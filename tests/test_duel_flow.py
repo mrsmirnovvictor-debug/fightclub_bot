@@ -1,6 +1,8 @@
 """Сквозной прогон дуэли через DuelService с поддельным ботом."""
 
+import asyncio
 import random
+from dataclasses import replace
 from dataclasses import dataclass, field
 
 import pytest
@@ -9,6 +11,7 @@ from bot.config import Config
 from bot.duel_service import DuelError, DuelService
 from bot.game.combat import MAX_MISSED_TURNS
 from bot.game.classes import get_class
+from bot.game.classes import Zone
 from bot.game.combat import Fighter
 from bot.game.health import FULL_REGEN_SECONDS, now_ts
 from bot.game.economy import (
@@ -93,16 +96,25 @@ def make_service(bot, db, turn_timeout: int = 600) -> DuelService:
     return DuelService(bot=bot, db=db, config=config, rng=random.Random(2024))
 
 
+ZONES = ["head", "chest", "belly", "belt", "legs"]
+
+
+async def choose(service: DuelService, session, user_id: int, index: int = 0) -> None:
+    """Полный выбор бойца: удар каждым оружием и один блок."""
+    fighter = session.fighters[user_id]
+    for slot in range(fighter.attacks_per_round):
+        await service.handle_choice(
+            session.id, user_id, "attack", ZONES[(index + slot) % len(ZONES)], slot
+        )
+    await service.handle_choice(
+        session.id, user_id, "block", ZONES[(index + 1) % len(ZONES)]
+    )
+
+
 async def play_round(service: DuelService, session) -> None:
-    """Обе стороны честно выбирают удар и блоки."""
-    zones = ["head", "chest", "belly", "belt", "legs"]
+    """Обе стороны честно выбирают удар и блок."""
     for index, user_id in enumerate(session.order):
-        fighter = session.fighters[user_id]
-        await service.handle_choice(session.id, user_id, "attack", zones[index])
-        for offset in range(fighter.derived.block_zones):
-            await service.handle_choice(
-                session.id, user_id, "block", zones[(index + offset + 1) % len(zones)]
-            )
+        await choose(service, session, user_id, index)
 
 
 async def force_round(service: DuelService, session) -> None:
@@ -124,7 +136,15 @@ async def test_full_duel_from_challenge_to_result(bot, db):
     session = await service.accept_challenge(challenge.id, second)
     assert service.duel_in_chat(CHAT_ID, THREAD_ID) is session
     assert service.is_busy(1) and service.is_busy(2)
-    assert "Дуэль на кулаках" in bot.texts[1]
+    assert not session.started
+    assert "Оцените друг друга" in bot.texts[-1]
+
+    # без подтверждения вызвавшего бой не начинается
+    with pytest.raises(DuelError):
+        await service.handle_choice(session.id, 1, "attack", "head")
+    await service.confirm_duel(session.id, first.user_id)
+    assert session.started
+    assert any("Дуэль на кулаках" in text for text in bot.texts)
 
     for _ in range(40):
         if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
@@ -267,16 +287,16 @@ async def test_choice_is_private_and_toggleable(bot, db):
 
     hint = await service.handle_choice(session.id, 1, "attack", "head")
     assert "голова" in hint
-    await service.handle_choice(session.id, 1, "block", "chest")
-    hint = await service.handle_choice(session.id, 1, "block", "chest")  # снимаем
-    assert "🛡 —" in hint
+    assert "Осталось выбрать блок" in hint
 
-    # третья зона вытесняет первую: воин закрывает только две
-    await service.handle_choice(session.id, 1, "block", "chest")
-    await service.handle_choice(session.id, 1, "block", "belly")
+    hint = await service.handle_choice(session.id, 1, "block", "chest")
+    assert "Грудь + живот" in hint  # блок закрывает смежные зоны
+    assert session.is_ready(1)
+
+    # новый блок заменяет прежний целиком
     hint = await service.handle_choice(session.id, 1, "block", "legs")
-    assert "живот, ноги" in hint
-    assert session.choice_of(1).is_ready(2)
+    assert "Ноги + голова" in hint
+    assert session.choice_of(1).block == (Zone.LEGS, Zone.HEAD)
 
 
 async def test_outsider_cannot_press_buttons(bot, db):
@@ -581,4 +601,106 @@ async def test_healed_fighter_is_allowed_again(bot, db):
     assert player.current_hp() == player.max_hp
     challenge = await service.open_challenge(CHAT_ID, THREAD_ID, player)
     session = await service.accept_challenge(challenge.id, await db.get_player(2))
+    await service.confirm_duel(session.id, 1)
     assert session.fighters[1].hp == session.fighters[1].max_hp
+
+
+# ---------- стойка перед боем ----------
+
+
+async def test_challenger_can_walk_away_after_seeing_the_opponent(bot, db):
+    """Посмотрел на соперника, испугался — разошлись без боя."""
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "assassin"))
+
+    challenge = await service.open_challenge(
+        CHAT_ID, THREAD_ID, await db.get_player(1)
+    )
+    session = await service.accept_challenge(challenge.id, await db.get_player(2))
+    assert not session.started
+    # карточка показывает, с кем предстоит драться
+    card = bot.texts[-1]
+    assert "Марла" in card and "Ассасин" in card and "рейтинг" in card
+
+    await service.decline_duel(session.id, 1)
+    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
+    assert not service.is_busy(1) and not service.is_busy(2)
+    assert "отказывается от боя" in bot.edits[-1].text
+    # несостоявшийся бой не пишется в статистику
+    assert (await db.get_player(1)).fights == 0
+
+
+async def test_opponent_may_also_back_out(bot, db):
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер"))
+    await db.save_player(make_player(2, "Марла"))
+    challenge = await service.open_challenge(
+        CHAT_ID, THREAD_ID, await db.get_player(1)
+    )
+    session = await service.accept_challenge(challenge.id, await db.get_player(2))
+    await service.decline_duel(session.id, 2)
+    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
+
+
+async def test_only_the_challenger_gives_the_gong(bot, db):
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер"))
+    await db.save_player(make_player(2, "Марла"))
+    challenge = await service.open_challenge(
+        CHAT_ID, THREAD_ID, await db.get_player(1)
+    )
+    session = await service.accept_challenge(challenge.id, await db.get_player(2))
+
+    with pytest.raises(DuelError):
+        await service.confirm_duel(session.id, 2)
+    with pytest.raises(DuelError):
+        await service.confirm_duel(session.id, 999)
+    assert not session.started
+
+    await service.confirm_duel(session.id, 1)
+    assert session.started
+    with pytest.raises(DuelError):  # второй раз гонга не будет
+        await service.confirm_duel(session.id, 1)
+
+
+async def test_standoff_frees_the_ring_when_nobody_decides(bot, db):
+    service = make_service(bot, db)
+    service.config = replace(service.config, challenge_timeout=0)
+    await db.save_player(make_player(1, "Тайлер"))
+    await db.save_player(make_player(2, "Марла"))
+    session = await service.open_standoff(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    for _ in range(200):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await asyncio.sleep(0)
+    assert not session.started
+    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
+    assert "не состоялся" in bot.edits[-1].text
+
+
+# ---------- как это читается в ветке ----------
+
+
+async def test_round_report_speaks_the_new_language(bot, db):
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Victor", "warrior"))
+    await db.save_player(make_player(2, "Евгений The One", "warrior"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    for _ in range(6):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await play_round(service, session)
+
+    rounds = [text for text in bot.texts if text.startswith("<b>⚔️ Раунд")]
+    assert rounds
+    body = "\n".join(rounds)
+    assert "кулаком" in body  # без оружия бьют кулаком
+    assert any(mark in body for mark in ("👊", "🛡", "🤸", "🥊", "🩸"))
+    # полоски здоровья остались в панели, в отчёте только цифры
+    assert "▰" not in body
+    assert "[" in body and "]" in body

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from bot.game.classes import ZONE_PREPOSITIONAL, Zone
 from bot.game.health import READY_THRESHOLD, format_duration
 from bot.game.links import links
+from bot.game.stats import derive
 from bot.game.combat import (
     MAX_MISSED_TURNS,
     DuelEnd,
@@ -23,36 +24,53 @@ from bot.game.combat import (
 if TYPE_CHECKING:  # только для подсказок типов: models импортирует не нас
     from bot.models import Player, ProgressReport
 
-BLOCK_LINES = [
-    "{a} метит {zone}, но {d} встречает удар глухим блоком.",
-    "{a} бьёт {zone} — {d} закрывается вовремя. Глухо.",
-    "Удар {zone} от {a} вязнет в блоке {d}.",
-    "{d} читает {a} как открытую книгу: удар {zone} принят на блок.",
-]
+# Эмодзи исхода: 👊 попадание, 🛡 блок, 🩸 крит, 🤸 уворот, 🥊 контрудар
+OUTCOME_EMOJI = {
+    Outcome.HIT: "👊",
+    Outcome.CRIT: "🩸",
+    Outcome.BLOCK: "🛡",
+    Outcome.DODGE: "🤸",
+    Outcome.COUNTER: "🥊",
+}
 
-DODGE_LINES = [
-    "{a} бьёт {zone}, но {d} уходит с линии удара.",
-    "{a} проваливается: удар {zone} рассекает воздух, {d} уже в стороне.",
-    "{d} убирает корпус — кулак {a} проходит мимо.",
-]
-
-COUNTER_LINES = [
-    "И тут же отвечает контрударом: <b>−{dmg}</b> по {a}!",
-    "Ответка прилетает мгновенно: <b>−{dmg}</b>!",
-    "{d} наказывает за промах контрударом на <b>{dmg}</b>.",
-]
-
+# Дальше — «{a} глагол {w} {zone}, {d} реакция». Формы подобраны так, чтобы
+# годились и бойцу, и бойчихе: прошедшего времени в мужском роде здесь нет.
 HIT_LINES = [
-    "{a} пробивает {zone}: <b>−{dmg}</b>.",
-    "{a} достаёт {zone} — {d} принимает <b>{dmg}</b>.",
-    "Чистое попадание {zone} от {a}: <b>−{dmg}</b>.",
-    "{a} вкладывается в удар {zone}. <b>{dmg}</b> из {d}.",
+    "{a} вкладывается {w} {zone}, {d} не отбивает",
+    "{a} прописывает {w} {zone} — {d} пропускает",
+    "{a} вламывает {w} {zone}, {d} теряет равновесие",
+    "{a} достаёт {w} {zone} соперника — {d} принимает",
+    "{a} коротко бьёт {w} {zone}, {d} не успевает закрыться",
 ]
 
 CRIT_LINES = [
-    "💥 КРИТ! {a} ловит момент и бьёт {zone} — <b>{dmg}</b>! {d} ведёт.",
-    "💥 {a} находит брешь {zone}: <b>{dmg}</b> одним ударом!",
-    "💥 Хруст на весь зал: {a} проламывает защиту {zone}. <b>−{dmg}</b>!",
+    "{a} страшно вламывает {w} {zone} — {d} плывёт",
+    "{a} ловит момент и лупит {w} {zone}, {d} едва держится",
+    "{a} проламывает защиту {w} {zone} — {d} складывается",
+]
+
+BLOCK_LINES = [
+    "{a} метит {w} {zone}, {d} отбивает",
+    "{a} бьёт {w} {zone} — {d} закрывается вовремя",
+    "Удар {w} {zone} от {a} вязнет в блоке {d}",
+]
+
+SHIELD_BLOCK_LINES = [
+    "{a} метит {w} {zone}, {d} отбивает щитом",
+    "{a} бьёт {w} {zone} — {d} подставляет щит",
+    "Удар {w} {zone} от {a} гаснет о щит {d}",
+]
+
+DODGE_LINES = [
+    "{a} бьёт {w} {zone}, {d} уходит с линии удара",
+    "{a} проваливается: удар {w} {zone} рассекает воздух",
+    "{d} убирает корпус — {a} машет {w} впустую",
+]
+
+COUNTER_LINES = [
+    "{a} бьёт {w} {zone} — {d} уходит и отвечает",
+    "{a} промахивается {w} {zone}, и тут же прилетает ответка",
+    "{d} уворачивается от {a} и наказывает контрударом",
 ]
 
 MISSED_TURN_LINES = [
@@ -125,6 +143,13 @@ def zone_phrase(zone: Zone) -> str:
     return ZONE_PREPOSITIONAL[zone]
 
 
+def damage_tail(damage: int, hp: int, maximum: int, crit: bool = False) -> str:
+    """«−11 [11/66]» — сколько снял и сколько у защищающегося осталось."""
+    amount = f"−{damage}"
+    body = f"<b>{amount}</b>" if crit else amount
+    return f", {body} [{hp}/{maximum}]"
+
+
 def describe_strike(
     strike: Strike,
     attacker: Fighter,
@@ -135,25 +160,39 @@ def describe_strike(
     names = {
         "a": f"<b>{esc(attacker.name)}</b>",
         "d": f"<b>{esc(defender.name)}</b>",
+        "w": strike.weapon,
         "zone": zone_phrase(strike.zone) if strike.zone else "",
     }
+
     if strike.outcome is Outcome.SKIP:
         lines = MISSED_TURN_LINES if strike.missed_turn else NO_ATTACK_LINES
         return rng.choice(lines).format(**names)
-    if strike.outcome is Outcome.BLOCK:
-        line = rng.choice(BLOCK_LINES).format(**names)
-    elif strike.outcome is Outcome.DODGE:
-        line = rng.choice(DODGE_LINES).format(**names)
-        if strike.counter_damage:
-            line += " " + rng.choice(COUNTER_LINES).format(
-                **names, dmg=strike.counter_damage
-            )
-    elif strike.outcome is Outcome.CRIT:
-        line = rng.choice(CRIT_LINES).format(**names, dmg=strike.damage)
-    else:
-        line = rng.choice(HIT_LINES).format(**names, dmg=strike.damage)
 
-    return f"{strike.zone.emoji} {line}"
+    emoji = OUTCOME_EMOJI[strike.outcome]
+    if strike.outcome is Outcome.BLOCK:
+        lines = SHIELD_BLOCK_LINES if strike.by_shield else BLOCK_LINES
+        return f"{emoji} {rng.choice(lines).format(**names)}"
+
+    if strike.outcome is Outcome.DODGE:
+        return f"{emoji} {rng.choice(DODGE_LINES).format(**names)}"
+
+    if strike.outcome is Outcome.COUNTER:
+        line = rng.choice(COUNTER_LINES).format(**names)
+        tail = damage_tail(
+            strike.counter_damage, strike.attacker_hp_after, attacker.max_hp
+        )
+        return f"{emoji} {line}{tail}"
+
+    line = rng.choice(
+        CRIT_LINES if strike.outcome is Outcome.CRIT else HIT_LINES
+    ).format(**names)
+    tail = damage_tail(
+        strike.damage,
+        strike.defender_hp_after,
+        defender.max_hp,
+        crit=strike.outcome is Outcome.CRIT,
+    )
+    return f"{emoji} {line}{tail}"
 
 
 def round_report(
@@ -169,9 +208,6 @@ def round_report(
                 strike, fighters[strike.attacker_id], fighters[strike.defender_id], rng
             )
         )
-    lines.append("")
-    for fighter in fighters.values():
-        lines.append(hp_line(fighter))
     return "\n".join(lines)
 
 
@@ -259,6 +295,51 @@ def fighter_hp_note(fighter: Fighter) -> str:
     return f"{fighter.hp}/{fighter.max_hp} HP (не долечился)"
 
 
+def _fighter_brief(player: "Player") -> str:
+    """Строка «на кого иду»: класс, уровень, здоровье, урон, рейтинг, счёт."""
+    stats = derive(
+        player.fclass, player.stats, player.level, player.equipment.hp_bonus
+    )
+    return (
+        f"{player.fclass.emoji} <b>{esc(player.nickname)}</b> — "
+        f"{player.fclass.title}, {player.level} ур.\n"
+        f"❤️ {player.current_hp()}/{stats.max_hp} · "
+        f"👊 {stats.damage_min}–{stats.damage_max} · "
+        f"💥 {stats.crit_chance:.0%} · 🌀 {stats.dodge_chance:.0%}\n"
+        f"🏆 рейтинг {player.rating} · {player.wins}—{player.losses}"
+    )
+
+
+def standoff_card(first: "Player", second: "Player", decision: str = "") -> str:
+    """Бойцы сошлись лицом к лицу — вызвавшему решать, драться или разойтись."""
+    lines = [
+        "🥊 <b>Вызов принят. Оцените друг друга.</b>",
+        "",
+        _fighter_brief(first),
+        "",
+        _fighter_brief(second),
+        "",
+    ]
+    gap = second.level - first.level
+    if gap:
+        stronger = second if gap > 0 else first
+        lines.append(
+            f"⚖️ Разница в уровнях — {abs(gap)} в пользу "
+            f"<b>{esc(stronger.nickname)}</b>."
+        )
+    else:
+        lines.append("⚖️ Уровни равны.")
+
+    if decision:
+        lines += ["", decision]
+    else:
+        lines += [
+            "",
+            f"Слово за <b>{esc(first.nickname)}</b>: выходить на ринг или разойтись.",
+        ]
+    return "\n".join(lines)
+
+
 def duel_intro(first: Fighter, second: Fighter) -> str:
     return (
         "🥊 <b>Бойцовский клуб. Дуэль на кулаках</b>\n\n"
@@ -266,9 +347,10 @@ def duel_intro(first: Fighter, second: Fighter) -> str:
         f"{first.level} ур., {fighter_hp_note(first)}\n"
         f"{second.fclass.emoji} {mention(second)} — {second.fclass.title}, "
         f"{second.level} ур., {fighter_hp_note(second)}\n\n"
-        "Правила простые: бьёшь в одну зону, закрываешь остальные. "
-        f"Первое правило клуба — не заставлять судью ждать: {MAX_MISSED_TURNS} "
-        "пропущенных хода подряд, и бой засчитают техническим поражением."
+        "Правила простые: удар слева, бьёшь в одну зону. "
+        "Блок справа — закрываешь две смежные, а со щитом три.\n"
+        f"Не заставлять судью ждать: {MAX_MISSED_TURNS} пропущенных удара "
+        "подряд, и бой засчитают техническим поражением."
     )
 
 

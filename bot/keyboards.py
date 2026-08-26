@@ -13,6 +13,7 @@ from bot.game.classes import (
     FighterClass,
     Stat,
     Zone,
+    block_title,
 )
 
 AVATARS: tuple[str, ...] = (
@@ -43,6 +44,12 @@ class FightCB(CallbackData, prefix="fight"):
     action: str  # attack | block
     duel_id: int
     zone: str = ""
+    slot: int = 0  # каким оружием бьём: 0 — основное, 1 — второе
+
+
+class StandoffCB(CallbackData, prefix="stand"):
+    action: str  # start | decline
+    duel_id: int
 
 
 def classes_keyboard() -> InlineKeyboardMarkup:
@@ -107,26 +114,56 @@ def challenge_keyboard(challenge_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def fight_keyboard(duel_id: int) -> InlineKeyboardMarkup:
-    """Одна клавиатура на обоих бойцов: кто нажал — тому и засчитали."""
-    builder = InlineKeyboardBuilder()
-    for zone in ALL_ZONES:
-        builder.button(
-            text=f"👊 {zone.title}",
-            callback_data=FightCB(action="attack", duel_id=duel_id, zone=zone.value),
+def fight_keyboard(duel_id: int, fighter) -> InlineKeyboardMarkup:
+    """Панель бойца: слева удары (по колонке на оружие), справа блоки.
+
+    Блок закрывает смежные зоны, поэтому вариантов ровно пять — по одному
+    на каждую зону, с которой блок начинается.
+    """
+    icons = fighter.weapon_icons
+    blocks = fighter.block_options()
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for index, zone in enumerate(ALL_ZONES):
+        row = [
+            InlineKeyboardButton(
+                text=f"{icon} {zone.title.capitalize()}",
+                callback_data=FightCB(
+                    action="attack", duel_id=duel_id, zone=zone.value, slot=slot
+                ).pack(),
+            )
+            for slot, icon in enumerate(icons)
+        ]
+        combo = blocks[index]
+        row.append(
+            InlineKeyboardButton(
+                text=f"🛡 {block_title(combo)}",
+                callback_data=FightCB(
+                    action="block", duel_id=duel_id, zone=combo[0].value
+                ).pack(),
+            )
         )
-    builder.adjust(5)
-    block_row = [
-        InlineKeyboardButton(
-            text=f"🛡 {zone.title}",
-            callback_data=FightCB(
-                action="block", duel_id=duel_id, zone=zone.value
-            ).pack(),
-        )
-        for zone in ALL_ZONES
-    ]
-    builder.row(*block_row)
-    return builder.as_markup()
+        rows.append(row)
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def standoff_keyboard(duel_id: int) -> InlineKeyboardMarkup:
+    """Последнее слово перед гонгом: выходить на ринг или разойтись."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⚔️ Бьёмся",
+                    callback_data=StandoffCB(action="start", duel_id=duel_id).pack(),
+                ),
+                InlineKeyboardButton(
+                    text="🚪 Отказаться",
+                    callback_data=StandoffCB(action="decline", duel_id=duel_id).pack(),
+                ),
+            ]
+        ]
+    )
 
 
 def class_hint(fclass: FighterClass) -> str:

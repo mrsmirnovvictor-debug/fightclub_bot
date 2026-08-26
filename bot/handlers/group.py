@@ -12,7 +12,7 @@ from bot.database import Database
 from bot.duel_service import DuelError, DuelService
 from bot.game.narrator import esc, name_link, plain
 from bot.handlers.common import thread_id_of
-from bot.keyboards import ChallengeCB, FightCB
+from bot.keyboards import ChallengeCB, FightCB, StandoffCB
 from bot.models import Player
 
 logger = logging.getLogger(__name__)
@@ -148,6 +148,7 @@ async def on_fight(
             callback.from_user.id,
             callback_data.action,
             callback_data.zone,
+            callback_data.slot,
         )
     except DuelError as error:
         await callback.answer(plain(str(error)), show_alert=True)
@@ -156,6 +157,22 @@ async def on_fight(
         await callback.answer("Судья запутался. Попробуй ещё раз.", show_alert=True)
     else:
         await callback.answer(hint)
+
+
+@router.callback_query(StandoffCB.filter())
+async def on_standoff(
+    callback: CallbackQuery, callback_data: StandoffCB, duels: DuelService
+) -> None:
+    """Последнее слово перед гонгом: выходим или расходимся."""
+    try:
+        if callback_data.action == "start":
+            await duels.confirm_duel(callback_data.duel_id, callback.from_user.id)
+            await callback.answer("Гонг!")
+        else:
+            await duels.decline_duel(callback_data.duel_id, callback.from_user.id)
+            await callback.answer("Бой отменён.")
+    except DuelError as error:
+        await callback.answer(plain(str(error)), show_alert=True)
 
 
 @router.message(Command("history"), F.chat.type.in_(GROUP_TYPES))
