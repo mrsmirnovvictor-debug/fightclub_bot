@@ -1,0 +1,88 @@
+"""Профиль, справка, таблица чемпионов."""
+
+from __future__ import annotations
+
+from aiogram import Router
+from aiogram.filters import Command
+from aiogram.types import Message
+
+from bot.database import Database
+from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES
+from bot.game.combat import MAX_ROUNDS
+from bot.game.narrator import esc
+from bot.handlers.common import profile_text, send_profile
+
+router = Router(name="profile")
+
+HELP_TEXT = (
+    "🥊 <b>Бойцовский клуб — как это работает</b>\n\n"
+    "<b>В личке бота</b>\n"
+    "/start — создать бойца (класс → прозвище → аватар → характеристики)\n"
+    "/profile — карточка бойца\n"
+    "/upgrade — раскидать свободные очки после уровня\n"
+    "/reset — начать заново с новым персонажем\n"
+    "/classes — чем отличаются классы\n\n"
+    "<b>В группе</b>\n"
+    "/arena — отметить текущую ветку как ринг клуба (только для админов)\n"
+    "/duel — бросить вызов всем желающим\n"
+    "/duel в ответ на сообщение — вызвать конкретного бойца\n"
+    "/top — чемпионы клуба\n"
+    "/giveup — сдаться в текущем бою\n\n"
+    "<b>Как идёт бой</b>\n"
+    "Каждый раунд оба бойца жмут одну зону удара (👊) и закрывают блоком (🛡) "
+    "столько зон, сколько положено классу. Соперник твоих нажатий не видит — "
+    "бот отвечает лично тому, кто нажал.\n"
+    "Блок гасит удар полностью, ловкач может увернуться и добавить контрудар, "
+    "ассасин — влепить крит.\n"
+    f"Зоны: {', '.join(z.label for z in ALL_ZONES)}.\n"
+    f"С 6-го раунда бойцы устают и бьют всё сильнее, "
+    f"через {MAX_ROUNDS} раундов победу присуждает судья по остатку здоровья."
+)
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message) -> None:
+    await message.answer(HELP_TEXT)
+
+
+@router.message(Command("classes"))
+async def cmd_classes(message: Message) -> None:
+    blocks = []
+    for fclass in FIGHTER_CLASSES.values():
+        stats = fclass.base_stats
+        blocks.append(
+            f"{fclass.label} — <i>{fclass.tagline}</i>\n"
+            f"{fclass.description}\n"
+            f"Старт: 💪{stats.strength} 🤸{stats.agility} "
+            f"🔮{stats.intuition} 🫀{stats.endurance}, блоков: {fclass.block_zones}"
+        )
+    await message.answer("\n\n".join(blocks))
+
+
+@router.message(Command("profile", "me"))
+async def cmd_profile(message: Message, db: Database) -> None:
+    player = await db.get_player(message.from_user.id)
+    if player is None:
+        await message.answer("Бойца ещё нет. Напиши мне в личку /start.")
+        return
+    if message.chat.type == "private":
+        await send_profile(message, player)
+    else:
+        await message.answer(profile_text(player))
+
+
+@router.message(Command("top"))
+async def cmd_top(message: Message, db: Database) -> None:
+    players = await db.top_players(10)
+    if not players:
+        await message.answer("В клубе пока ни одного бойца. /start — исправь это.")
+        return
+    medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+    lines = ["🏆 <b>Чемпионы клуба</b>", ""]
+    for index, player in enumerate(players):
+        lines.append(
+            f"{medals.get(index, f'{index + 1}.')} {player.avatar} "
+            f"<b>{esc(player.nickname)}</b> — {player.fclass.title}, "
+            f"{player.level} ур. · {player.wins}—{player.losses}"
+        )
+    await message.answer("\n".join(lines))

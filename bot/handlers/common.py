@@ -1,0 +1,72 @@
+"""Общие помощники для хендлеров."""
+
+from __future__ import annotations
+
+from aiogram.types import Message
+
+from bot.game.classes import ALL_STATS, FighterClass, Stats
+from bot.game.stats import derive
+from bot.game.narrator import esc
+from bot.models import Player
+
+PRIVATE_HINT = (
+    "Сначала заведи бойца: напиши мне в личку /start и пройди регистрацию."
+)
+
+
+def thread_id_of(message: Message | None) -> int | None:
+    """message_thread_id имеет смысл только для веток форума."""
+    if message is None:
+        return None
+    if getattr(message, "is_topic_message", False):
+        return message.message_thread_id
+    return None
+
+
+def stats_block(stats: Stats, indent: str = "") -> str:
+    return "\n".join(
+        f"{indent}{stat.emoji} {stat.title.capitalize()}: <b>{stats.get(stat)}</b>"
+        for stat in ALL_STATS
+    )
+
+
+def combat_block(fclass: FighterClass, stats: Stats, level: int = 1) -> str:
+    d = derive(fclass, stats, level)
+    return (
+        f"❤️ Здоровье: <b>{d.max_hp}</b>\n"
+        f"👊 Урон: <b>{d.damage_min}–{d.damage_max}</b>\n"
+        f"💥 Крит: <b>{d.crit_chance:.0%}</b> (×{d.crit_power})\n"
+        f"🌀 Уворот: <b>{d.dodge_chance:.0%}</b>\n"
+        f"🔄 Контрудар: <b>{d.counter_chance:.0%}</b>\n"
+        f"🛡 Блок: <b>{d.block_zones}</b> зоны из 5"
+    )
+
+
+def profile_text(player: Player) -> str:
+    fclass = player.fclass
+    lines = [
+        f"{player.avatar} <b>{esc(player.nickname)}</b>",
+        f"{fclass.label} · {player.level} уровень · опыт {player.exp}/{player.exp_needed}",
+        "",
+        stats_block(player.stats),
+        "",
+        combat_block(fclass, player.stats, player.level),
+        "",
+        f"🥊 Боёв: <b>{player.fights}</b> · "
+        f"побед: <b>{player.wins}</b> · "
+        f"поражений: <b>{player.losses}</b> · "
+        f"ничьих: <b>{player.draws}</b>",
+    ]
+    if player.free_points:
+        lines.append(
+            f"\n✨ Свободных очков: <b>{player.free_points}</b> — раскидай их: /upgrade"
+        )
+    return "\n".join(lines)
+
+
+async def send_profile(message: Message, player: Player) -> None:
+    text = profile_text(player)
+    if player.avatar_file_id:
+        await message.answer_photo(player.avatar_file_id, caption=text)
+    else:
+        await message.answer(text)
