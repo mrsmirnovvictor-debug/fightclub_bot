@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from aiogram.types import Chat, Message, User
+from aiogram.types import Chat, ForumTopicCreated, Message, User
 
 from tests.harness import feed_callback, feed_message, ids
 
@@ -193,3 +193,41 @@ async def test_hurt_fighter_is_turned_away_from_the_ring(arena):
     assert "мин" in text  # обратный отсчёт на месте
     assert duels.duel_in_chat(GROUP.id, THREAD_ID) is None
     assert not duels.is_busy(user.id)
+
+
+async def test_duel_in_a_topic_is_not_a_fight_with_yourself(arena):
+    """В ветке форума Telegram подставляет служебное сообщение о создании темы.
+
+    Его автор — тот, кто тему создал. Без проверки бот принимал его за
+    соперника, и человек получал «с самим собой драться нельзя».
+    """
+    db, duels, session = arena
+    user = as_user(651, "Тайлер")
+    await db.save_player(make_player(user.id, "Тайлер", "warrior"))
+
+    topic_root = Message(
+        message_id=THREAD_ID,
+        date=datetime.now(timezone.utc),
+        chat=GROUP,
+        from_user=user,  # тему создал сам игрок
+        message_thread_id=THREAD_ID,
+        is_topic_message=True,
+        forum_topic_created=ForumTopicCreated(name="Ринг", icon_color=0x6FB9F0),
+    )
+    await feed_message(group_message(user, "/duel", reply_to_message=topic_root))
+
+    assert "любого желающего" in session.texts[-1]
+    assert "самим собой" not in session.texts[-1]
+    assert duels.is_busy(user.id)
+
+
+async def test_replying_to_your_own_message_opens_a_free_challenge(arena):
+    db, duels, session = arena
+    user = as_user(652, "Марла")
+    await db.save_player(make_player(user.id, "Марла", "rogue"))
+
+    own = group_message(user, "я тут")
+    await feed_message(group_message(user, "/duel", reply_to_message=own))
+
+    assert "любого желающего" in session.texts[-1]
+    assert duels.is_busy(user.id)

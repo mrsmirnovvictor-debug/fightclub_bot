@@ -91,8 +91,8 @@ async def cmd_duel(message: Message, db: Database, duels: DuelService) -> None:
         return
 
     target: Player | None = None
-    reply = message.reply_to_message
-    if reply and reply.from_user and not reply.from_user.is_bot:
+    reply = _challenged_message(message)
+    if reply is not None:
         target = await db.get_player(reply.from_user.id)
         if target is None:
             await message.reply(
@@ -111,6 +111,27 @@ async def cmd_duel(message: Message, db: Database, duels: DuelService) -> None:
         )
     except DuelError as error:
         await message.reply(str(error))
+
+
+def _challenged_message(message: Message) -> Message | None:
+    """Чьё сообщение мы считаем вызовом конкретному бойцу.
+
+    В ветках форума Telegram подставляет в reply_to_message служебное
+    сообщение о создании темы, а его автор — тот, кто тему завёл. Без этой
+    проверки бот принимал автора темы за соперника, и человек, отправивший
+    /duel в собственной ветке, получал «с самим собой драться нельзя».
+    Ответ на своё же сообщение тоже не вызов, а обычный открытый вызов.
+    """
+    reply = message.reply_to_message
+    if reply is None or reply.from_user is None or reply.from_user.is_bot:
+        return None
+    if reply.forum_topic_created is not None:
+        return None
+    if message.message_thread_id and reply.message_id == message.message_thread_id:
+        return None
+    if reply.from_user.id == message.from_user.id:
+        return None
+    return reply
 
 
 @router.callback_query(ChallengeCB.filter())
