@@ -10,6 +10,7 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES
 from bot.game.combat import MAX_MISSED_TURNS, MAX_ROUNDS
+from bot.game.health import FULL_REGEN_SECONDS, HURT_THRESHOLD, READY_THRESHOLD
 from bot.game.economy import (
     LEVEL_CREDITS,
     MAX_LEVEL,
@@ -60,6 +61,16 @@ def help_text(turn_timeout: int = 30) -> str:
         f"С 6-го раунда бойцы устают и бьют всё сильнее, "
         f"через {MAX_ROUNDS} раундов победу присуждает судья по остатку здоровья.\n"
         "Взаимный нокаут и равное здоровье по решению судьи — ничья.\n\n"
+        "<b>Здоровье между боями</b>\n"
+        "Здоровье не восстанавливается мгновенно: после боя остаётся ровно то, "
+        "с чем ты его закончил, и затягивается полностью за "
+        f"{FULL_REGEN_SECONDS // 60} минут.\n"
+        f"🔴 меньше {HURT_THRESHOLD:.0%} — избит, "
+        f"🟡 от {HURT_THRESHOLD:.0%} до {READY_THRESHOLD:.0%} — отдыхает, "
+        f"🟢 от {READY_THRESHOLD:.0%} — можно на ринг.\n"
+        "В красной и жёлтой зоне драться нельзя. В зелёной — можно, "
+        "даже если здоровье неполное: это уже твой риск.\n"
+        "Сколько осталось ждать, видно в /profile.\n\n"
         "<b>Что даёт бой</b>\n"
         "Опыт получает только победитель: база плюс доля от нанесённого урона, "
         "умноженная на разницу уровней. Побить старшего выгодно, "

@@ -16,6 +16,16 @@ from bot.game.economy import (
     exp_to_next_level,
     ups_earned,
 )
+from bot.game.health import (
+    HealthState,
+    health_state,
+    hp_percent,
+    now_ts,
+    regenerated_hp,
+    seconds_until_full,
+    seconds_until_ready,
+)
+from bot.game.stats import derive
 
 
 @dataclass
@@ -53,6 +63,8 @@ class Player:
     micro_ups: int = 0  # промежуточных апов взято на текущем уровне
     credits: int = 0
     rating: int = RATING_START
+    hp: int | None = None  # здоровье на момент hp_at; None — полное
+    hp_at: int = 0  # когда это здоровье зафиксировали (unix-время)
     wins: int = 0
     losses: int = 0
     draws: int = 0
@@ -73,6 +85,41 @@ class Player:
     @property
     def fights(self) -> int:
         return self.wins + self.losses + self.draws
+
+    @property
+    def max_hp(self) -> int:
+        return derive(self.fclass, self.stats, self.level).max_hp
+
+    def current_hp(self, now: int | None = None) -> int:
+        """Здоровье с учётом восстановления, прошедшего с последнего боя."""
+        if self.hp is None:
+            return self.max_hp
+        moment = now_ts() if now is None else now
+        return regenerated_hp(self.hp, self.max_hp, moment - self.hp_at)
+
+    def hp_percent(self, now: int | None = None) -> float:
+        return hp_percent(self.current_hp(now), self.max_hp)
+
+    def health_state(self, now: int | None = None) -> HealthState:
+        return health_state(self.current_hp(now), self.max_hp)
+
+    def can_fight(self, now: int | None = None) -> bool:
+        return self.health_state(now).can_fight
+
+    def seconds_until_ready(self, now: int | None = None) -> int:
+        return seconds_until_ready(self.current_hp(now), self.max_hp)
+
+    def seconds_until_full(self, now: int | None = None) -> int:
+        return seconds_until_full(self.current_hp(now), self.max_hp)
+
+    def set_hp(self, value: int, now: int | None = None) -> None:
+        """Зафиксировать здоровье после боя — дальше оно начнёт затягиваться."""
+        self.hp = max(0, min(self.max_hp, value))
+        self.hp_at = now_ts() if now is None else now
+
+    def heal_full(self, now: int | None = None) -> None:
+        self.hp = self.max_hp
+        self.hp_at = now_ts() if now is None else now
 
     @property
     def exp_needed(self) -> int:

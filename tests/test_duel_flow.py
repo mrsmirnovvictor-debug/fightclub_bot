@@ -10,6 +10,7 @@ from bot.duel_service import DuelError, DuelService
 from bot.game.combat import MAX_MISSED_TURNS
 from bot.game.classes import get_class
 from bot.game.combat import Fighter
+from bot.game.health import FULL_REGEN_SECONDS, now_ts
 from bot.game.economy import (
     RATING_START,
     WIN_CREDITS_MIN,
@@ -356,6 +357,14 @@ async def test_accepting_while_having_own_challenge_withdraws_it(bot, db):
 # ---------- экономика ----------
 
 
+async def heal_everyone(db, *user_ids: int) -> None:
+    """Отмотать восстановление: как будто прошло десять минут."""
+    for user_id in user_ids:
+        player = await db.get_player(user_id)
+        player.heal_full()
+        await db.save_player(player)
+
+
 async def fight_to_the_end(service: DuelService, session) -> None:
     for _ in range(40):
         if service.duel_in_chat(session.chat_id, session.thread_id) is None:
@@ -427,6 +436,7 @@ async def test_repeat_fights_pay_less(bot, db):
 
     gains = []
     for _ in range(3):
+        await heal_everyone(db, 1, 2)  # между боями бойцы успевают отлежаться
         before = await db.get_player(1)
         session = await service.start_duel(
             CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
@@ -481,3 +491,94 @@ async def test_rating_transfer_stays_symmetric_when_the_winner_levels_up(bot, db
     winner, loser = await db.get_player(1), await db.get_player(2)
     assert winner.level == 2  # уровень действительно взят
     assert winner.rating - RATING_START == RATING_START - loser.rating
+
+
+# ---------- здоровье между боями ----------
+
+
+async def test_hp_carries_over_to_the_next_fight(bot, db):
+    """После боя здоровье сохраняется, а не откатывается к полному."""
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "rogue"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    await fight_to_the_end(service, session)
+
+    for user_id in (1, 2):
+        player = await db.get_player(user_id)
+        assert player.hp == session.fighters[user_id].hp
+        assert player.hp_at > 0
+    # проигравший лежит на нуле
+    loser = next(f for f in session.fighters.values() if f.hp == 0)
+    assert (await db.get_player(loser.user_id)).hp == 0
+
+
+async def test_beaten_fighter_cannot_start_a_new_duel(bot, db):
+    service = make_service(bot, db)
+    beaten = make_player(1, "Тайлер", "warrior")
+    beaten.set_hp(1)  # только что получил по лицу
+    await db.save_player(beaten)
+    await db.save_player(make_player(2, "Марла", "rogue"))
+
+    with pytest.raises(DuelError) as error:
+        await service.open_challenge(CHAT_ID, THREAD_ID, await db.get_player(1))
+    assert "не в форме" in str(error.value)
+    assert "🔴" in str(error.value)
+    assert not service.is_busy(1)
+
+
+async def test_beaten_fighter_cannot_be_challenged_or_accept(bot, db):
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    beaten = make_player(2, "Марла", "rogue")
+    beaten.set_hp(int(beaten.max_hp * 0.5))  # жёлтая зона
+    await db.save_player(beaten)
+
+    # адресный вызов отклоняется сразу
+    with pytest.raises(DuelError) as error:
+        await service.open_challenge(
+            CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+        )
+    assert "🟡" in str(error.value)
+
+    # и открытый вызов принять тоже нельзя
+    challenge = await service.open_challenge(
+        CHAT_ID, THREAD_ID, await db.get_player(1)
+    )
+    with pytest.raises(DuelError):
+        await service.accept_challenge(challenge.id, await db.get_player(2))
+    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
+
+
+async def test_scratched_fighter_enters_the_ring_with_what_is_left(bot, db):
+    """Зелёная зона пускает в бой, но здоровье в бою — неполное."""
+    service = make_service(bot, db)
+    scratched = make_player(1, "Тайлер", "warrior")
+    partial = int(scratched.max_hp * 0.85)
+    scratched.set_hp(partial)
+    await db.save_player(scratched)
+    await db.save_player(make_player(2, "Марла", "rogue"))
+
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    assert session.fighters[1].hp == partial
+    assert session.fighters[1].hp < session.fighters[1].max_hp
+    assert session.fighters[2].hp == session.fighters[2].max_hp
+    assert any("не долечился" in text for text in bot.texts)  # интро предупреждает
+
+
+async def test_healed_fighter_is_allowed_again(bot, db):
+    service = make_service(bot, db)
+    beaten = make_player(1, "Тайлер", "warrior")
+    beaten.set_hp(0, now=now_ts() - FULL_REGEN_SECONDS)  # отлежался десять минут
+    await db.save_player(beaten)
+    await db.save_player(make_player(2, "Марла", "rogue"))
+
+    player = await db.get_player(1)
+    assert player.current_hp() == player.max_hp
+    challenge = await service.open_challenge(CHAT_ID, THREAD_ID, player)
+    session = await service.accept_challenge(challenge.id, await db.get_player(2))
+    assert session.fighters[1].hp == session.fighters[1].max_hp
