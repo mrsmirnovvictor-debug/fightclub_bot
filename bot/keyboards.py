@@ -13,6 +13,7 @@ from bot.game.classes import (
     FighterClass,
     Stat,
     Zone,
+    block_combos,
     block_title,
 )
 
@@ -114,14 +115,15 @@ def challenge_keyboard(challenge_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def fight_keyboard(duel_id: int, fighter) -> InlineKeyboardMarkup:
-    """Панель бойца: слева удары (по колонке на оружие), справа блоки.
+def fight_keyboard(
+    duel_id: int, icons: tuple[str, ...] = ("👊",), block_width: int = 2
+) -> InlineKeyboardMarkup:
+    """Панель раунда: слева удары по зонам, справа блоки.
 
-    Блок закрывает смежные зоны, поэтому вариантов ровно пять — по одному
-    на каждую зону, с которой блок начинается.
+    Панель одна на обоих бойцов — так проще читать ветку. Кто нажал, тому
+    и засчитали: бот отвечает всплывающей подсказкой лично нажавшему.
     """
-    icons = fighter.weapon_icons
-    blocks = fighter.block_options()
+    blocks = block_combos(block_width)
     rows: list[list[InlineKeyboardButton]] = []
 
     for index, zone in enumerate(ALL_ZONES):

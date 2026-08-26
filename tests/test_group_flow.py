@@ -169,7 +169,7 @@ async def test_no_surrender_button_and_no_giveup_command(arena):
 
     buttons = [
         button.callback_data
-        for row in fight_keyboard(duel.id, duel.fighters[first.id]).inline_keyboard
+        for row in fight_keyboard(duel.id, *duel.panel).inline_keyboard
         for button in row
     ]
     assert all("giveup" not in (data or "") for data in buttons)

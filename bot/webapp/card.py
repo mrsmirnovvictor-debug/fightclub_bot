@@ -146,6 +146,5 @@ def build_card(
             "damage_max": derived.damage_max,
             "crit_chance": round(derived.crit_chance * 100),
             "dodge_chance": round(derived.dodge_chance * 100),
-            "block_zones": derived.block_zones,
         },
     }

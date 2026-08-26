@@ -101,8 +101,13 @@ def test_shield_widens_the_block():
     assert fighter.block_width == SHIELD_BLOCK_WIDTH
 
 
-def test_tank_blocks_three_zones_without_a_shield():
-    assert make(fclass=TANK).block_width == SHIELD_BLOCK_WIDTH
+def test_class_does_not_change_attacks_or_blocks():
+    """В кулачном бою у всех один удар и блок на две зоны."""
+    for fclass in FIGHTER_CLASSES.values():
+        fighter = make(fclass=fclass)
+        assert fighter.attacks_per_round == 1
+        assert fighter.block_width == BLOCK_WIDTH
+    assert make(fclass=TANK).block_width == make(fclass=WARRIOR).block_width
 
 
 def test_second_weapon_gives_a_second_strike():

@@ -38,8 +38,7 @@ def combat_block(fclass: FighterClass, stats: Stats, level: int = 1) -> str:
         f"👊 Урон: <b>{d.damage_min}–{d.damage_max}</b>\n"
         f"💥 Крит: <b>{d.crit_chance:.0%}</b> (×{d.crit_power})\n"
         f"🌀 Уворот: <b>{d.dodge_chance:.0%}</b>\n"
-        f"🔄 Контрудар: <b>{d.counter_chance:.0%}</b>\n"
-        f"🛡 Блок: <b>{d.block_zones}</b> зоны из 5"
+        f"🔄 Контрудар: <b>{d.counter_chance:.0%}</b>"
     )
 
 

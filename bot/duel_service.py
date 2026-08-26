@@ -11,11 +11,12 @@ import random
 from dataclasses import dataclass, field
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 from bot.config import Config
 from bot.database import Database
-from bot.game.classes import Zone, block_combo, block_title
+from bot.game.classes import BLOCK_WIDTH, Zone, block_combo, block_title
+from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.combat import (
     MAX_MISSED_TURNS,
     Action,
@@ -50,6 +51,10 @@ from bot.keyboards import challenge_keyboard, fight_keyboard, standoff_keyboard
 from bot.models import Player, ProgressReport
 
 logger = logging.getLogger(__name__)
+
+# Сколько раз пробуем отправить сообщение боя и сколько ждём на флуд-контроле
+SEND_ATTEMPTS = 3
+MAX_FLOOD_WAIT = 30
 
 
 class DuelError(Exception):
@@ -113,7 +118,7 @@ class DuelSession:
     round_number: int = 0
     choices: dict[int, Choice] = field(default_factory=dict)
     players: dict[int, Player] = field(default_factory=dict)
-    prompt_ids: dict[int, int] = field(default_factory=dict)
+    prompt_message_id: int | None = None
     standoff_message_id: int | None = None
     started: bool = False  # гонг прозвучал
     timer: asyncio.Task | None = None
@@ -139,6 +144,23 @@ class DuelSession:
     def is_ready(self, user_id: int) -> bool:
         fighter = self.fighters[user_id]
         return self.choice_of(user_id).is_ready(fighter.attacks_per_round)
+
+    @property
+    def panel(self) -> tuple[tuple[str, ...], int]:
+        """Одна панель на двоих: значки ударов и ширина блока.
+
+        В кулачном бою у обоих всё одинаково. Если однажды снаряжение
+        разойдётся, панель показывает общий знаменатель, а нажатие
+        считается по снаряжению того, кто нажал.
+        """
+        sides = [self.fighters[user_id] for user_id in self.order]
+        icons = sides[0].weapon_icons
+        if any(side.weapon_icons != icons for side in sides):
+            icons = (BARE_HANDS_ICON,) * max(s.attacks_per_round for s in sides)
+        width = sides[0].block_width
+        if any(side.block_width != width for side in sides):
+            width = BLOCK_WIDTH
+        return icons, width
 
 
 class DuelService:
@@ -452,30 +474,23 @@ class DuelService:
         session.round_number += 1
         session.choices = {}
         session.resolving = False
-        session.prompt_ids = {}
-        # У каждого бойца своя панель: удары зависят от оружия, блок — от щита
-        for user_id in session.order:
-            message = await self._send(
-                session.chat_id,
-                session.thread_id,
-                self._prompt_text(session, user_id),
-                reply_markup=fight_keyboard(session.id, session.fighters[user_id]),
-            )
-            session.prompt_ids[user_id] = message.message_id
+        icons, block_width = session.panel
+        message = await self._send(
+            session.chat_id,
+            session.thread_id,
+            self._prompt_text(session),
+            reply_markup=fight_keyboard(session.id, icons, block_width),
+        )
+        session.prompt_message_id = message.message_id if message else None
         session.timer = asyncio.create_task(
             self._round_timer(session, session.round_number)
         )
 
-    def _prompt_text(self, session: DuelSession, user_id: int) -> str:
-        fighter = session.fighters[user_id]
-        opponent = session.opponent_of(user_id)
-        lines = [
-            f"<b>🔔 Раунд {session.round_number} — панель "
-            f"{fighter.fclass.emoji} {esc(fighter.name)}</b>",
-            "",
-        ]
-        for side in (fighter, opponent):
-            mark = "✅ готов" if session.is_ready(side.user_id) else "⏳ думает"
+    def _prompt_text(self, session: DuelSession) -> str:
+        lines = [f"<b>🔔 Раунд {session.round_number}. Бойцы, выбирайте.</b>", ""]
+        for user_id in session.order:
+            side = session.fighters[user_id]
+            mark = "✅ готов" if session.is_ready(user_id) else "⏳ думает"
             warning = ""
             if side.missed_turns:
                 left = MAX_MISSED_TURNS - side.missed_turns
@@ -488,10 +503,10 @@ class DuelService:
                 f"— {mark}{warning}"
             )
 
-        blocks = "две" if fighter.block_width == 2 else "три"
+        blocks = "две" if session.panel[1] == 2 else "три"
         lines += [
             "",
-            f"Правила простые: удар слева, бьёшь в одну зону. "
+            "Правила простые: удар слева, бьёшь в одну зону. "
             f"Блок справа — закрываешь {blocks}.",
             f"⏱ {self.config.turn_timeout} сек. Успеете оба раньше — "
             "раунд посчитается сразу.",
@@ -499,6 +514,7 @@ class DuelService:
             "незакрытая зона остаётся открытой.",
             f"Не заставлять судью ждать: {MAX_MISSED_TURNS} пропущенных удара "
             "подряд, и бой засчитают техническим поражением.",
+            "Нажатия соперника ты не видишь: бот отвечает только тому, кто нажал.",
         ]
         return "\n".join(lines)
 
@@ -555,7 +571,7 @@ class DuelService:
         if both_ready:
             await self._resolve(session)
         elif was_ready != now_ready:
-            await self._repaint_prompts(session)
+            await self._repaint_prompt(session)
 
         return f"{choice.describe(fighter)}{self._hint(choice, fighter)}"
 
@@ -571,15 +587,19 @@ class DuelService:
             return "\nОсталось выбрать блок."
         return "\nГотов. Ждём соперника."
 
-    async def _repaint_prompts(self, session: DuelSession) -> None:
-        """Обновить обе панели: изменилась готовность бойцов."""
-        for user_id, message_id in session.prompt_ids.items():
-            await self._edit(
-                session.chat_id,
-                message_id,
-                self._prompt_text(session, user_id),
-                reply_markup=fight_keyboard(session.id, session.fighters[user_id]),
-            )
+    async def _repaint_prompt(self, session: DuelSession) -> None:
+        """Обновить панель: изменилась готовность бойцов.
+
+        Правка косметическая: если Telegram упрётся в лимит, её просто
+        не будет, а бой поедет дальше.
+        """
+        icons, block_width = session.panel
+        await self._edit(
+            session.chat_id,
+            session.prompt_message_id,
+            self._prompt_text(session),
+            reply_markup=fight_keyboard(session.id, icons, block_width),
+        )
 
     async def _resolve(self, session: DuelSession) -> None:
         self._cancel_timer(session)
@@ -601,13 +621,11 @@ class DuelService:
             self.rng,
         )
 
-        for user_id, message_id in session.prompt_ids.items():
-            await self._edit(
-                session.chat_id,
-                message_id,
-                f"🔒 Раунд {session.round_number}: "
-                f"{esc(session.fighters[user_id].name)} сделал(а) выбор.",
-            )
+        await self._edit(
+            session.chat_id,
+            session.prompt_message_id,
+            f"🔒 Раунд {session.round_number}: ставки сделаны, судья считает.",
+        )
         await self._send(
             session.chat_id,
             session.thread_id,
@@ -621,12 +639,11 @@ class DuelService:
 
     async def _finish(self, session: DuelSession, result: RoundResult) -> None:
         self._cancel_timer(session)
-        for message_id in session.prompt_ids.values():
-            await self._edit(
-                session.chat_id,
-                message_id,
-                f"🔒 Раунд {session.round_number}: бой окончен.",
-            )
+        await self._edit(
+            session.chat_id,
+            session.prompt_message_id,
+            f"🔒 Раунд {session.round_number}: бой окончен.",
+        )
         self._forget(session)
 
         rewards = await self._apply_results(session, result)
@@ -756,17 +773,41 @@ class DuelService:
     # ---------- отправка ----------
 
     async def _send(self, chat_id: int, thread_id: int | None, text: str, **kwargs):
-        return await self.bot.send_message(
-            chat_id, text, message_thread_id=thread_id, **kwargs
-        )
+        """Отправить сообщение боя, переждав лимит Telegram.
+
+        Ход боя держится на этих сообщениях, поэтому при флуд-контроле ждём
+        столько, сколько попросили, и пробуем ещё раз.
+        """
+        for attempt in range(SEND_ATTEMPTS):
+            try:
+                return await self.bot.send_message(
+                    chat_id, text, message_thread_id=thread_id, **kwargs
+                )
+            except TelegramRetryAfter as error:
+                delay = min(error.retry_after, MAX_FLOOD_WAIT)
+                logger.warning(
+                    "Telegram просит подождать %s сек (попытка %s)", delay, attempt + 1
+                )
+                await asyncio.sleep(delay)
+            except TelegramBadRequest as error:  # pragma: no cover - битый чат
+                logger.warning("Не удалось отправить сообщение: %s", error)
+                return None
+        logger.error("Сообщение так и не ушло после %s попыток", SEND_ATTEMPTS)
+        return None
 
     async def _edit(self, chat_id: int, message_id: int | None, text: str, **kwargs):
+        """Поправить сообщение. Правки косметические — на лимите просто пропускаем."""
         if message_id is None:
             return None
         try:
             return await self.bot.edit_message_text(
                 text, chat_id=chat_id, message_id=message_id, **kwargs
             )
+        except TelegramRetryAfter as error:
+            logger.info(
+                "Правка пропущена: Telegram просит подождать %s сек", error.retry_after
+            )
+            return None
         except TelegramBadRequest as error:
             if "message is not modified" not in str(error):
                 logger.warning("Не удалось отредактировать сообщение: %s", error)

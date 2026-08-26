@@ -6,6 +6,8 @@ from dataclasses import replace
 from dataclasses import dataclass, field
 
 import pytest
+from aiogram.exceptions import TelegramRetryAfter
+from aiogram.methods import SendMessage
 
 from bot.config import Config
 from bot.duel_service import DuelError, DuelService
@@ -704,3 +706,78 @@ async def test_round_report_speaks_the_new_language(bot, db):
     # полоски здоровья остались в панели, в отчёте только цифры
     assert "▰" not in body
     assert "[" in body and "]" in body
+
+
+# ---------- лимиты Telegram ----------
+
+
+class FloodyBot(FakeBot):
+    """Telegram, который упирается в флуд-контроль.
+
+    Правки он отвергает всегда, а первую отправку каждого сообщения —
+    один раз. Ровно на этом бой раньше вставал намертво.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refused_sends = 0
+        self.refused_edits = 0
+
+    def _flood(self):
+        return TelegramRetryAfter(
+            method=SendMessage(chat_id=1, text="x"),
+            message="Flood control exceeded",
+            retry_after=0,
+        )
+
+    async def send_message(self, chat_id, text, message_thread_id=None, **kwargs):
+        if self.refused_sends < 1:
+            self.refused_sends += 1
+            raise self._flood()
+        return await super().send_message(chat_id, text, message_thread_id, **kwargs)
+
+    async def edit_message_text(self, text, chat_id=None, message_id=None, **kwargs):
+        self.refused_edits += 1
+        raise self._flood()
+
+
+async def test_flood_control_does_not_freeze_the_duel(db):
+    """Раунд должен доигрываться, даже когда Telegram просит подождать."""
+    bot = FloodyBot()
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "warrior"))
+
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    assert bot.refused_sends == 1  # первую отправку Telegram отверг
+
+    for _ in range(40):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await play_round(service, session)
+
+    assert bot.refused_edits > 0  # правки действительно отвергались
+    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None  # но бой дошёл до конца
+    assert any("🏆" in text or "Ничья" in text for text in bot.texts)
+    winner = await db.get_player(1)
+    loser = await db.get_player(2)
+    assert winner.fights == 1 and loser.fights == 1
+
+
+async def test_panel_is_one_for_both_fighters(bot, db):
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "tank"))
+    await db.save_player(make_player(2, "Марла", "rogue"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    icons, block_width = session.panel
+    assert icons == ("👊",)
+    assert block_width == 2  # у танка тоже две зоны
+    # панель одна: за раунд ушло приглашение и ничего больше
+    prompts = [m for m in bot.sent if m.reply_markup is not None]
+    assert len(prompts) == 1
+    assert session.prompt_message_id == prompts[0].message_id

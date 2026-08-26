@@ -42,7 +42,6 @@ class DerivedStats:
     dodge_chance: float
     counter_chance: float
     accuracy: float
-    block_zones: int
 
 
 def derive(
@@ -87,5 +86,4 @@ def derive(
         dodge_chance=round(dodge_chance, 4),
         counter_chance=round(counter_chance, 4),
         accuracy=round(stats.intuition * ACCURACY_PER_INTUITION, 4),
-        block_zones=fclass.block_zones,
     )

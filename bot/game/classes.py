@@ -165,7 +165,6 @@ class FighterClass:
     tagline: str
     description: str
     base_stats: Stats
-    block_zones: int = 2
     hp_base: int = 45
     hp_per_endurance: int = 6
     damage_mult: float = 1.0
@@ -189,7 +188,6 @@ WARRIOR = FighterClass(
         "неплохое здоровье, никаких слабых мест."
     ),
     base_stats=Stats(strength=4, agility=3, intuition=3, endurance=4),
-    block_zones=2,
     hp_per_endurance=7,
     damage_mult=1.10,
     crit_bonus=0.02,
@@ -206,7 +204,6 @@ ROGUE = FighterClass(
         "отвечает контрударом. Ставка на ловкость и интуицию."
     ),
     base_stats=Stats(strength=3, agility=5, intuition=3, endurance=3),
-    block_zones=2,
     hp_per_endurance=7,
     damage_mult=1.0,
     dodge_bonus=0.26,
@@ -223,7 +220,6 @@ ASSASSIN = FighterClass(
         "мощь — может снести половину здоровья одним попаданием."
     ),
     base_stats=Stats(strength=4, agility=4, intuition=4, endurance=2),
-    block_zones=2,
     hp_per_endurance=7,
     damage_mult=1.05,
     crit_bonus=0.20,
@@ -235,16 +231,15 @@ TANK = FighterClass(
     code="tank",
     title="Танк",
     emoji="🛡️",
-    tagline="закрывает три зоны из пяти",
+    tagline="держит удар дольше всех",
     description=(
-        "Живая стена. Единственный класс, который держит блок сразу на трёх "
-        "зонах из пяти: пробить его тяжелее всех. Бьёт при этом слабее всех."
+        "Живая стена. Запас здоровья больше, чем у кого-либо: его добивают "
+        "долго и упорно. Бьёт при этом слабее остальных."
     ),
     base_stats=Stats(strength=4, agility=2, intuition=2, endurance=6),
-    block_zones=3,
-    hp_base=30,
-    hp_per_endurance=6,
-    damage_mult=0.80,
+    hp_base=40,
+    hp_per_endurance=8,
+    damage_mult=0.94,
 )
 
 FIGHTER_CLASSES: dict[str, FighterClass] = {
