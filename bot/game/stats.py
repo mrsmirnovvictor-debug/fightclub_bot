@@ -45,11 +45,18 @@ class DerivedStats:
     block_zones: int
 
 
-def derive(fclass: FighterClass, stats: Stats, level: int = 1) -> DerivedStats:
+def derive(
+    fclass: FighterClass,
+    stats: Stats,
+    level: int = 1,
+    extra_hp: int = 0,
+) -> DerivedStats:
+    """Боевые показатели. stats — уже с учётом экипировки, extra_hp — от неё же."""
     max_hp = int(
         fclass.hp_base
         + stats.endurance * fclass.hp_per_endurance
         + (level - 1) * HP_PER_LEVEL
+        + max(0, extra_hp)
     )
 
     avg_damage = (BASE_DAMAGE + stats.strength * DAMAGE_PER_STRENGTH) * fclass.damage_mult

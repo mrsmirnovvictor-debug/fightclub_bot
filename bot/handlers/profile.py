@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 
 from bot.config import Config
 from bot.database import Database
@@ -21,7 +26,8 @@ from bot.game.economy import (
     WIN_CREDITS_MAX,
     WIN_CREDITS_MIN,
 )
-from bot.game.narrator import esc
+from bot.game.narrator import esc, name_link
+from bot.game.links import links
 from bot.handlers.common import profile_text, send_profile
 
 router = Router(name="profile")
@@ -32,7 +38,8 @@ def help_text(turn_timeout: int = 30) -> str:
         "🥊 <b>Бойцовский клуб — как это работает</b>\n\n"
         "<b>В личке бота</b>\n"
         "/start — создать бойца (класс → прозвище → аватар → характеристики)\n"
-        "/profile — карточка бойца\n"
+        "/card — карточка бойца в мини-аппе\n"
+        "/profile — то же самое текстом\n"
         "/upgrade — раскидать свободные очки после апа или уровня\n"
         "/shop — кредиты и на что их тратить\n"
         "/respec — снести характеристики и раздать заново\n"
@@ -44,6 +51,7 @@ def help_text(turn_timeout: int = 30) -> str:
         "/arena — отметить текущую ветку как ринг клуба (только для админов)\n"
         "/duel — бросить вызов всем желающим\n"
         "/duel в ответ на сообщение — вызвать конкретного бойца\n"
+        "/card — открыть свою карточку\n"
         "/top — чемпионы клуба\n\n"
         "<b>Как идёт бой</b>\n"
         "Каждый раунд оба бойца жмут одну зону удара (👊) и закрывают блоком (🛡) "
@@ -107,16 +115,70 @@ async def cmd_classes(message: Message) -> None:
     await message.answer("\n\n".join(blocks))
 
 
-@router.message(Command("profile", "me"))
-async def cmd_profile(message: Message, db: Database) -> None:
+def card_keyboard(config: Config, user_id: int, private: bool) -> InlineKeyboardMarkup | None:
+    """Кнопка, открывающая карточку.
+
+    В личке Telegram разрешает web_app-кнопки, в группах — только ссылки,
+    поэтому там ведём на прямую ссылку мини-аппа.
+    """
+    if private and config.webapp_enabled:
+        url = f"{config.webapp_url}/?user_id={user_id}"
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🪪 Карточка бойца", web_app=WebAppInfo(url=url)
+                    )
+                ]
+            ]
+        )
+    card_url = links.card_url(user_id)
+    if card_url:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🪪 Карточка бойца", url=card_url)]
+            ]
+        )
+    return None
+
+
+@router.message(Command("card"))
+async def cmd_card(message: Message, db: Database, config: Config) -> None:
     player = await db.get_player(message.from_user.id)
     if player is None:
         await message.answer("Бойца ещё нет. Напиши мне в личку /start.")
         return
-    if message.chat.type == "private":
-        await send_profile(message, player)
-    else:
+
+    keyboard = card_keyboard(
+        config, player.user_id, private=message.chat.type == "private"
+    )
+    if keyboard is None:
+        await message.answer(
+            "Карточка пока не поднята: администратор клуба не настроил мини-апп.\n"
+            "Вот что есть в текстовом виде:"
+        )
         await message.answer(profile_text(player))
+        return
+    await message.answer(
+        f"🪪 Карточка бойца <b>{esc(player.nickname)}</b> "
+        f"[{player.level}] — открывается прямо в Telegram.",
+        reply_markup=keyboard,
+    )
+
+
+@router.message(Command("profile", "me"))
+async def cmd_profile(message: Message, db: Database, config: Config) -> None:
+    player = await db.get_player(message.from_user.id)
+    if player is None:
+        await message.answer("Бойца ещё нет. Напиши мне в личку /start.")
+        return
+    keyboard = card_keyboard(
+        config, player.user_id, private=message.chat.type == "private"
+    )
+    if message.chat.type == "private":
+        await send_profile(message, player, keyboard)
+    else:
+        await message.answer(profile_text(player), reply_markup=keyboard)
 
 
 @router.message(Command("top"))
@@ -130,7 +192,8 @@ async def cmd_top(message: Message, db: Database) -> None:
     for index, player in enumerate(players):
         lines.append(
             f"{medals.get(index, f'{index + 1}.')} {player.avatar} "
-            f"<b>{esc(player.nickname)}</b> — <b>{player.rating}</b> · "
+            f"<b>{name_link(player.user_id, player.nickname)}</b> — "
+            f"<b>{player.rating}</b> · "
             f"{player.fclass.title}, {player.level} ур. · "
             f"{player.wins}—{player.losses}"
         )

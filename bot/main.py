@@ -18,13 +18,16 @@ from aiogram.types import (
 from bot.config import Config, load_config
 from bot.database import Database
 from bot.duel_service import DuelService
+from bot.game.links import links
 from bot.handlers import build_router
+from bot.webapp import run_webapp
 
 logger = logging.getLogger(__name__)
 
 PRIVATE_COMMANDS = [
     BotCommand(command="start", description="Создать бойца"),
-    BotCommand(command="profile", description="Карточка бойца"),
+    BotCommand(command="card", description="Карточка бойца"),
+    BotCommand(command="profile", description="Профиль текстом"),
     BotCommand(command="upgrade", description="Раскидать свободные очки"),
     BotCommand(command="shop", description="Кредиты и траты"),
     BotCommand(command="respec", description="Пересобрать характеристики"),
@@ -39,6 +42,7 @@ PRIVATE_COMMANDS = [
 
 GROUP_COMMANDS = [
     BotCommand(command="duel", description="Бросить вызов на кулаках"),
+    BotCommand(command="card", description="Карточка бойца"),
     BotCommand(command="arena", description="Отметить ветку как ринг (админы)"),
     BotCommand(command="top", description="Чемпионы клуба"),
     BotCommand(command="history", description="Последние бои"),
@@ -69,11 +73,26 @@ async def run(config: Config | None = None) -> None:
 
     await setup_commands(bot)
     me = await bot.get_me()
-    logger.info("Клуб открыт: @%s", me.username)
+    links.configure(me.username or "", config.miniapp_name)
+    if config.miniapp_name and not config.webapp_enabled:
+        logger.warning(
+            "MINIAPP_NAME задан, а WEBAPP_URL — нет: ссылки на карточку никуда не ведут"
+        )
+    logger.info(
+        "Клуб открыт: @%s, карточка %s",
+        me.username,
+        "включена" if config.webapp_enabled else "выключена",
+    )
+
+    runner = await run_webapp(bot, db, config) if config.webapp_enabled else None
     try:
-        await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
+        await dispatcher.start_polling(
+            bot, allowed_updates=dispatcher.resolve_used_update_types()
+        )
     finally:
         await duels.shutdown()
+        if runner is not None:
+            await runner.cleanup()
         await db.close()
         await bot.session.close()
 

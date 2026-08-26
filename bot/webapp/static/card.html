@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Карточка бойца</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="static/card.css">
+</head>
+<body>
+  <div id="loader" class="loader">Судья листает картотеку…</div>
+
+  <div id="error" class="error hidden">
+    <div class="error-emoji">🥊</div>
+    <div class="error-text"></div>
+  </div>
+
+  <main id="card" class="card hidden">
+    <header class="head">
+      <span class="head-class" id="class-emoji"></span>
+      <h1 class="head-name" id="name"></h1>
+      <span class="head-level" id="level"></span>
+    </header>
+
+    <div class="hp" id="hp">
+      <div class="hp-fill" id="hp-fill"></div>
+      <div class="hp-text" id="hp-text"></div>
+    </div>
+    <div class="hp-note" id="hp-note"></div>
+
+    <section class="doll">
+      <div class="slots" id="slots-left"></div>
+      <div class="avatar" id="avatar"></div>
+      <div class="slots" id="slots-right"></div>
+    </section>
+
+    <div class="city" id="city"></div>
+
+    <section class="panel">
+      <ul class="rows" id="stats"></ul>
+      <hr class="rule">
+      <ul class="rows" id="progress"></ul>
+      <hr class="rule">
+      <ul class="rows" id="record"></ul>
+    </section>
+
+    <footer class="foot" id="foot"></footer>
+  </main>
+
+  <script src="static/card.js"></script>
+</body>
+</html>

@@ -67,6 +67,7 @@ class Challenge:
     target_id: int | None = None
     message_id: int | None = None
     task: asyncio.Task | None = None
+    chat_title: str = ""
 
 
 @dataclass
@@ -100,6 +101,7 @@ class DuelSession:
     thread_id: int | None
     fighters: dict[int, Fighter]
     order: tuple[int, int]
+    chat_title: str = ""  # название группы — станет местом рождения новичка
     round_number: int = 0
     choices: dict[int, Choice] = field(default_factory=dict)
     prompt_message_id: int | None = None
@@ -147,6 +149,7 @@ class DuelService:
         thread_id: int | None,
         challenger: Player,
         target: Player | None = None,
+        chat_title: str = "",
     ) -> Challenge:
         if self._busy.get(challenger.user_id):
             raise DuelError("Ты уже в бою или у тебя висит незакрытый вызов.")
@@ -168,6 +171,7 @@ class DuelService:
             thread_id=thread_id,
             challenger=challenger,
             target_id=target.user_id if target else None,
+            chat_title=chat_title,
         )
         if target is None:
             text = (
@@ -274,7 +278,11 @@ class DuelService:
             f"<b>{esc(challenger.nickname)}</b>. Ринг занят!",
         )
         return await self.start_duel(
-            challenge.chat_id, challenge.thread_id, challenger, opponent
+            challenge.chat_id,
+            challenge.thread_id,
+            challenger,
+            opponent,
+            challenge.chat_title,
         )
 
     # ---------- бой ----------
@@ -285,6 +293,7 @@ class DuelService:
         thread_id: int | None,
         first: Player,
         second: Player,
+        chat_title: str = "",
     ) -> DuelSession:
         if (chat_id, thread_id) in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой.")
@@ -300,6 +309,7 @@ class DuelService:
             thread_id=thread_id,
             fighters={fighter_a.user_id: fighter_a, fighter_b.user_id: fighter_b},
             order=(fighter_a.user_id, fighter_b.user_id),
+            chat_title=chat_title,
         )
         self._duels[session.id] = session
         self._duel_by_chat[session.key] = session.id
@@ -543,6 +553,9 @@ class DuelService:
                 credits = apply_share(credits, share)
                 delta = int(math.copysign(apply_share(abs(delta), share), delta))
 
+            if player.birthplace is None and session.chat_title:
+                # Место рождения — группа, где боец впервые вышел на ринг
+                player.birthplace = session.chat_title
             player.set_hp(fighter.hp)
             report = player.grant_exp(exp)
             report.credits += credits
