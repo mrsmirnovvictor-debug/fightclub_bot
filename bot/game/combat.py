@@ -98,13 +98,14 @@ class Fighter:
 
     @classmethod
     def from_player(cls, player) -> "Fighter":
-        """Собрать бойца из записи игрока в БД."""
+        """Собрать бойца из записи игрока: здоровье — то, что успело затянуться."""
         return cls(
             user_id=player.user_id,
             name=player.nickname,
             fclass=get_class(player.class_code),
             stats=player.stats,
             level=player.level,
+            hp=player.current_hp(),
         )
 
 

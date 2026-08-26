@@ -163,3 +163,19 @@ async def test_no_surrender_button_and_no_giveup_command(arena):
     await send(first, "/giveup")
     assert duels.duel_in_chat(GROUP.id, THREAD_ID) is duel  # бой продолжается
     assert (await db.get_player(second.id)).wins == 0
+
+
+async def test_hurt_fighter_is_turned_away_from_the_ring(arena):
+    """В ветке видно, сколько ждать до допуска."""
+    db, duels, session = arena
+    user = as_user(641, "Тайлер")
+    player = make_player(user.id, "Тайлер", "warrior")
+    player.set_hp(0)  # только что вынесли
+    await db.save_player(player)
+
+    await send(user, "/duel")
+    text = session.texts[-1]
+    assert "не в форме" in text
+    assert "мин" in text  # обратный отсчёт на месте
+    assert duels.duel_in_chat(GROUP.id, THREAD_ID) is None
+    assert not duels.is_busy(user.id)

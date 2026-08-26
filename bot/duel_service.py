@@ -40,6 +40,7 @@ from bot.game.narrator import (
     duel_intro,
     esc,
     finish_report,
+    health_warning,
     hp_bar,
     rewards_report,
     round_report,
@@ -149,11 +150,15 @@ class DuelService:
     ) -> Challenge:
         if self._busy.get(challenger.user_id):
             raise DuelError("Ты уже в бою или у тебя висит незакрытый вызов.")
+        if not challenger.can_fight():
+            raise DuelError(health_warning(challenger))
         if target is not None:
             if target.user_id == challenger.user_id:
                 raise DuelError("С самим собой драться — это уже другой фильм.")
             if self._busy.get(target.user_id) == "duel":
                 raise DuelError(f"{target.nickname} сейчас на ринге. Дождись конца боя.")
+            if not target.can_fight():
+                raise DuelError(health_warning(target, is_self=False))
         if (chat_id, thread_id) in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой. Один ринг — одна пара.")
 
@@ -245,6 +250,8 @@ class DuelService:
             raise DuelError("Этот вызов адресован другому бойцу.")
         if self._busy.get(opponent.user_id) == "duel":
             raise DuelError("Ты уже на ринге в другом бою.")
+        if not opponent.can_fight():
+            raise DuelError(health_warning(opponent))
         if self._busy.get(opponent.user_id) == "challenge":
             # у принимающего висел свой вызов — снимаем его, драка важнее
             await self._withdraw_challenges_of(opponent.user_id)
@@ -255,6 +262,10 @@ class DuelService:
         challenger = await self.db.get_player(challenge.challenger.user_id)
         if challenger is None:  # pragma: no cover - персонажа удалили посреди вызова
             raise DuelError("Соперник куда-то пропал вместе со своим персонажем.")
+        if not challenger.can_fight():
+            # Подстраховка: здоровье само по себе только растёт, но вызов мог
+            # провисеть дольше, чем живут наши записи о том, кто чем занят.
+            raise DuelError(health_warning(challenger, is_self=False))
 
         await self._edit(
             challenge.chat_id,
@@ -277,6 +288,9 @@ class DuelService:
     ) -> DuelSession:
         if (chat_id, thread_id) in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой.")
+        for player in (first, second):
+            if not player.can_fight():
+                raise DuelError(health_warning(player, is_self=False))
 
         fighter_a = Fighter.from_player(first)
         fighter_b = Fighter.from_player(second)
@@ -529,6 +543,7 @@ class DuelService:
                 credits = apply_share(credits, share)
                 delta = int(math.copysign(apply_share(abs(delta), share), delta))
 
+            player.set_hp(fighter.hp)
             report = player.grant_exp(exp)
             report.credits += credits
             report.rating_delta = delta

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import html
 import random
+import re
 
 from typing import TYPE_CHECKING
 
 from bot.game.classes import ZONE_PREPOSITIONAL, Zone
+from bot.game.health import READY_THRESHOLD, format_duration
 from bot.game.combat import (
     MAX_MISSED_TURNS,
     DuelEnd,
@@ -81,8 +83,16 @@ KO_LINES = [
 ]
 
 
+TAGS = re.compile(r"</?[a-z][^>]*>")
+
+
 def esc(text: str) -> str:
     return html.escape(text, quote=False)
+
+
+def plain(text: str) -> str:
+    """Без разметки — для всплывающих ответов, где HTML не разбирается."""
+    return TAGS.sub("", text)
 
 
 def mention(fighter: Fighter) -> str:
@@ -206,17 +216,66 @@ def finish_report(
     return "\n".join(lines)
 
 
+def health_line(player: "Player", now: int | None = None) -> str:
+    """Строка здоровья с цветом и временем восстановления."""
+    state = player.health_state(now)
+    hp, maximum = player.current_hp(now), player.max_hp
+    line = (
+        f"{state.emoji} Здоровье: <b>{hp}/{maximum}</b> "
+        f"({player.hp_percent(now):.0%}) — {state.title}"
+    )
+    if not state.can_fight:
+        line += (
+            f"\n⏳ Драться можно с {READY_THRESHOLD:.0%}: через "
+            f"{format_duration(player.seconds_until_ready(now))}"
+        )
+    elif hp < maximum:
+        line += f"\n⏳ До полного: {format_duration(player.seconds_until_full(now))}"
+    return line
+
+
+def health_warning(player: "Player", is_self: bool = True) -> str:
+    """Отказ пустить на ринг: кто, сколько здоровья и сколько ждать."""
+    state = player.health_state()
+    who = "Ты ещё не в форме" if is_self else f"<b>{esc(player.nickname)}</b> не в форме"
+    return (
+        f"{state.emoji} {who}: {player.current_hp()}/{player.max_hp} "
+        f"({player.hp_percent():.0%}).\n"
+        f"Выходить на ринг можно с {READY_THRESHOLD:.0%} — это через "
+        f"<b>{format_duration(player.seconds_until_ready())}</b>."
+    )
+
+
+def fighter_hp_note(fighter: Fighter) -> str:
+    """Пометка в интро, если боец вышел на ринг недолеченным."""
+    if fighter.hp >= fighter.max_hp:
+        return f"{fighter.max_hp} HP"
+    return f"{fighter.hp}/{fighter.max_hp} HP (не долечился)"
+
+
 def duel_intro(first: Fighter, second: Fighter) -> str:
     return (
         "🥊 <b>Бойцовский клуб. Дуэль на кулаках</b>\n\n"
         f"{first.fclass.emoji} {mention(first)} — {first.fclass.title}, "
-        f"{first.level} ур., {first.max_hp} HP\n"
+        f"{first.level} ур., {fighter_hp_note(first)}\n"
         f"{second.fclass.emoji} {mention(second)} — {second.fclass.title}, "
-        f"{second.level} ур., {second.max_hp} HP\n\n"
+        f"{second.level} ур., {fighter_hp_note(second)}\n\n"
         "Правила простые: бьёшь в одну зону, закрываешь остальные. "
         f"Первое правило клуба — не заставлять судью ждать: {MAX_MISSED_TURNS} "
         "пропущенных хода подряд, и бой засчитают техническим поражением."
     )
+
+
+def recovery_line(players: list["Player"]) -> str:
+    """Когда бойцы снова смогут выйти на ринг."""
+    waiting = [
+        f"{esc(player.nickname)} — через {format_duration(player.seconds_until_ready())}"
+        for player in players
+        if not player.can_fight()
+    ]
+    if not waiting:
+        return "🩹 Оба отделались лёгким испугом и готовы к новому бою."
+    return "🩹 Отлежаться: " + ", ".join(waiting)
 
 
 def rewards_report(
@@ -257,6 +316,9 @@ def rewards_report(
                 f"🔒 {name} на потолке уровня: опыт копится "
                 f"(всего {player.total_exp}), но новых уровней пока нет."
             )
+
+    lines.append("")
+    lines.append(recovery_line([player for player, _ in rows]))
 
     if share < 1.0:
         lines.append("")

@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from bot.database import Database
 from bot.duel_service import DuelError, DuelService
-from bot.game.narrator import esc
+from bot.game.narrator import esc, plain
 from bot.handlers.common import thread_id_of
 from bot.keyboards import ChallengeCB, FightCB
 from bot.models import Player
@@ -117,7 +117,7 @@ async def on_challenge(
         try:
             await duels.cancel_challenge(callback_data.challenge_id, callback.from_user.id)
         except DuelError as error:
-            await callback.answer(str(error), show_alert=True)
+            await callback.answer(plain(str(error)), show_alert=True)
         else:
             await callback.answer("Вызов отозван.")
         return
@@ -129,7 +129,7 @@ async def on_challenge(
     try:
         await duels.accept_challenge(callback_data.challenge_id, player)
     except DuelError as error:
-        await callback.answer(str(error), show_alert=True)
+        await callback.answer(plain(str(error)), show_alert=True)
     else:
         await callback.answer("В бой!")
 
@@ -146,7 +146,7 @@ async def on_fight(
             callback_data.zone,
         )
     except DuelError as error:
-        await callback.answer(str(error), show_alert=True)
+        await callback.answer(plain(str(error)), show_alert=True)
     except Exception:  # pragma: no cover - чтобы бой не завис из-за случайной ошибки
         logger.exception("Ошибка при обработке хода")
         await callback.answer("Судья запутался. Попробуй ещё раз.", show_alert=True)

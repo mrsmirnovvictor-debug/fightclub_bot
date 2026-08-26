@@ -7,7 +7,7 @@ from aiogram.types import Message
 from bot.game.classes import ALL_STATS, FighterClass, Stats
 from bot.game.economy import MICRO_UPS_PER_LEVEL
 from bot.game.stats import derive
-from bot.game.narrator import esc
+from bot.game.narrator import esc, health_line
 from bot.models import Player
 
 PRIVATE_HINT = (
@@ -34,7 +34,7 @@ def stats_block(stats: Stats, indent: str = "") -> str:
 def combat_block(fclass: FighterClass, stats: Stats, level: int = 1) -> str:
     d = derive(fclass, stats, level)
     return (
-        f"❤️ Здоровье: <b>{d.max_hp}</b>\n"
+        f"❤️ Запас здоровья: <b>{d.max_hp}</b>\n"
         f"👊 Урон: <b>{d.damage_min}–{d.damage_max}</b>\n"
         f"💥 Крит: <b>{d.crit_chance:.0%}</b> (×{d.crit_power})\n"
         f"🌀 Уворот: <b>{d.dodge_chance:.0%}</b>\n"
@@ -63,6 +63,7 @@ def profile_text(player: Player) -> str:
     lines = [
         f"{player.avatar} <b>{esc(player.nickname)}</b>",
         f"{fclass.label} · {player.level} уровень · рейтинг <b>{player.rating}</b>",
+        health_line(player),
         progress_line(player),
         f"💰 Кредиты: <b>{player.credits}</b>",
         "",

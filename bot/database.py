@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS players (
     micro_ups      INTEGER NOT NULL DEFAULT 0,
     credits        INTEGER NOT NULL DEFAULT 0,
     rating         INTEGER NOT NULL DEFAULT 1000,
+    hp             INTEGER,
+    hp_at          INTEGER NOT NULL DEFAULT 0,
     wins           INTEGER NOT NULL DEFAULT 0,
     losses         INTEGER NOT NULL DEFAULT 0,
     draws          INTEGER NOT NULL DEFAULT 0,
@@ -60,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_duels_chat ON duels(chat_id, created_at DESC);
 PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, strength, agility, "
     "intuition, endurance, free_points, level, exp, total_exp, micro_ups, "
-    "credits, rating, wins, losses, draws"
+    "credits, rating, hp, hp_at, wins, losses, draws"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -69,6 +71,8 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("micro_ups", "INTEGER NOT NULL DEFAULT 0"),
     ("credits", "INTEGER NOT NULL DEFAULT 0"),
     ("rating", f"INTEGER NOT NULL DEFAULT {RATING_START}"),
+    ("hp", "INTEGER"),  # NULL — боец здоров
+    ("hp_at", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -122,8 +126,9 @@ class Database:
             INSERT INTO players (
                 user_id, nickname, class_code, avatar, avatar_file_id, strength,
                 agility, intuition, endurance, free_points, level, exp,
-                total_exp, micro_ups, credits, rating, wins, losses, draws
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                total_exp, micro_ups, credits, rating, hp, hp_at,
+                wins, losses, draws
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -140,6 +145,8 @@ class Database:
                 micro_ups      = excluded.micro_ups,
                 credits        = excluded.credits,
                 rating         = excluded.rating,
+                hp             = excluded.hp,
+                hp_at          = excluded.hp_at,
                 wins           = excluded.wins,
                 losses         = excluded.losses,
                 draws          = excluded.draws
@@ -161,6 +168,8 @@ class Database:
                 player.micro_ups,
                 player.credits,
                 player.rating,
+                player.hp,
+                player.hp_at,
                 player.wins,
                 player.losses,
                 player.draws,
