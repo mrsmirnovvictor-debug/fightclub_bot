@@ -6,7 +6,14 @@ import html
 import random
 
 from bot.game.classes import ZONE_PREPOSITIONAL, Zone
-from bot.game.combat import DuelEnd, Fighter, Outcome, RoundResult, Strike
+from bot.game.combat import (
+    MAX_MISSED_TURNS,
+    DuelEnd,
+    Fighter,
+    Outcome,
+    RoundResult,
+    Strike,
+)
 
 BLOCK_LINES = [
     "{a} метит {zone}, но {d} встречает удар глухим блоком.",
@@ -40,9 +47,26 @@ CRIT_LINES = [
     "💥 Хруст на весь зал: {a} проламывает защиту {zone}. <b>−{dmg}</b>!",
 ]
 
-AUTO_LINES = [
-    "Время вышло: судья засчитывает {a} случайный удар.",
-    "От {a} команды не поступило — бьёт наугад.",
+MISSED_TURN_LINES = [
+    "⏳ {a} не сделал(а) ни одного движения — судья фиксирует пропуск хода.",
+    "⏳ Тридцать секунд тишины от {a}. Пропуск хода.",
+    "⏳ {a} стоит столбом: ни удара, ни блока.",
+]
+
+NO_ATTACK_LINES = [
+    "🤲 {a} закрывается, но бить не стал(а) — зона удара не выбрана.",
+    "🤲 {a} уходит в глухую оборону: удара в этом раунде нет.",
+    "🤲 {a} только защищается — судья не засчитывает удар.",
+]
+
+TECHNICAL_LINES = [
+    "Судья разводит бойцов: {loser} не отвечает уже три хода подряд.",
+    "Бой остановлен — {loser} перестал(а) отзываться на гонг.",
+]
+
+DRAW_LINES = [
+    "Оба бойца рухнули на настил одновременно. Судья разводит руками: ничья.",
+    "Взаимный нокаут! Поднять руку некому — ничья.",
 ]
 
 KO_LINES = [
@@ -90,8 +114,11 @@ def describe_strike(
     names = {
         "a": f"<b>{esc(attacker.name)}</b>",
         "d": f"<b>{esc(defender.name)}</b>",
-        "zone": zone_phrase(strike.zone),
+        "zone": zone_phrase(strike.zone) if strike.zone else "",
     }
+    if strike.outcome is Outcome.SKIP:
+        lines = MISSED_TURN_LINES if strike.missed_turn else NO_ATTACK_LINES
+        return rng.choice(lines).format(**names)
     if strike.outcome is Outcome.BLOCK:
         line = rng.choice(BLOCK_LINES).format(**names)
     elif strike.outcome is Outcome.DODGE:
@@ -105,8 +132,6 @@ def describe_strike(
     else:
         line = rng.choice(HIT_LINES).format(**names, dmg=strike.damage)
 
-    if strike.auto:
-        line = rng.choice(AUTO_LINES).format(**names) + " " + line
     return f"{strike.zone.emoji} {line}"
 
 
@@ -138,18 +163,27 @@ def finish_report(
     rng = rng or random
     lines: list[str] = []
     winner = fighters.get(result.winner_id) if result.winner_id else None
-    losers = [f for f in fighters.values() if winner is None or f.user_id != winner.user_id]
-    loser = losers[0] if losers else None
+    loser = (
+        next((f for f in fighters.values() if f.user_id != winner.user_id), None)
+        if winner
+        else None
+    )
 
     if result.end_reason is DuelEnd.KO and winner and loser:
         lines.append(rng.choice(KO_LINES).format(loser=f"<b>{esc(loser.name)}</b>"))
         lines.append("")
         lines.append(f"🏆 Победа: {mention(winner)} ({winner.fclass.label})")
-    elif result.end_reason is DuelEnd.DOUBLE_KO and winner:
-        lines.append("Оба бойца рухнули на настил одновременно!")
-        lines.append(
-            f"Судья поднимает руку {mention(winner)} — его удар прошёл первым."
-        )
+    elif result.end_reason is DuelEnd.DOUBLE_KO:
+        lines.append("🤝 " + rng.choice(DRAW_LINES))
+    elif result.end_reason is DuelEnd.TECHNICAL:
+        if winner and loser:
+            lines.append(
+                rng.choice(TECHNICAL_LINES).format(loser=f"<b>{esc(loser.name)}</b>")
+            )
+            lines.append("")
+            lines.append(f"🏆 Техническая победа: {mention(winner)}")
+        else:
+            lines.append("🤝 Оба бойца перестали отвечать. Судья закрывает бой ничьёй.")
     elif result.end_reason is DuelEnd.JUDGE:
         lines.append("🔔 Гонг! Раунды кончились, решение за судьёй.")
         if winner:
@@ -159,10 +193,7 @@ def finish_report(
             )
         else:
             lines.append("🤝 Судья фиксирует ничью — бойцы неотличимы.")
-    elif result.end_reason is DuelEnd.GIVE_UP and winner and loser:
-        lines.append(f"🏳️ {esc(loser.name)} выбрасывает полотенце.")
-        lines.append(f"🏆 Победа: {mention(winner)}.")
-    else:
+    else:  # pragma: no cover - неизвестный исход
         lines.append("🤝 Ничья.")
 
     lines.append("")
@@ -184,5 +215,6 @@ def duel_intro(first: Fighter, second: Fighter) -> str:
         f"{second.fclass.emoji} {mention(second)} — {second.fclass.title}, "
         f"{second.level} ур., {second.max_hp} HP\n\n"
         "Правила простые: бьёшь в одну зону, закрываешь остальные. "
-        "Первое правило клуба — не заставлять судью ждать."
+        f"Первое правило клуба — не заставлять судью ждать: {MAX_MISSED_TURNS} "
+        "пропущенных хода подряд, и бой засчитают техническим поражением."
     )

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import itertools
 import random
 import re
@@ -28,11 +27,6 @@ def plain(text: str) -> str:
     return TAGS.sub("", text)
 
 
-def choose(fclass: FighterClass, rng: random.Random):
-    """Ход «игрока»: тот же случайный выбор, но без пометки «не успел»."""
-    return dataclasses.replace(random_action(fclass, rng), auto=False)
-
-
 def show_fight(first: FighterClass, second: FighterClass, seed: int) -> None:
     rng = random.Random(seed)
     a = Fighter(1, f"{first.title}-1", first, first.base_stats)
@@ -42,7 +36,7 @@ def show_fight(first: FighterClass, second: FighterClass, seed: int) -> None:
     round_number = 1
     while True:
         result = resolve_round(
-            a, choose(first, rng), b, choose(second, rng), round_number, rng
+            a, random_action(first, rng), b, random_action(second, rng), round_number, rng
         )
         print(plain(round_report(result, fighters, rng)), "\n")
         if result.finished:

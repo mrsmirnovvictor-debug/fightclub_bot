@@ -40,7 +40,7 @@ class ChallengeCB(CallbackData, prefix="chl"):
 
 
 class FightCB(CallbackData, prefix="fight"):
-    action: str  # attack | block | giveup
+    action: str  # attack | block
     duel_id: int
     zone: str = ""
 
@@ -126,12 +126,6 @@ def fight_keyboard(duel_id: int) -> InlineKeyboardMarkup:
         for zone in ALL_ZONES
     ]
     builder.row(*block_row)
-    builder.row(
-        InlineKeyboardButton(
-            text="🏳️ Сдаться",
-            callback_data=FightCB(action="giveup", duel_id=duel_id).pack(),
-        )
-    )
     return builder.as_markup()
 
 

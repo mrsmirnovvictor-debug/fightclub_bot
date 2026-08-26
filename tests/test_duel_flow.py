@@ -1,6 +1,5 @@
 """Сквозной прогон дуэли через DuelService с поддельным ботом."""
 
-import asyncio
 import random
 from dataclasses import dataclass, field
 
@@ -8,6 +7,7 @@ import pytest
 
 from bot.config import Config
 from bot.duel_service import DuelError, DuelService
+from bot.game.combat import MAX_MISSED_TURNS
 from bot.game.classes import get_class
 from bot.models import Player
 
@@ -97,6 +97,11 @@ async def play_round(service: DuelService, session) -> None:
             )
 
 
+async def force_round(service: DuelService, session) -> None:
+    """Досчитать раунд принудительно — ровно это делает таймер, когда время вышло."""
+    await service._resolve(session)
+
+
 async def test_full_duel_from_challenge_to_result(bot, db):
     service = make_service(bot, db)
     first = make_player(1, "Тайлер", "warrior")
@@ -139,21 +144,109 @@ async def test_full_duel_from_challenge_to_result(bot, db):
     assert history[0]["rounds"] >= 1
 
 
-async def test_timeout_makes_the_judge_choose(bot, db):
-    """Если бойцы молчат, судья доигрывает бой за них."""
-    service = make_service(bot, db, turn_timeout=0)
+async def test_silence_on_both_sides_ends_in_technical_draw(bot, db):
+    """Молчат оба — три пропуска подряд, и судья закрывает бой ничьёй."""
+    service = make_service(bot, db)
     await db.save_player(make_player(1, "Тайлер", "assassin"))
     await db.save_player(make_player(2, "Марла", "tank"))
-
-    await service.start_duel(
+    session = await service.start_duel(
         CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
     )
-    for _ in range(400):
-        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
-            break
-        await asyncio.sleep(0)
+
+    for _ in range(MAX_MISSED_TURNS):
+        await force_round(service, session)
+
     assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
-    assert any("судья засчитывает" in text or "команды не поступило" in text for text in bot.texts)
+    assert session.round_number == MAX_MISSED_TURNS
+    assert any("пропуск хода" in text for text in bot.texts)
+    assert "перестали отвечать" in bot.texts[-1]
+    # никто никого не бил — здоровье целое
+    assert all(f.hp == f.max_hp for f in session.fighters.values())
+    assert (await db.get_player(1)).draws == 1
+    assert (await db.get_player(2)).draws == 1
+
+
+async def test_silent_fighter_loses_by_technical_decision(bot, db):
+    """Один бьёт, второй молчит — техпоражение молчуну."""
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "warrior"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    for _ in range(MAX_MISSED_TURNS):
+        await service.handle_choice(session.id, 1, "attack", "head")
+        await service.handle_choice(session.id, 1, "block", "chest")
+        await service.handle_choice(session.id, 1, "block", "belly")
+        await force_round(service, session)
+
+    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
+    assert session.fighters[1].missed_turns == 0
+    assert session.fighters[2].missed_turns == MAX_MISSED_TURNS
+    assert "Техническая победа" in bot.texts[-1]
+    assert (await db.get_player(1)).wins == 1
+    assert (await db.get_player(2)).losses == 1
+
+
+async def test_missed_turn_counter_resets_after_any_press(bot, db):
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "warrior"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    # соперник каждый раунд что-то нажимает, молчит только первый боец
+    for _ in range(2):
+        await service.handle_choice(session.id, 2, "block", "head")
+        await force_round(service, session)
+    assert session.fighters[1].missed_turns == 2
+    assert session.fighters[2].missed_turns == 0
+    assert "пропусков подряд: 2" in bot.texts[-1]  # предупреждение в шапке раунда
+
+    await service.handle_choice(session.id, 1, "block", "head")
+    await service.handle_choice(session.id, 2, "block", "head")
+    await force_round(service, session)
+    assert session.fighters[1].missed_turns == 0
+    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is not None
+
+
+async def test_partial_choice_goes_into_the_round_as_is(bot, db):
+    """Выбрал только блоки — не бьёшь, но и пропуска хода нет."""
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "warrior"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    opponent_hp = session.fighters[2].hp
+
+    await service.handle_choice(session.id, 1, "block", "head")
+    await force_round(service, session)
+
+    assert session.fighters[1].missed_turns == 0
+    assert session.fighters[2].hp == opponent_hp  # удара не было
+    assert any(
+        "бить не стал" in text or "глухую оборону" in text or "только защищается" in text
+        for text in bot.texts
+    )
+
+
+async def test_surrender_is_gone(bot, db):
+    """Сдаться больше нельзя: ни кнопки, ни метода."""
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер"))
+    await db.save_player(make_player(2, "Марла"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    assert not hasattr(service, "give_up")
+    with pytest.raises(DuelError):
+        await service.handle_choice(session.id, 1, "giveup", "")
+    with pytest.raises(DuelError):  # мусорная зона из старой кнопки
+        await service.handle_choice(session.id, 1, "attack", "nose")
+    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is session
 
 
 async def test_choice_is_private_and_toggleable(bot, db):
@@ -187,21 +280,6 @@ async def test_outsider_cannot_press_buttons(bot, db):
     )
     with pytest.raises(DuelError):
         await service.handle_choice(session.id, 999, "attack", "head")
-
-
-async def test_give_up_awards_win_to_opponent(bot, db):
-    service = make_service(bot, db)
-    await db.save_player(make_player(1, "Тайлер"))
-    await db.save_player(make_player(2, "Марла"))
-    session = await service.start_duel(
-        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
-    )
-    await service.give_up(session.id, 1)
-
-    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
-    assert "полотенце" in bot.texts[-1]
-    assert (await db.get_player(2)).wins == 1
-    assert (await db.get_player(1)).losses == 1
 
 
 async def test_one_ring_one_pair(bot, db):

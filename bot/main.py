@@ -35,7 +35,6 @@ PRIVATE_COMMANDS = [
 GROUP_COMMANDS = [
     BotCommand(command="duel", description="Бросить вызов на кулаках"),
     BotCommand(command="arena", description="Отметить ветку как ринг (админы)"),
-    BotCommand(command="giveup", description="Сдаться в текущем бою"),
     BotCommand(command="top", description="Чемпионы клуба"),
     BotCommand(command="history", description="Последние бои"),
     BotCommand(command="help", description="Как всё устроено"),

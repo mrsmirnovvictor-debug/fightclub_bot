@@ -1,8 +1,13 @@
 """Боевой движок: раунд = одновременный размен ударами.
 
-Каждый боец выбирает одну зону атаки и несколько зон блока. Обе атаки
-считаются от состояния на начало раунда и применяются одновременно, поэтому
-взаимный нокаут возможен и считается ничьей.
+Каждый боец выбирает зону атаки и зоны блока. Выбор может быть неполным —
+что боец успел нажать, то и работает: не выбрал зону удара, значит не бьёт;
+закрыл одну зону из двух, значит вторая осталась открытой. Кто не нажал
+ничего, пропускает ход целиком, а три пропуска подряд означают техническое
+поражение.
+
+Обе атаки считаются от состояния на начало раунда и применяются
+одновременно, поэтому взаимный нокаут возможен и засчитывается как ничья.
 """
 
 from __future__ import annotations
@@ -20,9 +25,12 @@ FATIGUE_FROM_ROUND = 6
 FATIGUE_STEP = 0.12
 # Жёсткий лимит: дальше судья останавливает бой и считает по здоровью.
 MAX_ROUNDS = 20
+# Столько пропусков подряд, и судья засчитывает техническое поражение.
+MAX_MISSED_TURNS = 3
 
 
 class Outcome(str, Enum):
+    SKIP = "skip"  # боец не выбрал зону удара
     BLOCK = "block"  # защитник закрыл зону
     DODGE = "dodge"  # ушёл с линии удара
     HIT = "hit"
@@ -31,18 +39,25 @@ class Outcome(str, Enum):
 
 class DuelEnd(str, Enum):
     KO = "ko"  # кто-то упал
-    DOUBLE_KO = "double_ko"  # упали оба
+    DOUBLE_KO = "double_ko"  # упали оба, ничья
     JUDGE = "judge"  # лимит раундов, решение судьи
-    GIVE_UP = "give_up"  # сдался
+    TECHNICAL = "technical"  # пропустил слишком много ходов подряд
 
 
 @dataclass(frozen=True)
 class Action:
-    """Выбор бойца на раунд."""
+    """Выбор бойца на раунд. Может быть неполным или пустым."""
 
-    attack: Zone
-    blocks: tuple[Zone, ...]
-    auto: bool = False  # выбрано ботом по таймауту
+    attack: Zone | None = None
+    blocks: tuple[Zone, ...] = ()
+
+    @property
+    def is_empty(self) -> bool:
+        """Боец не нажал вообще ничего — пропуск хода."""
+        return self.attack is None and not self.blocks
+
+    def is_complete(self, fclass: FighterClass) -> bool:
+        return self.attack is not None and len(set(self.blocks)) == fclass.block_zones
 
 
 @dataclass
@@ -55,6 +70,7 @@ class Fighter:
     stats: Stats
     level: int = 1
     hp: int = 0
+    missed_turns: int = 0  # пропусков подряд
     derived: DerivedStats = field(init=False)
 
     def __post_init__(self) -> None:
@@ -74,6 +90,11 @@ class Fighter:
     def hp_percent(self) -> float:
         return self.hp / self.max_hp if self.max_hp else 0.0
 
+    @property
+    def gave_up(self) -> bool:
+        """Боец молчит столько ходов, что судья вправе остановить бой."""
+        return self.missed_turns >= MAX_MISSED_TURNS
+
     @classmethod
     def from_player(cls, player) -> "Fighter":
         """Собрать бойца из записи игрока в БД."""
@@ -92,11 +113,11 @@ class Strike:
 
     attacker_id: int
     defender_id: int
-    zone: Zone
+    zone: Zone | None
     outcome: Outcome
     damage: int = 0
     counter_damage: int = 0
-    auto: bool = False
+    missed_turn: bool = False  # боец не нажал вообще ничего
 
 
 @dataclass
@@ -116,18 +137,20 @@ def fatigue_multiplier(round_number: int) -> float:
 
 
 def random_action(fclass: FighterClass, rng: random.Random | None = None) -> Action:
-    """Случайный выбор — за того, кто не успел определиться."""
+    """Полный случайный выбор — для симуляций и тестов."""
     rng = rng or random
     zones = list(ALL_ZONES)
-    attack = rng.choice(zones)
-    blocks = tuple(rng.sample(zones, k=min(fclass.block_zones, len(zones))))
-    return Action(attack=attack, blocks=blocks, auto=True)
+    return Action(
+        attack=rng.choice(zones),
+        blocks=tuple(rng.sample(zones, k=min(fclass.block_zones, len(zones)))),
+    )
 
 
 def validate_action(action: Action, fclass: FighterClass) -> None:
-    if len(set(action.blocks)) != fclass.block_zones:
+    """Неполный выбор допустим, лишние зоны блока — нет."""
+    if len(set(action.blocks)) > fclass.block_zones:
         raise ValueError(
-            f"{fclass.title} закрывает ровно {fclass.block_zones} зоны, "
+            f"{fclass.title} закрывает не больше {fclass.block_zones} зон, "
             f"а выбрано {len(set(action.blocks))}"
         )
 
@@ -140,13 +163,21 @@ def _resolve_strike(
     round_number: int,
     rng: random.Random,
 ) -> Strike:
+    if action.attack is None:
+        return Strike(
+            attacker_id=attacker.user_id,
+            defender_id=defender.user_id,
+            zone=None,
+            outcome=Outcome.SKIP,
+            missed_turn=action.is_empty,
+        )
+
     zone = action.attack
     strike = Strike(
         attacker_id=attacker.user_id,
         defender_id=defender.user_id,
         zone=zone,
         outcome=Outcome.BLOCK,
-        auto=action.auto,
     )
 
     if zone in defender_action.blocks:
@@ -185,8 +216,14 @@ def resolve_round(
     round_number: int,
     rng: random.Random | None = None,
 ) -> RoundResult:
-    """Посчитать раунд и применить урон. Меняет hp бойцов."""
+    """Посчитать раунд и применить урон. Меняет hp и счётчики пропусков."""
     rng = rng or random
+
+    for fighter, action in ((first, first_action), (second, second_action)):
+        if action.is_empty:
+            fighter.missed_turns += 1
+        else:
+            fighter.missed_turns = 0
 
     strike_a = _resolve_strike(first, second, first_action, second_action, round_number, rng)
     strike_b = _resolve_strike(second, first, second_action, first_action, round_number, rng)
@@ -203,11 +240,15 @@ def resolve_round(
         strikes=[strike_a, strike_b],
         hp_after={first.user_id: first.hp, second.user_id: second.hp},
     )
+    _apply_ending(result, first, second)
+    return result
 
+
+def _apply_ending(result: RoundResult, first: Fighter, second: Fighter) -> None:
+    """Проставить исход боя, если раунд оказался последним."""
     if not first.alive and not second.alive:
         result.finished = True
-        result.end_reason = DuelEnd.DOUBLE_KO
-        result.winner_id = initiative_winner(first, second, rng)
+        result.end_reason = DuelEnd.DOUBLE_KO  # добили друг друга — ничья
     elif not first.alive:
         result.finished = True
         result.winner_id = second.user_id
@@ -216,26 +257,17 @@ def resolve_round(
         result.finished = True
         result.winner_id = first.user_id
         result.end_reason = DuelEnd.KO
-    elif round_number >= MAX_ROUNDS:
+    elif first.gave_up or second.gave_up:
+        result.finished = True
+        result.end_reason = DuelEnd.TECHNICAL
+        if first.gave_up and not second.gave_up:
+            result.winner_id = second.user_id
+        elif second.gave_up and not first.gave_up:
+            result.winner_id = first.user_id
+    elif result.number >= MAX_ROUNDS:
         result.finished = True
         result.end_reason = DuelEnd.JUDGE
         result.winner_id = judge_decision(first, second)
-
-    return result
-
-
-def initiative_winner(first: Fighter, second: Fighter, rng: random.Random) -> int:
-    """Если рухнули оба — победил тот, чей удар прошёл первым.
-
-    Скорость бойца — ловкость плюс интуиция; при равенстве решает жребий.
-    """
-    speed_first = first.stats.agility + first.stats.intuition
-    speed_second = second.stats.agility + second.stats.intuition
-    if speed_first > speed_second:
-        return first.user_id
-    if speed_second > speed_first:
-        return second.user_id
-    return rng.choice([first.user_id, second.user_id])
 
 
 def judge_decision(first: Fighter, second: Fighter) -> int | None:

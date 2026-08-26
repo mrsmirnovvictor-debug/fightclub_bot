@@ -7,7 +7,7 @@ from aiogram.types import Chat, Message, User
 from tests.harness import feed_callback, feed_message, ids
 
 from bot.game.classes import get_class
-from bot.keyboards import ChallengeCB, FightCB
+from bot.keyboards import ChallengeCB, FightCB, fight_keyboard
 from bot.models import Player
 
 GROUP = Chat(id=-1002000, type="supergroup", title="Клуб")
@@ -139,7 +139,8 @@ async def test_reply_duel_targets_that_fighter(arena):
     assert duels.duel_in_chat(GROUP.id, THREAD_ID) is not None
 
 
-async def test_giveup_command_ends_the_fight(arena):
+async def test_no_surrender_button_and_no_giveup_command(arena):
+    """Сдачи не существует: команда игнорируется, кнопки в клавиатуре нет."""
     db, duels, session = arena
     first = as_user(631, "Тайлер")
     second = as_user(632, "Марла")
@@ -149,8 +150,16 @@ async def test_giveup_command_ends_the_fight(arena):
     await send(first, "/duel")
     challenge_id = next(iter(duels._challenges))
     await press(second, ChallengeCB(action="accept", challenge_id=challenge_id).pack())
-    assert duels.duel_in_chat(GROUP.id, THREAD_ID) is not None
+    duel = duels.duel_in_chat(GROUP.id, THREAD_ID)
+    assert duel is not None
+
+    buttons = [
+        button.callback_data
+        for row in fight_keyboard(duel.id).inline_keyboard
+        for button in row
+    ]
+    assert all("giveup" not in (data or "") for data in buttons)
 
     await send(first, "/giveup")
-    assert duels.duel_in_chat(GROUP.id, THREAD_ID) is None
-    assert (await db.get_player(second.id)).wins == 1
+    assert duels.duel_in_chat(GROUP.id, THREAD_ID) is duel  # бой продолжается
+    assert (await db.get_player(second.id)).wins == 0
