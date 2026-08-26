@@ -75,6 +75,15 @@ def ups_earned(exp: int, level: int) -> int:
     return min(MICRO_UPS_PER_LEVEL - 1, exp // exp_per_up(level))
 
 
+def credits_per_level() -> int:
+    """Сколько кредитов приносит уровень сам по себе, без учёта побед.
+
+    На это число смотрят цены в лавке: набор одной ступени стоит примерно
+    втрое дороже — поэтому на всё сразу не хватает и приходится выбирать.
+    """
+    return MICRO_UPS_PER_LEVEL * UP_CREDITS + LEVEL_CREDITS
+
+
 def level_diff_multiplier(my_level: int, opponent_level: int) -> float:
     raw = 1.0 + EXP_LEVEL_DIFF_STEP * (opponent_level - my_level)
     return max(EXP_LEVEL_DIFF_MIN, min(EXP_LEVEL_DIFF_MAX, raw))

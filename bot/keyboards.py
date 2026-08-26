@@ -16,7 +16,7 @@ from bot.game.classes import (
     block_combos,
     block_title,
 )
-from bot.game.equipment import SHOWCASE
+from bot.game.equipment import SHOWCASE, items_unlocked_at
 
 AVATARS: tuple[str, ...] = (
     "🥊", "🥷", "🐺", "🦍", "👹", "🤖",
@@ -106,14 +106,21 @@ def stats_keyboard(free_points: int, allow_reset: bool = True) -> InlineKeyboard
     return builder.as_markup()
 
 
-def showcase_keyboard(credits: int) -> InlineKeyboardMarkup:
-    """Витрина лавки: что по карману — то и кнопка, остальное с замком."""
+def showcase_keyboard(level: int, credits: int) -> InlineKeyboardMarkup:
+    """Покупка прямо из чата — то, что открылось последним.
+
+    Весь прилавок в кнопки не влезает: за полным списком идут в лавку
+    мини-аппа, а здесь под рукой свежая партия товара.
+    """
+    newest = max(
+        (item.level_required for item in SHOWCASE if item.level_required <= level),
+        default=1,
+    )
     builder = InlineKeyboardBuilder()
-    for item in SHOWCASE:
-        affordable = credits >= item.price
+    for item in items_unlocked_at(newest):
         builder.button(
             text=f"{item.emoji} {item.title} — {item.price} 💰"
-            + ("" if affordable else " 🔒"),
+            + ("" if credits >= item.price else " 🔒"),
             callback_data=BuyCB(code=item.code),
         )
     builder.adjust(1)

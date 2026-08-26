@@ -7,17 +7,25 @@ from aiogram.filters import Command, CommandObject
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 
+from bot.config import Config
 from bot.database import Database
 from bot.game.classes import get_class
 from bot.game.economy import PRICE_APPEARANCE, PRICE_CLASS_CHANGE, PRICE_RESPEC
 from bot.game.equipment import (
     MAX_WEAR,
     REPAIR_PRICE_PER_POINT,
-    SHOWCASE,
     describe_requirements,
     get_item,
+    items_unlocked_at,
+    shop_sections,
 )
 from bot.game.narrator import esc
 from bot.handlers.common import send_profile
@@ -92,22 +100,36 @@ async def cmd_shop(message: Message, db: Database) -> None:
 
 
 def showcase_text(player: Player) -> str:
+    """Что открыто бойцу прямо сейчас — по типам вещей."""
     lines = [
-        "🛒 <b>Витрина клуба</b>",
+        "🏪 <b>Лавка клуба</b>",
         "",
-        f"На счету: <b>{player.credits}</b> 💰",
+        f"На счету: <b>{player.credits}</b> 💰 · уровень {player.level}",
         "",
     ]
-    for item in SHOWCASE:
-        bonus = item.describe_bonus()
-        lines.append(
-            f"{item.emoji} <b>{esc(item.title)}</b> — {item.price} 💰 "
-            f"· {item.slot.title}"
-        )
-        lines.append(
-            f"    нужно: {describe_requirements(item)}"
-            + (f" · даёт: {bonus}" if bonus else "")
-        )
+    for slot, items in shop_sections():
+        open_now = [item for item in items if item.level_required <= player.level]
+        if not open_now:
+            continue
+        lines.append(f"{slot.emoji} <b>{slot.title.capitalize()}</b>")
+        for item in open_now:
+            bonus = item.describe_bonus()
+            lines.append(
+                f"   {item.emoji} {esc(item.title)} — {item.price} 💰"
+                + (f" · {bonus}" if bonus else "")
+                + f" · нужно {describe_requirements(item)}"
+            )
+
+    locked = [
+        item.level_required
+        for _, items in shop_sections()
+        for item in items
+        if item.level_required > player.level
+    ]
+    if locked:
+        level = min(locked)
+        names = ", ".join(esc(item.title) for item in items_unlocked_at(level))
+        lines += ["", f"🔒 На {level} уровне откроются: {names}."]
     lines += [
         "",
         "Купленное падает в инвентарь — надеть можно в карточке (/card), "
@@ -116,13 +138,29 @@ def showcase_text(player: Player) -> str:
     return "\n".join(lines)
 
 
+def shop_keyboard(config: Config, player: Player) -> InlineKeyboardMarkup:
+    """Кнопка в лавку мини-аппа, а под ней — свежая партия товара кнопками."""
+    builder = showcase_keyboard(player.level, player.credits)
+    if not config.webapp_enabled:
+        return builder
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="🏪 Открыть лавку",
+                web_app=WebAppInfo(url=f"{config.webapp_url}/?view=shop"),
+            )
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows + builder.inline_keyboard)
+
+
 @router.message(Command("buy", "items"))
-async def cmd_buy(message: Message, db: Database) -> None:
+async def cmd_buy(message: Message, db: Database, config: Config) -> None:
     player = await _require_player(message, db)
     if player is None:
         return
     await message.answer(
-        showcase_text(player), reply_markup=showcase_keyboard(player.credits)
+        showcase_text(player), reply_markup=shop_keyboard(config, player)
     )
 
 

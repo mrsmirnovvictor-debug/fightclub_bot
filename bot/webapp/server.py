@@ -10,9 +10,15 @@ from aiohttp import web
 from bot.config import Config
 from bot.database import Database
 from bot.game.equipment import Slot
-from bot.inventory_service import InventoryError, equip, repair_item, unequip
+from bot.inventory_service import (
+    InventoryError,
+    buy,
+    equip,
+    repair_item,
+    unequip,
+)
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
-from bot.webapp.card import build_card
+from bot.webapp.card import build_card, build_shop
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +179,40 @@ async def api_repair(request: web.Request) -> web.Response:
     )
 
 
+async def api_shop(request: web.Request) -> web.Response:
+    """Витрина: что продаётся, что уже открыто и что по карману."""
+    try:
+        player = await _own_player(request)
+    except InventoryError as error:  # pragma: no cover - витрина боем не занята
+        return web.json_response({"error": str(error)}, status=409)
+    return web.json_response(build_shop(player))
+
+
+async def api_buy(request: web.Request) -> web.Response:
+    """Купить вещь: она уходит в инвентарь, надевать — в карточке."""
+    data = await _payload(request)
+    code = str(data.get("code") or "")
+    try:
+        player = await _own_player(request)
+        item = await buy(request.app[DB_KEY], player, code)
+    except InventoryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "shop": build_shop(player),
+            "card": build_card(player, config.bot_token, player.user_id),
+            "bought": {
+                "code": item.code,
+                "title": item.title,
+                "price": item.item.price,
+                "can_equip": player.can_equip(item.item),
+            },
+        }
+    )
+
+
 async def avatar(request: web.Request) -> web.StreamResponse:
     """Отдать фото бойца. Ссылка подписана и живёт час."""
     config = request.app[CONFIG_KEY]
@@ -220,6 +260,8 @@ def create_app(bot, db: Database, config: Config, duels=None) -> web.Application
             web.post("/api/equip", api_equip),
             web.post("/api/unequip", api_unequip),
             web.post("/api/repair", api_repair),
+            web.get("/api/shop", api_shop),
+            web.post("/api/buy", api_buy),
             web.get("/avatar/{user_id}", avatar),
             web.get("/healthz", healthz),
             web.static("/static", STATIC_DIR),

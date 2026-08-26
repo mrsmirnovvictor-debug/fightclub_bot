@@ -120,9 +120,9 @@ function button(text, options) {
   return btn;
 }
 
-function thingCard(item, credits) {
+function thingCard(item, credits, shop) {
   const box = document.createElement("div");
-  box.className = "thing";
+  box.className = "thing" + (shop && !item.unlocked ? " locked" : "");
 
   const pic = document.createElement("div");
   pic.className = "thing-pic";
@@ -142,12 +142,37 @@ function thingCard(item, credits) {
   kind.textContent = item.slot_title;
   body.appendChild(kind);
 
-  const wear = document.createElement("div");
-  const left = item.max_wear - item.wear;
-  wear.className = "thing-wear" + (left <= 1 ? " dying" : item.wear ? " worn" : "");
-  wear.textContent = "🔧 Износ: " + item.wear_text;
-  if (left <= 1) wear.textContent += " — ещё один бой, и рассыплется";
-  body.appendChild(wear);
+  if (!shop) {
+    const wear = document.createElement("div");
+    const left = item.max_wear - item.wear;
+    wear.className = "thing-wear" + (left <= 1 ? " dying" : item.wear ? " worn" : "");
+    wear.textContent = "🔧 Износ: " + item.wear_text;
+    if (left <= 1) wear.textContent += " — ещё один бой, и рассыплется";
+    body.appendChild(wear);
+  }
+
+  if (shop) {
+    const price = document.createElement("div");
+    price.className = "thing-price";
+    price.textContent = item.price + " 💰";
+    body.appendChild(price);
+
+    if (item.suits.length) {
+      const suits = document.createElement("div");
+      suits.className = "thing-suits";
+      suits.textContent =
+        "Кому: " + item.suits.map((c) => c.emoji + " " + c.title).join(", ");
+      body.appendChild(suits);
+    }
+    if (item.owned) {
+      const owned = document.createElement("div");
+      owned.className = "thing-owned";
+      owned.textContent = item.owned > 1
+        ? "✔ уже есть, штук: " + item.owned
+        : "✔ уже есть";
+      body.appendChild(owned);
+    }
+  }
 
   const reqLabel = document.createElement("div");
   reqLabel.className = "thing-label";
@@ -159,6 +184,27 @@ function thingCard(item, credits) {
     gainLabel.className = "thing-label";
     gainLabel.textContent = "Даёт надетой";
     body.append(gainLabel, bonusList(item));
+  }
+
+  if (shop) {
+    const buy = document.createElement("div");
+    buy.className = "thing-buttons";
+    if (!item.unlocked) {
+      const locked = document.createElement("div");
+      locked.className = "thing-locked";
+      locked.textContent = "🔒 Откроется на " + item.level_required + " уровне";
+      body.appendChild(locked);
+    } else {
+      buy.appendChild(
+        button(item.affordable ? "Купить · " + item.price + " 💰" : "Не хватает кредитов", {
+          disabled: !item.affordable,
+          onClick: () => purchase(item),
+        })
+      );
+      body.appendChild(buy);
+    }
+    box.appendChild(body);
+    return box;
   }
 
   const buttons = document.createElement("div");
@@ -223,9 +269,115 @@ function renderBag(card) {
   });
 }
 
+// ---------- магазин ----------
+
+function shelf(section) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = section.emoji + " " + section.title;
+  const count = document.createElement("span");
+  count.className = "shelf-count";
+  count.textContent = "открыто " + section.open + " из " + section.items.length;
+  head.appendChild(count);
+  box.appendChild(head);
+
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  section.items
+    .filter((item) => item.unlocked)
+    .forEach((item) => list.appendChild(thingCard(item, 0, true)));
+  box.appendChild(list);
+
+  // Закрытое не мозолит глаза, но посмотреть, к чему готовиться, можно
+  const locked = section.items.filter((item) => !item.unlocked);
+  if (locked.length) {
+    const hidden = document.createElement("div");
+    hidden.className = "shelf-list hidden";
+    locked.forEach((item) => hidden.appendChild(thingCard(item, 0, true)));
+
+    const toggle = button("🔒 Показать закрытые · " + locked.length, {
+      secondary: true,
+      onClick: () => {
+        const shown = hidden.classList.toggle("hidden");
+        toggle.textContent = shown
+          ? "🔒 Показать закрытые · " + locked.length
+          : "Свернуть закрытые";
+      },
+    });
+    toggle.classList.add("shelf-toggle");
+    box.append(toggle, hidden);
+  }
+  return box;
+}
+
+function renderShop(data) {
+  shopData = data;
+  el("shop-purse").textContent = num(data.credits) + " 💰";
+  const next = data.sections
+    .flatMap((section) => section.items)
+    .filter((item) => !item.unlocked)
+    .reduce((min, item) => Math.min(min, item.level_required), 99);
+  el("shop-note").textContent =
+    next < 99
+      ? "Товар открывается уровнем. Следующая партия — на " + next + " уровне."
+      : "Открыто всё, что есть на прилавке.";
+
+  const list = el("shop-list");
+  list.textContent = "";
+  data.sections.forEach((section) => list.appendChild(shelf(section)));
+}
+
+function showTab(name) {
+  const shop = name === "shop";
+  el("card").classList.toggle("hidden", shop);
+  el("shop").classList.toggle("hidden", !shop);
+  el("tab-card").classList.toggle("active", !shop);
+  el("tab-shop").classList.toggle("active", shop);
+  if (shop && !shopData) loadShop();
+}
+
+async function loadShop() {
+  try {
+    const response = await fetch("api/shop", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Лавка закрыта.");
+    renderShop(await response.json());
+  } catch (error) {
+    el("shop-note").textContent = error.message;
+  }
+}
+
+async function purchase(item) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/buy", { code: item.code });
+    render(data.card, true);
+    renderShop(data.shop);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    popup(
+      "🛍 " + data.bought.title,
+      data.bought.can_equip
+        ? "Куплено за " + data.bought.price + " 💰. Вещь ждёт в инвентаре — "
+          + "надеть можно на вкладке «Боец»."
+        : "Куплено за " + data.bought.price + " 💰. Надеть пока нечем: "
+          + "требования не выполнены — вещь полежит в инвентаре."
+    );
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
 // ---------- действия ----------
 
 let busy = false;
+let shopData = null;
 
 async function post(url, body) {
   const response = await fetch(url, {
@@ -245,7 +397,8 @@ async function act(url, body) {
   if (busy) return;
   busy = true;
   try {
-    render(await post(url, body));
+    render(await post(url, body), true);
+    shopData = null;  // «уже есть» на витрине могло измениться
     if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
   } catch (error) {
     popup("Не вышло", error.message);
@@ -259,7 +412,8 @@ async function repair(item, points) {
   busy = true;
   try {
     const data = await post("api/repair", { item_id: item.id, points: points });
-    render(data.card);
+    render(data.card, true);
+    shopData = null;  // кредитов стало меньше
     const done = data.repair;
     let text = "Снято износа: " + done.points + ", списано " + done.price + " 💰.";
     if (done.destroyed) {
@@ -342,7 +496,7 @@ function startHealthTicker(hp) {
   }, 1000);
 }
 
-function render(card) {
+function render(card, keepTab) {
   el("class-emoji").textContent = card.fclass.emoji;
   el("name").textContent = card.name;
   el("level").textContent = "[" + card.level + "]";
@@ -403,7 +557,8 @@ function render(card) {
     card.fclass.emoji + " " + card.fclass.title + " — " + card.fclass.tagline;
 
   el("loader").classList.add("hidden");
-  el("card").classList.remove("hidden");
+  if (card.is_self) el("tabs").classList.remove("hidden");
+  if (!keepTab) showTab("card");
 }
 
 function fail(message) {
@@ -411,6 +566,15 @@ function fail(message) {
   const box = el("error");
   box.querySelector(".error-text").textContent = message;
   box.classList.remove("hidden");
+}
+
+function wantsShop() {
+  const params = new URLSearchParams(window.location.search);
+  return (
+    params.get("view") === "shop" ||
+    params.get("tgWebAppStartParam") === "shop" ||
+    (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param === "shop")
+  );
 }
 
 async function load() {
@@ -431,12 +595,17 @@ async function load() {
       fail("Карточка открывается только из Telegram.");
       return;
     }
-    render(await response.json());
+    const card = await response.json();
+    render(card);
+    if (card.is_self && wantsShop()) showTab("shop");
   } catch (error) {
     console.error("card load failed", error);
     fail("Не получилось загрузить карточку. Попробуй ещё раз.");
   }
 }
+
+el("tab-card").addEventListener("click", () => showTab("card"));
+el("tab-shop").addEventListener("click", () => showTab("shop"));
 
 if (tg) {
   tg.ready();

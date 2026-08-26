@@ -42,12 +42,42 @@ async def test_shop_shows_balance_and_prices(client, dispatcher_env):
     assert str(PRICE_RESPEC) in text and str(PRICE_CLASS_CHANGE) in text
 
 
-async def test_showcase_lists_goods_with_requirements(client, dispatcher_env):
+async def test_showcase_lists_open_goods_by_type(client, dispatcher_env):
     _, _, session = dispatcher_env
     await client.send("/buy")
     text = session.texts[-1]
     assert "Кеды" in text and str(CATALOGUE["sneakers"].price) in text
     assert "уровень 3, сила 6" in text  # требования кастета
+    assert "Оружие" in text and "Обувь" in text  # разложено по типам
+    # товар не по уровню на прилавок не выкладывают, но о нём предупреждают
+    assert f"Обрезок трубы — {CATALOGUE['pipe'].price}" not in text
+    assert "На 4 уровне откроются: Обрезок трубы" in text
+
+
+async def test_showcase_grows_with_the_fighter(client, dispatcher_env):
+    db, _, session = dispatcher_env
+    player = await client.player()
+    player.level = 6
+    await db.save_player(player)
+
+    await client.send("/buy")
+    text = session.texts[-1]
+
+    assert "Обрезок трубы" in text and "Бита" in text
+    assert "На 7 уровне откроются" in text
+    # кнопками в чате — только свежая партия, остальное в лавке мини-аппа
+    buttons = session.calls[-1].reply_markup.inline_keyboard
+    labels = [b.text for row in buttons for b in row]
+    assert any("Бита" in label for label in labels)
+    assert not any("Кастет" in label for label in labels)
+
+
+async def test_level_locked_goods_are_not_sold_in_chat(client, dispatcher_env):
+    _, _, session = dispatcher_env
+    await client.press(BuyCB(code="bat").pack())
+
+    assert "открывается на 6 уровне" in session.alerts[-1]
+    assert (await client.player()).gear == []
 
 
 async def test_buying_takes_credits_and_fills_the_backpack(client, dispatcher_env):

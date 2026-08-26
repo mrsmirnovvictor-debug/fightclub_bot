@@ -15,6 +15,11 @@
     <div class="error-text"></div>
   </div>
 
+  <nav class="tabs hidden" id="tabs">
+    <button type="button" class="tab active" id="tab-card">🥊 Боец</button>
+    <button type="button" class="tab" id="tab-shop">🏪 Магазин</button>
+  </nav>
+
   <main id="card" class="card hidden">
     <header class="head">
       <span class="head-class" id="class-emoji"></span>
@@ -53,6 +58,15 @@
     </section>
 
     <footer class="foot" id="foot"></footer>
+  </main>
+
+  <main id="shop" class="shop hidden">
+    <header class="shop-head">
+      <h1 class="shop-title">🏪 Лавка клуба</h1>
+      <span class="shop-purse" id="shop-purse"></span>
+    </header>
+    <p class="shop-note" id="shop-note"></p>
+    <div id="shop-list"></div>
   </main>
 
   <script src="static/card.js"></script>

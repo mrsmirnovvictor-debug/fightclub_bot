@@ -6,8 +6,10 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
-from bot.game.classes import Stats, get_class
+from bot.game.classes import FIGHTER_CLASSES, Stats, get_class
+from bot.game.economy import credits_per_level
 from bot.game.equipment import (
+    ALL_SLOTS,
     CATALOGUE,
     MAX_WEAR,
     Item,
@@ -17,12 +19,14 @@ from bot.game.equipment import (
     apply_fight_wear,
     can_equip,
     describe_requirements,
+    items_unlocked_at,
     repair,
+    shop_sections,
 )
 from bot.inventory_service import InventoryError, buy, equip, repair_item, unequip
 from bot.inventory_service import wear_after_fight
 from bot.models import Player
-from bot.webapp.card import build_card
+from bot.webapp.card import build_card, build_shop
 from bot.webapp.server import create_app
 from tests.test_webapp import TOKEN, make_init_data
 
@@ -160,9 +164,9 @@ async def test_shop_refuses_when_credits_run_short(db):
 
 
 async def test_gear_must_be_earned_before_it_is_worn(db):
-    player = make_player(level=1, stats=Stats(strength=4, agility=4, intuition=4, endurance=4))
+    player = make_player(level=3, stats=Stats(strength=4, agility=4, intuition=4, endurance=4))
     await db.save_player(player)
-    owned = await buy(db, player, "knuckles")
+    owned = await buy(db, player, "knuckles")  # купить можно, надеть — пока нет
 
     with pytest.raises(InventoryError, match="Пока не по плечу"):
         await equip(db, player, owned.id)
@@ -414,7 +418,7 @@ async def test_mini_app_dresses_and_undresses_the_fighter(client, db):
 
 
 async def test_mini_app_explains_why_the_button_is_grey(client, db):
-    player = make_player(user_id=42, level=1, stats=Stats(strength=4, agility=4, intuition=4, endurance=4))
+    player = make_player(user_id=42, level=3, stats=Stats(strength=4, agility=4, intuition=4, endurance=4))
     await db.save_player(player)
     owned = await buy(db, player, "knuckles")
 
@@ -549,3 +553,104 @@ async def test_nobody_changes_clothes_in_the_middle_of_a_fight(db):
 
     assert (await db.get_player(42)).equipped[0].code == "sneakers"
     await service.shutdown()
+
+
+# ---------- магазин ----------
+
+
+def test_every_tier_has_something_for_every_class():
+    """В каждой партии товара есть вещь под каждый класс."""
+    for level in (4, 5, 6, 7, 8):
+        covered = {code for item in items_unlocked_at(level) for code in item.for_classes}
+        assert covered == set(FIGHTER_CLASSES), f"{level} уровень обошли: {covered}"
+
+
+def test_a_tier_never_fits_into_one_level_of_income():
+    """Развилка: за уровень партию не выкупить, но что-то из неё по карману."""
+    income = credits_per_level()
+    for level in (4, 5, 6, 7, 8):
+        items = items_unlocked_at(level)
+        cheapest_per_slot: dict = {}
+        for item in items:
+            best = cheapest_per_slot.get(item.slot)
+            if best is None or item.price < best.price:
+                cheapest_per_slot[item.slot] = item
+        full_set = sum(item.price for item in cheapest_per_slot.values())
+        assert full_set > income, f"{level} уровень: партия за {full_set} — не выбор"
+        assert min(item.price for item in items) <= income * 4, (
+            f"{level} уровень: даже самое дешёвое копить вечность"
+        )
+
+
+def test_goods_are_sorted_by_type_and_level():
+    sections = shop_sections()
+    assert [slot for slot, _ in sections] == list(ALL_SLOTS)
+    for _, items in sections:
+        levels = [item.level_required for item in items]
+        assert levels == sorted(levels)
+        assert all(item.slot is items[0].slot for item in items)
+
+
+def test_shop_marks_what_is_locked_owned_and_affordable():
+    player = make_player(level=5, credits=100, stats=Stats(strength=13, agility=8, intuition=8, endurance=13))
+    player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, slot=Slot.WEAPON)]
+
+    shop = build_shop(player)
+    weapons = next(s for s in shop["sections"] if s["slot"] == "weapon")
+    goods = {row["code"]: row for row in weapons["items"]}
+
+    assert shop["credits"] == 100
+    assert goods["pipe"]["owned"] == 1
+    assert goods["pipe"]["unlocked"] is True
+    assert goods["pipe"]["affordable"] is False  # труба стоит 150
+    assert goods["knuckles"]["affordable"] is True
+    assert goods["bat"]["unlocked"] is False  # бита — с 6 уровня
+    assert goods["bat"]["level_required"] == 6
+    assert [c["code"] for c in goods["bat"]["suits"]] == ["warrior"]
+    # требования показываются и в лавке: сила у трубы уже есть, уровень биты — нет
+    assert all(need["ok"] for need in goods["pipe"]["requirements"])
+    assert weapons["open"] < len(weapons["items"])
+
+
+async def test_the_counter_refuses_goods_above_your_level(db):
+    player = make_player(level=5, credits=500, stats=Stats(strength=16, agility=8, intuition=8, endurance=13))
+    await db.save_player(player)
+
+    with pytest.raises(InventoryError, match="открывается на 6 уровне"):
+        await buy(db, player, "bat")
+    assert player.credits == 500
+
+    player.level = 6
+    bought = await buy(db, player, "bat")
+    assert bought.code == "bat"
+    assert player.credits == 500 - CATALOGUE["bat"].price
+
+
+async def test_mini_app_serves_the_shop_and_takes_the_money(client, db):
+    player = make_player(user_id=42, level=4, credits=200, stats=Stats(strength=12, agility=8, intuition=8, endurance=10))
+    await db.save_player(player)
+
+    response = await client.get("/api/shop", headers=headers(42))
+    assert response.status == 200
+    shop = await response.json()
+    assert [section["slot"] for section in shop["sections"]] == [s.value for s in ALL_SLOTS]
+
+    response = await client.post("/api/buy", json={"code": "pipe"}, headers=headers(42))
+    body = await response.json()
+
+    assert body["bought"] == {
+        "code": "pipe",
+        "title": "Обрезок трубы",
+        "price": 150,
+        "can_equip": True,
+    }
+    assert body["shop"]["credits"] == 50
+    assert [item["title"] for item in body["card"]["inventory"]] == ["Обрезок трубы"]
+    weapons = next(s for s in body["shop"]["sections"] if s["slot"] == "weapon")
+    assert next(row for row in weapons["items"] if row["code"] == "pipe")["owned"] == 1
+
+
+async def test_mini_app_shop_needs_your_own_init_data(client, db):
+    await db.save_player(make_player(user_id=42))
+    assert (await client.get("/api/shop")).status == 401
+    assert (await client.post("/api/buy", json={"code": "pipe"})).status == 401

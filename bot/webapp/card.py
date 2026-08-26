@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from bot.game.classes import ALL_STATS, Stats
+from bot.game.classes import ALL_STATS, Stats, get_class
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
 from bot.game.equipment import (
     LEFT_SLOTS,
@@ -14,6 +14,7 @@ from bot.game.equipment import (
     Item,
     OwnedItem,
     Slot,
+    shop_sections,
 )
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
 from bot.game.stats import derive
@@ -63,20 +64,20 @@ def slot_payload(equipment: Equipment, slot: Slot) -> dict:
     }
 
 
-def requirements_payload(player: Player, owned: OwnedItem) -> list[dict]:
+def requirements_payload(player: Player, item: Item) -> list[dict]:
     """Что нужно, чтобы надеть вещь, и что из этого у бойца уже есть."""
-    missing = set(player.missing_for(owned.item))
+    missing = set(player.missing_for(item))
     rows = [
         {
             "code": "level",
             "title": "Уровень",
-            "need": owned.item.level_required,
+            "need": item.level_required,
             "have": player.level,
             "ok": "level" not in missing,
         }
     ]
     for stat in ALL_STATS:
-        need = owned.item.requires.get(stat)
+        need = item.requires.get(stat)
         if need:
             rows.append(
                 {
@@ -110,7 +111,7 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "max_wear": owned.max_wear,
         "wear_text": owned.describe_wear(),
         "repair_price": owned.repair_price,
-        "requirements": requirements_payload(player, owned),
+        "requirements": requirements_payload(player, item),
         "can_equip": player.can_equip(item),
         "bonus": item.describe_bonus(),
         "bonuses": bonuses_payload(item),
@@ -127,6 +128,62 @@ def bonuses_payload(item: Item) -> list[dict]:
     if item.hp:
         rows.append({"emoji": "❤️", "title": "Здоровье", "value": item.hp})
     return rows
+
+
+def suits_payload(item: Item) -> list[dict]:
+    """Кому вещь в первую очередь — подсказка для витрины."""
+    return [
+        {"code": code, "title": get_class(code).title, "emoji": get_class(code).emoji}
+        for code in item.for_classes
+    ]
+
+
+def goods_payload(player: Player, item: Item, owned: int) -> dict:
+    """Строка витрины: цена, требования, свойства и кому подходит."""
+    return {
+        "code": item.code,
+        "title": item.title,
+        "icon": item.emoji,
+        "image": item.image,
+        "kind": item.kind.value,
+        "slot": item.slot.value,
+        "slot_title": item.slot.title.capitalize(),
+        "price": item.price,
+        "level_required": item.level_required,
+        "unlocked": player.level >= item.level_required,
+        "affordable": player.can_afford(item.price),
+        "can_equip": player.can_equip(item),
+        "owned": owned,
+        "requirements": requirements_payload(player, item),
+        "bonuses": bonuses_payload(item),
+        "suits": suits_payload(item),
+    }
+
+
+def build_shop(player: Player) -> dict:
+    """Магазин: товары, разложенные по типам вещей."""
+    mine: dict[str, int] = {}
+    for owned in player.gear:
+        mine[owned.code] = mine.get(owned.code, 0) + 1
+
+    sections = []
+    for slot, items in shop_sections():
+        rows = [goods_payload(player, item, mine.get(item.code, 0)) for item in items]
+        sections.append(
+            {
+                "slot": slot.value,
+                "title": slot.title.capitalize(),
+                "emoji": slot.emoji,
+                "open": sum(1 for row in rows if row["unlocked"]),
+                "items": rows,
+            }
+        )
+    return {
+        "credits": player.credits,
+        "level": player.level,
+        "fclass": {"code": player.fclass.code, "title": player.fclass.title},
+        "sections": sections,
+    }
 
 
 def stats_payload(base: Stats, bonus: Stats) -> list[dict]:

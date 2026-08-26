@@ -32,6 +32,11 @@ async def buy(db: Database, player: Player, code: str) -> OwnedItem:
     item: Item | None = get_item(code)
     if item is None:
         raise InventoryError("Такого товара в лавке нет.")
+    if player.level < item.level_required:
+        raise InventoryError(
+            f"«{item.title}» открывается на {item.level_required} уровне, "
+            f"а у тебя {player.level}."
+        )
     if not player.can_afford(item.price):
         raise InventoryError(
             f"Не хватает кредитов: «{item.title}» стоит {item.price} 💰, "
