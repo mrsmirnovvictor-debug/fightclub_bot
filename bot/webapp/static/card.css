@@ -124,6 +124,7 @@ body {
   cursor: pointer;
   user-select: none;
 }
+.slot img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
 .slot.empty {
   opacity: 0.3;
   font-size: 18px;
@@ -170,6 +171,94 @@ body {
 .rows .value.good { color: var(--hp-green); }
 .rule { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
 
+/* ---------- инвентарь ---------- */
+
+.bag { margin-top: 16px; }
+.bag-head {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.bag-count { color: var(--muted); font-weight: 600; }
+.bag-empty { color: var(--muted); font-size: 13px; margin: 0; }
+.bag-list { display: grid; gap: 10px; }
+
+.thing {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.thing-pic {
+  width: 74px;
+  height: 74px;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  overflow: hidden;
+}
+.thing-pic img { width: 100%; height: 100%; object-fit: cover; }
+.thing-body { min-width: 0; }
+.thing-title { font-weight: 700; }
+.thing-kind { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+.thing-wear { font-size: 12.5px; margin-top: 4px; }
+.thing-wear.worn { color: var(--hp-yellow); }
+.thing-wear.dying { color: var(--hp-red); font-weight: 700; }
+
+.thing-req, .thing-gain {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.thing-req li { color: var(--muted); }
+.thing-req li.bad { color: var(--hp-red); font-weight: 700; }
+.thing-gain li { color: var(--hp-green); font-weight: 600; }
+.thing-label { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+
+.thing-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.btn {
+  flex: 1 1 auto;
+  min-width: 120px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 700;
+  font-size: 13.5px;
+  color: #fff;
+  background: var(--accent);
+  cursor: pointer;
+}
+.btn.secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.btn:active { transform: scale(0.98); }
+.btn[disabled] {
+  background: var(--hp-track);
+  color: var(--muted);
+  border-color: transparent;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .foot {
   margin-top: 12px;
   text-align: center;
@@ -187,6 +276,7 @@ body {
       "note  panel"
       "doll  panel"
       "city  panel"
+      "bag   bag"
       "foot  foot";
     gap: 0 20px;
     align-items: start;
@@ -197,5 +287,7 @@ body {
   .doll { grid-area: doll; }
   .city { grid-area: city; }
   .panel { grid-area: panel; }
+  .bag { grid-area: bag; }
+  .bag-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .foot { grid-area: foot; }
 }

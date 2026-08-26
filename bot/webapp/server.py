@@ -9,6 +9,8 @@ from aiohttp import web
 
 from bot.config import Config
 from bot.database import Database
+from bot.game.equipment import Slot
+from bot.inventory_service import InventoryError, equip, repair_item, unequip
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.webapp.card import build_card
 
@@ -20,6 +22,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 BOT_KEY: web.AppKey = web.AppKey("bot")
 DB_KEY: web.AppKey[Database] = web.AppKey("db", Database)
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
+# Сервис дуэлей нужен, чтобы не давать переодеваться посреди боя
+DUELS_KEY: web.AppKey = web.AppKey("duels")
 # Кто может смотреть чужие карточки — все: клуб маленький, прятать нечего
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
 
@@ -71,6 +75,104 @@ async def api_card(request: web.Request) -> web.Response:
     return web.json_response(build_card(player, config.bot_token, viewer.user_id))
 
 
+async def _own_player(request: web.Request):
+    """Действия с вещами доступны только хозяину карточки и только вне боя."""
+    viewer = await _viewer(request)
+    player = await request.app[DB_KEY].get_player(viewer.user_id)
+    if player is None:
+        raise web.HTTPNotFound(text="У тебя ещё нет персонажа")
+    duels = request.app.get(DUELS_KEY)
+    if duels is not None and duels.duel_of_user(player.user_id) is not None:
+        raise InventoryError("Ты на ринге — переодеваться поздно.")
+    return player
+
+
+async def _payload(request: web.Request) -> dict:
+    try:
+        data = await request.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _card_response(request: web.Request, player) -> web.Response:
+    config = request.app[CONFIG_KEY]
+    return web.json_response(build_card(player, config.bot_token, player.user_id))
+
+
+def _int_field(data: dict, name: str) -> int:
+    try:
+        return int(data.get(name))
+    except (TypeError, ValueError) as error:
+        raise web.HTTPBadRequest(text=f"нет поля {name}") from error
+
+
+def _slot_field(data: dict, name: str) -> Slot | None:
+    raw = data.get(name)
+    if not raw:
+        return None
+    try:
+        return Slot(str(raw))
+    except ValueError as error:
+        raise web.HTTPBadRequest(text="неизвестный слот") from error
+
+
+async def api_equip(request: web.Request) -> web.Response:
+    """Надеть вещь из инвентаря."""
+    data = await _payload(request)
+    try:
+        player = await _own_player(request)
+        await equip(
+            request.app[DB_KEY],
+            player,
+            _int_field(data, "item_id"),
+            _slot_field(data, "slot"),
+        )
+    except InventoryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    return _card_response(request, player)
+
+
+async def api_unequip(request: web.Request) -> web.Response:
+    """Снять вещь со слота — она вернётся в инвентарь."""
+    data = await _payload(request)
+    slot = _slot_field(data, "slot")
+    if slot is None:
+        raise web.HTTPBadRequest(text="нет поля slot")
+    try:
+        player = await _own_player(request)
+        await unequip(request.app[DB_KEY], player, slot)
+    except InventoryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    return _card_response(request, player)
+
+
+async def api_repair(request: web.Request) -> web.Response:
+    """Починить вещь за кредиты."""
+    data = await _payload(request)
+    points = None if data.get("points") is None else _int_field(data, "points")
+    try:
+        player = await _own_player(request)
+        result = await repair_item(
+            request.app[DB_KEY], player, _int_field(data, "item_id"), points
+        )
+    except InventoryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "repair": {
+                "points": result.points,
+                "price": result.price,
+                "degraded": result.degraded,
+                "destroyed": result.destroyed,
+            },
+        }
+    )
+
+
 async def avatar(request: web.Request) -> web.StreamResponse:
     """Отдать фото бойца. Ссылка подписана и живёт час."""
     config = request.app[CONFIG_KEY]
@@ -104,15 +206,20 @@ async def healthz(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
-def create_app(bot, db: Database, config: Config) -> web.Application:
+def create_app(bot, db: Database, config: Config, duels=None) -> web.Application:
     app = web.Application()
     app[BOT_KEY] = bot
     app[DB_KEY] = db
     app[CONFIG_KEY] = config
+    if duels is not None:
+        app[DUELS_KEY] = duels
     app.add_routes(
         [
             web.get("/", index),
             web.get("/api/card", api_card),
+            web.post("/api/equip", api_equip),
+            web.post("/api/unequip", api_unequip),
+            web.post("/api/repair", api_repair),
             web.get("/avatar/{user_id}", avatar),
             web.get("/healthz", healthz),
             web.static("/static", STATIC_DIR),
@@ -121,9 +228,9 @@ def create_app(bot, db: Database, config: Config) -> web.Application:
     return app
 
 
-async def run_webapp(bot, db: Database, config: Config) -> web.AppRunner:
+async def run_webapp(bot, db: Database, config: Config, duels=None) -> web.AppRunner:
     """Поднять сервер мини-аппа рядом с ботом. Вернуть runner для остановки."""
-    runner = web.AppRunner(create_app(bot, db, config))
+    runner = web.AppRunner(create_app(bot, db, config, duels))
     await runner.setup()
     site = web.TCPSite(runner, config.webapp_host, config.webapp_port)
     await site.start()

@@ -15,6 +15,13 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES
 from bot.game.combat import MAX_MISSED_TURNS, MAX_ROUNDS
+from bot.game.equipment import (
+    MAX_WEAR,
+    REPAIR_DEGRADE_CHANCE,
+    REPAIR_PRICE_PER_POINT,
+    WEAR_CHANCE_LOSS,
+    WEAR_CHANCE_WIN,
+)
 from bot.game.health import FULL_REGEN_SECONDS, HURT_THRESHOLD, READY_THRESHOLD
 from bot.game.economy import (
     LEVEL_CREDITS,
@@ -42,6 +49,7 @@ def help_text(turn_timeout: int = 30) -> str:
         "/profile — то же самое текстом\n"
         "/upgrade — раскидать свободные очки после апа или уровня\n"
         "/shop — кредиты и на что их тратить\n"
+        "/buy — витрина клуба: оружие, броня, обувь\n"
         "/respec — снести характеристики и раздать заново\n"
         "/class — сменить класс бойца\n"
         "/rename — новое прозвище, /avatar — новая аватарка\n"
@@ -84,6 +92,18 @@ def help_text(turn_timeout: int = 30) -> str:
         "В красной и жёлтой зоне драться нельзя. В зелёной — можно, "
         "даже если здоровье неполное: это уже твой риск.\n"
         "Сколько осталось ждать, видно в /profile.\n\n"
+        "<b>Экипировка и инвентарь</b>\n"
+        "Вещи покупают за кредиты в /buy — они падают в инвентарь. "
+        "Инвентарь живёт в карточке (/card): там же вещь надевают, "
+        "снимают кликом по слоту на бойце и чинят.\n"
+        "Надеть можно, только дотянув до требований вещи по уровню и "
+        "характеристикам. Считаются свои характеристики, без экипировки.\n"
+        f"У каждой вещи запас прочности — {MAX_WEAR} пунктов износа. После поражения "
+        f"надетая вещь с шансом {WEAR_CHANCE_LOSS:.0%} снашивается на пункт, после победы — {WEAR_CHANCE_WIN:.0%}.\n"
+        f"Починка стоит {REPAIR_PRICE_PER_POINT} 💰 за пункт, но каждая починка "
+        f"с шансом {REPAIR_DEGRADE_CHANCE:.0%} отнимает у вещи пункт запаса — чинить "
+        "выгоднее сразу целиком, а не по одному.\n"
+        "Износ дошёл до запаса — вещь рассыпается в труху безвозвратно.\n\n"
         "<b>Что даёт бой</b>\n"
         "Опыт получает только победитель: база плюс доля от нанесённого урона, "
         "умноженная на разницу уровней. Побить старшего выгодно, "

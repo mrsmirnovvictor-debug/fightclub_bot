@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from bot.game.classes import FighterClass, Stats, get_class
-from bot.game.equipment import Equipment
+from bot.game.equipment import (
+    Equipment,
+    Item,
+    OwnedItem,
+    Slot,
+    can_equip,
+    missing_requirements,
+)
 from bot.game.economy import (
     LEVEL_CREDITS,
     MAX_LEVEL,
@@ -70,10 +77,11 @@ class Player:
     wins: int = 0
     losses: int = 0
     draws: int = 0
-    equipment_json: str | None = None  # что надето: слот → код предмета
     city: str = DEFAULT_CITY
     birthplace: str | None = None  # группа, где боец начал драться
     created_at: str | None = None  # когда персонаж появился на свет
+    # Инвентарь: и надетое, и лежащее в рюкзаке. Подгружается из базы.
+    gear: list[OwnedItem] = field(default_factory=list)
 
     @property
     def base_stats(self) -> Stats:
@@ -87,11 +95,32 @@ class Player:
 
     @property
     def equipment(self) -> Equipment:
-        return Equipment.from_json(self.equipment_json)
+        return Equipment.from_owned(self.gear)
 
-    @equipment.setter
-    def equipment(self, value: Equipment) -> None:
-        self.equipment_json = value.to_json()
+    @property
+    def backpack(self) -> list[OwnedItem]:
+        """Вещи, которые лежат в инвентаре и ждут своего часа."""
+        return [owned for owned in self.gear if not owned.is_equipped]
+
+    @property
+    def equipped(self) -> list[OwnedItem]:
+        return [owned for owned in self.gear if owned.is_equipped]
+
+    def find_gear(self, item_id: int) -> OwnedItem | None:
+        return next((owned for owned in self.gear if owned.id == item_id), None)
+
+    def gear_in_slot(self, slot: Slot) -> OwnedItem | None:
+        return next((owned for owned in self.gear if owned.slot is slot), None)
+
+    def can_equip(self, item: Item) -> bool:
+        """Требования считаются по своим характеристикам, без экипировки."""
+        return can_equip(item, self.level, self.base_stats)
+
+    def missing_for(self, item: Item) -> list[str]:
+        return missing_requirements(item, self.level, self.base_stats)
+
+    def drop_gear(self, owned: OwnedItem) -> None:
+        self.gear = [item for item in self.gear if item.id != owned.id]
 
     @property
     def stats(self) -> Stats:

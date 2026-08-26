@@ -47,6 +47,7 @@ from bot.game.narrator import (
     rewards_report,
     round_report,
 )
+from bot.inventory_service import wear_after_fight
 from bot.keyboards import challenge_keyboard, fight_keyboard, standoff_keyboard
 from bot.models import Player, ProgressReport
 
@@ -676,6 +677,7 @@ class DuelService:
         }
 
         rows: list[tuple[Player, ProgressReport]] = []
+        broken: list[tuple[Player, list]] = []
         for user_id, player in players.items():
             fighter = session.fighters[user_id]
             opponent = session.opponent_of(user_id)
@@ -705,6 +707,11 @@ class DuelService:
             if player.birthplace is None and session.chat_title:
                 # Место рождения — группа, где боец впервые вышел на ринг
                 player.birthplace = session.chat_title
+            # Вещи снашиваются до того, как фиксируем здоровье: развалившаяся
+            # экипировка уменьшает запас, и HP надо обрезать по новому потолку.
+            ruined = await wear_after_fight(self.db, player, won, self.rng)
+            if ruined:
+                broken.append((player, ruined))
             player.set_hp(fighter.hp)
             report = player.grant_exp(exp)
             report.credits += credits
@@ -714,7 +721,7 @@ class DuelService:
             await self.db.save_player(player)
             rows.append((player, report))
 
-        return rewards_report(rows, share, previous_fights)
+        return rewards_report(rows, share, previous_fights, broken)
 
     def _cancel_timer(self, session: DuelSession) -> None:
         """Снять таймер раунда.

@@ -42,15 +42,32 @@ function popup(title, message) {
   }
 }
 
-function renderSlots(container, slots) {
+function slotPicture(item, placeholder) {
+  if (item && item.image) {
+    const img = document.createElement("img");
+    img.src = item.image;
+    img.alt = item.title;
+    img.addEventListener("error", () => {
+      img.replaceWith(document.createTextNode(item.icon));
+    });
+    return img;
+  }
+  return document.createTextNode(item ? item.icon : placeholder);
+}
+
+function renderSlots(container, slots, own) {
   container.textContent = "";
   slots.forEach((slot) => {
     const box = document.createElement("div");
     box.className = "slot" + (slot.item ? "" : " empty");
-    box.textContent = slot.item ? slot.item.icon : slot.placeholder;
+    box.title = slot.title;
+    box.appendChild(slotPicture(slot.item, slot.placeholder));
     box.addEventListener("click", () => {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-      if (slot.item) {
+      if (slot.item && own) {
+        // Клик по надетой вещи возвращает её в инвентарь
+        act("api/unequip", { slot: slot.slot });
+      } else if (slot.item) {
         const bonus = slot.item.bonus ? "\n" + slot.item.bonus : "";
         popup(slot.item.title, slot.title + bonus);
       } else {
@@ -59,6 +76,203 @@ function renderSlots(container, slots) {
     });
     container.appendChild(box);
   });
+}
+
+// ---------- инвентарь ----------
+
+function requirementList(item) {
+  const list = document.createElement("ul");
+  list.className = "thing-req";
+  item.requirements.forEach((need) => {
+    const li = document.createElement("li");
+    if (!need.ok) li.className = "bad";
+    const label = need.emoji ? need.emoji + " " + need.title : need.title;
+    li.textContent = label + ": " + need.need + " (есть " + need.have + ")";
+    list.appendChild(li);
+  });
+  return list;
+}
+
+function bonusList(item) {
+  const list = document.createElement("ul");
+  list.className = "thing-gain";
+  item.bonuses.forEach((gain) => {
+    const li = document.createElement("li");
+    li.textContent = gain.emoji + " " + gain.title + " +" + gain.value;
+    list.appendChild(li);
+  });
+  return list;
+}
+
+function button(text, options) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn" + (options && options.secondary ? " secondary" : "");
+  btn.textContent = text;
+  if (options && options.disabled) {
+    btn.disabled = true;
+    if (options.hint) {
+      btn.addEventListener("click", () => popup("Нельзя надеть", options.hint));
+    }
+  } else if (options && options.onClick) {
+    btn.addEventListener("click", options.onClick);
+  }
+  return btn;
+}
+
+function thingCard(item, credits) {
+  const box = document.createElement("div");
+  box.className = "thing";
+
+  const pic = document.createElement("div");
+  pic.className = "thing-pic";
+  pic.appendChild(slotPicture(item, item.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "thing-body";
+
+  const title = document.createElement("div");
+  title.className = "thing-title";
+  title.textContent = item.title;
+  body.appendChild(title);
+
+  const kind = document.createElement("div");
+  kind.className = "thing-kind";
+  kind.textContent = item.slot_title;
+  body.appendChild(kind);
+
+  const wear = document.createElement("div");
+  const left = item.max_wear - item.wear;
+  wear.className = "thing-wear" + (left <= 1 ? " dying" : item.wear ? " worn" : "");
+  wear.textContent = "🔧 Износ: " + item.wear_text;
+  if (left <= 1) wear.textContent += " — ещё один бой, и рассыплется";
+  body.appendChild(wear);
+
+  const reqLabel = document.createElement("div");
+  reqLabel.className = "thing-label";
+  reqLabel.textContent = "Требования";
+  body.append(reqLabel, requirementList(item));
+
+  if (item.bonuses.length) {
+    const gainLabel = document.createElement("div");
+    gainLabel.className = "thing-label";
+    gainLabel.textContent = "Даёт надетой";
+    body.append(gainLabel, bonusList(item));
+  }
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  item.slots.forEach((slot, index) => {
+    const text = index === 0 ? "Надеть" : "Во вторую руку";
+    buttons.appendChild(
+      button(text, {
+        secondary: index > 0,
+        disabled: !item.can_equip,
+        hint: "Нужно подрасти: " + requirementText(item),
+        onClick: () => act("api/equip", { item_id: item.id, slot: slot.slot }),
+      })
+    );
+  });
+
+  if (item.wear > 0) {
+    const affordable = Math.min(item.wear, credits);
+    const full = item.repair_price <= credits;
+    const label = full
+      ? "Чинить · " + item.repair_price + " 💰"
+      : affordable > 0
+        ? "Чинить на " + affordable + " 💰"
+        : "Чинить · " + item.repair_price + " 💰";
+    buttons.appendChild(
+      button(label, {
+        secondary: true,
+        disabled: affordable <= 0,
+        onClick: () => repair(item, full ? null : affordable),
+      })
+    );
+  }
+  body.appendChild(buttons);
+
+  box.appendChild(body);
+  return box;
+}
+
+function requirementText(item) {
+  return item.requirements
+    .filter((need) => !need.ok)
+    .map((need) => need.title.toLowerCase() + " " + need.need)
+    .join(", ");
+}
+
+function renderBag(card) {
+  const bag = el("bag");
+  if (!card.is_self) {
+    bag.classList.add("hidden");
+    return;
+  }
+  bag.classList.remove("hidden");
+  el("bag-count").textContent = card.inventory.length
+    ? "· " + card.inventory.length
+    : "";
+  el("bag-empty").classList.toggle("hidden", card.inventory.length > 0);
+
+  const list = el("bag-list");
+  list.textContent = "";
+  card.inventory.forEach((item) => {
+    list.appendChild(thingCard(item, card.record.credits));
+  });
+}
+
+// ---------- действия ----------
+
+let busy = false;
+
+async function post(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Telegram-Init-Data": (tg && tg.initData) || "",
+    },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Судья не разрешил.");
+  return data;
+}
+
+async function act(url, body) {
+  if (busy) return;
+  busy = true;
+  try {
+    render(await post(url, body));
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
+async function repair(item, points) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/repair", { item_id: item.id, points: points });
+    render(data.card);
+    const done = data.repair;
+    let text = "Снято износа: " + done.points + ", списано " + done.price + " 💰.";
+    if (done.destroyed) {
+      text = "Чинить было уже нечего: «" + item.title + "» рассыпалась в труху.";
+    } else if (done.degraded) {
+      text += "\nЗапас прочности просел на пункт — вещь стареет.";
+    }
+    popup(item.title, text);
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
 }
 
 function renderAvatar(card) {
@@ -136,8 +350,9 @@ function render(card) {
 
   startHealthTicker(card.hp);
   renderAvatar(card);
-  renderSlots(el("slots-left"), card.slots.left);
-  renderSlots(el("slots-right"), card.slots.right);
+  renderSlots(el("slots-left"), card.slots.left, card.is_self);
+  renderSlots(el("slots-right"), card.slots.right, card.is_self);
+  renderBag(card);
   el("city").textContent = card.city;
 
   const stats = el("stats");

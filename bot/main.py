@@ -31,6 +31,7 @@ PRIVATE_COMMANDS = [
     BotCommand(command="profile", description="Профиль текстом"),
     BotCommand(command="upgrade", description="Раскидать свободные очки"),
     BotCommand(command="shop", description="Кредиты и траты"),
+    BotCommand(command="buy", description="Витрина: оружие и броня"),
     BotCommand(command="respec", description="Пересобрать характеристики"),
     BotCommand(command="class", description="Сменить класс"),
     BotCommand(command="rename", description="Сменить прозвище"),
@@ -85,7 +86,9 @@ async def run(config: Config | None = None) -> None:
         "включена" if config.webapp_enabled else "выключена",
     )
 
-    runner = await run_webapp(bot, db, config) if config.webapp_enabled else None
+    runner = (
+        await run_webapp(bot, db, config, duels) if config.webapp_enabled else None
+    )
     try:
         await dispatcher.start_polling(
             bot, allowed_updates=dispatcher.resolve_used_update_types()

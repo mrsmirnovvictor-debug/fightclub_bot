@@ -10,7 +10,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
-from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS, Equipment
+from bot.game.equipment import CATALOGUE, LEFT_SLOTS, RIGHT_SLOTS, OwnedItem, Slot
 from bot.game.health import now_ts
 from bot.models import Player
 from bot.webapp.auth import (
@@ -153,9 +153,10 @@ def test_card_slots_follow_the_layout():
 def test_equipment_shows_up_in_slots_stats_and_hp():
     bare = make_player()
     dressed = make_player()
-    dressed.equipment = Equipment.from_codes(
-        {"weapon": "knuckles", "jacket": "leather_jacket"}
-    )
+    dressed.gear = [
+        OwnedItem(item=CATALOGUE["knuckles"], id=1, slot=Slot.WEAPON),
+        OwnedItem(item=CATALOGUE["leather_jacket"], id=2, slot=Slot.JACKET),
+    ]
 
     before = build_card(bare, TOKEN)
     after = build_card(dressed, TOKEN)

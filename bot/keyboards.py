@@ -16,6 +16,7 @@ from bot.game.classes import (
     block_combos,
     block_title,
 )
+from bot.game.equipment import SHOWCASE
 
 AVATARS: tuple[str, ...] = (
     "🥊", "🥷", "🐺", "🦍", "👹", "🤖",
@@ -34,6 +35,10 @@ class AvatarCB(CallbackData, prefix="ava"):
 class StatCB(CallbackData, prefix="stat"):
     action: str  # add | reset | done
     stat: str = ""
+
+
+class BuyCB(CallbackData, prefix="buy"):
+    code: str
 
 
 class ChallengeCB(CallbackData, prefix="chl"):
@@ -98,6 +103,20 @@ def stats_keyboard(free_points: int, allow_reset: bool = True) -> InlineKeyboard
         )
     if bottom:
         builder.row(*bottom)
+    return builder.as_markup()
+
+
+def showcase_keyboard(credits: int) -> InlineKeyboardMarkup:
+    """Витрина лавки: что по карману — то и кнопка, остальное с замком."""
+    builder = InlineKeyboardBuilder()
+    for item in SHOWCASE:
+        affordable = credits >= item.price
+        builder.button(
+            text=f"{item.emoji} {item.title} — {item.price} 💰"
+            + ("" if affordable else " 🔒"),
+            callback_data=BuyCB(code=item.code),
+        )
+    builder.adjust(1)
     return builder.as_markup()
 
 

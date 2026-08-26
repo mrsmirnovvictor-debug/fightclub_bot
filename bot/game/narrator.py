@@ -366,10 +366,23 @@ def recovery_line(players: list["Player"]) -> str:
     return "🩹 Отлежаться: " + ", ".join(waiting)
 
 
+def broken_gear_report(broken: list[tuple["Player", list]]) -> list[str]:
+    """Что развалилось на бойцах за этот бой."""
+    lines = []
+    for player, items in broken:
+        for owned in items:
+            lines.append(
+                f"💔 <b>{esc(player.nickname)}</b>: «{owned.title}» доносили "
+                "до дыр — вещь рассыпалась в труху."
+            )
+    return lines
+
+
 def rewards_report(
     rows: list[tuple["Player", "ProgressReport"]],
     share: float = 1.0,
     previous_fights: int = 0,
+    broken: list[tuple["Player", list]] | None = None,
 ) -> str:
     """Что каждый унёс с ринга: опыт, кредиты, рейтинг, апы и уровни."""
     lines = ["📊 <b>Итоги</b>"]
@@ -414,6 +427,10 @@ def rewards_report(
             f"♻️ Бой номер {previous_fights + 1} с этим соперником за сутки — "
             f"награда урезана до {share:.0%}."
         )
+    ruined = broken_gear_report(broken or [])
+    if ruined:
+        lines.append("")
+        lines.extend(ruined)
     if events:
         lines.append("")
         lines.extend(events)

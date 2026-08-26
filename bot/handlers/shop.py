@@ -12,9 +12,24 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.database import Database
 from bot.game.classes import get_class
 from bot.game.economy import PRICE_APPEARANCE, PRICE_CLASS_CHANGE, PRICE_RESPEC
+from bot.game.equipment import (
+    MAX_WEAR,
+    REPAIR_PRICE_PER_POINT,
+    SHOWCASE,
+    describe_requirements,
+    get_item,
+)
 from bot.game.narrator import esc
 from bot.handlers.common import send_profile
-from bot.keyboards import AvatarCB, ClassCB, avatars_keyboard, classes_keyboard
+from bot.inventory_service import InventoryError, buy
+from bot.keyboards import (
+    AvatarCB,
+    BuyCB,
+    ClassCB,
+    avatars_keyboard,
+    classes_keyboard,
+    showcase_keyboard,
+)
 from bot.models import Player
 
 router = Router(name="shop")
@@ -42,9 +57,12 @@ def price_list(player: Player) -> str:
         "и раздать очки заново\n"
         f"<b>{PRICE_CLASS_CHANGE}</b> 💰 — /class, сменить класс бойца\n"
         f"<b>{PRICE_APPEARANCE}</b> 💰 — /rename &lt;прозвище&gt;, новое имя на ринге\n"
-        f"<b>{PRICE_APPEARANCE}</b> 💰 — /avatar, новая аватарка\n\n"
-        "Кредиты капают за победы, апы и уровни. "
-        "Экипировка появится в следующих обновлениях."
+        f"<b>{PRICE_APPEARANCE}</b> 💰 — /avatar, новая аватарка\n"
+        "🛒 /buy — витрина: оружие, броня и всё, что надевается\n\n"
+        "Купленное лежит в инвентаре — открой карточку (/card) и надень.\n"
+        f"Вещи снашиваются в боях (запас — {MAX_WEAR} пунктов износа) и чинятся "
+        f"там же: {REPAIR_PRICE_PER_POINT} 💰 за пункт.\n\n"
+        "Кредиты капают за победы, апы и уровни."
     )
 
 
@@ -68,6 +86,70 @@ async def cmd_shop(message: Message, db: Database) -> None:
     player = await _require_player(message, db)
     if player:
         await message.answer(price_list(player))
+
+
+# ---------- витрина ----------
+
+
+def showcase_text(player: Player) -> str:
+    lines = [
+        "🛒 <b>Витрина клуба</b>",
+        "",
+        f"На счету: <b>{player.credits}</b> 💰",
+        "",
+    ]
+    for item in SHOWCASE:
+        bonus = item.describe_bonus()
+        lines.append(
+            f"{item.emoji} <b>{esc(item.title)}</b> — {item.price} 💰 "
+            f"· {item.slot.title}"
+        )
+        lines.append(
+            f"    нужно: {describe_requirements(item)}"
+            + (f" · даёт: {bonus}" if bonus else "")
+        )
+    lines += [
+        "",
+        "Купленное падает в инвентарь — надеть можно в карточке (/card), "
+        "хоть сразу, хоть когда дорастёшь до требований.",
+    ]
+    return "\n".join(lines)
+
+
+@router.message(Command("buy", "items"))
+async def cmd_buy(message: Message, db: Database) -> None:
+    player = await _require_player(message, db)
+    if player is None:
+        return
+    await message.answer(
+        showcase_text(player), reply_markup=showcase_keyboard(player.credits)
+    )
+
+
+@router.callback_query(BuyCB.filter())
+async def on_buy(callback: CallbackQuery, callback_data: BuyCB, db: Database) -> None:
+    player = await db.get_player(callback.from_user.id)
+    if player is None:
+        await callback.answer("Сначала создай бойца: /start", show_alert=True)
+        return
+
+    item = get_item(callback_data.code)
+    try:
+        await buy(db, player, callback_data.code)
+    except InventoryError as error:
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    ready = (
+        "Надевай в карточке: /card"
+        if player.can_equip(item)
+        else f"Пока не наденешь: нужно {describe_requirements(item)}"
+    )
+    await callback.message.answer(
+        f"🛍 Куплено: {item.emoji} <b>{esc(item.title)}</b> за {item.price} 💰.\n"
+        f"Осталось: <b>{player.credits}</b> 💰. {ready}"
+    )
+    await callback.answer("В рюкзак!")
 
 
 # ---------- респек ----------

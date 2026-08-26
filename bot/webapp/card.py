@@ -7,7 +7,14 @@ from datetime import datetime
 
 from bot.game.classes import ALL_STATS, Stats
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
-from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS, Equipment, Slot
+from bot.game.equipment import (
+    LEFT_SLOTS,
+    RIGHT_SLOTS,
+    Equipment,
+    Item,
+    OwnedItem,
+    Slot,
+)
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
 from bot.game.stats import derive
 from bot.models import Player
@@ -36,20 +43,90 @@ def format_birthday(created_at: str | None) -> str:
 
 
 def slot_payload(equipment: Equipment, slot: Slot) -> dict:
-    item = equipment.get(slot)
+    owned = equipment.get(slot)
     return {
         "slot": slot.value,
         "title": slot.title,
         "placeholder": slot.emoji,
         "item": None
-        if item is None
+        if owned is None
         else {
-            "code": item.code,
-            "title": item.title,
-            "icon": item.emoji,
-            "bonus": item.describe_bonus(),
+            "id": owned.id,
+            "code": owned.code,
+            "title": owned.title,
+            "icon": owned.emoji,
+            "image": owned.image,
+            "bonus": owned.describe_bonus(),
+            "wear": owned.wear,
+            "max_wear": owned.max_wear,
         },
     }
+
+
+def requirements_payload(player: Player, owned: OwnedItem) -> list[dict]:
+    """Что нужно, чтобы надеть вещь, и что из этого у бойца уже есть."""
+    missing = set(player.missing_for(owned.item))
+    rows = [
+        {
+            "code": "level",
+            "title": "Уровень",
+            "need": owned.item.level_required,
+            "have": player.level,
+            "ok": "level" not in missing,
+        }
+    ]
+    for stat in ALL_STATS:
+        need = owned.item.requires.get(stat)
+        if need:
+            rows.append(
+                {
+                    "code": stat.value,
+                    "title": stat.title.capitalize(),
+                    "emoji": stat.emoji,
+                    "need": need,
+                    "have": player.base_stats.get(stat),
+                    "ok": stat.value not in missing,
+                }
+            )
+    return rows
+
+
+def item_payload(player: Player, owned: OwnedItem) -> dict:
+    """Строка инвентаря: картинка, тип, износ, требования, свойства, кнопки."""
+    item = owned.item
+    return {
+        "id": owned.id,
+        "code": owned.code,
+        "title": owned.title,
+        "icon": owned.emoji,
+        "image": owned.image,
+        "kind": item.kind.value,
+        "slot": item.slot.value,
+        "slot_title": item.slot.title.capitalize(),
+        "slots": [
+            {"slot": slot.value, "title": slot.title} for slot in item.slots
+        ],
+        "wear": owned.wear,
+        "max_wear": owned.max_wear,
+        "wear_text": owned.describe_wear(),
+        "repair_price": owned.repair_price,
+        "requirements": requirements_payload(player, owned),
+        "can_equip": player.can_equip(item),
+        "bonus": item.describe_bonus(),
+        "bonuses": bonuses_payload(item),
+    }
+
+
+def bonuses_payload(item: Item) -> list[dict]:
+    """Что вещь даёт, когда надета."""
+    rows = [
+        {"emoji": stat.emoji, "title": stat.title.capitalize(), "value": value}
+        for stat, value in ((stat, item.bonus.get(stat)) for stat in ALL_STATS)
+        if value
+    ]
+    if item.hp:
+        rows.append({"emoji": "❤️", "title": "Здоровье", "value": item.hp})
+    return rows
 
 
 def stats_payload(base: Stats, bonus: Stats) -> list[dict]:
@@ -120,6 +197,10 @@ def build_card(
             "left": [slot_payload(equipment, slot) for slot in LEFT_SLOTS],
             "right": [slot_payload(equipment, slot) for slot in RIGHT_SLOTS],
         },
+        # Рюкзак показываем только хозяину карточки
+        "inventory": [item_payload(player, owned) for owned in player.backpack]
+        if viewer_id == player.user_id
+        else [],
         "city": player.city,
         "progress": {
             "exp": player.exp,

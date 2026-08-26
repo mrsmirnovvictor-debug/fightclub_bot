@@ -10,6 +10,7 @@ from typing import Any, Iterable
 import aiosqlite
 
 from bot.game.economy import RATING_START
+from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
 from bot.game.world import DEFAULT_CITY
 from bot.models import Arena, Player
 
@@ -35,7 +36,6 @@ CREATE TABLE IF NOT EXISTS players (
     rating         INTEGER NOT NULL DEFAULT 1000,
     hp             INTEGER,
     hp_at          INTEGER NOT NULL DEFAULT 0,
-    equipment      TEXT,
     city           TEXT    NOT NULL DEFAULT 'Vegas City',
     birthplace     TEXT,
     wins           INTEGER NOT NULL DEFAULT 0,
@@ -43,6 +43,18 @@ CREATE TABLE IF NOT EXISTS players (
     draws          INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS inventory (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id  INTEGER NOT NULL,
+    code     TEXT    NOT NULL,
+    wear     INTEGER NOT NULL DEFAULT 0,
+    max_wear INTEGER NOT NULL DEFAULT 20,
+    slot     TEXT,
+    bought_at TEXT   NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_user ON inventory(user_id);
 
 CREATE TABLE IF NOT EXISTS arenas (
     chat_id   INTEGER PRIMARY KEY,
@@ -69,7 +81,7 @@ PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, strength, agility, "
     "intuition, endurance, free_points, level, exp, total_exp, micro_ups, "
     "credits, rating, hp, hp_at, wins, losses, draws, "
-    "equipment AS equipment_json, city, birthplace, created_at"
+    "city, birthplace, created_at"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -80,7 +92,6 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("rating", f"INTEGER NOT NULL DEFAULT {RATING_START}"),
     ("hp", "INTEGER"),  # NULL — боец здоров
     ("hp_at", "INTEGER NOT NULL DEFAULT 0"),
-    ("equipment", "TEXT"),
     ("city", f"TEXT NOT NULL DEFAULT '{DEFAULT_CITY}'"),
     ("birthplace", "TEXT"),
 )
@@ -140,7 +151,11 @@ class Database:
             f"SELECT {PLAYER_COLUMNS} FROM players WHERE user_id = ?", (user_id,)
         ) as cursor:
             row = await cursor.fetchone()
-        return _to_player(row) if row else None
+        if not row:
+            return None
+        player = _to_player(row)
+        player.gear = await self.list_gear(player.user_id)
+        return player
 
     async def save_player(self, player: Player) -> None:
         if not player.created_at:
@@ -152,8 +167,8 @@ class Database:
                 user_id, nickname, class_code, avatar, avatar_file_id, strength,
                 agility, intuition, endurance, free_points, level, exp,
                 total_exp, micro_ups, credits, rating, hp, hp_at,
-                wins, losses, draws, equipment, city, birthplace, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                wins, losses, draws, city, birthplace, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -172,7 +187,6 @@ class Database:
                 rating         = excluded.rating,
                 hp             = excluded.hp,
                 hp_at          = excluded.hp_at,
-                equipment      = excluded.equipment,
                 city           = excluded.city,
                 birthplace     = excluded.birthplace,
                 wins           = excluded.wins,
@@ -201,7 +215,6 @@ class Database:
                 player.wins,
                 player.losses,
                 player.draws,
-                player.equipment_json,
                 player.city,
                 player.birthplace,
                 player.created_at,
@@ -211,6 +224,7 @@ class Database:
 
     async def delete_player(self, user_id: int) -> None:
         await self.conn.execute("DELETE FROM players WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM inventory WHERE user_id = ?", (user_id,))
         await self.conn.commit()
 
     async def top_players(self, limit: int = 10) -> list[Player]:
@@ -223,7 +237,49 @@ class Database:
             (limit,),
         ) as cursor:
             rows = await cursor.fetchall()
-        return [_to_player(row) for row in rows]
+        players = [_to_player(row) for row in rows]
+        for player in players:
+            player.gear = await self.list_gear(player.user_id)
+        return players
+
+    # ---------- инвентарь ----------
+
+    async def list_gear(self, user_id: int) -> list[OwnedItem]:
+        """Всё, что у бойца есть: и надетое, и лежащее в рюкзаке."""
+        async with self.conn.execute(
+            """
+            SELECT id, code, wear, max_wear, slot FROM inventory
+            WHERE user_id = ? ORDER BY id
+            """,
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [owned for owned in map(_to_owned_item, rows) if owned is not None]
+
+    async def add_gear(
+        self, user_id: int, code: str, max_wear: int = MAX_WEAR
+    ) -> OwnedItem:
+        """Положить купленную вещь в инвентарь."""
+        item = get_item(code)
+        if item is None:
+            raise ValueError(f"Неизвестный предмет: {code}")
+        cursor = await self.conn.execute(
+            "INSERT INTO inventory (user_id, code, max_wear) VALUES (?,?,?)",
+            (user_id, code, max_wear),
+        )
+        await self.conn.commit()
+        return OwnedItem(item=item, id=int(cursor.lastrowid or 0), max_wear=max_wear)
+
+    async def save_gear(self, owned: OwnedItem) -> None:
+        await self.conn.execute(
+            "UPDATE inventory SET wear = ?, max_wear = ?, slot = ? WHERE id = ?",
+            (owned.wear, owned.max_wear, owned.slot.value if owned.slot else None, owned.id),
+        )
+        await self.conn.commit()
+
+    async def delete_gear(self, item_id: int) -> None:
+        await self.conn.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
+        await self.conn.commit()
 
     # ---------- арены ----------
 
@@ -303,3 +359,23 @@ class Database:
 def _to_player(row: Iterable[Any]) -> Player:
     data = dict(row)  # type: ignore[arg-type]
     return Player(**data)
+
+
+def _to_owned_item(row: Any) -> OwnedItem | None:
+    """Строка инвентаря → экземпляр предмета. Предметы из будущих версий пропускаем."""
+    item = get_item(row["code"])
+    if item is None:  # pragma: no cover - каталог урезали, а вещь осталась
+        return None
+    slot = None
+    if row["slot"]:
+        try:
+            slot = Slot(row["slot"])
+        except ValueError:  # pragma: no cover - слот из будущей версии
+            slot = None
+    return OwnedItem(
+        item=item,
+        id=int(row["id"]),
+        wear=int(row["wear"]),
+        max_wear=int(row["max_wear"]),
+        slot=slot,
+    )

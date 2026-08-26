@@ -5,7 +5,8 @@ import pytest
 from tests.harness import Client
 
 from bot.game.economy import PRICE_APPEARANCE, PRICE_CLASS_CHANGE, PRICE_RESPEC
-from bot.keyboards import AvatarCB, ClassCB
+from bot.game.equipment import CATALOGUE
+from bot.keyboards import AvatarCB, BuyCB, ClassCB
 from bot.models import Player
 
 
@@ -39,6 +40,44 @@ async def test_shop_shows_balance_and_prices(client, dispatcher_env):
     text = session.texts[-1]
     assert "300" in text
     assert str(PRICE_RESPEC) in text and str(PRICE_CLASS_CHANGE) in text
+
+
+async def test_showcase_lists_goods_with_requirements(client, dispatcher_env):
+    _, _, session = dispatcher_env
+    await client.send("/buy")
+    text = session.texts[-1]
+    assert "Кеды" in text and str(CATALOGUE["sneakers"].price) in text
+    assert "уровень 3, сила 6" in text  # требования кастета
+
+
+async def test_buying_takes_credits_and_fills_the_backpack(client, dispatcher_env):
+    db, _, session = dispatcher_env
+    await client.send("/buy")
+    await client.press(BuyCB(code="sneakers").pack())
+
+    player = await client.player()
+    assert player.credits == 300 - CATALOGUE["sneakers"].price
+    assert [item.code for item in player.backpack] == ["sneakers"]
+    assert "Куплено" in session.texts[-1]
+
+
+async def test_empty_wallet_stops_the_purchase(client, dispatcher_env):
+    db, _, session = dispatcher_env
+    player = await client.player()
+    player.credits = 5
+    await db.save_player(player)
+
+    await client.press(BuyCB(code="sneakers").pack())
+
+    assert "Не хватает кредитов" in session.alerts[-1]
+    assert (await client.player()).gear == []
+
+
+async def test_shop_explains_wear_and_repair(client, dispatcher_env):
+    _, _, session = dispatcher_env
+    await client.send("/shop")
+    text = session.texts[-1]
+    assert "инвентаре" in text and "износ" in text.lower()
 
 
 async def test_respec_asks_before_charging(client, dispatcher_env):
