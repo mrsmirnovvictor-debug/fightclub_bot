@@ -1,0 +1,201 @@
+:root {
+  color-scheme: light dark;
+  --bg: var(--tg-theme-bg-color, #dbe3ee);
+  --panel: var(--tg-theme-secondary-bg-color, #ccd7e6);
+  --ink: var(--tg-theme-text-color, #16202c);
+  --muted: var(--tg-theme-hint-color, #5b6b7e);
+  --accent: var(--tg-theme-link-color, #1a6dd0);
+  --line: rgba(22, 32, 44, 0.16);
+  --slot: rgba(255, 255, 255, 0.55);
+  --slot-line: rgba(22, 32, 44, 0.28);
+  --hp-track: rgba(22, 32, 44, 0.25);
+  --hp-green: #3ea842;
+  --hp-yellow: #d8a417;
+  --hp-red: #cc3b30;
+}
+
+/* Telegram обычно сам подставляет цвета темы; тут — тёмные запасные,
+   чтобы карточка не светила белым, если переменных нет. */
+body.dark {
+  --bg: var(--tg-theme-bg-color, #17212b);
+  --panel: var(--tg-theme-secondary-bg-color, #1f2c3a);
+  --ink: var(--tg-theme-text-color, #eef4fa);
+  --muted: var(--tg-theme-hint-color, #8fa3b8);
+  --line: rgba(255, 255, 255, 0.14);
+  --slot: rgba(255, 255, 255, 0.06);
+  --slot-line: rgba(255, 255, 255, 0.22);
+  --hp-track: rgba(255, 255, 255, 0.14);
+  --hp-green: #4cbf52;
+  --hp-yellow: #e0b02a;
+  --hp-red: #e04b3f;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 14px 14px 28px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.hidden { display: none !important; }
+
+.loader, .error {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--muted);
+}
+.error-emoji { font-size: 40px; margin-bottom: 12px; }
+.error-text { color: var(--ink); }
+
+.card { max-width: 760px; margin: 0 auto; }
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+.head-class { font-size: 17px; }
+.head-name {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.head-level { color: var(--muted); font-weight: 600; }
+
+.hp {
+  position: relative;
+  height: 22px;
+  border-radius: 4px;
+  background: var(--hp-track);
+  border: 1px solid var(--slot-line);
+  overflow: hidden;
+}
+.hp-fill {
+  height: 100%;
+  width: 0;
+  background: var(--hp-green);
+  transition: width 0.6s linear, background-color 0.4s;
+}
+.hp.yellow .hp-fill { background: var(--hp-yellow); }
+.hp.red .hp-fill { background: var(--hp-red); }
+.hp-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+  letter-spacing: 0.2px;
+}
+.hp-note {
+  margin: 5px 2px 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+  min-height: 16px;
+}
+
+.doll {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 56px;
+  gap: 10px;
+  align-items: start;
+}
+.slots { display: grid; gap: 10px; }
+.slot {
+  aspect-ratio: 1;
+  border: 1px solid var(--slot-line);
+  border-radius: 5px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  cursor: pointer;
+  user-select: none;
+}
+.slot.empty {
+  opacity: 0.3;
+  font-size: 18px;
+  filter: grayscale(1);
+}
+.slot:active { transform: scale(0.95); }
+
+.avatar {
+  min-height: 250px;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
+.avatar .emoji { font-size: 92px; line-height: 1; }
+
+.city {
+  margin: 12px 0 16px;
+  text-align: center;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.rows { list-style: none; margin: 0; padding: 0; }
+.rows li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+}
+.rows .label { color: var(--muted); }
+.rows .value { font-weight: 700; text-align: right; }
+.rows .value .bonus { color: var(--muted); font-weight: 500; }
+.rows .value.good { color: var(--hp-green); }
+.rule { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+
+.foot {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+@media (min-width: 620px) {
+  .card {
+    display: grid;
+    grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+    grid-template-areas:
+      "head  panel"
+      "hp    panel"
+      "note  panel"
+      "doll  panel"
+      "city  panel"
+      "foot  foot";
+    gap: 0 20px;
+    align-items: start;
+  }
+  .head { grid-area: head; }
+  .hp { grid-area: hp; }
+  .hp-note { grid-area: note; }
+  .doll { grid-area: doll; }
+  .city { grid-area: city; }
+  .panel { grid-area: panel; }
+  .foot { grid-area: foot; }
+}

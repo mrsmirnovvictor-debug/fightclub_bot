@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bot.game.classes import FighterClass, Stats, get_class
+from bot.game.equipment import Equipment
 from bot.game.economy import (
     LEVEL_CREDITS,
     MAX_LEVEL,
@@ -26,6 +27,7 @@ from bot.game.health import (
     seconds_until_ready,
 )
 from bot.game.stats import derive
+from bot.game.world import DEFAULT_BIRTHPLACE, DEFAULT_CITY
 
 
 @dataclass
@@ -68,15 +70,37 @@ class Player:
     wins: int = 0
     losses: int = 0
     draws: int = 0
+    equipment_json: str | None = None  # что надето: слот → код предмета
+    city: str = DEFAULT_CITY
+    birthplace: str | None = None  # группа, где боец начал драться
+    created_at: str | None = None  # когда персонаж появился на свет
 
     @property
-    def stats(self) -> Stats:
+    def base_stats(self) -> Stats:
+        """Собственные характеристики бойца, без экипировки."""
         return Stats(
             strength=self.strength,
             agility=self.agility,
             intuition=self.intuition,
             endurance=self.endurance,
         )
+
+    @property
+    def equipment(self) -> Equipment:
+        return Equipment.from_json(self.equipment_json)
+
+    @equipment.setter
+    def equipment(self, value: Equipment) -> None:
+        self.equipment_json = value.to_json()
+
+    @property
+    def stats(self) -> Stats:
+        """Характеристики с учётом надетого — их и видит боевой движок."""
+        return self.base_stats.merge(self.equipment.bonus)
+
+    @property
+    def home(self) -> str:
+        return self.birthplace or DEFAULT_BIRTHPLACE
 
     @property
     def fclass(self) -> FighterClass:
@@ -88,7 +112,9 @@ class Player:
 
     @property
     def max_hp(self) -> int:
-        return derive(self.fclass, self.stats, self.level).max_hp
+        return derive(
+            self.fclass, self.stats, self.level, self.equipment.hp_bonus
+        ).max_hp
 
     def current_hp(self, now: int | None = None) -> int:
         """Здоровье с учётом восстановления, прошедшего с последнего боя."""
@@ -140,8 +166,8 @@ class Player:
 
     @property
     def spent_points(self) -> int:
-        """Сколько очков боец вложил сверх базы своего класса."""
-        return self.stats.total() - self.fclass.base_stats.total()
+        """Сколько очков боец вложил сверх базы своего класса (без экипировки)."""
+        return self.base_stats.total() - self.fclass.base_stats.total()
 
     def apply_stats(self, stats: Stats) -> None:
         self.strength = stats.strength

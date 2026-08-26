@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from bot.database import Database
 from bot.duel_service import DuelError, DuelService
-from bot.game.narrator import esc, plain
+from bot.game.narrator import esc, name_link, plain
 from bot.handlers.common import thread_id_of
 from bot.keyboards import ChallengeCB, FightCB
 from bot.models import Player
@@ -103,7 +103,11 @@ async def cmd_duel(message: Message, db: Database, duels: DuelService) -> None:
 
     try:
         await duels.open_challenge(
-            message.chat.id, thread_id_of(message), challenger, target
+            message.chat.id,
+            thread_id_of(message),
+            challenger,
+            target,
+            chat_title=message.chat.title or "",
         )
     except DuelError as error:
         await message.reply(str(error))
@@ -164,8 +168,12 @@ async def cmd_history(message: Message, db: Database) -> None:
     for row in duels_rows:
         challenger = await db.get_player(row["challenger_id"])
         opponent = await db.get_player(row["opponent_id"])
-        first = esc(challenger.nickname) if challenger else "боец"
-        second = esc(opponent.nickname) if opponent else "боец"
+        first = (
+            name_link(challenger.user_id, challenger.nickname) if challenger else "боец"
+        )
+        second = (
+            name_link(opponent.user_id, opponent.nickname) if opponent else "боец"
+        )
         if row["winner_id"] is None:
             outcome = "ничья"
         elif row["winner_id"] == row["challenger_id"]:

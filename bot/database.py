@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import aiosqlite
 
 from bot.game.economy import RATING_START
+from bot.game.world import DEFAULT_CITY
 from bot.models import Arena, Player
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,9 @@ CREATE TABLE IF NOT EXISTS players (
     rating         INTEGER NOT NULL DEFAULT 1000,
     hp             INTEGER,
     hp_at          INTEGER NOT NULL DEFAULT 0,
+    equipment      TEXT,
+    city           TEXT    NOT NULL DEFAULT 'Vegas City',
+    birthplace     TEXT,
     wins           INTEGER NOT NULL DEFAULT 0,
     losses         INTEGER NOT NULL DEFAULT 0,
     draws          INTEGER NOT NULL DEFAULT 0,
@@ -62,7 +67,8 @@ CREATE INDEX IF NOT EXISTS idx_duels_chat ON duels(chat_id, created_at DESC);
 PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, strength, agility, "
     "intuition, endurance, free_points, level, exp, total_exp, micro_ups, "
-    "credits, rating, hp, hp_at, wins, losses, draws"
+    "credits, rating, hp, hp_at, wins, losses, draws, "
+    "equipment AS equipment_json, city, birthplace, created_at"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -73,6 +79,9 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("rating", f"INTEGER NOT NULL DEFAULT {RATING_START}"),
     ("hp", "INTEGER"),  # NULL — боец здоров
     ("hp_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("equipment", "TEXT"),
+    ("city", f"TEXT NOT NULL DEFAULT '{DEFAULT_CITY}'"),
+    ("birthplace", "TEXT"),
 )
 
 
@@ -121,14 +130,17 @@ class Database:
         return _to_player(row) if row else None
 
     async def save_player(self, player: Player) -> None:
+        if not player.created_at:
+            # День рождения персонажа ставим один раз, при первом сохранении
+            player.created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         await self.conn.execute(
             """
             INSERT INTO players (
                 user_id, nickname, class_code, avatar, avatar_file_id, strength,
                 agility, intuition, endurance, free_points, level, exp,
                 total_exp, micro_ups, credits, rating, hp, hp_at,
-                wins, losses, draws
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                wins, losses, draws, equipment, city, birthplace, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -147,6 +159,9 @@ class Database:
                 rating         = excluded.rating,
                 hp             = excluded.hp,
                 hp_at          = excluded.hp_at,
+                equipment      = excluded.equipment,
+                city           = excluded.city,
+                birthplace     = excluded.birthplace,
                 wins           = excluded.wins,
                 losses         = excluded.losses,
                 draws          = excluded.draws
@@ -173,6 +188,10 @@ class Database:
                 player.wins,
                 player.losses,
                 player.draws,
+                player.equipment_json,
+                player.city,
+                player.birthplace,
+                player.created_at,
             ),
         )
         await self.conn.commit()

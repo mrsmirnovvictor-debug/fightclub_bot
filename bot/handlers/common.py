@@ -83,9 +83,11 @@ def profile_text(player: Player) -> str:
     return "\n".join(lines)
 
 
-async def send_profile(message: Message, player: Player) -> None:
+async def send_profile(message: Message, player: Player, keyboard=None) -> None:
     text = profile_text(player)
     if player.avatar_file_id:
-        await message.answer_photo(player.avatar_file_id, caption=text)
+        await message.answer_photo(
+            player.avatar_file_id, caption=text, reply_markup=keyboard
+        )
     else:
-        await message.answer(text)
+        await message.answer(text, reply_markup=keyboard)

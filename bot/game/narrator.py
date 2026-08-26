@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from bot.game.classes import ZONE_PREPOSITIONAL, Zone
 from bot.game.health import READY_THRESHOLD, format_duration
+from bot.game.links import links
 from bot.game.combat import (
     MAX_MISSED_TURNS,
     DuelEnd,
@@ -96,7 +97,12 @@ def plain(text: str) -> str:
 
 
 def mention(fighter: Fighter) -> str:
-    return f'<a href="tg://user?id={fighter.user_id}">{esc(fighter.name)}</a>'
+    return name_link(fighter.user_id, fighter.name)
+
+
+def name_link(user_id: int, name: str) -> str:
+    """Имя-ссылка: открывает карточку бойца, если мини-апп настроен."""
+    return f'<a href="{links.href(user_id)}">{esc(name)}</a>'
 
 
 def hp_bar(current: int, maximum: int, width: int = 10) -> str:
