@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
 import aiosqlite
@@ -91,6 +92,7 @@ class Database:
         self._conn: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
+        self._ensure_directory()
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys = ON")
@@ -108,6 +110,17 @@ class Database:
                     f"ALTER TABLE players ADD COLUMN {column} {definition}"
                 )
                 logger.info("База обновлена: добавлена колонка players.%s", column)
+
+    def _ensure_directory(self) -> None:
+        """Создать каталог под базу.
+
+        На хостингах путь вроде /data/fightclub.db указывает на подключённый
+        диск, но если диск ещё не примонтирован, каталога может не быть —
+        и SQLite падает с невнятным «unable to open database file».
+        """
+        parent = Path(self.path).parent
+        if self.path != ":memory:" and str(parent) not in ("", "."):
+            parent.mkdir(parents=True, exist_ok=True)
 
     async def close(self) -> None:
         if self._conn is not None:
