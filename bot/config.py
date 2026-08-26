@@ -14,7 +14,7 @@ load_dotenv()
 class Config:
     bot_token: str
     db_path: str = "fightclub.db"
-    turn_timeout: int = 60
+    turn_timeout: int = 30
     challenge_timeout: int = 180
 
 
@@ -27,6 +27,6 @@ def load_config() -> Config:
     return Config(
         bot_token=token,
         db_path=os.getenv("DB_PATH", "fightclub.db").strip() or "fightclub.db",
-        turn_timeout=int(os.getenv("TURN_TIMEOUT", "60")),
+        turn_timeout=int(os.getenv("TURN_TIMEOUT", "30")),
         challenge_timeout=int(os.getenv("CHALLENGE_TIMEOUT", "180")),
     )

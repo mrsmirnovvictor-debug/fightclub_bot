@@ -18,7 +18,15 @@ from aiogram.client.session.base import BaseSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import TelegramMethod
-from aiogram.types import CallbackQuery, Chat, ChatMemberOwner, Message, Update, User
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    ChatMemberOwner,
+    Message,
+    PhotoSize,
+    Update,
+    User,
+)
 
 from bot.handlers import build_router
 
@@ -123,3 +131,31 @@ async def feed_callback(user: User, chat: Chat, data: str, **message_kwargs) -> 
     await DISPATCHER.feed_update(
         BOT, Update(update_id=next(ids), callback_query=callback)
     )
+
+
+class Client:
+    """Пользователь со своим приватным чатом, шлющий апдейты в общий диспетчер."""
+
+    def __init__(self, db) -> None:
+        self.user = new_user()
+        self.chat = private_chat(self.user)
+        self.db = db
+
+    async def send(self, text: str) -> None:
+        await feed_message(make_message(self.chat, text, self.user))
+
+    async def press(self, data: str) -> None:
+        await feed_callback(self.user, self.chat, data)
+
+    async def send_photo(self, file_id: str = "photo-file-id") -> None:
+        message = Message(
+            message_id=next(ids),
+            date=datetime.now(timezone.utc),
+            chat=self.chat,
+            from_user=self.user,
+            photo=[PhotoSize(file_id=file_id, file_unique_id="u", width=90, height=90)],
+        )
+        await feed_message(message)
+
+    async def player(self):
+        return await self.db.get_player(self.user.id)

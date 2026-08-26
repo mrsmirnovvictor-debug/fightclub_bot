@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterable
 
 import aiosqlite
 
+from bot.game.economy import RATING_START
 from bot.models import Arena, Player
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS players (
@@ -22,6 +26,10 @@ CREATE TABLE IF NOT EXISTS players (
     free_points    INTEGER NOT NULL DEFAULT 0,
     level          INTEGER NOT NULL DEFAULT 1,
     exp            INTEGER NOT NULL DEFAULT 0,
+    total_exp      INTEGER NOT NULL DEFAULT 0,
+    micro_ups      INTEGER NOT NULL DEFAULT 0,
+    credits        INTEGER NOT NULL DEFAULT 0,
+    rating         INTEGER NOT NULL DEFAULT 1000,
     wins           INTEGER NOT NULL DEFAULT 0,
     losses         INTEGER NOT NULL DEFAULT 0,
     draws          INTEGER NOT NULL DEFAULT 0,
@@ -51,7 +59,16 @@ CREATE INDEX IF NOT EXISTS idx_duels_chat ON duels(chat_id, created_at DESC);
 
 PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, strength, agility, "
-    "intuition, endurance, free_points, level, exp, wins, losses, draws"
+    "intuition, endurance, free_points, level, exp, total_exp, micro_ups, "
+    "credits, rating, wins, losses, draws"
+)
+
+# Колонки, добавленные после первой версии: их дописываем в уже живые базы.
+MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("total_exp", "INTEGER NOT NULL DEFAULT 0"),
+    ("micro_ups", "INTEGER NOT NULL DEFAULT 0"),
+    ("credits", "INTEGER NOT NULL DEFAULT 0"),
+    ("rating", f"INTEGER NOT NULL DEFAULT {RATING_START}"),
 )
 
 
@@ -65,7 +82,19 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys = ON")
         await self._conn.executescript(SCHEMA)
+        await self._migrate()
         await self._conn.commit()
+
+    async def _migrate(self) -> None:
+        """Дописать колонки, которых нет в базе, созданной прошлой версией."""
+        async with self.conn.execute("PRAGMA table_info(players)") as cursor:
+            existing = {row["name"] for row in await cursor.fetchall()}
+        for column, definition in MIGRATIONS:
+            if column not in existing:
+                await self.conn.execute(
+                    f"ALTER TABLE players ADD COLUMN {column} {definition}"
+                )
+                logger.info("База обновлена: добавлена колонка players.%s", column)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -93,8 +122,8 @@ class Database:
             INSERT INTO players (
                 user_id, nickname, class_code, avatar, avatar_file_id, strength,
                 agility, intuition, endurance, free_points, level, exp,
-                wins, losses, draws
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                total_exp, micro_ups, credits, rating, wins, losses, draws
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -107,6 +136,10 @@ class Database:
                 free_points    = excluded.free_points,
                 level          = excluded.level,
                 exp            = excluded.exp,
+                total_exp      = excluded.total_exp,
+                micro_ups      = excluded.micro_ups,
+                credits        = excluded.credits,
+                rating         = excluded.rating,
                 wins           = excluded.wins,
                 losses         = excluded.losses,
                 draws          = excluded.draws
@@ -124,6 +157,10 @@ class Database:
                 player.free_points,
                 player.level,
                 player.exp,
+                player.total_exp,
+                player.micro_ups,
+                player.credits,
+                player.rating,
                 player.wins,
                 player.losses,
                 player.draws,
@@ -139,7 +176,7 @@ class Database:
         async with self.conn.execute(
             f"""
             SELECT {PLAYER_COLUMNS} FROM players
-            ORDER BY wins DESC, level DESC, exp DESC
+            ORDER BY rating DESC, wins DESC, level DESC
             LIMIT ?
             """,
             (limit,),
@@ -193,6 +230,22 @@ class Database:
         )
         await self.conn.commit()
         return int(cursor.lastrowid or 0)
+
+    async def count_recent_duels_between(
+        self, first_id: int, second_id: int, hours: int = 24
+    ) -> int:
+        """Сколько боёв эта пара уже провела за последние часы — для антифарма."""
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) AS fights FROM duels
+            WHERE ((challenger_id = ? AND opponent_id = ?)
+                OR (challenger_id = ? AND opponent_id = ?))
+              AND created_at >= datetime('now', ?)
+            """,
+            (first_id, second_id, second_id, first_id, f"-{int(hours)} hours"),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["fights"]) if row else 0
 
     async def recent_duels(self, chat_id: int, limit: int = 5) -> list[dict[str, Any]]:
         async with self.conn.execute(

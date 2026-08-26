@@ -139,10 +139,6 @@ async def on_fight(
     callback: CallbackQuery, callback_data: FightCB, duels: DuelService
 ) -> None:
     try:
-        if callback_data.action == "giveup":
-            await duels.give_up(callback_data.duel_id, callback.from_user.id)
-            await callback.answer("Ты выбросил полотенце.")
-            return
         hint = await duels.handle_choice(
             callback_data.duel_id,
             callback.from_user.id,
@@ -156,18 +152,6 @@ async def on_fight(
         await callback.answer("Судья запутался. Попробуй ещё раз.", show_alert=True)
     else:
         await callback.answer(hint)
-
-
-@router.message(Command("giveup"), F.chat.type.in_(GROUP_TYPES))
-async def cmd_giveup(message: Message, duels: DuelService) -> None:
-    session = duels.duel_of_user(message.from_user.id)
-    if session is None:
-        await message.reply("Ты сейчас не дерёшься.")
-        return
-    try:
-        await duels.give_up(session.id, message.from_user.id)
-    except DuelError as error:
-        await message.reply(str(error))
 
 
 @router.message(Command("history"), F.chat.type.in_(GROUP_TYPES))

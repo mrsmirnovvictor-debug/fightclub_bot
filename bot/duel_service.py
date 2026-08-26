@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import itertools
 import logging
+import math
 import random
 from dataclasses import dataclass, field
 
@@ -16,24 +17,37 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone
 from bot.game.combat import (
+    MAX_MISSED_TURNS,
     Action,
-    DuelEnd,
     Fighter,
     RoundResult,
-    random_action,
     resolve_round,
 )
-from bot.game.narrator import duel_intro, esc, finish_report, hp_bar, round_report
+from bot.game.economy import (
+    DRAW_CREDITS,
+    DRAW_EXP_SHARE,
+    LOSS_CREDITS,
+    LOSS_EXP_SHARE,
+    REPEAT_WINDOW_HOURS,
+    apply_share,
+    consolation_exp,
+    rating_delta,
+    repeat_share,
+    win_credits,
+    win_exp,
+)
+from bot.game.narrator import (
+    duel_intro,
+    esc,
+    finish_report,
+    hp_bar,
+    rewards_report,
+    round_report,
+)
 from bot.keyboards import challenge_keyboard, fight_keyboard
-from bot.models import Player
+from bot.models import Player, ProgressReport
 
 logger = logging.getLogger(__name__)
-
-# Опыт за бой: база плюс надбавка за уровень соперника
-EXP_BASE = 40
-EXP_PER_OPPONENT_LEVEL = 10
-EXP_LOSER_SHARE = 3  # проигравший получает треть
-EXP_DRAW = 20
 
 
 class DuelError(Exception):
@@ -65,8 +79,12 @@ class Choice:
         return self.attack is not None and len(self.blocks) == needed_blocks
 
     def to_action(self) -> Action:
-        assert self.attack is not None
+        """Что боец успел нажать, то и уходит в раунд."""
         return Action(attack=self.attack, blocks=tuple(self.blocks))
+
+    @property
+    def is_empty(self) -> bool:
+        return self.attack is None and not self.blocks
 
     def describe(self) -> str:
         attack = self.attack.title if self.attack else "—"
@@ -303,15 +321,27 @@ class DuelService:
             choice = session.choices.get(user_id, Choice())
             ready = choice.is_ready(fighter.derived.block_zones)
             mark = "✅ готов" if ready else "⏳ думает"
+            warning = ""
+            left = MAX_MISSED_TURNS - fighter.missed_turns
+            if fighter.missed_turns:
+                warning = (
+                    f" — ⚠️ пропусков подряд: {fighter.missed_turns}, "
+                    f"осталось {left}"
+                )
             lines.append(
                 f"{fighter.fclass.emoji} {esc(fighter.name)} "
                 f"{hp_bar(fighter.hp, fighter.max_hp)} {fighter.hp}/{fighter.max_hp} "
-                f"— блоков: {fighter.derived.block_zones} — {mark}"
+                f"— блоков: {fighter.derived.block_zones} — {mark}{warning}"
             )
         lines += [
             "",
             "👊 — куда бьёшь (одна зона), 🛡 — что закрываешь.",
-            f"⏱ {self.config.turn_timeout} сек. Не успел — судья выберет за тебя.",
+            f"⏱ {self.config.turn_timeout} сек. Успеете оба раньше — "
+            "раунд посчитается сразу.",
+            "Что успел нажать, то и работает: без зоны удара боец не бьёт, "
+            "незакрытая зона остаётся открытой.",
+            f"Не нажал ничего — пропуск хода. {MAX_MISSED_TURNS} пропуска подряд — "
+            "техническое поражение.",
             "Нажатия соперника ты не видишь: бот отвечает только тому, кто нажал.",
         ]
         return "\n".join(lines)
@@ -345,19 +375,22 @@ class DuelService:
             fighter = session.fighters[user_id]
             choice = session.choice_of(user_id)
             was_ready = choice.is_ready(fighter.derived.block_zones)
-            zone = Zone(zone_value)
+            if action not in {"attack", "block"}:
+                raise DuelError("Непонятное действие.")
+            try:
+                zone = Zone(zone_value)
+            except ValueError as error:  # устаревшая кнопка из прошлой версии
+                raise DuelError("Эта кнопка уже не работает.") from error
 
             if action == "attack":
                 choice.attack = zone
-            elif action == "block":
+            else:
                 if zone in choice.blocks:
                     choice.blocks.remove(zone)
                 else:
                     choice.blocks.append(zone)
                     if len(choice.blocks) > fighter.derived.block_zones:
                         choice.blocks.pop(0)
-            else:  # pragma: no cover - защита от неизвестного действия
-                raise DuelError("Непонятное действие.")
 
             now_ready = choice.is_ready(fighter.derived.block_zones)
             both_ready = all(
@@ -385,40 +418,14 @@ class DuelService:
             hint = "\nВыбери зону удара."
         return f"{choice.describe()}{hint}"
 
-    async def give_up(self, duel_id: int, user_id: int) -> None:
-        session = self._duels.get(duel_id)
-        if session is None:
-            raise DuelError("Этот бой уже закончился.")
-        if user_id not in session.fighters:
-            raise DuelError("Ты не участвуешь в этом бою.")
-        async with session.lock:
-            if session.resolving:
-                raise DuelError("Раунд уже считается, поздно.")
-            session.resolving = True
-        self._cancel_timer(session)
-        winner = session.opponent_of(user_id)
-        result = RoundResult(
-            number=session.round_number,
-            strikes=[],
-            hp_after={uid: f.hp for uid, f in session.fighters.items()},
-            finished=True,
-            winner_id=winner.user_id,
-            end_reason=DuelEnd.GIVE_UP,
-        )
-        await self._finish(session, result)
-
     async def _resolve(self, session: DuelSession) -> None:
         self._cancel_timer(session)
         first_id, second_id = session.order
         first, second = session.fighters[first_id], session.fighters[second_id]
-        actions: dict[int, Action] = {}
-        for user_id in session.order:
-            fighter = session.fighters[user_id]
-            choice = session.choices.get(user_id, Choice())
-            if choice.is_ready(fighter.derived.block_zones):
-                actions[user_id] = choice.to_action()
-            else:
-                actions[user_id] = random_action(fighter.fclass, self.rng)
+        actions = {
+            user_id: session.choices.get(user_id, Choice()).to_action()
+            for user_id in session.order
+        }
 
         result = resolve_round(
             first,
@@ -457,10 +464,10 @@ class DuelService:
         for user_id in session.order:
             self._busy.pop(user_id, None)
 
-        reward, level_up_lines = await self._apply_results(session, result)
-        text = finish_report(result, session.fighters, reward, self.rng)
-        if level_up_lines:
-            text += "\n\n" + "\n".join(level_up_lines)
+        rewards = await self._apply_results(session, result)
+        text = finish_report(result, session.fighters, self.rng)
+        if rewards:
+            text += "\n\n" + rewards
         await self._send(session.chat_id, session.thread_id, text)
         await self.db.add_duel(
             chat_id=session.chat_id,
@@ -472,51 +479,77 @@ class DuelService:
             end_reason=result.end_reason.value if result.end_reason else None,
         )
 
-    async def _apply_results(
-        self, session: DuelSession, result: RoundResult
-    ) -> tuple[int, list[str]]:
-        """Начислить опыт и статистику. Вернуть награду и заметки о новых уровнях."""
-        lines: list[str] = []
-        winner_id = result.winner_id
+    async def _apply_results(self, session: DuelSession, result: RoundResult) -> str:
+        """Начислить опыт, кредиты и рейтинг. Вернуть блок текста с итогами."""
         players: dict[int, Player] = {}
         for user_id in session.order:
             player = await self.db.get_player(user_id)
             if player is not None:
                 players[user_id] = player
+        if not players:  # pragma: no cover - персонажей удалили по ходу боя
+            return ""
 
-        reward = 0
-        draw_note = False
-        if winner_id and winner_id in players:
-            loser_id = next(uid for uid in session.order if uid != winner_id)
-            loser_level = players[loser_id].level if loser_id in players else 1
-            reward = EXP_BASE + EXP_PER_OPPONENT_LEVEL * loser_level
+        previous_fights = await self.db.count_recent_duels_between(
+            session.order[0], session.order[1], REPEAT_WINDOW_HOURS
+        )
+        share = repeat_share(previous_fights)
+        # Уровни фиксируем до начисления: иначе взятый в этом же бою уровень
+        # перекосит награду второго бойца.
+        levels = {
+            user_id: players[user_id].level
+            if user_id in players
+            else session.fighters[user_id].level
+            for user_id in session.order
+        }
 
+        rows: list[tuple[Player, ProgressReport]] = []
         for user_id, player in players.items():
-            if winner_id is None:
-                player.draws += 1
-                gained = player.grant_exp(EXP_DRAW)
-                draw_note = True
-            elif user_id == winner_id:
+            fighter = session.fighters[user_id]
+            opponent = session.opponent_of(user_id)
+            my_level = levels[user_id]
+            opponent_level = levels[opponent.user_id]
+            won = result.winner_id == user_id
+
+            full_exp = win_exp(fighter.damage_dealt, my_level, opponent_level)
+            if won:
                 player.wins += 1
-                gained = player.grant_exp(reward)
+                exp, credits = full_exp, win_credits(self.rng)
+            elif result.winner_id is None:
+                player.draws += 1
+                exp = consolation_exp(full_exp, DRAW_EXP_SHARE)
+                credits = DRAW_CREDITS
             else:
                 player.losses += 1
-                gained = player.grant_exp(max(1, reward // EXP_LOSER_SHARE))
-            if gained:
-                lines.append(
-                    f"🎉 <b>{esc(player.nickname)}</b> берёт {player.level} уровень! "
-                    f"Свободных очков: {player.free_points} (/upgrade в личке бота)."
-                )
-            await self.db.save_player(player)
+                exp = consolation_exp(full_exp, LOSS_EXP_SHARE)
+                credits = LOSS_CREDITS
 
-        if draw_note:
-            lines.insert(0, f"Ничья: обоим по +{EXP_DRAW} опыта.")
-        return reward, lines
+            delta = rating_delta(won, my_level, opponent_level)
+            if share < 1.0:
+                exp = apply_share(exp, share)
+                credits = apply_share(credits, share)
+                delta = int(math.copysign(apply_share(abs(delta), share), delta))
+
+            report = player.grant_exp(exp)
+            report.credits += credits
+            report.rating_delta = delta
+            player.grant_credits(credits)
+            player.apply_rating(delta)
+            await self.db.save_player(player)
+            rows.append((player, report))
+
+        return rewards_report(rows, share, previous_fights)
 
     def _cancel_timer(self, session: DuelSession) -> None:
-        if session.timer and not session.timer.done():
-            session.timer.cancel()
+        """Снять таймер раунда.
+
+        Раунд может считаться прямо из задачи-таймера (когда время вышло),
+        поэтому себя же отменять нельзя — иначе CancelledError оборвёт подсчёт
+        итогов на первом же await.
+        """
+        timer = session.timer
         session.timer = None
+        if timer and not timer.done() and timer is not asyncio.current_task():
+            timer.cancel()
 
     # ---------- состояние ----------
 

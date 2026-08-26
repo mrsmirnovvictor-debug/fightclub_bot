@@ -226,8 +226,7 @@ FIGHTER_CLASSES: dict[str, FighterClass] = {
 START_POINTS = 6
 # Больше этого в один стат при создании не вложить — чтобы не было вырожденных билдов
 START_POINTS_PER_STAT_CAP = 4
-# Очков характеристик за уровень
-POINTS_PER_LEVEL = 2
+# Очки характеристик выдаются за апы — см. bot/game/economy.py
 
 
 def get_class(code: str) -> FighterClass:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from aiogram.types import Message
 
 from bot.game.classes import ALL_STATS, FighterClass, Stats
+from bot.game.economy import MICRO_UPS_PER_LEVEL
 from bot.game.stats import derive
 from bot.game.narrator import esc
 from bot.models import Player
@@ -42,11 +43,28 @@ def combat_block(fclass: FighterClass, stats: Stats, level: int = 1) -> str:
     )
 
 
+def progress_line(player: Player) -> str:
+    """Строка прогресса: опыт до уровня и до ближайшего апа."""
+    if player.at_max_level:
+        return (
+            f"🔒 Потолок уровня. Всего опыта: <b>{player.total_exp}</b> — "
+            "он копится под будущие уровни."
+        )
+    ups_left = MICRO_UPS_PER_LEVEL - player.micro_ups
+    return (
+        f"📈 Опыт: <b>{player.exp}/{player.exp_needed}</b> · "
+        f"до апа: <b>{player.exp_to_next_up}</b> "
+        f"(апов до уровня: {ups_left})"
+    )
+
+
 def profile_text(player: Player) -> str:
     fclass = player.fclass
     lines = [
         f"{player.avatar} <b>{esc(player.nickname)}</b>",
-        f"{fclass.label} · {player.level} уровень · опыт {player.exp}/{player.exp_needed}",
+        f"{fclass.label} · {player.level} уровень · рейтинг <b>{player.rating}</b>",
+        progress_line(player),
+        f"💰 Кредиты: <b>{player.credits}</b>",
         "",
         stats_block(player.stats),
         "",
