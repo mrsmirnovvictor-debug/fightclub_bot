@@ -27,7 +27,7 @@ COUNTER_PER_INTUITION = 0.004
 MAX_COUNTER_CHANCE = 0.5
 COUNTER_DAMAGE_MULT = 0.5  # контрудар бьёт вполсилы
 
-HP_PER_LEVEL = 3
+HP_PER_LEVEL = 5  # прибавка к здоровью за каждый уровень
 
 
 @dataclass(frozen=True)

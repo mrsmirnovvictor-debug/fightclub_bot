@@ -5,6 +5,8 @@ from __future__ import annotations
 import html
 import random
 
+from typing import TYPE_CHECKING
+
 from bot.game.classes import ZONE_PREPOSITIONAL, Zone
 from bot.game.combat import (
     MAX_MISSED_TURNS,
@@ -14,6 +16,9 @@ from bot.game.combat import (
     RoundResult,
     Strike,
 )
+
+if TYPE_CHECKING:  # только для подсказок типов: models импортирует не нас
+    from bot.models import Player, ProgressReport
 
 BLOCK_LINES = [
     "{a} метит {zone}, но {d} встречает удар глухим блоком.",
@@ -157,7 +162,6 @@ def round_report(
 def finish_report(
     result: RoundResult,
     fighters: dict[int, Fighter],
-    reward_exp: int = 0,
     rng: random.Random | None = None,
 ) -> str:
     rng = rng or random
@@ -199,11 +203,6 @@ def finish_report(
     lines.append("")
     for fighter in fighters.values():
         lines.append(hp_line(fighter))
-    if reward_exp:
-        lines.append("")
-        lines.append(
-            f"Опыт: победителю +{reward_exp}, проигравшему +{max(1, reward_exp // 3)}."
-        )
     return "\n".join(lines)
 
 
@@ -218,3 +217,54 @@ def duel_intro(first: Fighter, second: Fighter) -> str:
         f"Первое правило клуба — не заставлять судью ждать: {MAX_MISSED_TURNS} "
         "пропущенных хода подряд, и бой засчитают техническим поражением."
     )
+
+
+def rewards_report(
+    rows: list[tuple["Player", "ProgressReport"]],
+    share: float = 1.0,
+    previous_fights: int = 0,
+) -> str:
+    """Что каждый унёс с ринга: опыт, кредиты, рейтинг, апы и уровни."""
+    lines = ["📊 <b>Итоги</b>"]
+    events: list[str] = []
+
+    for player, report in rows:
+        parts: list[str] = []
+        parts.append(f"+{report.exp} опыта" if report.exp else "без опыта")
+        if report.credits:
+            parts.append(f"+{report.credits} 💰 (всего {player.credits})")
+        sign = "+" if report.rating_delta >= 0 else "−"
+        parts.append(
+            f"рейтинг {player.rating} ({sign}{abs(report.rating_delta)})"
+        )
+        lines.append(f"{player.avatar} <b>{esc(player.nickname)}</b>: " + ", ".join(parts))
+
+        name = f"<b>{esc(player.nickname)}</b>"
+        if report.levels:
+            events.append(
+                f"🎉 {name} берёт <b>{player.level}</b> уровень! "
+                f"Здоровье выросло, очков характеристик: +{report.points} "
+                f"(всего свободных {player.free_points}) — /upgrade"
+            )
+        elif report.ups:
+            word = "ап" if report.ups == 1 else "апа"
+            events.append(
+                f"⚡ {name} получает {report.ups} {word}: +{report.points} "
+                f"к характеристикам (всего свободных {player.free_points}) — /upgrade"
+            )
+        if report.capped and report.exp:
+            events.append(
+                f"🔒 {name} на потолке уровня: опыт копится "
+                f"(всего {player.total_exp}), но новых уровней пока нет."
+            )
+
+    if share < 1.0:
+        lines.append("")
+        lines.append(
+            f"♻️ Бой номер {previous_fights + 1} с этим соперником за сутки — "
+            f"награда урезана до {share:.0%}."
+        )
+    if events:
+        lines.append("")
+        lines.extend(events)
+    return "\n".join(lines)

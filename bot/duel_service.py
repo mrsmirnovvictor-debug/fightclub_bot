@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import itertools
 import logging
+import math
 import random
 from dataclasses import dataclass, field
 
@@ -22,17 +23,31 @@ from bot.game.combat import (
     RoundResult,
     resolve_round,
 )
-from bot.game.narrator import duel_intro, esc, finish_report, hp_bar, round_report
+from bot.game.economy import (
+    DRAW_CREDITS,
+    DRAW_EXP_SHARE,
+    LOSS_CREDITS,
+    LOSS_EXP_SHARE,
+    REPEAT_WINDOW_HOURS,
+    apply_share,
+    consolation_exp,
+    rating_delta,
+    repeat_share,
+    win_credits,
+    win_exp,
+)
+from bot.game.narrator import (
+    duel_intro,
+    esc,
+    finish_report,
+    hp_bar,
+    rewards_report,
+    round_report,
+)
 from bot.keyboards import challenge_keyboard, fight_keyboard
-from bot.models import Player
+from bot.models import Player, ProgressReport
 
 logger = logging.getLogger(__name__)
-
-# Опыт за бой: база плюс надбавка за уровень соперника
-EXP_BASE = 40
-EXP_PER_OPPONENT_LEVEL = 10
-EXP_LOSER_SHARE = 3  # проигравший получает треть
-EXP_DRAW = 20
 
 
 class DuelError(Exception):
@@ -449,10 +464,10 @@ class DuelService:
         for user_id in session.order:
             self._busy.pop(user_id, None)
 
-        reward, level_up_lines = await self._apply_results(session, result)
-        text = finish_report(result, session.fighters, reward, self.rng)
-        if level_up_lines:
-            text += "\n\n" + "\n".join(level_up_lines)
+        rewards = await self._apply_results(session, result)
+        text = finish_report(result, session.fighters, self.rng)
+        if rewards:
+            text += "\n\n" + rewards
         await self._send(session.chat_id, session.thread_id, text)
         await self.db.add_duel(
             chat_id=session.chat_id,
@@ -464,46 +479,65 @@ class DuelService:
             end_reason=result.end_reason.value if result.end_reason else None,
         )
 
-    async def _apply_results(
-        self, session: DuelSession, result: RoundResult
-    ) -> tuple[int, list[str]]:
-        """Начислить опыт и статистику. Вернуть награду и заметки о новых уровнях."""
-        lines: list[str] = []
-        winner_id = result.winner_id
+    async def _apply_results(self, session: DuelSession, result: RoundResult) -> str:
+        """Начислить опыт, кредиты и рейтинг. Вернуть блок текста с итогами."""
         players: dict[int, Player] = {}
         for user_id in session.order:
             player = await self.db.get_player(user_id)
             if player is not None:
                 players[user_id] = player
+        if not players:  # pragma: no cover - персонажей удалили по ходу боя
+            return ""
 
-        reward = 0
-        draw_note = False
-        if winner_id and winner_id in players:
-            loser_id = next(uid for uid in session.order if uid != winner_id)
-            loser_level = players[loser_id].level if loser_id in players else 1
-            reward = EXP_BASE + EXP_PER_OPPONENT_LEVEL * loser_level
+        previous_fights = await self.db.count_recent_duels_between(
+            session.order[0], session.order[1], REPEAT_WINDOW_HOURS
+        )
+        share = repeat_share(previous_fights)
+        # Уровни фиксируем до начисления: иначе взятый в этом же бою уровень
+        # перекосит награду второго бойца.
+        levels = {
+            user_id: players[user_id].level
+            if user_id in players
+            else session.fighters[user_id].level
+            for user_id in session.order
+        }
 
+        rows: list[tuple[Player, ProgressReport]] = []
         for user_id, player in players.items():
-            if winner_id is None:
-                player.draws += 1
-                gained = player.grant_exp(EXP_DRAW)
-                draw_note = True
-            elif user_id == winner_id:
+            fighter = session.fighters[user_id]
+            opponent = session.opponent_of(user_id)
+            my_level = levels[user_id]
+            opponent_level = levels[opponent.user_id]
+            won = result.winner_id == user_id
+
+            full_exp = win_exp(fighter.damage_dealt, my_level, opponent_level)
+            if won:
                 player.wins += 1
-                gained = player.grant_exp(reward)
+                exp, credits = full_exp, win_credits(self.rng)
+            elif result.winner_id is None:
+                player.draws += 1
+                exp = consolation_exp(full_exp, DRAW_EXP_SHARE)
+                credits = DRAW_CREDITS
             else:
                 player.losses += 1
-                gained = player.grant_exp(max(1, reward // EXP_LOSER_SHARE))
-            if gained:
-                lines.append(
-                    f"🎉 <b>{esc(player.nickname)}</b> берёт {player.level} уровень! "
-                    f"Свободных очков: {player.free_points} (/upgrade в личке бота)."
-                )
-            await self.db.save_player(player)
+                exp = consolation_exp(full_exp, LOSS_EXP_SHARE)
+                credits = LOSS_CREDITS
 
-        if draw_note:
-            lines.insert(0, f"Ничья: обоим по +{EXP_DRAW} опыта.")
-        return reward, lines
+            delta = rating_delta(won, my_level, opponent_level)
+            if share < 1.0:
+                exp = apply_share(exp, share)
+                credits = apply_share(credits, share)
+                delta = int(math.copysign(apply_share(abs(delta), share), delta))
+
+            report = player.grant_exp(exp)
+            report.credits += credits
+            report.rating_delta = delta
+            player.grant_credits(credits)
+            player.apply_rating(delta)
+            await self.db.save_player(player)
+            rows.append((player, report))
+
+        return rewards_report(rows, share, previous_fights)
 
     def _cancel_timer(self, session: DuelSession) -> None:
         """Снять таймер раунда.

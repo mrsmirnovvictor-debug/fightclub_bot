@@ -71,6 +71,7 @@ class Fighter:
     level: int = 1
     hp: int = 0
     missed_turns: int = 0  # пропусков подряд
+    damage_dealt: int = 0  # всего нанесено за бой — от этого считается опыт
     derived: DerivedStats = field(init=False)
 
     def __post_init__(self) -> None:
@@ -234,6 +235,8 @@ def resolve_round(
 
     first.hp = max(0, first.hp - damage_to_first)
     second.hp = max(0, second.hp - damage_to_second)
+    first.damage_dealt += damage_to_second
+    second.damage_dealt += damage_to_first
 
     result = RoundResult(
         number=round_number,

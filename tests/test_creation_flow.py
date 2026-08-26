@@ -1,27 +1,9 @@
 """Регистрация бойца через настоящий Dispatcher aiogram (Telegram подменён)."""
 
-from tests.harness import feed_callback, feed_message, make_message, new_user, private_chat
+from tests.harness import Client
 
 from bot.keyboards import AvatarCB, ClassCB, StatCB
 from bot.models import Player
-
-
-class Client:
-    """Пользователь со своим приватным чатом."""
-
-    def __init__(self, db):
-        self.user = new_user()
-        self.chat = private_chat(self.user)
-        self.db = db
-
-    async def send(self, text: str) -> None:
-        await feed_message(make_message(self.chat, text, self.user))
-
-    async def press(self, data: str) -> None:
-        await feed_callback(self.user, self.chat, data)
-
-    async def player(self) -> Player | None:
-        return await self.db.get_player(self.user.id)
 
 
 async def test_character_creation_end_to_end(dispatcher_env):
@@ -151,3 +133,21 @@ async def test_upgrade_without_points_is_refused(dispatcher_env):
     await create_character(client, "warrior", "Боб")
     await client.send("/upgrade")
     assert "Свободных очков нет" in session.texts[-1]
+
+
+async def test_help_and_top_are_wired_up(dispatcher_env):
+    """Справка и топ должны получать config и db из workflow-данных."""
+    db, _, session = dispatcher_env
+    client = Client(db)
+    await create_character(client, "rogue", "Марла")
+
+    await client.send("/help")
+    assert "Бойцовский клуб" in session.texts[-1]
+    assert "ап" in session.texts[-1]
+
+    await client.send("/top")
+    assert "Чемпионы клуба" in session.texts[-1]
+    assert "Марла" in session.texts[-1]
+
+    await client.send("/classes")
+    assert "Танк" in session.texts[-1]

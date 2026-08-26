@@ -10,6 +10,16 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES
 from bot.game.combat import MAX_MISSED_TURNS, MAX_ROUNDS
+from bot.game.economy import (
+    LEVEL_CREDITS,
+    MAX_LEVEL,
+    POINTS_PER_UP,
+    RATING_BASE,
+    REPEAT_SHARES,
+    UP_CREDITS,
+    WIN_CREDITS_MAX,
+    WIN_CREDITS_MIN,
+)
 from bot.game.narrator import esc
 from bot.handlers.common import profile_text, send_profile
 
@@ -22,7 +32,11 @@ def help_text(turn_timeout: int = 30) -> str:
         "<b>В личке бота</b>\n"
         "/start — создать бойца (класс → прозвище → аватар → характеристики)\n"
         "/profile — карточка бойца\n"
-        "/upgrade — раскидать свободные очки после уровня\n"
+        "/upgrade — раскидать свободные очки после апа или уровня\n"
+        "/shop — кредиты и на что их тратить\n"
+        "/respec — снести характеристики и раздать заново\n"
+        "/class — сменить класс бойца\n"
+        "/rename — новое прозвище, /avatar — новая аватарка\n"
         "/reset — начать заново с новым персонажем\n"
         "/classes — чем отличаются классы\n\n"
         "<b>В группе</b>\n"
@@ -45,7 +59,21 @@ def help_text(turn_timeout: int = 30) -> str:
         f"Зоны: {', '.join(z.label for z in ALL_ZONES)}.\n"
         f"С 6-го раунда бойцы устают и бьют всё сильнее, "
         f"через {MAX_ROUNDS} раундов победу присуждает судья по остатку здоровья.\n"
-        "Взаимный нокаут и равное здоровье по решению судьи — ничья."
+        "Взаимный нокаут и равное здоровье по решению судьи — ничья.\n\n"
+        "<b>Что даёт бой</b>\n"
+        "Опыт получает только победитель: база плюс доля от нанесённого урона, "
+        "умноженная на разницу уровней. Побить старшего выгодно, "
+        "младшего — почти бесполезно.\n"
+        f"Каждая четверть уровня — <b>ап</b>: +{POINTS_PER_UP} очко характеристик "
+        f"и {UP_CREDITS} 💰. Четвёртый ап совпадает с новым уровнем, за него "
+        f"дают ещё {LEVEL_CREDITS} 💰 и прибавку к здоровью.\n"
+        f"За победу капает {WIN_CREDITS_MIN}–{WIN_CREDITS_MAX} 💰. "
+        "За поражение и ничью — ни опыта, ни кредитов.\n"
+        f"Рейтинг: ±{RATING_BASE} с поправкой на разницу уровней, "
+        "ничья считается поражением обоим.\n"
+        f"Повторные бои с одним соперником за сутки приносят "
+        f"{' → '.join(f'{share:.0%}' for share in REPEAT_SHARES)} награды.\n"
+        f"Потолок — {MAX_LEVEL} уровень, дальше опыт копится про запас."
     )
 
 
@@ -87,11 +115,12 @@ async def cmd_top(message: Message, db: Database) -> None:
         await message.answer("В клубе пока ни одного бойца. /start — исправь это.")
         return
     medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-    lines = ["🏆 <b>Чемпионы клуба</b>", ""]
+    lines = ["🏆 <b>Чемпионы клуба</b>", "<i>по рейтингу</i>", ""]
     for index, player in enumerate(players):
         lines.append(
             f"{medals.get(index, f'{index + 1}.')} {player.avatar} "
-            f"<b>{esc(player.nickname)}</b> — {player.fclass.title}, "
-            f"{player.level} ур. · {player.wins}—{player.losses}"
+            f"<b>{esc(player.nickname)}</b> — <b>{player.rating}</b> · "
+            f"{player.fclass.title}, {player.level} ур. · "
+            f"{player.wins}—{player.losses}"
         )
     await message.answer("\n".join(lines))
