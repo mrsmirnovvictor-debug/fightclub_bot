@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -101,6 +102,9 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        # По умолчанию logging пишет в stderr, и хостинги красят весь лог
+        # в красное. Обычные сообщения должны идти в stdout.
+        stream=sys.stdout,
     )
     try:
         asyncio.run(run())

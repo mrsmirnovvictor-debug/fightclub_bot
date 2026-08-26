@@ -43,7 +43,7 @@ def show_fight(first: FighterClass, second: FighterClass, seed: int) -> None:
     round_number = 1
     while True:
         result = resolve_round(
-            a, random_action(first, rng), b, random_action(second, rng), round_number, rng
+            a, random_action(a, rng), b, random_action(b, rng), round_number, rng
         )
         print(plain(round_report(result, fighters, rng)), "\n")
         if result.finished:
@@ -65,12 +65,7 @@ def balance(runs: int, seed: int) -> None:
             round_number = 1
             while True:
                 result = resolve_round(
-                    a,
-                    random_action(first, rng),
-                    b,
-                    random_action(second, rng),
-                    round_number,
-                    rng,
+                    a, random_action(a, rng), b, random_action(b, rng), round_number, rng
                 )
                 if result.finished:
                     wins[result.winner_id] += 1
@@ -118,12 +113,7 @@ def progress(runs: int, seed: int) -> None:
             round_number = 1
             while True:
                 result = resolve_round(
-                    a,
-                    random_action(hero.fclass, rng),
-                    b,
-                    random_action(rival, rng),
-                    round_number,
-                    rng,
+                    a, random_action(a, rng), b, random_action(b, rng), round_number, rng
                 )
                 if result.finished:
                     break

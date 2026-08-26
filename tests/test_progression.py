@@ -203,3 +203,18 @@ async def test_delete_player(db):
     await db.save_player(make_player())
     await db.delete_player(1)
     assert await db.get_player(1) is None
+
+
+async def test_database_creates_its_directory(tmp_path):
+    """Путь на ещё не примонтированном диске не должен ронять бота."""
+    from bot.database import Database
+
+    target = tmp_path / "data" / "nested" / "fightclub.db"
+    database = Database(str(target))
+    await database.connect()
+    try:
+        assert target.exists()
+        await database.save_player(make_player(user_id=1))
+        assert (await database.get_player(1)) is not None
+    finally:
+        await database.close()

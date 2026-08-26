@@ -58,10 +58,26 @@ SLOT_EMOJI: dict[Slot, str] = {
     Slot.BOOTS: "👟",
 }
 
+# Чем бьёт боец без оружия
+BARE_HANDS = "кулаком"
+BARE_HANDS_ICON = "👊"
+
 # Слева направо на карточке: две колонки по четыре слота
 LEFT_SLOTS: tuple[Slot, ...] = (Slot.HEAD, Slot.WEAPON, Slot.JACKET, Slot.BELT)
 RIGHT_SLOTS: tuple[Slot, ...] = (Slot.GLOVES, Slot.SHIELD, Slot.PANTS, Slot.BOOTS)
 ALL_SLOTS: tuple[Slot, ...] = LEFT_SLOTS + RIGHT_SLOTS
+
+
+class ItemKind(str, Enum):
+    """Чем предмет является в бою.
+
+    В слот щита можно поставить и второе оружие — тогда боец бьёт дважды
+    за раунд, но лишается прибавки к блоку.
+    """
+
+    GEAR = "gear"  # просто вещь с бонусами
+    WEAPON = "weapon"
+    SHIELD = "shield"
 
 
 @dataclass(frozen=True)
@@ -72,6 +88,9 @@ class Item:
     title: str
     slot: Slot
     icon: str = ""
+    kind: ItemKind = ItemKind.GEAR
+    # Как предмет называется в тексте боя: «кастетом», «мечом»
+    instrumental: str = ""
     strength: int = 0
     agility: int = 0
     intuition: int = 0
@@ -79,6 +98,45 @@ class Item:
     hp: int = 0  # прибавка к запасу здоровья сверх выносливости
     level_required: int = 1
     price: int = 0  # под будущий магазин
+
+    @property
+    def weapon(self) -> Item | None:
+        """Оружие в основной руке."""
+        item = self.items.get(Slot.WEAPON)
+        return item if item and item.is_weapon else None
+
+    @property
+    def offhand(self) -> Item | None:
+        """Что во второй руке: щит или второе оружие."""
+        return self.items.get(Slot.SHIELD)
+
+    @property
+    def has_shield(self) -> bool:
+        offhand = self.offhand
+        return bool(offhand and offhand.is_shield)
+
+    @property
+    def second_weapon(self) -> Item | None:
+        offhand = self.offhand
+        return offhand if offhand and offhand.is_weapon else None
+
+    @property
+    def weapon_names(self) -> tuple[str, ...]:
+        """Чем боец бьёт в этом раунде. Без оружия — кулаком."""
+        names = [self.weapon.instrumental if self.weapon else BARE_HANDS]
+        second = self.second_weapon
+        if second:
+            names.append(second.instrumental or BARE_HANDS)
+        return tuple(names)
+
+    @property
+    def weapon_icons(self) -> tuple[str, ...]:
+        """Чем подписывать колонки ударов: кулак или значок оружия."""
+        icons = [self.weapon.emoji if self.weapon else BARE_HANDS_ICON]
+        second = self.second_weapon
+        if second:
+            icons.append(second.emoji)
+        return tuple(icons)
 
     @property
     def bonus(self) -> Stats:
@@ -92,6 +150,19 @@ class Item:
     @property
     def emoji(self) -> str:
         return self.icon or self.slot.emoji
+
+    @property
+    def is_weapon(self) -> bool:
+        return self.kind is ItemKind.WEAPON
+
+    @property
+    def is_shield(self) -> bool:
+        return self.kind is ItemKind.SHIELD
+
+    @property
+    def in_hand(self) -> str:
+        """Чем бьют этим предметом. Пустая строка — предмет не оружие."""
+        return self.instrumental if self.is_weapon else ""
 
     def describe_bonus(self) -> str:
         parts = []
@@ -113,11 +184,28 @@ CATALOGUE: dict[str, Item] = {
     item.code: item
     for item in (
         Item("bandana", "Бандана", Slot.HEAD, "🧢", intuition=1, price=40),
-        Item("knuckles", "Кастет", Slot.WEAPON, "🔩", strength=2, price=80),
+        Item(
+            "knuckles",
+            "Кастет",
+            Slot.WEAPON,
+            "🔩",
+            kind=ItemKind.WEAPON,
+            instrumental="кастетом",
+            strength=2,
+            price=80,
+        ),
         Item("leather_jacket", "Косуха", Slot.JACKET, "🧥", endurance=1, hp=5, price=90),
         Item("wide_belt", "Широкий пояс", Slot.BELT, "🥋", endurance=1, price=50),
         Item("wraps", "Бинты", Slot.GLOVES, "🩹", strength=1, price=35),
-        Item("bar_lid", "Крышка от бочки", Slot.SHIELD, "🛢", endurance=2, price=70),
+        Item(
+            "bar_lid",
+            "Крышка от бочки",
+            Slot.SHIELD,
+            "🛢",
+            kind=ItemKind.SHIELD,
+            endurance=2,
+            price=70,
+        ),
         Item("canvas_pants", "Брезентовые штаны", Slot.PANTS, "👖", endurance=1, price=45),
         Item("sneakers", "Кеды", Slot.BOOTS, "👟", agility=2, price=60),
     )
@@ -175,6 +263,45 @@ class Equipment:
 
     def take_off(self, slot: Slot) -> Item | None:
         return self.items.pop(slot, None)
+
+    @property
+    def weapon(self) -> Item | None:
+        """Оружие в основной руке."""
+        item = self.items.get(Slot.WEAPON)
+        return item if item and item.is_weapon else None
+
+    @property
+    def offhand(self) -> Item | None:
+        """Что во второй руке: щит или второе оружие."""
+        return self.items.get(Slot.SHIELD)
+
+    @property
+    def has_shield(self) -> bool:
+        offhand = self.offhand
+        return bool(offhand and offhand.is_shield)
+
+    @property
+    def second_weapon(self) -> Item | None:
+        offhand = self.offhand
+        return offhand if offhand and offhand.is_weapon else None
+
+    @property
+    def weapon_names(self) -> tuple[str, ...]:
+        """Чем боец бьёт в этом раунде. Без оружия — кулаком."""
+        names = [self.weapon.instrumental if self.weapon else BARE_HANDS]
+        second = self.second_weapon
+        if second:
+            names.append(second.instrumental or BARE_HANDS)
+        return tuple(names)
+
+    @property
+    def weapon_icons(self) -> tuple[str, ...]:
+        """Чем подписывать колонки ударов: кулак или значок оружия."""
+        icons = [self.weapon.emoji if self.weapon else BARE_HANDS_ICON]
+        second = self.second_weapon
+        if second:
+            icons.append(second.emoji)
+        return tuple(icons)
 
     @property
     def bonus(self) -> Stats:

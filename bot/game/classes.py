@@ -52,7 +52,36 @@ ZONE_PREPOSITIONAL: dict[Zone, str] = {
     Zone.LEGS: "по ногам",
 }
 
+# Зоны идут кольцом: за ногами снова начинается голова.
+# Блок закрывает только смежные зоны, поэтому порядок здесь — часть правил.
 ALL_ZONES: tuple[Zone, ...] = tuple(Zone)
+
+# Сколько зон закрывает обычный блок и блок со щитом
+BLOCK_WIDTH = 2
+SHIELD_BLOCK_WIDTH = 3
+
+
+def block_combo(start: Zone, width: int = BLOCK_WIDTH) -> tuple[Zone, ...]:
+    """Блок, начинающийся с этой зоны: она и соседние по кольцу."""
+    zones = ALL_ZONES
+    count = len(zones)
+    width = max(1, min(width, count))
+    first = zones.index(start)
+    return tuple(zones[(first + step) % count] for step in range(width))
+
+
+def block_combos(width: int = BLOCK_WIDTH) -> tuple[tuple[Zone, ...], ...]:
+    """Все допустимые блоки заданной ширины — по одному на каждую зону."""
+    return tuple(block_combo(zone, width) for zone in ALL_ZONES)
+
+
+def block_title(combo: tuple[Zone, ...]) -> str:
+    """«Голова + грудь» — первая зона с большой буквы, остальные с маленькой."""
+    if not combo:
+        return "—"
+    titles = [combo[0].title.capitalize()]
+    titles += [zone.title for zone in combo[1:]]
+    return " + ".join(titles)
 
 
 class Stat(str, Enum):

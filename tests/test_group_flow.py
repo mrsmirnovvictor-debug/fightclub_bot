@@ -7,7 +7,7 @@ from aiogram.types import Chat, Message, User
 from tests.harness import feed_callback, feed_message, ids
 
 from bot.game.classes import get_class
-from bot.keyboards import ChallengeCB, FightCB, fight_keyboard
+from bot.keyboards import ChallengeCB, FightCB, StandoffCB, fight_keyboard
 from bot.models import Player
 
 GROUP = Chat(id=-1002000, type="supergroup", title="Клуб")
@@ -75,25 +75,38 @@ async def test_duel_from_arena_setup_to_result(arena):
     duel = duels.duel_in_chat(GROUP.id, THREAD_ID)
     assert duel is not None
     duel_id = duel.id
+    assert not duel.started
+    assert "Оцените друг друга" in session.texts[-1]
+
+    # соперник не может начать бой за вызвавшего
+    await press(second, StandoffCB(action="start", duel_id=duel_id).pack())
+    assert not duel.started
+    await press(first, StandoffCB(action="start", duel_id=duel_id).pack())
+    assert duel.started
 
     for _ in range(40):
         if duels.duel_in_chat(GROUP.id, THREAD_ID) is None:
             break
         for index, user in enumerate((first, second)):
             fighter = duel.fighters[user.id]
-            await press(
-                user,
-                FightCB(action="attack", duel_id=duel_id, zone=ZONES[index]).pack(),
-            )
-            for offset in range(fighter.derived.block_zones):
+            for slot in range(fighter.attacks_per_round):
                 await press(
                     user,
                     FightCB(
-                        action="block",
+                        action="attack",
                         duel_id=duel_id,
-                        zone=ZONES[(index + offset + 1) % len(ZONES)],
+                        zone=ZONES[(index + slot) % len(ZONES)],
+                        slot=slot,
                     ).pack(),
                 )
+            await press(
+                user,
+                FightCB(
+                    action="block",
+                    duel_id=duel_id,
+                    zone=ZONES[(index + 1) % len(ZONES)],
+                ).pack(),
+            )
     assert duels.duel_in_chat(GROUP.id, THREAD_ID) is None
     assert "🏆" in session.texts[-1] or "Ничья" in session.texts[-1]
 
@@ -152,10 +165,11 @@ async def test_no_surrender_button_and_no_giveup_command(arena):
     await press(second, ChallengeCB(action="accept", challenge_id=challenge_id).pack())
     duel = duels.duel_in_chat(GROUP.id, THREAD_ID)
     assert duel is not None
+    await press(first, StandoffCB(action="start", duel_id=duel.id).pack())
 
     buttons = [
         button.callback_data
-        for row in fight_keyboard(duel.id).inline_keyboard
+        for row in fight_keyboard(duel.id, duel.fighters[first.id]).inline_keyboard
         for button in row
     ]
     assert all("giveup" not in (data or "") for data in buttons)

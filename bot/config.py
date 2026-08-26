@@ -28,6 +28,29 @@ class Config:
         return bool(self.webapp_url)
 
 
+def _webapp_url() -> str:
+    """Публичный адрес мини-аппа.
+
+    На хостингах вроде Railway домен выдаётся автоматически и приезжает
+    в окружении — тогда прописывать его руками не нужно.
+    """
+    url = os.getenv("WEBAPP_URL", "").strip()
+    if not url:
+        domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+        if domain:
+            url = f"https://{domain}"
+    return url.rstrip("/")
+
+
+def _webapp_port() -> int:
+    """Порт мини-аппа. PORT задаёт хостинг, WEBAPP_PORT — мы сами."""
+    for name in ("PORT", "WEBAPP_PORT"):
+        value = os.getenv(name, "").strip()
+        if value.isdigit():
+            return int(value)
+    return 8080
+
+
 def load_config() -> Config:
     token = os.getenv("BOT_TOKEN", "").strip()
     if not token:
@@ -39,8 +62,8 @@ def load_config() -> Config:
         db_path=os.getenv("DB_PATH", "fightclub.db").strip() or "fightclub.db",
         turn_timeout=int(os.getenv("TURN_TIMEOUT", "30")),
         challenge_timeout=int(os.getenv("CHALLENGE_TIMEOUT", "180")),
-        webapp_url=os.getenv("WEBAPP_URL", "").strip().rstrip("/"),
+        webapp_url=_webapp_url(),
         webapp_host=os.getenv("WEBAPP_HOST", "0.0.0.0").strip(),
-        webapp_port=int(os.getenv("WEBAPP_PORT", "8080")),
+        webapp_port=_webapp_port(),
         miniapp_name=os.getenv("MINIAPP_NAME", "").strip(),
     )
