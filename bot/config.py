@@ -26,6 +26,9 @@ class Config:
     webapp_port: int = 8080
     # Короткое имя мини-аппа из BotFather: по нему строятся ссылки на карточку
     miniapp_name: str = ""
+    # Мини-апп включён главным (BotFather → Configure Mini App): тогда карточка
+    # открывается по t.me/бот?startapp=id и короткое имя не нужно
+    miniapp_main: bool = False
 
     @property
     def webapp_enabled(self) -> bool:
@@ -55,6 +58,10 @@ def _webapp_port() -> int:
     return 8080
 
 
+def _flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on", "да"}
+
+
 def load_config() -> Config:
     token = os.getenv("BOT_TOKEN", "").strip()
     if not token:
@@ -74,4 +81,5 @@ def load_config() -> Config:
         webapp_host=os.getenv("WEBAPP_HOST", "0.0.0.0").strip(),
         webapp_port=_webapp_port(),
         miniapp_name=os.getenv("MINIAPP_NAME", "").strip(),
+        miniapp_main=_flag("MINIAPP_MAIN"),
     )

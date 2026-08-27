@@ -4,12 +4,7 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-    WebAppInfo,
-)
+from aiogram.types import Message
 
 from bot.config import Config
 from bot.database import Database
@@ -33,7 +28,7 @@ from bot.game.economy import (
 )
 from bot.game.narrator import esc, name_link
 from bot.game.links import links
-from bot.handlers.common import profile_text, send_profile
+from bot.handlers.common import card_keyboard, profile_text, send_profile
 
 router = Router(name="profile")
 
@@ -44,6 +39,7 @@ def help_text(turn_timeout: int = 30) -> str:
         "<b>В личке бота</b>\n"
         "/start — создать бойца (класс → прозвище → аватар → характеристики)\n"
         "/card — карточка бойца в мини-аппе\n"
+        "/miniapp — проверить ссылку на карточку, если она не открывается\n"
         "/profile — то же самое текстом\n"
         "/upgrade — раскидать свободные очки после апа или уровня\n"
         "/shop — кредиты и на что их тратить\n"
@@ -206,31 +202,48 @@ async def cmd_classes(message: Message) -> None:
     await message.answer("\n\n".join(blocks))
 
 
-def card_keyboard(config: Config, user_id: int, private: bool) -> InlineKeyboardMarkup | None:
-    """Кнопка, открывающая карточку.
+@router.message(Command("miniapp"))
+async def cmd_miniapp(message: Message, config: Config) -> None:
+    """Проверка карточки: какая ссылка стоит под именем бойца в чате боя.
 
-    В личке Telegram разрешает web_app-кнопки, в группах — только ссылки,
-    поэтому там ведём на прямую ссылку мини-аппа.
+    Самая частая поломка не в коде: если в BotFather нет приложения с таким
+    коротким именем, Telegram по этой ссылке молча открывает чат с ботом.
+    Команда показывает ссылку целиком, чтобы это было видно сразу.
     """
-    if private and config.webapp_enabled:
-        url = f"{config.webapp_url}/?user_id={user_id}"
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="🪪 Карточка бойца", web_app=WebAppInfo(url=url)
-                    )
-                ]
-            ]
+    user_id = message.from_user.id
+    lines = ["🔗 <b>Как настроена карточка</b>", ""]
+
+    if links.bot_username:
+        lines.append(f"Бот: <code>@{links.bot_username}</code>")
+    else:  # pragma: no cover - до первого get_me такого не бывает
+        lines.append("Бот: имя ещё не получено")
+
+    if links.miniapp_name:
+        lines.append(f"Короткое имя мини-аппа: <code>{esc(links.miniapp_name)}</code>")
+    elif links.main_app:
+        lines.append("Мини-апп включён главным (MINIAPP_MAIN)")
+    else:
+        lines.append(
+            "Короткого имени нет: имена в чате ведут в личку, "
+            "а карточку присылает сам бот"
         )
-    card_url = links.card_url(user_id)
-    if card_url:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🪪 Карточка бойца", url=card_url)]
-            ]
-        )
-    return None
+    lines.append(
+        f"Адрес мини-аппа: <code>{esc(config.webapp_url) or '—'}</code>"
+    )
+
+    lines += ["", "Под именем бойца в чате стоит:", f"<code>{esc(links.href(user_id))}</code>"]
+    if links.card_url(user_id):
+        lines += [
+            "",
+            "Открой её и проверь. Если вместо карточки открылся чат с ботом — "
+            "приложения с таким коротким именем в BotFather нет. Лечится одним "
+            "из трёх способов: завести его (/newapp) и вписать то же имя в "
+            "MINIAPP_NAME; включить мини-апп главным (Configure Mini App) и "
+            "поставить MINIAPP_MAIN=1 с пустым MINIAPP_NAME; либо очистить "
+            "MINIAPP_NAME — тогда имя в чате ведёт в личку, и бот присылает "
+            "карточку сам.",
+        ]
+    return await message.answer("\n".join(lines), disable_web_page_preview=True)
 
 
 @router.message(Command("card"))

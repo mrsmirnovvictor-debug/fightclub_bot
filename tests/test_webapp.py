@@ -326,6 +326,46 @@ def test_card_link_needs_both_username_and_app_name():
     )
 
 
+def test_the_main_mini_app_opens_without_a_short_name():
+    """Мини-апп можно включить главным — тогда короткое имя не нужно."""
+    from bot.game.links import CardLinks
+
+    main = CardLinks(bot_username="bot", main_app=True)
+    assert main.card_url(7) == "https://t.me/bot?startapp=7"
+    assert main.enabled
+
+    # именованное приложение важнее: оно точнее адресует
+    both = CardLinks(bot_username="bot", miniapp_name="card", main_app=True)
+    assert both.card_url(7) == "https://t.me/bot/card?startapp=7"
+
+
+def test_without_a_mini_app_the_name_leads_to_the_bot_not_into_nowhere():
+    """Запасной путь: диплинк в личку, где бот сам пришлёт карточку."""
+    from bot.game.links import CardLinks, card_target
+
+    plain = CardLinks(bot_username="bot")
+    assert plain.card_url(9) is None
+    assert not plain.enabled
+    assert plain.href(9) == "https://t.me/bot?start=card_9"
+
+    # бот понимает, чью карточку у него просят
+    assert card_target("card_9") == 9
+    assert card_target("card_") is None
+    assert card_target("shop") is None
+
+    # без имени бота остаётся только профиль в Telegram
+    assert CardLinks().href(9) == "tg://user?id=9"
+
+
+def test_a_short_name_written_with_a_slash_still_works():
+    """MINIAPP_NAME иногда вписывают как «/card» — ссылка не должна ломаться."""
+    from bot.game.links import CardLinks
+
+    sloppy = CardLinks()
+    sloppy.configure("@fightclub_bot", " /card ")
+    assert sloppy.card_url(1) == "https://t.me/fightclub_bot/card?startapp=1"
+
+
 def test_stranger_card_hides_the_wallet_and_the_backpack():
     """Карточку соседа открывают из чата боя — кошелёк и рюкзак не показываем."""
     from bot.game.equipment import CATALOGUE, OwnedItem

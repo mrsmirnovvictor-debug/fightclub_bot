@@ -151,3 +151,62 @@ async def test_help_and_top_are_wired_up(dispatcher_env):
 
     await client.send("/classes")
     assert "Танк" in session.texts[-1]
+
+
+async def test_card_deep_link_shows_that_fighter(dispatcher_env):
+    """t.me/бот?start=card_ID — запасной путь к карточке из чата боя."""
+    db, _, session = dispatcher_env
+    owner = Client(db)
+    guest = Client(db)
+    fighter = Player(
+        user_id=owner.user.id,
+        nickname="Тайлер",
+        class_code="warrior",
+        level=4,
+        credits=321,
+    )
+    await db.save_player(fighter)
+
+    await guest.send(f"/start card_{owner.user.id}")
+    text = session.texts[-1]
+
+    assert "Тайлер" in text
+    assert "4 уровень" in text
+    assert "321" not in text  # чужой кошелёк не показываем
+    # и кнопка, открывающая карточку в мини-аппе
+    button = session.method_calls("SendMessage")[-1].reply_markup
+    assert button is None or "Карточка" in button.inline_keyboard[0][0].text
+
+
+async def test_a_deep_link_to_nobody_falls_back_to_registration(dispatcher_env):
+    db, _, session = dispatcher_env
+    client = Client(db)
+
+    await client.send("/start card_999999")
+    assert "картотеке нет" in session.texts[-2]
+    assert "Выбирай класс" in session.texts[-1]
+
+
+async def test_an_unknown_deep_link_starts_the_usual_way(dispatcher_env):
+    db, _, session = dispatcher_env
+    client = Client(db)
+
+    await client.send("/start reklama")
+    assert "Выбирай класс" in session.texts[-1]
+
+
+async def test_miniapp_command_shows_the_link_under_the_name(dispatcher_env):
+    """/miniapp показывает ссылку целиком — по ней и видно, что настроено."""
+    from bot.game.links import links
+
+    db, _, session = dispatcher_env
+    client = Client(db)
+    try:
+        links.configure("vegasfightclub_bot", "card")
+        await client.send("/miniapp")
+        text = session.texts[-1]
+
+        assert f"https://t.me/vegasfightclub_bot/card?startapp={client.user.id}" in text
+        assert "чат с ботом" in text  # подсказка про несозданное приложение
+    finally:
+        links.configure("", "")

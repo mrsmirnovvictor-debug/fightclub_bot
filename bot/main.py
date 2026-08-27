@@ -92,7 +92,7 @@ async def run(config: Config | None = None) -> None:
 
     await setup_commands(bot)
     me = await bot.get_me()
-    links.configure(me.username or "", config.miniapp_name)
+    links.configure(me.username or "", config.miniapp_name, config.miniapp_main)
     if config.miniapp_name and not config.webapp_enabled:
         logger.warning(
             "MINIAPP_NAME задан, а WEBAPP_URL — нет: ссылки на карточку никуда не ведут"

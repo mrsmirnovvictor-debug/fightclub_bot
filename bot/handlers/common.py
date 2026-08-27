@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-from aiogram.types import Message
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 
+from bot.config import Config
 from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats
 from bot.game.equipment import Equipment
 from bot.game.economy import MICRO_UPS_PER_LEVEL
 from bot.game.stats import derive
+from bot.game.links import links
 from bot.game.narrator import esc, health_line
 from bot.models import Player
 
@@ -84,14 +91,18 @@ def progress_line(player: Player) -> str:
     )
 
 
-def profile_text(player: Player) -> str:
+def profile_text(player: Player, own: bool = True) -> str:
+    """Профиль текстом. Чужому кошелёк и подсказки про очки не показываем."""
     fclass = player.fclass
     lines = [
         f"{player.avatar} <b>{esc(player.nickname)}</b>",
         f"{fclass.label} · {player.level} уровень · рейтинг <b>{player.rating}</b>",
         health_line(player),
         progress_line(player),
-        f"💰 Кредиты: <b>{player.credits}</b>",
+    ]
+    if own:
+        lines.append(f"💰 Кредиты: <b>{player.credits}</b>")
+    lines += [
         "",
         stats_block(player.stats),
         "",
@@ -102,11 +113,41 @@ def profile_text(player: Player) -> str:
         f"поражений: <b>{player.losses}</b> · "
         f"ничьих: <b>{player.draws}</b>",
     ]
-    if player.free_points:
+    if own and player.free_points:
         lines.append(
             f"\n✨ Свободных очков: <b>{player.free_points}</b> — раскидай их: /upgrade"
         )
     return "\n".join(lines)
+
+
+def card_keyboard(
+    config: Config, user_id: int, private: bool
+) -> InlineKeyboardMarkup | None:
+    """Кнопка, открывающая карточку.
+
+    В личке Telegram разрешает web_app-кнопки, и это самый надёжный путь:
+    он не зависит от того, заведено ли приложение в BotFather. В группах
+    web_app-кнопок нет, поэтому там ведём на прямую ссылку мини-аппа.
+    """
+    if private and config.webapp_enabled:
+        url = f"{config.webapp_url}/?user_id={user_id}"
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🪪 Карточка бойца", web_app=WebAppInfo(url=url)
+                    )
+                ]
+            ]
+        )
+    card_url = links.card_url(user_id)
+    if card_url:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🪪 Карточка бойца", url=card_url)]
+            ]
+        )
+    return None
 
 
 async def send_profile(message: Message, player: Player, keyboard=None) -> None:

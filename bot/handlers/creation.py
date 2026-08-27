@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot.config import Config
 from bot.database import Database
 from bot.game.classes import (
     ALL_STATS,
@@ -20,8 +21,15 @@ from bot.game.classes import (
     Stats,
     get_class,
 )
+from bot.game.links import card_target
 from bot.game.narrator import esc
-from bot.handlers.common import combat_block, send_profile, stats_block
+from bot.handlers.common import (
+    card_keyboard,
+    combat_block,
+    profile_text,
+    send_profile,
+    stats_block,
+)
 from bot.keyboards import (
     AvatarCB,
     ClassCB,
@@ -108,6 +116,36 @@ def distribution_text(
 
 
 # ---------- старт ----------
+
+
+@router.message(CommandStart(deep_link=True))
+async def cmd_start_card(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+) -> None:
+    """Диплинк на карточку: t.me/бот?start=card_12345.
+
+    Так имя бойца из чата открывается даже там, где именованного мини-аппа
+    нет: человек попадает в личку, но не в пустоту — бот сразу показывает
+    того самого бойца и кнопку, открывающую его карточку.
+    """
+    target = card_target(command.args or "")
+    if target is None:
+        await cmd_start(message, state, db)
+        return
+
+    player = await db.get_player(target)
+    if player is None:
+        await message.answer("Этого бойца в картотеке нет.")
+        await cmd_start(message, state, db)
+        return
+
+    own = target == message.from_user.id
+    keyboard = card_keyboard(config, target, private=True)
+    await message.answer(profile_text(player, own=own), reply_markup=keyboard)
 
 
 @router.message(CommandStart())
