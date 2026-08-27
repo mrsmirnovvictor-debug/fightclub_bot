@@ -460,7 +460,9 @@ class BattleService:
                 esc(session.fighters[user_id].name) for user_id in session.idle
             )
             lines.append("")
-            lines.append(f"😐 Без пары в этом ходу: {names} — стоят и ждут.")
+            lines.append(
+                f"😐 Без пары в этом ходу: {names} — ход пропускается без потерь."
+            )
         lines += ["", f"⏱️ {self.config.turn_timeout} сек. Выберите удар и блок."]
         return "\n".join(lines)
 
