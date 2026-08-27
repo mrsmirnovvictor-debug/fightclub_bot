@@ -98,7 +98,11 @@ function bonusList(item) {
   list.className = "thing-gain";
   item.bonuses.forEach((gain) => {
     const li = document.createElement("li");
-    li.textContent = gain.emoji + " " + gain.title + " +" + gain.value;
+    // диапазоны и проценты пишем через двоеточие, прибавки — со знаком плюс
+    li.textContent =
+      gain.text === undefined
+        ? gain.emoji + " " + gain.title + " +" + gain.value
+        : gain.emoji + " " + gain.title + ": " + gain.text;
     list.appendChild(li);
   });
   return list;

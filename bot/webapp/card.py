@@ -119,14 +119,33 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
 
 
 def bonuses_payload(item: Item) -> list[dict]:
-    """Что вещь даёт, когда надета."""
-    rows = [
+    """Что вещь даёт, когда надета.
+
+    Строка с диапазоном («Урон: 13–21») приходит текстом, прибавка к
+    характеристике — числом: на экране они рисуются по-разному.
+    """
+    rows: list[dict] = []
+    if item.damage_max:
+        rows.append({"emoji": "👊", "title": "Урон", "text": item.describe_damage()})
+    if item.armor_max:
+        rows.append({"emoji": "🛡", "title": "Броня", "text": item.describe_armor()})
+    rows += [
         {"emoji": stat.emoji, "title": stat.title.capitalize(), "value": value}
         for stat, value in ((stat, item.bonus.get(stat)) for stat in ALL_STATS)
         if value
     ]
     if item.hp:
         rows.append({"emoji": "❤️", "title": "Здоровье", "value": item.hp})
+    rows += [
+        {"emoji": emoji, "title": title, "text": f"{share:.0%}"}
+        for emoji, title, share in (
+            ("🎯", "Точность", item.accuracy),
+            ("🌀", "Уворот", item.dodge),
+            ("💥", "Крит", item.crit),
+            ("🚫", "Антикрит", item.anticrit),
+        )
+        if share
+    ]
     return rows
 
 

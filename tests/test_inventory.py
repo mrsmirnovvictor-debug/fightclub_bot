@@ -342,8 +342,10 @@ def test_inventory_rows_carry_everything_the_screen_draws():
     assert row["wear_text"] == f"3/{MAX_WEAR}"
     assert row["repair_price"] == 3
     assert row["can_equip"] is False
-    gain = {row["title"]: row["value"] for row in row["bonuses"]}
-    assert gain["Сила"] == CATALOGUE["knuckles"].strength
+    gain = {line["title"]: line for line in row["bonuses"]}
+    assert gain["Сила"]["value"] == CATALOGUE["knuckles"].strength
+    # у оружия в свойствах стоит диапазон урона, а не прибавка со знаком плюс
+    assert gain["Урон"]["text"] == CATALOGUE["knuckles"].describe_damage()
     # уровень и сила не дотягивают — обе строки требований помечены красным
     assert [need["ok"] for need in row["requirements"]] == [False, False]
     # оружие можно взять и во вторую руку
@@ -671,18 +673,40 @@ def test_percent_bonuses_stay_within_their_caps():
 def test_every_weapon_adds_damage_and_it_grows_with_the_tier():
     weapons = [item for item in CATALOGUE.values() if item.is_weapon]
     assert weapons
+    by_level: dict[int, list[float]] = {}
     for item in weapons:
         assert item.damage_min > 0 and item.damage_max >= item.damage_min
-    by_level = {}
-    for item in weapons:
-        by_level.setdefault(item.level_required, set()).add(
-            (item.damage_min, item.damage_max)
+        by_level.setdefault(item.level_required, []).append(
+            (item.damage_min + item.damage_max) / 2
         )
     levels = sorted(by_level)
     for lower, upper in zip(levels, levels[1:]):
         assert max(by_level[lower]) < min(by_level[upper]), (
             f"оружие {upper} уровня не сильнее оружия {lower}"
         )
+
+
+def test_weapon_spread_matches_the_character_of_its_class():
+    """У ассасина оружие рвано́е, у танка ровное, у воина с трикстером середина."""
+    def spread(code: str) -> float:
+        item = CATALOGUE[code]
+        return (item.damage_max - item.damage_min) / (item.damage_min + item.damage_max)
+
+    for tier in (
+        ("pipe", "switchblade", "awl", "crowbar"),
+        ("bat", "machete", "stiletto", "sledge"),
+        ("fire_axe", "balisong", "ice_pick", "chain"),
+        ("cleaver", "razor", "needle", "pry_bar"),
+    ):
+        warrior, rogue, assassin, tank = (spread(code) for code in tier)
+        assert assassin > warrior > tank, tier
+        assert assassin > rogue > tank, tier
+        # среднее у всех четверых одно: разводим разброс, а не силу
+        averages = {
+            (CATALOGUE[code].damage_min + CATALOGUE[code].damage_max) / 2
+            for code in tier
+        }
+        assert len(averages) == 1, f"{tier}: средний урон разъехался — {averages}"
 
 
 def test_armour_covers_the_zone_it_is_worn_on():
