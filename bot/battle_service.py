@@ -46,13 +46,13 @@ from bot.game.modes import FightMode
 from bot.game.narrator import (
     battle_intro,
     battle_result,
+    battle_rewards_report,
     battle_round_report,
     esc,
     health_warning,
     hp_bar,
     lobby_card,
     mention,
-    rewards_report,
 )
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import BattleCB, LobbyCB, battle_keyboard, lobby_keyboard
@@ -159,6 +159,9 @@ class BattleSession:
     prompt_message_id: int | None = None
     timer: asyncio.Task | None = None
     resolving: bool = False
+    # О ком судья уже сказал: чтобы не повторять одно и то же каждый раунд
+    announced_out: set[int] = field(default_factory=set)
+    announced_idle: tuple[int, ...] = ()
 
     @property
     def order(self) -> list[int]:
@@ -182,7 +185,13 @@ class BattleSession:
 
     @property
     def everyone_ready(self) -> bool:
-        return all(self.is_ready(user_id) for pair in self.pairs for user_id in pair)
+        """Все, кто в этом ходу дерётся, уже нажали. Упавших не ждём."""
+        return all(
+            self.is_ready(user_id)
+            for pair in self.pairs
+            for user_id in pair
+            if self.fighters[user_id].alive
+        )
 
     @property
     def panel(self) -> tuple[tuple[str, ...], int]:
@@ -437,10 +446,12 @@ class BattleService:
             return
 
         icons, width = session.panel
+        text = self._prompt_text(session)
+        session.announced_idle = tuple(session.idle)
         message = await self.voice.send(
             session.chat_id,
             session.thread_id,
-            self._prompt_text(session),
+            text,
             reply_markup=battle_keyboard(session.id, icons, width),
         )
         session.prompt_message_id = message.message_id if message else None
@@ -455,7 +466,7 @@ class BattleService:
                 f"{self._fighter_line(session, first)}  ⚔️  "
                 f"{self._fighter_line(session, second)}"
             )
-        if session.idle:
+        if session.idle and tuple(session.idle) != session.announced_idle:
             names = ", ".join(
                 esc(session.fighters[user_id].name) for user_id in session.idle
             )
@@ -535,6 +546,9 @@ class BattleService:
             session.resolving = False
 
     async def _play_round(self, session: BattleSession) -> None:
+        standing = {
+            user_id for user_id, fighter in session.fighters.items() if fighter.alive
+        }
         results = []
         for first_id, second_id in session.pairs:
             first, second = session.fighters[first_id], session.fighters[second_id]
@@ -554,10 +568,17 @@ class BattleService:
             session.prompt_message_id,
             f"🔒 Раунд {session.round_number}: ставки сделаны, судья считает.",
         )
+        fallen = [
+            user_id
+            for user_id in standing
+            if not session.fighters[user_id].alive
+            and user_id not in session.announced_out
+        ]
+        session.announced_out.update(fallen)
         await self.voice.send(
             session.chat_id,
             session.thread_id,
-            battle_round_report(session, results, self.rng),
+            battle_round_report(session, results, fallen, self.rng),
         )
 
         outcome = judge(
@@ -602,7 +623,7 @@ class BattleService:
         levels = {
             user_id: session.fighters[user_id].level for user_id in session.fighters
         }
-        rows: list[tuple[Player, ProgressReport]] = []
+        rows: list[tuple[Player, ProgressReport, Fighter, bool]] = []
         broken: list[tuple[Player, list]] = []
 
         for user_id, player in players.items():
@@ -639,9 +660,9 @@ class BattleService:
             player.grant_credits(credits)
             player.apply_rating(delta)
             await self.db.save_player(player)
-            rows.append((player, report))
+            rows.append((player, report, fighter, won))
 
-        return rewards_report(rows, broken=broken)
+        return battle_rewards_report(rows, broken=broken)
 
     def _cancel_timer(self, session: BattleSession) -> None:
         timer = session.timer

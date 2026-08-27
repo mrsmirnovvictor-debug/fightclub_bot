@@ -540,8 +540,10 @@ def battle_intro(session) -> str:
     return "\n".join(lines)
 
 
-def battle_round_report(session, results, rng: random.Random | None = None) -> str:
-    """Разбор всех пар за один ход."""
+def battle_round_report(
+    session, results, fallen: list[int], rng: random.Random | None = None
+) -> str:
+    """Разбор всех пар за один ход. Про выбывших говорим один раз — когда упали."""
     rng = rng or random
     lines = [f"<b>⚔️ Раунд {session.round_number}</b>"]
     for result in results:
@@ -555,15 +557,76 @@ def battle_round_report(session, results, rng: random.Random | None = None) -> s
                     rng,
                 )
             )
-    fallen = [
-        fighter for fighter in session.fighters.values() if not fighter.alive
-    ]
     if fallen:
-        lines.append("")
-        lines.append(
-            "❌ Вне боя: "
-            + ", ".join(f"<b>{esc(fighter.name)}</b>" for fighter in fallen)
+        names = ", ".join(
+            f"<b>{esc(session.fighters[user_id].name)}</b>" for user_id in fallen
         )
+        lines.append("")
+        lines.append(f"❌ Выбывает из боя: {names}")
+    return "\n".join(lines)
+
+
+def plural(count: int, one: str, few: str, many: str) -> str:
+    """«1 очко», «2 очка», «5 очков» — русский счёт без ляпов."""
+    tail_two = abs(count) % 100
+    tail = abs(count) % 10
+    if 11 <= tail_two <= 14:
+        return many
+    if tail == 1:
+        return one
+    if 2 <= tail <= 4:
+        return few
+    return many
+
+
+def battle_rewards_report(rows, broken=None) -> str:
+    """Итог по каждому бойцу: урон, опыт, кредиты, рейтинг.
+
+    rows — тройки (боец, награда, победил ли он).
+    """
+    lines = ["📊 <b>Итоги</b>"]
+    events: list[str] = []
+
+    for player, report, fighter, won in rows:
+        points = plural(report.exp, "очко", "очка", "очков")
+        parts = [f"нанесено урона {fighter.damage_dealt}"]
+        parts.append(f"получено {report.exp} {points} опыта")
+        if report.credits:
+            parts.append(f"+{report.credits} кр.")
+        delta = abs(report.rating_delta)
+        sign = "+" if report.rating_delta >= 0 else "-"
+        parts.append(
+            f"{sign}{delta} {plural(delta, 'очко', 'очка', 'очков')} рейтинга"
+        )
+        mark = "🎉" if won else "❌"
+        name = name_link(player.user_id, player.nickname)
+        lines.append(f"{mark} <b>{name}</b>: " + ", ".join(parts))
+
+        title = f"<b>{name_link(player.user_id, player.nickname)}</b>"
+        if report.levels:
+            grown = f"+{report.endurance} к выносливости" if report.endurance else ""
+            events.append(
+                f"🎉 {title} берёт <b>{player.level}</b> уровень! "
+                f"Здоровье выросло, {grown + ', ' if grown else ''}"
+                f"очков характеристик: +{report.points} — /upgrade"
+            )
+        elif report.ups:
+            word = "ап" if report.ups == 1 else "апа"
+            events.append(
+                f"⚡ {title} получает {report.ups} {word}: +{report.points} "
+                f"к характеристикам — /upgrade"
+            )
+
+    lines.append("")
+    lines.append(recovery_line([player for player, _, _, _ in rows]))
+
+    ruined = broken_gear_report(broken or [])
+    if ruined:
+        lines.append("")
+        lines.extend(ruined)
+    if events:
+        lines.append("")
+        lines.extend(events)
     return "\n".join(lines)
 
 

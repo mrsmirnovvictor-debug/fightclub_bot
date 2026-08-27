@@ -80,16 +80,27 @@ def _pair_teams(
     if not red or not blue:
         return [], alive
 
-    # Сдвигаем обе стороны: так и соперник на каждом ходу новый, и без пары
-    # остаётся каждый раз другой боец, а не один и тот же всё время
-    pairs = list(zip(_rotate(red, round_number), _rotate(blue, round_number)))
+    # Меньшая сторона сдвигается каждый раунд — так соперник каждый ход новый
+    # и за круг успеваешь подраться с каждым. Большая сторона сдвигается раз
+    # в полный круг: тогда без пары остаётся то один, то другой. При равных
+    # составах большую сторону не двигаем вовсе — иначе пары не вернутся к
+    # исходным, а перетасуются заново.
+    small, large = (blue, red) if len(blue) <= len(red) else (red, blue)
+    cycle = len(small)
+    small = _shift(small, (round_number - 1) % cycle)
+    if len(large) > cycle:
+        large = _shift(large, ((round_number - 1) // cycle) % len(large))
+
+    pairs = [
+        (first, second) if first in red else (second, first)
+        for first, second in zip(large, small)
+    ]
     paired = {user_id for pair in pairs for user_id in pair}
     return pairs, [user_id for user_id in alive if user_id not in paired]
 
 
-def _rotate(side: list[int], round_number: int) -> list[int]:
-    shift = (round_number - 1) % len(side)
-    return side[shift:] + side[:shift]
+def _shift(side: list[int], steps: int) -> list[int]:
+    return side[steps:] + side[:steps]
 
 
 def _pair_everyone(
@@ -98,7 +109,7 @@ def _pair_everyone(
     if len(alive) < 2:
         return [], alive
     # На каждом раунде сдвигаем круг: пары перетасовываются, но без случайности
-    order = _rotate(alive, round_number)
+    order = _shift(alive, (round_number - 1) % len(alive))
     pairs = [(order[i], order[i + 1]) for i in range(0, len(order) - 1, 2)]
     paired = {user_id for pair in pairs for user_id in pair}
     return pairs, [user_id for user_id in alive if user_id not in paired]

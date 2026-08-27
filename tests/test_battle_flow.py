@@ -69,11 +69,20 @@ async def fill(db, count: int, first_id: int = 1, level: int = 5) -> list[Player
 
 
 async def choose_all(service: BattleService, session) -> None:
-    """Каждый, кому досталась пара, выбирает удар и блок."""
-    for index, (first, second) in enumerate(session.pairs):
+    """Каждый, кому досталась пара, выбирает удар и блок.
+
+    Как только выбрали все, раунд считается сам — поэтому останавливаемся,
+    едва номер раунда сменился: дальше уже другая раскладка.
+    """
+    round_number = session.round_number
+    for index, (first, second) in enumerate(list(session.pairs)):
+        if session.round_number != round_number:
+            return
         for offset, user_id in enumerate((first, second)):
-            zone = ZONES[(index + offset) % len(ZONES)]
             fighter = session.fighters[user_id]
+            if not fighter.alive:
+                continue  # упавший кнопки уже не жмёт
+            zone = ZONES[(index + offset) % len(ZONES)]
             for slot in range(fighter.attacks_per_round):
                 await service.handle_choice(session.id, user_id, "attack", zone, slot)
             await service.handle_choice(
@@ -378,4 +387,113 @@ async def test_fist_battle_leaves_the_gear_behind(bot, db):
 
     armed = await gather(102, FightMode.ARMED)
     assert all(fighter.weapons == ("битой",) for fighter in armed.fighters.values())
+    await service.shutdown()
+
+
+# ---------- что именно видит ветка ----------
+
+
+def test_pairs_swap_every_round_and_come_back():
+    """Раунд 1: Т—А и М—Б. Раунд 2: Т—Б и М—А. Раунд 3: снова как в первом."""
+    fighters = {user_id: make_fighter(user_id) for user_id in range(1, 5)}
+    teams = {1: RED, 2: RED, 3: BLUE, 4: BLUE}
+
+    rounds = [pair_up(fighters, teams, BattleKind.TEAM, r)[0] for r in (1, 2, 3, 4)]
+    assert rounds[0] == [(1, 3), (2, 4)]
+    assert rounds[1] == [(1, 4), (2, 3)]
+    assert rounds[2] == rounds[0]
+    assert rounds[3] == rounds[1]
+
+
+def test_uneven_sides_rotate_after_a_full_circle():
+    """Трое против двоих: сперва каждый обходит обоих, потом меняется лишний."""
+    fighters = {user_id: make_fighter(user_id) for user_id in range(1, 6)}
+    teams = {1: RED, 2: RED, 3: RED, 4: BLUE, 5: BLUE}
+
+    seen: dict[int, set[int]] = {1: set(), 2: set(), 3: set()}
+    idle_seen = []
+    for round_number in range(1, 7):
+        pairs, idle = pair_up(fighters, teams, BattleKind.TEAM, round_number)
+        for red, blue in pairs:
+            seen[red].add(blue)
+        idle_seen += idle
+
+    assert all(rivals == {4, 5} for rivals in seen.values()), "не все встретились"
+    assert set(idle_seen) == {1, 2, 3}, "без пары стоит один и тот же"
+
+
+async def test_the_judge_says_it_once(bot, db):
+    """Про выбывшего и про безпарного судья говорит один раз, а не каждый раунд."""
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    await fight_to_the_end(service, session)
+
+    log = "\n".join(bot.texts)
+    for player in players:
+        # каждое имя объявляют выбывшим не больше одного раза
+        assert log.count(f"Выбывает из боя: <b>{player.nickname}</b>") <= 1
+    # строка про безпарных появляется только при смене расклада, а не каждый ход
+    rounds = sum(1 for text in bot.texts if "Пары этого хода" in text)
+    assert log.count("Без пары") < rounds
+    await service.shutdown()
+
+
+async def test_the_result_lists_damage_exp_credits_and_rating(bot, db):
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    await fight_to_the_end(service, session)
+
+    summary = next(text for text in bot.texts if "📊" in text)
+    for player in players:
+        line = next(
+            row
+            for row in summary.splitlines()
+            if player.nickname in row and row.startswith(("🎉", "❌"))
+        )
+        assert "нанесено урона" in line
+        assert "опыта" in line and "рейтинга" in line
+        if line.startswith("❌"):
+            assert "получено 0 очков опыта" in line
+    await service.shutdown()
+
+
+async def test_health_starts_healing_when_the_battle_ends(bot, db):
+    """Упавший в третьем раунде отлёживается с конца боя, а не с момента падения."""
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    # роняем одного сразу, а бой тянем дальше
+    early = players[3].user_id
+    session.fighters[early].hp = 0
+    session.pairs, session.idle = pair_up(
+        session.fighters, session.teams, session.kind, session.round_number
+    )
+    await fight_to_the_end(service, session)
+
+    saved = {}
+    for player in players:
+        saved[player.user_id] = await db.get_player(player.user_id)
+    stamps = {row.hp_at for row in saved.values()}
+    assert max(stamps) - min(stamps) <= 1, "часы старта восстановления разъехались"
+    assert saved[early].hp == 0
     await service.shutdown()
