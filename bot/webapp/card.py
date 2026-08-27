@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from bot.game.classes import ALL_STATS, Stats, get_class
+from bot.game.classes import ALL_STATS, ALL_ZONES, Stats, get_class
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
 from bot.game.equipment import (
     LEFT_SLOTS,
@@ -282,7 +282,34 @@ def build_card(
         "combat": {
             "damage_min": derived.damage_min,
             "damage_max": derived.damage_max,
+            # Класс проворачивает оружие по-своему, поэтому показываем то,
+            # что реально долетит до соперника
+            "weapon_damage": [
+                {
+                    "min": round(low * fclass.damage_mult),
+                    "max": round(high * fclass.damage_mult),
+                }
+                for low, high in equipment.weapon_damages
+                if high
+            ],
             "crit_chance": round(derived.crit_chance * 100),
+            "crit_power": derived.crit_power,
+            "anticrit": round((derived.anticrit + equipment.anticrit) * 100),
             "dodge_chance": round(derived.dodge_chance * 100),
+            "accuracy": round((derived.accuracy + equipment.accuracy) * 100),
+            "counter_chance": round(derived.counter_chance * 100),
+            "resist": round(derived.resist * 100),
         },
+        "armor": [
+            {
+                "zone": zone.value,
+                "title": zone.title.capitalize(),
+                "emoji": zone.emoji,
+                "min": low,
+                "max": high,
+            }
+            for zone, (low, high) in (
+                (zone, equipment.armor_range(zone)) for zone in ALL_ZONES
+            )
+        ],
     }

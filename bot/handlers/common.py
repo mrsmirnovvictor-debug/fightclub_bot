@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from aiogram.types import Message
 
-from bot.game.classes import ALL_STATS, FighterClass, Stats
+from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats
+from bot.game.equipment import Equipment
 from bot.game.economy import MICRO_UPS_PER_LEVEL
 from bot.game.stats import derive
 from bot.game.narrator import esc, health_line
@@ -31,15 +32,40 @@ def stats_block(stats: Stats, indent: str = "") -> str:
     )
 
 
-def combat_block(fclass: FighterClass, stats: Stats, level: int = 1) -> str:
-    d = derive(fclass, stats, level)
-    return (
-        f"❤️ Запас здоровья: <b>{d.max_hp}</b>\n"
-        f"👊 Урон: <b>{d.damage_min}–{d.damage_max}</b>\n"
-        f"💥 Крит: <b>{d.crit_chance:.0%}</b> (×{d.crit_power})\n"
-        f"🌀 Уворот: <b>{d.dodge_chance:.0%}</b>\n"
-        f"🔄 Контрудар: <b>{d.counter_chance:.0%}</b>"
-    )
+def combat_block(
+    fclass: FighterClass,
+    stats: Stats,
+    level: int = 1,
+    equipment: Equipment | None = None,
+) -> str:
+    equipment = equipment or Equipment()
+    d = derive(fclass, stats, level, equipment.hp_bonus)
+    weapon = equipment.weapon_damages[0] if equipment.weapon_damages else (0, 0)
+    hit = f"{d.damage_min}–{d.damage_max}"
+    if weapon[1]:
+        # оружие тоже проходит через множитель класса
+        low, high = (round(value * fclass.damage_mult) for value in weapon)
+        hit += f" + оружие {low}–{high}"
+    lines = [
+        f"❤️ Запас здоровья: <b>{d.max_hp}</b>",
+        f"👊 Урон: <b>{hit}</b>",
+        f"💥 Крит: <b>{d.crit_chance:.0%}</b> (×{d.crit_power})",
+        f"🚫 Антикрит: <b>{d.anticrit + equipment.anticrit:.0%}</b>",
+        f"🌀 Уворот: <b>{d.dodge_chance:.0%}</b>",
+        f"🎯 Точность: <b>{d.accuracy + equipment.accuracy:.0%}</b>",
+        f"🔄 Контрудар: <b>{d.counter_chance:.0%}</b>",
+        f"🪨 Сопротивление: <b>{d.resist:.0%}</b>",
+    ]
+    armor = [
+        f"{zone.emoji}{low}–{high}"
+        for zone, (low, high) in (
+            (zone, equipment.armor_range(zone)) for zone in ALL_ZONES
+        )
+        if high
+    ]
+    if armor:
+        lines.append("🛡 Броня: <b>" + " ".join(armor) + "</b>")
+    return "\n".join(lines)
 
 
 def progress_line(player: Player) -> str:
@@ -68,7 +94,7 @@ def profile_text(player: Player) -> str:
         "",
         stats_block(player.stats),
         "",
-        combat_block(fclass, player.stats, player.level),
+        combat_block(fclass, player.stats, player.level, player.equipment),
         "",
         f"🥊 Боёв: <b>{player.fights}</b> · "
         f"побед: <b>{player.wins}</b> · "

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable
 
-from bot.game.classes import ALL_STATS, Stats
+from bot.game.classes import ALL_STATS, ALL_ZONES, Stats, Zone
 
 
 class Slot(str, Enum):
@@ -62,6 +62,17 @@ SLOT_EMOJI: dict[Slot, str] = {
 BARE_HANDS = "кулаком"
 BARE_HANDS_ICON = "👊"
 
+# Какие зоны прикрывает одежда из слота. Перчатки и оружие брони не дают:
+# кулаки и ладони — не зона удара. Щит закрывает всё, но только если он щит.
+SLOT_ZONES: dict[Slot, tuple[Zone, ...]] = {
+    Slot.HEAD: (Zone.HEAD,),
+    Slot.JACKET: (Zone.CHEST, Zone.BELLY),
+    Slot.BELT: (Zone.BELT,),
+    Slot.PANTS: (Zone.BELT, Zone.LEGS),
+    Slot.BOOTS: (Zone.LEGS,),
+    Slot.SHIELD: ALL_ZONES,
+}
+
 # Слева направо на карточке: две колонки по четыре слота
 LEFT_SLOTS: tuple[Slot, ...] = (Slot.HEAD, Slot.WEAPON, Slot.JACKET, Slot.BELT)
 RIGHT_SLOTS: tuple[Slot, ...] = (Slot.GLOVES, Slot.SHIELD, Slot.PANTS, Slot.BOOTS)
@@ -79,6 +90,17 @@ REPAIR_PRICE_PER_POINT = 1
 # Каждая починка с этим шансом отнимает у вещи один пункт запаса прочности,
 # поэтому чинить понемногу невыгодно: платишь столько же, а вещь ветшает.
 REPAIR_DEGRADE_CHANCE = 0.5
+
+# ---------- проценты на вещах ----------
+
+# Точность, уворот, крит и антикрит вещи дают долями. На первых ступенях
+# доля маленькая, на последних заметная, но и там мы держимся заметно ниже
+# «половины»: точность в 50% с одной вещи обнулила бы уворот ловкача,
+# антикрит такого размера — крит ассасина. Пары должны спорить, а не стирать
+# друг друга.
+EARLY_LEVELS = 5
+EARLY_SHARE_CAP = 0.05
+LATE_SHARE_CAP = 0.10
 
 
 class ItemKind(str, Enum):
@@ -110,6 +132,18 @@ class Item:
     intuition: int = 0
     endurance: int = 0
     hp: int = 0  # прибавка к запасу здоровья сверх выносливости
+    # Оружие добавляет свой урон к тому, что боец выбивает силой
+    damage_min: int = 0
+    damage_max: int = 0
+    # Одежда держит удар в те зоны, которые прикрывает; щит — во все сразу
+    armor_min: int = 0
+    armor_max: int = 0
+    # Обе половины каждой пары можно носить на себе: одни вещи давят
+    # чужую защиту, другие поднимают свою.
+    accuracy: float = 0.0  # доля к точности: сбивает уворот соперника
+    dodge: float = 0.0  # доля к увороту
+    crit: float = 0.0  # доля к шансу крита
+    anticrit: float = 0.0  # доля к антикриту: сбивает крит соперника
     level_required: int = 1
     requires: Stats = field(default_factory=Stats)  # характеристики под надевание
     price: int = 0
@@ -138,6 +172,37 @@ class Item:
         return self.kind is ItemKind.SHIELD
 
     @property
+    def zones(self) -> tuple[Zone, ...]:
+        """Куда вещь принимает удар. Щитом считается только настоящий щит."""
+        if not (self.armor_min or self.armor_max):
+            return ()
+        if self.slot is Slot.SHIELD and not self.is_shield:
+            return ()  # во второй руке оружие, а не щит
+        return SLOT_ZONES.get(self.slot, ())
+
+    def roll_armor(self, rng: random.Random | None = None) -> int:
+        rng = rng or random
+        if self.armor_max <= 0:
+            return 0
+        return rng.randint(min(self.armor_min, self.armor_max), self.armor_max)
+
+    def roll_damage(self, rng: random.Random | None = None) -> int:
+        rng = rng or random
+        if self.damage_max <= 0:
+            return 0
+        return rng.randint(min(self.damage_min, self.damage_max), self.damage_max)
+
+    def describe_damage(self) -> str:
+        if self.damage_max <= 0:
+            return ""
+        return f"{self.damage_min}–{self.damage_max}"
+
+    def describe_armor(self) -> str:
+        if self.armor_max <= 0:
+            return ""
+        return f"{self.armor_min}–{self.armor_max}"
+
+    @property
     def slots(self) -> tuple[Slot, ...]:
         """Куда вещь можно надеть. Оружие берут и во вторую руку."""
         if self.is_weapon:
@@ -146,6 +211,10 @@ class Item:
 
     def describe_bonus(self) -> str:
         parts = []
+        if self.damage_max:
+            parts.append(f"👊{self.describe_damage()}")
+        if self.armor_max:
+            parts.append(f"🛡{self.describe_armor()}")
         for label, value in (
             ("💪", self.strength),
             ("🤸", self.agility),
@@ -155,6 +224,14 @@ class Item:
         ):
             if value:
                 parts.append(f"{label}+{value}")
+        for label, share in (
+            ("🎯", self.accuracy),
+            ("🌀", self.dodge),
+            ("💥", self.crit),
+            ("🚫", self.anticrit),
+        ):
+            if share:
+                parts.append(f"{label}+{share:.0%}")
         return " ".join(parts)
 
 
@@ -338,6 +415,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.GLOVES,
         "🩹",
         strength=1,
+        accuracy=0.02,
         requires=Stats(strength=4),
         price=35,
         for_classes=(WARRIOR, TANK),
@@ -348,6 +426,9 @@ ITEMS: tuple[Item, ...] = (
         Slot.HEAD,
         "🧢",
         intuition=1,
+        armor_min=0,
+        armor_max=1,
+        anticrit=0.02,
         requires=Stats(intuition=4),
         price=40,
         for_classes=(ASSASSIN,),
@@ -358,6 +439,8 @@ ITEMS: tuple[Item, ...] = (
         Slot.PANTS,
         "👖",
         endurance=1,
+        armor_min=0,
+        armor_max=1,
         level_required=2,
         requires=Stats(endurance=5),
         price=45,
@@ -369,6 +452,8 @@ ITEMS: tuple[Item, ...] = (
         Slot.BELT,
         "🥋",
         endurance=1,
+        armor_min=0,
+        armor_max=1,
         level_required=2,
         requires=Stats(endurance=5),
         price=50,
@@ -380,7 +465,9 @@ ITEMS: tuple[Item, ...] = (
         Slot.BOOTS,
         "👟",
         image=f"{IMAGES}/bots/Worn_sneakers_game_asset_202608261347.jpeg",
-        agility=2,
+        agility=1,
+        armor_min=0,
+        armor_max=1,
         level_required=2,
         requires=Stats(agility=5),
         price=60,
@@ -392,7 +479,10 @@ ITEMS: tuple[Item, ...] = (
         Slot.SHIELD,
         "🛢",
         kind=ItemKind.SHIELD,
-        endurance=2,
+        endurance=1,
+        armor_min=1,
+        armor_max=2,
+        anticrit=0.03,
         level_required=3,
         requires=Stats(strength=6, endurance=5),
         price=70,
@@ -405,7 +495,10 @@ ITEMS: tuple[Item, ...] = (
         "🔩",
         kind=ItemKind.WEAPON,
         instrumental="кастетом",
-        strength=2,
+        strength=1,
+        damage_min=2,
+        damage_max=4,
+        accuracy=0.02,
         level_required=3,
         requires=Stats(strength=6),
         price=80,
@@ -418,6 +511,8 @@ ITEMS: tuple[Item, ...] = (
         "🧥",
         endurance=1,
         hp=5,
+        armor_min=1,
+        armor_max=3,
         level_required=3,
         requires=Stats(endurance=6),
         price=90,
@@ -431,7 +526,10 @@ ITEMS: tuple[Item, ...] = (
         "🛠",
         kind=ItemKind.WEAPON,
         instrumental="трубой",
-        strength=3,
+        strength=1,
+        damage_min=4,
+        damage_max=7,
+        accuracy=0.03,
         level_required=4,
         requires=Stats(strength=12),
         price=150,
@@ -444,7 +542,10 @@ ITEMS: tuple[Item, ...] = (
         "🔪",
         kind=ItemKind.WEAPON,
         instrumental="выкидухой",
-        agility=3,
+        agility=1,
+        damage_min=4,
+        damage_max=7,
+        dodge=0.03,
         level_required=4,
         requires=Stats(agility=12),
         price=150,
@@ -457,7 +558,10 @@ ITEMS: tuple[Item, ...] = (
         "📌",
         kind=ItemKind.WEAPON,
         instrumental="шилом",
-        intuition=3,
+        intuition=1,
+        damage_min=4,
+        damage_max=7,
+        crit=0.03,
         level_required=4,
         requires=Stats(intuition=12),
         price=150,
@@ -470,8 +574,10 @@ ITEMS: tuple[Item, ...] = (
         "🔧",
         kind=ItemKind.WEAPON,
         instrumental="монтировкой",
-        strength=1,
-        endurance=2,
+        endurance=1,
+        damage_min=4,
+        damage_max=7,
+        accuracy=0.03,
         level_required=4,
         requires=Stats(endurance=12),
         price=150,
@@ -483,8 +589,11 @@ ITEMS: tuple[Item, ...] = (
         "Клёпаная косуха",
         Slot.JACKET,
         "🧥",
-        endurance=2,
+        endurance=1,
         hp=10,
+        armor_min=3,
+        armor_max=5,
+        anticrit=0.03,
         level_required=5,
         requires=Stats(endurance=13),
         price=80,
@@ -495,8 +604,11 @@ ITEMS: tuple[Item, ...] = (
         "Джинсовка без рукавов",
         Slot.JACKET,
         "🦺",
-        agility=2,
-        hp=4,
+        agility=1,
+        hp=8,
+        armor_min=2,
+        armor_max=3,
+        dodge=0.03,
         level_required=5,
         requires=Stats(agility=13),
         price=80,
@@ -507,7 +619,9 @@ ITEMS: tuple[Item, ...] = (
         "Брезент с накладками",
         Slot.PANTS,
         "👖",
-        endurance=2,
+        endurance=1,
+        armor_min=2,
+        armor_max=4,
         level_required=5,
         requires=Stats(endurance=13),
         price=80,
@@ -518,7 +632,11 @@ ITEMS: tuple[Item, ...] = (
         "Спортивки",
         Slot.PANTS,
         "🩳",
-        agility=2,
+        agility=1,
+        hp=4,
+        armor_min=1,
+        armor_max=2,
+        dodge=0.03,
         level_required=5,
         requires=Stats(agility=13),
         price=80,
@@ -529,7 +647,8 @@ ITEMS: tuple[Item, ...] = (
         "Кожаные наручи",
         Slot.GLOVES,
         "🦾",
-        strength=2,
+        strength=1,
+        accuracy=0.04,
         level_required=5,
         requires=Stats(strength=13),
         price=80,
@@ -540,7 +659,9 @@ ITEMS: tuple[Item, ...] = (
         "Наручи шулера",
         Slot.GLOVES,
         "🃏",
-        intuition=2,
+        intuition=1,
+        hp=4,
+        anticrit=0.04,
         level_required=5,
         requires=Stats(intuition=13),
         price=80,
@@ -551,7 +672,9 @@ ITEMS: tuple[Item, ...] = (
         "Ремень с бляхой",
         Slot.BELT,
         "🥋",
-        strength=2,
+        strength=1,
+        armor_min=2,
+        armor_max=3,
         level_required=5,
         requires=Stats(strength=13),
         price=80,
@@ -562,7 +685,10 @@ ITEMS: tuple[Item, ...] = (
         "Пояс с ножнами",
         Slot.BELT,
         "🗡",
-        intuition=2,
+        intuition=1,
+        armor_min=1,
+        armor_max=2,
+        crit=0.03,
         level_required=5,
         requires=Stats(intuition=13),
         price=80,
@@ -576,7 +702,10 @@ ITEMS: tuple[Item, ...] = (
         "🏏",
         kind=ItemKind.WEAPON,
         instrumental="битой",
-        strength=4,
+        strength=2,
+        damage_min=7,
+        damage_max=11,
+        accuracy=0.04,
         level_required=6,
         requires=Stats(strength=16),
         price=180,
@@ -589,7 +718,10 @@ ITEMS: tuple[Item, ...] = (
         "🗡",
         kind=ItemKind.WEAPON,
         instrumental="мачете",
-        agility=4,
+        agility=2,
+        damage_min=7,
+        damage_max=11,
+        dodge=0.04,
         level_required=6,
         requires=Stats(agility=16),
         price=180,
@@ -602,7 +734,10 @@ ITEMS: tuple[Item, ...] = (
         "🪡",
         kind=ItemKind.WEAPON,
         instrumental="стилетом",
-        intuition=4,
+        intuition=2,
+        damage_min=7,
+        damage_max=11,
+        crit=0.04,
         level_required=6,
         requires=Stats(intuition=16),
         price=180,
@@ -615,8 +750,10 @@ ITEMS: tuple[Item, ...] = (
         "🔨",
         kind=ItemKind.WEAPON,
         instrumental="кувалдой",
-        strength=2,
-        endurance=3,
+        endurance=2,
+        damage_min=7,
+        damage_max=11,
+        accuracy=0.04,
         level_required=6,
         requires=Stats(endurance=16),
         price=180,
@@ -627,8 +764,11 @@ ITEMS: tuple[Item, ...] = (
         "Мотошлем",
         Slot.HEAD,
         "🪖",
-        endurance=2,
+        endurance=1,
         hp=8,
+        armor_min=3,
+        armor_max=5,
+        anticrit=0.05,
         level_required=6,
         requires=Stats(endurance=15),
         price=100,
@@ -639,7 +779,11 @@ ITEMS: tuple[Item, ...] = (
         "Кепка с козырьком",
         Slot.HEAD,
         "🧢",
-        intuition=3,
+        intuition=2,
+        hp=4,
+        armor_min=1,
+        armor_max=2,
+        crit=0.04,
         level_required=6,
         requires=Stats(intuition=15),
         price=100,
@@ -650,8 +794,9 @@ ITEMS: tuple[Item, ...] = (
         "Берцы",
         Slot.BOOTS,
         "🥾",
-        strength=1,
-        endurance=2,
+        endurance=1,
+        armor_min=2,
+        armor_max=4,
         level_required=6,
         requires=Stats(endurance=15),
         price=100,
@@ -662,7 +807,11 @@ ITEMS: tuple[Item, ...] = (
         "Беговые кроссовки",
         Slot.BOOTS,
         "👟",
-        agility=3,
+        agility=2,
+        hp=4,
+        armor_min=1,
+        armor_max=2,
+        dodge=0.04,
         level_required=6,
         requires=Stats(agility=15),
         price=100,
@@ -676,7 +825,10 @@ ITEMS: tuple[Item, ...] = (
         "🪓",
         kind=ItemKind.WEAPON,
         instrumental="топором",
-        strength=5,
+        strength=2,
+        damage_min=10,
+        damage_max=15,
+        accuracy=0.05,
         level_required=7,
         requires=Stats(strength=18),
         price=240,
@@ -689,7 +841,10 @@ ITEMS: tuple[Item, ...] = (
         "🦋",
         kind=ItemKind.WEAPON,
         instrumental="балисонгом",
-        agility=5,
+        agility=2,
+        damage_min=10,
+        damage_max=15,
+        dodge=0.05,
         level_required=7,
         requires=Stats(agility=18),
         price=240,
@@ -702,7 +857,10 @@ ITEMS: tuple[Item, ...] = (
         "⛏",
         kind=ItemKind.WEAPON,
         instrumental="ледорубом",
-        intuition=5,
+        intuition=2,
+        damage_min=10,
+        damage_max=15,
+        crit=0.05,
         level_required=7,
         requires=Stats(intuition=18),
         price=240,
@@ -715,8 +873,10 @@ ITEMS: tuple[Item, ...] = (
         "⛓",
         kind=ItemKind.WEAPON,
         instrumental="цепью",
-        strength=2,
-        endurance=4,
+        endurance=2,
+        damage_min=10,
+        damage_max=15,
+        accuracy=0.05,
         level_required=7,
         requires=Stats(endurance=18),
         price=240,
@@ -727,7 +887,8 @@ ITEMS: tuple[Item, ...] = (
         "Битые перчатки",
         Slot.GLOVES,
         "🥊",
-        strength=3,
+        strength=2,
+        accuracy=0.06,
         level_required=7,
         requires=Stats(strength=17),
         price=130,
@@ -738,7 +899,9 @@ ITEMS: tuple[Item, ...] = (
         "Перчатки без пальцев",
         Slot.GLOVES,
         "🧤",
-        agility=3,
+        agility=2,
+        hp=4,
+        dodge=0.05,
         level_required=7,
         requires=Stats(agility=17),
         price=130,
@@ -749,7 +912,9 @@ ITEMS: tuple[Item, ...] = (
         "Перчатки крупье",
         Slot.GLOVES,
         "🎴",
-        intuition=3,
+        intuition=2,
+        hp=4,
+        crit=0.05,
         level_required=7,
         requires=Stats(intuition=17),
         price=130,
@@ -761,8 +926,11 @@ ITEMS: tuple[Item, ...] = (
         Slot.SHIELD,
         "🚧",
         kind=ItemKind.SHIELD,
-        endurance=3,
+        endurance=2,
         hp=10,
+        armor_min=3,
+        armor_max=4,
+        anticrit=0.06,
         level_required=7,
         requires=Stats(strength=15, endurance=17),
         price=130,
@@ -774,8 +942,11 @@ ITEMS: tuple[Item, ...] = (
         Slot.SHIELD,
         "🛡",
         kind=ItemKind.SHIELD,
-        agility=2,
-        endurance=1,
+        agility=1,
+        hp=6,
+        armor_min=2,
+        armor_max=3,
+        dodge=0.03,
         level_required=7,
         requires=Stats(agility=17),
         price=130,
@@ -789,7 +960,10 @@ ITEMS: tuple[Item, ...] = (
         "⚔",
         kind=ItemKind.WEAPON,
         instrumental="тесаком",
-        strength=6,
+        strength=3,
+        damage_min=14,
+        damage_max=20,
+        accuracy=0.07,
         level_required=8,
         requires=Stats(strength=20),
         price=300,
@@ -802,7 +976,10 @@ ITEMS: tuple[Item, ...] = (
         "🪒",
         kind=ItemKind.WEAPON,
         instrumental="бритвой",
-        agility=6,
+        agility=3,
+        damage_min=14,
+        damage_max=20,
+        dodge=0.06,
         level_required=8,
         requires=Stats(agility=20),
         price=300,
@@ -815,7 +992,10 @@ ITEMS: tuple[Item, ...] = (
         "💉",
         kind=ItemKind.WEAPON,
         instrumental="иглой",
-        intuition=6,
+        intuition=3,
+        damage_min=14,
+        damage_max=20,
+        crit=0.06,
         level_required=8,
         requires=Stats(intuition=20),
         price=300,
@@ -828,8 +1008,10 @@ ITEMS: tuple[Item, ...] = (
         "🦯",
         kind=ItemKind.WEAPON,
         instrumental="ломом",
-        strength=3,
-        endurance=4,
+        endurance=3,
+        damage_min=14,
+        damage_max=20,
+        accuracy=0.07,
         level_required=8,
         requires=Stats(endurance=20),
         price=300,
@@ -947,6 +1129,57 @@ class Equipment:
     @property
     def hp_bonus(self) -> int:
         return sum(item.hp for item in self.items.values())
+
+    @property
+    def accuracy(self) -> float:
+        return sum(item.item.accuracy for item in self.items.values())
+
+    @property
+    def anticrit(self) -> float:
+        return sum(item.item.anticrit for item in self.items.values())
+
+    @property
+    def dodge(self) -> float:
+        return sum(item.item.dodge for item in self.items.values())
+
+    @property
+    def crit(self) -> float:
+        return sum(item.item.crit for item in self.items.values())
+
+    def armor_range(self, zone: Zone) -> tuple[int, int]:
+        """Сколько брони прикрывает эту зону: сумма по всем вещам."""
+        low = high = 0
+        for owned in self.items.values():
+            if zone in owned.item.zones:
+                low += owned.item.armor_min
+                high += owned.item.armor_max
+        return low, high
+
+    def roll_armor(self, zone: Zone, rng: random.Random | None = None) -> int:
+        """Бросок брони на пропущенный удар в эту зону."""
+        return sum(
+            owned.item.roll_armor(rng)
+            for owned in self.items.values()
+            if zone in owned.item.zones
+        )
+
+    @property
+    def weapon_damages(self) -> tuple[tuple[int, int], ...]:
+        """Прибавка к урону от каждого оружия — по порядку ударов."""
+        damages = [
+            (self.weapon.item.damage_min, self.weapon.item.damage_max)
+            if self.weapon
+            else (0, 0)
+        ]
+        second = self.second_weapon
+        if second:
+            damages.append((second.item.damage_min, second.item.damage_max))
+        return tuple(damages)
+
+    def roll_weapon_damage(self, index: int, rng: random.Random | None = None) -> int:
+        """Что добавит оружие этого удара. Кулак не добавляет ничего."""
+        weapon = self.weapon if index == 0 else self.second_weapon
+        return weapon.item.roll_damage(rng) if weapon else 0
 
     def __bool__(self) -> bool:
         return bool(self.items)

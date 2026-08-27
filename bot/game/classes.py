@@ -189,7 +189,7 @@ WARRIOR = FighterClass(
     ),
     base_stats=Stats(strength=4, agility=3, intuition=3, endurance=4),
     hp_per_endurance=7,
-    damage_mult=1.10,
+    damage_mult=1.05,
     crit_bonus=0.02,
     counter_bonus=0.02,
 )
@@ -204,10 +204,10 @@ ROGUE = FighterClass(
         "отвечает контрударом. Ставка на ловкость и интуицию."
     ),
     base_stats=Stats(strength=3, agility=5, intuition=3, endurance=3),
-    hp_per_endurance=7,
-    damage_mult=1.0,
-    dodge_bonus=0.26,
-    counter_bonus=0.25,
+    hp_per_endurance=6,
+    damage_mult=0.92,
+    dodge_bonus=0.28,
+    counter_bonus=0.29,
 )
 
 ASSASSIN = FighterClass(
@@ -220,10 +220,10 @@ ASSASSIN = FighterClass(
         "мощь — может снести половину здоровья одним попаданием."
     ),
     base_stats=Stats(strength=4, agility=4, intuition=4, endurance=2),
-    hp_per_endurance=7,
-    damage_mult=1.05,
-    crit_bonus=0.20,
-    crit_power_bonus=0.5,
+    hp_per_endurance=5,
+    damage_mult=1.02,
+    crit_bonus=0.25,
+    crit_power_bonus=0.53,
     dodge_bonus=0.02,
 )
 
@@ -237,9 +237,9 @@ TANK = FighterClass(
         "долго и упорно. Бьёт при этом слабее остальных."
     ),
     base_stats=Stats(strength=4, agility=2, intuition=2, endurance=6),
-    hp_base=40,
-    hp_per_endurance=8,
-    damage_mult=0.94,
+    hp_base=55,
+    hp_per_endurance=6,
+    damage_mult=0.88,
 )
 
 FIGHTER_CLASSES: dict[str, FighterClass] = {

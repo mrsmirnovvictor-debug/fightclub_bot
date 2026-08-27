@@ -6,12 +6,16 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
-from bot.game.classes import FIGHTER_CLASSES, Stats, get_class
+from bot.game.classes import FIGHTER_CLASSES, Stats, Zone, get_class
 from bot.game.economy import credits_per_level
 from bot.game.equipment import (
     ALL_SLOTS,
     CATALOGUE,
+    EARLY_LEVELS,
+    EARLY_SHARE_CAP,
+    LATE_SHARE_CAP,
     MAX_WEAR,
+    Equipment,
     Item,
     ItemKind,
     OwnedItem,
@@ -338,11 +342,8 @@ def test_inventory_rows_carry_everything_the_screen_draws():
     assert row["wear_text"] == f"3/{MAX_WEAR}"
     assert row["repair_price"] == 3
     assert row["can_equip"] is False
-    assert {"💪", "Сила", 2} == {
-        row["bonuses"][0]["emoji"],
-        row["bonuses"][0]["title"],
-        row["bonuses"][0]["value"],
-    }
+    gain = {row["title"]: row["value"] for row in row["bonuses"]}
+    assert gain["Сила"] == CATALOGUE["knuckles"].strength
     # уровень и сила не дотягивают — обе строки требований помечены красным
     assert [need["ok"] for need in row["requirements"]] == [False, False]
     # оружие можно взять и во вторую руку
@@ -654,3 +655,58 @@ async def test_mini_app_shop_needs_your_own_init_data(client, db):
     await db.save_player(make_player(user_id=42))
     assert (await client.get("/api/shop")).status == 401
     assert (await client.post("/api/buy", json={"code": "pipe"})).status == 401
+
+
+# ---------- числа предметов ----------
+
+
+def test_percent_bonuses_stay_within_their_caps():
+    """Проценты растут со ступенью, но не настолько, чтобы стирать класс."""
+    for item in CATALOGUE.values():
+        shares = (item.accuracy, item.dodge, item.crit, item.anticrit)
+        cap = EARLY_SHARE_CAP if item.level_required <= EARLY_LEVELS else LATE_SHARE_CAP
+        assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%} > {cap:.0%}"
+
+
+def test_every_weapon_adds_damage_and_it_grows_with_the_tier():
+    weapons = [item for item in CATALOGUE.values() if item.is_weapon]
+    assert weapons
+    for item in weapons:
+        assert item.damage_min > 0 and item.damage_max >= item.damage_min
+    by_level = {}
+    for item in weapons:
+        by_level.setdefault(item.level_required, set()).add(
+            (item.damage_min, item.damage_max)
+        )
+    levels = sorted(by_level)
+    for lower, upper in zip(levels, levels[1:]):
+        assert max(by_level[lower]) < min(by_level[upper]), (
+            f"оружие {upper} уровня не сильнее оружия {lower}"
+        )
+
+
+def test_armour_covers_the_zone_it_is_worn_on():
+    coverage = {
+        "moto_helmet": (Zone.HEAD,),
+        "biker_jacket": (Zone.CHEST, Zone.BELLY),
+        "buckle_belt": (Zone.BELT,),
+        "padded_pants": (Zone.BELT, Zone.LEGS),
+        "army_boots": (Zone.LEGS,),
+    }
+    for code, zones in coverage.items():
+        assert CATALOGUE[code].zones == zones, code
+    # щит держит всё сразу, перчатки и оружие брони не дают вовсе
+    assert set(CATALOGUE["road_sign"].zones) == set(Zone)
+    assert CATALOGUE["battered_gloves"].zones == ()
+    assert CATALOGUE["cleaver"].zones == ()
+
+
+def test_gear_percentages_reach_the_fighter():
+    """Проценты с вещей складываются и доходят до бойца целиком."""
+    equipment = Equipment.from_codes({"weapon": "razor", "gloves": "fingerless_gloves"})
+    assert equipment.dodge == pytest.approx(
+        CATALOGUE["razor"].dodge + CATALOGUE["fingerless_gloves"].dodge
+    )
+    tank = Equipment.from_codes({"weapon": "pry_bar", "head": "moto_helmet"})
+    assert tank.accuracy == pytest.approx(CATALOGUE["pry_bar"].accuracy)
+    assert tank.anticrit == pytest.approx(CATALOGUE["moto_helmet"].anticrit)

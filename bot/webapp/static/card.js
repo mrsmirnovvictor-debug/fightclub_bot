@@ -640,6 +640,30 @@ function render(card, keepTab) {
     progress.appendChild(row("Свободных очков", num(card.progress.free_points), "good"));
   }
 
+  const combat = el("combat");
+  combat.textContent = "";
+  const c = card.combat;
+  const hit = c.weapon_damage.length
+    ? c.damage_min + "–" + c.damage_max +
+      c.weapon_damage.map((w) => " + " + w.min + "–" + w.max).join("")
+    : c.damage_min + "–" + c.damage_max;
+  combat.appendChild(row("👊 Урон", hit));
+  combat.appendChild(row("💥 Крит", c.crit_chance + "% ×" + c.crit_power));
+  combat.appendChild(row("🚫 Антикрит", c.anticrit + "%"));
+  combat.appendChild(row("🌀 Уворот", c.dodge_chance + "%"));
+  combat.appendChild(row("🎯 Точность", c.accuracy + "%"));
+  combat.appendChild(row("🔄 Контрудар", c.counter_chance + "%"));
+  combat.appendChild(row("🪨 Сопротивление", c.resist + "%"));
+  const armor = card.armor.filter((zone) => zone.max > 0);
+  if (armor.length) {
+    combat.appendChild(
+      row(
+        "🛡 Броня",
+        armor.map((z) => z.emoji + " " + z.min + "–" + z.max).join("  ")
+      )
+    );
+  }
+
   const record = el("record");
   record.textContent = "";
   record.appendChild(row("Побед", num(card.record.wins)));

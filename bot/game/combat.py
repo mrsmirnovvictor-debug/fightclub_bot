@@ -30,7 +30,14 @@ from bot.game.classes import (
     get_class,
 )
 from bot.game.equipment import BARE_HANDS, BARE_HANDS_ICON, Equipment
-from bot.game.stats import COUNTER_DAMAGE_MULT, DerivedStats, derive
+from bot.game.stats import (
+    COUNTER_DAMAGE_MULT,
+    MAX_ACCURACY,
+    MAX_ANTICRIT,
+    MAX_CRIT_CHANCE,
+    DerivedStats,
+    derive,
+)
 
 # После этого раунда бойцы начинают уставать и бьют всё больнее —
 # чтобы дуэль не превращалась в бесконечное перетягивание блоков.
@@ -40,6 +47,14 @@ FATIGUE_STEP = 0.12
 MAX_ROUNDS = 20
 # Столько пропусков подряд, и судья засчитывает техническое поражение.
 MAX_MISSED_TURNS = 3
+# Уворот нельзя сбить точностью в ноль: сколько бы ни было точности,
+# у защищающегося остаётся эта надежда уйти с линии удара.
+MIN_DODGE_CHANCE = 0.02
+# И потолок сверху, чтобы бой не превращался в танцы вокруг ловкача
+MAX_DODGE_CHANCE = 0.6
+# Броня не может съесть больше половины удара: иначе комплект брони делает
+# лёгкие классы безвредными, а бой — бесконечным.
+MAX_ARMOR_SHARE = 0.5
 
 
 class Outcome(str, Enum):
@@ -119,6 +134,44 @@ class Fighter:
         return self.equipment.has_shield
 
     @property
+    def accuracy(self) -> float:
+        """Точность: ловкость плюс проценты с вещей. Сбивает чужой уворот."""
+        return min(MAX_ACCURACY, self.derived.accuracy + self.equipment.accuracy)
+
+    @property
+    def anticrit(self) -> float:
+        """Антикрит: интуиция плюс проценты с вещей. Сбивает чужой крит."""
+        return min(MAX_ANTICRIT, self.derived.anticrit + self.equipment.anticrit)
+
+    @property
+    def resist(self) -> float:
+        """Сопротивление урону от выносливости: доля, которую снимает с удара."""
+        return self.derived.resist
+
+    @property
+    def dodge(self) -> float:
+        """Уворот: ловкость плюс проценты с вещей."""
+        return min(MAX_DODGE_CHANCE, self.derived.dodge_chance + self.equipment.dodge)
+
+    @property
+    def crit(self) -> float:
+        """Шанс крита: интуиция плюс проценты с вещей."""
+        return min(MAX_CRIT_CHANCE, self.derived.crit_chance + self.equipment.crit)
+
+    def dodge_against(self, attacker: "Fighter") -> float:
+        """Шанс увернуться от этого соперника: свой уворот минус его точность."""
+        return min(
+            MAX_DODGE_CHANCE, max(MIN_DODGE_CHANCE, self.dodge - attacker.accuracy)
+        )
+
+    def crit_against(self, defender: "Fighter") -> float:
+        """Шанс крита по этому сопернику: свой крит минус его антикрит."""
+        return max(0.0, self.crit - defender.anticrit)
+
+    def armor_range(self, zone: Zone) -> tuple[int, int]:
+        return self.equipment.armor_range(zone)
+
+    @property
     def weapons(self) -> tuple[str, ...]:
         """Чем бьёт: одно название на каждое оружие, без оружия — кулаком."""
         return self.equipment.weapon_names or (BARE_HANDS,)
@@ -170,6 +223,8 @@ class Strike:
     damage: int = 0
     counter_damage: int = 0
     by_shield: bool = False  # блок принят щитом
+    armor: int = 0  # сколько сняла броня зоны
+    absorbed: int = 0  # сколько всего съели выносливость и броня
     missed_turn: bool = False  # боец не нажал вообще ничего
     defender_hp_after: int = 0
     attacker_hp_after: int = 0
@@ -218,6 +273,7 @@ def _resolve_strike(
     defender: Fighter,
     zone: Zone | None,
     weapon: str,
+    weapon_index: int,
     defender_action: Action,
     round_number: int,
     rng: random.Random,
@@ -239,29 +295,47 @@ def _resolve_strike(
         strike.by_shield = defender.has_shield
         return strike
 
-    dodge_chance = min(
-        0.6, max(0.01, defender.derived.dodge_chance - attacker.derived.accuracy)
-    )
-    if rng.random() < dodge_chance:
+    if rng.random() < defender.dodge_against(attacker):
         strike.outcome = Outcome.DODGE
         if rng.random() < defender.derived.counter_chance:
-            counter = _roll_damage(defender, round_number, rng) * COUNTER_DAMAGE_MULT
+            counter = _roll_damage(defender, 0, round_number, rng) * COUNTER_DAMAGE_MULT
+            # Контрудар прилетает не в выбранную зону, поэтому броню не трогает —
+            # только сопротивление от выносливости.
+            counter *= 1.0 - attacker.resist
             strike.counter_damage = max(1, int(round(counter)))
             strike.outcome = Outcome.COUNTER
         return strike
 
-    damage = _roll_damage(attacker, round_number, rng)
-    if rng.random() < attacker.derived.crit_chance:
+    damage = _roll_damage(attacker, weapon_index, round_number, rng)
+    if rng.random() < attacker.crit_against(defender):
         strike.outcome = Outcome.CRIT
         damage *= attacker.derived.crit_power
     else:
         strike.outcome = Outcome.HIT
+
+    # Удар доходит через выносливость и броню той зоны, куда пришёлся
+    before = damage
+    damage *= 1.0 - defender.resist
+    armor = min(defender.equipment.roll_armor(zone, rng), damage * MAX_ARMOR_SHARE)
+    strike.armor = int(round(armor))
+    damage -= armor
     strike.damage = max(1, int(round(damage)))
+    strike.absorbed = max(0, int(round(before)) - strike.damage)
     return strike
 
 
-def _roll_damage(fighter: Fighter, round_number: int, rng: random.Random) -> float:
+def _roll_damage(
+    fighter: Fighter, weapon_index: int, round_number: int, rng: random.Random
+) -> float:
+    """Урон от силы плюс урон оружия, всё вместе растёт от усталости.
+
+    Класс влияет и на оружие: одну и ту же биту воин проворачивает лучше,
+    чем танк. Иначе плоский урон оружия стирал бы разницу между классами —
+    у того, кто бьёт слабо, прибавка весит вдвое больше.
+    """
     raw = rng.randint(fighter.derived.damage_min, fighter.derived.damage_max)
+    weapon = fighter.equipment.roll_weapon_damage(weapon_index, rng)
+    raw += weapon * fighter.fclass.damage_mult
     return raw * fatigue_multiplier(round_number)
 
 
@@ -284,6 +358,7 @@ def _strikes_of(
                 defender,
                 zones[index],
                 weapon,
+                index,
                 defender_action,
                 round_number,
                 rng,

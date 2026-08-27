@@ -163,10 +163,12 @@ def test_equipment_shows_up_in_slots_stats_and_hp():
 
     weapon = next(s for s in after["slots"]["left"] if s["slot"] == "weapon")
     assert weapon["item"]["title"] == "Кастет"
-    assert "💪+2" in weapon["item"]["bonus"]
+    assert f"💪+{CATALOGUE['knuckles'].strength}" in weapon["item"]["bonus"]
+    assert "👊" in weapon["item"]["bonus"]  # кастет добавляет свой урон
 
     strength = next(s for s in after["stats"] if s["code"] == "strength")
-    assert (strength["base"], strength["bonus"], strength["total"]) == (9, 2, 11)
+    bonus = CATALOGUE["knuckles"].strength
+    assert (strength["base"], strength["bonus"], strength["total"]) == (9, bonus, 9 + bonus)
     # косуха даёт выносливость и плоские очки здоровья
     assert after["hp"]["max"] > before["hp"]["max"]
 

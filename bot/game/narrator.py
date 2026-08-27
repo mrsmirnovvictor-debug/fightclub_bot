@@ -143,11 +143,17 @@ def zone_phrase(zone: Zone) -> str:
     return ZONE_PREPOSITIONAL[zone]
 
 
-def damage_tail(damage: int, hp: int, maximum: int, crit: bool = False) -> str:
-    """«−11 [11/66]» — сколько снял и сколько у защищающегося осталось."""
+def damage_tail(
+    damage: int, hp: int, maximum: int, crit: bool = False, armor: int = 0
+) -> str:
+    """«−11 [11/66]» — сколько снял и сколько у защищающегося осталось.
+
+    Если броня успела погасить часть удара, судья это отмечает: «−11 🛡3».
+    """
     amount = f"−{damage}"
     body = f"<b>{amount}</b>" if crit else amount
-    return f", {body} [{hp}/{maximum}]"
+    shield = f" 🛡{armor}" if armor > 0 else ""
+    return f", {body}{shield} [{hp}/{maximum}]"
 
 
 def describe_strike(
@@ -191,6 +197,7 @@ def describe_strike(
         strike.defender_hp_after,
         defender.max_hp,
         crit=strike.outcome is Outcome.CRIT,
+        armor=strike.armor,
     )
     return f"{emoji} {line}{tail}"
 

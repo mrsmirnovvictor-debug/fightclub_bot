@@ -6,11 +6,13 @@ import pytest
 
 from bot.game.classes import (
     ALL_ZONES,
+    ASSASSIN,
     BLOCK_WIDTH,
     FIGHTER_CLASSES,
     SHIELD_BLOCK_WIDTH,
     TANK,
     WARRIOR,
+    Stats,
     Zone,
     block_combo,
     block_combos,
@@ -19,6 +21,7 @@ from bot.game.classes import (
 from bot.game.combat import (
     MAX_MISSED_TURNS,
     MAX_ROUNDS,
+    MIN_DODGE_CHANCE,
     Action,
     DuelEnd,
     Fighter,
@@ -386,3 +389,188 @@ def test_duel_always_terminates(code):
         else:  # pragma: no cover
             pytest.fail(f"{code} vs {opponent_code}: бой не закончился")
         assert result.end_reason is not None
+
+
+# ---------- точность, антикрит, сопротивление, броня ----------
+
+
+class Rigged:
+    """Кости с заранее расписанным исходом: сначала броски, потом числа."""
+
+    def __init__(self, rolls: list[float] | None = None, numbers: list[int] | None = None):
+        self.rolls = list(rolls or [])
+        self.numbers = list(numbers or [])
+
+    def random(self) -> float:
+        return self.rolls.pop(0) if self.rolls else 1.0
+
+    def randint(self, low: int, high: int) -> int:
+        return self.numbers.pop(0) if self.numbers else high
+
+    def choice(self, seq):  # pragma: no cover - в этих тестах не нужен
+        return seq[0]
+
+
+def dressed(*codes: str, user_id: int = 1, fclass=WARRIOR, **kwargs) -> Fighter:
+    equipment = Equipment.from_codes(
+        {CATALOGUE[code].slots[0].value: code for code in codes}
+    )
+    return Fighter(
+        user_id=user_id,
+        name="Боец",
+        fclass=fclass,
+        stats=fclass.base_stats.merge(equipment.bonus),
+        equipment=equipment,
+        **kwargs,
+    )
+
+
+def test_dodge_always_outruns_accuracy_at_equal_agility():
+    """При равной ловкости шанс увернуться остаётся у обоих."""
+    for agility in range(0, 40):
+        stats = Stats(strength=5, agility=agility, intuition=5, endurance=5)
+        d = derive(WARRIOR, stats)
+        assert d.dodge_chance > d.accuracy
+
+
+def test_crit_always_outruns_anticrit_at_equal_intuition():
+    for intuition in range(0, 40):
+        stats = Stats(strength=5, agility=5, intuition=intuition, endurance=5)
+        d = derive(WARRIOR, stats)
+        assert d.crit_chance > d.anticrit
+
+
+def test_accuracy_eats_the_dodge_point_for_point():
+    """Ловкач с 40% уворота против точности в 10% уворачивается на 30%."""
+    dodger = make(user_id=1)
+    striker = make(user_id=2)
+    object.__setattr__(dodger.derived, "dodge_chance", 0.40)
+    object.__setattr__(striker.derived, "accuracy", 0.10)
+
+    assert dodger.dodge_against(striker) == pytest.approx(0.30)
+
+
+def test_dodge_never_falls_to_zero():
+    dodger = make(user_id=1)
+    striker = make(user_id=2)
+    object.__setattr__(dodger.derived, "dodge_chance", 0.10)
+    object.__setattr__(striker.derived, "accuracy", 0.90)
+
+    assert dodger.dodge_against(striker) == MIN_DODGE_CHANCE
+
+
+def test_anticrit_eats_the_crit_point_for_point():
+    striker = make(user_id=1, fclass=ASSASSIN)
+    defender = make(user_id=2)
+    object.__setattr__(striker.derived, "crit_chance", 0.40)
+    object.__setattr__(defender.derived, "anticrit", 0.15)
+
+    assert striker.crit_against(defender) == pytest.approx(0.25)
+    object.__setattr__(defender.derived, "anticrit", 0.90)
+    assert striker.crit_against(defender) == 0.0
+
+
+def test_weapon_damage_lands_on_top_of_the_strength_damage():
+    """Сила выбила 11, кастет добавил свои 4 — соперник получает 15."""
+    attacker = dressed("knuckles", user_id=1)
+    defender = make(user_id=2)
+    object.__setattr__(defender.derived, "resist", 0.0)
+
+    # промах по увороту, без крита, урон силой 11, урон кастетом 4
+    rng = Rigged(rolls=[0.99, 0.99], numbers=[11, 4])
+    result = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.LEGS)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        round_number=1,
+        rng=rng,
+    )
+    assert result.strikes[0].damage == 15
+
+
+def test_resistance_shaves_a_share_off_every_hit():
+    """Урон 30 при сопротивлении 10% доходит как 27."""
+    attacker = make(user_id=1)
+    defender = make(user_id=2)
+    object.__setattr__(defender.derived, "resist", 0.10)
+
+    rng = Rigged(rolls=[0.99, 0.99], numbers=[30])
+    result = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.LEGS)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        round_number=1,
+        rng=rng,
+    )
+    assert result.strikes[0].damage == 27
+
+
+def test_armor_holds_the_zone_it_covers():
+    """Шлем принимает удар в голову и не помогает, когда бьют по ногам."""
+    attacker = make(user_id=1)
+    helmet = CATALOGUE["moto_helmet"]
+    defender = dressed("moto_helmet", user_id=2)
+    object.__setattr__(defender.derived, "resist", 0.0)
+
+    assert defender.armor_range(Zone.HEAD) == (helmet.armor_min, helmet.armor_max)
+    assert defender.armor_range(Zone.LEGS) == (0, 0)
+
+    # удар 30 в голову: броня снимает свои 3
+    rng = Rigged(rolls=[0.99, 0.99], numbers=[30, 3])
+    head = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.BELT)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        round_number=1,
+        rng=rng,
+    ).strikes[0]
+    assert (head.damage, head.armor) == (27, 3)
+
+    # тот же удар по ногам проходит целиком
+    rng = Rigged(rolls=[0.99, 0.99], numbers=[30])
+    legs = resolve_round(
+        attacker,
+        strike_at(Zone.LEGS, guard(Zone.BELT)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        round_number=1,
+        rng=rng,
+    ).strikes[0]
+    assert (legs.damage, legs.armor) == (30, 0)
+
+
+def test_shield_covers_every_zone_but_a_second_weapon_covers_none():
+    shielded = dressed("bar_lid", user_id=1)
+    assert all(shielded.armor_range(zone)[1] > 0 for zone in ALL_ZONES)
+
+    # то же место занято оружием — брони нет
+    armed = Fighter(
+        user_id=2,
+        name="Боец",
+        fclass=WARRIOR,
+        stats=WARRIOR.base_stats,
+        equipment=Equipment(items={Slot.SHIELD: SHIV}),
+    )
+    assert all(armed.armor_range(zone) == (0, 0) for zone in ALL_ZONES)
+
+
+def test_armor_never_eats_more_than_half_of_a_hit():
+    """Иначе комплект брони делает лёгкие классы безвредными."""
+    attacker = make(user_id=1)
+    defender = dressed("moto_helmet", "bar_lid", user_id=2)
+    object.__setattr__(defender.derived, "resist", 0.0)
+
+    rng = Rigged(rolls=[0.99, 0.99], numbers=[6, 5, 2])  # урон 6, брони на 7
+    strike = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.BELT)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        round_number=1,
+        rng=rng,
+    ).strikes[0]
+    assert strike.damage == 3
+    assert strike.armor == 3
