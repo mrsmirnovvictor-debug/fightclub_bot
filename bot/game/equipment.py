@@ -403,6 +403,10 @@ def repair(
 # В каждом наборе есть вещь под каждый класс, но кредитов на всё не хватит:
 # на уровень капает около сотни, а набор стоит втрое дороже — в этом и развилка.
 
+# Картинки предметов лежат в R2. Оружие — в новом бакете, папка weapons;
+# обувь пока осталась в старом, её стоит перенести туда же.
+ART = "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev"
+WEAPON_ART = f"{ART}/weapons"
 IMAGES = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/VEGAS%20Fight%20Club"
 
 WARRIOR, ROGUE, ASSASSIN, TANK = "warrior", "rogue", "assassin", "tank"
@@ -494,6 +498,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🔩",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Brass_knuckle_game_inventory_icon_202608280127.jpeg",
         instrumental="кастетом",
         strength=1,
         damage_min=2,
@@ -540,6 +545,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🔪",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Folding_knife_game_inventory_icon_202608280132.jpeg",
         instrumental="выкидухой",
         agility=1,
         damage_min=4,
@@ -556,6 +562,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "📌",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Utility_knife_game_inventory_icon_202608280152.jpeg",
         instrumental="шилом",
         intuition=1,
         damage_min=2,
@@ -572,6 +579,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🔧",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Game_inventory_crowbar_icon_202608280137.jpeg",
         instrumental="монтировкой",
         damage_min=5,
         damage_max=6,
@@ -699,6 +707,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🏏",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Bat_game_inventory_icon_202608280129.jpeg",
         instrumental="битой",
         strength=2,
         damage_min=7,
@@ -715,6 +724,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🗡",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Roman_gladius_game_icon_202608280153.jpeg",
         instrumental="мачете",
         agility=2,
         damage_min=7,
@@ -731,6 +741,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🪡",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Stiletto_game_inventory_icon_202608280134.jpeg",
         instrumental="стилетом",
         intuition=2,
         damage_min=4,
@@ -747,6 +758,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🔨",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Sledgehammer_game_inventory_icon_202608280138.jpeg",
         instrumental="кувалдой",
         damage_min=8,
         damage_max=10,
@@ -821,6 +833,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🪓",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Customized_street_axe_game_icon_202608280139.jpeg",
         instrumental="топором",
         strength=2,
         damage_min=9,
@@ -837,6 +850,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🦋",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Butterfly_knife_game_inventory_icon_202608280133.jpeg",
         instrumental="балисонгом",
         agility=2,
         damage_min=9,
@@ -853,6 +867,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "⛏",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Karambit_knife_game_icon_202608280141.jpeg",
         instrumental="ледорубом",
         intuition=2,
         damage_min=5,
@@ -955,6 +970,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "⚔",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Butcher_cleaver_game_icon_202608280140.jpeg",
         instrumental="тесаком",
         strength=3,
         damage_min=13,
@@ -971,6 +987,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🪒",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Open_folding_knife_game_icon_202608280130.jpeg",
         instrumental="бритвой",
         agility=3,
         damage_min=13,
@@ -987,6 +1004,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "💉",
         kind=ItemKind.WEAPON,
+        image=f"{WEAPON_ART}/Tactical_knife_game_inventory_icon_202608280151.jpeg",
         instrumental="иглой",
         intuition=3,
         damage_min=7,

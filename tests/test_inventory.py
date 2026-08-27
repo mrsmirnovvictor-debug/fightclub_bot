@@ -745,3 +745,17 @@ def test_gear_percentages_reach_the_fighter():
     assert tank.anticrit == pytest.approx(
         CATALOGUE["pry_bar"].anticrit + CATALOGUE["moto_helmet"].anticrit
     )
+
+
+def test_pictures_are_wired_to_the_right_bucket():
+    """Картинки предметов лежат в R2 и не повторяются у разных вещей."""
+    from bot.game.equipment import SHOWCASE, WEAPON_ART
+
+    pictures = [item.image for item in SHOWCASE if item.image]
+    assert pictures, "картинок нет вовсе"
+    assert len(set(pictures)) == len(pictures), "две вещи делят одну картинку"
+    assert all(picture.startswith("https://") for picture in pictures)
+
+    for item in SHOWCASE:
+        if item.image and item.is_weapon:
+            assert item.image.startswith(WEAPON_ART), item.code
