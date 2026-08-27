@@ -20,6 +20,7 @@ from bot.config import Config, load_config
 from bot.database import Database
 from bot.battle_service import BattleService
 from bot.duel_service import DuelService
+from bot.tournament_service import TournamentService
 from bot.game.links import links
 from bot.handlers import build_router
 from bot.webapp import run_webapp
@@ -48,6 +49,8 @@ GROUP_COMMANDS = [
     BotCommand(command="fight", description="Вызов с оружием"),
     BotCommand(command="battle", description="Командный бой: /battle 3"),
     BotCommand(command="royale", description="Королевская битва: /royale 6"),
+    BotCommand(command="tournament", description="Объявить турнир (админы)"),
+    BotCommand(command="bracket", description="Сетка турнира"),
     BotCommand(command="card", description="Карточка бойца"),
     BotCommand(command="rings", description="Ринги клуба и что свободно"),
     BotCommand(command="arena1", description="Отметить кулачный ринг (админы)"),
@@ -73,11 +76,13 @@ async def run(config: Config | None = None) -> None:
     await db.connect()
     duels = DuelService(bot=bot, db=db, config=config)
     battles = BattleService(bot=bot, db=db, config=config)
+    tournaments = TournamentService(bot=bot, db=db, config=config, duels=duels)
 
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher["db"] = db
     dispatcher["duels"] = duels
     dispatcher["battles"] = battles
+    dispatcher["tournaments"] = tournaments
     dispatcher["config"] = config
     dispatcher.include_router(build_router())
 
@@ -97,6 +102,8 @@ async def run(config: Config | None = None) -> None:
     runner = (
         await run_webapp(bot, db, config, duels) if config.webapp_enabled else None
     )
+    # Турниры живут дольше одного запуска: поднимаем недоигранные сетки
+    await tournaments.resume()
     try:
         await dispatcher.start_polling(
             bot, allowed_updates=dispatcher.resolve_used_update_types()
@@ -104,6 +111,7 @@ async def run(config: Config | None = None) -> None:
     finally:
         await duels.shutdown()
         await battles.shutdown()
+        await tournaments.shutdown()
         if runner is not None:
             await runner.cleanup()
         await db.close()

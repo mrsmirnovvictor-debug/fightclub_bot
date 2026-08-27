@@ -108,6 +108,51 @@ CREATE TABLE IF NOT EXISTS battle_members (
 );
 
 CREATE INDEX IF NOT EXISTS idx_battles_chat ON battles(chat_id, created_at DESC);
+
+-- Турнир живёт сутками и обязан пережить перезапуск бота, поэтому он весь
+-- в базе: и запись участников, и сетка, и то, на каком круге остановились.
+CREATE TABLE IF NOT EXISTS tournaments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER NOT NULL,
+    thread_id  INTEGER,
+    title      TEXT    NOT NULL DEFAULT '',
+    size       INTEGER NOT NULL DEFAULT 8,
+    mode       TEXT    NOT NULL DEFAULT 'armed',
+    min_level  INTEGER NOT NULL DEFAULT 1,
+    max_level  INTEGER NOT NULL DEFAULT 10,
+    state      TEXT    NOT NULL DEFAULT 'registration',
+    round      INTEGER NOT NULL DEFAULT 0,
+    winner_id  INTEGER,
+    opens_until TEXT   NOT NULL,
+    message_id INTEGER,
+    chat_title TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS tournament_players (
+    tournament_id INTEGER NOT NULL,
+    user_id       INTEGER NOT NULL,
+    seed          INTEGER NOT NULL DEFAULT 0,
+    out_at_round  INTEGER,
+    PRIMARY KEY (tournament_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS tournament_matches (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    tournament_id INTEGER NOT NULL,
+    round         INTEGER NOT NULL,
+    slot          INTEGER NOT NULL,
+    first_id      INTEGER,
+    second_id     INTEGER,
+    winner_id     INTEGER,
+    replays       INTEGER NOT NULL DEFAULT 0,
+    state         TEXT    NOT NULL DEFAULT 'pending'
+);
+
+CREATE INDEX IF NOT EXISTS idx_tournaments_chat
+    ON tournaments(chat_id, state);
+CREATE INDEX IF NOT EXISTS idx_tournament_matches
+    ON tournament_matches(tournament_id, round, slot);
 """
 
 PLAYER_COLUMNS = (
@@ -497,6 +542,150 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # ---------- турниры ----------
+
+    async def create_tournament(
+        self,
+        chat_id: int,
+        thread_id: int | None,
+        size: int,
+        mode: FightMode,
+        min_level: int,
+        max_level: int,
+        opens_until: str,
+        title: str = "",
+        chat_title: str = "",
+    ) -> int:
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO tournaments (
+                chat_id, thread_id, title, size, mode,
+                min_level, max_level, opens_until, chat_title
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                chat_id,
+                thread_id,
+                title,
+                size,
+                mode.value,
+                min_level,
+                max_level,
+                opens_until,
+                chat_title,
+            ),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def get_tournament(self, tournament_id: int) -> dict[str, Any] | None:
+        async with self.conn.execute(
+            "SELECT * FROM tournaments WHERE id = ?", (tournament_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def live_tournaments(self, chat_id: int | None = None) -> list[dict[str, Any]]:
+        """Турниры, которые ещё идут: набирают состав или дерутся."""
+        query = "SELECT * FROM tournaments WHERE state IN ('registration', 'running')"
+        params: tuple = ()
+        if chat_id is not None:
+            query += " AND chat_id = ?"
+            params = (chat_id,)
+        async with self.conn.execute(query + " ORDER BY id", params) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_tournament(self, tournament_id: int, **fields: Any) -> None:
+        if not fields:  # pragma: no cover - вызывать без правок незачем
+            return
+        columns = ", ".join(f"{name} = ?" for name in fields)
+        await self.conn.execute(
+            f"UPDATE tournaments SET {columns} WHERE id = ?",
+            (*fields.values(), tournament_id),
+        )
+        await self.conn.commit()
+
+    async def add_tournament_player(self, tournament_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO tournament_players (tournament_id, user_id) "
+            "VALUES (?,?)",
+            (tournament_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def drop_tournament_player(self, tournament_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM tournament_players WHERE tournament_id = ? AND user_id = ?",
+            (tournament_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def tournament_players(self, tournament_id: int) -> list[dict[str, Any]]:
+        async with self.conn.execute(
+            """
+            SELECT user_id, seed, out_at_round FROM tournament_players
+            WHERE tournament_id = ? ORDER BY seed, user_id
+            """,
+            (tournament_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def set_tournament_seeds(
+        self, tournament_id: int, seeds: dict[int, int]
+    ) -> None:
+        await self.conn.executemany(
+            "UPDATE tournament_players SET seed = ? "
+            "WHERE tournament_id = ? AND user_id = ?",
+            [(seed, tournament_id, user_id) for user_id, seed in seeds.items()],
+        )
+        await self.conn.commit()
+
+    async def knock_out(self, tournament_id: int, user_id: int, round_number: int) -> None:
+        await self.conn.execute(
+            "UPDATE tournament_players SET out_at_round = ? "
+            "WHERE tournament_id = ? AND user_id = ?",
+            (round_number, tournament_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def add_matches(
+        self, tournament_id: int, round_number: int, pairs: list[tuple]
+    ) -> None:
+        await self.conn.executemany(
+            """
+            INSERT INTO tournament_matches (
+                tournament_id, round, slot, first_id, second_id
+            ) VALUES (?,?,?,?,?)
+            """,
+            [
+                (tournament_id, round_number, slot, first, second)
+                for slot, (first, second) in enumerate(pairs)
+            ],
+        )
+        await self.conn.commit()
+
+    async def tournament_matches(
+        self, tournament_id: int, round_number: int | None = None
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM tournament_matches WHERE tournament_id = ?"
+        params: tuple = (tournament_id,)
+        if round_number is not None:
+            query += " AND round = ?"
+            params = (tournament_id, round_number)
+        async with self.conn.execute(query + " ORDER BY round, slot", params) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_match(self, match_id: int, **fields: Any) -> None:
+        columns = ", ".join(f"{name} = ?" for name in fields)
+        await self.conn.execute(
+            f"UPDATE tournament_matches SET {columns} WHERE id = ?",
+            (*fields.values(), match_id),
+        )
+        await self.conn.commit()
 
     async def count_recent_duels_between(
         self, first_id: int, second_id: int, hours: int = 24

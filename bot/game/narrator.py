@@ -9,6 +9,7 @@ import re
 from typing import TYPE_CHECKING
 
 from bot.game.classes import ZONE_PREPOSITIONAL, Zone
+from bot.game.economy import MAX_LEVEL
 from bot.game.health import READY_THRESHOLD, format_duration
 from bot.game.links import links
 from bot.game.modes import FightMode
@@ -645,3 +646,86 @@ def battle_result(session, outcome) -> str:
         side = team_name(outcome.winning_team or 0)
         return f"🏆 <b>Победа{how}: {side}</b>\n{winners}"
     return f"👑 <b>Последний на ногах{how}: {winners}</b>"
+
+
+# ---------- турнир ----------
+
+
+def tournament_card(tournament, names: list[tuple[int, str, int]]) -> str:
+    """Объявление о наборе: кто уже в списке и сколько осталось времени."""
+    lines = [
+        f"🏆 <b>Турнир{' «' + esc(tournament.title) + '»' if tournament.title else ''}</b> "
+        f"{tournament.mode.emoji} {tournament.mode.title}",
+        "",
+        f"Мест: <b>{len(names)}/{tournament.size}</b> · " + (
+            "уровни <b>любые</b>"
+            if tournament.min_level <= 1 and tournament.max_level >= MAX_LEVEL
+            else f"уровни <b>{tournament.min_level}–{tournament.max_level}</b>"
+        ),
+        f"Запись закрывается через <b>{format_duration(tournament.seconds_left)}</b>",
+        "",
+    ]
+    if names:
+        lines.append("<b>Записались</b>")
+        for index, (user_id, nickname, rating) in enumerate(
+            sorted(names, key=lambda row: -row[2]), start=1
+        ):
+            lines.append(f"{index}. {name_link(user_id, nickname)} — рейтинг {rating}")
+    else:
+        lines.append("Пока никого. Кто первый?")
+    lines += [
+        "",
+        "Сетка плей-офф: проигравший выбывает, ничья переигрывается. "
+        "Перед каждым боем бот лечит обоих до полного здоровья.",
+    ]
+    return "\n".join(lines)
+
+
+def bracket_text(tournament, matches: list[dict], names: dict[int, str]) -> str:
+    """Сетка: круги сверху вниз, в каждом — пары и их исход."""
+    rounds: dict[int, list[dict]] = {}
+    for match in matches:
+        rounds.setdefault(match["round"], []).append(match)
+
+    lines = ["🗂 <b>Сетка</b>"]
+    for number in sorted(rounds):
+        pairs = sorted(rounds[number], key=lambda row: row["slot"])
+        lines += ["", f"<b>{round_title_for(len(pairs))}</b>"]
+        for match in pairs:
+            lines.append(_bracket_line(match, names))
+    return "\n".join(lines)
+
+
+def round_title_for(matches: int) -> str:
+    from bot.game.bracket import round_title
+
+    return round_title(matches)
+
+
+def _bracket_line(match: dict, names: dict[int, str]) -> str:
+    def who(user_id: int | None) -> str:
+        if user_id is None:
+            return "—"
+        return esc(names.get(user_id, "боец"))
+
+    first, second = who(match["first_id"]), who(match["second_id"])
+    if match["first_id"] is None and match["second_id"] is None:
+        return "▫️ —"
+    if match["winner_id"]:
+        winner = who(match["winner_id"])
+        if match["first_id"] is None or match["second_id"] is None:
+            return f"🎟 {winner} — без боя"
+        return f"✅ {first} — {second} → <b>{winner}</b>"
+    if match["state"] == "running":
+        return f"▶️ {first} — {second}"
+    return f"⏳ {first} — {second}"
+
+
+def tournament_winner(tournament, winner) -> str:
+    if winner is None:
+        return "🚫 Турнир закончился без победителя."
+    return (
+        "🏆 <b>Турнир взят!</b>\n"
+        f"Победитель: <b>{name_link(winner.user_id, winner.nickname)}</b> "
+        f"({winner.fclass.label}, {winner.level} ур., рейтинг {winner.rating})"
+    )

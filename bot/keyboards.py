@@ -54,6 +54,11 @@ class BattleCB(CallbackData, prefix="btl"):
     slot: int = 0
 
 
+class TourCB(CallbackData, prefix="tour"):
+    action: str  # join | leave
+    tournament_id: int
+
+
 class ChallengeCB(CallbackData, prefix="chl"):
     action: str  # accept | cancel
     challenge_id: int
@@ -175,6 +180,20 @@ def lobby_keyboard(lobby) -> InlineKeyboardMarkup:
         text="🚪 Выйти", callback_data=LobbyCB(action="leave", lobby_id=lobby.id)
     )
     builder.adjust(2 if lobby.kind is BattleKind.TEAM else 1)
+    return builder.as_markup()
+
+
+def tournament_keyboard(tournament_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="🏆 Записаться",
+        callback_data=TourCB(action="join", tournament_id=tournament_id),
+    )
+    builder.button(
+        text="🚪 Передумал",
+        callback_data=TourCB(action="leave", tournament_id=tournament_id),
+    )
+    builder.adjust(1)
     return builder.as_markup()
 
 

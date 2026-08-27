@@ -18,6 +18,8 @@ class Config:
     challenge_timeout: int = 180
     # Сколько ждём состав на групповой бой; набрался раньше — начинаем сразу
     lobby_timeout: int = 180
+    # Сколько идёт запись на турнир: по умолчанию сутки
+    tournament_registration: int = 24 * 60 * 60
     # Публичный HTTPS-адрес мини-аппа. Пусто — карточка не поднимается.
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
@@ -65,6 +67,9 @@ def load_config() -> Config:
         turn_timeout=int(os.getenv("TURN_TIMEOUT", "30")),
         challenge_timeout=int(os.getenv("CHALLENGE_TIMEOUT", "180")),
         lobby_timeout=int(os.getenv("LOBBY_TIMEOUT", "180")),
+        tournament_registration=int(
+            os.getenv("TOURNAMENT_REGISTRATION", str(24 * 60 * 60))
+        ),
         webapp_url=_webapp_url(),
         webapp_host=os.getenv("WEBAPP_HOST", "0.0.0.0").strip(),
         webapp_port=_webapp_port(),

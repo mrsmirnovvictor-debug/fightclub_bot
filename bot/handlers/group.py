@@ -19,7 +19,8 @@ from bot.game.battle import (
 from bot.game.modes import FIST_RINGS, FightMode
 from bot.game.narrator import esc, name_link, plain
 from bot.handlers.common import thread_id_of
-from bot.keyboards import BattleCB, ChallengeCB, FightCB, LobbyCB, StandoffCB
+from bot.keyboards import BattleCB, ChallengeCB, FightCB, LobbyCB, StandoffCB, TourCB
+from bot.tournament_service import TournamentError, TournamentService
 from bot.models import Player, Ring
 
 logger = logging.getLogger(__name__)
@@ -331,6 +332,109 @@ async def on_battle_choice(
         await callback.answer("Судья запутался. Попробуй ещё раз.", show_alert=True)
     else:
         await callback.answer(hint)
+
+
+# ---------- турнир ----------
+
+
+@router.message(Command("tournament", "tour"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_tournament(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    bot: Bot,
+    tournaments: TournamentService,
+) -> None:
+    """Объявить турнир: /tournament 16 5-8 Кубок подвала."""
+    if not await _is_admin(bot, message.chat.id, message.from_user.id):
+        await message.reply("Турнир объявляют администраторы клуба.")
+        return
+    ring = await _ring_for_battle(message, db)
+    if ring is None:
+        return
+
+    player = await db.get_player(message.from_user.id)
+    if player is None:
+        await message.reply(NO_CHARACTER)
+        return
+
+    parts = (command.args or "").split()
+    size = int(parts[0]) if parts and parts[0].isdigit() else 8
+    rest = parts[1:] if parts and parts[0].isdigit() else parts
+    levels = _parse_levels(rest[:1])
+    title = " ".join(rest[1:] if levels else rest)[:48]
+
+    try:
+        await tournaments.create(
+            message.chat.id,
+            thread_id_of(message),
+            player,
+            size,
+            mode=ring.mode,
+            levels=levels,
+            title=title,
+            chat_title=message.chat.title or "",
+        )
+    except TournamentError as error:
+        await message.reply(str(error))
+
+
+@router.message(Command("bracket", "setka"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_bracket(
+    message: Message, db: Database, tournaments: TournamentService
+) -> None:
+    """Показать сетку идущего турнира."""
+    live = await db.live_tournaments(message.chat.id)
+    if not live:
+        await message.reply("Сейчас турнира нет. Объявить: /tournament 8")
+        return
+    tournament_id = live[0]["id"]
+    if live[0]["state"] == "registration":
+        await message.reply("Запись ещё идёт — сетки пока нет.")
+        return
+    await message.reply(await tournaments.bracket(tournament_id))
+
+
+@router.message(Command("tourstop"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_tourstop(
+    message: Message, db: Database, bot: Bot, tournaments: TournamentService
+) -> None:
+    if not await _is_admin(bot, message.chat.id, message.from_user.id):
+        await message.reply("Турнир останавливают администраторы клуба.")
+        return
+    live = await db.live_tournaments(message.chat.id)
+    if not live:
+        await message.reply("Останавливать нечего.")
+        return
+    await tournaments.stop(live[0]["id"])
+
+
+@router.callback_query(TourCB.filter())
+async def on_tournament(
+    callback: CallbackQuery,
+    callback_data: TourCB,
+    db: Database,
+    tournaments: TournamentService,
+) -> None:
+    if callback_data.action == "leave":
+        try:
+            await tournaments.leave(callback_data.tournament_id, callback.from_user.id)
+        except TournamentError as error:
+            await callback.answer(plain(str(error)), show_alert=True)
+        else:
+            await callback.answer("Вычеркнул из списка.")
+        return
+
+    player = await db.get_player(callback.from_user.id)
+    if player is None:
+        await callback.answer(NO_CHARACTER, show_alert=True)
+        return
+    try:
+        await tournaments.join(callback_data.tournament_id, player)
+    except TournamentError as error:
+        await callback.answer(plain(str(error)), show_alert=True)
+    else:
+        await callback.answer("В списке!")
 
 
 def _challenged_message(message: Message) -> Message | None:

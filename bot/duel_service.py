@@ -120,6 +120,8 @@ class DuelSession:
     choices: dict[int, Choice] = field(default_factory=dict)
     players: dict[int, Player] = field(default_factory=dict)
     prompt_message_id: int | None = None
+    # Кого позвать, когда бой кончится: турнир так узнаёт победителя пары
+    on_finish: object | None = None
     standoff_message_id: int | None = None
     started: bool = False  # гонг прозвучал
     timer: asyncio.Task | None = None
@@ -467,10 +469,12 @@ class DuelService:
         second: Player,
         chat_title: str = "",
         mode: FightMode = FightMode.FIST,
+        on_finish=None,
     ) -> DuelSession:
         """Свести бойцов и сразу дать гонг — без стойки."""
         session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
         session.started = True
+        session.on_finish = on_finish
         await self._send(
             chat_id,
             thread_id,
@@ -651,6 +655,8 @@ class DuelService:
         if rewards:
             text += "\n\n" + rewards
         await self._send(session.chat_id, session.thread_id, text)
+        if session.on_finish is not None:
+            await session.on_finish(session, result)
         await self.db.add_duel(
             chat_id=session.chat_id,
             thread_id=session.thread_id,

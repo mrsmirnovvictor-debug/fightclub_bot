@@ -423,3 +423,53 @@ async def test_royale_is_open_to_everyone_who_fits(arena, battles):
     assert "Уровень не тот" in session.alerts[-1]
     await join(guest)
     assert lobby.total == 2
+
+
+async def test_tournament_is_announced_and_signed_up_from_the_chat(arena, tournaments):
+    """/tournament объявляет набор, кнопка записывает, /bracket ждёт гонга."""
+    from bot.keyboards import TourCB
+
+    db, _, session = arena
+    host = as_user(840, "Хозяин")
+    guest = as_user(841, "Гость")
+    for user in (host, guest):
+        player = make_player(user.id, user.first_name, "warrior")
+        player.level = 5
+        await db.save_player(player)
+
+    await send(host, "/arena_gear", thread_id=503)
+    await send(host, "/tournament 8 4-6 Кубок подвала", thread_id=503)
+
+    live = await db.live_tournaments(GROUP.id)
+    assert len(live) == 1
+    assert (live[0]["size"], live[0]["min_level"], live[0]["max_level"]) == (8, 4, 6)
+    assert live[0]["title"] == "Кубок подвала"
+    assert live[0]["mode"] == "armed"
+    assert "Кубок подвала" in session.texts[-1]
+
+    await send(host, "/bracket", thread_id=503)
+    assert "Запись ещё идёт" in session.texts[-1]
+
+    await feed_callback(
+        guest,
+        GROUP,
+        TourCB(action="join", tournament_id=live[0]["id"]).pack(),
+        message_thread_id=503,
+        is_topic_message=True,
+    )
+    assert session.alerts[-1] == "В списке!"
+    assert len(await db.tournament_players(live[0]["id"])) == 2
+
+    await feed_callback(
+        guest,
+        GROUP,
+        TourCB(action="leave", tournament_id=live[0]["id"]).pack(),
+        message_thread_id=503,
+        is_topic_message=True,
+    )
+    assert len(await db.tournament_players(live[0]["id"])) == 1
+
+    await send(host, "/tourstop", thread_id=503)
+    assert not await db.live_tournaments(GROUP.id)
+    assert "остановлен" in session.texts[-1]
+    assert not tournaments._timers
