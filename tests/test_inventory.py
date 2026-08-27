@@ -565,7 +565,7 @@ async def test_nobody_changes_clothes_in_the_middle_of_a_fight(db):
 
 def test_every_tier_has_something_for_every_class():
     """В каждой партии товара есть вещь под каждый класс."""
-    for level in (4, 5, 6, 7, 8):
+    for level in (4, 5, 6, 7, 8, 9):
         covered = {code for item in items_unlocked_at(level) for code in item.for_classes}
         assert covered == set(FIGHTER_CLASSES), f"{level} уровень обошли: {covered}"
 
