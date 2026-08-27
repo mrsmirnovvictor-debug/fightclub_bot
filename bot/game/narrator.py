@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from bot.game.classes import ZONE_PREPOSITIONAL, Zone
 from bot.game.health import READY_THRESHOLD, format_duration
 from bot.game.links import links
+from bot.game.modes import FightMode
 from bot.game.stats import derive
 from bot.game.combat import (
     MAX_MISSED_TURNS,
@@ -24,13 +25,15 @@ from bot.game.combat import (
 if TYPE_CHECKING:  # только для подсказок типов: models импортирует не нас
     from bot.models import Player, ProgressReport
 
-# Эмодзи исхода: 👊 попадание, 🛡 блок, 🩸 крит, 🤸 уворот, 🥊 контрудар
+# Эмодзи исхода: 👊 попадание, 🛡 блок, 🩸 крит, 🌀 уворот, 🔄 контрудар.
+# Те же значки стоят у этих показателей на карточке — чтобы лог боя читался
+# теми же символами, что и характеристики.
 OUTCOME_EMOJI = {
     Outcome.HIT: "👊",
     Outcome.CRIT: "🩸",
     Outcome.BLOCK: "🛡",
-    Outcome.DODGE: "🤸",
-    Outcome.COUNTER: "🥊",
+    Outcome.DODGE: "🌀",
+    Outcome.COUNTER: "🔄",
 }
 
 # Дальше — «{a} глагол {w} {zone}, {d} реакция». Формы подобраны так, чтобы
@@ -306,11 +309,17 @@ def fighter_hp_note(fighter: Fighter) -> str:
     return f"{fighter.hp}/{fighter.max_hp} HP (не долечился)"
 
 
-def _fighter_brief(player: "Player") -> str:
-    """Строка «на кого иду»: класс, уровень, здоровье, урон, рейтинг, счёт."""
-    stats = derive(
-        player.fclass, player.stats, player.level, player.equipment.hp_bonus
-    )
+def _fighter_brief(player: "Player", mode: FightMode = FightMode.FIST) -> str:
+    """Строка «на кого иду»: класс, уровень, здоровье, урон, рейтинг, счёт.
+
+    В кулачном бою считаем бойца без вещей — таким он и выйдет на ринг.
+    """
+    if mode.armed:
+        stats = derive(
+            player.fclass, player.stats, player.level, player.equipment.hp_bonus
+        )
+    else:
+        stats = derive(player.fclass, player.base_stats, player.level)
     return (
         f"{player.fclass.emoji} "
         f"<b>{name_link(player.user_id, player.nickname)}</b> — "
@@ -322,14 +331,19 @@ def _fighter_brief(player: "Player") -> str:
     )
 
 
-def standoff_card(first: "Player", second: "Player", decision: str = "") -> str:
+def standoff_card(
+    first: "Player",
+    second: "Player",
+    decision: str = "",
+    mode: FightMode = FightMode.FIST,
+) -> str:
     """Бойцы сошлись лицом к лицу — вызвавшему решать, драться или разойтись."""
     lines = [
-        "🥊 <b>Вызов принят. Оцените друг друга.</b>",
+        f"🥊 <b>Вызов принят. {mode.title.capitalize()}.</b>",
         "",
-        _fighter_brief(first),
+        _fighter_brief(first, mode),
         "",
-        _fighter_brief(second),
+        _fighter_brief(second, mode),
         "",
     ]
     gap = second.level - first.level
@@ -353,13 +367,21 @@ def standoff_card(first: "Player", second: "Player", decision: str = "") -> str:
     return "\n".join(lines)
 
 
-def duel_intro(first: Fighter, second: Fighter) -> str:
+def duel_intro(
+    first: Fighter, second: Fighter, mode: FightMode = FightMode.FIST
+) -> str:
+    gear = (
+        "Дерутся тем, что надето."
+        if mode.armed
+        else "Вещи остались в раздевалке: спорят чистые характеристики."
+    )
     return (
-        "🥊 <b>Бойцовский клуб. Дуэль на кулаках</b>\n\n"
+        f"🥊 <b>Бойцовский клуб. {mode.title.capitalize()}</b>\n\n"
         f"{first.fclass.emoji} {mention(first)} — {first.fclass.title}, "
         f"{first.level} ур., {fighter_hp_note(first)}\n"
         f"{second.fclass.emoji} {mention(second)} — {second.fclass.title}, "
         f"{second.level} ур., {fighter_hp_note(second)}\n\n"
+        f"{gear}\n"
         "Правила простые: удар слева, бьёшь в одну зону. "
         "Блок справа — закрываешь две смежные, а со щитом три.\n"
         f"Не заставлять судью ждать: {MAX_MISSED_TURNS} пропущенных удара "

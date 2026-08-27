@@ -43,9 +43,12 @@ PRIVATE_COMMANDS = [
 ]
 
 GROUP_COMMANDS = [
-    BotCommand(command="duel", description="Бросить вызов на кулаках"),
+    BotCommand(command="duel", description="Вызов на кулаках"),
+    BotCommand(command="fight", description="Вызов с оружием"),
     BotCommand(command="card", description="Карточка бойца"),
-    BotCommand(command="arena", description="Отметить ветку как ринг (админы)"),
+    BotCommand(command="rings", description="Ринги клуба и что свободно"),
+    BotCommand(command="arena1", description="Отметить кулачный ринг (админы)"),
+    BotCommand(command="arena_gear", description="Отметить ринг с оружием (админы)"),
     BotCommand(command="top", description="Чемпионы клуба"),
     BotCommand(command="history", description="Последние бои"),
     BotCommand(command="help", description="Как всё устроено"),

@@ -207,17 +207,25 @@ class Fighter:
         return block_combos(self.block_width)
 
     @classmethod
-    def from_player(cls, player) -> "Fighter":
-        """Собрать бойца из записи игрока: здоровье — то, что успело затянуться."""
-        return cls(
+    def from_player(cls, player, armed: bool = True) -> "Fighter":
+        """Собрать бойца из записи игрока: здоровье — то, что успело затянуться.
+
+        В кулачном бою вещи остаются в раздевалке: ни оружия, ни брони, ни
+        прибавок — спорят голые характеристики. Здоровье при этом урезается
+        по новому потолку, иначе боец вышел бы на ринг с чужим запасом.
+        """
+        equipment = player.equipment if armed else Equipment()
+        stats = player.stats if armed else player.base_stats
+        fighter = cls(
             user_id=player.user_id,
             name=player.nickname,
             fclass=get_class(player.class_code),
-            stats=player.stats,
+            stats=stats,
             level=player.level,
-            hp=player.current_hp(),
-            equipment=player.equipment,
+            equipment=equipment,
         )
+        fighter.hp = max(1, min(player.current_hp(), fighter.max_hp))
+        return fighter
 
 
 @dataclass

@@ -7,6 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
 from bot.game.classes import FIGHTER_CLASSES, Stats, Zone, get_class
+from bot.game.modes import FightMode
 from bot.game.economy import credits_per_level
 from bot.game.equipment import (
     ALL_SLOTS,
@@ -34,6 +35,7 @@ from bot.webapp.card import build_card, build_shop
 from bot.webapp.server import create_app
 from tests.test_webapp import TOKEN, make_init_data
 
+ARMED = FightMode.ARMED
 KNUCKLES = CATALOGUE["knuckles"]
 SNEAKERS = CATALOGUE["sneakers"]
 WRAPS = CATALOGUE["wraps"]
@@ -493,7 +495,7 @@ async def test_gear_wears_out_over_real_fights(bot_and_db):
     for _ in range(3):
         await heal_everyone(db, 1, 2)
         session = await service.start_duel(
-            -100, 7, await db.get_player(1), await db.get_player(2)
+            -100, 7, await db.get_player(1), await db.get_player(2), mode=ARMED
         )
         await fight_to_the_end(service, session)
 
@@ -520,7 +522,7 @@ async def test_dust_is_announced_in_the_thread(bot_and_db):
     for _ in range(4):
         await heal_everyone(db, 1, 2)
         session = await service.start_duel(
-            -100, 7, await db.get_player(1), await db.get_player(2)
+            -100, 7, await db.get_player(1), await db.get_player(2), mode=ARMED
         )
         await fight_to_the_end(service, session)
         if any("рассыпалась в труху" in text for text in fake_bot.texts):

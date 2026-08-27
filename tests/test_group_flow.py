@@ -63,8 +63,8 @@ async def test_duel_from_arena_setup_to_result(arena):
     await db.save_player(make_player(second.id, "Марла", "assassin"))
 
     await send(first, "/arena Ринг")
-    assert "ринг клуба" in session.texts[-1]
-    assert (await db.get_arena(GROUP.id)).thread_id == THREAD_ID
+    assert "Ринги клуба" in session.texts[-1]
+    assert (await db.get_ring(GROUP.id, THREAD_ID)).number == 1
 
     await send(first, "/duel")
     assert "вызывает любого желающего" in session.texts[-1]
@@ -76,7 +76,7 @@ async def test_duel_from_arena_setup_to_result(arena):
     assert duel is not None
     duel_id = duel.id
     assert not duel.started
-    assert "Оцените друг друга" in session.texts[-1]
+    assert "Вызов принят" in session.texts[-1]
 
     # соперник не может начать бой за вызвавшего
     await press(second, StandoffCB(action="start", duel_id=duel_id).pack())
@@ -120,10 +120,10 @@ async def test_duel_outside_arena_thread_is_refused(arena):
     db, _, session = arena
     user = as_user(611, "Боб")
     await db.save_player(make_player(user.id, "Боб", "tank"))
-    await db.set_arena(GROUP.id, THREAD_ID, "Ринг")
+    await db.set_ring(GROUP.id, THREAD_ID, title="Ринг")
 
     await send(user, "/duel", thread_id=None)
-    assert "Бои проходят" in session.texts[-1]
+    assert "Здесь не дерутся" in session.texts[-1]
 
 
 async def test_duel_without_character_sends_to_private(arena):
@@ -231,3 +231,120 @@ async def test_replying_to_your_own_message_opens_a_free_challenge(arena):
 
     assert "любого желающего" in session.texts[-1]
     assert duels.is_busy(user.id)
+
+
+# ---------- три ринга и два режима ----------
+
+
+async def test_three_fist_rings_hold_three_fights_at_once(arena):
+    """Один ринг — один бой, три ринга — три боя одновременно."""
+    db, duels, session = arena
+    fighters = []
+    for index in range(6):
+        user = as_user(700 + index, f"Боец{index}")
+        await db.save_player(make_player(user.id, f"Боец{index}", "warrior"))
+        fighters.append(user)
+
+    admin = fighters[0]
+    for number, thread in enumerate((101, 102, 103), start=1):
+        await send(admin, f"/arena{number}", thread_id=thread)
+        ring = await db.get_ring(GROUP.id, thread)
+        assert (ring.number, ring.mode.value) == (number, "fist")
+
+    # в каждой ветке своя пара
+    for thread, (one, two) in zip((101, 102, 103), ((0, 1), (2, 3), (4, 5))):
+        await send(fighters[one], "/duel", thread_id=thread)
+        challenge_id = max(duels._challenges)
+        await feed_callback(
+            fighters[two],
+            GROUP,
+            ChallengeCB(action="accept", challenge_id=challenge_id).pack(),
+            message_thread_id=thread,
+            is_topic_message=True,
+        )
+
+    assert all(
+        duels.duel_in_chat(GROUP.id, thread) is not None for thread in (101, 102, 103)
+    )
+    # в занятую ветку седьмой боец не влезет: ринг занят
+    seventh = as_user(710, "Седьмой")
+    await db.save_player(make_player(seventh.id, "Седьмой", "rogue"))
+    await send(seventh, "/duel", thread_id=101)
+    assert "уже идёт бой" in session.texts[-1]
+
+
+async def test_each_ring_wants_its_own_command(arena):
+    db, _, session = arena
+    user = as_user(720, "Боб")
+    await db.save_player(make_player(user.id, "Боб", "tank"))
+
+    await send(user, "/arena1", thread_id=201)
+    await send(user, "/arena_gear", thread_id=202)
+
+    await send(user, "/fight", thread_id=201)
+    assert "кулачный бой" in session.texts[-1].lower()
+    assert "/duel" in session.texts[-1]
+
+    await send(user, "/duel", thread_id=202)
+    assert "оружием" in session.texts[-1]
+    assert "/fight" in session.texts[-1]
+
+
+async def test_rings_command_shows_what_is_busy(arena):
+    db, duels, session = arena
+    first, second = as_user(730, "Тайлер"), as_user(731, "Марла")
+    for user, code in ((first, "warrior"), (second, "rogue")):
+        await db.save_player(make_player(user.id, user.first_name, code))
+
+    await send(first, "/arena1 Подвал", thread_id=301)
+    await send(first, "/arena_gear Оружейная", thread_id=302)
+
+    await send(first, "/rings", thread_id=301)
+    text = session.texts[-1]
+    assert "Подвал" in text and "Оружейная" in text
+    assert text.count("🟢 свободен") == 2
+
+    await send(first, "/duel", thread_id=301)
+    await feed_callback(
+        second,
+        GROUP,
+        ChallengeCB(action="accept", challenge_id=max(duels._challenges)).pack(),
+        message_thread_id=301,
+        is_topic_message=True,
+    )
+    await send(first, "/rings", thread_id=301)
+    assert "🔴 идёт бой" in session.texts[-1]
+
+
+async def test_fists_leave_the_gear_in_the_locker_room(arena):
+    """На кулачном ринге вещи не работают, на оружейном — работают."""
+    from bot.game.equipment import CATALOGUE, Slot
+    from bot.game.modes import FightMode
+
+    db, duels, _ = arena
+    first, second = as_user(740, "Тайлер"), as_user(741, "Марла")
+    for user, code in ((first, "warrior"), (second, "tank")):
+        player = make_player(user.id, user.first_name, code)
+        player.level = 8
+        await db.save_player(player)
+        weapon = await db.add_gear(user.id, "bat")
+        weapon.slot = Slot.WEAPON
+        await db.save_gear(weapon)
+
+    fist = await duels.start_duel(
+        GROUP.id, 401, await db.get_player(first.id), await db.get_player(second.id)
+    )
+    armed = await duels.start_duel(
+        GROUP.id,
+        402,
+        await db.get_player(first.id),
+        await db.get_player(second.id),
+        mode=FightMode.ARMED,
+    )
+
+    bare = fist.fighters[first.id]
+    kitted = armed.fighters[first.id]
+    assert bare.weapons == ("кулаком",)
+    assert kitted.weapons == (CATALOGUE["bat"].instrumental,)
+    assert kitted.derived.damage_max > bare.derived.damage_max  # бита даёт силу
+    assert kitted.max_hp >= bare.max_hp

@@ -17,6 +17,7 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import BLOCK_WIDTH, Zone, block_combo, block_title
 from bot.game.equipment import BARE_HANDS_ICON
+from bot.game.modes import FightMode
 from bot.game.combat import (
     MAX_MISSED_TURNS,
     Action,
@@ -77,6 +78,7 @@ class Challenge:
     message_id: int | None = None
     task: asyncio.Task | None = None
     chat_title: str = ""
+    mode: FightMode = FightMode.FIST
 
 
 @dataclass
@@ -118,6 +120,7 @@ class DuelSession:
     fighters: dict[int, Fighter]
     order: tuple[int, int]
     chat_title: str = ""  # название группы — станет местом рождения новичка
+    mode: FightMode = FightMode.FIST
     round_number: int = 0
     choices: dict[int, Choice] = field(default_factory=dict)
     players: dict[int, Player] = field(default_factory=dict)
@@ -195,6 +198,7 @@ class DuelService:
         challenger: Player,
         target: Player | None = None,
         chat_title: str = "",
+        mode: FightMode = FightMode.FIST,
     ) -> Challenge:
         if self._busy.get(challenger.user_id):
             raise DuelError("Ты уже в бою или у тебя висит незакрытый вызов.")
@@ -217,6 +221,7 @@ class DuelService:
             challenger=challenger,
             target_id=target.user_id if target else None,
             chat_title=chat_title,
+            mode=mode,
         )
         if target is None:
             text = (
@@ -328,6 +333,7 @@ class DuelService:
             challenger,
             opponent,
             challenge.chat_title,
+            challenge.mode,
         )
 
     # ---------- бой ----------
@@ -339,13 +345,14 @@ class DuelService:
         first: Player,
         second: Player,
         chat_title: str = "",
+        mode: FightMode = FightMode.FIST,
     ) -> DuelSession:
         """Свести бойцов лицом к лицу и дать вызвавшему посмотреть на соперника."""
-        session = self._make_session(chat_id, thread_id, first, second, chat_title)
+        session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
         message = await self._send(
             chat_id,
             thread_id,
-            standoff_card(first, second),
+            standoff_card(first, second, mode=mode),
             reply_markup=standoff_keyboard(session.id),
         )
         session.standoff_message_id = message.message_id
@@ -424,6 +431,7 @@ class DuelService:
         first: Player,
         second: Player,
         chat_title: str = "",
+        mode: FightMode = FightMode.FIST,
     ) -> DuelSession:
         if (chat_id, thread_id) in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой.")
@@ -431,8 +439,8 @@ class DuelService:
             if not player.can_fight():
                 raise DuelError(health_warning(player, is_self=False))
 
-        fighter_a = Fighter.from_player(first)
-        fighter_b = Fighter.from_player(second)
+        fighter_a = Fighter.from_player(first, armed=mode.armed)
+        fighter_b = Fighter.from_player(second, armed=mode.armed)
         session = DuelSession(
             id=next(self._ids),
             chat_id=chat_id,
@@ -440,6 +448,7 @@ class DuelService:
             fighters={fighter_a.user_id: fighter_a, fighter_b.user_id: fighter_b},
             order=(fighter_a.user_id, fighter_b.user_id),
             chat_title=chat_title,
+            mode=mode,
             players={first.user_id: first, second.user_id: second},
         )
         self._duels[session.id] = session
@@ -461,14 +470,15 @@ class DuelService:
         first: Player,
         second: Player,
         chat_title: str = "",
+        mode: FightMode = FightMode.FIST,
     ) -> DuelSession:
         """Свести бойцов и сразу дать гонг — без стойки."""
-        session = self._make_session(chat_id, thread_id, first, second, chat_title)
+        session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
         session.started = True
         await self._send(
             chat_id,
             thread_id,
-            duel_intro(*(session.fighters[uid] for uid in session.order)),
+            duel_intro(*(session.fighters[uid] for uid in session.order), mode=mode),
         )
         await self._start_round(session)
         return session
@@ -653,6 +663,7 @@ class DuelService:
             winner_id=result.winner_id,
             rounds=session.round_number,
             end_reason=result.end_reason.value if result.end_reason else None,
+            mode=session.mode,
         )
 
     async def _apply_results(self, session: DuelSession, result: RoundResult) -> str:
@@ -711,7 +722,12 @@ class DuelService:
                 player.birthplace = session.chat_title
             # Вещи снашиваются до того, как фиксируем здоровье: развалившаяся
             # экипировка уменьшает запас, и HP надо обрезать по новому потолку.
-            ruined = await wear_after_fight(self.db, player, won, self.rng)
+            # На кулаках вещи остались в раздевалке — снашивать нечего.
+            ruined = (
+                await wear_after_fight(self.db, player, won, self.rng)
+                if session.mode.armed
+                else []
+            )
             if ruined:
                 broken.append((player, ruined))
             player.set_hp(fighter.hp)

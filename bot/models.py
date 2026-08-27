@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from bot.game.classes import FighterClass, Stat, Stats, get_class
+from bot.game.modes import FightMode
 from bot.game.equipment import (
     Equipment,
     Item,
@@ -309,9 +310,27 @@ class Player:
 
 
 @dataclass
-class Arena:
-    """Ветка группы, в которой клуб проводит бои."""
+class Ring:
+    """Ветка группы, отведённая под бои.
+
+    Рингов в группе несколько: в каждом идёт свой бой, и режим у каждого
+    свой — кулачный или с оружием.
+    """
 
     chat_id: int
     thread_id: int | None
+    number: int = 1
+    mode: FightMode = FightMode.FIST
     title: str = ""
+
+    @property
+    def label(self) -> str:
+        name = self.title or f"{self.mode.title}, ринг {self.number}"
+        return f"{self.mode.emoji} {name}"
+
+    @property
+    def command(self) -> str:
+        """Команда, которой этот ринг отмечают в ветке."""
+        if self.mode.armed:
+            return "/arena_gear"
+        return f"/arena{self.number}"

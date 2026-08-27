@@ -139,14 +139,14 @@ async def test_full_duel_from_challenge_to_result(bot, db):
     assert service.duel_in_chat(CHAT_ID, THREAD_ID) is session
     assert service.is_busy(1) and service.is_busy(2)
     assert not session.started
-    assert "Оцените друг друга" in bot.texts[-1]
+    assert "Вызов принят" in bot.texts[-1]
 
     # без подтверждения вызвавшего бой не начинается
     with pytest.raises(DuelError):
         await service.handle_choice(session.id, 1, "attack", "head")
     await service.confirm_duel(session.id, first.user_id)
     assert session.started
-    assert any("Дуэль на кулаках" in text for text in bot.texts)
+    assert any("Кулачный бой" in text for text in bot.texts)
 
     for _ in range(40):
         if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:

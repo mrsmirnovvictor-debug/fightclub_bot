@@ -10,10 +10,11 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from bot.database import Database
 from bot.duel_service import DuelError, DuelService
+from bot.game.modes import FIST_RINGS, FightMode
 from bot.game.narrator import esc, name_link, plain
 from bot.handlers.common import thread_id_of
 from bot.keyboards import ChallengeCB, FightCB, StandoffCB
-from bot.models import Player
+from bot.models import Player, Ring
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +31,35 @@ async def _is_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     return member.status in {"creator", "administrator"}
 
 
-async def _arena_guard(message: Message, db: Database) -> bool:
-    """Проверить, что команда пришла в ту ветку, где клуб проводит бои."""
-    arena = await db.get_arena(message.chat.id)
-    if arena is None:
-        return True
-    if arena.thread_id == thread_id_of(message):
-        return True
-    where = f"«{esc(arena.title)}»" if arena.title else "отдельной ветке клуба"
-    await message.reply(f"Бои проходят в {where}. Здесь — только разговоры.")
-    return False
+def _rings_list(rings: list[Ring]) -> str:
+    return "\n".join(f"• {ring.label} — {ring.command}" for ring in rings)
+
+
+async def _ring_for(message: Message, db: Database, mode: FightMode) -> Ring | None:
+    """Ринг этой ветки, если здесь дерутся именно в этом режиме.
+
+    Пока в группе не размечен ни один ринг, драться можно где угодно — так
+    клуб заводится в один шаг. Как только ринги появились, бои идут только
+    в них и только в своём режиме.
+    """
+    thread_id = thread_id_of(message)
+    rings = await db.list_rings(message.chat.id)
+    if not rings:
+        return Ring(chat_id=message.chat.id, thread_id=thread_id, mode=mode)
+
+    ring = await db.get_ring(message.chat.id, thread_id)
+    if ring is None:
+        await message.reply(
+            "Здесь не дерутся. Ринги клуба:\n" + _rings_list(rings)
+        )
+        return None
+    if ring.mode is not mode:
+        await message.reply(
+            f"Это {ring.label}. Вызов здесь бросают командой "
+            f"{ring.mode.command}."
+        )
+        return None
+    return ring
 
 
 @router.my_chat_member(F.chat.type.in_(GROUP_TYPES))
@@ -49,40 +69,95 @@ async def added_to_group(event: ChatMemberUpdated) -> None:
     await event.bot.send_message(
         event.chat.id,
         "🥊 <b>Бойцовский клуб открыт.</b>\n\n"
-        "Создайте отдельную ветку для боёв и отправьте там /arena — "
-        "буду судить только в ней.\n"
-        "Бойцы регистрируются у меня в личке командой /start, "
-        "дерутся здесь командой /duel.\n\n"
+        "Создайте ветки для боёв и отметьте их: /arena1, /arena2, /arena3 — "
+        "кулачные ринги, /arena_gear — ринг с оружием. В каждом ринге идёт "
+        "свой бой, так что драк может быть несколько разом.\n"
+        "Бойцы регистрируются у меня в личке командой /start, дерутся "
+        "здесь: /duel на кулаках, /fight с оружием.\n\n"
         "Подробности — /help",
     )
 
 
-@router.message(Command("arena"), F.chat.type.in_(GROUP_TYPES))
-async def cmd_arena(
-    message: Message, command: CommandObject, db: Database, bot: Bot
+FIST_COMMANDS = tuple(f"arena{number}" for number in range(1, FIST_RINGS + 1))
+GEAR_COMMANDS = ("arena_gear", "armory")
+
+
+def _ring_number(command: str | None) -> int:
+    """«arena2» → 2. Голая /arena — первый ринг."""
+    digits = "".join(ch for ch in (command or "") if ch.isdigit())
+    return int(digits) if digits else 1
+
+
+async def _mark_ring(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    bot: Bot,
+    mode: FightMode,
+    number: int,
 ) -> None:
     if not await _is_admin(bot, message.chat.id, message.from_user.id):
         await message.reply("Ринг назначают администраторы группы.")
         return
 
     thread_id = thread_id_of(message)
+    if thread_id is None and (number > 1 or mode.armed):
+        await message.reply(
+            "Второй ринг живёт в отдельной ветке форума. Включите темы в "
+            "настройках группы, создайте ветку и повторите команду там."
+        )
+        return
+
     title = (command.args or "").strip()[:64]
-    await db.set_arena(message.chat.id, thread_id, title)
-    if thread_id is None:
-        await message.reply(
-            "✅ Ринг — этот чат целиком. Если создадите отдельную ветку форума "
-            "и повторите /arena там, бои переедут в неё."
-        )
-    else:
-        await message.reply(
-            "✅ Эта ветка отмечена как ринг клуба. Все бои — только здесь.\n"
-            "Бросай вызов: /duel"
-        )
+    ring = await db.set_ring(message.chat.id, thread_id, number, mode, title)
+    rings = await db.list_rings(message.chat.id)
+    where = "Эта ветка" if thread_id is not None else "Этот чат"
+    await message.reply(
+        f"✅ {where} — {ring.label}. Вызов: {mode.command}\n\n"
+        f"Ринги клуба:\n{_rings_list(rings)}\n\n"
+        "В каждом ринге идёт свой бой: сколько рингов, столько и боёв разом."
+    )
 
 
-@router.message(Command("duel", "fight"), F.chat.type.in_(GROUP_TYPES))
-async def cmd_duel(message: Message, db: Database, duels: DuelService) -> None:
-    if not await _arena_guard(message, db):
+@router.message(Command("arena", *FIST_COMMANDS), F.chat.type.in_(GROUP_TYPES))
+async def cmd_arena(
+    message: Message, command: CommandObject, db: Database, bot: Bot
+) -> None:
+    """Кулачный ринг: /arena1, /arena2, /arena3."""
+    await _mark_ring(
+        message, command, db, bot, FightMode.FIST, _ring_number(command.command)
+    )
+
+
+@router.message(Command(*GEAR_COMMANDS), F.chat.type.in_(GROUP_TYPES))
+async def cmd_arena_gear(
+    message: Message, command: CommandObject, db: Database, bot: Bot
+) -> None:
+    """Ринг с оружием: здесь дерутся в полной экипировке."""
+    await _mark_ring(message, command, db, bot, FightMode.ARMED, 1)
+
+
+@router.message(Command("rings", "arenas"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_rings(message: Message, db: Database, duels: DuelService) -> None:
+    """Где идут бои и какие ринги сейчас свободны."""
+    rings = await db.list_rings(message.chat.id)
+    if not rings:
+        await message.reply(
+            "Ринги ещё не размечены. Админ создаёт ветку и отправляет там "
+            "/arena1 (кулачный) или /arena_gear (с оружием)."
+        )
+        return
+    lines = ["🥊 <b>Ринги клуба</b>", ""]
+    for ring in rings:
+        busy = duels.duel_in_chat(ring.chat_id, ring.thread_id) is not None
+        state = "🔴 идёт бой" if busy else "🟢 свободен"
+        lines.append(f"• {ring.label} — {state}, вызов: {ring.mode.command}")
+    await message.reply("\n".join(lines))
+
+
+async def _open_duel(message: Message, db: Database, duels: DuelService, mode: FightMode) -> None:
+    ring = await _ring_for(message, db, mode)
+    if ring is None:
         return
 
     challenger = await db.get_player(message.from_user.id)
@@ -108,9 +183,22 @@ async def cmd_duel(message: Message, db: Database, duels: DuelService) -> None:
             challenger,
             target,
             chat_title=message.chat.title or "",
+            mode=mode,
         )
     except DuelError as error:
         await message.reply(str(error))
+
+
+@router.message(Command("duel"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_duel(message: Message, db: Database, duels: DuelService) -> None:
+    """Кулачный вызов: вещи остаются в раздевалке."""
+    await _open_duel(message, db, duels, FightMode.FIST)
+
+
+@router.message(Command("fight", "armed"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_fight(message: Message, db: Database, duels: DuelService) -> None:
+    """Вызов с оружием: дерутся в том, что надето."""
+    await _open_duel(message, db, duels, FightMode.ARMED)
 
 
 def _challenged_message(message: Message) -> Message | None:

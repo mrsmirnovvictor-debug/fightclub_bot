@@ -11,8 +11,9 @@ import aiosqlite
 
 from bot.game.economy import RATING_START
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
+from bot.game.modes import FightMode, mode_of
 from bot.game.world import DEFAULT_CITY
-from bot.models import Arena, Player
+from bot.models import Player, Ring
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,18 @@ CREATE TABLE IF NOT EXISTS inventory (
 
 CREATE INDEX IF NOT EXISTS idx_inventory_user ON inventory(user_id);
 
-CREATE TABLE IF NOT EXISTS arenas (
-    chat_id   INTEGER PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS rings (
+    chat_id   INTEGER NOT NULL,
     thread_id INTEGER,
-    title     TEXT NOT NULL DEFAULT ''
+    number    INTEGER NOT NULL DEFAULT 1,
+    mode      TEXT    NOT NULL DEFAULT 'fist',
+    title     TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (chat_id, mode, number)
 );
+
+-- Одна ветка — один ринг: иначе в ней столкнулись бы два боя
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rings_thread
+    ON rings(chat_id, thread_id);
 
 CREATE TABLE IF NOT EXISTS duels (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,6 +79,7 @@ CREATE TABLE IF NOT EXISTS duels (
     winner_id     INTEGER,
     rounds        INTEGER NOT NULL DEFAULT 0,
     end_reason    TEXT,
+    mode          TEXT NOT NULL DEFAULT 'fist',
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -121,6 +130,34 @@ class Database:
                     f"ALTER TABLE players ADD COLUMN {column} {definition}"
                 )
                 logger.info("База обновлена: добавлена колонка players.%s", column)
+        await self._migrate_duels()
+        await self._migrate_arenas()
+
+    async def _migrate_duels(self) -> None:
+        """Записи боёв прошлой версии — кулачные: другого режима тогда не было."""
+        async with self.conn.execute("PRAGMA table_info(duels)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if "mode" not in columns:
+            await self.conn.execute(
+                "ALTER TABLE duels ADD COLUMN mode TEXT NOT NULL DEFAULT 'fist'"
+            )
+            logger.info("База обновлена: у боёв появился режим")
+
+    async def _migrate_arenas(self) -> None:
+        """Единственная арена прошлой версии становится первым кулачным рингом."""
+        async with self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'arenas'"
+        ) as cursor:
+            if await cursor.fetchone() is None:
+                return
+        await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO rings (chat_id, thread_id, number, mode, title)
+            SELECT chat_id, thread_id, 1, 'fist', title FROM arenas
+            """
+        )
+        await self.conn.execute("DROP TABLE arenas")
+        logger.info("База обновлена: арены переехали в ринги")
 
     def _ensure_directory(self) -> None:
         """Создать каталог под базу.
@@ -281,28 +318,66 @@ class Database:
         await self.conn.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
         await self.conn.commit()
 
-    # ---------- арены ----------
+    # ---------- ринги ----------
 
-    async def set_arena(self, chat_id: int, thread_id: int | None, title: str = "") -> None:
+    async def set_ring(
+        self,
+        chat_id: int,
+        thread_id: int | None,
+        number: int = 1,
+        mode: FightMode = FightMode.FIST,
+        title: str = "",
+    ) -> Ring:
+        """Отметить ветку рингом. Ветка занята другим рингом — тот освобождается."""
+        await self.conn.execute(
+            "DELETE FROM rings WHERE chat_id = ? AND thread_id IS ?",
+            (chat_id, thread_id),
+        )
         await self.conn.execute(
             """
-            INSERT INTO arenas (chat_id, thread_id, title) VALUES (?,?,?)
-            ON CONFLICT(chat_id) DO UPDATE SET
+            INSERT INTO rings (chat_id, thread_id, number, mode, title) VALUES (?,?,?,?,?)
+            ON CONFLICT(chat_id, mode, number) DO UPDATE SET
                 thread_id = excluded.thread_id,
                 title     = excluded.title
             """,
-            (chat_id, thread_id, title),
+            (chat_id, thread_id, number, mode.value, title),
         )
         await self.conn.commit()
+        return Ring(
+            chat_id=chat_id, thread_id=thread_id, number=number, mode=mode, title=title
+        )
 
-    async def get_arena(self, chat_id: int) -> Arena | None:
+    async def get_ring(self, chat_id: int, thread_id: int | None) -> Ring | None:
+        """Ринг этой ветки, если она отмечена."""
         async with self.conn.execute(
-            "SELECT chat_id, thread_id, title FROM arenas WHERE chat_id = ?", (chat_id,)
+            """
+            SELECT chat_id, thread_id, number, mode, title FROM rings
+            WHERE chat_id = ? AND thread_id IS ?
+            """,
+            (chat_id, thread_id),
         ) as cursor:
             row = await cursor.fetchone()
-        if not row:
-            return None
-        return Arena(chat_id=row["chat_id"], thread_id=row["thread_id"], title=row["title"])
+        return _to_ring(row) if row else None
+
+    async def list_rings(self, chat_id: int) -> list[Ring]:
+        """Все ринги группы — кулачные по порядку, следом с оружием."""
+        async with self.conn.execute(
+            """
+            SELECT chat_id, thread_id, number, mode, title FROM rings
+            WHERE chat_id = ?
+            ORDER BY CASE mode WHEN 'fist' THEN 0 ELSE 1 END, number
+            """,
+            (chat_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_to_ring(row) for row in rows]
+
+    async def drop_ring(self, chat_id: int, thread_id: int | None) -> None:
+        await self.conn.execute(
+            "DELETE FROM rings WHERE chat_id = ? AND thread_id IS ?",
+            (chat_id, thread_id),
+        )
+        await self.conn.commit()
 
     # ---------- дуэли ----------
 
@@ -315,15 +390,25 @@ class Database:
         winner_id: int | None,
         rounds: int,
         end_reason: str | None,
+        mode: FightMode = FightMode.FIST,
     ) -> int:
         cursor = await self.conn.execute(
             """
             INSERT INTO duels (
                 chat_id, thread_id, challenger_id, opponent_id,
-                winner_id, rounds, end_reason
-            ) VALUES (?,?,?,?,?,?,?)
+                winner_id, rounds, end_reason, mode
+            ) VALUES (?,?,?,?,?,?,?,?)
             """,
-            (chat_id, thread_id, challenger_id, opponent_id, winner_id, rounds, end_reason),
+            (
+                chat_id,
+                thread_id,
+                challenger_id,
+                opponent_id,
+                winner_id,
+                rounds,
+                end_reason,
+                mode.value,
+            ),
         )
         await self.conn.commit()
         return int(cursor.lastrowid or 0)
@@ -347,7 +432,8 @@ class Database:
     async def recent_duels(self, chat_id: int, limit: int = 5) -> list[dict[str, Any]]:
         async with self.conn.execute(
             """
-            SELECT challenger_id, opponent_id, winner_id, rounds, end_reason, created_at
+            SELECT challenger_id, opponent_id, winner_id, rounds, end_reason,
+                   mode, created_at
             FROM duels WHERE chat_id = ? ORDER BY id DESC LIMIT ?
             """,
             (chat_id, limit),
@@ -359,6 +445,16 @@ class Database:
 def _to_player(row: Iterable[Any]) -> Player:
     data = dict(row)  # type: ignore[arg-type]
     return Player(**data)
+
+
+def _to_ring(row: Any) -> Ring:
+    return Ring(
+        chat_id=row["chat_id"],
+        thread_id=row["thread_id"],
+        number=int(row["number"]),
+        mode=mode_of(row["mode"]),
+        title=row["title"],
+    )
 
 
 def _to_owned_item(row: Any) -> OwnedItem | None:
