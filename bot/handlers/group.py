@@ -8,12 +8,18 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
+from bot.battle_service import BattleError, BattleService
 from bot.database import Database
 from bot.duel_service import DuelError, DuelService
+from bot.game.battle import (
+    MIN_ROYALE,
+    MIN_TEAM_SIZE,
+    BattleKind,
+)
 from bot.game.modes import FIST_RINGS, FightMode
 from bot.game.narrator import esc, name_link, plain
 from bot.handlers.common import thread_id_of
-from bot.keyboards import ChallengeCB, FightCB, StandoffCB
+from bot.keyboards import BattleCB, ChallengeCB, FightCB, LobbyCB, StandoffCB
 from bot.models import Player, Ring
 
 logger = logging.getLogger(__name__)
@@ -199,6 +205,132 @@ async def cmd_duel(message: Message, db: Database, duels: DuelService) -> None:
 async def cmd_fight(message: Message, db: Database, duels: DuelService) -> None:
     """Вызов с оружием: дерутся в том, что надето."""
     await _open_duel(message, db, duels, FightMode.ARMED)
+
+
+# ---------- бои на много бойцов ----------
+
+
+def _parse_levels(parts: list[str]) -> tuple[int, int] | None:
+    """«5-8» или «5 8» в рамках уровней. Ничего не поняли — рамок нет."""
+    numbers: list[int] = []
+    for part in parts:
+        for chunk in part.replace("—", "-").replace("–", "-").split("-"):
+            if chunk.strip().isdigit():
+                numbers.append(int(chunk))
+    if len(numbers) < 2:
+        return None
+    return numbers[0], numbers[1]
+
+
+async def _open_lobby(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    battles: BattleService,
+    kind: BattleKind,
+) -> None:
+    ring = await _ring_for_battle(message, db)
+    if ring is None:
+        return
+
+    player = await db.get_player(message.from_user.id)
+    if player is None:
+        await message.reply(NO_CHARACTER)
+        return
+
+    parts = (command.args or "").split()
+    default = MIN_TEAM_SIZE if kind is BattleKind.TEAM else MIN_ROYALE
+    size = int(parts[0]) if parts and parts[0].isdigit() else default
+    levels = _parse_levels(parts[1:] if parts and parts[0].isdigit() else parts)
+
+    try:
+        await battles.open_lobby(
+            message.chat.id,
+            thread_id_of(message),
+            player,
+            kind,
+            size,
+            mode=ring.mode,
+            levels=levels,
+            chat_title=message.chat.title or "",
+        )
+    except BattleError as error:
+        await message.reply(str(error))
+
+
+async def _ring_for_battle(message: Message, db: Database) -> Ring | None:
+    """Групповые бои идут в любом ринге — режим берётся у ринга."""
+    thread_id = thread_id_of(message)
+    rings = await db.list_rings(message.chat.id)
+    if not rings:
+        return Ring(chat_id=message.chat.id, thread_id=thread_id, mode=FightMode.ARMED)
+    ring = await db.get_ring(message.chat.id, thread_id)
+    if ring is None:
+        await message.reply("Здесь не дерутся. Ринги клуба:\n" + _rings_list(rings))
+        return None
+    return ring
+
+
+@router.message(Command("battle", "team"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_battle(
+    message: Message, command: CommandObject, db: Database, battles: BattleService
+) -> None:
+    """Командный бой: /battle 3 5-8 — трое на трое, уровни с 5 по 8."""
+    await _open_lobby(message, command, db, battles, BattleKind.TEAM)
+
+
+@router.message(Command("royale", "royal"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_royale(
+    message: Message, command: CommandObject, db: Database, battles: BattleService
+) -> None:
+    """Королевская битва: /royale 6 — каждый сам за себя."""
+    await _open_lobby(message, command, db, battles, BattleKind.ROYALE)
+
+
+@router.callback_query(LobbyCB.filter())
+async def on_lobby(
+    callback: CallbackQuery, callback_data: LobbyCB, db: Database, battles: BattleService
+) -> None:
+    if callback_data.action == "leave":
+        try:
+            await battles.leave(callback_data.lobby_id, callback.from_user.id)
+        except BattleError as error:
+            await callback.answer(plain(str(error)), show_alert=True)
+        else:
+            await callback.answer("Вышел из состава.")
+        return
+
+    player = await db.get_player(callback.from_user.id)
+    if player is None:
+        await callback.answer(NO_CHARACTER, show_alert=True)
+        return
+    try:
+        await battles.join(callback_data.lobby_id, player, callback_data.team)
+    except BattleError as error:
+        await callback.answer(plain(str(error)), show_alert=True)
+    else:
+        await callback.answer("Записан!")
+
+
+@router.callback_query(BattleCB.filter())
+async def on_battle_choice(
+    callback: CallbackQuery, callback_data: BattleCB, battles: BattleService
+) -> None:
+    try:
+        hint = await battles.handle_choice(
+            callback_data.battle_id,
+            callback.from_user.id,
+            callback_data.action,
+            callback_data.zone,
+            callback_data.slot,
+        )
+    except BattleError as error:
+        await callback.answer(plain(str(error)), show_alert=True)
+    except Exception:  # pragma: no cover - чтобы бой не завис из-за случайной ошибки
+        logger.exception("Ошибка при обработке хода группового боя")
+        await callback.answer("Судья запутался. Попробуй ещё раз.", show_alert=True)
+    else:
+        await callback.answer(hint)
 
 
 def _challenged_message(message: Message) -> Message | None:

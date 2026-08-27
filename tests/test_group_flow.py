@@ -348,3 +348,78 @@ async def test_fists_leave_the_gear_in_the_locker_room(arena):
     assert kitted.weapons == (CATALOGUE["bat"].instrumental,)
     assert kitted.derived.damage_max > bare.derived.damage_max  # бита даёт силу
     assert kitted.max_hp >= bare.max_hp
+
+
+# ---------- групповые бои ----------
+
+
+async def test_team_battle_gathers_and_starts_from_the_chat(arena, battles):
+    """/battle собирает состав кнопками и даёт гонг, как только он полон."""
+    from bot.keyboards import LobbyCB
+
+    db, _, session = arena
+    people = [as_user(800 + i, f"Боец{i}") for i in range(4)]
+    for user in people:
+        player = make_player(user.id, user.first_name, "warrior")
+        player.level = 5
+        await db.save_player(player)
+
+    await send(people[0], "/arena_gear", thread_id=501)
+    await send(people[0], "/battle 2 4-6", thread_id=501)
+
+    lobby = battles.lobby_in_chat(GROUP.id, 501)
+    assert lobby is not None
+    assert (lobby.min_level, lobby.max_level, lobby.size) == (4, 6, 2)
+    assert "Командный бой" in session.texts[-1]
+
+    async def join(user, team):
+        await feed_callback(
+            user,
+            GROUP,
+            LobbyCB(action="join", lobby_id=lobby.id, team=team).pack(),
+            message_thread_id=501,
+            is_topic_message=True,
+        )
+
+    await join(people[1], 0)
+    await join(people[2], 1)
+    assert battles.battle_in_chat(GROUP.id, 501) is None
+    await join(people[3], 1)
+
+    battle = battles.battle_in_chat(GROUP.id, 501)
+    assert battle is not None and len(battle.fighters) == 4
+    assert battle.mode.armed  # ринг с оружием
+    assert any("Пары этого хода" in text for text in session.texts)
+
+
+async def test_royale_is_open_to_everyone_who_fits(arena, battles):
+    from bot.keyboards import LobbyCB
+
+    db, _, session = arena
+    host = as_user(820, "Хозяин")
+    guest = as_user(821, "Гость")
+    rookie = as_user(822, "Салага")
+    for user, level in ((host, 5), (guest, 6), (rookie, 1)):
+        player = make_player(user.id, user.first_name, "rogue")
+        player.level = level
+        await db.save_player(player)
+
+    await send(host, "/arena1", thread_id=502)
+    await send(host, "/royale 3", thread_id=502)
+    lobby = battles.lobby_in_chat(GROUP.id, 502)
+    assert lobby is not None and lobby.kind.value == "royale"
+    assert not lobby.mode.armed  # кулачный ринг — кулачная мясорубка
+
+    async def join(user):
+        await feed_callback(
+            user,
+            GROUP,
+            LobbyCB(action="join", lobby_id=lobby.id).pack(),
+            message_thread_id=502,
+            is_topic_message=True,
+        )
+
+    await join(rookie)  # не проходит по уровню
+    assert "Уровень не тот" in session.alerts[-1]
+    await join(guest)
+    assert lobby.total == 2

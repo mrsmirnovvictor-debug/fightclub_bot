@@ -41,6 +41,19 @@ class BuyCB(CallbackData, prefix="buy"):
     code: str
 
 
+class LobbyCB(CallbackData, prefix="lob"):
+    action: str  # join | leave
+    lobby_id: int
+    team: int = 0
+
+
+class BattleCB(CallbackData, prefix="btl"):
+    action: str  # attack | block
+    battle_id: int
+    zone: str
+    slot: int = 0
+
+
 class ChallengeCB(CallbackData, prefix="chl"):
     action: str  # accept | cancel
     challenge_id: int
@@ -139,6 +152,59 @@ def challenge_keyboard(challenge_id: int) -> InlineKeyboardMarkup:
     )
     builder.adjust(1)
     return builder.as_markup()
+
+
+def lobby_keyboard(lobby) -> InlineKeyboardMarkup:
+    """Кнопки записи в бой: за какую сторону или просто влезть в мясорубку."""
+    from bot.game.battle import BLUE, RED, BattleKind, team_name
+
+    builder = InlineKeyboardBuilder()
+    if lobby.kind is BattleKind.TEAM:
+        for team in (RED, BLUE):
+            taken = len(lobby.side(team))
+            builder.button(
+                text=f"{team_name(team)} ({taken}/{lobby.size})",
+                callback_data=LobbyCB(action="join", lobby_id=lobby.id, team=team),
+            )
+    else:
+        builder.button(
+            text=f"👑 Влезть ({lobby.total}/{lobby.size})",
+            callback_data=LobbyCB(action="join", lobby_id=lobby.id),
+        )
+    builder.button(
+        text="🚪 Выйти", callback_data=LobbyCB(action="leave", lobby_id=lobby.id)
+    )
+    builder.adjust(2 if lobby.kind is BattleKind.TEAM else 1)
+    return builder.as_markup()
+
+
+def battle_keyboard(
+    battle_id: int, icons: tuple[str, ...] = ("👊",), block_width: int = 2
+) -> InlineKeyboardMarkup:
+    """Та же панель, что в дуэли, но нажатия уходят в групповой бой."""
+    blocks = block_combos(block_width)
+    rows: list[list[InlineKeyboardButton]] = []
+    for index, zone in enumerate(ALL_ZONES):
+        row = [
+            InlineKeyboardButton(
+                text=f"{icon} {zone.title.capitalize()}",
+                callback_data=BattleCB(
+                    action="attack", battle_id=battle_id, zone=zone.value, slot=slot
+                ).pack(),
+            )
+            for slot, icon in enumerate(icons)
+        ]
+        combo = blocks[index]
+        row.append(
+            InlineKeyboardButton(
+                text=f"🛡 {block_title(combo)}",
+                callback_data=BattleCB(
+                    action="block", battle_id=battle_id, zone=combo[0].value
+                ).pack(),
+            )
+        )
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def fight_keyboard(

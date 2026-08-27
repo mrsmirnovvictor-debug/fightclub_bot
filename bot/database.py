@@ -84,6 +84,30 @@ CREATE TABLE IF NOT EXISTS duels (
 );
 
 CREATE INDEX IF NOT EXISTS idx_duels_chat ON duels(chat_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS battles (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER NOT NULL,
+    thread_id  INTEGER,
+    kind       TEXT    NOT NULL,
+    mode       TEXT    NOT NULL DEFAULT 'armed',
+    rounds     INTEGER NOT NULL DEFAULT 0,
+    winner_team INTEGER,
+    draw       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS battle_members (
+    battle_id INTEGER NOT NULL,
+    user_id   INTEGER NOT NULL,
+    team      INTEGER NOT NULL DEFAULT 0,
+    won       INTEGER NOT NULL DEFAULT 0,
+    survived  INTEGER NOT NULL DEFAULT 0,
+    damage    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (battle_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_battles_chat ON battles(chat_id, created_at DESC);
 """
 
 PLAYER_COLUMNS = (
@@ -412,6 +436,67 @@ class Database:
         )
         await self.conn.commit()
         return int(cursor.lastrowid or 0)
+
+    async def add_battle(self, session, outcome) -> int:
+        """Записать групповой бой и всех, кто в нём был."""
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO battles (
+                chat_id, thread_id, kind, mode, rounds, winner_team, draw
+            ) VALUES (?,?,?,?,?,?,?)
+            """,
+            (
+                session.chat_id,
+                session.thread_id,
+                session.kind.value,
+                session.mode.value,
+                session.round_number,
+                outcome.winning_team,
+                int(outcome.draw),
+            ),
+        )
+        battle_id = int(cursor.lastrowid or 0)
+        await self.conn.executemany(
+            """
+            INSERT INTO battle_members (battle_id, user_id, team, won, survived, damage)
+            VALUES (?,?,?,?,?,?)
+            """,
+            [
+                (
+                    battle_id,
+                    user_id,
+                    session.teams.get(user_id, 0),
+                    int(user_id in outcome.winners),
+                    int(fighter.alive),
+                    fighter.damage_dealt,
+                )
+                for user_id, fighter in session.fighters.items()
+            ],
+        )
+        await self.conn.commit()
+        return battle_id
+
+    async def recent_battles(self, chat_id: int, limit: int = 5) -> list[dict[str, Any]]:
+        async with self.conn.execute(
+            """
+            SELECT id, kind, mode, rounds, winner_team, draw, created_at
+            FROM battles WHERE chat_id = ? ORDER BY id DESC LIMIT ?
+            """,
+            (chat_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def battle_members(self, battle_id: int) -> list[dict[str, Any]]:
+        async with self.conn.execute(
+            """
+            SELECT user_id, team, won, survived, damage FROM battle_members
+            WHERE battle_id = ? ORDER BY team, user_id
+            """,
+            (battle_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     async def count_recent_duels_between(
         self, first_id: int, second_id: int, hours: int = 24

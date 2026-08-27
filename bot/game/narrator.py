@@ -477,3 +477,108 @@ def rewards_report(
         lines.append("")
         lines.extend(events)
     return "\n".join(lines)
+
+
+# ---------- бои на много бойцов ----------
+
+
+def lobby_card(lobby, timeout: int) -> str:
+    """Объявление о сборе: кто уже записался, кого ждём и до каких пор."""
+    from bot.game.battle import BLUE, RED, BattleKind, team_name
+
+    lines = [
+        f"{lobby.kind.emoji} <b>{lobby.kind.title.capitalize()}</b> "
+        f"{lobby.mode.emoji} {lobby.mode.title}",
+        "",
+        f"Уровни: <b>{lobby.min_level}–{lobby.max_level}</b> · "
+        f"на сбор {format_duration(timeout)}",
+        "",
+    ]
+    if lobby.kind is BattleKind.TEAM:
+        for team in (RED, BLUE):
+            side = lobby.side(team)
+            names = ", ".join(esc(lobby.names[user_id]) for user_id in side) or "—"
+            lines.append(f"{team_name(team)} ({len(side)}/{lobby.size}): {names}")
+    else:
+        names = ", ".join(esc(name) for name in lobby.names.values()) or "—"
+        lines.append(f"Записались ({lobby.total}/{lobby.size}): {names}")
+    lines += ["", "Наберётся состав — гонг сразу, ждать не будем."]
+    return "\n".join(lines)
+
+
+def battle_intro(session) -> str:
+    """Кто вышел на ринг и по каким правилам."""
+    from bot.game.battle import BLUE, RED, BattleKind, team_name
+
+    lines = [
+        f"{session.kind.emoji} <b>{session.kind.title.capitalize()}</b> — "
+        f"{session.mode.title}",
+        "",
+    ]
+    if session.kind is BattleKind.TEAM:
+        for team in (RED, BLUE):
+            side = [
+                user_id
+                for user_id in session.fighters
+                if session.teams.get(user_id) == team
+            ]
+            lines.append(
+                f"{team_name(team)}: "
+                + ", ".join(mention(session.fighters[user_id]) for user_id in side)
+            )
+    else:
+        lines.append(
+            "На ринге: "
+            + ", ".join(mention(fighter) for fighter in session.fighters.values())
+        )
+    lines += [
+        "",
+        "Каждый ход бойцы разбиты на пары: соперник меняется от раунда к раунду. "
+        "Кому пары не хватило — стоит и ждёт своего.",
+        "Упал — выбыл: кнопки больше не твои, но бой идёт дальше.",
+    ]
+    return "\n".join(lines)
+
+
+def battle_round_report(session, results, rng: random.Random | None = None) -> str:
+    """Разбор всех пар за один ход."""
+    rng = rng or random
+    lines = [f"<b>⚔️ Раунд {session.round_number}</b>"]
+    for result in results:
+        lines.append("")
+        for strike in result.strikes:
+            lines.append(
+                describe_strike(
+                    strike,
+                    session.fighters[strike.attacker_id],
+                    session.fighters[strike.defender_id],
+                    rng,
+                )
+            )
+    fallen = [
+        fighter for fighter in session.fighters.values() if not fighter.alive
+    ]
+    if fallen:
+        lines.append("")
+        lines.append(
+            "❌ Вне боя: "
+            + ", ".join(f"<b>{esc(fighter.name)}</b>" for fighter in fallen)
+        )
+    return "\n".join(lines)
+
+
+def battle_result(session, outcome) -> str:
+    """Итог боя: кто устоял."""
+    from bot.game.battle import BattleKind, team_name
+
+    if outcome.draw:
+        return "🤝 <b>Ничья.</b> Судья развёл всех по углам."
+
+    winners = ", ".join(
+        mention(session.fighters[user_id]) for user_id in outcome.winners
+    )
+    how = " по остатку здоровья" if outcome.by_rounds else ""
+    if session.kind is BattleKind.TEAM:
+        side = team_name(outcome.winning_team or 0)
+        return f"🏆 <b>Победа{how}: {side}</b>\n{winners}"
+    return f"👑 <b>Последний на ногах{how}: {winners}</b>"

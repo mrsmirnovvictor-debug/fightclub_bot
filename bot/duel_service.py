@@ -11,7 +11,6 @@ import random
 from dataclasses import dataclass, field
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 from bot.config import Config
 from bot.database import Database
@@ -52,14 +51,10 @@ from bot.game.narrator import (
 )
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import challenge_keyboard, fight_keyboard, standoff_keyboard
+from bot.messaging import Announcer
 from bot.models import Player, ProgressReport
 
 logger = logging.getLogger(__name__)
-
-# Сколько раз пробуем отправить сообщение боя и сколько ждём на флуд-контроле
-SEND_ATTEMPTS = 3
-MAX_FLOOD_WAIT = 30
-
 
 class DuelError(Exception):
     """Ошибка, которую можно показать игроку как есть."""
@@ -182,6 +177,7 @@ class DuelService:
         self.bot = bot
         self.db = db
         self.config = config
+        self.voice = Announcer(bot)
         self.rng = rng or random.Random()
         self._ids = itertools.count(1)
         self._challenges: dict[int, Challenge] = {}
@@ -789,42 +785,7 @@ class DuelService:
     # ---------- отправка ----------
 
     async def _send(self, chat_id: int, thread_id: int | None, text: str, **kwargs):
-        """Отправить сообщение боя, переждав лимит Telegram.
-
-        Ход боя держится на этих сообщениях, поэтому при флуд-контроле ждём
-        столько, сколько попросили, и пробуем ещё раз.
-        """
-        for attempt in range(SEND_ATTEMPTS):
-            try:
-                return await self.bot.send_message(
-                    chat_id, text, message_thread_id=thread_id, **kwargs
-                )
-            except TelegramRetryAfter as error:
-                delay = min(error.retry_after, MAX_FLOOD_WAIT)
-                logger.warning(
-                    "Telegram просит подождать %s сек (попытка %s)", delay, attempt + 1
-                )
-                await asyncio.sleep(delay)
-            except TelegramBadRequest as error:  # pragma: no cover - битый чат
-                logger.warning("Не удалось отправить сообщение: %s", error)
-                return None
-        logger.error("Сообщение так и не ушло после %s попыток", SEND_ATTEMPTS)
-        return None
+        return await self.voice.send(chat_id, thread_id, text, **kwargs)
 
     async def _edit(self, chat_id: int, message_id: int | None, text: str, **kwargs):
-        """Поправить сообщение. Правки косметические — на лимите просто пропускаем."""
-        if message_id is None:
-            return None
-        try:
-            return await self.bot.edit_message_text(
-                text, chat_id=chat_id, message_id=message_id, **kwargs
-            )
-        except TelegramRetryAfter as error:
-            logger.info(
-                "Правка пропущена: Telegram просит подождать %s сек", error.retry_after
-            )
-            return None
-        except TelegramBadRequest as error:
-            if "message is not modified" not in str(error):
-                logger.warning("Не удалось отредактировать сообщение: %s", error)
-            return None
+        return await self.voice.edit(chat_id, message_id, text, **kwargs)
