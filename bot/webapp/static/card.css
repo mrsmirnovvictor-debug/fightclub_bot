@@ -209,6 +209,49 @@ body {
 .shop-purse { font-weight: 700; }
 .shop-note { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
 
+.filters {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 14px;
+  display: grid;
+  gap: 8px;
+}
+.filter-row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.filter-label { color: var(--muted); font-size: 12.5px; font-weight: 700; }
+.chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+.chips::-webkit-scrollbar { display: none; }
+.chip {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid var(--slot-line);
+  border-radius: 999px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip.locked { opacity: 0.6; }
+.chip:active { transform: scale(0.97); }
+
+.shop-empty { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+
 .shelf { margin-bottom: 18px; }
 .shelf-head {
   margin: 0 0 8px;

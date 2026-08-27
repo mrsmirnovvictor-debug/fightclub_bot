@@ -271,7 +271,88 @@ function renderBag(card) {
 
 // ---------- магазин ----------
 
+// Что показывать на прилавке: тип вещи и уровень партии.
+// Фильтры живут на клиенте — витрина приходит целиком, одним запросом.
+const filters = { slot: "all", level: "all" };
+
+function chip(label, active, onClick, extraClass) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "chip" + (active ? " on" : "") + (extraClass ? " " + extraClass : "");
+  btn.textContent = label;
+  btn.addEventListener("click", () => {
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    onClick();
+  });
+  return btn;
+}
+
+function pickSlot(value) {
+  filters.slot = value;
+  renderShop(shopData);
+}
+
+function pickLevel(value) {
+  filters.level = value;
+  renderShop(shopData);
+}
+
+function shownItems(section) {
+  if (filters.level === "open") return section.items.filter((item) => item.unlocked);
+  if (filters.level === "all") return section.items.filter((item) => item.unlocked);
+  return section.items.filter((item) => item.level_required === filters.level);
+}
+
+function hiddenItems(section) {
+  // Закрытое прячем, только пока не выбран конкретный уровень
+  if (filters.level !== "all") return [];
+  return section.items.filter((item) => !item.unlocked);
+}
+
+function renderFilters(data) {
+  const types = el("filter-type");
+  types.textContent = "";
+  types.appendChild(chip("Все", filters.slot === "all", () => pickSlot("all")));
+  data.sections.forEach((section) => {
+    types.appendChild(
+      chip(
+        section.emoji + " " + section.title,
+        filters.slot === section.slot,
+        () => pickSlot(section.slot)
+      )
+    );
+  });
+
+  const levels = el("filter-level");
+  levels.textContent = "";
+  levels.appendChild(chip("Все", filters.level === "all", () => pickLevel("all")));
+  levels.appendChild(
+    chip("Доступные", filters.level === "open", () => pickLevel("open"))
+  );
+  const numbers = [
+    ...new Set(
+      data.sections.flatMap((section) =>
+        section.items.map((item) => item.level_required)
+      )
+    ),
+  ].sort((a, b) => a - b);
+  numbers.forEach((level) => {
+    levels.appendChild(
+      chip(
+        (level > data.level ? "🔒 " : "") + level + " ур.",
+        filters.level === level,
+        () => pickLevel(level),
+        level > data.level ? "locked" : ""
+      )
+    );
+  });
+}
+
 function shelf(section) {
+  const shown = shownItems(section);
+  const locked = hiddenItems(section);
+  if (!shown.length && !locked.length) return null;
+
   const box = document.createElement("section");
   box.className = "shelf";
 
@@ -280,19 +361,19 @@ function shelf(section) {
   head.textContent = section.emoji + " " + section.title;
   const count = document.createElement("span");
   count.className = "shelf-count";
-  count.textContent = "открыто " + section.open + " из " + section.items.length;
+  count.textContent =
+    filters.level === "all" || filters.level === "open"
+      ? "открыто " + section.open + " из " + section.items.length
+      : "товаров: " + shown.length;
   head.appendChild(count);
   box.appendChild(head);
 
   const list = document.createElement("div");
   list.className = "shelf-list";
-  section.items
-    .filter((item) => item.unlocked)
-    .forEach((item) => list.appendChild(thingCard(item, 0, true)));
+  shown.forEach((item) => list.appendChild(thingCard(item, 0, true)));
   box.appendChild(list);
 
   // Закрытое не мозолит глаза, но посмотреть, к чему готовиться, можно
-  const locked = section.items.filter((item) => !item.unlocked);
   if (locked.length) {
     const hidden = document.createElement("div");
     hidden.className = "shelf-list hidden";
@@ -301,8 +382,8 @@ function shelf(section) {
     const toggle = button("🔒 Показать закрытые · " + locked.length, {
       secondary: true,
       onClick: () => {
-        const shown = hidden.classList.toggle("hidden");
-        toggle.textContent = shown
+        const stashed = hidden.classList.toggle("hidden");
+        toggle.textContent = stashed
           ? "🔒 Показать закрытые · " + locked.length
           : "Свернуть закрытые";
       },
@@ -313,21 +394,39 @@ function shelf(section) {
   return box;
 }
 
-function renderShop(data) {
-  shopData = data;
-  el("shop-purse").textContent = num(data.credits) + " 💰";
+function shopNote(data) {
+  if (typeof filters.level === "number") {
+    const open = filters.level <= data.level;
+    return open
+      ? "Партия " + filters.level + " уровня — она уже открыта."
+      : "Партия " + filters.level + " уровня откроется, когда дорастёшь: "
+        + "сейчас у тебя " + data.level + ".";
+  }
+  if (filters.level === "open") return "Только то, что уже можно купить.";
   const next = data.sections
     .flatMap((section) => section.items)
     .filter((item) => !item.unlocked)
     .reduce((min, item) => Math.min(min, item.level_required), 99);
-  el("shop-note").textContent =
-    next < 99
-      ? "Товар открывается уровнем. Следующая партия — на " + next + " уровне."
-      : "Открыто всё, что есть на прилавке.";
+  return next < 99
+    ? "Товар открывается уровнем. Следующая партия — на " + next + " уровне."
+    : "Открыто всё, что есть на прилавке.";
+}
+
+function renderShop(data) {
+  shopData = data;
+  el("shop-purse").textContent = num(data.credits) + " 💰";
+  el("shop-note").textContent = shopNote(data);
+  renderFilters(data);
 
   const list = el("shop-list");
   list.textContent = "";
-  data.sections.forEach((section) => list.appendChild(shelf(section)));
+  data.sections
+    .filter((section) => filters.slot === "all" || section.slot === filters.slot)
+    .forEach((section) => {
+      const shelved = shelf(section);
+      if (shelved) list.appendChild(shelved);
+    });
+  el("shop-empty").classList.toggle("hidden", list.childElementCount > 0);
 }
 
 function showTab(name) {

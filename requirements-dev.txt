@@ -1,3 +1,6 @@
 -r requirements.txt
 pytest>=8.0
 pytest-asyncio>=0.24
+# Браузерные проверки мини-аппа. Без установленного Chromium
+# (`playwright install chromium`) эти тесты просто пропускаются.
+playwright>=1.40
