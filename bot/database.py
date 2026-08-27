@@ -153,6 +153,23 @@ CREATE INDEX IF NOT EXISTS idx_tournaments_chat
     ON tournaments(chat_id, state);
 CREATE INDEX IF NOT EXISTS idx_tournament_matches
     ON tournament_matches(tournament_id, round, slot);
+
+-- Покупки за Telegram Stars. charge_id уникален: Telegram может прислать
+-- один и тот же платёж дважды, а начислить кредиты мы обязаны один раз.
+CREATE TABLE IF NOT EXISTS purchases (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    kind       TEXT    NOT NULL DEFAULT 'credits',
+    code       TEXT    NOT NULL,
+    stars      INTEGER NOT NULL DEFAULT 0,
+    credits    INTEGER NOT NULL DEFAULT 0,
+    charge_id  TEXT    NOT NULL UNIQUE,
+    refunded_at TEXT,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchases_user
+    ON purchases(user_id, created_at DESC);
 """
 
 PLAYER_COLUMNS = (
@@ -684,6 +701,54 @@ class Database:
         await self.conn.execute(
             f"UPDATE tournament_matches SET {columns} WHERE id = ?",
             (*fields.values(), match_id),
+        )
+        await self.conn.commit()
+
+    # ---------- касса ----------
+
+    async def add_purchase(
+        self,
+        user_id: int,
+        code: str,
+        stars: int,
+        credits: int,
+        charge_id: str,
+        kind: str = "credits",
+    ) -> bool:
+        """Записать оплату. False значит, что этот платёж уже был учтён."""
+        cursor = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO purchases (
+                user_id, kind, code, stars, credits, charge_id
+            ) VALUES (?,?,?,?,?,?)
+            """,
+            (user_id, kind, code, stars, credits, charge_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_purchase(self, charge_id: str) -> dict[str, Any] | None:
+        async with self.conn.execute(
+            "SELECT * FROM purchases WHERE charge_id = ?", (charge_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def purchases_of(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        async with self.conn.execute(
+            """
+            SELECT * FROM purchases WHERE user_id = ?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (user_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def mark_refunded(self, charge_id: str) -> None:
+        await self.conn.execute(
+            "UPDATE purchases SET refunded_at = datetime('now') WHERE charge_id = ?",
+            (charge_id,),
         )
         await self.conn.commit()
 

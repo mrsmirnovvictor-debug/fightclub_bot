@@ -18,6 +18,7 @@ from bot.game.equipment import (
 )
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
 from bot.game.stats import derive
+from bot.game.store import PACKS
 from bot.models import Player
 from bot.webapp.auth import sign_avatar
 
@@ -202,6 +203,31 @@ def build_shop(player: Player) -> dict:
         "level": player.level,
         "fclass": {"code": player.fclass.code, "title": player.fclass.title},
         "sections": sections,
+    }
+
+
+def build_topup(player: Player, open_for_business: bool = True) -> dict:
+    """Касса: счёт бойца и пачки кредитов, которые можно купить за звёзды."""
+    return {
+        "credits": player.credits,
+        "open": open_for_business,
+        "packs": [
+            {
+                "code": pack.code,
+                "title": pack.title,
+                "emoji": pack.emoji,
+                "credits": pack.credits,
+                "bonus": pack.bonus,
+                "total": pack.total,
+                "stars": pack.stars,
+                "note": pack.note,
+                # Насколько пачка выгоднее самой маленькой, в процентах
+                "profit": round(
+                    (1 - pack.stars_per_hundred / PACKS[0].stars_per_hundred) * 100
+                ),
+            }
+            for pack in PACKS
+        ],
     }
 
 

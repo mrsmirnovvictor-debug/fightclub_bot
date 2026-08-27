@@ -20,6 +20,7 @@ from bot.config import Config, load_config
 from bot.database import Database
 from bot.battle_service import BattleService
 from bot.duel_service import DuelService
+from bot.store_service import StoreService
 from bot.tournament_service import TournamentService
 from bot.game.links import links
 from bot.handlers import build_router
@@ -34,6 +35,7 @@ PRIVATE_COMMANDS = [
     BotCommand(command="upgrade", description="Раскидать свободные очки"),
     BotCommand(command="shop", description="Кредиты и траты"),
     BotCommand(command="buy", description="Лавка клуба: оружие и броня"),
+    BotCommand(command="topup", description="Пополнить счёт звёздами"),
     BotCommand(command="respec", description="Пересобрать характеристики"),
     BotCommand(command="class", description="Сменить класс"),
     BotCommand(command="rename", description="Сменить прозвище"),
@@ -77,12 +79,14 @@ async def run(config: Config | None = None) -> None:
     duels = DuelService(bot=bot, db=db, config=config)
     battles = BattleService(bot=bot, db=db, config=config)
     tournaments = TournamentService(bot=bot, db=db, config=config, duels=duels)
+    store = StoreService(bot=bot, db=db, config=config)
 
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher["db"] = db
     dispatcher["duels"] = duels
     dispatcher["battles"] = battles
     dispatcher["tournaments"] = tournaments
+    dispatcher["store"] = store
     dispatcher["config"] = config
     dispatcher.include_router(build_router())
 
@@ -100,7 +104,9 @@ async def run(config: Config | None = None) -> None:
     )
 
     runner = (
-        await run_webapp(bot, db, config, duels) if config.webapp_enabled else None
+        await run_webapp(bot, db, config, duels, store)
+        if config.webapp_enabled
+        else None
     )
     # Турниры живут дольше одного запуска: поднимаем недоигранные сетки
     await tournaments.resume()

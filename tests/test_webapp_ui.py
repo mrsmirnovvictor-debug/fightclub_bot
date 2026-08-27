@@ -14,8 +14,9 @@ from aiohttp.test_utils import TestServer
 
 from bot.game.classes import Stats
 from bot.game.equipment import CATALOGUE, OwnedItem, Slot
+from bot.game.store import PACKS
 from bot.models import Player
-from bot.webapp.card import build_card, build_shop
+from bot.webapp.card import build_card, build_shop, build_topup
 from bot.webapp.server import create_app
 from tests.test_webapp import TOKEN
 
@@ -59,7 +60,7 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
         raise AssertionError
 
 
-async def open_page(pw, server, card, shop=None, query=""):
+async def open_page(pw, server, card, shop=None, query="", topup=None):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
         return lambda route: route.fulfill(
@@ -72,6 +73,7 @@ async def open_page(pw, server, card, shop=None, query=""):
     page = await browser.new_page(viewport={"width": 420, "height": 900})
     await page.route("**/api/card*", canned(card))
     await page.route("**/api/shop*", canned(shop or {}))
+    await page.route("**/api/topup*", canned(topup or {"credits": 0, "packs": []}))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body=""
     ))
@@ -234,4 +236,66 @@ async def test_own_card_keeps_the_tabs(server):
         await page.get_by_role("button", name="🏪 Магазин").click()
         assert await page.locator("#shop").is_visible()
         assert await page.locator("#card").is_hidden()
+        await browser.close()
+
+
+# ---------- касса ----------
+
+
+async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
+    """Кнопка «+» рядом с кредитами ведёт в кассу и возвращает обратно."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), topup=build_topup(player)
+        )
+        await page.wait_for_selector("#card:not(.hidden)")
+
+        assert "214" in await page.locator("#record").inner_text()
+        await page.locator("#record .plus").click()
+
+        await page.wait_for_selector("#topup:not(.hidden)")
+        assert await page.locator("#card").is_hidden()
+        titles = await page.locator(".pack-title").all_inner_texts()
+        assert len(titles) == len(PACKS)
+        assert PACKS[0].title in titles[0]
+        # цена стоит на кнопке, выгода — рядом с названием
+        assert f"{PACKS[-1].stars} ⭐" in await page.locator(".pack").last.inner_text()
+        assert await page.locator(".pack-profit").count() == len(PACKS) - 1
+
+        await page.get_by_role("button", name="← Назад").click()
+        await page.wait_for_selector("#card:not(.hidden)")
+        await browser.close()
+
+
+async def test_the_shop_purse_has_the_same_plus(server):
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), query="?view=shop",
+            topup=build_topup(player),
+        )
+        await page.wait_for_selector("#shop:not(.hidden)")
+
+        await page.locator("#shop-purse .plus").click()
+        await page.wait_for_selector("#topup:not(.hidden)")
+
+        # «назад» из кассы возвращает в лавку, а не на карточку
+        await page.get_by_role("button", name="← Назад").click()
+        await page.wait_for_selector("#shop:not(.hidden)")
+        await browser.close()
+
+
+async def test_a_stranger_sees_no_plus(server):
+    stranger = make_player()
+    card = build_card(stranger, TOKEN, viewer_id=999)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, query="?user_id=42")
+        await page.wait_for_selector("#card:not(.hidden)")
+        assert await page.locator(".plus").count() == 0
         await browser.close()

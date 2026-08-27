@@ -17,8 +17,9 @@ from bot.inventory_service import (
     repair_item,
     unequip,
 )
+from bot.store_service import StoreError, StoreService
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
-from bot.webapp.card import build_card, build_shop
+from bot.webapp.card import build_card, build_shop, build_topup
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,8 @@ DB_KEY: web.AppKey[Database] = web.AppKey("db", Database)
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
 # Сервис дуэлей нужен, чтобы не давать переодеваться посреди боя
 DUELS_KEY: web.AppKey = web.AppKey("duels")
+# Касса: выставляет счета в звёздах для кнопки «+» рядом с кредитами
+STORE_KEY: web.AppKey = web.AppKey("store")
 # Кто может смотреть чужие карточки — все: клуб маленький, прятать нечего
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
 
@@ -213,6 +216,36 @@ async def api_buy(request: web.Request) -> web.Response:
     )
 
 
+async def api_topup(request: web.Request) -> web.Response:
+    """Касса: сколько на счету и какие пачки кредитов есть."""
+    viewer = await _viewer(request)
+    player = await request.app[DB_KEY].get_player(viewer.user_id)
+    if player is None:
+        raise web.HTTPNotFound(text="У тебя ещё нет персонажа")
+    return web.json_response(build_topup(player, request.app.get(STORE_KEY) is not None))
+
+
+async def api_invoice(request: web.Request) -> web.Response:
+    """Счёт на пачку кредитов: мини-апп открывает ссылку через openInvoice."""
+    viewer = await _viewer(request)
+    store: StoreService | None = request.app.get(STORE_KEY)
+    if store is None:
+        return web.json_response({"error": "Касса закрыта."}, status=503)
+
+    data = await _payload(request)
+    try:
+        pack = store.check(f"pack:{data.get('code') or ''}")
+        link = await store.invoice_link(pack, viewer.user_id)
+    except StoreError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except Exception:  # pragma: no cover - Telegram не ответил
+        logger.exception("Не удалось выставить счёт")
+        return web.json_response(
+            {"error": "Касса не отвечает. Попробуй ещё раз."}, status=502
+        )
+    return web.json_response({"link": link, "code": pack.code, "stars": pack.stars})
+
+
 async def avatar(request: web.Request) -> web.StreamResponse:
     """Отдать фото бойца. Ссылка подписана и живёт час."""
     config = request.app[CONFIG_KEY]
@@ -246,13 +279,17 @@ async def healthz(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
-def create_app(bot, db: Database, config: Config, duels=None) -> web.Application:
+def create_app(
+    bot, db: Database, config: Config, duels=None, store=None
+) -> web.Application:
     app = web.Application()
     app[BOT_KEY] = bot
     app[DB_KEY] = db
     app[CONFIG_KEY] = config
     if duels is not None:
         app[DUELS_KEY] = duels
+    if store is not None:
+        app[STORE_KEY] = store
     app.add_routes(
         [
             web.get("/", index),
@@ -262,6 +299,8 @@ def create_app(bot, db: Database, config: Config, duels=None) -> web.Application
             web.post("/api/repair", api_repair),
             web.get("/api/shop", api_shop),
             web.post("/api/buy", api_buy),
+            web.get("/api/topup", api_topup),
+            web.post("/api/invoice", api_invoice),
             web.get("/avatar/{user_id}", avatar),
             web.get("/healthz", healthz),
             web.static("/static", STATIC_DIR),
@@ -270,9 +309,11 @@ def create_app(bot, db: Database, config: Config, duels=None) -> web.Application
     return app
 
 
-async def run_webapp(bot, db: Database, config: Config, duels=None) -> web.AppRunner:
+async def run_webapp(
+    bot, db: Database, config: Config, duels=None, store=None
+) -> web.AppRunner:
     """Поднять сервер мини-аппа рядом с ботом. Вернуть runner для остановки."""
-    runner = web.AppRunner(create_app(bot, db, config, duels))
+    runner = web.AppRunner(create_app(bot, db, config, duels, store))
     await runner.setup()
     site = web.TCPSite(runner, config.webapp_host, config.webapp_port)
     await site.start()

@@ -60,6 +60,8 @@ class FakeSession(BaseSession):
                 is_anonymous=False,
                 status="creator",
             )
+        if name == "CreateInvoiceLink":
+            return "https://t.me/$test-invoice"
         if name in MESSAGE_METHODS:
             self._message_id += 1
             chat_id = getattr(method, "chat_id", 0) or 0

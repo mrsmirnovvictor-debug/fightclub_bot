@@ -418,7 +418,8 @@ function shopNote(data) {
 
 function renderShop(data) {
   shopData = data;
-  el("shop-purse").textContent = num(data.credits) + " 💰";
+  el("shop-purse").textContent = "";
+  el("shop-purse").appendChild(purse(data.credits));
   el("shop-note").textContent = shopNote(data);
   renderFilters(data);
 
@@ -433,13 +434,148 @@ function renderShop(data) {
   el("shop-empty").classList.toggle("hidden", list.childElementCount > 0);
 }
 
+const SCREENS = ["card", "shop", "topup"];
+let lastTab = "card";
+
 function showTab(name) {
-  const shop = name === "shop";
-  el("card").classList.toggle("hidden", shop);
-  el("shop").classList.toggle("hidden", !shop);
-  el("tab-card").classList.toggle("active", !shop);
-  el("tab-shop").classList.toggle("active", shop);
-  if (shop && !shopData) loadShop();
+  SCREENS.forEach((screen) => {
+    el(screen).classList.toggle("hidden", screen !== name);
+  });
+  if (name !== "topup") lastTab = name;
+  el("tab-card").classList.toggle("active", name === "card");
+  el("tab-shop").classList.toggle("active", name === "shop");
+  if (name === "shop" && !shopData) loadShop();
+  if (name === "topup") loadTopUp();
+}
+
+// ---------- касса ----------
+
+function plusButton() {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "plus";
+  btn.textContent = "+";
+  btn.title = "Пополнить счёт";
+  btn.setAttribute("aria-label", "Пополнить счёт");
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    showTab("topup");
+  });
+  return btn;
+}
+
+function purse(credits) {
+  const box = document.createElement("span");
+  box.className = "purse";
+  const amount = document.createElement("span");
+  amount.textContent = num(credits) + " 💰";
+  box.append(amount, plusButton());
+  return box;
+}
+
+function packCard(pack) {
+  const box = document.createElement("div");
+  box.className = "pack";
+
+  const head = document.createElement("div");
+  head.className = "pack-head";
+  const title = document.createElement("span");
+  title.className = "pack-title";
+  title.textContent = pack.emoji + " " + pack.title;
+  head.appendChild(title);
+  if (pack.profit > 0) {
+    const badge = document.createElement("span");
+    badge.className = "pack-profit";
+    badge.textContent = "выгоднее на " + pack.profit + "%";
+    head.appendChild(badge);
+  }
+
+  const amount = document.createElement("div");
+  amount.className = "pack-amount";
+  amount.textContent = num(pack.total) + " 💰";
+  if (pack.bonus) {
+    const bonus = document.createElement("span");
+    bonus.className = "pack-bonus";
+    bonus.textContent = " " + num(pack.credits) + " + " + num(pack.bonus) + " сверху";
+    amount.appendChild(bonus);
+  }
+
+  box.append(head, amount);
+  if (pack.note) {
+    const note = document.createElement("div");
+    note.className = "pack-note";
+    note.textContent = pack.note;
+    box.appendChild(note);
+  }
+  box.appendChild(
+    button(pack.stars + " ⭐ — купить", { onClick: () => buyPack(pack) })
+  );
+  return box;
+}
+
+function renderTopUp(data) {
+  el("topup-purse").textContent = "";
+  el("topup-purse").appendChild(document.createTextNode(num(data.credits) + " 💰"));
+  el("topup-note").textContent = data.open
+    ? "Кредиты падают на счёт сразу после оплаты."
+    : "Касса закрыта: оплату принимает бот командой /topup.";
+
+  const list = el("topup-list");
+  list.textContent = "";
+  data.packs.forEach((pack) => list.appendChild(packCard(pack)));
+}
+
+async function loadTopUp() {
+  try {
+    const response = await fetch("api/topup", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Касса не открылась.");
+    renderTopUp(await response.json());
+  } catch (error) {
+    el("topup-note").textContent = error.message;
+  }
+}
+
+async function buyPack(pack) {
+  if (busy) return;
+  if (!tg || !tg.openInvoice) {
+    popup("Касса", "Открой кассу в самом боте: команда /topup.");
+    return;
+  }
+  busy = true;
+  try {
+    const data = await post("api/invoice", { code: pack.code });
+    tg.openInvoice(data.link, async (status) => {
+      if (status === "paid") {
+        if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        shopData = null;  // кредитов стало больше
+        await refresh();
+        await loadTopUp();
+        popup(
+          "✅ " + pack.emoji + " " + pack.title,
+          "На счёт упало " + num(pack.total) + " 💰. За вещами — в лавку."
+        );
+      } else if (status === "failed") {
+        popup("Не прошло", "Оплата не прошла. Звёзды остались у тебя.");
+      }
+    });
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
+async function refresh() {
+  try {
+    const response = await fetch("api/card", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (response.ok) render(await response.json(), true);
+  } catch (error) {
+    console.error("card refresh failed", error);
+  }
 }
 
 async function loadShop() {
@@ -676,7 +812,7 @@ function render(card, keepTab) {
   record.appendChild(row("Ничьих", num(card.record.draws)));
   record.appendChild(row("Рейтинг", num(card.record.rating)));
   if (card.is_self) {
-    record.appendChild(row("Кредиты", num(card.record.credits)));
+    record.appendChild(row("Кредиты", purse(card.record.credits)));
   }
   record.appendChild(row("Место рождения", card.birthplace));
   record.appendChild(row("День рождения персонажа", card.birthday));
@@ -734,6 +870,7 @@ async function load() {
 
 el("tab-card").addEventListener("click", () => showTab("card"));
 el("tab-shop").addEventListener("click", () => showTab("shop"));
+el("topup-back").addEventListener("click", () => showTab(lastTab));
 
 if (tg) {
   tg.ready();

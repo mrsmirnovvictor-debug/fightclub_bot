@@ -9,6 +9,7 @@ from bot.config import Config  # noqa: E402
 from bot.database import Database  # noqa: E402
 from bot.battle_service import BattleService  # noqa: E402
 from bot.duel_service import DuelService  # noqa: E402
+from bot.store_service import StoreService  # noqa: E402
 from bot.tournament_service import TournamentService  # noqa: E402
 from tests.harness import BOT, DISPATCHER, SESSION  # noqa: E402
 
@@ -29,10 +30,12 @@ async def dispatcher_env(db):
     duels = DuelService(bot=BOT, db=db, config=config)
     battles = BattleService(bot=BOT, db=db, config=config)
     tournaments = TournamentService(bot=BOT, db=db, config=config, duels=duels)
+    store = StoreService(bot=BOT, db=db, config=config)
     DISPATCHER["db"] = db
     DISPATCHER["duels"] = duels
     DISPATCHER["battles"] = battles
     DISPATCHER["tournaments"] = tournaments
+    DISPATCHER["store"] = store
     DISPATCHER["config"] = config
     SESSION.calls.clear()
     yield db, duels, SESSION
@@ -51,6 +54,12 @@ async def arena(dispatcher_env):
 def battles():
     """Сервис групповых боёв того же диспетчера."""
     return DISPATCHER["battles"]
+
+
+@pytest.fixture
+def store():
+    """Касса того же диспетчера."""
+    return DISPATCHER["store"]
 
 
 @pytest.fixture

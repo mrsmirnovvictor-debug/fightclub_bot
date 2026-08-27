@@ -59,6 +59,10 @@ class TourCB(CallbackData, prefix="tour"):
     tournament_id: int
 
 
+class TopUpCB(CallbackData, prefix="topup"):
+    code: str  # какая пачка кредитов
+
+
 class ChallengeCB(CallbackData, prefix="chl"):
     action: str  # accept | cancel
     challenge_id: int
