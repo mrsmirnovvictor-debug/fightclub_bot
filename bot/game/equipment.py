@@ -95,7 +95,7 @@ REPAIR_DEGRADE_CHANCE = 0.5
 
 # Точность, уворот, крит и антикрит вещи дают долями. На первых ступенях
 # доля маленькая, на последних заметная, но и там мы держимся заметно ниже
-# «половины»: точность в 50% с одной вещи обнулила бы уворот ловкача,
+# «половины»: точность в 50% с одной вещи обнулила бы уворот трикстера,
 # антикрит такого размера — крит ассасина. Пары должны спорить, а не стирать
 # друг друга.
 EARLY_LEVELS = 5
@@ -130,8 +130,10 @@ class Item:
     strength: int = 0
     agility: int = 0
     intuition: int = 0
-    endurance: int = 0
-    hp: int = 0  # прибавка к запасу здоровья сверх выносливости
+    # Выносливости на вещах нет и не будет: её растят только руками, по очку
+    # за ап и по очку автоматом за уровень. Вещь может дать лишь запас
+    # здоровья — но не сопротивление и не антикрит, которые идут от стата.
+    hp: int = 0
     # Оружие добавляет свой урон к тому, что боец выбивает силой
     damage_min: int = 0
     damage_max: int = 0
@@ -156,7 +158,6 @@ class Item:
             strength=self.strength,
             agility=self.agility,
             intuition=self.intuition,
-            endurance=self.endurance,
         )
 
     @property
@@ -219,7 +220,6 @@ class Item:
             ("💪", self.strength),
             ("🤸", self.agility),
             ("🔮", self.intuition),
-            ("🫀", self.endurance),
             ("❤️", self.hp),
         ):
             if value:
@@ -438,7 +438,7 @@ ITEMS: tuple[Item, ...] = (
         "Брезентовые штаны",
         Slot.PANTS,
         "👖",
-        endurance=1,
+        hp=6,
         armor_min=0,
         armor_max=1,
         level_required=2,
@@ -451,7 +451,7 @@ ITEMS: tuple[Item, ...] = (
         "Широкий пояс",
         Slot.BELT,
         "🥋",
-        endurance=1,
+        hp=6,
         armor_min=0,
         armor_max=1,
         level_required=2,
@@ -479,7 +479,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.SHIELD,
         "🛢",
         kind=ItemKind.SHIELD,
-        endurance=1,
+        hp=6,
         armor_min=1,
         armor_max=2,
         anticrit=0.03,
@@ -509,8 +509,7 @@ ITEMS: tuple[Item, ...] = (
         "Косуха",
         Slot.JACKET,
         "🧥",
-        endurance=1,
-        hp=5,
+        hp=11,
         armor_min=1,
         armor_max=3,
         level_required=3,
@@ -574,10 +573,10 @@ ITEMS: tuple[Item, ...] = (
         "🔧",
         kind=ItemKind.WEAPON,
         instrumental="монтировкой",
-        endurance=1,
         damage_min=4,
         damage_max=7,
         accuracy=0.03,
+        anticrit=0.03,
         level_required=4,
         requires=Stats(endurance=12),
         price=150,
@@ -589,8 +588,7 @@ ITEMS: tuple[Item, ...] = (
         "Клёпаная косуха",
         Slot.JACKET,
         "🧥",
-        endurance=1,
-        hp=10,
+        hp=16,
         armor_min=3,
         armor_max=5,
         anticrit=0.03,
@@ -619,7 +617,7 @@ ITEMS: tuple[Item, ...] = (
         "Брезент с накладками",
         Slot.PANTS,
         "👖",
-        endurance=1,
+        hp=6,
         armor_min=2,
         armor_max=4,
         level_required=5,
@@ -750,10 +748,10 @@ ITEMS: tuple[Item, ...] = (
         "🔨",
         kind=ItemKind.WEAPON,
         instrumental="кувалдой",
-        endurance=2,
         damage_min=7,
         damage_max=11,
         accuracy=0.04,
+        anticrit=0.04,
         level_required=6,
         requires=Stats(endurance=16),
         price=180,
@@ -764,8 +762,7 @@ ITEMS: tuple[Item, ...] = (
         "Мотошлем",
         Slot.HEAD,
         "🪖",
-        endurance=1,
-        hp=8,
+        hp=14,
         armor_min=3,
         armor_max=5,
         anticrit=0.05,
@@ -794,7 +791,7 @@ ITEMS: tuple[Item, ...] = (
         "Берцы",
         Slot.BOOTS,
         "🥾",
-        endurance=1,
+        hp=6,
         armor_min=2,
         armor_max=4,
         level_required=6,
@@ -873,10 +870,10 @@ ITEMS: tuple[Item, ...] = (
         "⛓",
         kind=ItemKind.WEAPON,
         instrumental="цепью",
-        endurance=2,
         damage_min=10,
         damage_max=15,
         accuracy=0.05,
+        anticrit=0.05,
         level_required=7,
         requires=Stats(endurance=18),
         price=240,
@@ -926,8 +923,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.SHIELD,
         "🚧",
         kind=ItemKind.SHIELD,
-        endurance=2,
-        hp=10,
+        hp=22,
         armor_min=3,
         armor_max=4,
         anticrit=0.06,
@@ -1008,10 +1004,10 @@ ITEMS: tuple[Item, ...] = (
         "🦯",
         kind=ItemKind.WEAPON,
         instrumental="ломом",
-        endurance=3,
         damage_min=14,
         damage_max=20,
         accuracy=0.07,
+        anticrit=0.06,
         level_required=8,
         requires=Stats(endurance=20),
         price=300,

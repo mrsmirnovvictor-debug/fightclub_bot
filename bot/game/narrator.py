@@ -408,9 +408,11 @@ def rewards_report(
 
         name = f"<b>{esc(player.nickname)}</b>"
         if report.levels:
+            grown = f"+{report.endurance} к выносливости" if report.endurance else ""
             events.append(
                 f"🎉 {name} берёт <b>{player.level}</b> уровень! "
-                f"Здоровье выросло, очков характеристик: +{report.points} "
+                f"Здоровье выросло, {grown + ', ' if grown else ''}"
+                f"очков характеристик: +{report.points} "
                 f"(всего свободных {player.free_points}) — /upgrade"
             )
         elif report.ups:

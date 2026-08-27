@@ -8,12 +8,12 @@ from bot.game.classes import FighterClass, Stats
 
 # Базовый урон голыми кулаками. Сила прибавляет к нему понемногу: иначе
 # один-единственный стат решает бой, а уворот с критом остаются украшением.
-BASE_DAMAGE = 8.5
-DAMAGE_PER_STRENGTH = 0.78
+BASE_DAMAGE = 10.5
+DAMAGE_PER_STRENGTH = 0.62
 DAMAGE_SPREAD = 0.25  # разброс урона ±25%
 
 BASE_CRIT_CHANCE = 0.03
-CRIT_PER_INTUITION = 0.008
+CRIT_PER_INTUITION = 0.0108
 MAX_CRIT_CHANCE = 0.55
 BASE_CRIT_POWER = 1.5
 # Интуиция растит не только шанс крита, но и его силу. Шанс упирается в
@@ -21,23 +21,33 @@ BASE_CRIT_POWER = 1.5
 CRIT_POWER_PER_INTUITION = 0.04
 
 BASE_DODGE_CHANCE = 0.02
-DODGE_PER_AGILITY = 0.007
+DODGE_PER_AGILITY = 0.01
 MAX_DODGE_CHANCE = 0.55
 
-# Точность — обратная сторона уворота, и отвечает за неё та же ловкость.
-# За очко ловкости точности дают меньше, чем уворота, поэтому при равной
-# ловкости уворот всегда чуть впереди: шанс уйти с линии удара есть всегда.
-ACCURACY_PER_AGILITY = 0.005
+# Три пары идут по кругу: ловкость бьёт выносливость, выносливость —
+# интуицию, интуиция — ловкость. Отсюда камень-ножницы-бумага между
+# трикстером, танком и ассасином, а сила остаётся вне круга — воин волен
+# качаться ровно или уходить в крайности.
+#
+#   🤸 уворот      ← сбивает 🔮 точность
+#   🔮 крит        ← сбивает 🫀 антикрит
+#   🫀 сопротивление ← пробивает 🤸 ловкость
+
+# Точность (антиуворот): интуиция угадывает, куда уйдёт соперник
+ACCURACY_PER_INTUITION = 0.005
 MAX_ACCURACY = 0.6
 
-# Антикрит — обратная сторона крита, и отвечает за него та же интуиция.
-# За очко интуиции крита дают чуть больше, чем антикрита.
-ANTICRIT_PER_INTUITION = 0.006
+# Антикрит: выносливость терпит там, где другой сложился бы
+ANTICRIT_PER_ENDURANCE = 0.011
 MAX_ANTICRIT = 0.5
 
 # Сопротивление урону: выносливость снимает долю с каждого пропущенного удара
-RESIST_PER_ENDURANCE = 0.005
-MAX_RESIST = 0.25
+RESIST_PER_ENDURANCE = 0.008
+MAX_RESIST = 0.31
+
+# Пробивание: ловкость находит щель в чужой обороне и срезает сопротивление
+PENETRATION_PER_AGILITY = 0.008
+MAX_PENETRATION = 0.5
 
 # Контрудар — продолжение уворота, поэтому и растёт он от ловкости
 BASE_COUNTER_CHANCE = 0.02
@@ -62,6 +72,7 @@ class DerivedStats:
     counter_chance: float
     accuracy: float
     resist: float
+    penetration: float
 
 
 def derive(
@@ -78,17 +89,23 @@ def derive(
         + max(0, extra_hp)
     )
 
-    avg_damage = (BASE_DAMAGE + stats.strength * DAMAGE_PER_STRENGTH) * fclass.damage_mult
+    avg_damage = (
+        BASE_DAMAGE + stats.strength * DAMAGE_PER_STRENGTH * fclass.damage_gain
+    ) * fclass.damage_mult
     damage_min = max(1, round(avg_damage * (1 - DAMAGE_SPREAD)))
     damage_max = max(damage_min + 1, round(avg_damage * (1 + DAMAGE_SPREAD)))
 
     crit_chance = min(
         MAX_CRIT_CHANCE,
-        BASE_CRIT_CHANCE + stats.intuition * CRIT_PER_INTUITION + fclass.crit_bonus,
+        BASE_CRIT_CHANCE
+        + stats.intuition * CRIT_PER_INTUITION * fclass.crit_gain
+        + fclass.crit_bonus,
     )
     dodge_chance = min(
         MAX_DODGE_CHANCE,
-        BASE_DODGE_CHANCE + stats.agility * DODGE_PER_AGILITY + fclass.dodge_bonus,
+        BASE_DODGE_CHANCE
+        + stats.agility * DODGE_PER_AGILITY * fclass.dodge_gain
+        + fclass.dodge_bonus,
     )
     counter_chance = min(
         MAX_COUNTER_CHANCE,
@@ -106,9 +123,34 @@ def derive(
             + stats.intuition * CRIT_POWER_PER_INTUITION,
             3,
         ),
-        anticrit=round(min(MAX_ANTICRIT, stats.intuition * ANTICRIT_PER_INTUITION), 4),
+        anticrit=round(
+            min(
+                MAX_ANTICRIT,
+                stats.endurance * ANTICRIT_PER_ENDURANCE + fclass.anticrit_bonus,
+            ),
+            4,
+        ),
         dodge_chance=round(dodge_chance, 4),
         counter_chance=round(counter_chance, 4),
-        accuracy=round(min(MAX_ACCURACY, stats.agility * ACCURACY_PER_AGILITY), 4),
-        resist=round(min(MAX_RESIST, stats.endurance * RESIST_PER_ENDURANCE), 4),
+        accuracy=round(
+            min(
+                MAX_ACCURACY,
+                stats.intuition * ACCURACY_PER_INTUITION + fclass.accuracy_bonus,
+            ),
+            4,
+        ),
+        resist=round(
+            min(
+                MAX_RESIST,
+                stats.endurance * RESIST_PER_ENDURANCE * fclass.resist_gain,
+            ),
+            4,
+        ),
+        penetration=round(
+            min(
+                MAX_PENETRATION,
+                stats.agility * PENETRATION_PER_AGILITY + fclass.penetration_bonus,
+            ),
+            4,
+        ),
     )

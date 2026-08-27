@@ -299,6 +299,7 @@ def build_card(
             "accuracy": round((derived.accuracy + equipment.accuracy) * 100),
             "counter_chance": round(derived.counter_chance * 100),
             "resist": round(derived.resist * 100),
+            "penetration": round(derived.penetration * 100),
         },
         "armor": [
             {

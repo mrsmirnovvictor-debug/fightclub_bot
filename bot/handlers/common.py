@@ -55,6 +55,7 @@ def combat_block(
         f"🎯 Точность: <b>{d.accuracy + equipment.accuracy:.0%}</b>",
         f"🔄 Контрудар: <b>{d.counter_chance:.0%}</b>",
         f"🪨 Сопротивление: <b>{d.resist:.0%}</b>",
+        f"🪚 Пробивание: <b>{d.penetration:.0%}</b>",
     ]
     armor = [
         f"{zone.emoji}{low}–{high}"

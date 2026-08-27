@@ -10,6 +10,7 @@ from bot.game.classes import (
     BLOCK_WIDTH,
     FIGHTER_CLASSES,
     SHIELD_BLOCK_WIDTH,
+    ROGUE,
     TANK,
     WARRIOR,
     Stats,
@@ -33,6 +34,7 @@ from bot.game.combat import (
     validate_action,
 )
 from bot.game.equipment import CATALOGUE, Equipment, Item, ItemKind, Slot
+from bot.game.reference import developed_stats, reference_equipment
 from bot.game.stats import derive
 
 SHIV = Item(
@@ -425,23 +427,63 @@ def dressed(*codes: str, user_id: int = 1, fclass=WARRIOR, **kwargs) -> Fighter:
     )
 
 
-def test_dodge_always_outruns_accuracy_at_equal_agility():
-    """При равной ловкости шанс увернуться остаётся у обоих."""
-    for agility in range(0, 40):
-        stats = Stats(strength=5, agility=agility, intuition=5, endurance=5)
-        d = derive(WARRIOR, stats)
-        assert d.dodge_chance > d.accuracy
+def test_each_pair_is_split_between_two_stats():
+    """Круг: ловкость бьёт выносливость, выносливость — интуицию, интуиция — ловкость."""
+    nimble = derive(WARRIOR, Stats(strength=5, agility=30, intuition=5, endurance=5))
+    sharp = derive(WARRIOR, Stats(strength=5, agility=5, intuition=30, endurance=5))
+    tough = derive(WARRIOR, Stats(strength=5, agility=5, intuition=5, endurance=30))
+
+    # ловкость — уворот и пробивание, но не точность и не антикрит
+    assert nimble.dodge_chance > sharp.dodge_chance
+    assert nimble.penetration > sharp.penetration
+    assert nimble.accuracy == pytest.approx(sharp.accuracy / 6, abs=0.01)
+    # интуиция — крит и точность
+    assert sharp.crit_chance > tough.crit_chance
+    assert sharp.accuracy > nimble.accuracy
+    # выносливость — сопротивление и антикрит
+    assert tough.resist > nimble.resist
+    assert tough.anticrit > sharp.anticrit
 
 
-def test_crit_always_outruns_anticrit_at_equal_intuition():
-    for intuition in range(0, 40):
-        stats = Stats(strength=5, agility=5, intuition=intuition, endurance=5)
-        d = derive(WARRIOR, stats)
-        assert d.crit_chance > d.anticrit
+def gain_per_point(fclass, stat: str, read, low: int = 5, high: int = 15) -> float:
+    """Сколько приносит классу одно очко этой характеристики."""
+    base = Stats(strength=5, agility=5, intuition=5, endurance=5)
+    weak = derive(fclass, Stats(**{**base.as_dict(), stat: low}))
+    strong = derive(fclass, Stats(**{**base.as_dict(), stat: high}))
+    return (read(strong) - read(weak)) / (high - low)
+
+
+def test_class_gets_more_out_of_its_own_stat():
+    """Профильное очко весит для своего класса больше, чем для чужого."""
+    checks = (
+        (WARRIOR, "strength", lambda d: d.damage_max),
+        (ROGUE, "agility", lambda d: d.dodge_chance),
+        (ASSASSIN, "intuition", lambda d: d.crit_chance),
+        (TANK, "endurance", lambda d: d.resist),
+    )
+    for owner, stat, read in checks:
+        mine = gain_per_point(owner, stat, read)
+        for other in (WARRIOR, ROGUE, ASSASSIN, TANK):
+            if other is owner:
+                continue
+            assert mine > gain_per_point(other, stat, read), (
+                f"{stat}: {owner.title} должен получать больше, чем {other.title}"
+            )
+
+
+def test_penetration_shaves_the_resistance():
+    striker = make(user_id=1)
+    defender = make(user_id=2)
+    object.__setattr__(defender.derived, "resist", 0.20)
+    object.__setattr__(striker.derived, "penetration", 0.08)
+
+    assert defender.resist_against(striker) == pytest.approx(0.12)
+    object.__setattr__(striker.derived, "penetration", 0.50)
+    assert defender.resist_against(striker) == 0.0
 
 
 def test_accuracy_eats_the_dodge_point_for_point():
-    """Ловкач с 40% уворота против точности в 10% уворачивается на 30%."""
+    """Трикстер с 40% уворота против точности в 10% уворачивается на 30%."""
     dodger = make(user_id=1)
     striker = make(user_id=2)
     object.__setattr__(dodger.derived, "dodge_chance", 0.40)
@@ -475,9 +517,11 @@ def test_weapon_damage_lands_on_top_of_the_strength_damage():
     attacker = dressed("knuckles", user_id=1)
     defender = make(user_id=2)
     object.__setattr__(defender.derived, "resist", 0.0)
+    object.__setattr__(attacker.derived, "penetration", 0.0)
 
     # промах по увороту, без крита, урон силой 11, урон кастетом 4
     rng = Rigged(rolls=[0.99, 0.99], numbers=[11, 4])
+    weapon_share = round(4 * attacker.fclass.damage_mult)
     result = resolve_round(
         attacker,
         strike_at(Zone.HEAD, guard(Zone.LEGS)),
@@ -486,7 +530,7 @@ def test_weapon_damage_lands_on_top_of_the_strength_damage():
         round_number=1,
         rng=rng,
     )
-    assert result.strikes[0].damage == 15
+    assert result.strikes[0].damage == 11 + weapon_share
 
 
 def test_resistance_shaves_a_share_off_every_hit():
@@ -494,6 +538,7 @@ def test_resistance_shaves_a_share_off_every_hit():
     attacker = make(user_id=1)
     defender = make(user_id=2)
     object.__setattr__(defender.derived, "resist", 0.10)
+    object.__setattr__(attacker.derived, "penetration", 0.0)
 
     rng = Rigged(rolls=[0.99, 0.99], numbers=[30])
     result = resolve_round(
@@ -513,6 +558,7 @@ def test_armor_holds_the_zone_it_covers():
     helmet = CATALOGUE["moto_helmet"]
     defender = dressed("moto_helmet", user_id=2)
     object.__setattr__(defender.derived, "resist", 0.0)
+    object.__setattr__(attacker.derived, "penetration", 0.0)
 
     assert defender.armor_range(Zone.HEAD) == (helmet.armor_min, helmet.armor_max)
     assert defender.armor_range(Zone.LEGS) == (0, 0)
@@ -562,6 +608,7 @@ def test_armor_never_eats_more_than_half_of_a_hit():
     attacker = make(user_id=1)
     defender = dressed("moto_helmet", "bar_lid", user_id=2)
     object.__setattr__(defender.derived, "resist", 0.0)
+    object.__setattr__(attacker.derived, "penetration", 0.0)
 
     rng = Rigged(rolls=[0.99, 0.99], numbers=[6, 5, 2])  # урон 6, брони на 7
     strike = resolve_round(
@@ -574,3 +621,60 @@ def test_armor_never_eats_more_than_half_of_a_hit():
     ).strikes[0]
     assert strike.damage == 3
     assert strike.armor == 3
+
+
+# ---------- камень-ножницы-бумага ----------
+
+
+def duel_share(first: str, second: str, level: int, runs: int, seed: int) -> float:
+    """Доля побед первого класса в серии боёв на этом уровне, в комплектах."""
+    rng = random.Random(seed)
+    wins = 0.0
+    for _ in range(runs):
+        fighters = []
+        for index, code in enumerate((first, second), start=1):
+            fclass = FIGHTER_CLASSES[code]
+            equipment = reference_equipment(fclass, level)
+            stats = developed_stats(fclass, level).merge(equipment.bonus)
+            fighters.append(
+                Fighter(index, fclass.title, fclass, stats, level, equipment=equipment)
+            )
+        a, b = fighters
+        number = 1
+        while True:
+            result = resolve_round(
+                a, random_action(a, rng), b, random_action(b, rng), number, rng
+            )
+            if result.finished:
+                break
+            number += 1
+        if result.winner_id == 1:
+            wins += 1
+        elif result.winner_id is None:
+            wins += 0.5
+    return wins / runs
+
+
+@pytest.mark.parametrize(
+    "winner,loser,why",
+    [
+        ("rogue", "tank", "ловкость пробивает сопротивление"),
+        ("tank", "assassin", "выносливость гасит крит антикритом"),
+        ("assassin", "rogue", "интуиция ловит уворот точностью"),
+    ],
+)
+@pytest.mark.parametrize("level", [1, 8])
+def test_the_circle_holds_on_every_level(winner, loser, why, level):
+    """Трикстер бьёт танка, танк — ассасина, ассасин — трикстера."""
+    share = duel_share(winner, loser, level=level, runs=120, seed=2024 + level)
+    assert share > 0.5, (
+        f"{FIGHTER_CLASSES[winner].title} должен бить "
+        f"{FIGHTER_CLASSES[loser].title} ({why}), а взял {share:.0%} на {level} уровне"
+    )
+
+
+def test_the_warrior_stays_out_of_the_circle():
+    """Воин ровен со всеми: его дело урон, а не круг."""
+    for rival in ("rogue", "assassin", "tank"):
+        share = duel_share("warrior", rival, level=8, runs=200, seed=77)
+        assert 0.40 < share < 0.62, f"воин против {rival}: {share:.0%}"

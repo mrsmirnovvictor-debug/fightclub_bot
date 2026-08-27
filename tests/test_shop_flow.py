@@ -127,7 +127,9 @@ async def test_respec_asks_before_charging(client, dispatcher_env):
     await client.press("respec:1")
     after = await client.player()
     assert after.credits == before.credits - PRICE_RESPEC
-    assert after.stats == after.fclass.base_stats
+    # выносливость, накопленная уровнями, респеком не сносится
+    assert after.stats == after.base_with_levels()
+    assert after.endurance == after.fclass.base_stats.endurance + after.level_endurance
     assert after.free_points == before.free_points + spent
     assert after.level == before.level  # уровень и рейтинг не трогаем
     assert after.rating == before.rating
@@ -155,7 +157,7 @@ async def test_class_change_rebases_stats(client, dispatcher_env):
 
     after = await client.player()
     assert after.class_code == "tank"
-    assert after.stats == after.fclass.base_stats
+    assert after.stats == after.base_with_levels()
     assert after.free_points == before.free_points + spent
     assert after.credits == before.credits - PRICE_CLASS_CHANGE
     assert after.level == before.level

@@ -172,6 +172,19 @@ class FighterClass:
     crit_power_bonus: float = 0.0
     dodge_bonus: float = 0.0
     counter_bonus: float = 0.0
+    # Профильная характеристика приносит своему классу больше, чем чужому:
+    # одно и то же очко силы у воина превращается в больший урон, очко
+    # ловкости у трикстера — в больший уворот, и так далее.
+    damage_gain: float = 1.0
+    dodge_gain: float = 1.0
+    crit_gain: float = 1.0
+    resist_gain: float = 1.0
+    # Своё оружие против своей добычи: ассасину точность против уворота,
+    # трикстеру пробивание против сопротивления, танку антикрит против крита.
+    # Плоская прибавка держит круг и на первых уровнях, где статы ещё малы.
+    accuracy_bonus: float = 0.0
+    penetration_bonus: float = 0.0
+    anticrit_bonus: float = 0.0
 
     @property
     def label(self) -> str:
@@ -182,32 +195,37 @@ WARRIOR = FighterClass(
     code="warrior",
     title="Воин",
     emoji="⚔️",
-    tagline="бьёт тяжело и держит удар",
+    tagline="из его силы выходит больше урона",
     description=(
-        "Крепкий кулачный боец. Самый ровный класс: хороший урон, "
-        "неплохое здоровье, никаких слабых мест."
+        "Крепкий кулачный боец. Сила у него весит больше, чем у остальных, "
+        "а в круге камень-ножницы-бумага он не участвует: можно качаться "
+        "ровно, можно уходить в любую крайность."
     ),
     base_stats=Stats(strength=4, agility=3, intuition=3, endurance=4),
     hp_per_endurance=7,
-    damage_mult=1.05,
+    damage_mult=0.9,
+    damage_gain=1.33,
     crit_bonus=0.02,
     counter_bonus=0.02,
 )
 
 ROGUE = FighterClass(
     code="rogue",
-    title="Ловкач",
+    title="Трикстер",
     emoji="🤸",
-    tagline="уходит от ударов и наказывает за промах",
+    tagline="уходит от ударов и находит щели в обороне",
     description=(
-        "Скользкий тип. Уходит с линии удара чаще всех и почти всегда "
-        "отвечает контрударом. Ставка на ловкость и интуицию."
+        "Скользкий тип. Ловкость у него весит больше, чем у остальных: "
+        "уходит с линии удара чаще всех, отвечает контрударом и пробивает "
+        "чужое сопротивление. Бьёт танка, но сам вязнет против ассасина."
     ),
     base_stats=Stats(strength=3, agility=5, intuition=3, endurance=3),
-    hp_per_endurance=6,
-    damage_mult=0.92,
-    dodge_bonus=0.28,
-    counter_bonus=0.29,
+    hp_per_endurance=4,
+    damage_mult=0.91,
+    dodge_gain=2.05,
+    dodge_bonus=0.25,
+    counter_bonus=0.19,
+    penetration_bonus=0.08,
 )
 
 ASSASSIN = FighterClass(
@@ -216,14 +234,17 @@ ASSASSIN = FighterClass(
     emoji="🗡️",
     tagline="ловит момент и бьёт насмерть",
     description=(
-        "Мастер точного удара. Огромный шанс крита и страшная критическая "
-        "мощь — может снести половину здоровья одним попаданием."
+        "Мастер точного удара. Интуиция у него весит больше, чем у остальных: "
+        "огромный шанс крита, страшная критическая мощь и точность, от которой "
+        "не увернуться. Бьёт трикстера, но ломается о танка."
     ),
     base_stats=Stats(strength=4, agility=4, intuition=4, endurance=2),
     hp_per_endurance=5,
-    damage_mult=1.02,
-    crit_bonus=0.25,
-    crit_power_bonus=0.53,
+    damage_mult=1.15,
+    crit_gain=1.93,
+    crit_bonus=0.12,
+    crit_power_bonus=0.57,
+    accuracy_bonus=0.08,
     dodge_bonus=0.02,
 )
 
@@ -233,13 +254,16 @@ TANK = FighterClass(
     emoji="🛡️",
     tagline="держит удар дольше всех",
     description=(
-        "Живая стена. Запас здоровья больше, чем у кого-либо: его добивают "
-        "долго и упорно. Бьёт при этом слабее остальных."
+        "Живая стена. Выносливость у него весит больше, чем у остальных: "
+        "запас здоровья, сопротивление урону и антикрит. Бьёт ассасина, "
+        "но не успевает за трикстером."
     ),
     base_stats=Stats(strength=4, agility=2, intuition=2, endurance=6),
-    hp_base=55,
-    hp_per_endurance=6,
-    damage_mult=0.88,
+    hp_base=43,
+    hp_per_endurance=5,
+    damage_mult=0.98,
+    resist_gain=1.52,
+    anticrit_bonus=0.12,
 )
 
 FIGHTER_CLASSES: dict[str, FighterClass] = {

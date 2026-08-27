@@ -3,6 +3,7 @@
     python scripts/simulate.py             # один показательный бой
     python scripts/simulate.py --balance   # винрейты всех пар классов
     python scripts/simulate.py --gear 8    # то же, но в полной экипировке
+    python scripts/simulate.py --triangle  # держится ли круг классов
     python scripts/simulate.py --progress  # сколько боёв уходит до потолка
 """
 
@@ -24,19 +25,16 @@ from bot.game.classes import (  # noqa: E402
     START_POINTS,
     FighterClass,
     Stat,
-    Stats,
 )
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL, win_exp  # noqa: E402
-from bot.game.equipment import (  # noqa: E402
-    ALL_SLOTS,
-    SHOWCASE,
-    Equipment,
-    Item,
-    OwnedItem,
-    Slot,
+from bot.game.reference import (  # noqa: E402
+    developed_stats,
+    kit_price,
+    reference_equipment,
 )
 from bot.models import Player  # noqa: E402
 from bot.game.combat import Fighter, random_action, resolve_round  # noqa: E402
+from bot.game.equipment import Equipment  # noqa: E402
 from bot.game.narrator import duel_intro, finish_report, round_report  # noqa: E402
 
 TAGS = re.compile(r"</?[a-z][^>]*>")
@@ -147,41 +145,8 @@ def progress(runs: int, seed: int) -> None:
 
 # ---------- экипировка ----------
 
-# На что боец класса тратит очки характеристик и какие вещи ему подходят.
-# Это осмысленная прокачка, а не крайность: профильный стат, немного силы
-# (без неё нечем бить) и немного выносливости. Именно на таких билдах
-# сходится баланс — билд, который полностью сливает силу, играет заведомо
-# слабее, и это нормально.
-FOCUS = {
-    "warrior": ("strength", "endurance", "strength", "agility"),
-    "rogue": ("agility", "strength", "endurance", "agility"),
-    "assassin": ("intuition", "strength", "endurance", "intuition"),
-    "tank": ("endurance", "strength", "endurance", "intuition"),
-}
-
-
-def best_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
-    """Лучшее, что боец этого класса мог купить к своему уровню."""
-    kit: dict[Slot, Item] = {}
-    for slot in ALL_SLOTS:
-        options = [
-            item
-            for item in SHOWCASE
-            if item.slot is slot and item.level_required <= level
-        ]
-        mine = [item for item in options if fclass.code in item.for_classes] or options
-        if mine:
-            kit[slot] = max(mine, key=lambda item: (item.level_required, item.price))
-    return kit
-
-
-def _focused(fclass: FighterClass, level: int) -> Stats:
-    """Статы бойца, который вкладывался в свои характеристики, а не наугад."""
-    stats = fclass.base_stats
-    focus = FOCUS[fclass.code]
-    for step in range(START_POINTS + MICRO_UPS_PER_LEVEL * (level - 1)):
-        stats = stats.plus(Stat(focus[step % len(focus)]))
-    return stats
+# Эталонные сборки и комплекты живут в bot/game/reference.py: на них
+# сходится баланс, их же проверяют тесты.
 
 
 def geared(level: int, runs: int, seed: int) -> None:
@@ -192,15 +157,8 @@ def geared(level: int, runs: int, seed: int) -> None:
 
     def make(code: str, user_id: int, dressed: bool) -> Fighter:
         fclass = FIGHTER_CLASSES[code]
-        equipment = Equipment(
-            items={
-                slot: OwnedItem(item=item, slot=slot)
-                for slot, item in best_kit(fclass, level).items()
-            }
-            if dressed
-            else {}
-        )
-        stats = _focused(fclass, level)
+        equipment = reference_equipment(fclass, level) if dressed else Equipment()
+        stats = developed_stats(fclass, level)
         return Fighter(
             user_id,
             fclass.title,
@@ -251,13 +209,58 @@ def geared(level: int, runs: int, seed: int) -> None:
             winner, _ = duel(make(code, 1, True), make(code, 2, False))
             wins[winner] += 1
         share = (wins[1] + wins[None] / 2) / runs
-        price = sum(item.price for item in best_kit(fclass, level).values())
+        price = kit_price(fclass, level)
         print(f"  {fclass.title:10} {share:5.0%}   комплект стоит {price} 💰")
 
 
+# Кто кого должен бить в круге камень-ножницы-бумага
+CIRCLE = (
+    ("rogue", "tank", "ловкость пробивает сопротивление"),
+    ("tank", "assassin", "выносливость гасит крит антикритом"),
+    ("assassin", "rogue", "интуиция ловит уворот точностью"),
+)
+
+
+def triangle(runs: int, seed: int) -> None:
+    """Держится ли круг на каждом уровне: трикстер → танк → ассасин → трикстер."""
+    rng = random.Random(seed)
+    levels = (1, 4, 6, 8, 10)
+
+    def fighter(code: str, level: int, user_id: int) -> Fighter:
+        fclass = FIGHTER_CLASSES[code]
+        equipment = reference_equipment(fclass, level) if level > 1 else Equipment()
+        stats = developed_stats(fclass, level).merge(equipment.bonus)
+        return Fighter(user_id, fclass.title, fclass, stats, level, equipment=equipment)
+
+    print("круг: кто кого бьёт (в комплектах своего уровня)\n")
+    print(f"{'пара':26}" + "".join(f"{'ур.' + str(level):>8}" for level in levels))
+    holds = True
+    for winner, loser, why in CIRCLE:
+        shares = []
+        for level in levels:
+            wins = {1: 0, 2: 0, None: 0}
+            for _ in range(runs):
+                a, b = fighter(winner, level, 1), fighter(loser, level, 2)
+                number = 1
+                while True:
+                    result = resolve_round(
+                        a, random_action(a, rng), b, random_action(b, rng), number, rng
+                    )
+                    if result.finished:
+                        break
+                    number += 1
+                wins[result.winner_id] += 1
+            share = (wins[1] + wins[None] / 2) / runs
+            shares.append(share)
+            holds = holds and share > 0.5
+        pair = f"{FIGHTER_CLASSES[winner].title} → {FIGHTER_CLASSES[loser].title}"
+        print(f"{pair:26}" + "".join(f"{s:>8.0%}" for s in shares) + f"   {why}")
+    print("\nкруг держится" if holds else "\nкруг где-то разорван")
+
+
 def _developed(fclass: FighterClass, level: int, rng: random.Random):
-    """Статы бойца этого уровня: база плюс стартовые очки и апы."""
-    stats = fclass.base_stats
+    """Статы бойца этого уровня при случайной раскидке очков."""
+    stats = fclass.base_stats.plus(Stat.ENDURANCE, level - 1)
     for _ in range(START_POINTS + MICRO_UPS_PER_LEVEL * (level - 1)):
         stats = stats.plus(rng.choice(ALL_STATS))
     return stats
@@ -281,6 +284,9 @@ def main() -> None:
     parser.add_argument(
         "--gear", type=int, metavar="УРОВЕНЬ", help="баланс в полной экипировке"
     )
+    parser.add_argument(
+        "--triangle", action="store_true", help="держится ли круг классов"
+    )
     parser.add_argument("--runs", type=int, default=500, help="боёв на пару (для --balance)")
     parser.add_argument("--seed", type=int, default=None, help="зерно генератора")
     parser.add_argument("--first", default="warrior", choices=sorted(FIGHTER_CLASSES))
@@ -288,7 +294,9 @@ def main() -> None:
     args = parser.parse_args()
 
     seed = args.seed if args.seed is not None else random.randrange(10**6)
-    if args.gear:
+    if args.triangle:
+        triangle(max(50, args.runs // 2), seed)
+    elif args.gear:
         geared(args.gear, args.runs, seed)
     elif args.progress:
         progress(max(1, args.runs // 25), seed)

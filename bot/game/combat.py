@@ -50,7 +50,7 @@ MAX_MISSED_TURNS = 3
 # Уворот нельзя сбить точностью в ноль: сколько бы ни было точности,
 # у защищающегося остаётся эта надежда уйти с линии удара.
 MIN_DODGE_CHANCE = 0.02
-# И потолок сверху, чтобы бой не превращался в танцы вокруг ловкача
+# И потолок сверху, чтобы бой не превращался в танцы вокруг трикстера
 MAX_DODGE_CHANCE = 0.6
 # Броня не может съесть больше половины удара: иначе комплект брони делает
 # лёгкие классы безвредными, а бой — бесконечным.
@@ -147,6 +147,15 @@ class Fighter:
     def resist(self) -> float:
         """Сопротивление урону от выносливости: доля, которую снимает с удара."""
         return self.derived.resist
+
+    @property
+    def penetration(self) -> float:
+        """Пробивание от ловкости: срезает чужое сопротивление."""
+        return self.derived.penetration
+
+    def resist_against(self, attacker: "Fighter") -> float:
+        """Сколько удастся снять с удара этого соперника: резист минус пробой."""
+        return max(0.0, self.resist - attacker.penetration)
 
     @property
     def dodge(self) -> float:
@@ -301,7 +310,7 @@ def _resolve_strike(
             counter = _roll_damage(defender, 0, round_number, rng) * COUNTER_DAMAGE_MULT
             # Контрудар прилетает не в выбранную зону, поэтому броню не трогает —
             # только сопротивление от выносливости.
-            counter *= 1.0 - attacker.resist
+            counter *= 1.0 - attacker.resist_against(defender)
             strike.counter_damage = max(1, int(round(counter)))
             strike.outcome = Outcome.COUNTER
         return strike
@@ -315,7 +324,7 @@ def _resolve_strike(
 
     # Удар доходит через выносливость и броню той зоны, куда пришёлся
     before = damage
-    damage *= 1.0 - defender.resist
+    damage *= 1.0 - defender.resist_against(attacker)
     armor = min(defender.equipment.roll_armor(zone, rng), damage * MAX_ARMOR_SHARE)
     strike.armor = int(round(armor))
     damage -= armor

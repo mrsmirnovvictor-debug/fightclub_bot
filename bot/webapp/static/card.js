@@ -654,6 +654,7 @@ function render(card, keepTab) {
   combat.appendChild(row("🎯 Точность", c.accuracy + "%"));
   combat.appendChild(row("🔄 Контрудар", c.counter_chance + "%"));
   combat.appendChild(row("🪨 Сопротивление", c.resist + "%"));
+  combat.appendChild(row("🪚 Пробивание", c.penetration + "%"));
   const armor = card.armor.filter((zone) => zone.max > 0);
   if (armor.length) {
     combat.appendChild(

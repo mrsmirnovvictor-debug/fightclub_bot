@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from bot.game.classes import FighterClass, Stats, get_class
+from bot.game.classes import FighterClass, Stat, Stats, get_class
 from bot.game.equipment import (
     Equipment,
     Item,
@@ -46,6 +46,7 @@ class ProgressReport:
     levels: int = 0
     credits: int = 0
     points: int = 0
+    endurance: int = 0  # выносливость, пришедшая с уровнями сама
     rating_delta: int = 0
     capped: bool = False  # опыт пришёл на потолке уровня
 
@@ -194,9 +195,22 @@ class Player:
         return max(0, target - self.exp)
 
     @property
+    def level_endurance(self) -> int:
+        """Выносливость, которую уровни выдали сами: по очку за каждый.
+
+        Вещи выносливость не дают вовсе, а эта прибавка не считается
+        вложенной — респек и смена класса её не забирают.
+        """
+        return max(0, self.level - 1)
+
+    @property
     def spent_points(self) -> int:
         """Сколько очков боец вложил сверх базы своего класса (без экипировки)."""
-        return self.base_stats.total() - self.fclass.base_stats.total()
+        return (
+            self.base_stats.total()
+            - self.fclass.base_stats.total()
+            - self.level_endurance
+        )
 
     def apply_stats(self, stats: Stats) -> None:
         self.strength = stats.strength
@@ -204,18 +218,24 @@ class Player:
         self.intuition = stats.intuition
         self.endurance = stats.endurance
 
+    def base_with_levels(self, fclass: FighterClass | None = None) -> Stats:
+        """База класса плюс выносливость, накопленная уровнями."""
+        base = (fclass or self.fclass).base_stats
+        return base.plus(Stat.ENDURANCE, self.level_endurance)
+
     def reset_stats(self) -> int:
         """Снести распределённые очки обратно в свободные. Вернуть их число."""
         returned = max(0, self.spent_points)
-        self.apply_stats(self.fclass.base_stats)
+        self.apply_stats(self.base_with_levels())
         self.free_points += returned
         return returned
 
     def switch_class(self, class_code: str) -> int:
         """Сменить класс: база нового класса, все вложенные очки возвращаются."""
         returned = max(0, self.spent_points)
+        new_class = get_class(class_code)
+        self.apply_stats(self.base_with_levels(new_class))
         self.class_code = class_code
-        self.apply_stats(get_class(class_code).base_stats)
         self.free_points += returned
         return returned
 
@@ -246,6 +266,10 @@ class Player:
             self.level += 1
             self.micro_ups = 0
             report.levels += 1
+            # Уровень сам добавляет очко выносливости: её нельзя ни надеть,
+            # ни выбить из вещей — только вырастить.
+            self.endurance += 1
+            report.endurance += 1
             self.credits += LEVEL_CREDITS
             report.credits += LEVEL_CREDITS
             self._take_up(report)  # четвёртый ап — сам уровень

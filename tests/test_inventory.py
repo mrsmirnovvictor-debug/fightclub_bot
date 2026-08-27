@@ -701,6 +701,13 @@ def test_armour_covers_the_zone_it_is_worn_on():
     assert CATALOGUE["cleaver"].zones == ()
 
 
+def test_items_never_hand_out_endurance():
+    """Выносливость растят только руками — вещи дают лишь запас здоровья."""
+    for item in CATALOGUE.values():
+        assert item.bonus.endurance == 0, item.title
+    assert any(item.hp for item in CATALOGUE.values())
+
+
 def test_gear_percentages_reach_the_fighter():
     """Проценты с вещей складываются и доходят до бойца целиком."""
     equipment = Equipment.from_codes({"weapon": "razor", "gloves": "fingerless_gloves"})
@@ -709,4 +716,6 @@ def test_gear_percentages_reach_the_fighter():
     )
     tank = Equipment.from_codes({"weapon": "pry_bar", "head": "moto_helmet"})
     assert tank.accuracy == pytest.approx(CATALOGUE["pry_bar"].accuracy)
-    assert tank.anticrit == pytest.approx(CATALOGUE["moto_helmet"].anticrit)
+    assert tank.anticrit == pytest.approx(
+        CATALOGUE["pry_bar"].anticrit + CATALOGUE["moto_helmet"].anticrit
+    )
