@@ -139,7 +139,9 @@ async def test_type_filter_leaves_one_shelf(shop_page):
 
     assert [head.split("\n")[0] for head in await shelves(shop_page)] == ["🔪 Оружие"]
     assert all(
-        title in ("Кастет", "Обрезок трубы", "Выкидуха", "Шило", "Монтировка")
+        title
+        in ("Кастет", "Деревянная бита", "Выкидуха", "Строительный нож",
+            "Монтировка", "Нож")
         for title in await visible_titles(shop_page)
     )
 
@@ -153,7 +155,7 @@ async def test_level_filter_shows_the_whole_batch_even_if_it_is_locked(shop_page
             "Мотошлем",
             "Кепка с козырьком",
             "Бита",
-            "Мачете",
+            "Гладиус",
             "Стилет",
             "Кувалда",
             "Берцы",

@@ -645,12 +645,12 @@ async def test_mini_app_serves_the_shop_and_takes_the_money(client, db):
 
     assert body["bought"] == {
         "code": "pipe",
-        "title": "Обрезок трубы",
+        "title": "Деревянная бита",
         "price": 150,
         "can_equip": True,
     }
     assert body["shop"]["credits"] == 50
-    assert [item["title"] for item in body["card"]["inventory"]] == ["Обрезок трубы"]
+    assert [item["title"] for item in body["card"]["inventory"]] == ["Деревянная бита"]
     weapons = next(s for s in body["shop"]["sections"] if s["slot"] == "weapon")
     assert next(row for row in weapons["items"] if row["code"] == "pipe")["owned"] == 1
 

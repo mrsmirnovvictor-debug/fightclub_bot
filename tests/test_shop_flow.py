@@ -50,8 +50,9 @@ async def test_showcase_lists_open_goods_by_type(client, dispatcher_env):
     assert "уровень 3, сила 6" in text  # требования кастета
     assert "Оружие" in text and "Обувь" in text  # разложено по типам
     # товар не по уровню на прилавок не выкладывают, но о нём предупреждают
-    assert f"Обрезок трубы — {CATALOGUE['pipe'].price}" not in text
-    assert "На 4 уровне откроются: Обрезок трубы" in text
+    assert f"Деревянная бита — {CATALOGUE['pipe'].price}" not in text
+    unlocks = next(line for line in text.splitlines() if "На 4 уровне откроются" in line)
+    assert "Деревянная бита" in unlocks
 
 
 async def test_showcase_grows_with_the_fighter(client, dispatcher_env):
@@ -63,7 +64,7 @@ async def test_showcase_grows_with_the_fighter(client, dispatcher_env):
     await client.send("/buy")
     text = session.texts[-1]
 
-    assert "Обрезок трубы" in text and "Бита" in text
+    assert "Деревянная бита" in text and "Бита" in text
     assert "На 7 уровне откроются" in text
     # кнопками в чате — только свежая партия, остальное в лавке мини-аппа
     buttons = session.calls[-1].reply_markup.inline_keyboard
