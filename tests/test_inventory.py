@@ -749,7 +749,7 @@ def test_gear_percentages_reach_the_fighter():
 
 def test_pictures_are_wired_to_the_right_bucket():
     """Картинки предметов лежат в R2 и не повторяются у разных вещей."""
-    from bot.game.equipment import SHOWCASE, WEAPON_ART
+    from bot.game.equipment import ART, SHOWCASE
 
     pictures = [item.image for item in SHOWCASE if item.image]
     assert pictures, "картинок нет вовсе"
@@ -757,5 +757,17 @@ def test_pictures_are_wired_to_the_right_bucket():
     assert all(picture.startswith("https://") for picture in pictures)
 
     for item in SHOWCASE:
-        if item.image and item.is_weapon:
-            assert item.image.startswith(WEAPON_ART), item.code
+        if item.is_weapon or item.is_shield:
+            assert item.image.startswith(ART), f"{item.code}: не из бакета клуба"
+
+
+def test_everything_that_hits_or_blocks_has_a_picture():
+    """Оружие и щиты нарисованы все до одного — эмодзи там уже не осталось."""
+    from bot.game.equipment import SHOWCASE
+
+    naked = [
+        item.code
+        for item in SHOWCASE
+        if (item.is_weapon or item.is_shield) and not item.image
+    ]
+    assert not naked, f"без картинки: {naked}"

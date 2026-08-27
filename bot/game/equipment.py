@@ -407,6 +407,8 @@ def repair(
 # обувь пока осталась в старом, её стоит перенести туда же.
 ART = "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev"
 WEAPON_ART = f"{ART}/weapons"
+# Второй заход по недостающим позициям лёг в отдельную папку
+ADDED_ART = f"{ART}/add"
 IMAGES = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/VEGAS%20Fight%20Club"
 
 WARRIOR, ROGUE, ASSASSIN, TANK = "warrior", "rogue", "assassin", "tank"
@@ -483,6 +485,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.SHIELD,
         "🛢",
         kind=ItemKind.SHIELD,
+        image=f"{ADDED_ART}/Game_inventory_shield_icon_202608280250.jpeg",
         hp=6,
         armor_min=1,
         armor_max=2,
@@ -900,6 +903,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "⛓",
         kind=ItemKind.WEAPON,
+        image=f"{ADDED_ART}/Bicycle_chain_and_padlock_icon_202608280249.jpeg",
         instrumental="цепью",
         damage_min=11,
         damage_max=14,
@@ -954,6 +958,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.SHIELD,
         "🚧",
         kind=ItemKind.SHIELD,
+        image=f"{ADDED_ART}/Shield_made_from_road_sign_202608280250.jpeg",
         hp=22,
         armor_min=3,
         armor_max=4,
@@ -969,6 +974,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.SHIELD,
         "🛡",
         kind=ItemKind.SHIELD,
+        image=f"{ADDED_ART}/Game_inventory_steel_buckler_icon_202608280250.jpeg",
         agility=1,
         hp=6,
         armor_min=2,
@@ -1037,6 +1043,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "🦯",
         kind=ItemKind.WEAPON,
+        image=f"{ADDED_ART}/Forged_steel_pry_bar_icon_202608280249.jpeg",
         instrumental="ломом",
         damage_min=15,
         damage_max=19,
@@ -1123,6 +1130,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.WEAPON,
         "📌",
         kind=ItemKind.WEAPON,
+        image=f"{ADDED_ART}/Shiv_game_inventory_icon_202608280250.jpeg",
         instrumental="заточкой",
         intuition=4,
         damage_min=9,
