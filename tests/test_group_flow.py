@@ -142,7 +142,7 @@ async def test_reply_duel_targets_that_fighter(arena):
 
     reply_target = group_message(second, "я тут")
     await feed_message(group_message(first, "/duel", reply_to_message=reply_target))
-    assert "вызывает <b>Марла</b>" in session.texts[-1]
+    assert "вызывает" in session.texts[-1] and "Марла" in session.texts[-1]
 
     challenge_id = next(iter(duels._challenges))
     await press(third, ChallengeCB(action="accept", challenge_id=challenge_id).pack())

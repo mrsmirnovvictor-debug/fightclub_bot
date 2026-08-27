@@ -59,6 +59,27 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
         raise AssertionError
 
 
+async def open_page(pw, server, card, shop=None, query=""):
+    """Открыть мини-апп с подменёнными ответами API."""
+    def canned(payload):
+        return lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(payload)
+        )
+
+    browser = await pw.chromium.launch(
+        executable_path=CHROMIUM, args=["--no-proxy-server"]
+    )
+    page = await browser.new_page(viewport={"width": 420, "height": 900})
+    await page.route("**/api/card*", canned(card))
+    await page.route("**/api/shop*", canned(shop or {}))
+    await page.route("https://telegram.org/**", lambda route: route.fulfill(
+        status=200, content_type="application/javascript", body=""
+    ))
+    await page.route("**/*.jpeg", lambda route: route.abort())
+    await page.goto(f"{server.make_url('/')}{query}")
+    return browser, page
+
+
 @pytest.fixture
 async def shop_page(db):
     """Страница мини-аппа с подменёнными ответами API."""
@@ -157,3 +178,60 @@ async def test_filters_can_leave_the_counter_empty(shop_page):
 
     assert await shop_page.locator("#shop-empty").is_visible()
     assert await shop_page.locator(".shelf").count() == 0
+
+
+
+# ---------- чужая карточка из чата боя ----------
+
+
+@pytest.fixture
+async def server(db):
+    from bot.config import Config
+
+    server = TestServer(create_app(FakeBot(), db, Config(bot_token=TOKEN)))
+    await server.start_server()
+    yield server
+    await server.close()
+
+
+async def test_stranger_card_has_no_backpack_and_no_shop(server):
+    """Имя бойца в чате открывает его карточку — без инвентаря и лавки."""
+    stranger = make_player()
+    stranger.credits = 777
+    card = build_card(stranger, TOKEN, viewer_id=999)  # смотрит кто-то другой
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, query="?user_id=42")
+        await page.wait_for_selector("#card:not(.hidden)")
+
+        assert await page.locator("#tabs").is_hidden(), "чужому видны вкладки"
+        assert await page.locator("#bag").is_hidden(), "чужому виден инвентарь"
+        assert await page.locator("#shop").is_hidden(), "чужому видна лавка"
+
+        # зато боец и его характеристики на месте
+        assert await page.locator("#name").inner_text() == stranger.nickname
+        rows = await page.locator("#stats li").all_inner_texts()
+        assert any("Сила" in row for row in rows)
+        combat = await page.locator("#combat").inner_text()
+        for line in ("Урон", "Крит", "Уворот", "Сопротивление"):
+            assert line in combat
+        # кошелёк соседа не показываем
+        assert "777" not in await page.locator("#record").inner_text()
+        await browser.close()
+
+
+async def test_own_card_keeps_the_tabs(server):
+    """На своей карточке вкладки и рюкзак на месте."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#card:not(.hidden)")
+
+        assert await page.locator("#tabs").is_visible()
+        assert await page.locator("#bag").is_visible()
+        await page.get_by_role("button", name="🏪 Магазин").click()
+        assert await page.locator("#shop").is_visible()
+        assert await page.locator("#card").is_hidden()
+        await browser.close()

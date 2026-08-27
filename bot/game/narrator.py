@@ -134,7 +134,7 @@ def hp_bar(current: int, maximum: int, width: int = 10) -> str:
 
 def hp_line(fighter: Fighter) -> str:
     return (
-        f"{fighter.fclass.emoji} {esc(fighter.name)} "
+        f"{fighter.fclass.emoji} {mention(fighter)} "
         f"{hp_bar(fighter.hp, fighter.max_hp)} {fighter.hp}/{fighter.max_hp}"
     )
 
@@ -164,8 +164,8 @@ def describe_strike(
 ) -> str:
     rng = rng or random
     names = {
-        "a": f"<b>{esc(attacker.name)}</b>",
-        "d": f"<b>{esc(defender.name)}</b>",
+        "a": f"<b>{mention(attacker)}</b>",
+        "d": f"<b>{mention(defender)}</b>",
         "w": strike.weapon,
         "zone": zone_phrase(strike.zone) if strike.zone else "",
     }
@@ -233,7 +233,7 @@ def finish_report(
     )
 
     if result.end_reason is DuelEnd.KO and winner and loser:
-        lines.append(rng.choice(KO_LINES).format(loser=f"<b>{esc(loser.name)}</b>"))
+        lines.append(rng.choice(KO_LINES).format(loser=f"<b>{mention(loser)}</b>"))
         lines.append("")
         lines.append(f"🏆 Победа: {mention(winner)} ({winner.fclass.label})")
     elif result.end_reason is DuelEnd.DOUBLE_KO:
@@ -241,7 +241,7 @@ def finish_report(
     elif result.end_reason is DuelEnd.TECHNICAL:
         if winner and loser:
             lines.append(
-                rng.choice(TECHNICAL_LINES).format(loser=f"<b>{esc(loser.name)}</b>")
+                rng.choice(TECHNICAL_LINES).format(loser=f"<b>{mention(loser)}</b>")
             )
             lines.append("")
             lines.append(f"🏆 Техническая победа: {mention(winner)}")
@@ -286,7 +286,11 @@ def health_line(player: "Player", now: int | None = None) -> str:
 def health_warning(player: "Player", is_self: bool = True) -> str:
     """Отказ пустить на ринг: кто, сколько здоровья и сколько ждать."""
     state = player.health_state()
-    who = "Ты ещё не в форме" if is_self else f"<b>{esc(player.nickname)}</b> не в форме"
+    who = (
+        "Ты ещё не в форме"
+        if is_self
+        else f"<b>{name_link(player.user_id, player.nickname)}</b> не в форме"
+    )
     return (
         f"{state.emoji} {who}: {player.current_hp()}/{player.max_hp} "
         f"({player.hp_percent():.0%}).\n"
@@ -308,7 +312,8 @@ def _fighter_brief(player: "Player") -> str:
         player.fclass, player.stats, player.level, player.equipment.hp_bonus
     )
     return (
-        f"{player.fclass.emoji} <b>{esc(player.nickname)}</b> — "
+        f"{player.fclass.emoji} "
+        f"<b>{name_link(player.user_id, player.nickname)}</b> — "
         f"{player.fclass.title}, {player.level} ур.\n"
         f"❤️ {player.current_hp()}/{stats.max_hp} · "
         f"👊 {stats.damage_min}–{stats.damage_max} · "
@@ -332,7 +337,7 @@ def standoff_card(first: "Player", second: "Player", decision: str = "") -> str:
         stronger = second if gap > 0 else first
         lines.append(
             f"⚖️ Разница в уровнях — {abs(gap)} в пользу "
-            f"<b>{esc(stronger.nickname)}</b>."
+            f"<b>{name_link(stronger.user_id, stronger.nickname)}</b>."
         )
     else:
         lines.append("⚖️ Уровни равны.")
@@ -342,7 +347,8 @@ def standoff_card(first: "Player", second: "Player", decision: str = "") -> str:
     else:
         lines += [
             "",
-            f"Слово за <b>{esc(first.nickname)}</b>: выходить на ринг или разойтись.",
+            f"Слово за <b>{name_link(first.user_id, first.nickname)}</b>: "
+            "выходить на ринг или разойтись.",
         ]
     return "\n".join(lines)
 
@@ -364,7 +370,8 @@ def duel_intro(first: Fighter, second: Fighter) -> str:
 def recovery_line(players: list["Player"]) -> str:
     """Когда бойцы снова смогут выйти на ринг."""
     waiting = [
-        f"{esc(player.nickname)} — через {format_duration(player.seconds_until_ready())}"
+        f"{name_link(player.user_id, player.nickname)} — "
+        f"через {format_duration(player.seconds_until_ready())}"
         for player in players
         if not player.can_fight()
     ]
@@ -379,7 +386,8 @@ def broken_gear_report(broken: list[tuple["Player", list]]) -> list[str]:
     for player, items in broken:
         for owned in items:
             lines.append(
-                f"💔 <b>{esc(player.nickname)}</b>: «{owned.title}» доносили "
+                f"💔 <b>{name_link(player.user_id, player.nickname)}</b>: "
+                f"«{owned.title}» доносили "
                 "до дыр — вещь рассыпалась в труху."
             )
     return lines
@@ -404,9 +412,12 @@ def rewards_report(
         parts.append(
             f"рейтинг {player.rating} ({sign}{abs(report.rating_delta)})"
         )
-        lines.append(f"{player.avatar} <b>{esc(player.nickname)}</b>: " + ", ".join(parts))
+        lines.append(
+            f"{player.avatar} <b>{name_link(player.user_id, player.nickname)}</b>: "
+            + ", ".join(parts)
+        )
 
-        name = f"<b>{esc(player.nickname)}</b>"
+        name = f"<b>{name_link(player.user_id, player.nickname)}</b>"
         if report.levels:
             grown = f"+{report.endurance} к выносливости" if report.endurance else ""
             events.append(

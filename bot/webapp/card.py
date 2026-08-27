@@ -227,6 +227,7 @@ def build_card(
 ) -> dict:
     """Всё, что рисует карточка: имя, здоровье, слоты, характеристики, история."""
     moment = int(time.time()) if now is None else now
+    is_self = viewer_id == player.user_id
     equipment = player.equipment
     fclass = player.fclass
     derived = derive(fclass, player.stats, player.level, equipment.hp_bonus)
@@ -246,7 +247,7 @@ def build_card(
         "user_id": player.user_id,
         "name": player.nickname,
         "level": player.level,
-        "is_self": viewer_id == player.user_id,
+        "is_self": is_self,
         "fclass": {
             "code": fclass.code,
             "title": fclass.title,
@@ -275,7 +276,7 @@ def build_card(
         },
         # Рюкзак показываем только хозяину карточки
         "inventory": [item_payload(player, owned) for owned in player.backpack]
-        if viewer_id == player.user_id
+        if is_self
         else [],
         "city": player.city,
         "progress": {
@@ -294,7 +295,8 @@ def build_card(
             "losses": player.losses,
             "draws": player.draws,
             "rating": player.rating,
-            "credits": player.credits,
+            # Чужой кошелёк не наше дело: карточку соседа открывают из чата боя
+            "credits": player.credits if is_self else 0,
         },
         "birthplace": player.home,
         "birthday": format_birthday(player.created_at),

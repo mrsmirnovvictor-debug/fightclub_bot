@@ -39,6 +39,8 @@ from bot.game.economy import (
 )
 from bot.game.narrator import (
     duel_intro,
+    mention,
+    name_link,
     standoff_card,
     esc,
     finish_report,
@@ -218,16 +220,16 @@ class DuelService:
         )
         if target is None:
             text = (
-                f"🥊 <b>{esc(challenger.nickname)}</b> "
+                f"🥊 <b>{name_link(challenger.user_id, challenger.nickname)}</b> "
                 f"({challenger.fclass.label}, {challenger.level} ур.) "
                 "вызывает любого желающего на кулачный бой.\n\n"
                 "Кто примет вызов?"
             )
         else:
             text = (
-                f"🥊 <b>{esc(challenger.nickname)}</b> "
+                f"🥊 <b>{name_link(challenger.user_id, challenger.nickname)}</b> "
                 f"({challenger.fclass.label}, {challenger.level} ур.) "
-                f"вызывает <b>{esc(target.nickname)}</b> "
+                f"вызывает <b>{name_link(target.user_id, target.nickname)}</b> "
                 f"({target.fclass.label}, {target.level} ур.) на кулачный бой.\n\n"
                 "Слово за вызванным."
             )
@@ -499,7 +501,7 @@ class DuelService:
                     f" — ⚠️ пропусков подряд: {side.missed_turns}, осталось {left}"
                 )
             lines.append(
-                f"{side.fclass.emoji} {esc(side.name)} "
+                f"{side.fclass.emoji} {mention(side)} "
                 f"{hp_bar(side.hp, side.max_hp)} {side.hp}/{side.max_hp} "
                 f"— {mark}{warning}"
             )

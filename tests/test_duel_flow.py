@@ -781,3 +781,39 @@ async def test_panel_is_one_for_both_fighters(bot, db):
     prompts = [m for m in bot.sent if m.reply_markup is not None]
     assert len(prompts) == 1
     assert session.prompt_message_id == prompts[0].message_id
+
+
+async def test_every_name_in_the_fight_log_opens_the_card(bot, db):
+    """Имя бойца кликабельно везде: вызов, стойка, панель раунда, удары, итог."""
+    from bot.game.links import links
+
+    links.configure("vegasfightclub_bot", "card")
+    try:
+        service = make_service(bot, db)
+        await db.save_player(make_player(1, "Тайлер", "warrior"))
+        await db.save_player(make_player(2, "Марла", "rogue"))
+
+        await service.open_challenge(CHAT_ID, THREAD_ID, await db.get_player(1))
+        session = await service.start_duel(
+            CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+        )
+        await fight_to_the_end(service, session)
+
+        links_by_id = {
+            user_id: f'href="https://t.me/vegasfightclub_bot/card?startapp={user_id}"'
+            for user_id in (1, 2)
+        }
+        named = [
+            text
+            for text in bot.texts
+            if "Тайлер" in text or "Марла" in text
+        ]
+        assert named, "в логе боя вообще нет имён"
+        for text in named:
+            for user_id, name in ((1, "Тайлер"), (2, "Марла")):
+                # каждое упоминание имени должно быть завёрнуто в ссылку
+                assert text.count(name) == text.count(links_by_id[user_id]), (
+                    f"имя {name} где-то без ссылки на карточку: {text[:160]}"
+                )
+    finally:
+        links.configure("", "")

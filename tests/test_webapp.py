@@ -324,3 +324,22 @@ def test_card_link_needs_both_username_and_app_name():
     assert CardLinks(bot_username="bot", miniapp_name="card").card_url(1) == (
         "https://t.me/bot/card?startapp=1"
     )
+
+
+def test_stranger_card_hides_the_wallet_and_the_backpack():
+    """Карточку соседа открывают из чата боя — кошелёк и рюкзак не показываем."""
+    from bot.game.equipment import CATALOGUE, OwnedItem
+
+    player = make_player(credits=777)
+    player.gear = [OwnedItem(item=CATALOGUE["knuckles"], id=1)]
+
+    stranger = build_card(player, TOKEN, viewer_id=999)
+    assert stranger["is_self"] is False
+    assert stranger["record"]["credits"] == 0
+    assert stranger["inventory"] == []
+    # характеристики и боевые показатели при этом на месте
+    assert stranger["stats"] and stranger["combat"]["damage_max"] > 0
+
+    mine = build_card(player, TOKEN, viewer_id=player.user_id)
+    assert mine["record"]["credits"] == 777
+    assert len(mine["inventory"]) == 1
