@@ -18,7 +18,7 @@ from bot.game.classes import get_class
 from bot.game.combat import Fighter
 from bot.game.modes import FightMode
 from bot.models import Player
-from tests.test_duel_flow import FakeBot
+from tests.test_duel_flow import FakeBot, earned_credits
 
 CHAT_ID = -100500
 THREAD_ID = 7
@@ -496,4 +496,28 @@ async def test_health_starts_healing_when_the_battle_ends(bot, db):
     stamps = {row.hp_at for row in saved.values()}
     assert max(stamps) - min(stamps) <= 1, "часы старта восстановления разъехались"
     assert saved[early].hp == 0
+    await service.shutdown()
+
+
+async def test_a_group_win_pays_no_credits_either(bot, db):
+    """Кредиты и здесь только за рост: за сам бой касса молчит."""
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+
+    before = {
+        player.user_id: (player.credits, earned_credits(player)) for player in players
+    }
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    await fight_to_the_end(service, session)
+
+    for player in players:
+        fresh = await db.get_player(player.user_id)
+        was, grown = before[player.user_id]
+        # прибавка к счёту ровно та, что дали апы и уровни за этот бой
+        assert fresh.credits - was == earned_credits(fresh) - grown, fresh.nickname
     await service.shutdown()

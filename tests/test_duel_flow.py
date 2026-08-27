@@ -17,8 +17,10 @@ from bot.game.classes import Zone
 from bot.game.combat import Fighter
 from bot.game.health import FULL_REGEN_SECONDS, now_ts
 from bot.game.economy import (
+    LEVEL_CREDITS,
+    MICRO_UPS_PER_LEVEL,
     RATING_START,
-    WIN_CREDITS_MIN,
+    UP_CREDITS,
     exp_to_next_level,
     win_exp,
 )
@@ -395,7 +397,13 @@ async def fight_to_the_end(service: DuelService, session) -> None:
     raise AssertionError("бой не закончился за 40 раундов")
 
 
-async def test_only_the_winner_gets_exp_and_credits(bot, db):
+def earned_credits(player) -> int:
+    """Сколько кредитов боец должен был получить за апы и уровни — и только."""
+    ups = (player.level - 1) * MICRO_UPS_PER_LEVEL + player.micro_ups
+    return ups * UP_CREDITS + (player.level - 1) * LEVEL_CREDITS
+
+
+async def test_only_the_winner_gets_exp_and_the_ring_pays_no_credits(bot, db):
     service = make_service(bot, db)
     await db.save_player(make_player(1, "Тайлер", "warrior"))
     await db.save_player(make_player(2, "Марла", "rogue"))
@@ -408,7 +416,8 @@ async def test_only_the_winner_gets_exp_and_credits(bot, db):
     winner, loser = (first, second) if first.wins else (second, first)
 
     assert winner.total_exp > 0
-    assert winner.credits >= WIN_CREDITS_MIN
+    # за сам бой денег нет: кредиты только те, что дали апы и уровни
+    assert winner.credits == earned_credits(winner)
     assert winner.rating > RATING_START
     # проигравшему — ни опыта, ни кредитов, только минус в рейтинге
     assert loser.total_exp == 0

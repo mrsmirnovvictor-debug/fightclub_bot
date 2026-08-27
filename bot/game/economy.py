@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import random
 
 # ---------- уровни и опыт ----------
 
@@ -33,10 +32,9 @@ DRAW_EXP_SHARE = 0.0
 
 # ---------- кредиты ----------
 
-WIN_CREDITS_MIN = 1
-WIN_CREDITS_MAX = 5
-LOSS_CREDITS = 0
-DRAW_CREDITS = 0
+# Кредиты капают только с роста бойца: за апы и за уровни. Сам бой денег не
+# приносит — иначе доход считался бы не по времени в клубе, а по числу драк,
+# и цены в лавке поплыли бы вслед за самым усидчивым.
 UP_CREDITS = 10  # за каждый ап, включая тот, что совпал с уровнем
 LEVEL_CREDITS = 50  # сверху за сам уровень
 
@@ -76,7 +74,7 @@ def ups_earned(exp: int, level: int) -> int:
 
 
 def credits_per_level() -> int:
-    """Сколько кредитов приносит уровень сам по себе, без учёта побед.
+    """Сколько кредитов приносит уровень — весь доход бойца, других нет.
 
     На это число смотрят цены в лавке: набор одной ступени стоит примерно
     втрое дороже — поэтому на всё сразу не хватает и приходится выбирать.
@@ -100,11 +98,6 @@ def consolation_exp(winner_exp: int, share: float) -> int:
     if share <= 0:
         return 0
     return max(1, round(winner_exp * share))
-
-
-def win_credits(rng: random.Random | None = None) -> int:
-    rng = rng or random
-    return rng.randint(WIN_CREDITS_MIN, WIN_CREDITS_MAX)
 
 
 def rating_delta(won: bool, my_level: int, opponent_level: int) -> int:

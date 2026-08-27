@@ -36,9 +36,7 @@ from bot.game.battle import (
 from bot.game.classes import BLOCK_WIDTH, Zone, block_combo, block_title
 from bot.game.combat import Action, Fighter, resolve_round
 from bot.game.economy import (
-    LOSS_CREDITS,
     rating_delta,
-    win_credits,
     win_exp,
 )
 from bot.game.equipment import BARE_HANDS_ICON
@@ -635,13 +633,12 @@ class BattleService:
             if won:
                 player.wins += 1
                 exp = win_exp(fighter.damage_dealt, levels[user_id], rival_level)
-                credits = win_credits(self.rng)
             elif outcome.draw:
                 player.draws += 1
-                exp, credits = 0, LOSS_CREDITS
+                exp = 0
             else:
                 player.losses += 1
-                exp, credits = 0, LOSS_CREDITS
+                exp = 0
 
             delta = rating_delta(won, levels[user_id], rival_level)
             if player.birthplace is None and session.chat_title:
@@ -655,9 +652,7 @@ class BattleService:
                 broken.append((player, ruined))
             player.set_hp(fighter.hp)
             report = player.grant_exp(exp)
-            report.credits += credits
             report.rating_delta = delta
-            player.grant_credits(credits)
             player.apply_rating(delta)
             await self.db.save_player(player)
             rows.append((player, report, fighter, won))

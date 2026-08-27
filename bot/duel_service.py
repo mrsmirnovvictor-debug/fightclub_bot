@@ -25,16 +25,13 @@ from bot.game.combat import (
     resolve_round,
 )
 from bot.game.economy import (
-    DRAW_CREDITS,
     DRAW_EXP_SHARE,
-    LOSS_CREDITS,
     LOSS_EXP_SHARE,
     REPEAT_WINDOW_HOURS,
     apply_share,
     consolation_exp,
     rating_delta,
     repeat_share,
-    win_credits,
     win_exp,
 )
 from bot.game.narrator import (
@@ -703,20 +700,17 @@ class DuelService:
             full_exp = win_exp(fighter.damage_dealt, my_level, opponent_level)
             if won:
                 player.wins += 1
-                exp, credits = full_exp, win_credits(self.rng)
+                exp = full_exp
             elif result.winner_id is None:
                 player.draws += 1
                 exp = consolation_exp(full_exp, DRAW_EXP_SHARE)
-                credits = DRAW_CREDITS
             else:
                 player.losses += 1
                 exp = consolation_exp(full_exp, LOSS_EXP_SHARE)
-                credits = LOSS_CREDITS
 
             delta = rating_delta(won, my_level, opponent_level)
             if share < 1.0:
                 exp = apply_share(exp, share)
-                credits = apply_share(credits, share)
                 delta = int(math.copysign(apply_share(abs(delta), share), delta))
 
             if player.birthplace is None and session.chat_title:
@@ -734,9 +728,7 @@ class DuelService:
                 broken.append((player, ruined))
             player.set_hp(fighter.hp)
             report = player.grant_exp(exp)
-            report.credits += credits
             report.rating_delta = delta
-            player.grant_credits(credits)
             player.apply_rating(delta)
             await self.db.save_player(player)
             rows.append((player, report))
