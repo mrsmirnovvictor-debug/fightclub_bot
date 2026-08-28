@@ -432,8 +432,8 @@ def test_stranger_card_hides_the_wallet_and_the_backpack():
 # ---------- бойцовский клуб ----------
 
 
-async def test_club_lists_every_fighter_with_a_short_card(client, db):
-    """Список клуба: сильные сверху, у каждого короткая карточка для «i»."""
+async def test_club_lists_every_fighter(client, db):
+    """Список клуба: сильные сверху, в строке только то, что в ней видно."""
     from bot.models import Player
 
     for user_id, nickname, rating, level in (
@@ -445,7 +445,6 @@ async def test_club_lists_every_fighter_with_a_short_card(client, db):
             user_id=user_id, nickname=nickname, class_code="warrior", level=level
         )
         player.rating = rating
-        player.birthplace = "Клуб на Вязов"
         await db.save_player(player)
 
     response = await client.get(
@@ -459,16 +458,9 @@ async def test_club_lists_every_fighter_with_a_short_card(client, db):
 
     me = next(row for row in body["fighters"] if row["user_id"] == 42)
     assert me["is_self"] and me["level"] == 4
-    assert [stat["code"] for stat in me["stats"]] == [
-        "strength",
-        "agility",
-        "intuition",
-        "endurance",
-    ]
-    assert me["birthplace"] == "Клуб на Вязов" and me["birthday"]
-    assert {"wins", "losses", "draws", "rating", "exp"} <= set(me)
-    # чужие кредиты в списке не ходят
-    assert "credits" not in me
+    assert me["fclass"]["title"] == "Воин"
+    # всё остальное — аватар, слоты, счёт — приезжает из /api/card по кнопке «i»
+    assert set(me) == {"user_id", "nickname", "level", "is_self", "fclass"}
 
 
 async def test_the_club_list_needs_a_signature(client):

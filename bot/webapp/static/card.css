@@ -638,14 +638,13 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .soon-text { margin: 0 0 8px; font-size: 13px; line-height: 1.45; }
 .soon-text.muted { color: var(--muted); margin-bottom: 0; }
 
-/* ---------- портрет на карточке персонажа ---------- */
+/* ---------- кукла внутри листа с чужой карточкой ---------- */
 
-.portrait {
-  display: flex;
-  justify-content: center;
+.sheet-doll {
+  margin-bottom: 12px;
 }
-.portrait .avatar {
-  width: min(62%, 260px);
+.sheet-doll .slot { min-height: 0; }
+.sheet-doll .avatar {
   min-height: 0;
   aspect-ratio: 3 / 4;
 }

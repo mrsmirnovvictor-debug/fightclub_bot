@@ -143,7 +143,7 @@ async def test_shop_opens_with_all_types_on_the_counter(shop_page):
 
 
 async def test_type_filter_leaves_one_shelf(shop_page):
-    await shop_page.get_by_role("button", name="🔪 Оружие").click()
+    await shop_page.get_by_role("button", name="Оружие", exact=True).click()
 
     assert [head.split("\n")[0] for head in await shelves(shop_page)] == ["🔪 Оружие"]
     assert all(
@@ -159,7 +159,10 @@ async def test_the_counter_has_no_level_filter_any_more(shop_page):
     labels = await shop_page.locator(".bubbles .chip").all_inner_texts()
 
     assert labels[0] == "Все"
-    assert "🔪 Оружие" in labels
+    assert "Оружие" in labels
+    assert not [label for label in labels if any(ch > "\u2000" for ch in label)], (
+        "в фильтрах остались значки"
+    )
     assert not [label for label in labels if "ур." in label], "уровни всё ещё в фильтрах"
     assert await shop_page.locator(".filters").count() == 0
 
@@ -412,9 +415,9 @@ async def test_an_empty_slot_falls_back_to_its_icon(server):
         await page.locator("#tab-bag").click()
         await page.wait_for_timeout(300)
 
-        empty = page.locator(".slot.empty")
+        empty = page.locator("#bag .slot.empty")
         assert await empty.count() == 8
-        assert await page.locator(".slot.empty.no-art").count() == 8
+        assert await page.locator("#bag .slot.empty.no-art").count() == 8
         assert "🎩" in await page.locator("#slots-left .slot").first.inner_text()
         await browser.close()
 
@@ -429,7 +432,7 @@ def club_of(*fighters) -> dict:
 
 
 async def test_the_club_lists_everyone_and_opens_a_card(server):
-    """Список клуба: ник, уровень и кнопка «i» с короткой карточкой."""
+    """Список клуба: ник, уровень и кнопка «i» с карточкой соседа."""
     me = make_player()
     rival = make_player()
     rival.user_id = 43
@@ -437,10 +440,20 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
     rival.level = 7
     rival.birthplace = "Клуб на Вязов"
     card = build_card(me, TOKEN, viewer_id=me.user_id)
+    rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
 
     async with async_playwright() as pw:
         browser, page = await open_page(
             pw, server, card, build_shop(me), club=club_of(me, rival)
+        )
+        # карточку соседа отдаём отдельно: маршруты примеряются с конца
+        await page.route(
+            "**/api/card?user_id=43",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(rival_card),
+            ),
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
@@ -452,13 +465,16 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         assert names == ["Растафарайчик", "Марла"]
         levels = await page.locator(".fighter-level").all_inner_texts()
         assert levels == ["[5]", "[7]"]
-        # свою строку видно сразу
         assert await page.locator(".fighter.me .fighter-name").inner_text() == names[0]
 
         await page.locator(".fighter").nth(1).locator(".fighter-info").click()
-        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.wait_for_selector(".sheet-doll")
 
         assert "Марла [7]" in await page.locator("#sheet-title").inner_text()
+        # в карточке соседа есть и аватар, и все восемь слотов
+        assert await page.locator(".sheet-doll .avatar").count() == 1
+        assert await page.locator(".sheet-doll .slot").count() == 8
+
         card_text = await page.locator("#sheet-list").inner_text()
         for line in ("Сила", "Ловкость", "Интуиция", "Выносливость"):
             assert line in card_text
@@ -466,6 +482,22 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
             assert line in card_text
         assert "Клуб на Вязов" in card_text
         assert "День рождения персонажа" in card_text
-        # чужой кошелёк в короткой карточке не показываем
+        # чужой кошелёк в карточке не показываем
         assert "Кредиты" not in card_text
+        await browser.close()
+
+
+async def test_the_hero_screen_shows_the_slots_too(server):
+    """На «Персонаже» рядом с портретом стоят те же восемь слотов."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#hero .slot").count() == 8
+        assert await page.locator("#hero-avatar").is_visible()
+        # надетая вещь видна и здесь, и в инвентаре
+        assert await page.locator("#hero .slot:not(.empty)").count() == 1
         await browser.close()

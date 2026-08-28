@@ -351,11 +351,7 @@ function renderFilters(data) {
   types.appendChild(chip("Все", filters.slot === "all", () => pickSlot("all")));
   data.sections.forEach((section) => {
     types.appendChild(
-      chip(
-        section.emoji + " " + section.title,
-        filters.slot === section.slot,
-        () => pickSlot(section.slot)
-      )
+      chip(section.title, filters.slot === section.slot, () => pickSlot(section.slot))
     );
   });
 }
@@ -495,42 +491,80 @@ function sheetRows(pairs) {
   return list;
 }
 
-function showFighter(fighter) {
+function sheetDoll(card) {
+  // Аватар и слоты — то же, что на карточке, только помельче
+  const doll = document.createElement("section");
+  doll.className = "doll sheet-doll";
+
+  const left = document.createElement("div");
+  left.className = "slots";
+  const avatar = document.createElement("div");
+  avatar.className = "avatar";
+  const right = document.createElement("div");
+  right.className = "slots";
+
+  renderSlots(left, card.slots.left, false);
+  renderSlots(right, card.slots.right, false);
+  paintAvatar(avatar, card, false);
+
+  doll.append(left, avatar, right);
+  return doll;
+}
+
+function fighterCard(card) {
+  const box = document.createDocumentFragment();
+  box.appendChild(sheetDoll(card));
+
+  const panel = document.createElement("section");
+  panel.className = "panel";
+  panel.appendChild(
+    sheetRows(card.stats.map((stat) => [stat.emoji + " " + stat.title, num(stat.total)]))
+  );
+  panel.appendChild(document.createElement("hr")).className = "rule";
+  panel.appendChild(
+    sheetRows([
+      ["Уровень", num(card.level)],
+      ["Опыт", num(card.progress.total_exp)],
+    ])
+  );
+  panel.appendChild(document.createElement("hr")).className = "rule";
+  panel.appendChild(
+    sheetRows([
+      ["Побед", num(card.record.wins)],
+      ["Поражений", num(card.record.losses)],
+      ["Ничьих", num(card.record.draws)],
+      ["Рейтинг", num(card.record.rating)],
+    ])
+  );
+  panel.appendChild(document.createElement("hr")).className = "rule";
+  panel.appendChild(
+    sheetRows([
+      ["Место рождения", card.birthplace],
+      ["День рождения персонажа", card.birthday],
+    ])
+  );
+  box.appendChild(panel);
+  return box;
+}
+
+async function showFighter(fighter) {
   openSheet(
     fighter.nickname + " [" + fighter.level + "]",
     fighter.fclass.emoji + " " + fighter.fclass.title
   );
-  const list = el("sheet-list");
-  const panel = document.createElement("section");
-  panel.className = "panel";
-
-  panel.appendChild(
-    sheetRows(fighter.stats.map((stat) => [stat.emoji + " " + stat.title, num(stat.value)]))
-  );
-  panel.appendChild(document.createElement("hr")).className = "rule";
-  panel.appendChild(
-    sheetRows([
-      ["Уровень", num(fighter.level)],
-      ["Опыт", num(fighter.exp)],
-    ])
-  );
-  panel.appendChild(document.createElement("hr")).className = "rule";
-  panel.appendChild(
-    sheetRows([
-      ["Побед", num(fighter.wins)],
-      ["Поражений", num(fighter.losses)],
-      ["Ничьих", num(fighter.draws)],
-      ["Рейтинг", num(fighter.rating)],
-    ])
-  );
-  panel.appendChild(document.createElement("hr")).className = "rule";
-  panel.appendChild(
-    sheetRows([
-      ["Место рождения", fighter.birthplace],
-      ["День рождения персонажа", fighter.birthday],
-    ])
-  );
-  list.appendChild(panel);
+  try {
+    const response = await fetch("api/card?user_id=" + fighter.user_id, {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Карточка не открылась.");
+    const card = await response.json();
+    el("sheet-note").textContent =
+      card.fclass.emoji + " " + card.fclass.title + " · " + card.city;
+    el("sheet-list").textContent = "";
+    el("sheet-list").appendChild(fighterCard(card));
+  } catch (error) {
+    el("sheet-note").textContent = error.message;
+  }
 }
 
 function renderClub(data) {
@@ -1004,6 +1038,8 @@ function render(card, keepTab) {
   renderAvatar(card);
   renderSlots(el("slots-left"), card.slots.left, card.is_self);
   renderSlots(el("slots-right"), card.slots.right, card.is_self);
+  renderSlots(el("hero-slots-left"), card.slots.left, card.is_self);
+  renderSlots(el("hero-slots-right"), card.slots.right, card.is_self);
   renderBag(card);
   el("city").textContent = card.city;
   el("hero-city").textContent = card.city;

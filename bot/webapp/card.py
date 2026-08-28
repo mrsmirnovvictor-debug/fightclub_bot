@@ -227,11 +227,11 @@ def avatar_payload(player: Player, avatar_url: str) -> dict:
 
 
 def fighter_row(player: Player, viewer_id: int | None) -> dict:
-    """Строка списка клуба вместе с короткой карточкой для кнопки «i».
+    """Строка списка клуба: только то, что видно в самой строке.
 
-    Карточка приходит сразу со списком: клуб небольшой, зато тап по «i»
-    открывается мгновенно и без похода на сервер. Кошелька тут нет — чужие
-    кредиты не показываем нигде.
+    Карточку по кнопке «i» отдаёт /api/card — там уже есть и аватар, и слоты,
+    и счёт. Тянуть всё это в список значило бы читать экипировку каждого
+    бойца ради строчки из трёх слов.
     """
     return {
         "user_id": player.user_id,
@@ -243,22 +243,6 @@ def fighter_row(player: Player, viewer_id: int | None) -> dict:
             "title": player.fclass.title,
             "emoji": player.fclass.emoji,
         },
-        "stats": [
-            {
-                "code": stat.value,
-                "title": stat.title.capitalize(),
-                "emoji": stat.emoji,
-                "value": player.base_stats.get(stat),
-            }
-            for stat in ALL_STATS
-        ],
-        "exp": player.total_exp,
-        "wins": player.wins,
-        "losses": player.losses,
-        "draws": player.draws,
-        "rating": player.rating,
-        "birthplace": player.birthplace or "—",
-        "birthday": format_birthday(player.created_at),
     }
 
 
