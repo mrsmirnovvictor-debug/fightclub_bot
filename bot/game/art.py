@@ -13,6 +13,7 @@ WEAPONS = f"{BUCKET}/weapons"
 ADDED = f"{BUCKET}/add"
 AVATARS = f"{BUCKET}/avatars"
 SLOTS = f"{BUCKET}/slots"
+ITEMS = f"{BUCKET}/items"
 
 # Первый бакет, из которого пока не переехали кеды
 LEGACY = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/VEGAS%20Fight%20Club"
@@ -28,4 +29,14 @@ def slot(code: str) -> str:
     return f"{SLOTS}/{code}.jpeg"
 
 
-__all__ = ["ADDED", "AVATARS", "BUCKET", "LEGACY", "SLOTS", "WEAPONS", "avatar", "slot"]
+__all__ = [
+    "ADDED",
+    "AVATARS",
+    "BUCKET",
+    "ITEMS",
+    "LEGACY",
+    "SLOTS",
+    "WEAPONS",
+    "avatar",
+    "slot",
+]

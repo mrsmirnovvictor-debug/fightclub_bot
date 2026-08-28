@@ -761,16 +761,22 @@ def test_pictures_are_wired_to_the_right_bucket():
             assert item.image.startswith(ART), f"{item.code}: не из бакета клуба"
 
 
-def test_everything_that_hits_or_blocks_has_a_picture():
-    """Оружие и щиты нарисованы все до одного — эмодзи там уже не осталось."""
+def test_the_whole_catalogue_is_drawn():
+    """Каждая вещь на прилавке нарисована — значков-заглушек не осталось."""
     from bot.game.equipment import SHOWCASE
 
-    naked = [
-        item.code
-        for item in SHOWCASE
-        if (item.is_weapon or item.is_shield) and not item.image
-    ]
+    naked = [item.code for item in SHOWCASE if not item.image]
     assert not naked, f"без картинки: {naked}"
+
+
+def test_pictures_are_not_shared_between_items():
+    """Одна картинка на две вещи — почти всегда промах при раскладке файлов."""
+    from bot.game.equipment import SHOWCASE
+
+    seen: dict[str, str] = {}
+    for item in SHOWCASE:
+        twin = seen.setdefault(item.image, item.code)
+        assert twin == item.code, f"{item.code} и {twin} делят картинку"
 
 
 # ---------- образы ----------
