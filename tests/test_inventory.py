@@ -12,6 +12,8 @@ from bot.game.economy import credits_per_level
 from bot.game.equipment import (
     ALL_SLOTS,
     CATALOGUE,
+    MAGIC_ITEMS,
+    SHOWCASE,
     EARLY_LEVELS,
     EARLY_SHARE_CAP,
     LATE_SHARE_CAP,
@@ -470,11 +472,22 @@ async def test_nobody_touches_a_stranger_backpack(client, db):
 
 def test_catalogue_items_know_their_slot_and_price():
     for item in CATALOGUE.values():
-        assert item.price > 0
+        # За что вещь берут: кредиты в лавке клуба или звёзды у мага
+        assert item.price > 0 or item.stars > 0
+        assert not (item.price and item.stars), f"{item.title}: и кредиты, и звёзды"
         assert item.slot in item.slots
         assert isinstance(item, Item)
         if item.kind is ItemKind.SHIELD:
             assert item.slot is Slot.SHIELD
+
+
+def test_the_magic_counter_is_kept_out_of_the_club_shop():
+    """Звёздный товар не лежит на прилавке за кредиты и не путается с ним."""
+    assert MAGIC_ITEMS, "у мага пусто"
+    for item in MAGIC_ITEMS:
+        assert item.stars > 0 and item.price == 0
+        assert item not in SHOWCASE
+    assert all(not item.is_magic for item in SHOWCASE)
 
 
 # ---------- износ в настоящем бою ----------
@@ -668,15 +681,21 @@ async def test_mini_app_shop_needs_your_own_init_data(client, db):
 
 
 def test_percent_bonuses_stay_within_their_caps():
-    """Проценты растут со ступенью, но не настолько, чтобы стирать класс."""
-    for item in CATALOGUE.values():
-        shares = (item.accuracy, item.dodge, item.crit, item.anticrit)
+    """Проценты растут со ступенью, но не настолько, чтобы стирать класс.
+
+    Потолок держит лавку клуба — то, что берут за кредиты и что определяет
+    баланс между классами. Товар мага живёт по своим правилам: он и должен
+    быть заметно сильнее, иначе за него не платили бы звёздами.
+    """
+    for item in SHOWCASE:
+        shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
         cap = EARLY_SHARE_CAP if item.level_required <= EARLY_LEVELS else LATE_SHARE_CAP
         assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%} > {cap:.0%}"
 
 
 def test_every_weapon_adds_damage_and_it_grows_with_the_tier():
-    weapons = [item for item in CATALOGUE.values() if item.is_weapon]
+    """Лестница ступеней — про лавку клуба: у мага своя цена и свой отсчёт."""
+    weapons = [item for item in SHOWCASE if item.is_weapon]
     assert weapons
     by_level: dict[int, list[float]] = {}
     for item in weapons:

@@ -98,24 +98,43 @@ def get_pack(code: str) -> CreditPack | None:
     return BY_CODE.get(code)
 
 
+# Что можно купить за звёзды: пачка кредитов или вещь из лавки мага
+PACK_KIND = "pack"
+RELIC_KIND = "relic"
+
+
+def parse_payload(payload: str) -> tuple[str, str]:
+    """«pack:case:12345» → («pack», «case»). Чужое — («», «»)."""
+    parts = (payload or "").split(":")
+    if len(parts) < 2 or parts[0] not in (PACK_KIND, RELIC_KIND):
+        return "", ""
+    return parts[0], parts[1]
+
+
 def pack_of_payload(payload: str) -> CreditPack | None:
     """Разобрать payload инвойса: «pack:case:12345» — пачка «кейс» для 12345."""
-    parts = payload.split(":")
-    if len(parts) < 2 or parts[0] != "pack":
-        return None
-    return get_pack(parts[1])
+    kind, code = parse_payload(payload)
+    return get_pack(code) if kind == PACK_KIND else None
 
 
 def payload_for(pack: CreditPack, user_id: int) -> str:
-    return f"pack:{pack.code}:{user_id}"
+    return f"{PACK_KIND}:{pack.code}:{user_id}"
+
+
+def relic_payload(code: str, user_id: int) -> str:
+    return f"{RELIC_KIND}:{code}:{user_id}"
 
 
 __all__ = [
     "BY_CODE",
     "PACKS",
+    "PACK_KIND",
+    "RELIC_KIND",
     "STARS",
     "CreditPack",
     "get_pack",
     "pack_of_payload",
+    "parse_payload",
     "payload_for",
+    "relic_payload",
 ]

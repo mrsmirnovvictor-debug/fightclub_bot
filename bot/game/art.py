@@ -14,6 +14,8 @@ ADDED = f"{BUCKET}/add"
 AVATARS = f"{BUCKET}/avatars"
 SLOTS = f"{BUCKET}/slots"
 ITEMS = f"{BUCKET}/items"
+# Товар лавки мага
+MAGIC = f"{BUCKET}/magic"
 
 # Первый бакет, из которого пока не переехали кеды
 LEGACY = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/VEGAS%20Fight%20Club"
@@ -34,6 +36,7 @@ __all__ = [
     "AVATARS",
     "BUCKET",
     "ITEMS",
+    "MAGIC",
     "LEGACY",
     "SLOTS",
     "WEAPONS",

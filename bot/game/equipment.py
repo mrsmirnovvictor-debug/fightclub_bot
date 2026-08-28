@@ -171,9 +171,13 @@ class Item:
     dodge: float = 0.0  # доля к увороту
     crit: float = 0.0  # доля к шансу крита
     anticrit: float = 0.0  # доля к антикриту: сбивает крит соперника
+    counter: float = 0.0  # доля к шансу контрудара
     level_required: int = 1
     requires: Stats = field(default_factory=Stats)  # характеристики под надевание
     price: int = 0
+    # Цена в звёздах Telegram. Больше нуля — вещь из лавки мага: за кредиты
+    # её не купить, и на прилавке клуба она не лежит.
+    stars: int = 0
     # Кому вещь в первую очередь: коды классов. Пустой набор — всем поровну.
     for_classes: tuple[str, ...] = ()
 
@@ -196,6 +200,11 @@ class Item:
     @property
     def is_shield(self) -> bool:
         return self.kind is ItemKind.SHIELD
+
+    @property
+    def is_magic(self) -> bool:
+        """Вещь из лавки мага: продаётся только за звёзды."""
+        return self.stars > 0
 
     @property
     def zones(self) -> tuple[Zone, ...]:
@@ -254,6 +263,7 @@ class Item:
             ("🌀", self.dodge),
             ("💥", self.crit),
             ("🚫", self.anticrit),
+            ("🔄", self.counter),
         ):
             if share:
                 parts.append(f"{label}+{share:.0%}")
@@ -433,6 +443,7 @@ ART = art.BUCKET
 WEAPON_ART = art.WEAPONS
 ADDED_ART = art.ADDED
 ITEM_ART = art.ITEMS
+MAGIC_ART = art.MAGIC
 # Обувь пока осталась в первом бакете, её стоит перенести туда же
 IMAGES = art.LEGACY
 
@@ -1204,13 +1215,40 @@ ITEMS: tuple[Item, ...] = (
         price=400,
         for_classes=(TANK,),
     ),
+    # ---------- лавка мага: только за звёзды ----------
+    Item(
+        "lightsaber",
+        "Световой меч",
+        Slot.WEAPON,
+        "🗡",
+        kind=ItemKind.WEAPON,
+        instrumental="световым мечом",
+        image=f"{MAGIC_ART}/lightsaber.jpeg",
+        damage_min=7,
+        damage_max=15,
+        dodge=0.35,
+        counter=0.25,
+        level_required=2,
+        requires=Stats(strength=10),
+        stars=250,
+    ),
 )
 
 CATALOGUE: dict[str, Item] = {item.code: item for item in ITEMS}
 
-# Витрина: по типам вещей в порядке слотов карточки, внутри — от простого к дорогому
+# Витрина лавки клуба: по типам вещей в порядке слотов карточки, внутри — от
+# простого к дорогому. Вещи из лавки мага сюда не попадают: за кредиты их не
+# купить, и висеть на прилавке рядом с кастетом им незачем.
 SHOWCASE: tuple[Item, ...] = tuple(
-    sorted(ITEMS, key=lambda item: (ALL_SLOTS.index(item.slot), item.level_required, item.price))
+    sorted(
+        (item for item in ITEMS if not item.is_magic),
+        key=lambda item: (ALL_SLOTS.index(item.slot), item.level_required, item.price),
+    )
+)
+
+# Прилавок мага: только за звёзды
+MAGIC_ITEMS: tuple[Item, ...] = tuple(
+    sorted((item for item in ITEMS if item.is_magic), key=lambda item: item.stars)
 )
 
 
@@ -1332,6 +1370,10 @@ class Equipment:
     @property
     def crit(self) -> float:
         return sum(item.item.crit for item in self.items.values())
+
+    @property
+    def counter(self) -> float:
+        return sum(item.item.counter for item in self.items.values())
 
     def armor_range(self, zone: Zone) -> tuple[int, int]:
         """Сколько брони прикрывает эту зону: сумма по всем вещам."""

@@ -9,6 +9,7 @@ from bot.game.classes import ALL_STATS, ALL_ZONES, Stats, get_class
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
 from bot.game.equipment import (
     LEFT_SLOTS,
+    MAGIC_ITEMS,
     RIGHT_SLOTS,
     Equipment,
     Item,
@@ -155,6 +156,7 @@ def bonuses_payload(item: Item) -> list[dict]:
             ("🌀", "Уворот", item.dodge),
             ("💥", "Крит", item.crit),
             ("🚫", "Антикрит", item.anticrit),
+            ("🔄", "Контрудар", item.counter),
         )
         if share
     ]
@@ -271,6 +273,33 @@ def effect_payload(effect: ActiveEffect, now: int) -> dict:
         "gain": potion.describe() if potion else "",
         "seconds_left": left,
         "left_text": spell_duration(left),
+    }
+
+
+def relic_payload(player: Player, item: Item, owned: int) -> dict:
+    """Товар мага. Ключи те же, что у вещи в лавке, только цена в звёздах."""
+    row = goods_payload(player, item, owned)
+    row["stars"] = item.stars
+    row["price"] = 0
+    # За звёзды берут в любой момент: копить не надо, значит и «не по карману»
+    # тут не бывает — платит Telegram, а не кошелёк бойца.
+    row["affordable"] = True
+    row["magic"] = True
+    return row
+
+
+def build_magic(player: Player) -> dict:
+    """Лавка мага: товар только за звёзды Telegram."""
+    mine: dict[str, int] = {}
+    for owned in player.gear:
+        mine[owned.code] = mine.get(owned.code, 0) + 1
+    return {
+        "credits": player.credits,
+        "level": player.level,
+        "items": [
+            relic_payload(player, item, mine.get(item.code, 0))
+            for item in MAGIC_ITEMS
+        ],
     }
 
 
@@ -498,7 +527,9 @@ def build_card(
             "anticrit": round((derived.anticrit + equipment.anticrit) * 100),
             "dodge_chance": round(derived.dodge_chance * 100),
             "accuracy": round((derived.accuracy + equipment.accuracy) * 100),
-            "counter_chance": round(derived.counter_chance * 100),
+            "counter_chance": round(
+                (derived.counter_chance + equipment.counter) * 100
+            ),
             "resist": round(derived.resist * 100),
             "penetration": round(derived.penetration * 100),
         },

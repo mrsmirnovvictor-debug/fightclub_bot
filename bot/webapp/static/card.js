@@ -205,8 +205,8 @@ function thingCard(item, credits, shop) {
 
   if (shop) {
     const price = document.createElement("div");
-    price.className = "thing-price";
-    price.textContent = item.price + " 💰";
+    price.className = "thing-price" + (item.magic ? " stars" : "");
+    price.textContent = item.magic ? item.stars + " ⭐" : item.price + " 💰";
     body.appendChild(price);
 
     if (item.suits.length) {
@@ -258,10 +258,16 @@ function thingCard(item, credits, shop) {
       body.appendChild(locked);
     } else {
       buy.appendChild(
-        button(item.affordable ? "Купить · " + item.price + " 💰" : "Не хватает кредитов", {
-          disabled: !item.affordable,
-          onClick: () => purchase(item),
-        })
+        item.magic
+          ? button("Купить · " + item.stars + " ⭐", {
+              onClick: () => buyRelic(item),
+            })
+          : button(
+              item.affordable
+                ? "Купить · " + item.price + " 💰"
+                : "Не хватает кредитов",
+              { disabled: !item.affordable, onClick: () => purchase(item) }
+            )
       );
       body.appendChild(buy);
     }
@@ -530,6 +536,7 @@ function showTab(name) {
   window.scrollTo(0, 0);
   if (name === "shop" && !shopData) loadShop();
   if (name === "club" && !clubData) loadClub();
+  if (name === "magic" && !magicData) loadMagic();
 }
 
 // Касса — не вкладка, а лист поверх экрана: в панель она не попадает
@@ -538,6 +545,63 @@ function showTopUp() {
   el("topup").classList.remove("hidden");
   window.scrollTo(0, 0);
   loadTopUp();
+}
+
+// ---------- лавка мага ----------
+
+let magicData = null;
+
+function renderMagic(data) {
+  magicData = data;
+  el("magic-note").textContent = data.items.length
+    ? "Товар мага берут за звёзды Telegram — кредиты тут не в ходу. "
+      + "Купленное падает в инвентарь."
+    : "";
+  el("magic-empty").classList.toggle("hidden", data.items.length > 0);
+
+  const list = el("magic-list");
+  list.textContent = "";
+  data.items.forEach((item) => list.appendChild(thingCard(item, 0, true)));
+}
+
+async function loadMagic() {
+  try {
+    const response = await fetch("api/magic", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Лавка мага закрыта.");
+    renderMagic(await response.json());
+  } catch (error) {
+    el("magic-note").textContent = error.message;
+  }
+}
+
+async function buyRelic(item) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/invoice", { code: item.code, kind: "relic" });
+    if (!tg || !tg.openInvoice) {
+      popup("Оплата", "Счёт открывается только в Telegram.");
+      return;
+    }
+    tg.openInvoice(data.link, (status) => {
+      if (status === "paid") {
+        // Вещь кладёт в рюкзак бот, когда Telegram подтвердит списание,
+        // поэтому просто перечитываем карточку и прилавок.
+        magicData = null;
+        refresh();
+        loadMagic();
+        popup("✨ " + item.title, "Оплачено. Вещь ждёт в инвентаре.");
+      } else if (status === "failed") {
+        popup("Не вышло", "Telegram не принял оплату.");
+      }
+    });
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
 }
 
 // ---------- бойцовский клуб ----------

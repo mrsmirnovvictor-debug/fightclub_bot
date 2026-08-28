@@ -19,6 +19,7 @@ from aiogram.types import (
 )
 
 from bot.database import Database
+from bot.game.equipment import describe_requirements, get_item
 from bot.game.store import PACKS, get_pack
 from bot.keyboards import TopUpCB
 from bot.store_service import StoreError, StoreService, spent_stars
@@ -125,13 +126,20 @@ async def on_paid(message: Message, store: StoreService) -> None:
         return
 
     if grant.already:
+        await message.answer(f"Этот платёж уже учтён: <b>{grant.label}</b>.")
+        return
+
+    if grant.is_relic:
         await message.answer(
-            f"Этот платёж уже учтён. На счету {grant.balance} 💰."
+            f"✨ <b>{grant.label}</b> — вещь мага уже в рюкзаке.\n"
+            f"{grant.goods.describe_bonus()}\n\n"
+            f"Надеть можно в карточке (/card), как дорастёшь до требований: "
+            f"{describe_requirements(grant.goods)}."
         )
         return
 
     await message.answer(
-        f"✅ <b>{grant.pack.label}</b>\n"
+        f"✅ <b>{grant.label}</b>\n"
         f"Начислено {grant.credits} 💰, на счету теперь <b>{grant.balance}</b> 💰.\n\n"
         "За вещами — в лавку: /buy"
     )
@@ -148,10 +156,13 @@ async def cmd_refund(
     except StoreError as error:
         await message.answer(str(error))
         return
-    await message.answer(
-        f"↩️ Звёзды вернулись: {row['stars']} ⭐. "
-        f"Кредиты ({row['credits']} 💰) сняты со счёта."
+    item = get_item(row["code"])
+    taken = (
+        f"«{item.title}» ушёл обратно к магу."
+        if item is not None and item.is_magic
+        else f"Кредиты ({row['credits']} 💰) сняты со счёта."
     )
+    await message.answer(f"↩️ Звёзды вернулись: {row['stars']} ⭐. {taken}")
 
 
 @router.message(Command("purchases"))
@@ -165,10 +176,16 @@ async def cmd_purchases(message: Message, store: StoreService) -> None:
     lines = ["🧾 <b>Покупки</b>", ""]
     for row in rows:
         pack = get_pack(row["code"])
-        title = pack.label if pack else row["code"]
+        item = get_item(row["code"])
+        if pack is not None:
+            title, what = pack.label, f"{row['credits']} 💰"
+        elif item is not None:
+            title, what = f"{item.emoji} {item.title}", "вещь мага"
+        else:  # pragma: no cover - товар убрали из каталога
+            title, what = row["code"], f"{row['credits']} 💰"
         mark = " (возвращено)" if row["refunded_at"] else ""
         lines.append(
-            f"{row['created_at'][:10]} · {title} · {row['credits']} 💰 "
+            f"{row['created_at'][:10]} · {title} · {what} "
             f"за {row['stars']} ⭐{mark}\n<code>{row['charge_id']}</code>"
         )
     lines += ["", f"Всего занесено: <b>{spent_stars(rows)}</b> ⭐"]

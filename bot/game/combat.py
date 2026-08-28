@@ -34,6 +34,7 @@ from bot.game.stats import (
     COUNTER_DAMAGE_MULT,
     MAX_ACCURACY,
     MAX_ANTICRIT,
+    MAX_COUNTER_CHANCE,
     MAX_CRIT_CHANCE,
     DerivedStats,
     derive,
@@ -168,6 +169,13 @@ class Fighter:
     def crit(self) -> float:
         """Шанс крита: интуиция плюс проценты с вещей."""
         return min(MAX_CRIT_CHANCE, self.derived.crit_chance + self.equipment.crit)
+
+    @property
+    def counter(self) -> float:
+        """Шанс контрудара: ловкость плюс проценты с вещей."""
+        return min(
+            MAX_COUNTER_CHANCE, self.derived.counter_chance + self.equipment.counter
+        )
 
     def dodge_against(self, attacker: "Fighter") -> float:
         """Шанс увернуться от этого соперника: свой уворот минус его точность."""
@@ -321,7 +329,7 @@ def _resolve_strike(
 
     if rng.random() < defender.dodge_against(attacker):
         strike.outcome = Outcome.DODGE
-        if rng.random() < defender.derived.counter_chance:
+        if rng.random() < defender.counter:
             counter = _roll_damage(defender, 0, round_number, rng) * COUNTER_DAMAGE_MULT
             # Контрудар прилетает не в выбранную зону, поэтому броню не трогает —
             # только сопротивление от выносливости.

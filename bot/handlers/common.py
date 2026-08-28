@@ -63,7 +63,7 @@ def combat_block(
         f"🚫 Антикрит: <b>{d.anticrit + equipment.anticrit:.0%}</b>",
         f"🌀 Уворот: <b>{d.dodge_chance:.0%}</b>",
         f"🎯 Точность: <b>{d.accuracy + equipment.accuracy:.0%}</b>",
-        f"🔄 Контрудар: <b>{d.counter_chance:.0%}</b>",
+        f"🔄 Контрудар: <b>{d.counter_chance + equipment.counter:.0%}</b>",
         f"🪨 Сопротивление: <b>{d.resist:.0%}</b>",
         f"🪚 Пробивание: <b>{d.penetration:.0%}</b>",
     ]

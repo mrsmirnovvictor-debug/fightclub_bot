@@ -19,7 +19,7 @@ from bot.game.health import now_ts
 from bot.game.potions import ActiveEffect
 from bot.game.store import PACKS
 from bot.models import Player
-from bot.webapp.card import build_card, build_shop, build_topup
+from bot.webapp.card import build_card, build_magic, build_shop, build_topup
 from bot.webapp.server import create_app
 from tests.test_webapp import TOKEN
 
@@ -64,7 +64,8 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
 
 
 async def open_page(
-    pw, server, card, shop=None, query="", topup=None, looks=None, club=None
+    pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
+    magic=None,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -81,6 +82,7 @@ async def open_page(
     await page.route("**/api/topup*", canned(topup or {"credits": 0, "packs": []}))
     await page.route("**/api/looks*", canned(looks or {"looks": [], "credits": 0}))
     await page.route("**/api/club*", canned(club or {"fighters": [], "total": 0}))
+    await page.route("**/api/magic*", canned(magic or {"items": [], "credits": 0}))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body=""
     ))
@@ -120,6 +122,7 @@ async def shop_page(db):
         await page.route("**/*.jpeg", lambda route: route.abort())
 
         await page.route("**/api/club*", canned({"fighters": [], "total": 0}))
+        await page.route("**/api/magic*", canned({"items": [], "credits": 0}))
         await page.goto(f"{server.make_url('/')}")
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-shop").click()
@@ -243,7 +246,7 @@ async def test_the_bottom_bar_switches_five_screens(server):
             ]
             assert shown == [tab], f"вместе с {tab} открыто {shown}"
 
-        assert "в разработке" in await page.locator("#magic").inner_text()
+        assert "Прилавок пуст" in await page.locator("#magic").inner_text()
         await browser.close()
 
 
@@ -576,4 +579,33 @@ async def test_the_bag_pours_a_potion_and_the_counter_sells_them(server):
         ).all_inner_texts()
         assert "Эликсир восстановления" in titles
         assert "Кастет" not in titles
+        await browser.close()
+
+
+async def test_the_mage_sells_for_stars_and_never_for_credits(server):
+    """Прилавок мага: цена в звёздах, кнопка ведёт в счёт Telegram."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), magic=build_magic(player)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-magic").click()
+        await page.wait_for_selector("#magic .thing")
+
+        counter = page.locator("#magic")
+        text = await counter.inner_text()
+        assert "Световой меч" in text
+        assert "250 ⭐" in text
+        assert "💰" not in text, "у мага кредитами не торгуют"
+        assert "Прилавок пуст" not in text
+
+        # свойства меча видно прямо на прилавке
+        for line in ("👊 Урон: 7–15", "🌀 Уворот: 35%", "🔄 Контрудар: 25%"):
+            assert line in text
+
+        buttons = await counter.locator(".btn").all_inner_texts()
+        assert buttons == ["Купить · 250 ⭐"]
         await browser.close()

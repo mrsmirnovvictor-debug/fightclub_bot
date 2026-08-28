@@ -23,7 +23,13 @@ from bot.looks_service import LookError, choose_look, wardrobe
 from bot.potions_service import PotionError, buy_potion, use_potion
 from bot.store_service import StoreError, StoreService
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
-from bot.webapp.card import build_card, build_club, build_shop, build_topup
+from bot.webapp.card import (
+    build_card,
+    build_club,
+    build_magic,
+    build_shop,
+    build_topup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +298,15 @@ async def api_use(request: web.Request) -> web.Response:
     )
 
 
+async def api_magic(request: web.Request) -> web.Response:
+    """Лавка мага: товар только за звёзды."""
+    try:
+        player = await _own_player(request)
+    except InventoryError as error:  # pragma: no cover - лавка боем не занята
+        return web.json_response({"error": str(error)}, status=409)
+    return web.json_response(build_magic(player))
+
+
 async def api_club(request: web.Request) -> web.Response:
     """Список клуба: все записанные бойцы с короткими карточками."""
     viewer = await _viewer(request)
@@ -354,9 +369,11 @@ async def api_invoice(request: web.Request) -> web.Response:
         return web.json_response({"error": "Касса закрыта."}, status=503)
 
     data = await _payload(request)
+    # Касса и лавка мага ходят в одну ручку, различаясь только видом товара
+    kind = str(data.get("kind") or "pack")
     try:
-        pack = store.check(f"pack:{data.get('code') or ''}")
-        link = await store.invoice_link(pack, viewer.user_id)
+        goods = store.check(f"{kind}:{data.get('code') or ''}")
+        link = await store.invoice_link(goods, viewer.user_id)
     except StoreError as error:
         return web.json_response({"error": str(error)}, status=409)
     except Exception:  # pragma: no cover - Telegram не ответил
@@ -364,7 +381,9 @@ async def api_invoice(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Касса не отвечает. Попробуй ещё раз."}, status=502
         )
-    return web.json_response({"link": link, "code": pack.code, "stars": pack.stars})
+    return web.json_response(
+        {"link": link, "code": goods.code, "stars": goods.stars}
+    )
 
 
 async def avatar(request: web.Request) -> web.StreamResponse:
@@ -423,6 +442,7 @@ def create_app(
             web.post("/api/buy", api_buy),
             web.post("/api/use", api_use),
             web.get("/api/club", api_club),
+            web.get("/api/magic", api_magic),
             web.get("/api/looks", api_looks),
             web.post("/api/look", api_look),
             web.get("/api/topup", api_topup),

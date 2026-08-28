@@ -393,6 +393,15 @@ class Database:
         await self.conn.execute("DELETE FROM effects WHERE user_id = ?", (user_id,))
         await self.conn.commit()
 
+    async def find_by_nickname(self, nickname: str) -> Player | None:
+        """Боец по прозвищу. Регистр не важен: прозвище — не пароль."""
+        async with self.conn.execute(
+            f"SELECT {PLAYER_COLUMNS} FROM players WHERE lower(nickname) = lower(?)",
+            (nickname,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return await self.get_player(int(row["user_id"])) if row else None
+
     async def top_players(self, limit: int = 10) -> list[Player]:
         async with self.conn.execute(
             f"""
@@ -885,9 +894,10 @@ class Database:
         return dict(row) if row else None
 
     async def purchases_of(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        """Оплаченные покупки. Подарки сюда не идут: за них не платили."""
         async with self.conn.execute(
             """
-            SELECT * FROM purchases WHERE user_id = ?
+            SELECT * FROM purchases WHERE user_id = ? AND kind <> 'gift'
             ORDER BY id DESC LIMIT ?
             """,
             (user_id, limit),
