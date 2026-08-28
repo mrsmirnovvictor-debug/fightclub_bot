@@ -226,6 +226,50 @@ def avatar_payload(player: Player, avatar_url: str) -> dict:
     }
 
 
+def fighter_row(player: Player, viewer_id: int | None) -> dict:
+    """Строка списка клуба вместе с короткой карточкой для кнопки «i».
+
+    Карточка приходит сразу со списком: клуб небольшой, зато тап по «i»
+    открывается мгновенно и без похода на сервер. Кошелька тут нет — чужие
+    кредиты не показываем нигде.
+    """
+    return {
+        "user_id": player.user_id,
+        "nickname": player.nickname,
+        "level": player.level,
+        "is_self": player.user_id == viewer_id,
+        "fclass": {
+            "code": player.fclass.code,
+            "title": player.fclass.title,
+            "emoji": player.fclass.emoji,
+        },
+        "stats": [
+            {
+                "code": stat.value,
+                "title": stat.title.capitalize(),
+                "emoji": stat.emoji,
+                "value": player.base_stats.get(stat),
+            }
+            for stat in ALL_STATS
+        ],
+        "exp": player.total_exp,
+        "wins": player.wins,
+        "losses": player.losses,
+        "draws": player.draws,
+        "rating": player.rating,
+        "birthplace": player.birthplace or "—",
+        "birthday": format_birthday(player.created_at),
+    }
+
+
+def build_club(players: list[Player], viewer_id: int | None) -> dict:
+    """Список клуба: кто записан, какого уровня и что у него в карточке."""
+    return {
+        "fighters": [fighter_row(player, viewer_id) for player in players],
+        "total": len(players),
+    }
+
+
 def build_topup(player: Player, open_for_business: bool = True) -> dict:
     """Касса: счёт бойца и пачки кредитов, которые можно купить за звёзды."""
     return {

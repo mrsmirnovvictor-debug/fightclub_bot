@@ -296,7 +296,7 @@ function requirementText(item) {
 }
 
 function renderBag(card) {
-  const bag = el("bag");
+  const bag = el("bag-box");
   if (!card.is_self) {
     bag.classList.add("hidden");
     return;
@@ -316,9 +316,9 @@ function renderBag(card) {
 
 // ---------- магазин ----------
 
-// Что показывать на прилавке: тип вещи и уровень партии.
-// Фильтры живут на клиенте — витрина приходит целиком, одним запросом.
-const filters = { slot: "all", level: "all" };
+// Что показывать на прилавке. Фильтр один — тип вещи; уровень не фильтруем:
+// закрытое и так свёрнуто в конце каждой полки.
+const filters = { slot: "all" };
 
 function chip(label, active, onClick, extraClass) {
   const btn = document.createElement("button");
@@ -337,20 +337,11 @@ function pickSlot(value) {
   renderShop(shopData);
 }
 
-function pickLevel(value) {
-  filters.level = value;
-  renderShop(shopData);
-}
-
 function shownItems(section) {
-  if (filters.level === "open") return section.items.filter((item) => item.unlocked);
-  if (filters.level === "all") return section.items.filter((item) => item.unlocked);
-  return section.items.filter((item) => item.level_required === filters.level);
+  return section.items.filter((item) => item.unlocked);
 }
 
 function hiddenItems(section) {
-  // Закрытое прячем, только пока не выбран конкретный уровень
-  if (filters.level !== "all") return [];
   return section.items.filter((item) => !item.unlocked);
 }
 
@@ -364,30 +355,6 @@ function renderFilters(data) {
         section.emoji + " " + section.title,
         filters.slot === section.slot,
         () => pickSlot(section.slot)
-      )
-    );
-  });
-
-  const levels = el("filter-level");
-  levels.textContent = "";
-  levels.appendChild(chip("Все", filters.level === "all", () => pickLevel("all")));
-  levels.appendChild(
-    chip("Доступные", filters.level === "open", () => pickLevel("open"))
-  );
-  const numbers = [
-    ...new Set(
-      data.sections.flatMap((section) =>
-        section.items.map((item) => item.level_required)
-      )
-    ),
-  ].sort((a, b) => a - b);
-  numbers.forEach((level) => {
-    levels.appendChild(
-      chip(
-        (level > data.level ? "🔒 " : "") + level + " ур.",
-        filters.level === level,
-        () => pickLevel(level),
-        level > data.level ? "locked" : ""
       )
     );
   });
@@ -406,10 +373,7 @@ function shelf(section) {
   head.textContent = section.emoji + " " + section.title;
   const count = document.createElement("span");
   count.className = "shelf-count";
-  count.textContent =
-    filters.level === "all" || filters.level === "open"
-      ? "открыто " + section.open + " из " + section.items.length
-      : "товаров: " + shown.length;
+  count.textContent = "открыто " + section.open + " из " + section.items.length;
   head.appendChild(count);
   box.appendChild(head);
 
@@ -440,14 +404,6 @@ function shelf(section) {
 }
 
 function shopNote(data) {
-  if (typeof filters.level === "number") {
-    const open = filters.level <= data.level;
-    return open
-      ? "Партия " + filters.level + " уровня — она уже открыта."
-      : "Партия " + filters.level + " уровня откроется, когда дорастёшь: "
-        + "сейчас у тебя " + data.level + ".";
-  }
-  if (filters.level === "open") return "Только то, что уже можно купить.";
   const next = data.sections
     .flatMap((section) => section.items)
     .filter((item) => !item.unlocked)
@@ -475,18 +431,141 @@ function renderShop(data) {
   el("shop-empty").classList.toggle("hidden", list.childElementCount > 0);
 }
 
-const SCREENS = ["card", "shop", "topup"];
-let lastTab = "card";
+const SCREENS = ["club", "shop", "magic", "bag", "hero"];
+let lastTab = "hero";
 
 function showTab(name) {
   SCREENS.forEach((screen) => {
     el(screen).classList.toggle("hidden", screen !== name);
   });
-  if (name !== "topup") lastTab = name;
-  el("tab-card").classList.toggle("active", name === "card");
-  el("tab-shop").classList.toggle("active", name === "shop");
+  SCREENS.forEach((screen) => {
+    el("tab-" + screen).classList.toggle("active", screen === name);
+  });
+  el("topup").classList.add("hidden");
+  lastTab = name;
+  window.scrollTo(0, 0);
   if (name === "shop" && !shopData) loadShop();
-  if (name === "topup") loadTopUp();
+  if (name === "club" && !clubData) loadClub();
+}
+
+// Касса — не вкладка, а лист поверх экрана: в панель она не попадает
+function showTopUp() {
+  SCREENS.forEach((screen) => el(screen).classList.add("hidden"));
+  el("topup").classList.remove("hidden");
+  window.scrollTo(0, 0);
+  loadTopUp();
+}
+
+// ---------- бойцовский клуб ----------
+
+let clubData = null;
+
+function fighterRow(fighter) {
+  const box = document.createElement("div");
+  box.className = "fighter" + (fighter.is_self ? " me" : "");
+
+  const face = document.createElement("span");
+  face.className = "fighter-class";
+  face.textContent = fighter.fclass.emoji;
+
+  const name = document.createElement("span");
+  name.className = "fighter-name";
+  name.textContent = fighter.nickname;
+
+  const level = document.createElement("span");
+  level.className = "fighter-level";
+  level.textContent = "[" + fighter.level + "]";
+
+  const info = document.createElement("button");
+  info.type = "button";
+  info.className = "fighter-info";
+  info.textContent = "i";
+  info.title = "Карточка бойца";
+  info.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
+  info.addEventListener("click", () => showFighter(fighter));
+
+  box.append(face, name, level, info);
+  return box;
+}
+
+function sheetRows(pairs) {
+  const list = document.createElement("ul");
+  list.className = "rows";
+  pairs.forEach(([label, value]) => list.appendChild(row(label, value)));
+  return list;
+}
+
+function showFighter(fighter) {
+  openSheet(
+    fighter.nickname + " [" + fighter.level + "]",
+    fighter.fclass.emoji + " " + fighter.fclass.title
+  );
+  const list = el("sheet-list");
+  const panel = document.createElement("section");
+  panel.className = "panel";
+
+  panel.appendChild(
+    sheetRows(fighter.stats.map((stat) => [stat.emoji + " " + stat.title, num(stat.value)]))
+  );
+  panel.appendChild(document.createElement("hr")).className = "rule";
+  panel.appendChild(
+    sheetRows([
+      ["Уровень", num(fighter.level)],
+      ["Опыт", num(fighter.exp)],
+    ])
+  );
+  panel.appendChild(document.createElement("hr")).className = "rule";
+  panel.appendChild(
+    sheetRows([
+      ["Побед", num(fighter.wins)],
+      ["Поражений", num(fighter.losses)],
+      ["Ничьих", num(fighter.draws)],
+      ["Рейтинг", num(fighter.rating)],
+    ])
+  );
+  panel.appendChild(document.createElement("hr")).className = "rule";
+  panel.appendChild(
+    sheetRows([
+      ["Место рождения", fighter.birthplace],
+      ["День рождения персонажа", fighter.birthday],
+    ])
+  );
+  list.appendChild(panel);
+}
+
+function renderClub(data) {
+  clubData = data;
+  el("club-count").textContent = data.total
+    ? data.total + " " + plural(data.total, "боец", "бойца", "бойцов")
+    : "";
+  el("club-note").textContent = data.total
+    ? "Все, кто завёл бойца. Кнопка «i» открывает карточку."
+    : "В клубе пока никого.";
+
+  const list = el("club-list");
+  list.textContent = "";
+  data.fighters.forEach((fighter) => list.appendChild(fighterRow(fighter)));
+}
+
+function plural(count, one, few, many) {
+  const tail = count % 100;
+  if (tail >= 11 && tail <= 14) return many;
+  const last = count % 10;
+  if (last === 1) return one;
+  if (last >= 2 && last <= 4) return few;
+  return many;
+}
+
+async function loadClub() {
+  try {
+    const response = await fetch("api/club", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Картотека не открылась.");
+    renderClub(await response.json());
+  } catch (error) {
+    el("club-note").textContent = error.message;
+  }
 }
 
 // ---------- касса ----------
@@ -500,7 +579,7 @@ function plusButton() {
   btn.setAttribute("aria-label", "Пополнить счёт");
   btn.addEventListener("click", (event) => {
     event.stopPropagation();
-    showTab("topup");
+    showTopUp();
   });
   return btn;
 }
@@ -830,45 +909,50 @@ async function pickLook(look) {
   }
 }
 
-function renderAvatar(card) {
-  const box = el("avatar");
+function paintAvatar(box, card, clickable) {
   box.textContent = "";
-  box.classList.toggle("clickable", Boolean(card.is_self));
-  if (card.avatar.url) {
-    const img = document.createElement("img");
-    img.src = card.avatar.url;
-    img.alt = card.name;
-    img.addEventListener("error", () => {
-      box.textContent = "";
-      const emoji = document.createElement("div");
-      emoji.className = "emoji";
-      emoji.textContent = card.avatar.emoji || "🥊";
-      box.appendChild(emoji);
-    });
-    box.appendChild(img);
-  } else {
-    const emoji = document.createElement("div");
-    emoji.className = "emoji";
-    emoji.textContent = card.avatar.emoji || "🥊";
-    box.appendChild(emoji);
+  box.classList.toggle("clickable", clickable);
+  const emoji = () => {
+    const span = document.createElement("div");
+    span.className = "emoji";
+    span.textContent = card.avatar.emoji || "🥊";
+    return span;
+  };
+  if (!card.avatar.url) {
+    box.appendChild(emoji());
+    return;
   }
+  const img = document.createElement("img");
+  img.src = card.avatar.url;
+  img.alt = card.name;
+  img.addEventListener("error", () => {
+    box.textContent = "";
+    box.appendChild(emoji());
+  });
+  box.appendChild(img);
 }
 
-// Здоровье затягивается на глазах: тикаем локально от той же скорости,
-// по которой его считает сервер.
+function renderAvatar(card) {
+  // Образ меняют на карточке персонажа, в инвентаре рамка просто показывает
+  paintAvatar(el("hero-avatar"), card, Boolean(card.is_self));
+  paintAvatar(el("avatar"), card, false);
+}
+
+// Здоровье тикает на клиенте: сервер отдаёт срез, дальше считаем сами
 let health = null;
 let ticker = null;
 
-function paintHealth() {
-  if (!health) return;
+function paintOneBar(prefix) {
+  const bar = el(prefix + "hp");
+  if (!bar) return;
   const percent = health.max ? Math.min(100, (health.current / health.max) * 100) : 0;
-  const bar = el("hp");
   bar.classList.remove("green", "yellow", "red");
   bar.classList.add(percent < 20 ? "red" : percent < 80 ? "yellow" : "green");
-  el("hp-fill").style.width = percent.toFixed(1) + "%";
-  el("hp-text").textContent = num(Math.floor(health.current)) + " / " + num(health.max);
+  el(prefix + "hp-fill").style.width = percent.toFixed(1) + "%";
+  el(prefix + "hp-text").textContent =
+    num(Math.floor(health.current)) + " / " + num(health.max);
 
-  const note = el("hp-note");
+  const note = el(prefix + "hp-note");
   if (percent >= 80) {
     note.textContent =
       health.current >= health.max
@@ -881,6 +965,13 @@ function paintHealth() {
     const time = minutes ? `${minutes} мин ${seconds} сек` : `${seconds} сек`;
     note.textContent = `${percent < 20 ? "🔴" : "🟡"} Драться можно с 80% — через ${time}`;
   }
+}
+
+function paintHealth() {
+  // Полоска стоит и в инвентаре, и на карточке персонажа: тикают обе
+  if (!health) return;
+  paintOneBar("");
+  paintOneBar("hero-");
 }
 
 function startHealthTicker(hp) {
@@ -898,10 +989,15 @@ function startHealthTicker(hp) {
   }, 1000);
 }
 
+function renderHead(prefix, card) {
+  el(prefix + "class").textContent = card.fclass.emoji;
+  el(prefix + "name").textContent = card.name;
+  el(prefix + "level").textContent = "[" + card.level + "]";
+}
+
 function render(card, keepTab) {
-  el("class-emoji").textContent = card.fclass.emoji;
-  el("name").textContent = card.name;
-  el("level").textContent = "[" + card.level + "]";
+  renderHead("bag-", card);
+  renderHead("hero-", card);
   document.title = card.name + " [" + card.level + "]";
 
   startHealthTicker(card.hp);
@@ -910,6 +1006,7 @@ function render(card, keepTab) {
   renderSlots(el("slots-right"), card.slots.right, card.is_self);
   renderBag(card);
   el("city").textContent = card.city;
+  el("hero-city").textContent = card.city;
 
   const stats = el("stats");
   stats.textContent = "";
@@ -984,8 +1081,9 @@ function render(card, keepTab) {
     card.fclass.emoji + " " + card.fclass.title + " — " + card.fclass.tagline;
 
   el("loader").classList.add("hidden");
-  if (card.is_self) el("tabs").classList.remove("hidden");
-  if (!keepTab) showTab("card");
+  // Чужую карточку показываем одним экраном: ни панели, ни рюкзака
+  el("bar").classList.toggle("hidden", !card.is_self);
+  if (!keepTab) showTab("hero");
 }
 
 function fail(message) {
@@ -1031,16 +1129,17 @@ async function load() {
   }
 }
 
-el("avatar").addEventListener("click", () => {
-  if (!el("avatar").classList.contains("clickable")) return;
+el("hero-avatar").addEventListener("click", () => {
+  if (!el("hero-avatar").classList.contains("clickable")) return;
   if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
   openLooks();
 });
 el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
 
-el("tab-card").addEventListener("click", () => showTab("card"));
-el("tab-shop").addEventListener("click", () => showTab("shop"));
+SCREENS.forEach((screen) => {
+  el("tab-" + screen).addEventListener("click", () => showTab(screen));
+});
 el("topup-back").addEventListener("click", () => showTab(lastTab));
 
 if (tg) {

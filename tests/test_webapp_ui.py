@@ -61,7 +61,9 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
         raise AssertionError
 
 
-async def open_page(pw, server, card, shop=None, query="", topup=None, looks=None):
+async def open_page(
+    pw, server, card, shop=None, query="", topup=None, looks=None, club=None
+):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
         return lambda route: route.fulfill(
@@ -76,6 +78,7 @@ async def open_page(pw, server, card, shop=None, query="", topup=None, looks=Non
     await page.route("**/api/shop*", canned(shop or {}))
     await page.route("**/api/topup*", canned(topup or {"credits": 0, "packs": []}))
     await page.route("**/api/looks*", canned(looks or {"looks": [], "credits": 0}))
+    await page.route("**/api/club*", canned(club or {"fighters": [], "total": 0}))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body=""
     ))
@@ -114,7 +117,10 @@ async def shop_page(db):
         ))
         await page.route("**/*.jpeg", lambda route: route.abort())
 
-        await page.goto(f"{server.make_url('/')}?view=shop")
+        await page.route("**/api/club*", canned({"fighters": [], "total": 0}))
+        await page.goto(f"{server.make_url('/')}")
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-shop").click()
         await page.wait_for_selector(".shelf")
         yield page
         await browser.close()
@@ -148,43 +154,24 @@ async def test_type_filter_leaves_one_shelf(shop_page):
     )
 
 
-async def test_level_filter_shows_the_whole_batch_even_if_it_is_locked(shop_page):
-    await shop_page.get_by_role("button", name="🔒 6 ур.").click()
+async def test_the_counter_has_no_level_filter_any_more(shop_page):
+    """Фильтр остался один — тип вещи, и он не лента, а пузыри в несколько строк."""
+    labels = await shop_page.locator(".bubbles .chip").all_inner_texts()
 
+    assert labels[0] == "Все"
+    assert "🔪 Оружие" in labels
+    assert not [label for label in labels if "ур." in label], "уровни всё ещё в фильтрах"
+    assert await shop_page.locator(".filters").count() == 0
+
+
+async def test_locked_goods_stay_folded_at_the_end_of_the_shelf(shop_page):
+    """Закрытое по уровню видно только под кнопкой — это не фильтр, а раскладка."""
     titles = await visible_titles(shop_page)
-    assert sorted(titles) == sorted(
-        [
-            "Мотошлем",
-            "Кепка с козырьком",
-            "Бита",
-            "Гладиус",
-            "Стилет",
-            "Кувалда",
-            "Берцы",
-            "Беговые кроссовки",
-        ]
-    )
-    note = await shop_page.locator("#shop-note").inner_text()
-    assert "6 уровня откроется" in note
-    assert "Купить" not in await shop_page.locator("#shop-list").inner_text()
-
-
-async def test_available_filter_hides_everything_locked(shop_page):
-    await shop_page.get_by_role("button", name="Доступные").click()
+    assert "Кастет" in titles  # открыто по уровню
+    assert "Бита" not in titles  # закрыто
 
     text = await shop_page.locator("#shop-list").inner_text()
-    assert "Откроется на" not in text
-    assert "Показать закрытые" not in text
-    assert "Кастет" in await visible_titles(shop_page)
-
-
-async def test_filters_can_leave_the_counter_empty(shop_page):
-    await shop_page.get_by_role("button", name="🛡 Щиты").click()
-    await shop_page.get_by_role("button", name="🔒 6 ур.").click()
-
-    assert await shop_page.locator("#shop-empty").is_visible()
-    assert await shop_page.locator(".shelf").count() == 0
-
+    assert "Показать закрытые" in text
 
 
 # ---------- чужая карточка из чата боя ----------
@@ -208,14 +195,14 @@ async def test_stranger_card_has_no_backpack_and_no_shop(server):
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, query="?user_id=42")
-        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_selector("#hero:not(.hidden)")
 
-        assert await page.locator("#tabs").is_hidden(), "чужому видны вкладки"
+        assert await page.locator("#bar").is_hidden(), "чужому видна панель вкладок"
         assert await page.locator("#bag").is_hidden(), "чужому виден инвентарь"
         assert await page.locator("#shop").is_hidden(), "чужому видна лавка"
 
         # зато боец и его характеристики на месте
-        assert await page.locator("#name").inner_text() == stranger.nickname
+        assert await page.locator("#hero-name").inner_text() == stranger.nickname
         rows = await page.locator("#stats li").all_inner_texts()
         assert any("Сила" in row for row in rows)
         combat = await page.locator("#combat").inner_text()
@@ -226,20 +213,31 @@ async def test_stranger_card_has_no_backpack_and_no_shop(server):
         await browser.close()
 
 
-async def test_own_card_keeps_the_tabs(server):
-    """На своей карточке вкладки и рюкзак на месте."""
+async def test_the_bottom_bar_switches_five_screens(server):
+    """Панель снизу: клуб, магазин, лавка мага, инвентарь, персонаж."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
-        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_selector("#hero:not(.hidden)")
 
-        assert await page.locator("#tabs").is_visible()
-        assert await page.locator("#bag").is_visible()
-        await page.get_by_role("button", name="🏪 Магазин").click()
-        assert await page.locator("#shop").is_visible()
-        assert await page.locator("#card").is_hidden()
+        assert await page.locator("#bar").is_visible()
+        assert await page.locator(".bar-tab").count() == 5
+        # открывается карточка персонажа, её вкладка и подсвечена
+        assert await page.locator("#tab-hero").get_attribute("class") == "bar-tab active"
+
+        for tab in ("club", "shop", "magic", "bag", "hero"):
+            await page.locator("#tab-" + tab).click()
+            await page.wait_for_selector("#" + tab + ":not(.hidden)")
+            shown = [
+                screen
+                for screen in ("club", "shop", "magic", "bag", "hero")
+                if await page.locator("#" + screen).is_visible()
+            ]
+            assert shown == [tab], f"вместе с {tab} открыто {shown}"
+
+        assert "в разработке" in await page.locator("#magic").inner_text()
         await browser.close()
 
 
@@ -255,7 +253,7 @@ async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
         browser, page = await open_page(
             pw, server, card, build_shop(player), topup=build_topup(player)
         )
-        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_selector("#hero:not(.hidden)")
 
         assert "214" in await page.locator("#record").inner_text()
         await page.locator("#record .plus").click()
@@ -270,7 +268,7 @@ async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
         assert await page.locator(".pack-profit").count() == len(PACKS) - 1
 
         await page.get_by_role("button", name="← Назад").click()
-        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_selector("#hero:not(.hidden)")
         await browser.close()
 
 
@@ -280,9 +278,10 @@ async def test_the_shop_purse_has_the_same_plus(server):
 
     async with async_playwright() as pw:
         browser, page = await open_page(
-            pw, server, card, build_shop(player), query="?view=shop",
-            topup=build_topup(player),
+            pw, server, card, build_shop(player), topup=build_topup(player)
         )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-shop").click()
         await page.wait_for_selector("#shop:not(.hidden)")
 
         await page.locator("#shop-purse .plus").click()
@@ -300,7 +299,7 @@ async def test_a_stranger_sees_no_plus(server):
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, query="?user_id=42")
-        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_selector("#hero:not(.hidden)")
         assert await page.locator(".plus").count() == 0
         await browser.close()
 
@@ -340,10 +339,10 @@ async def test_tapping_the_avatar_opens_the_wardrobe(server):
         browser, page = await open_page(
             pw, server, card, build_shop(player), looks=wardrobe()
         )
-        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_selector("#hero:not(.hidden)")
         assert await page.locator("#sheet").is_hidden()
 
-        await page.locator("#avatar").click()
+        await page.locator("#hero-avatar").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
 
         assert await page.locator(".look").count() == 12
@@ -364,9 +363,9 @@ async def test_a_stranger_cannot_change_your_look(server):
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, query="?user_id=42")
-        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_selector("#hero:not(.hidden)")
 
-        await page.locator("#avatar").click()
+        await page.locator("#hero-avatar").click()
         assert await page.locator("#sheet").is_hidden(), "чужой открыл гардероб"
         await browser.close()
 
@@ -378,7 +377,8 @@ async def test_taking_a_worn_item_off_asks_first(server):
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
-        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
 
         calls = []
         await page.route("**/api/unequip", lambda route: calls.append(route.request.url))
@@ -408,11 +408,64 @@ async def test_an_empty_slot_falls_back_to_its_icon(server):
     async with async_playwright() as pw:
         # картинки в этом тесте не отдаются: маршрут .jpeg их обрывает
         browser, page = await open_page(pw, server, card, build_shop(player))
-        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
         await page.wait_for_timeout(300)
 
         empty = page.locator(".slot.empty")
         assert await empty.count() == 8
         assert await page.locator(".slot.empty.no-art").count() == 8
         assert "🎩" in await page.locator("#slots-left .slot").first.inner_text()
+        await browser.close()
+
+
+# ---------- бойцовский клуб ----------
+
+
+def club_of(*fighters) -> dict:
+    from bot.webapp.card import build_club
+
+    return build_club(list(fighters), 42)
+
+
+async def test_the_club_lists_everyone_and_opens_a_card(server):
+    """Список клуба: ник, уровень и кнопка «i» с короткой карточкой."""
+    me = make_player()
+    rival = make_player()
+    rival.user_id = 43
+    rival.nickname = "Марла"
+    rival.level = 7
+    rival.birthplace = "Клуб на Вязов"
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(me), club=club_of(me, rival)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector(".fighter")
+
+        assert await page.locator(".fighter").count() == 2
+        assert "2 бойца" in await page.locator("#club-count").inner_text()
+        names = await page.locator(".fighter-name").all_inner_texts()
+        assert names == ["Растафарайчик", "Марла"]
+        levels = await page.locator(".fighter-level").all_inner_texts()
+        assert levels == ["[5]", "[7]"]
+        # свою строку видно сразу
+        assert await page.locator(".fighter.me .fighter-name").inner_text() == names[0]
+
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert "Марла [7]" in await page.locator("#sheet-title").inner_text()
+        card_text = await page.locator("#sheet-list").inner_text()
+        for line in ("Сила", "Ловкость", "Интуиция", "Выносливость"):
+            assert line in card_text
+        for line in ("Уровень", "Опыт", "Побед", "Поражений", "Ничьих", "Рейтинг"):
+            assert line in card_text
+        assert "Клуб на Вязов" in card_text
+        assert "День рождения персонажа" in card_text
+        # чужой кошелёк в короткой карточке не показываем
+        assert "Кредиты" not in card_text
         await browser.close()

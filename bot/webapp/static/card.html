@@ -15,16 +15,54 @@
     <div class="error-text"></div>
   </div>
 
-  <nav class="tabs hidden" id="tabs">
-    <button type="button" class="tab active" id="tab-card">🥊 Боец</button>
-    <button type="button" class="tab" id="tab-shop">🏪 Магазин</button>
-  </nav>
+  <!-- ---------- 1. Бойцовский клуб ---------- -->
+  <main id="club" class="screen club hidden">
+    <header class="screen-head">
+      <h1 class="screen-title">🥊 Бойцовский клуб</h1>
+      <span class="screen-count" id="club-count"></span>
+    </header>
+    <p class="screen-note" id="club-note"></p>
+    <div id="club-list"></div>
+  </main>
 
-  <main id="card" class="card hidden">
+  <!-- ---------- 2. Магазин ---------- -->
+  <main id="shop" class="screen shop hidden">
+    <header class="screen-head">
+      <h1 class="screen-title">🏪 Лавка клуба</h1>
+      <span class="shop-purse" id="shop-purse"></span>
+    </header>
+    <p class="screen-note" id="shop-note"></p>
+
+    <div class="bubbles" id="filter-type"></div>
+
+    <p class="shop-empty hidden" id="shop-empty">
+      Под этот фильтр на прилавке ничего нет.
+    </p>
+    <div id="shop-list"></div>
+  </main>
+
+  <!-- ---------- 3. Лавка мага ---------- -->
+  <main id="magic" class="screen magic hidden">
+    <header class="screen-head">
+      <h1 class="screen-title">🔮 Лавка мага</h1>
+    </header>
+    <div class="soon">
+      <div class="soon-emoji">🔮</div>
+      <h2 class="soon-title">Раздел в разработке</h2>
+      <p class="soon-text">
+        Здесь появятся особые товары — только за звёзды Telegram, и только те,
+        которых не купить за кредиты.
+      </p>
+      <p class="soon-text muted">Маг ещё раскладывает товар. Загляни позже.</p>
+    </div>
+  </main>
+
+  <!-- ---------- 4. Инвентарь ---------- -->
+  <main id="bag" class="screen hidden">
     <header class="head">
-      <span class="head-class" id="class-emoji"></span>
-      <h1 class="head-name" id="name"></h1>
-      <span class="head-level" id="level"></span>
+      <span class="head-class" id="bag-class"></span>
+      <h1 class="head-name" id="bag-name"></h1>
+      <span class="head-level" id="bag-level"></span>
     </header>
 
     <div class="hp" id="hp">
@@ -41,6 +79,35 @@
 
     <div class="city" id="city"></div>
 
+    <section class="bag" id="bag-box">
+      <h2 class="bag-head">🎒 Инвентарь <span class="bag-count" id="bag-count"></span></h2>
+      <div class="bag-list" id="bag-list"></div>
+      <p class="bag-empty hidden" id="bag-empty">
+        Рюкзак пуст. Вещи покупаются в лавке клуба — вкладка «Магазин».
+      </p>
+    </section>
+  </main>
+
+  <!-- ---------- 5. Персонаж ---------- -->
+  <main id="hero" class="screen hidden">
+    <header class="head">
+      <span class="head-class" id="hero-class"></span>
+      <h1 class="head-name" id="hero-name"></h1>
+      <span class="head-level" id="hero-level"></span>
+    </header>
+
+    <div class="hp" id="hero-hp">
+      <div class="hp-fill" id="hero-hp-fill"></div>
+      <div class="hp-text" id="hero-hp-text"></div>
+    </div>
+    <div class="hp-note" id="hero-hp-note"></div>
+
+    <section class="portrait">
+      <div class="avatar" id="hero-avatar"></div>
+    </section>
+
+    <div class="city" id="hero-city"></div>
+
     <section class="panel">
       <ul class="rows" id="stats"></ul>
       <hr class="rule">
@@ -51,54 +118,41 @@
       <ul class="rows" id="record"></ul>
     </section>
 
-    <section class="bag hidden" id="bag">
-      <h2 class="bag-head">🎒 Инвентарь <span class="bag-count" id="bag-count"></span></h2>
-      <div class="bag-list" id="bag-list"></div>
-      <p class="bag-empty hidden" id="bag-empty">
-        Рюкзак пуст. Вещи покупаются в лавке клуба: напиши боту /buy.
-      </p>
-    </section>
-
     <footer class="foot" id="foot"></footer>
   </main>
 
-  <main id="shop" class="shop hidden">
-    <header class="shop-head">
-      <h1 class="shop-title">🏪 Лавка клуба</h1>
-      <span class="shop-purse" id="shop-purse"></span>
-    </header>
-    <p class="shop-note" id="shop-note"></p>
-
-    <div class="filters" id="filters">
-      <div class="filter-row">
-        <span class="filter-label">Тип</span>
-        <div class="chips" id="filter-type"></div>
-      </div>
-      <div class="filter-row">
-        <span class="filter-label">Уровень</span>
-        <div class="chips" id="filter-level"></div>
-      </div>
-    </div>
-
-    <p class="shop-empty hidden" id="shop-empty">
-      Под эти фильтры на прилавке ничего нет.
-    </p>
-    <div id="shop-list"></div>
-  </main>
-
-  <main id="topup" class="topup hidden">
-    <header class="shop-head">
+  <!-- Касса: не вкладка, открывается кнопкой «+» рядом со счётом -->
+  <main id="topup" class="screen topup hidden">
+    <header class="screen-head">
       <button type="button" class="back" id="topup-back">← Назад</button>
       <span class="shop-purse" id="topup-purse"></span>
     </header>
-    <h1 class="shop-title">💳 Касса клуба</h1>
-    <p class="shop-note" id="topup-note"></p>
+    <h1 class="screen-title">💳 Касса клуба</h1>
+    <p class="screen-note" id="topup-note"></p>
     <div id="topup-list"></div>
     <p class="topup-foot">
       Оплата — звёздами Telegram. Кредиты тратятся на вещи, починку и смену
       класса. Уровень и характеристики за деньги не продаются.
     </p>
   </main>
+
+  <nav class="bar hidden" id="bar">
+    <button type="button" class="bar-tab" id="tab-club">
+      <span class="bar-icon">🥊</span><span class="bar-label">Клуб</span>
+    </button>
+    <button type="button" class="bar-tab" id="tab-shop">
+      <span class="bar-icon">🏪</span><span class="bar-label">Магазин</span>
+    </button>
+    <button type="button" class="bar-tab" id="tab-magic">
+      <span class="bar-icon">🔮</span><span class="bar-label">Лавка мага</span>
+    </button>
+    <button type="button" class="bar-tab" id="tab-bag">
+      <span class="bar-icon">🎒</span><span class="bar-label">Инвентарь</span>
+    </button>
+    <button type="button" class="bar-tab active" id="tab-hero">
+      <span class="bar-icon">🪪</span><span class="bar-label">Персонаж</span>
+    </button>
+  </nav>
 
   <div id="sheet" class="sheet hidden">
     <div class="sheet-back" id="sheet-back"></div>

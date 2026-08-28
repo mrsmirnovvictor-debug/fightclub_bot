@@ -34,7 +34,8 @@ body.dark {
 
 body {
   margin: 0;
-  padding: 14px 14px 28px;
+  /* снизу оставляем место под панель вкладок */
+  padding: 14px 14px calc(78px + env(safe-area-inset-bottom));
   background: var(--bg);
   color: var(--ink);
   font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -51,7 +52,7 @@ body {
 .error-emoji { font-size: 40px; margin-bottom: 12px; }
 .error-text { color: var(--ink); }
 
-.card { max-width: 760px; margin: 0 auto; }
+.screen { max-width: 760px; margin: 0 auto; }
 
 .head {
   display: flex;
@@ -195,29 +196,48 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 
 /* ---------- вкладки и магазин ---------- */
 
-.tabs {
+/* ---------- нижняя панель вкладок ---------- */
+
+.bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
   display: flex;
-  gap: 6px;
-  max-width: 760px;
-  margin: 0 auto 12px;
+  gap: 2px;
+  padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 4px;
+  border-top: 1px solid var(--line);
 }
-.tab {
+.bar.hidden { display: none; }
+.bar-tab {
   flex: 1;
-  padding: 8px 10px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 2px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-weight: 700;
-  font-size: 14px;
   cursor: pointer;
 }
-.tab.active { background: var(--accent); color: #fff; }
+.bar-icon { font-size: 19px; line-height: 1; }
+.bar-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.bar-tab.active { color: var(--accent); }
+.bar-tab.active .bar-icon { transform: translateY(-1px); }
+.bar-tab:active { background: var(--slot); }
 
 .shop { max-width: 760px; margin: 0 auto; }
 .shop-head {
@@ -295,30 +315,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .shop-note { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
 
-.filters {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin-bottom: 14px;
-  display: grid;
-  gap: 8px;
-}
-.filter-row {
-  display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-}
-.filter-label { color: var(--muted); font-size: 12.5px; font-weight: 700; }
-.chips {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-  scrollbar-width: none;
-}
-.chips::-webkit-scrollbar { display: none; }
+/* Фильтры теперь пузырями в .bubbles — горизонтальной ленты больше нет */
 .chip {
   flex: 0 0 auto;
   padding: 5px 10px;
@@ -564,3 +561,91 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .look-tag { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
 .look-tag.on { color: var(--accent); font-weight: 700; }
 .look-tag.poor { color: var(--hp-red); }
+
+
+/* ---------- общая шапка экрана ---------- */
+
+.screen-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.screen-title { margin: 0; font-size: 18px; font-weight: 700; }
+.screen-count { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.screen-note { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
+
+/* ---------- бойцовский клуб ---------- */
+
+.fighter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.fighter.me { border-color: var(--accent); }
+.fighter-class { font-size: 17px; }
+.fighter-name {
+  font-weight: 700;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fighter-level { color: var(--muted); font-weight: 700; }
+.fighter-info {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  cursor: pointer;
+}
+.fighter-info:active { background: var(--accent); color: #fff; }
+
+/* ---------- пузыри фильтров ---------- */
+
+.bubbles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+/* ---------- лавка мага ---------- */
+
+.soon {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 28px 18px;
+  text-align: center;
+}
+.soon-emoji { font-size: 44px; line-height: 1; margin-bottom: 10px; }
+.soon-title { margin: 0 0 8px; font-size: 16px; font-weight: 700; }
+.soon-text { margin: 0 0 8px; font-size: 13px; line-height: 1.45; }
+.soon-text.muted { color: var(--muted); margin-bottom: 0; }
+
+/* ---------- портрет на карточке персонажа ---------- */
+
+.portrait {
+  display: flex;
+  justify-content: center;
+}
+.portrait .avatar {
+  width: min(62%, 260px);
+  min-height: 0;
+  aspect-ratio: 3 / 4;
+}

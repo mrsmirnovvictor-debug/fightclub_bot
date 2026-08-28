@@ -427,3 +427,49 @@ def test_stranger_card_hides_the_wallet_and_the_backpack():
     mine = build_card(player, TOKEN, viewer_id=player.user_id)
     assert mine["record"]["credits"] == 777
     assert len(mine["inventory"]) == 1
+
+
+# ---------- бойцовский клуб ----------
+
+
+async def test_club_lists_every_fighter_with_a_short_card(client, db):
+    """Список клуба: сильные сверху, у каждого короткая карточка для «i»."""
+    from bot.models import Player
+
+    for user_id, nickname, rating, level in (
+        (42, "Тайлер", 1000, 4),
+        (43, "Марла", 1400, 7),
+        (44, "Ангел", 900, 2),
+    ):
+        player = Player(
+            user_id=user_id, nickname=nickname, class_code="warrior", level=level
+        )
+        player.rating = rating
+        player.birthplace = "Клуб на Вязов"
+        await db.save_player(player)
+
+    response = await client.get(
+        "/api/club", headers={"X-Telegram-Init-Data": make_init_data(42)}
+    )
+    body = await response.json()
+
+    assert response.status == 200
+    assert body["total"] == 3
+    assert [row["nickname"] for row in body["fighters"]] == ["Марла", "Тайлер", "Ангел"]
+
+    me = next(row for row in body["fighters"] if row["user_id"] == 42)
+    assert me["is_self"] and me["level"] == 4
+    assert [stat["code"] for stat in me["stats"]] == [
+        "strength",
+        "agility",
+        "intuition",
+        "endurance",
+    ]
+    assert me["birthplace"] == "Клуб на Вязов" and me["birthday"]
+    assert {"wins", "losses", "draws", "rating", "exp"} <= set(me)
+    # чужие кредиты в списке не ходят
+    assert "credits" not in me
+
+
+async def test_the_club_list_needs_a_signature(client):
+    assert (await client.get("/api/club")).status == 401

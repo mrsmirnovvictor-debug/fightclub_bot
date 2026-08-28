@@ -378,6 +378,19 @@ class Database:
             player.gear = await self.list_gear(player.user_id)
         return players
 
+    async def all_players(self, limit: int = 200) -> list[Player]:
+        """Все бойцы клуба: сильные сверху. Экипировку не тянем — она не нужна."""
+        async with self.conn.execute(
+            f"""
+            SELECT {PLAYER_COLUMNS} FROM players
+            ORDER BY rating DESC, level DESC, wins DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_to_player(row) for row in rows]
+
     # ---------- инвентарь ----------
 
     async def list_gear(self, user_id: int) -> list[OwnedItem]:

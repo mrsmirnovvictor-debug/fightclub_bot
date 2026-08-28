@@ -21,7 +21,7 @@ from bot.inventory_service import (
 from bot.looks_service import LookError, choose_look, wardrobe
 from bot.store_service import StoreError, StoreService
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
-from bot.webapp.card import build_card, build_shop, build_topup
+from bot.webapp.card import build_card, build_club, build_shop, build_topup
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +250,13 @@ async def api_buy(request: web.Request) -> web.Response:
     )
 
 
+async def api_club(request: web.Request) -> web.Response:
+    """Список клуба: все записанные бойцы с короткими карточками."""
+    viewer = await _viewer(request)
+    players = await request.app[DB_KEY].all_players()
+    return web.json_response(build_club(players, viewer.user_id))
+
+
 async def api_looks(request: web.Request) -> web.Response:
     """Гардероб: все образы, какой надет и что уже куплено."""
     try:
@@ -372,6 +379,7 @@ def create_app(
             web.post("/api/repair", api_repair),
             web.get("/api/shop", api_shop),
             web.post("/api/buy", api_buy),
+            web.get("/api/club", api_club),
             web.get("/api/looks", api_looks),
             web.post("/api/look", api_look),
             web.get("/api/topup", api_topup),
