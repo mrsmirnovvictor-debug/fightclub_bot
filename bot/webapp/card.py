@@ -218,7 +218,7 @@ def avatar_payload(player: Player, avatar_url: str) -> dict:
     own_face = bool(player.avatar_file_id) or look is None
     return {
         "emoji": player.avatar if own_face else look.emoji,
-        "url": avatar_url or ("" if own_face else look.image),
+        "url": avatar_url or ("" if own_face else look.picture),
         "look": look.code if look else DEFAULT_LOOK,
         "look_title": look.title if look else "",
         "photo": bool(player.avatar_file_id),

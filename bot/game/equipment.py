@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable
 
+from bot.game import art
 from bot.game.classes import ALL_STATS, ALL_ZONES, Stats, Zone
 
 
@@ -422,13 +423,12 @@ def repair(
 # В каждом наборе есть вещь под каждый класс, но кредитов на всё не хватит:
 # на уровень капает около сотни, а набор стоит втрое дороже — в этом и развилка.
 
-# Картинки предметов лежат в R2. Оружие — в новом бакете, папка weapons;
-# обувь пока осталась в старом, её стоит перенести туда же.
-ART = "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev"
-WEAPON_ART = f"{ART}/weapons"
-# Второй заход по недостающим позициям лёг в отдельную папку
-ADDED_ART = f"{ART}/add"
-IMAGES = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/VEGAS%20Fight%20Club"
+# Картинки предметов лежат в R2, адреса собраны в bot.game.art
+ART = art.BUCKET
+WEAPON_ART = art.WEAPONS
+ADDED_ART = art.ADDED
+# Обувь пока осталась в первом бакете, её стоит перенести туда же
+IMAGES = art.LEGACY
 
 WARRIOR, ROGUE, ASSASSIN, TANK = "warrior", "rogue", "assassin", "tank"
 

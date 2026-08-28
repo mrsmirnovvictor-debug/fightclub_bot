@@ -914,3 +914,22 @@ def test_shop_sections_are_named_after_body_parts():
     assert Slot.SHIELD.title == "щит"
     assert Slot.PANTS.title == "штаны"
     assert build_shop(make_player())["sections"][0]["title"] == "Голова"
+
+
+def test_every_look_points_at_its_own_picture():
+    """Картинка образа лежит под его кодом — переименовали, и всё поехало."""
+    from bot.game.art import AVATARS
+    from bot.game.looks import LOOKS
+
+    pictures = [look.picture for look in LOOKS]
+    assert len(set(pictures)) == len(LOOKS)
+    for look in LOOKS:
+        assert look.picture == f"{AVATARS}/{look.code}.jpeg"
+
+
+def test_a_look_can_override_its_picture():
+    """Поле image оставлено на случай файла с другим именем."""
+    from bot.game.looks import Look
+
+    custom = Look("x", "Тест", "🥊", "male", image="https://example.com/one.png")
+    assert custom.picture == "https://example.com/one.png"

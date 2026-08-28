@@ -58,6 +58,9 @@ function slotPicture(item, placeholder) {
     const img = document.createElement("img");
     img.src = item.image;
     img.alt = item.title;
+    // Картинок в лавке полсотни, и каждая тяжёлая: тянем по мере прокрутки
+    img.loading = "lazy";
+    img.decoding = "async";
     img.addEventListener("error", () => {
       img.replaceWith(document.createTextNode(item.icon));
     });
@@ -709,6 +712,8 @@ function lookTile(look) {
     const img = document.createElement("img");
     img.src = look.image;
     img.alt = look.title;
+    img.loading = "lazy";
+    img.decoding = "async";
     img.addEventListener("error", () => {
       img.replaceWith(document.createTextNode(look.emoji));
     });

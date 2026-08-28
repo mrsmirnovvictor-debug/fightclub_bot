@@ -75,7 +75,7 @@ async def wardrobe(db: Database, player: Player) -> list[dict]:
             "code": look.code,
             "title": look.title,
             "emoji": look.emoji,
-            "image": look.image,
+            "image": look.picture,
             "gender": look.gender,
             "price": look.price,
             "note": look.note,
