@@ -15,7 +15,9 @@ from bot.game.combat import MAX_MISSED_TURNS
 from bot.game.classes import get_class
 from bot.game.classes import Zone
 from bot.game.combat import Fighter
+from bot.game.equipment import Slot
 from bot.game.health import FULL_REGEN_SECONDS, now_ts
+from bot.game.modes import FightMode
 from bot.game.economy import (
     LEVEL_CREDITS,
     MICRO_UPS_PER_LEVEL,
@@ -826,3 +828,75 @@ async def test_every_name_in_the_fight_log_opens_the_card(bot, db):
                 )
     finally:
         links.configure("", "")
+
+
+# ---------- бой с оружием доходит до ринга боем с оружием ----------
+
+
+async def armed_pair(db):
+    """Двое с оружием в руках, готовые к /fight."""
+    from bot.game.classes import Stats
+    from bot.inventory_service import buy, equip
+
+    players = []
+    for user_id, nickname, code in ((1, "Тайлер", "pipe"), (2, "Марла", "switchblade")):
+        player = make_player(user_id, nickname)
+        player.level = 6
+        player.credits = 800
+        player.apply_stats(Stats(strength=16, agility=14, intuition=12, endurance=14))
+        await db.save_player(player)
+        owned = await buy(db, player, code)
+        await equip(db, player, owned.id)
+        players.append(await db.get_player(user_id))
+    return players
+
+
+async def test_an_armed_challenge_stays_armed_all_the_way_to_the_gong(bot, db):
+    """Вызов, стойка и выход на ринг — везде бой с оружием.
+
+    Карточка стойки перерисовывается трижды, и режим у неё в умолчании
+    кулачный: стоило забыть его на подтверждении, и бойцы выходили на ринг
+    «без вещей» — с уроном без оружия и подписью про раздевалку, хотя дрались
+    как раз надетым.
+    """
+    first, second = await armed_pair(db)
+
+    challenge = await service_armed(bot, db, first, second)
+    service, session = challenge
+    await service.confirm_duel(session.id, first.user_id)
+
+    call = bot.texts[0]
+    assert "на бой с оружием" in call and "кулачный" not in call
+
+    card = bot.edits[-1].text
+    assert "Вызов принят. Бой с оружием." in card
+
+    intro = next(text for text in bot.texts if "Бойцовский клуб." in text)
+    assert "Бой с оружием" in intro
+    assert "Дерутся тем, что надето." in intro
+    assert "раздевалке" not in intro
+
+    # и оружие никуда не делось: оно на бойце, а не в рюкзаке
+    weapon = (await db.get_player(1)).gear_in_slot(Slot.WEAPON)
+    assert weapon is not None and weapon.code == "pipe"
+
+
+async def service_armed(bot, db, first, second):
+    service = make_service(bot, db)
+    challenge = await service.open_challenge(
+        CHAT_ID, THREAD_ID, first, second, "Клуб", FightMode.ARMED
+    )
+    session = await service.accept_challenge(challenge.id, second)
+    return service, session
+
+
+async def test_walking_away_from_an_armed_fight_says_so_too(bot, db):
+    """Отказ и просроченная стойка тоже не переобувают бойцов в кулаки."""
+    first, second = await armed_pair(db)
+    service, session = await service_armed(bot, db, first, second)
+
+    await service.decline_duel(session.id, first.user_id)
+
+    card = bot.edits[-1].text
+    assert "Вызов принят. Бой с оружием." in card
+    assert "отказывается от боя" in card

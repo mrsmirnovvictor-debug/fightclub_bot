@@ -218,19 +218,21 @@ class DuelService:
             chat_title=chat_title,
             mode=mode,
         )
+        # Каким боем вызвали, таким и объявляем: /fight — это бой с оружием,
+        # и написать про кулачный значит соврать ещё до первого удара.
         if target is None:
             text = (
-                f"🥊 <b>{name_link(challenger.user_id, challenger.nickname)}</b> "
+                f"{mode.emoji} <b>{name_link(challenger.user_id, challenger.nickname)}</b> "
                 f"({challenger.fclass.label}, {challenger.level} ур.) "
-                "вызывает любого желающего на кулачный бой.\n\n"
+                f"вызывает любого желающего на {mode.title}.\n\n"
                 "Кто примет вызов?"
             )
         else:
             text = (
-                f"🥊 <b>{name_link(challenger.user_id, challenger.nickname)}</b> "
+                f"{mode.emoji} <b>{name_link(challenger.user_id, challenger.nickname)}</b> "
                 f"({challenger.fclass.label}, {challenger.level} ур.) "
                 f"вызывает <b>{name_link(target.user_id, target.nickname)}</b> "
-                f"({target.fclass.label}, {target.level} ур.) на кулачный бой.\n\n"
+                f"({target.fclass.label}, {target.level} ур.) на {mode.title}.\n\n"
                 "Слово за вызванным."
             )
         message = await self._send(
@@ -361,15 +363,13 @@ class DuelService:
             raise DuelError("Решает тот, кто бросил вызов. Жди.")
         self._cancel_timer(session)
         session.started = True
-        await self._edit(
-            session.chat_id,
-            session.standoff_message_id,
-            standoff_card(*self._standoff_players(session), decision="✅ Бойцы сошлись."),
-        )
+        await self._repaint_standoff(session, "✅ Бойцы сошлись.")
         await self._send(
             session.chat_id,
             session.thread_id,
-            duel_intro(*(session.fighters[uid] for uid in session.order)),
+            duel_intro(
+                *(session.fighters[uid] for uid in session.order), mode=session.mode
+            ),
         )
         await self._start_round(session)
         return session
@@ -382,13 +382,8 @@ class DuelService:
         self._cancel_timer(session)
         who = session.fighters[user_id].name
         self._forget(session)
-        await self._edit(
-            session.chat_id,
-            session.standoff_message_id,
-            standoff_card(
-                *self._standoff_players(session),
-                decision=f"🚪 <b>{esc(who)}</b> отказывается от боя. Ринг свободен.",
-            ),
+        await self._repaint_standoff(
+            session, f"🚪 <b>{esc(who)}</b> отказывается от боя. Ринг свободен."
         )
 
     def _pending(self, duel_id: int) -> DuelSession:
@@ -402,6 +397,23 @@ class DuelService:
     def _standoff_players(self, session: DuelSession) -> tuple[Player, Player]:
         return tuple(session.players[uid] for uid in session.order)
 
+    async def _repaint_standoff(self, session: DuelSession, decision: str) -> None:
+        """Перерисовать карточку стойки — всегда в режиме этого боя.
+
+        Карточка обновляется из трёх мест, и режим у неё в умолчании кулачный:
+        забыть его хоть раз значит показать вооружённых бойцов голыми — с
+        уроном без оружия и подписью «кулачный бой».
+        """
+        await self._edit(
+            session.chat_id,
+            session.standoff_message_id,
+            standoff_card(
+                *self._standoff_players(session),
+                decision=decision,
+                mode=session.mode,
+            ),
+        )
+
     async def _standoff_timer(self, session: DuelSession) -> None:
         try:
             await asyncio.sleep(self.config.challenge_timeout)
@@ -410,13 +422,8 @@ class DuelService:
         if session.started or session.id not in self._duels:
             return
         self._forget(session)
-        await self._edit(
-            session.chat_id,
-            session.standoff_message_id,
-            standoff_card(
-                *self._standoff_players(session),
-                decision="🥱 Никто не вышел на ринг. Бой не состоялся.",
-            ),
+        await self._repaint_standoff(
+            session, "🥱 Никто не вышел на ринг. Бой не состоялся."
         )
 
     def _make_session(
