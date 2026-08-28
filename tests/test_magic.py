@@ -5,6 +5,7 @@ from aiogram.types import SuccessfulPayment
 from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
+from bot.game import art
 from bot.game.classes import Stats
 from bot.game.combat import Fighter
 from bot.game.equipment import (
@@ -85,6 +86,12 @@ def test_the_lightsaber_is_exactly_what_was_ordered():
     assert SABER.counter == 0.25
     assert SABER.is_weapon and SABER.slot is Slot.WEAPON
     assert SABER.describe_bonus() == "👊7–15 🌀+35% 🔄+25%"
+
+
+def test_the_saber_is_drawn_and_lives_in_the_mage_folder():
+    """Расширение — часть адреса: у мага картинка в png, а не в jpeg."""
+    assert SABER.image == f"{art.MAGIC}/lightsaber.png"
+    assert SABER.image.startswith("https://")
 
 
 def test_the_saber_is_sold_by_the_mage_and_nowhere_else():

@@ -1223,7 +1223,8 @@ ITEMS: tuple[Item, ...] = (
         "🗡",
         kind=ItemKind.WEAPON,
         instrumental="световым мечом",
-        image=f"{MAGIC_ART}/lightsaber.jpeg",
+        # У мага картинка лежит в png: у клинка есть свечение по краям
+        image=f"{MAGIC_ART}/lightsaber.png",
         damage_min=7,
         damage_max=15,
         dodge=0.35,

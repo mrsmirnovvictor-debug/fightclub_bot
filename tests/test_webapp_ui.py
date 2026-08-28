@@ -38,6 +38,8 @@ def find_chromium() -> str | None:
 
 
 CHROMIUM = find_chromium()
+# Всё, что рисуется картинкой: у лавки клуба jpeg, у мага png
+IMAGES = "**/*.{jpeg,jpg,png}"
 pytestmark = pytest.mark.skipif(CHROMIUM is None, reason="Chromium не найден")
 
 
@@ -86,7 +88,7 @@ async def open_page(
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body=""
     ))
-    await page.route("**/*.jpeg", lambda route: route.abort())
+    await page.route(IMAGES, lambda route: route.abort())
     await page.goto(f"{server.make_url('/')}{query}")
     return browser, page
 
@@ -119,7 +121,7 @@ async def shop_page(db):
         await page.route("https://telegram.org/**", lambda route: route.fulfill(
             status=200, content_type="application/javascript", body=""
         ))
-        await page.route("**/*.jpeg", lambda route: route.abort())
+        await page.route(IMAGES, lambda route: route.abort())
 
         await page.route("**/api/club*", canned({"fighters": [], "total": 0}))
         await page.route("**/api/magic*", canned({"items": [], "credits": 0}))
@@ -415,7 +417,7 @@ async def test_an_empty_slot_falls_back_to_its_icon(server):
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     async with async_playwright() as pw:
-        # картинки в этом тесте не отдаются: маршрут .jpeg их обрывает
+        # картинки в этом тесте не отдаются: маршрут IMAGES их обрывает
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-bag").click()
