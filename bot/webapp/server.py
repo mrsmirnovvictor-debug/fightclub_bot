@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -25,11 +26,15 @@ from bot.webapp.card import build_card, build_shop, build_topup
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+# Файлы, из которых собирается метка версии страницы
+ASSETS = ("card.css", "card.js")
 
 # Типизированные ключи приложения — так рекомендует aiohttp
 BOT_KEY: web.AppKey = web.AppKey("bot")
 DB_KEY: web.AppKey[Database] = web.AppKey("db", Database)
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
+# Метка версии статики: без неё Telegram показывает страницу из кеша
+STAMP_KEY: web.AppKey[str] = web.AppKey("stamp", str)
 # Сервис дуэлей нужен, чтобы не давать переодеваться посреди боя
 DUELS_KEY: web.AppKey = web.AppKey("duels")
 # Касса: выставляет счета в звёздах для кнопки «+» рядом с кредитами
@@ -58,8 +63,36 @@ async def _viewer(request: web.Request):
         ) from error
 
 
-async def index(request: web.Request) -> web.FileResponse:
-    return web.FileResponse(STATIC_DIR / "card.html")
+def asset_stamp() -> str:
+    """Короткая метка версии: меняется, как только меняется стиль или скрипт."""
+    digest = hashlib.sha1()
+    for name in ASSETS:
+        digest.update((STATIC_DIR / name).read_bytes())
+    return digest.hexdigest()[:8]
+
+
+def stamped_page(stamp: str) -> str:
+    """Страница со ссылками вида static/card.css?v=метка.
+
+    Telegram держит мини-апп в вебвью и кеширует стили со скриптами намертво:
+    после выката человек открывает карточку и видит вчерашнюю вёрстку, а в
+    логах сервера — только запрос к API. Метка в адресе делает файл новым, и
+    вебвью идёт за ним заново.
+    """
+    html = (STATIC_DIR / "card.html").read_text(encoding="utf-8")
+    for name in ASSETS:
+        html = html.replace(f"static/{name}", f"static/{name}?v={stamp}")
+    return html
+
+
+async def index(request: web.Request) -> web.Response:
+    return web.Response(
+        text=stamped_page(request.app[STAMP_KEY]),
+        content_type="text/html",
+        charset="utf-8",
+        # Саму страницу не кешируем: иначе новые метки до вебвью не доедут
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 async def api_card(request: web.Request) -> web.Response:
@@ -325,6 +358,7 @@ def create_app(
     app[BOT_KEY] = bot
     app[DB_KEY] = db
     app[CONFIG_KEY] = config
+    app[STAMP_KEY] = asset_stamp()
     if duels is not None:
         app[DUELS_KEY] = duels
     if store is not None:

@@ -313,6 +313,34 @@ async def test_page_and_health_are_served(client):
     assert (await (await client.get("/healthz")).json()) == {"status": "ok"}
 
 
+async def test_the_page_carries_a_version_and_is_never_cached(client):
+    """Иначе Telegram показывает вчерашнюю вёрстку из кеша вебвью."""
+    from bot.webapp.server import asset_stamp
+
+    page = await client.get("/")
+    body = await page.text()
+    stamp = asset_stamp()
+
+    assert f"static/card.css?v={stamp}" in body
+    assert f"static/card.js?v={stamp}" in body
+    assert "no-store" in page.headers["Cache-Control"]
+    # файл со штампом в адресе отдаётся как обычно
+    assert (await client.get(f"/static/card.css?v={stamp}")).status == 200
+
+
+def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
+    """Метка считается по содержимому: правка стиля обязана её сдвинуть."""
+    import bot.webapp.server as server
+
+    for name in ("card.html", "card.css", "card.js"):
+        (tmp_path / name).write_text("было", encoding="utf-8")
+    monkeypatch.setattr(server, "STATIC_DIR", tmp_path)
+
+    before = server.asset_stamp()
+    (tmp_path / "card.css").write_text("стало", encoding="utf-8")
+    assert server.asset_stamp() != before
+
+
 # ---------- ссылки на карточку в чате ----------
 
 
