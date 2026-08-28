@@ -63,6 +63,8 @@ class Player:
     class_code: str
     avatar: str = "🥊"
     avatar_file_id: str | None = None
+    # Выбранный образ: код из bot.game.looks. Пусто — образ ещё не выбирали
+    look: str = ""
     strength: int = 0
     agility: int = 0
     intuition: int = 0

@@ -107,11 +107,11 @@ body {
 
 .doll {
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) 56px;
-  gap: 10px;
-  align-items: start;
+  grid-template-columns: 68px minmax(0, 1fr) 68px;
+  gap: 9px;
+  align-items: stretch;
 }
-.slots { display: grid; gap: 10px; }
+.slots { display: grid; gap: 9px; align-content: start; }
 .slot {
   aspect-ratio: 1;
   border: 1px solid var(--slot-line);
@@ -120,20 +120,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
+  font-size: 28px;
   cursor: pointer;
   user-select: none;
 }
 .slot img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
 .slot.empty {
   opacity: 0.3;
-  font-size: 18px;
+  font-size: 22px;
   filter: grayscale(1);
 }
 .slot:active { transform: scale(0.95); }
 
 .avatar {
-  min-height: 250px;
+  /* Рамка тянется по колонке слотов, поэтому она заметно выше, чем широкая:
+     боец в полный рост смотрится лучше квадрата. Высота — запасной пол на
+     случай, если слотов почему-то не будет. */
+  min-height: 280px;
   border: 1px solid var(--slot-line);
   border-radius: 6px;
   background: var(--slot);
@@ -143,7 +146,22 @@ body {
   overflow: hidden;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
-.avatar .emoji { font-size: 92px; line-height: 1; }
+.avatar .emoji { font-size: 104px; line-height: 1; }
+.avatar.clickable { cursor: pointer; position: relative; }
+.avatar.clickable::after {
+  content: "сменить образ";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 5px 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-align: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+}
+.avatar.clickable:active { transform: scale(0.99); }
 
 .city {
   margin: 12px 0 16px;
@@ -354,7 +372,7 @@ body {
 
 .thing {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
+  grid-template-columns: 104px minmax(0, 1fr);
   gap: 12px;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -362,15 +380,15 @@ body {
   padding: 10px 12px;
 }
 .thing-pic {
-  width: 74px;
-  height: 74px;
+  width: 104px;
+  height: 104px;
   border: 1px solid var(--slot-line);
   border-radius: 6px;
   background: var(--slot);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 34px;
+  font-size: 46px;
   overflow: hidden;
 }
 .thing-pic img { width: 100%; height: 100%; object-fit: cover; }
@@ -460,3 +478,85 @@ body {
   .bag-list, .shelf-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .foot { grid-area: foot; }
 }
+
+
+/* ---------- выдвижной лист: выбор образа ---------- */
+
+.sheet { position: fixed; inset: 0; z-index: 20; }
+.sheet.hidden { display: none; }
+.sheet-back {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+.sheet-body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 82vh;
+  overflow-y: auto;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  border-radius: 14px 14px 0 0;
+  padding: 14px 14px 24px;
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sheet-title { margin: 0; font-size: 17px; font-weight: 700; }
+.sheet-close {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.sheet-note { margin: 6px 0 12px; font-size: 12.5px; color: var(--muted); }
+
+.look-group {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+  margin: 10px 0 8px;
+}
+.look-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.look {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 8px 6px 10px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+.look:active { transform: scale(0.97); }
+.look.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.look.locked .look-pic { filter: grayscale(0.7); opacity: 0.75; }
+.look-pic {
+  aspect-ratio: 3 / 4;
+  border-radius: 7px;
+  background: var(--slot);
+  border: 1px solid var(--slot-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.look-pic img { width: 100%; height: 100%; object-fit: cover; }
+.look-title { font-size: 12.5px; font-weight: 700; line-height: 1.2; }
+.look-tag { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.look-tag.on { color: var(--accent); font-weight: 700; }
+.look-tag.poor { color: var(--hp-red); }

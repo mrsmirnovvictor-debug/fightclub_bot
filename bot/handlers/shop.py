@@ -325,6 +325,8 @@ async def on_avatar(
         return
     player.avatar = callback_data.value
     player.avatar_file_id = None
+    # Значок и образ — одна рамка на карточке: выбрал значок, образ снимаем
+    player.look = ""
     await db.save_player(player)
     await callback.message.edit_text(
         f"🖼 Новый аватар: {player.avatar}. "
@@ -343,6 +345,7 @@ async def on_avatar_photo(message: Message, state: FSMContext, db: Database) -> 
     player.pay(PRICE_APPEARANCE)
     player.avatar = "📷"
     player.avatar_file_id = message.photo[-1].file_id
+    player.look = ""
     await db.save_player(player)
     await state.clear()
     await message.answer(

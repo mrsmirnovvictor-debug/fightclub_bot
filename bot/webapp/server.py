@@ -17,6 +17,7 @@ from bot.inventory_service import (
     repair_item,
     unequip,
 )
+from bot.looks_service import LookError, choose_look, wardrobe
 from bot.store_service import StoreError, StoreService
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.webapp.card import build_card, build_shop, build_topup
@@ -216,6 +217,44 @@ async def api_buy(request: web.Request) -> web.Response:
     )
 
 
+async def api_looks(request: web.Request) -> web.Response:
+    """Гардероб: все образы, какой надет и что уже куплено."""
+    try:
+        player = await _own_player(request)
+    except InventoryError as error:  # pragma: no cover - гардероб боем не занят
+        return web.json_response({"error": str(error)}, status=409)
+    return web.json_response(
+        {"looks": await wardrobe(request.app[DB_KEY], player), "credits": player.credits}
+    )
+
+
+async def api_look(request: web.Request) -> web.Response:
+    """Сменить образ. Платный купится, если кредитов хватает."""
+    data = await _payload(request)
+    try:
+        player = await _own_player(request)
+        choice = await choose_look(
+            request.app[DB_KEY], player, str(data.get("code") or "")
+        )
+    except (InventoryError, LookError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "looks": await wardrobe(request.app[DB_KEY], player),
+            "chosen": {
+                "code": choice.look.code,
+                "title": choice.look.title,
+                "bought": choice.bought,
+                "price": choice.look.price,
+                "credits": choice.credits,
+            },
+        }
+    )
+
+
 async def api_topup(request: web.Request) -> web.Response:
     """Касса: сколько на счету и какие пачки кредитов есть."""
     viewer = await _viewer(request)
@@ -299,6 +338,8 @@ def create_app(
             web.post("/api/repair", api_repair),
             web.get("/api/shop", api_shop),
             web.post("/api/buy", api_buy),
+            web.get("/api/looks", api_looks),
+            web.post("/api/look", api_look),
             web.get("/api/topup", api_topup),
             web.post("/api/invoice", api_invoice),
             web.get("/avatar/{user_id}", avatar),

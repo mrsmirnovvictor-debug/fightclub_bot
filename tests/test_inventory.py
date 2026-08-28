@@ -771,3 +771,126 @@ def test_everything_that_hits_or_blocks_has_a_picture():
         if (item.is_weapon or item.is_shield) and not item.image
     ]
     assert not naked, f"без картинки: {naked}"
+
+
+# ---------- образы ----------
+
+
+async def test_wardrobe_shows_what_is_worn_and_what_is_for_sale(db):
+    from bot.game.looks import LOOKS, LOOK_PRICE
+    from bot.looks_service import wardrobe
+
+    player = make_player(credits=0)
+    await db.save_player(player)
+
+    rows = await wardrobe(db, player)
+    assert len(rows) == len(LOOKS)
+    assert sum(1 for row in rows if row["price"] == 0) == 6
+    assert sum(1 for row in rows if row["price"] == LOOK_PRICE) == 6
+    assert {row["gender"] for row in rows} == {"male", "female"}
+
+    # бесплатные свои, платные — нет, и без кредитов они не по карману
+    assert all(row["owned"] for row in rows if not row["price"])
+    assert not any(row["owned"] for row in rows if row["price"])
+    assert not any(row["affordable"] for row in rows if row["price"])
+
+    # пока образ не выбирали, ни один не отмечен: в рамке значок бойца
+    assert not any(row["current"] for row in rows)
+
+    player.look = "worker"
+    assert [row["code"] for row in await wardrobe(db, player) if row["current"]] == [
+        "worker"
+    ]
+
+
+async def test_a_free_look_is_just_put_on(db):
+    from bot.looks_service import choose_look
+
+    player = make_player(credits=50)
+    await db.save_player(player)
+
+    choice = await choose_look(db, player, "barmaid")
+
+    assert not choice.bought and choice.credits == 50
+    assert (await db.get_player(player.user_id)).look == "barmaid"
+    assert not await db.owned_looks(player.user_id)  # платить было не за что
+
+
+async def test_a_paid_look_is_bought_once_and_stays_forever(db):
+    from bot.game.looks import LOOK_PRICE
+    from bot.looks_service import choose_look
+
+    player = make_player(credits=LOOK_PRICE + 200)
+    await db.save_player(player)
+
+    bought = await choose_look(db, player, "queen")
+    assert bought.bought and bought.credits == 200
+    assert await db.owned_looks(player.user_id) == {"queen"}
+
+    # ушёл на бесплатный и вернулся — второй раз не платит
+    await choose_look(db, player, "rookie")
+    again = await choose_look(db, player, "queen")
+    assert not again.bought
+    assert (await db.get_player(player.user_id)).credits == 200
+
+
+async def test_a_look_you_cannot_afford_is_refused(db):
+    from bot.looks_service import LookError, choose_look
+
+    player = make_player(credits=999)
+    await db.save_player(player)
+
+    with pytest.raises(LookError, match="на счету"):
+        await choose_look(db, player, "ghost")
+    with pytest.raises(LookError, match="нет"):
+        await choose_look(db, player, "император")
+
+    fresh = await db.get_player(player.user_id)
+    assert fresh.credits == 999 and not fresh.look
+    assert not await db.owned_looks(player.user_id)
+
+
+async def test_choosing_a_look_takes_the_photo_off(db):
+    """Образ и фото — одна рамка: выбрал образ, значит фото убрали."""
+    from bot.looks_service import choose_look
+
+    player = make_player()
+    player.avatar_file_id = "file-123"
+    await db.save_player(player)
+
+    await choose_look(db, player, "racer")
+
+    fresh = await db.get_player(player.user_id)
+    assert fresh.look == "racer" and fresh.avatar_file_id is None
+
+
+async def test_mini_app_serves_the_wardrobe_and_charges_for_a_look(client, db):
+    from bot.game.looks import LOOK_PRICE
+
+    player = make_player(credits=LOOK_PRICE)
+    await db.save_player(player)
+
+    listing = await client.get("/api/looks", headers=headers(1))
+    body = await listing.json()
+    assert listing.status == 200 and len(body["looks"]) == 12
+
+    response = await client.post(
+        "/api/look", json={"code": "veteran"}, headers=headers(1)
+    )
+    result = await response.json()
+    assert response.status == 200
+    assert result["chosen"]["bought"] and result["chosen"]["credits"] == 0
+    assert result["card"]["avatar"]["look"] == "veteran"
+    assert [row["current"] for row in result["looks"] if row["code"] == "veteran"] == [True]
+
+    # второй платный уже не по карману
+    refused = await client.post(
+        "/api/look", json={"code": "boss"}, headers=headers(1)
+    )
+    assert refused.status == 409
+    assert "на счету" in (await refused.json())["error"]
+
+
+async def test_the_wardrobe_is_yours_alone(client):
+    assert (await client.get("/api/looks")).status == 401
+    assert (await client.post("/api/look", json={"code": "queen"})).status == 401

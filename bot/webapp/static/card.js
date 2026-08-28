@@ -42,6 +42,17 @@ function popup(title, message) {
   }
 }
 
+function confirmAction(question) {
+  // Спрашиваем силами Telegram, а без него — обычным confirm
+  return new Promise((resolve) => {
+    if (tg && tg.showConfirm) {
+      tg.showConfirm(question, (ok) => resolve(Boolean(ok)));
+    } else {
+      resolve(window.confirm(question));
+    }
+  });
+}
+
 function slotPicture(item, placeholder) {
   if (item && item.image) {
     const img = document.createElement("img");
@@ -65,8 +76,13 @@ function renderSlots(container, slots, own) {
     box.addEventListener("click", () => {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
       if (slot.item && own) {
-        // Клик по надетой вещи возвращает её в инвентарь
-        act("api/unequip", { slot: slot.slot });
+        // Клик по надетой вещи возвращает её в инвентарь, но не молча:
+        // промахнуться по слоту легко, а вещь при этом слетает.
+        confirmAction(
+          "Вы уверены, что хотите снять предмет?\n" + slot.item.title
+        ).then((ok) => {
+          if (ok) act("api/unequip", { slot: slot.slot });
+        });
       } else if (slot.item) {
         const bonus = slot.item.bonus ? "\n" + slot.item.bonus : "";
         popup(slot.item.title, slot.title + bonus);
@@ -668,9 +684,129 @@ async function repair(item, points) {
   }
 }
 
+// ---------- образ бойца ----------
+
+function closeSheet() {
+  el("sheet").classList.add("hidden");
+}
+
+function openSheet(title, note) {
+  el("sheet-title").textContent = title;
+  el("sheet-note").textContent = note || "";
+  el("sheet-list").textContent = "";
+  el("sheet").classList.remove("hidden");
+}
+
+function lookTile(look) {
+  const box = document.createElement("button");
+  box.type = "button";
+  box.className =
+    "look" + (look.current ? " current" : "") + (look.owned ? "" : " locked");
+
+  const pic = document.createElement("div");
+  pic.className = "look-pic";
+  if (look.image) {
+    const img = document.createElement("img");
+    img.src = look.image;
+    img.alt = look.title;
+    img.addEventListener("error", () => {
+      img.replaceWith(document.createTextNode(look.emoji));
+    });
+    pic.appendChild(img);
+  } else {
+    pic.textContent = look.emoji;
+  }
+
+  const title = document.createElement("div");
+  title.className = "look-title";
+  title.textContent = look.title;
+
+  const tag = document.createElement("div");
+  tag.className = "look-tag";
+  if (look.current) {
+    tag.textContent = "надет";
+    tag.classList.add("on");
+  } else if (look.owned) {
+    tag.textContent = look.price ? "куплен" : "доступен";
+  } else {
+    tag.textContent = num(look.price) + " 💰";
+    if (!look.affordable) tag.classList.add("poor");
+  }
+
+  box.append(pic, title, tag);
+  box.addEventListener("click", () => pickLook(look));
+  return box;
+}
+
+function renderLooks(looks) {
+  const list = el("sheet-list");
+  list.textContent = "";
+  [
+    ["male", "Мужские"],
+    ["female", "Женские"],
+  ].forEach(([gender, title]) => {
+    const head = document.createElement("div");
+    head.className = "look-group";
+    head.textContent = title;
+    const grid = document.createElement("div");
+    grid.className = "look-grid";
+    looks
+      .filter((look) => look.gender === gender)
+      .forEach((look) => grid.appendChild(lookTile(look)));
+    list.append(head, grid);
+  });
+}
+
+async function openLooks() {
+  openSheet("Образ бойца", "Загружаю гардероб…");
+  try {
+    const response = await fetch("api/looks", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Гардероб не открылся.");
+    const data = await response.json();
+    el("sheet-note").textContent =
+      "Шесть образов открыты всем, остальные покупаются раз и навсегда. "
+      + "На бой образ не влияет.";
+    renderLooks(data.looks);
+  } catch (error) {
+    el("sheet-note").textContent = error.message;
+  }
+}
+
+async function pickLook(look) {
+  if (busy || look.current) return;
+  if (!look.owned) {
+    const ok = await confirmAction(
+      "Купить образ «" + look.title + "» за " + num(look.price) + " кредитов?"
+    );
+    if (!ok) return;
+  }
+  busy = true;
+  try {
+    const data = await post("api/look", { code: look.code });
+    render(data.card, true);
+    renderLooks(data.looks);
+    shopData = null;  // кредитов могло стать меньше
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    if (data.chosen.bought) {
+      popup(
+        "Образ куплен",
+        "«" + data.chosen.title + "» теперь твой навсегда. "
+          + "На счету осталось " + num(data.chosen.credits) + " 💰."
+      );
+    }
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
 function renderAvatar(card) {
   const box = el("avatar");
   box.textContent = "";
+  box.classList.toggle("clickable", Boolean(card.is_self));
   if (card.avatar.url) {
     const img = document.createElement("img");
     img.src = card.avatar.url;
@@ -867,6 +1003,14 @@ async function load() {
     fail("Не получилось загрузить карточку. Попробуй ещё раз.");
   }
 }
+
+el("avatar").addEventListener("click", () => {
+  if (!el("avatar").classList.contains("clickable")) return;
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+  openLooks();
+});
+el("sheet-close").addEventListener("click", closeSheet);
+el("sheet-back").addEventListener("click", closeSheet);
 
 el("tab-card").addEventListener("click", () => showTab("card"));
 el("tab-shop").addEventListener("click", () => showTab("shop"));

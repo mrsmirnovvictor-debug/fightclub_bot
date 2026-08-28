@@ -184,9 +184,25 @@ def test_card_reports_a_beaten_fighter_as_red():
 
 
 def test_avatar_url_appears_only_for_uploaded_photos():
-    assert build_card(make_player(), TOKEN)["avatar"]["url"] is None
-    with_photo = build_card(make_player(avatar_file_id="file-123"), TOKEN)
-    assert with_photo["avatar"]["url"].startswith("avatar/42?expires=")
+    """Без фото в рамке стоит образ: своей картинки у него пока нет."""
+    plain = build_card(make_player(), TOKEN)["avatar"]
+    assert not plain["url"] and not plain["photo"]
+    assert plain["look"] == "rookie" and plain["emoji"] == "🥊"
+
+    with_photo = build_card(make_player(avatar_file_id="file-123"), TOKEN)["avatar"]
+    assert with_photo["url"].startswith("avatar/42?expires=")
+    assert with_photo["photo"]
+
+
+def test_the_chosen_look_shows_up_in_the_frame():
+    picked = build_card(make_player(look="queen"), TOKEN)["avatar"]
+    assert (picked["look"], picked["emoji"]) == ("queen", "👑")
+    assert picked["look_title"] == "Королева ринга"
+
+    # загруженное фото важнее образа — боец поставил своё лицо осознанно
+    both = build_card(make_player(look="queen", avatar_file_id="file-1"), TOKEN)
+    assert both["avatar"]["url"].startswith("avatar/42?expires=")
+    assert both["avatar"]["photo"]
 
 
 def test_birthday_formats_and_survives_junk():

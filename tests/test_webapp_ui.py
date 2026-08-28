@@ -5,6 +5,7 @@
 прогон от этого не зависит.
 """
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -60,7 +61,7 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
         raise AssertionError
 
 
-async def open_page(pw, server, card, shop=None, query="", topup=None):
+async def open_page(pw, server, card, shop=None, query="", topup=None, looks=None):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
         return lambda route: route.fulfill(
@@ -74,6 +75,7 @@ async def open_page(pw, server, card, shop=None, query="", topup=None):
     await page.route("**/api/card*", canned(card))
     await page.route("**/api/shop*", canned(shop or {}))
     await page.route("**/api/topup*", canned(topup or {"credits": 0, "packs": []}))
+    await page.route("**/api/looks*", canned(looks or {"looks": [], "credits": 0}))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body=""
     ))
@@ -300,4 +302,98 @@ async def test_a_stranger_sees_no_plus(server):
         browser, page = await open_page(pw, server, card, query="?user_id=42")
         await page.wait_for_selector("#card:not(.hidden)")
         assert await page.locator(".plus").count() == 0
+        await browser.close()
+
+
+# ---------- образ и снятие вещей ----------
+
+
+def wardrobe(current: str = "rookie") -> dict:
+    from bot.game.looks import LOOKS
+
+    return {
+        "credits": 1200,
+        "looks": [
+            {
+                "code": look.code,
+                "title": look.title,
+                "emoji": look.emoji,
+                "image": "",
+                "gender": look.gender,
+                "price": look.price,
+                "note": look.note,
+                "owned": not look.paid,
+                "current": look.code == current,
+                "affordable": True,
+            }
+            for look in LOOKS
+        ],
+    }
+
+
+async def test_tapping_the_avatar_opens_the_wardrobe(server):
+    """По аватару открывается выбор образа: шесть своих и шесть за кредиты."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), looks=wardrobe()
+        )
+        await page.wait_for_selector("#card:not(.hidden)")
+        assert await page.locator("#sheet").is_hidden()
+
+        await page.locator("#avatar").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert await page.locator(".look").count() == 12
+        assert await page.locator(".look.current .look-title").inner_text() == "Новичок"
+        # платные подписаны ценой, свои — словом
+        tags = await page.locator(".look-tag").all_inner_texts()
+        assert sum(1 for tag in tags if "💰" in tag) == 6
+        assert await page.locator(".look-group").count() == 2
+
+        await page.locator("#sheet-close").click()
+        assert await page.locator("#sheet").is_hidden()
+        await browser.close()
+
+
+async def test_a_stranger_cannot_change_your_look(server):
+    stranger = make_player()
+    card = build_card(stranger, TOKEN, viewer_id=999)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, query="?user_id=42")
+        await page.wait_for_selector("#card:not(.hidden)")
+
+        await page.locator("#avatar").click()
+        assert await page.locator("#sheet").is_hidden(), "чужой открыл гардероб"
+        await browser.close()
+
+
+async def test_taking_a_worn_item_off_asks_first(server):
+    """Промахнуться по слоту легко, поэтому вещь снимается только с ответом «да»."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#card:not(.hidden)")
+
+        calls = []
+        await page.route("**/api/unequip", lambda route: calls.append(route.request.url))
+
+        asked = []
+
+        def on_dialog(dialog):
+            asked.append(dialog.message)
+            asyncio.ensure_future(dialog.dismiss())
+
+        page.on("dialog", on_dialog)
+        await page.locator("#slots-left .slot:not(.empty)").first.click()
+        await page.wait_for_timeout(200)
+
+        assert asked and "снять предмет" in asked[0]
+        assert "Обрезок трубы" in asked[0] or "бита" in asked[0].lower()
+        assert not calls, "вещь сняли, хотя ответили «нет»"
         await browser.close()

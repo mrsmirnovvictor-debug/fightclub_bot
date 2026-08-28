@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS players (
     hp             INTEGER,
     hp_at          INTEGER NOT NULL DEFAULT 0,
     city           TEXT    NOT NULL DEFAULT 'Vegas City',
+    look           TEXT    NOT NULL DEFAULT '',
     birthplace     TEXT,
     wins           INTEGER NOT NULL DEFAULT 0,
     losses         INTEGER NOT NULL DEFAULT 0,
@@ -56,6 +57,15 @@ CREATE TABLE IF NOT EXISTS inventory (
 );
 
 CREATE INDEX IF NOT EXISTS idx_inventory_user ON inventory(user_id);
+
+-- Купленные образы: платный образ покупается один раз и остаётся навсегда,
+-- переключаться между своими можно сколько угодно.
+CREATE TABLE IF NOT EXISTS player_looks (
+    user_id   INTEGER NOT NULL,
+    code      TEXT    NOT NULL,
+    bought_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, code)
+);
 
 CREATE TABLE IF NOT EXISTS rings (
     chat_id   INTEGER NOT NULL,
@@ -173,9 +183,9 @@ CREATE INDEX IF NOT EXISTS idx_purchases_user
 """
 
 PLAYER_COLUMNS = (
-    "user_id, nickname, class_code, avatar, avatar_file_id, strength, agility, "
-    "intuition, endurance, free_points, level, exp, total_exp, micro_ups, "
-    "credits, rating, hp, hp_at, wins, losses, draws, "
+    "user_id, nickname, class_code, avatar, avatar_file_id, look, strength, "
+    "agility, intuition, endurance, free_points, level, exp, total_exp, "
+    "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
     "city, birthplace, created_at"
 )
 
@@ -189,6 +199,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("hp_at", "INTEGER NOT NULL DEFAULT 0"),
     ("city", f"TEXT NOT NULL DEFAULT '{DEFAULT_CITY}'"),
     ("birthplace", "TEXT"),
+    ("look", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -287,16 +298,17 @@ class Database:
         await self.conn.execute(
             """
             INSERT INTO players (
-                user_id, nickname, class_code, avatar, avatar_file_id, strength,
-                agility, intuition, endurance, free_points, level, exp,
-                total_exp, micro_ups, credits, rating, hp, hp_at,
+                user_id, nickname, class_code, avatar, avatar_file_id, look,
+                strength, agility, intuition, endurance, free_points, level,
+                exp, total_exp, micro_ups, credits, rating, hp, hp_at,
                 wins, losses, draws, city, birthplace, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
                 avatar         = excluded.avatar,
                 avatar_file_id = excluded.avatar_file_id,
+                look           = excluded.look,
                 strength       = excluded.strength,
                 agility        = excluded.agility,
                 intuition      = excluded.intuition,
@@ -322,6 +334,7 @@ class Database:
                 player.class_code,
                 player.avatar,
                 player.avatar_file_id,
+                player.look,
                 player.strength,
                 player.agility,
                 player.intuition,
@@ -559,6 +572,23 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # ---------- образы ----------
+
+    async def owned_looks(self, user_id: int) -> set[str]:
+        """Какие платные образы боец уже купил."""
+        async with self.conn.execute(
+            "SELECT code FROM player_looks WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {row["code"] for row in rows}
+
+    async def add_look(self, user_id: int, code: str) -> None:
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO player_looks (user_id, code) VALUES (?,?)",
+            (user_id, code),
+        )
+        await self.conn.commit()
 
     # ---------- турниры ----------
 

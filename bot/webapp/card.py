@@ -17,6 +17,7 @@ from bot.game.equipment import (
     shop_sections,
 )
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
+from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game.stats import derive
 from bot.game.store import PACKS
 from bot.models import Player
@@ -206,6 +207,24 @@ def build_shop(player: Player) -> dict:
     }
 
 
+def avatar_payload(player: Player, avatar_url: str) -> dict:
+    """Что показать в рамке аватара.
+
+    Загруженное фото важнее образа: боец поставил своё лицо осознанно.
+    Нет фото — показываем картинку образа, нет и её — значок образа.
+    """
+    look = get_look(player.look)
+    # Образ не выбирали — оставляем всё как было: значок бойца
+    own_face = bool(player.avatar_file_id) or look is None
+    return {
+        "emoji": player.avatar if own_face else look.emoji,
+        "url": avatar_url or ("" if own_face else look.image),
+        "look": look.code if look else DEFAULT_LOOK,
+        "look_title": look.title if look else "",
+        "photo": bool(player.avatar_file_id),
+    }
+
+
 def build_topup(player: Player, open_for_business: bool = True) -> dict:
     """Касса: счёт бойца и пачки кредитов, которые можно купить за звёзды."""
     return {
@@ -280,7 +299,7 @@ def build_card(
             "emoji": fclass.emoji,
             "tagline": fclass.tagline,
         },
-        "avatar": {"emoji": player.avatar, "url": avatar_url},
+        "avatar": avatar_payload(player, avatar_url),
         "hp": {
             "current": current_hp,
             "max": derived.max_hp,
