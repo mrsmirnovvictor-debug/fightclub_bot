@@ -105,7 +105,7 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "image": owned.image,
         "kind": item.kind.value,
         "slot": item.slot.value,
-        "slot_title": item.slot.title.capitalize(),
+        "slot_title": item.slot.section.capitalize(),
         "slots": [
             {"slot": slot.value, "title": slot.title} for slot in item.slots
         ],
@@ -168,7 +168,7 @@ def goods_payload(player: Player, item: Item, owned: int) -> dict:
         "image": item.image,
         "kind": item.kind.value,
         "slot": item.slot.value,
-        "slot_title": item.slot.title.capitalize(),
+        "slot_title": item.slot.section.capitalize(),
         "price": item.price,
         "level_required": item.level_required,
         "unlocked": player.level >= item.level_required,
@@ -193,7 +193,7 @@ def build_shop(player: Player) -> dict:
         sections.append(
             {
                 "slot": slot.value,
-                "title": slot.title.capitalize(),
+                "title": slot.section.capitalize(),
                 "emoji": slot.emoji,
                 "open": sum(1 for row in rows if row["unlocked"]),
                 "items": rows,

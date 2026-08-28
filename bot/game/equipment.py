@@ -29,7 +29,13 @@ class Slot(str, Enum):
 
     @property
     def title(self) -> str:
+        """Как слот называется в предложении: «сюда надевается ...»."""
         return SLOT_TITLES[self]
+
+    @property
+    def section(self) -> str:
+        """Как называется тип товара в лавке и в инвентаре."""
+        return SLOT_SECTIONS[self]
 
     @property
     def emoji(self) -> str:
@@ -44,6 +50,19 @@ SLOT_TITLES: dict[Slot, str] = {
     Slot.GLOVES: "перчатки",
     Slot.SHIELD: "щит",
     Slot.PANTS: "штаны",
+    Slot.BOOTS: "обувь",
+}
+
+# Тип товара на витрине: это ярлык раздела, а не часть предложения, поэтому
+# он короче и называет часть тела, а не саму вещь.
+SLOT_SECTIONS: dict[Slot, str] = {
+    Slot.HEAD: "голова",
+    Slot.WEAPON: "оружие",
+    Slot.JACKET: "тело",
+    Slot.BELT: "пояс",
+    Slot.GLOVES: "перчатки",
+    Slot.SHIELD: "щиты",
+    Slot.PANTS: "ноги",
     Slot.BOOTS: "обувь",
 }
 

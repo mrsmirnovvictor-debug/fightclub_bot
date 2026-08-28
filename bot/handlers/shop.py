@@ -113,7 +113,7 @@ def showcase_text(player: Player) -> str:
         open_now = [item for item in items if item.level_required <= player.level]
         if not open_now:
             continue
-        lines.append(f"{slot.emoji} <b>{slot.title.capitalize()}</b>")
+        lines.append(f"{slot.emoji} <b>{slot.section.capitalize()}</b>")
         for item in open_now:
             bonus = item.describe_bonus()
             lines.append(

@@ -894,3 +894,23 @@ async def test_mini_app_serves_the_wardrobe_and_charges_for_a_look(client, db):
 async def test_the_wardrobe_is_yours_alone(client):
     assert (await client.get("/api/looks")).status == 401
     assert (await client.post("/api/look", json={"code": "queen"})).status == 401
+
+
+def test_shop_sections_are_named_after_body_parts():
+    """В лавке разделы называются частью тела, а не самой вещью."""
+    from bot.game.equipment import ALL_SLOTS, Slot
+
+    assert [slot.section for slot in ALL_SLOTS] == [
+        "голова",
+        "оружие",
+        "тело",
+        "пояс",
+        "перчатки",
+        "щиты",
+        "ноги",
+        "обувь",
+    ]
+    # в предложении слот по-прежнему называется вещью: «сюда надевается щит»
+    assert Slot.SHIELD.title == "щит"
+    assert Slot.PANTS.title == "штаны"
+    assert build_shop(make_player())["sections"][0]["title"] == "Голова"

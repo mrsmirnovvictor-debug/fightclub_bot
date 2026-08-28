@@ -179,7 +179,7 @@ async def test_available_filter_hides_everything_locked(shop_page):
 
 
 async def test_filters_can_leave_the_counter_empty(shop_page):
-    await shop_page.get_by_role("button", name="🛡 Щит").click()
+    await shop_page.get_by_role("button", name="🛡 Щиты").click()
     await shop_page.get_by_role("button", name="🔒 6 ур.").click()
 
     assert await shop_page.locator("#shop-empty").is_visible()
