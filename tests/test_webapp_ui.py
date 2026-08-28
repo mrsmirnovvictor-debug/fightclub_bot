@@ -475,6 +475,12 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         assert await page.locator(".sheet-doll .avatar").count() == 1
         assert await page.locator(".sheet-doll .slot").count() == 8
 
+        # и ничего никуда не наезжает: рамка аватара кончается там, где
+        # начинается правый ряд слотов
+        face = await page.locator(".sheet-doll .avatar").bounding_box()
+        right = await page.locator(".sheet-doll .slots").nth(1).bounding_box()
+        assert face["x"] + face["width"] <= right["x"] + 0.5
+
         card_text = await page.locator("#sheet-list").inner_text()
         for line in ("Сила", "Ловкость", "Интуиция", "Выносливость"):
             assert line in card_text
