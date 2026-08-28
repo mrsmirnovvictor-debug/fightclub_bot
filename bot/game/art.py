@@ -12,6 +12,7 @@ WEAPONS = f"{BUCKET}/weapons"
 # Второй заход по недостающим позициям лёг в отдельную папку
 ADDED = f"{BUCKET}/add"
 AVATARS = f"{BUCKET}/avatars"
+SLOTS = f"{BUCKET}/slots"
 
 # Первый бакет, из которого пока не переехали кеды
 LEGACY = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/VEGAS%20Fight%20Club"
@@ -22,4 +23,9 @@ def avatar(code: str) -> str:
     return f"{AVATARS}/{code}.jpeg"
 
 
-__all__ = ["ADDED", "AVATARS", "BUCKET", "LEGACY", "WEAPONS", "avatar"]
+def slot(code: str) -> str:
+    """Подложка пустого слота — тоже под своим кодом: slots/weapon.jpeg."""
+    return f"{SLOTS}/{code}.jpeg"
+
+
+__all__ = ["ADDED", "AVATARS", "BUCKET", "LEGACY", "SLOTS", "WEAPONS", "avatar", "slot"]

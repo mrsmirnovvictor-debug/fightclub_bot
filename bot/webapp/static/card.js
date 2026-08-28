@@ -53,20 +53,38 @@ function confirmAction(question) {
   });
 }
 
+function picture(src, alt, fallback, onFail) {
+  // Картинка со значком на случай, если файл не доехал
+  const img = document.createElement("img");
+  img.src = src;
+  img.alt = alt;
+  // Картинок в лавке полсотни, и каждая тяжёлая: тянем по мере прокрутки
+  img.loading = "lazy";
+  img.decoding = "async";
+  img.addEventListener("error", () => {
+    img.replaceWith(document.createTextNode(fallback));
+    if (onFail) onFail();
+  });
+  return img;
+}
+
 function slotPicture(item, placeholder) {
   if (item && item.image) {
-    const img = document.createElement("img");
-    img.src = item.image;
-    img.alt = item.title;
-    // Картинок в лавке полсотни, и каждая тяжёлая: тянем по мере прокрутки
-    img.loading = "lazy";
-    img.decoding = "async";
-    img.addEventListener("error", () => {
-      img.replaceWith(document.createTextNode(item.icon));
-    });
-    return img;
+    return picture(item.image, item.title, item.icon);
   }
   return document.createTextNode(item ? item.icon : placeholder);
+}
+
+function emptySlotPicture(slot, box) {
+  // Тень того, что сюда надевается
+  if (!slot.placeholder_image) {
+    box.classList.add("no-art");
+    return document.createTextNode(slot.placeholder);
+  }
+  // Не загрузилась подложка — гасим слот по-старому и показываем значок
+  return picture(slot.placeholder_image, slot.title, slot.placeholder, () =>
+    box.classList.add("no-art")
+  );
 }
 
 function renderSlots(container, slots, own) {
@@ -75,7 +93,11 @@ function renderSlots(container, slots, own) {
     const box = document.createElement("div");
     box.className = "slot" + (slot.item ? "" : " empty");
     box.title = slot.title;
-    box.appendChild(slotPicture(slot.item, slot.placeholder));
+    box.appendChild(
+      slot.item
+        ? slotPicture(slot.item, slot.placeholder)
+        : emptySlotPicture(slot, box)
+    );
     box.addEventListener("click", () => {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
       if (slot.item && own) {

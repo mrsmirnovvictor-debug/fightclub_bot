@@ -397,3 +397,22 @@ async def test_taking_a_worn_item_off_asks_first(server):
         assert "Обрезок трубы" in asked[0] or "бита" in asked[0].lower()
         assert not calls, "вещь сняли, хотя ответили «нет»"
         await browser.close()
+
+
+async def test_an_empty_slot_falls_back_to_its_icon(server):
+    """Подложка не доехала — слот гаснет и показывает значок, как раньше."""
+    player = make_player()
+    player.gear = []  # всё снято, все восемь слотов пустые
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        # картинки в этом тесте не отдаются: маршрут .jpeg их обрывает
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#card:not(.hidden)")
+        await page.wait_for_timeout(300)
+
+        empty = page.locator(".slot.empty")
+        assert await empty.count() == 8
+        assert await page.locator(".slot.empty.no-art").count() == 8
+        assert "🎩" in await page.locator("#slots-left .slot").first.inner_text()
+        await browser.close()

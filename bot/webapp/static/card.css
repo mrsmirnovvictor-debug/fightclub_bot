@@ -125,11 +125,15 @@ body {
   user-select: none;
 }
 .slot img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
-.slot.empty {
+/* У пустого слота своя подложка — тень того, что сюда надевается.
+   Гасим слот только когда она не загрузилась и остался значок. */
+.slot.empty { font-size: 22px; }
+.slot.empty.no-art {
   opacity: 0.3;
-  font-size: 22px;
   filter: grayscale(1);
 }
+/* Подложки нарисованы под тёмную тему; на светлой приглушаем их */
+body:not(.dark) .slot.empty img { opacity: 0.6; }
 .slot:active { transform: scale(0.95); }
 
 .avatar {

@@ -51,6 +51,7 @@ def slot_payload(equipment: Equipment, slot: Slot) -> dict:
         "slot": slot.value,
         "title": slot.title,
         "placeholder": slot.emoji,
+        "placeholder_image": slot.placeholder,
         "item": None
         if owned is None
         else {

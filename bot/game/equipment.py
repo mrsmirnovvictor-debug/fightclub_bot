@@ -39,6 +39,11 @@ class Slot(str, Enum):
         return SLOT_SECTIONS[self]
 
     @property
+    def placeholder(self) -> str:
+        """Подложка пустого слота: тень того, что сюда надевается."""
+        return art.slot(self.value)
+
+    @property
     def emoji(self) -> str:
         return SLOT_EMOJI[self]
 

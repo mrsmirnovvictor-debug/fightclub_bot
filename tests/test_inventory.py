@@ -933,3 +933,17 @@ def test_a_look_can_override_its_picture():
 
     custom = Look("x", "Тест", "🥊", "male", image="https://example.com/one.png")
     assert custom.picture == "https://example.com/one.png"
+
+
+def test_empty_slots_carry_their_own_placeholder():
+    """У пустого слота своя подложка — по коду слота, как у аватаров."""
+    from bot.game.art import SLOTS
+    from bot.game.equipment import ALL_SLOTS
+
+    card = build_card(make_player(), TOKEN, viewer_id=1)
+    rows = card["slots"]["left"] + card["slots"]["right"]
+
+    assert len(rows) == len(ALL_SLOTS)
+    for row in rows:
+        assert row["placeholder_image"] == f"{SLOTS}/{row['slot']}.jpeg"
+        assert row["placeholder"], "значок остаётся запасным вариантом"
