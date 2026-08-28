@@ -28,14 +28,18 @@ from bot.game.equipment import (
     shop_sections,
 )
 from bot.game.narrator import esc
+from bot.game.potions import POTIONS, get_potion, spell_duration
 from bot.handlers.common import send_profile
 from bot.inventory_service import InventoryError, buy
+from bot.potions_service import PotionError, buy_potion, use_potion
 from bot.keyboards import (
     AvatarCB,
     BuyCB,
     ClassCB,
+    DrinkCB,
     avatars_keyboard,
     classes_keyboard,
+    potions_keyboard,
     showcase_keyboard,
 )
 from bot.models import Player
@@ -66,7 +70,8 @@ def price_list(player: Player) -> str:
         f"<b>{PRICE_CLASS_CHANGE}</b> 💰 — /class, сменить класс бойца\n"
         f"<b>{PRICE_APPEARANCE}</b> 💰 — /rename &lt;прозвище&gt;, новое имя на ринге\n"
         f"<b>{PRICE_APPEARANCE}</b> 💰 — /avatar, новая аватарка\n"
-        "🛒 /buy — витрина: оружие, броня и всё, что надевается\n\n"
+        "🛒 /buy — витрина: оружие, броня и всё, что надевается\n"
+        "🧪 /potions — эликсиры: восстановить здоровье и разогнать характеристики\n\n"
         "Купленное лежит в инвентаре — открой карточку (/card) и надень.\n"
         f"Вещи снашиваются в боях (запас — {MAX_WEAR} пунктов износа) и чинятся "
         f"там же: {REPAIR_PRICE_PER_POINT} 💰 за пункт.\n\n"
@@ -136,6 +141,7 @@ def showcase_text(player: Player) -> str:
         "",
         "Купленное падает в инвентарь — надеть можно в карточке (/card), "
         "хоть сразу, хоть когда дорастёшь до требований.",
+        "🧪 Эликсиры лежат отдельной полкой — «Прочее»: /potions.",
     ]
     return "\n".join(lines)
 
@@ -173,6 +179,24 @@ async def on_buy(callback: CallbackQuery, callback_data: BuyCB, db: Database) ->
         await callback.answer("Сначала создай бойца: /start", show_alert=True)
         return
 
+    potion = get_potion(callback_data.code)
+    if potion is not None:
+        try:
+            await buy_potion(db, player, potion.code)
+        except PotionError as error:
+            await callback.answer(str(error), show_alert=True)
+            return
+        await callback.message.answer(
+            f"🛍 Куплено: {potion.emoji} <b>{esc(potion.title)}</b> "
+            f"за {potion.price} 💰.\n"
+            f"Осталось: <b>{player.credits}</b> 💰. Выпить — /potions",
+            reply_markup=potions_keyboard(
+                player.level, player.credits, player.potions
+            ),
+        )
+        await callback.answer("В рюкзак!")
+        return
+
     item = get_item(callback_data.code)
     try:
         await buy(db, player, callback_data.code)
@@ -190,6 +214,103 @@ async def on_buy(callback: CallbackQuery, callback_data: BuyCB, db: Database) ->
         f"Осталось: <b>{player.credits}</b> 💰. {ready}"
     )
     await callback.answer("В рюкзак!")
+
+
+# ---------- эликсиры ----------
+
+
+def potions_text(player: Player) -> str:
+    """Что действует, что в рюкзаке и что можно докупить."""
+    lines = [
+        "🧪 <b>Эликсиры</b>",
+        "",
+        f"На счету: <b>{player.credits}</b> 💰 · уровень {player.level}",
+    ]
+
+    working = player.active_effects()
+    if working:
+        lines += ["", "<b>Сейчас действует</b>"]
+        for effect in working:
+            potion = effect.potion
+            lines.append(
+                f"   {potion.emoji} {esc(potion.title)} — ещё "
+                f"{spell_duration(effect.seconds_left())}"
+            )
+
+    bag = player.potions_in_bag()
+    if bag:
+        lines += ["", "<b>В рюкзаке</b>"]
+        for potion, count in bag:
+            lines.append(f"   {potion.emoji} {esc(potion.title)} — {count} шт.")
+
+    lines += ["", "<b>На прилавке</b>"]
+    for potion in POTIONS:
+        if potion.level_required > player.level:
+            continue
+        lines.append(
+            f"   {potion.emoji} {esc(potion.title)} — {potion.price} 💰 · "
+            f"{potion.describe()}"
+        )
+    locked = [p.level_required for p in POTIONS if p.level_required > player.level]
+    if locked:
+        lines += ["", f"🔒 Следующие склянки откроются на {min(locked)} уровне."]
+    lines += [
+        "",
+        "Восстановление доливает здоровье сразу, но не выше потолка. "
+        "Временный эликсир держится два часа и уходит сам; выпить второй "
+        "такой же — продлить срок, а не удвоить прибавку.",
+    ]
+    return "\n".join(lines)
+
+
+@router.message(Command("potions", "elixirs"))
+async def cmd_potions(message: Message, db: Database) -> None:
+    player = await _require_player(message, db)
+    if player is None:
+        return
+    await message.answer(
+        potions_text(player),
+        reply_markup=potions_keyboard(player.level, player.credits, player.potions),
+    )
+
+
+@router.callback_query(DrinkCB.filter())
+async def on_drink(
+    callback: CallbackQuery, callback_data: DrinkCB, db: Database
+) -> None:
+    player = await db.get_player(callback.from_user.id)
+    if player is None:
+        await callback.answer("Сначала создай бойца: /start", show_alert=True)
+        return
+
+    try:
+        result = await use_potion(db, player, callback_data.code)
+    except PotionError as error:
+        await callback.answer(str(error), show_alert=True)
+        return
+
+    potion = result.potion
+    if result.healed:
+        news = (
+            f"❤️ Здоровья прибавилось на <b>{result.healed}</b> — "
+            f"стало {player.current_hp()}/{player.max_hp}."
+        )
+    else:
+        verb = "продлён" if result.extended else "пошёл"
+        news = (
+            f"⏳ Эффект {verb}: {potion.describe()}. "
+            f"Держится ещё {spell_duration(result.seconds_left())}."
+        )
+    left = (
+        f"Осталось таких: {result.left} шт."
+        if result.left
+        else "Это была последняя."
+    )
+    await callback.message.answer(
+        f"🥤 Выпит {potion.emoji} <b>{esc(potion.title)}</b>.\n{news}\n{left}",
+        reply_markup=potions_keyboard(player.level, player.credits, player.potions),
+    )
+    await callback.answer("До дна!")
 
 
 # ---------- респек ----------

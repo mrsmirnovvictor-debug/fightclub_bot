@@ -106,6 +106,26 @@ body {
   min-height: 16px;
 }
 
+/* ---------- действующие эффекты ---------- */
+
+.effects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+.effects.hidden { display: none; }
+.effect {
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--slot-line);
+  background: var(--slot);
+  color: var(--hp-green);
+  white-space: nowrap;
+}
+
 .doll {
   display: grid;
   grid-template-columns: 68px minmax(0, 1fr) 68px;
@@ -462,6 +482,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
       "head  panel"
       "hp    panel"
       "note  panel"
+      "eff   panel"
       "doll  panel"
       "city  panel"
       "bag   bag"
@@ -472,6 +493,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   .head { grid-area: head; }
   .hp { grid-area: hp; }
   .hp-note { grid-area: note; }
+  .effects { grid-area: eff; }
   .doll { grid-area: doll; }
   .city { grid-area: city; }
   .panel { grid-area: panel; }

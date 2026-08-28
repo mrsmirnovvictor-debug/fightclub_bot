@@ -15,6 +15,8 @@ from aiohttp.test_utils import TestServer
 
 from bot.game.classes import Stats
 from bot.game.equipment import CATALOGUE, OwnedItem, Slot
+from bot.game.health import now_ts
+from bot.game.potions import ActiveEffect
 from bot.game.store import PACKS
 from bot.models import Player
 from bot.webapp.card import build_card, build_shop, build_topup
@@ -136,7 +138,8 @@ async def visible_titles(page) -> list[str]:
 
 
 async def test_shop_opens_with_all_types_on_the_counter(shop_page):
-    assert len(await shelves(shop_page)) == 8
+    # восемь полок с экипировкой плюс «Прочее» — эликсиры
+    assert len(await shelves(shop_page)) == 9
     titles = await visible_titles(shop_page)
     assert "Кастет" in titles  # открыто по уровню
     assert "Бита" not in titles  # закрыто, лежит под кнопкой
@@ -506,4 +509,71 @@ async def test_the_hero_screen_shows_the_slots_too(server):
         assert await page.locator("#hero-avatar").is_visible()
         # надетая вещь видна и здесь, и в инвентаре
         assert await page.locator("#hero .slot:not(.empty)").count() == 1
+        await browser.close()
+
+
+async def test_the_bag_pours_a_potion_and_the_counter_sells_them(server):
+    """Склянка стоит своей полкой в рюкзаке, и у неё одна кнопка — выпить."""
+    player = make_player()
+    player.potions = {"heal_small": 2}
+    player.effects = [
+        ActiveEffect(code="boost_strength", until=now_ts() + 3600 + 47 * 60)
+    ]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        drunk = []
+
+        async def pour(route):
+            drunk.append(route.request.post_data)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "card": card,
+                        "used": {
+                            "code": "heal_small",
+                            "title": "Эликсир восстановления",
+                            "healed": 30,
+                            "extended": False,
+                            "seconds_left": 0,
+                            "left": 1,
+                        },
+                    }
+                ),
+            )
+
+        await page.route("**/api/use", pour)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # действующий эффект висит и на «Персонаже», и в инвентаре
+        chips = await page.locator("#hero-effects .effect").all_inner_texts()
+        assert chips == ["💪 Эликсир силы · 1 ч 47 мин"]
+
+        await page.locator("#tab-bag").click()
+        box = page.locator("#potion-box")
+        assert await box.is_visible()
+        assert "В рюкзаке: 2 шт." in await box.inner_text()
+        # склянку не надевают и не чинят — только пьют
+        buttons = await box.locator(".btn").all_inner_texts()
+        assert buttons == ["Использовать"]
+
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+        await box.locator(".btn").click()
+        await page.wait_for_timeout(200)
+        assert json.loads(drunk[0]) == {"code": "heal_small"}
+        # ответ дошёл: карточка перерисовалась, полка склянок на месте
+        assert await page.locator("#potion-box").is_visible()
+
+        # на прилавке склянки лежат под своим фильтром
+        await page.locator("#tab-shop").click()
+        await page.wait_for_selector(".shelf")
+        await page.get_by_role("button", name="Прочее", exact=True).click()
+        titles = await page.locator(
+            ".shelf-list:not(.hidden) .thing-title"
+        ).all_inner_texts()
+        assert "Эликсир восстановления" in titles
+        assert "Кастет" not in titles
         await browser.close()

@@ -17,6 +17,7 @@ from bot.game.classes import (
     block_title,
 )
 from bot.game.equipment import SHOWCASE, items_unlocked_at
+from bot.game.potions import POTIONS
 
 AVATARS: tuple[str, ...] = (
     "🥊", "🥷", "🐺", "🦍", "👹", "🤖",
@@ -38,6 +39,12 @@ class StatCB(CallbackData, prefix="stat"):
 
 
 class BuyCB(CallbackData, prefix="buy"):
+    code: str
+
+
+class DrinkCB(CallbackData, prefix="drink"):
+    """Выпить эликсир из рюкзака прямо из чата."""
+
     code: str
 
 
@@ -144,6 +151,30 @@ def showcase_keyboard(level: int, credits: int) -> InlineKeyboardMarkup:
             text=f"{item.emoji} {item.title} — {item.price} 💰"
             + ("" if credits >= item.price else " 🔒"),
             callback_data=BuyCB(code=item.code),
+        )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def potions_keyboard(
+    level: int, credits: int, bag: dict[str, int]
+) -> InlineKeyboardMarkup:
+    """Склянки: сначала выпить то, что есть, потом докупить открытое."""
+    builder = InlineKeyboardBuilder()
+    for potion in POTIONS:
+        count = bag.get(potion.code, 0)
+        if count:
+            builder.button(
+                text=f"🥤 Выпить {potion.title} ({count})",
+                callback_data=DrinkCB(code=potion.code),
+            )
+    for potion in POTIONS:
+        if potion.level_required > level:
+            continue
+        builder.button(
+            text=f"{potion.emoji} {potion.title} — {potion.price} 💰"
+            + ("" if credits >= potion.price else " 🔒"),
+            callback_data=BuyCB(code=potion.code),
         )
     builder.adjust(1)
     return builder.as_markup()

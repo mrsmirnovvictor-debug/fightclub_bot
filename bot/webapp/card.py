@@ -18,6 +18,15 @@ from bot.game.equipment import (
 )
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
 from bot.game.looks import DEFAULT_LOOK, get_look
+from bot.game.potions import (
+    POTIONS,
+    SECTION_CODE,
+    SECTION_EMOJI,
+    SECTION_TITLE,
+    ActiveEffect,
+    Potion,
+    spell_duration,
+)
 from bot.game.stats import derive
 from bot.game.store import PACKS
 from bot.models import Player
@@ -182,6 +191,89 @@ def goods_payload(player: Player, item: Item, owned: int) -> dict:
     }
 
 
+def potion_gains_payload(potion: Potion) -> list[dict]:
+    """Что эликсир делает — теми же строчками, что и свойства вещи."""
+    rows: list[dict] = []
+    if potion.heal:
+        rows.append(
+            {"emoji": "❤️", "title": "Восстановит", "text": f"до +{potion.heal}"}
+        )
+    rows += [
+        {"emoji": stat.emoji, "title": stat.title.capitalize(), "value": value}
+        for stat, value in ((stat, potion.bonus.get(stat)) for stat in ALL_STATS)
+        if value
+    ]
+    if potion.hp:
+        rows.append({"emoji": "❤️", "title": "Запас здоровья", "value": potion.hp})
+    if potion.seconds:
+        rows.append(
+            {"emoji": "⏳", "title": "Держится", "text": spell_duration(potion.seconds)}
+        )
+    return rows
+
+
+def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
+    """Склянка на витрине и в рюкзаке. Ключи те же, что у вещи: рисует их
+    одна и та же карточка, а `consumable` разводит кнопки."""
+    return {
+        "code": potion.code,
+        "title": potion.title,
+        "icon": potion.emoji,
+        "image": potion.image,
+        "kind": potion.kind.value,
+        "consumable": True,
+        "slot": SECTION_CODE,
+        "slot_title": SECTION_TITLE,
+        "note": potion.note,
+        "price": potion.price,
+        "level_required": potion.level_required,
+        "unlocked": player.level >= potion.level_required,
+        "affordable": player.can_afford(potion.price),
+        "owned": owned,
+        "requirements": [
+            {
+                "code": "level",
+                "title": "Уровень",
+                "need": potion.level_required,
+                "have": player.level,
+                "ok": player.level >= potion.level_required,
+            }
+        ],
+        "bonuses": potion_gains_payload(potion),
+        "gain_title": "Что делает",
+        "suits": [],
+    }
+
+
+def potions_section(player: Player) -> dict:
+    """Раздел «Прочее»: то, что пьют, а не надевают."""
+    rows = [
+        potion_payload(player, potion, player.potion_count(potion.code))
+        for potion in POTIONS
+    ]
+    return {
+        "slot": SECTION_CODE,
+        "title": SECTION_TITLE,
+        "emoji": SECTION_EMOJI,
+        "open": sum(1 for row in rows if row["unlocked"]),
+        "items": rows,
+    }
+
+
+def effect_payload(effect: ActiveEffect, now: int) -> dict:
+    """Действующий эффект: чем держится и сколько ему осталось."""
+    potion = effect.potion
+    left = effect.seconds_left(now)
+    return {
+        "code": effect.code,
+        "title": potion.title if potion else effect.code,
+        "emoji": potion.emoji if potion else "🧪",
+        "gain": potion.describe() if potion else "",
+        "seconds_left": left,
+        "left_text": spell_duration(left),
+    }
+
+
 def build_shop(player: Player) -> dict:
     """Магазин: товары, разложенные по типам вещей."""
     mine: dict[str, int] = {}
@@ -200,6 +292,8 @@ def build_shop(player: Player) -> dict:
                 "items": rows,
             }
         )
+    # Эликсиры идут последними: их не надевают, и слота у них нет
+    sections.append(potions_section(player))
     return {
         "credits": player.credits,
         "level": player.level,
@@ -304,7 +398,7 @@ def build_card(
     is_self = viewer_id == player.user_id
     equipment = player.equipment
     fclass = player.fclass
-    derived = derive(fclass, player.stats, player.level, equipment.hp_bonus)
+    derived = derive(fclass, player.stats, player.level, player.extra_hp)
 
     current_hp = player.current_hp(moment)
     state = player.health_state(moment)
@@ -352,6 +446,18 @@ def build_card(
         "inventory": [item_payload(player, owned) for owned in player.backpack]
         if is_self
         else [],
+        # Склянки лежат там же, но своей стопкой: их пьют, а не надевают
+        "potions": [
+            potion_payload(player, potion, count)
+            for potion, count in player.potions_in_bag()
+        ]
+        if is_self
+        else [],
+        # Что сейчас действует — видно всем: эффект уже учтён в характеристиках
+        "effects": [
+            effect_payload(effect, moment)
+            for effect in player.active_effects(moment)
+        ],
         "city": player.city,
         "progress": {
             "exp": player.exp,

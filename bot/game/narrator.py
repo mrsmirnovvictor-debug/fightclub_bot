@@ -316,11 +316,15 @@ def _fighter_brief(player: "Player", mode: FightMode = FightMode.FIST) -> str:
     В кулачном бою считаем бойца без вещей — таким он и выйдет на ринг.
     """
     if mode.armed:
-        stats = derive(
-            player.fclass, player.stats, player.level, player.equipment.hp_bonus
-        )
+        stats = derive(player.fclass, player.stats, player.level, player.extra_hp)
     else:
-        stats = derive(player.fclass, player.base_stats, player.level)
+        # Вещи в раздевалке, а выпитое при бойце — как и на ринге
+        stats = derive(
+            player.fclass,
+            player.base_stats.merge(player.effect_stats),
+            player.level,
+            player.effect_hp,
+        )
     return (
         f"{player.fclass.emoji} "
         f"<b>{name_link(player.user_id, player.nickname)}</b> — "

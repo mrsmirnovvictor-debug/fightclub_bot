@@ -6,8 +6,11 @@ from tests.harness import Client
 
 from bot.game.economy import PRICE_APPEARANCE, PRICE_CLASS_CHANGE, PRICE_RESPEC
 from bot.game.equipment import CATALOGUE
-from bot.keyboards import AvatarCB, BuyCB, ClassCB
+from bot.game.potions import get_potion
+from bot.keyboards import AvatarCB, BuyCB, ClassCB, DrinkCB
 from bot.models import Player
+
+HEAL = get_potion("heal_small")
 
 
 def make_player(user_id: int, **kwargs) -> Player:
@@ -231,3 +234,57 @@ async def test_shop_needs_a_character(dispatcher_env):
     stranger = Client(db)
     await stranger.send("/shop")
     assert "создай бойца" in session.texts[-1]
+
+
+# ---------- эликсиры ----------
+
+
+async def test_potions_shelf_lists_what_is_open_and_what_is_locked(
+    client, dispatcher_env
+):
+    _, _, session = dispatcher_env
+    await client.send("/potions")
+    text = session.texts[-1]
+
+    assert "Эликсир восстановления" in text and str(HEAL.price) in text
+    # временные открываются с 5 уровня, а бойцу тут третий
+    assert "Эликсир силы" not in text
+    assert "откроются на 5 уровне" in text
+
+
+async def test_a_potion_is_bought_and_then_drunk_from_the_chat(
+    client, dispatcher_env
+):
+    db, _, session = dispatcher_env
+    player = await client.player()
+    player.set_hp(player.max_hp - 100)
+    await db.save_player(player)
+
+    await client.press(BuyCB(code="heal_small").pack())
+    assert (await client.player()).credits == 300 - HEAL.price
+    assert await db.list_potions(client.user.id) == {"heal_small": 1}
+
+    await client.press(DrinkCB(code="heal_small").pack())
+    text = session.texts[-1]
+
+    assert "Выпит" in text and f"на <b>{HEAL.heal}</b>" in text
+    assert "Это была последняя" in text
+    assert await db.list_potions(client.user.id) == {}
+
+
+async def test_the_temporary_effect_shows_up_in_the_profile(client, dispatcher_env):
+    db, _, session = dispatcher_env
+    player = await client.player()
+    player.level = 5
+    await db.save_player(player)
+
+    await client.press(BuyCB(code="boost_strength").pack())
+    await client.press(DrinkCB(code="boost_strength").pack())
+    assert "Эффект пошёл" in session.texts[-1]
+
+    await client.send("/profile")
+    text = session.texts[-1]
+
+    assert "🧪 Действует: 💪 Эликсир силы" in text
+    # характеристики в профиле уже с прибавкой
+    assert "Сила: <b>18</b>" in text

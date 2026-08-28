@@ -103,11 +103,13 @@ class Fighter:
     missed_turns: int = 0  # пропусков подряд
     damage_dealt: int = 0  # всего нанесено за бой — от этого считается опыт
     equipment: Equipment = field(default_factory=Equipment)
+    # Запас здоровья сверх своего: от вещей и от выпитых эликсиров
+    extra_hp: int = 0
     derived: DerivedStats = field(init=False)
 
     def __post_init__(self) -> None:
         self.derived = derive(
-            self.fclass, self.stats, self.level, self.equipment.hp_bonus
+            self.fclass, self.stats, self.level, self.equipment.hp_bonus + self.extra_hp
         )
         if self.hp <= 0:
             self.hp = self.derived.max_hp
@@ -213,9 +215,13 @@ class Fighter:
         В кулачном бою вещи остаются в раздевалке: ни оружия, ни брони, ни
         прибавок — спорят голые характеристики. Здоровье при этом урезается
         по новому потолку, иначе боец вышел бы на ринг с чужим запасом.
+
+        Выпитое — другое дело: эликсир в раздевалке не оставишь, поэтому его
+        прибавка идёт с бойцом на ринг в любом режиме.
         """
         equipment = player.equipment if armed else Equipment()
-        stats = player.stats if armed else player.base_stats
+        effect_stats = getattr(player, "effect_stats", None) or Stats()
+        stats = player.stats if armed else player.base_stats.merge(effect_stats)
         fighter = cls(
             user_id=player.user_id,
             name=player.nickname,
@@ -223,6 +229,7 @@ class Fighter:
             stats=stats,
             level=player.level,
             equipment=equipment,
+            extra_hp=getattr(player, "effect_hp", 0),
         )
         fighter.hp = max(1, min(player.current_hp(), fighter.max_hp))
         return fighter

@@ -34,6 +34,13 @@ from bot.game.health import (
     seconds_until_full,
     seconds_until_ready,
 )
+from bot.game.potions import (
+    ActiveEffect,
+    Potion,
+    effects_bonus,
+    effects_hp,
+    get_potion,
+)
 from bot.game.stats import derive
 from bot.game.world import DEFAULT_BIRTHPLACE, DEFAULT_CITY
 
@@ -86,6 +93,10 @@ class Player:
     created_at: str | None = None  # когда персонаж появился на свет
     # Инвентарь: и надетое, и лежащее в рюкзаке. Подгружается из базы.
     gear: list[OwnedItem] = field(default_factory=list)
+    # Эликсиры лежат стопками: код → сколько штук
+    potions: dict[str, int] = field(default_factory=dict)
+    # Что сейчас действует. Просроченное сюда не попадает — база чистит сама
+    effects: list[ActiveEffect] = field(default_factory=list)
 
     @property
     def base_stats(self) -> Stats:
@@ -126,10 +137,37 @@ class Player:
     def drop_gear(self, owned: OwnedItem) -> None:
         self.gear = [item for item in self.gear if item.id != owned.id]
 
+    # ---------- эликсиры ----------
+
+    def active_effects(self, now: int | None = None) -> list[ActiveEffect]:
+        """Эффекты, которые ещё держатся. Выдохшиеся не показываем и не считаем."""
+        return [effect for effect in self.effects if effect.is_active(now)]
+
+    def effect_of(self, code: str, now: int | None = None) -> ActiveEffect | None:
+        return next(
+            (effect for effect in self.active_effects(now) if effect.code == code),
+            None,
+        )
+
+    def potions_in_bag(self) -> list[tuple[Potion, int]]:
+        """Склянки в рюкзаке в порядке витрины — так их и рисуют."""
+        return [
+            (potion, count)
+            for potion, count in (
+                (get_potion(code), count) for code, count in self.potions.items()
+            )
+            if potion is not None and count > 0
+        ]
+
+    def potion_count(self, code: str) -> int:
+        return max(0, self.potions.get(code, 0))
+
     @property
     def stats(self) -> Stats:
-        """Характеристики с учётом надетого — их и видит боевой движок."""
-        return self.base_stats.merge(self.equipment.bonus)
+        """Характеристики с учётом надетого и выпитого — их видит боевой движок."""
+        return self.base_stats.merge(self.equipment.bonus).merge(
+            effects_bonus(self.effects)
+        )
 
     @property
     def home(self) -> str:
@@ -144,10 +182,23 @@ class Player:
         return self.wins + self.losses + self.draws
 
     @property
+    def effect_stats(self) -> Stats:
+        """Прибавка от выпитого. Она при бойце и в кулачном бою: эликсир не
+        вещь, в раздевалке его не оставишь."""
+        return effects_bonus(self.effects)
+
+    @property
+    def effect_hp(self) -> int:
+        return effects_hp(self.effects)
+
+    @property
+    def extra_hp(self) -> int:
+        """Запас здоровья сверх своего: от вещей и от выпитого."""
+        return self.equipment.hp_bonus + self.effect_hp
+
+    @property
     def max_hp(self) -> int:
-        return derive(
-            self.fclass, self.stats, self.level, self.equipment.hp_bonus
-        ).max_hp
+        return derive(self.fclass, self.stats, self.level, self.extra_hp).max_hp
 
     def current_hp(self, now: int | None = None) -> int:
         """Здоровье с учётом восстановления, прошедшего с последнего боя."""

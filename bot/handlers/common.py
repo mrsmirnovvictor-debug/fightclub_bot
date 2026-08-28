@@ -16,6 +16,7 @@ from bot.game.economy import MICRO_UPS_PER_LEVEL
 from bot.game.stats import derive
 from bot.game.links import links
 from bot.game.narrator import esc, health_line
+from bot.game.potions import spell_duration
 from bot.models import Player
 
 PRIVATE_HINT = (
@@ -44,9 +45,11 @@ def combat_block(
     stats: Stats,
     level: int = 1,
     equipment: Equipment | None = None,
+    extra_hp: int = 0,
 ) -> str:
+    """extra_hp — запас сверх вещей: то, что дал выпитый эликсир."""
     equipment = equipment or Equipment()
-    d = derive(fclass, stats, level, equipment.hp_bonus)
+    d = derive(fclass, stats, level, equipment.hp_bonus + extra_hp)
     weapon = equipment.weapon_damages[0] if equipment.weapon_damages else (0, 0)
     hit = f"{d.damage_min}–{d.damage_max}"
     if weapon[1]:
@@ -91,6 +94,20 @@ def progress_line(player: Player) -> str:
     )
 
 
+def effects_line(player: Player) -> str:
+    """Что сейчас действует и сколько ему осталось. Пусто — ничего не пил."""
+    working = player.active_effects()
+    if not working:
+        return ""
+    parts = [
+        f"{effect.potion.emoji} {effect.potion.title} "
+        f"({spell_duration(effect.seconds_left())})"
+        for effect in working
+        if effect.potion is not None
+    ]
+    return "🧪 Действует: " + ", ".join(parts) if parts else ""
+
+
 def profile_text(player: Player, own: bool = True) -> str:
     """Профиль текстом. Чужому кошелёк и подсказки про очки не показываем."""
     fclass = player.fclass
@@ -102,11 +119,16 @@ def profile_text(player: Player, own: bool = True) -> str:
     ]
     if own:
         lines.append(f"💰 Кредиты: <b>{player.credits}</b>")
+    effects = effects_line(player)
+    if effects:
+        lines.append(effects)
     lines += [
         "",
         stats_block(player.stats),
         "",
-        combat_block(fclass, player.stats, player.level, player.equipment),
+        combat_block(
+            fclass, player.stats, player.level, player.equipment, player.effect_hp
+        ),
         "",
         f"🥊 Боёв: <b>{player.fights}</b> · "
         f"побед: <b>{player.wins}</b> · "

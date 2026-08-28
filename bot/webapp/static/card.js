@@ -187,7 +187,14 @@ function thingCard(item, credits, shop) {
   kind.textContent = item.slot_title;
   body.appendChild(kind);
 
-  if (!shop) {
+  if (!shop && item.consumable) {
+    const have = document.createElement("div");
+    have.className = "thing-have";
+    have.textContent = "В рюкзаке: " + item.owned + " шт.";
+    body.appendChild(have);
+  }
+
+  if (!shop && !item.consumable) {
     const wear = document.createElement("div");
     const left = item.max_wear - item.wear;
     wear.className = "thing-wear" + (left <= 1 ? " dying" : item.wear ? " worn" : "");
@@ -212,9 +219,12 @@ function thingCard(item, credits, shop) {
     if (item.owned) {
       const owned = document.createElement("div");
       owned.className = "thing-owned";
-      owned.textContent = item.owned > 1
-        ? "✔ уже есть, штук: " + item.owned
-        : "✔ уже есть";
+      // Склянки копят стопкой, вещи — штуками: и говорим о них по-разному
+      owned.textContent = item.consumable
+        ? "🎒 В рюкзаке: " + item.owned + " шт."
+        : item.owned > 1
+          ? "✔ уже есть, штук: " + item.owned
+          : "✔ уже есть";
       body.appendChild(owned);
     }
   }
@@ -224,10 +234,17 @@ function thingCard(item, credits, shop) {
   reqLabel.textContent = "Требования";
   body.append(reqLabel, requirementList(item));
 
+  if (item.note) {
+    const note = document.createElement("div");
+    note.className = "thing-note";
+    note.textContent = item.note;
+    body.appendChild(note);
+  }
+
   if (item.bonuses.length) {
     const gainLabel = document.createElement("div");
     gainLabel.className = "thing-label";
-    gainLabel.textContent = "Даёт надетой";
+    gainLabel.textContent = item.gain_title || "Даёт надетой";
     body.append(gainLabel, bonusList(item));
   }
 
@@ -254,6 +271,14 @@ function thingCard(item, credits, shop) {
 
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
+
+  if (item.consumable) {
+    buttons.appendChild(button("Использовать", { onClick: () => usePotion(item) }));
+    body.appendChild(buttons);
+    box.appendChild(body);
+    return box;
+  }
+
   item.slots.forEach((slot, index) => {
     const text = index === 0 ? "Надеть" : "Во вторую руку";
     buttons.appendChild(
@@ -302,16 +327,79 @@ function renderBag(card) {
     return;
   }
   bag.classList.remove("hidden");
+  const potions = card.potions || [];
   el("bag-count").textContent = card.inventory.length
     ? "· " + card.inventory.length
     : "";
-  el("bag-empty").classList.toggle("hidden", card.inventory.length > 0);
+  // «Рюкзак пуст» — только когда пуст совсем: склянки тоже вещи
+  el("bag-empty").classList.toggle(
+    "hidden",
+    card.inventory.length > 0 || potions.length > 0
+  );
 
   const list = el("bag-list");
   list.textContent = "";
   card.inventory.forEach((item) => {
     list.appendChild(thingCard(item, card.record.credits));
   });
+
+  // Склянки стоят своей полкой: их пьют, а не надевают
+  const box = el("potion-box");
+  box.classList.toggle("hidden", potions.length === 0);
+  el("potion-count").textContent = potions.length ? "· " + potions.length : "";
+  const shelf = el("potion-list");
+  shelf.textContent = "";
+  potions.forEach((potion) => {
+    shelf.appendChild(thingCard(potion, card.record.credits));
+  });
+}
+
+// ---------- действующие эффекты ----------
+
+// Сколько эффекту осталось, считаем от отметки, снятой при отрисовке:
+// часы на телефоне могут расходиться с серверными.
+let effects = [];
+let effectsAt = 0;
+
+function spell(seconds) {
+  const left = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(left / 3600);
+  const minutes = Math.floor((left % 3600) / 60);
+  if (hours && minutes) return hours + " ч " + minutes + " мин";
+  if (hours) return hours + " ч";
+  if (minutes) return minutes + " мин";
+  return left + " сек";
+}
+
+function paintEffects() {
+  const passed = (Date.now() - effectsAt) / 1000;
+  const live = effects.filter((effect) => effect.seconds_left - passed > 0);
+  ["effects", "hero-effects"].forEach((id) => {
+    const box = el(id);
+    box.textContent = "";
+    box.classList.toggle("hidden", live.length === 0);
+    live.forEach((effect) => {
+      const chip = document.createElement("span");
+      chip.className = "effect";
+      chip.textContent =
+        effect.emoji + " " + effect.title + " · " + spell(effect.seconds_left - passed);
+      chip.title = effect.gain;
+      box.appendChild(chip);
+    });
+  });
+  // Эффект догорел — в характеристиках он больше не учитывается, значит
+  // карточку пора перечитать. Список сужаем сразу, иначе будем звать сервер
+  // каждую секунду.
+  if (live.length < effects.length) {
+    effects = live;
+    refresh();
+  }
+}
+
+function startEffects(list) {
+  effects = list || [];
+  effectsAt = Date.now();
+  paintEffects();
 }
 
 // ---------- магазин ----------
@@ -752,13 +840,43 @@ async function purchase(item) {
     render(data.card, true);
     renderShop(data.shop);
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    popup("🛍 " + data.bought.title, boughtNote(data.bought));
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
+function boughtNote(bought) {
+  const paid = "Куплено за " + bought.price + " 💰. ";
+  if (bought.consumable) {
+    return paid + "Склянка ждёт в инвентаре — там же её и выпить.";
+  }
+  return bought.can_equip
+    ? paid + "Вещь ждёт в инвентаре — надеть можно на вкладке «Боец»."
+    : paid + "Надеть пока нечем: требования не выполнены — вещь полежит "
+      + "в инвентаре.";
+}
+
+async function usePotion(potion) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/use", { code: potion.code });
+    render(data.card, true);
+    shopData = null;  // «уже есть» на витрине изменилось
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    const used = data.used;
+    const left = used.left
+      ? "\nОсталось таких: " + used.left + " шт."
+      : "\nЭто была последняя.";
     popup(
-      "🛍 " + data.bought.title,
-      data.bought.can_equip
-        ? "Куплено за " + data.bought.price + " 💰. Вещь ждёт в инвентаре — "
-          + "надеть можно на вкладке «Боец»."
-        : "Куплено за " + data.bought.price + " 💰. Надеть пока нечем: "
-          + "требования не выполнены — вещь полежит в инвентаре."
+      potion.icon + " " + used.title,
+      (used.healed
+        ? "Здоровья прибавилось на " + used.healed + "."
+        : (used.extended ? "Эффект продлён — держится " : "Эффект пошёл — держится ")
+          + spell(used.seconds_left) + ".") + left
     );
   } catch (error) {
     popup("Не вышло", error.message);
@@ -1016,7 +1134,9 @@ function startHealthTicker(hp) {
   };
   paintHealth();
   if (ticker) clearInterval(ticker);
+  // Один таймер на всё, что тикает: здоровье затягивается, эффекты догорают
   ticker = setInterval(() => {
+    paintEffects();
     if (health.current >= health.max) return;
     health.current = Math.min(health.max, health.current + health.rate);
     paintHealth();
@@ -1035,6 +1155,7 @@ function render(card, keepTab) {
   document.title = card.name + " [" + card.level + "]";
 
   startHealthTicker(card.hp);
+  startEffects(card.effects);
   renderAvatar(card);
   renderSlots(el("slots-left"), card.slots.left, card.is_self);
   renderSlots(el("slots-right"), card.slots.right, card.is_self);

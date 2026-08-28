@@ -11,7 +11,9 @@ import aiosqlite
 
 from bot.game.economy import RATING_START
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
+from bot.game.health import now_ts
 from bot.game.modes import FightMode, mode_of
+from bot.game.potions import ActiveEffect, get_potion
 from bot.game.world import DEFAULT_CITY
 from bot.models import Player, Ring
 
@@ -64,6 +66,24 @@ CREATE TABLE IF NOT EXISTS player_looks (
     user_id   INTEGER NOT NULL,
     code      TEXT    NOT NULL,
     bought_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, code)
+);
+
+-- Эликсиры лежат стопкой: у одного бойца их может быть сколько угодно
+-- штук, а различать их между собой незачем — они одинаковые.
+CREATE TABLE IF NOT EXISTS potions (
+    user_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, code)
+);
+
+-- Действующие эффекты: храним момент, до которого эффект живёт, а не
+-- остаток. Так он переживает перезапуск бота и не требует фоновых задач.
+CREATE TABLE IF NOT EXISTS effects (
+    user_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    until   INTEGER NOT NULL,
     PRIMARY KEY (user_id, code)
 );
 
@@ -289,6 +309,8 @@ class Database:
             return None
         player = _to_player(row)
         player.gear = await self.list_gear(player.user_id)
+        player.potions = await self.list_potions(player.user_id)
+        player.effects = await self.list_effects(player.user_id)
         return player
 
     async def save_player(self, player: Player) -> None:
@@ -359,8 +381,16 @@ class Database:
         await self.conn.commit()
 
     async def delete_player(self, user_id: int) -> None:
+        """Стереть бойца со всем нажитым.
+
+        Купленные образы не трогаем: они привязаны к человеку, а не к
+        персонажу, и оплачены отдельно. Вещи, склянки и выпитое уходят
+        вместе с бойцом.
+        """
         await self.conn.execute("DELETE FROM players WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM inventory WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM potions WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM effects WHERE user_id = ?", (user_id,))
         await self.conn.commit()
 
     async def top_players(self, limit: int = 10) -> list[Player]:
@@ -428,6 +458,83 @@ class Database:
 
     async def delete_gear(self, item_id: int) -> None:
         await self.conn.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
+        await self.conn.commit()
+
+    # ---------- эликсиры ----------
+
+    async def list_potions(self, user_id: int) -> dict[str, int]:
+        """Что у бойца в склянках: код эликсира → сколько штук."""
+        async with self.conn.execute(
+            "SELECT code, count FROM potions WHERE user_id = ? AND count > 0",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {
+            row["code"]: int(row["count"])
+            for row in rows
+            if get_potion(row["code"]) is not None
+        }
+
+    async def add_potion(self, user_id: int, code: str, count: int = 1) -> int:
+        """Положить купленные склянки в рюкзак. Вернуть, сколько их стало."""
+        if get_potion(code) is None:
+            raise ValueError(f"Неизвестный эликсир: {code}")
+        await self.conn.execute(
+            """
+            INSERT INTO potions (user_id, code, count) VALUES (?,?,?)
+            ON CONFLICT(user_id, code) DO UPDATE SET count = count + excluded.count
+            """,
+            (user_id, code, count),
+        )
+        await self.conn.commit()
+        async with self.conn.execute(
+            "SELECT count FROM potions WHERE user_id = ? AND code = ?", (user_id, code)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["count"]) if row else 0
+
+    async def take_potion(self, user_id: int, code: str) -> bool:
+        """Забрать одну склянку. False — брать было нечего."""
+        cursor = await self.conn.execute(
+            "UPDATE potions SET count = count - 1 WHERE user_id = ? AND code = ? "
+            "AND count > 0",
+            (user_id, code),
+        )
+        taken = cursor.rowcount > 0
+        await self.conn.execute(
+            "DELETE FROM potions WHERE user_id = ? AND code = ? AND count <= 0",
+            (user_id, code),
+        )
+        await self.conn.commit()
+        return taken
+
+    async def list_effects(self, user_id: int) -> list[ActiveEffect]:
+        """Действующие эффекты. Просроченные подчищаем тут же — их время вышло."""
+        await self.conn.execute(
+            "DELETE FROM effects WHERE user_id = ? AND until <= ?",
+            (user_id, now_ts()),
+        )
+        await self.conn.commit()
+        async with self.conn.execute(
+            "SELECT code, until FROM effects WHERE user_id = ? ORDER BY until",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            ActiveEffect(code=row["code"], until=int(row["until"]))
+            for row in rows
+            if get_potion(row["code"]) is not None
+        ]
+
+    async def set_effect(self, user_id: int, code: str, until: int) -> None:
+        """Завести эффект или сдвинуть его срок."""
+        await self.conn.execute(
+            """
+            INSERT INTO effects (user_id, code, until) VALUES (?,?,?)
+            ON CONFLICT(user_id, code) DO UPDATE SET until = excluded.until
+            """,
+            (user_id, code, until),
+        )
         await self.conn.commit()
 
     # ---------- ринги ----------

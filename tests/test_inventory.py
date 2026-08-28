@@ -638,7 +638,9 @@ async def test_mini_app_serves_the_shop_and_takes_the_money(client, db):
     response = await client.get("/api/shop", headers=headers(42))
     assert response.status == 200
     shop = await response.json()
-    assert [section["slot"] for section in shop["sections"]] == [s.value for s in ALL_SLOTS]
+    assert [section["slot"] for section in shop["sections"]] == [
+        s.value for s in ALL_SLOTS
+    ] + ["misc"]  # эликсиры идут последними: слота у них нет
 
     response = await client.post("/api/buy", json={"code": "pipe"}, headers=headers(42))
     body = await response.json()
@@ -648,6 +650,7 @@ async def test_mini_app_serves_the_shop_and_takes_the_money(client, db):
         "title": "Деревянная бита",
         "price": 150,
         "can_equip": True,
+        "consumable": False,
     }
     assert body["shop"]["credits"] == 50
     assert [item["title"] for item in body["card"]["inventory"]] == ["Деревянная бита"]

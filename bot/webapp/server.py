@@ -11,6 +11,7 @@ from aiohttp import web
 from bot.config import Config
 from bot.database import Database
 from bot.game.equipment import Slot
+from bot.game.potions import get_potion
 from bot.inventory_service import (
     InventoryError,
     buy,
@@ -19,6 +20,7 @@ from bot.inventory_service import (
     unequip,
 )
 from bot.looks_service import LookError, choose_look, wardrobe
+from bot.potions_service import PotionError, buy_potion, use_potion
 from bot.store_service import StoreError, StoreService
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.webapp.card import build_card, build_club, build_shop, build_topup
@@ -229,10 +231,29 @@ async def api_buy(request: web.Request) -> web.Response:
     """Купить вещь: она уходит в инвентарь, надевать — в карточке."""
     data = await _payload(request)
     code = str(data.get("code") or "")
+    potion = get_potion(code)
     try:
         player = await _own_player(request)
-        item = await buy(request.app[DB_KEY], player, code)
-    except InventoryError as error:
+        if potion is not None:
+            await buy_potion(request.app[DB_KEY], player, code)
+            # Склянку не надевают — её пьют, поэтому и подсказка другая
+            bought = {
+                "code": potion.code,
+                "title": potion.title,
+                "price": potion.price,
+                "can_equip": False,
+                "consumable": True,
+            }
+        else:
+            item = await buy(request.app[DB_KEY], player, code)
+            bought = {
+                "code": item.code,
+                "title": item.title,
+                "price": item.item.price,
+                "can_equip": player.can_equip(item.item),
+                "consumable": False,
+            }
+    except (InventoryError, PotionError) as error:
         return web.json_response({"error": str(error)}, status=409)
 
     config = request.app[CONFIG_KEY]
@@ -240,11 +261,32 @@ async def api_buy(request: web.Request) -> web.Response:
         {
             "shop": build_shop(player),
             "card": build_card(player, config.bot_token, player.user_id),
-            "bought": {
-                "code": item.code,
-                "title": item.title,
-                "price": item.item.price,
-                "can_equip": player.can_equip(item.item),
+            "bought": bought,
+        }
+    )
+
+
+async def api_use(request: web.Request) -> web.Response:
+    """Выпить эликсир из рюкзака."""
+    data = await _payload(request)
+    code = str(data.get("code") or "")
+    try:
+        player = await _own_player(request)
+        result = await use_potion(request.app[DB_KEY], player, code)
+    except (InventoryError, PotionError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "used": {
+                "code": result.potion.code,
+                "title": result.potion.title,
+                "healed": result.healed,
+                "extended": result.extended,
+                "seconds_left": result.seconds_left(),
+                "left": result.left,
             },
         }
     )
@@ -379,6 +421,7 @@ def create_app(
             web.post("/api/repair", api_repair),
             web.get("/api/shop", api_shop),
             web.post("/api/buy", api_buy),
+            web.post("/api/use", api_use),
             web.get("/api/club", api_club),
             web.get("/api/looks", api_looks),
             web.post("/api/look", api_look),
