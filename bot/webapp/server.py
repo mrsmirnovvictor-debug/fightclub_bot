@@ -148,8 +148,11 @@ async def _payload(request: web.Request) -> dict:
 
 
 def _card_response(request: web.Request, player) -> web.Response:
+    """Карточка плюс список того, что слетело: вещи держатся друг за друга."""
     config = request.app[CONFIG_KEY]
-    return web.json_response(build_card(player, config.bot_token, player.user_id))
+    body = build_card(player, config.bot_token, player.user_id)
+    body["undressed"] = [owned.title for owned in player.dropped_gear]
+    return web.json_response(body)
 
 
 def _int_field(data: dict, name: str) -> int:

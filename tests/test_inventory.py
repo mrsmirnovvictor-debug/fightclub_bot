@@ -998,3 +998,120 @@ def test_the_whole_catalogue_lives_in_one_bucket():
 
     for item in CATALOGUE.values():
         assert item.image.startswith(ART), f"{item.code}: не из общего бакета"
+
+
+# ---------- требования считаются по надетому ----------
+
+
+async def test_a_stat_from_gear_opens_the_door_to_the_next_item(db):
+    """Меч даёт +5 интуиции, и под него надевается клинок с требованием 7."""
+    player = make_player(user_id=1, level=5, stats=Stats(
+        strength=12, agility=8, intuition=3, endurance=12
+    ))
+    await db.save_player(player)
+    saber = await db.add_gear(1, "lightsaber")
+    blade = await db.add_gear(1, "hidden_blade")
+    player.gear += [saber, blade]
+
+    # своей интуиции не хватает
+    with pytest.raises(InventoryError, match="интуиция 7"):
+        await equip(db, player, blade.id, Slot.SHIELD)
+
+    await equip(db, player, saber.id, Slot.WEAPON)
+    assert player.worn_stats.intuition == 8
+    await equip(db, player, blade.id, Slot.SHIELD)
+
+    assert player.gear_in_slot(Slot.SHIELD) is blade
+
+
+async def test_taking_off_the_support_takes_off_what_stood_on_it(db):
+    """Сняли меч — интуиция упала, клинок ушёл в рюкзак вслед за ним."""
+    player = make_player(user_id=1, level=5, stats=Stats(
+        strength=12, agility=8, intuition=3, endurance=12
+    ))
+    await db.save_player(player)
+    saber = await db.add_gear(1, "lightsaber")
+    blade = await db.add_gear(1, "hidden_blade")
+    player.gear += [saber, blade]
+    await equip(db, player, saber.id, Slot.WEAPON)
+    await equip(db, player, blade.id, Slot.SHIELD)
+
+    await unequip(db, player, Slot.WEAPON)
+
+    assert [owned.title for owned in player.dropped_gear] == ["Клинок ассасина"]
+    assert player.equipped == []
+    # и в базе тоже: слоты сняты, вещи целы
+    stored = await db.list_gear(1)
+    assert all(owned.slot is None for owned in stored)
+    assert len(stored) == 2
+
+
+async def test_an_item_never_props_itself_up_while_being_replaced(db):
+    """Меняем меч на вещь, которую держал сам меч, — не выйдет."""
+    player = make_player(user_id=1, level=5, stats=Stats(
+        strength=12, agility=8, intuition=3, endurance=12
+    ))
+    await db.save_player(player)
+    saber = await db.add_gear(1, "lightsaber")
+    blade = await db.add_gear(1, "hidden_blade")
+    player.gear += [saber, blade]
+    await equip(db, player, saber.id, Slot.WEAPON)
+
+    # клинок в тот же слот: меч уходит, и его прибавка уходит вместе с ним
+    with pytest.raises(InventoryError, match="интуиция 7"):
+        await equip(db, player, blade.id, Slot.WEAPON)
+
+    assert player.gear_in_slot(Slot.WEAPON) is saber
+
+
+async def test_the_cascade_keeps_going_until_the_gear_stands_on_its_own(db):
+    """Снятие идёт не в один заход: за первой вещью может уйти вторая."""
+    player = make_player(user_id=1, level=5, stats=Stats(
+        strength=12, agility=8, intuition=3, endurance=12
+    ))
+    saber = OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON)
+    blade = OwnedItem(item=CATALOGUE["hidden_blade"], id=2, slot=Slot.SHIELD)
+    player.gear = [saber, blade]
+    assert player.worn_stats.intuition == 10  # 3 + 5 от меча + 2 от клинка
+
+    saber.slot = None  # сняли руками, как это делает unequip
+    dropped = player.settle_gear()
+
+    assert [owned.title for owned in dropped] == ["Клинок ассасина"]
+    assert player.equipped == []
+
+
+def test_potions_do_not_count_towards_requirements():
+    """Эффект уходит по часам: вещь на нём слетала бы посреди боя."""
+    from bot.game.potions import ActiveEffect
+    from bot.game.health import now_ts
+
+    player = make_player(stats=Stats(
+        strength=12, agility=8, intuition=3, endurance=12
+    ))
+    player.effects = [ActiveEffect(code="boost_intuition", until=now_ts() + 3600)]
+
+    assert player.stats.intuition == 13  # в бою эффект считается
+    assert player.worn_stats.intuition == 3  # а в требованиях — нет
+    assert not player.can_equip(CATALOGUE["hidden_blade"])
+
+
+async def test_a_respec_undresses_what_it_can_no_longer_carry(db):
+    """Сбросили характеристики — надетое не по плечу уходит в рюкзак."""
+    from bot.inventory_service import settle_gear
+
+    player = make_player(user_id=1, level=5, stats=Stats(
+        strength=20, agility=8, intuition=20, endurance=12
+    ))
+    await db.save_player(player)
+    blade = await db.add_gear(1, "hidden_blade")
+    player.gear.append(blade)
+    await equip(db, player, blade.id)
+    assert player.equipped
+
+    player.reset_stats()
+    await db.save_player(player)
+    dropped = await settle_gear(db, player)
+
+    assert [owned.title for owned in dropped] == ["Клинок ассасина"]
+    assert (await db.get_player(1)).equipped == []

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from bot.game.classes import FighterClass, Stat, Stats, get_class
+from bot.game.classes import ALL_STATS, FighterClass, Stat, Stats, get_class
 from bot.game.modes import FightMode
 from bot.game.equipment import (
     Equipment,
@@ -100,6 +100,9 @@ class Player:
     potions: dict[str, int] = field(default_factory=dict)
     # Что сейчас действует. Просроченное сюда не попадает — база чистит сама
     effects: list[ActiveEffect] = field(default_factory=list)
+    # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
+    # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
+    dropped_gear: list[OwnedItem] = field(default_factory=list)
 
     @property
     def base_stats(self) -> Stats:
@@ -130,15 +133,69 @@ class Player:
     def gear_in_slot(self, slot: Slot) -> OwnedItem | None:
         return next((owned for owned in self.gear if owned.slot is slot), None)
 
-    def can_equip(self, item: Item) -> bool:
-        """Требования считаются по своим характеристикам, без экипировки."""
-        return can_equip(item, self.level, self.base_stats)
+    @property
+    def worn_stats(self) -> Stats:
+        """Характеристики, по которым меряются требования вещей.
 
-    def missing_for(self, item: Item) -> list[str]:
-        return missing_requirements(item, self.level, self.base_stats)
+        Своё плюс надетое: меч с прибавкой к интуиции позволяет взять во
+        вторую руку нож, до которого без него боец не дотягивался.
+
+        Выпитое сюда не входит намеренно. Эффект уходит сам, по часам, и
+        вещь, надетая под эликсир, слетала бы посреди боя без единого
+        нажатия — экипировка не должна зависеть от того, что тикает.
+        """
+        return self.base_stats.merge(self.equipment.bonus)
+
+    def stats_without(self, owned: OwnedItem | None) -> Stats:
+        """Характеристики, как если бы этой вещи на бойце не было."""
+        if owned is None or not owned.is_equipped:
+            return self.worn_stats
+        return Stats(
+            **{
+                stat.value: self.worn_stats.get(stat) - owned.bonus.get(stat)
+                for stat in ALL_STATS
+            }
+        )
+
+    def can_equip(self, item: Item, without: OwnedItem | None = None) -> bool:
+        """Хватает ли бойцу характеристик на эту вещь.
+
+        `without` — вещь, которая уйдёт из слота вместо неё: её прибавка в
+        зачёт не идёт, иначе снимаемое поддерживало бы само себя.
+        """
+        return can_equip(item, self.level, self.stats_without(without))
+
+    def missing_for(
+        self, item: Item, without: OwnedItem | None = None
+    ) -> list[str]:
+        return missing_requirements(item, self.level, self.stats_without(without))
 
     def drop_gear(self, owned: OwnedItem) -> None:
         self.gear = [item for item in self.gear if item.id != owned.id]
+
+    def settle_gear(self) -> list[OwnedItem]:
+        """Снять всё, что больше не по плечу. Вернуть снятое.
+
+        Вещи держатся друг за друга: меч даёт интуицию, под неё надет нож.
+        Убрали меч — нож остался без опоры, а за ножом может посыпаться и
+        третья вещь. Поэтому снимаем не по одному разу, а пока есть что
+        снимать.
+        """
+        dropped: list[OwnedItem] = []
+        while True:
+            stats = self.worn_stats
+            loose = next(
+                (
+                    owned
+                    for owned in self.equipped
+                    if not can_equip(owned.item, self.level, stats)
+                ),
+                None,
+            )
+            if loose is None:
+                return dropped
+            loose.slot = None
+            dropped.append(loose)
 
     # ---------- подписка ----------
 

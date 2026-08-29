@@ -30,7 +30,7 @@ from bot.game.equipment import (
 from bot.game.narrator import esc
 from bot.game.potions import POTIONS, get_potion, spell_duration
 from bot.handlers.common import send_profile
-from bot.inventory_service import InventoryError, buy
+from bot.inventory_service import InventoryError, buy, settle_gear
 from bot.potions_service import (
     PotionError,
     buy_potion,
@@ -64,6 +64,14 @@ class Shop(StatesGroup):
     changing_avatar = State()
     waiting_photo = State()
     changing_class = State()
+
+
+def undressed(dropped: list) -> str:
+    """Строка про то, что слетело вместе с характеристиками. Пусто — ничего."""
+    if not dropped:
+        return ""
+    names = ", ".join(esc(owned.title) for owned in dropped)
+    return f"\n👕 Ушло в рюкзак, требования больше не выполнены: {names}.\n"
 
 
 def price_list(player: Player) -> str:
@@ -410,10 +418,13 @@ async def on_respec(
     player.pay(PRICE_RESPEC)
     returned = player.reset_stats()
     await db.save_player(player)
+    # Характеристики просели до базы: часть надетого могла стать не по плечу
+    dropped = await settle_gear(db, player)
     await callback.message.edit_text(
         f"♻️ Характеристики сброшены до базы {player.fclass.label}.\n"
         f"Свободных очков: <b>{player.free_points}</b> (вернулось {returned}).\n"
-        f"Осталось кредитов: <b>{player.credits}</b> 💰\n\n"
+        f"Осталось кредитов: <b>{player.credits}</b> 💰\n"
+        f"{undressed(dropped)}\n"
         "Раскидывай заново: /upgrade"
     )
     await callback.answer()
@@ -578,11 +589,13 @@ async def on_class_change(
     player.pay(PRICE_CLASS_CHANGE)
     returned = player.switch_class(new_class.code)
     await db.save_player(player)
+    dropped = await settle_gear(db, player)
     await state.clear()
     await callback.message.edit_text(
         f"🔄 {old.label} → {new_class.label}\n"
         f"Свободных очков: <b>{player.free_points}</b> (вернулось {returned}).\n"
-        f"Списано {PRICE_CLASS_CHANGE} 💰, осталось {player.credits} 💰.\n\n"
+        f"Списано {PRICE_CLASS_CHANGE} 💰, осталось {player.credits} 💰.\n"
+        f"{undressed(dropped)}\n"
         "Собирай билд заново: /upgrade"
     )
     await callback.answer("Новый класс!")

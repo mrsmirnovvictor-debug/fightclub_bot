@@ -94,7 +94,12 @@ def slot_payload(
 
 
 def requirements_payload(player: Player, item: Item) -> list[dict]:
-    """Что нужно, чтобы надеть вещь, и что из этого у бойца уже есть."""
+    """Что нужно, чтобы надеть вещь, и что из этого у бойца уже есть.
+
+    «Есть» считается по надетому: меч с прибавкой к интуиции открывает нож,
+    до которого боец сам не дотягивается, — значит и в требованиях должно
+    стоять то число, по которому решает сервер.
+    """
     missing = set(player.missing_for(item))
     rows = [
         {
@@ -114,7 +119,7 @@ def requirements_payload(player: Player, item: Item) -> list[dict]:
                     "title": stat.title.capitalize(),
                     "emoji": stat.emoji,
                     "need": need,
-                    "have": player.base_stats.get(stat),
+                    "have": player.worn_stats.get(stat),
                     "ok": stat.value not in missing,
                 }
             )

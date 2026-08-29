@@ -1124,9 +1124,19 @@ async function act(url, body) {
   if (busy) return;
   busy = true;
   try {
-    render(await post(url, body), true);
+    const card = await post(url, body);
+    render(card, true);
     shopData = null;  // «уже есть» на витрине могло измениться
     if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+    // Вещи держатся друг за друга: сняли меч — ушёл и нож, который стоял
+    // на его прибавке. Молчать об этом нельзя, слот пустеет сам собой.
+    if (card.undressed && card.undressed.length) {
+      popup(
+        "👕 Слетело с бойца",
+        "Требования больше не выполнены, ушло в рюкзак:\n"
+          + card.undressed.join("\n")
+      );
+    }
   } catch (error) {
     popup("Не вышло", error.message);
   } finally {

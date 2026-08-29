@@ -50,6 +50,14 @@ async def buy(db: Database, player: Player, code: str) -> OwnedItem:
     return owned
 
 
+async def settle_gear(db: Database, player: Player) -> list[OwnedItem]:
+    """Снять всё, что осталось без опоры, и записать это в базу."""
+    dropped = player.settle_gear()
+    for owned in dropped:
+        await db.save_gear(owned)
+    return dropped
+
+
 async def equip(
     db: Database, player: Player, item_id: int, slot: Slot | None = None
 ) -> OwnedItem:
@@ -63,28 +71,38 @@ async def equip(
     target = slot or owned.item.slots[0]
     if target not in owned.item.slots:
         raise InventoryError(f"«{owned.title}» в этот слот не надевается.")
-    if not player.can_equip(owned.item):
+
+    busy = player.gear_in_slot(target)
+    # Уходящая из слота вещь в зачёт не идёт: иначе она поддерживала бы
+    # сама себя — сняли меч, а требования считаются так, будто он на бойце.
+    if not player.can_equip(owned.item, without=busy):
         raise InventoryError(
             f"Пока не по плечу: нужно {describe_requirements(owned.item)}."
         )
 
-    busy = player.gear_in_slot(target)
     if busy is not None:
         busy.slot = None
         await db.save_gear(busy)
 
     owned.slot = target
     await db.save_gear(owned)
+    # Ушедшая вещь могла держать что-то ещё — проверяем всё надетое
+    player.dropped_gear = await settle_gear(db, player)
     return owned
 
 
 async def unequip(db: Database, player: Player, slot: Slot) -> OwnedItem:
-    """Снять вещь со слота — она вернётся в инвентарь."""
+    """Снять вещь со слота — она вернётся в инвентарь.
+
+    Вместе с ней уходит всё, что на ней держалось: нож, надетый под чужую
+    прибавку к интуиции, без неё бойцу уже не по плечу.
+    """
     owned = player.gear_in_slot(slot)
     if owned is None:
         raise InventoryError("Слот и так пуст.")
     owned.slot = None
     await db.save_gear(owned)
+    player.dropped_gear = await settle_gear(db, player)
     return owned
 
 
@@ -134,4 +152,6 @@ async def wear_after_fight(
             player.drop_gear(owned)
         else:
             await db.save_gear(owned)
+    # Рассыпавшаяся вещь могла держать соседнюю — та уходит в рюкзак
+    player.dropped_gear = await settle_gear(db, player)
     return broken
