@@ -756,3 +756,70 @@ async def test_the_bag_explains_what_the_weapon_does_in_your_hands(server):
         assert "🗡 Световой меч" in hero
         assert "7–15 → 6–14" in hero
         await browser.close()
+
+
+async def test_free_points_are_handed_out_right_on_the_hero_screen(server):
+    """Плюсы копят черновик, кнопка отправляет его одним разом."""
+    player = make_player()
+    player.free_points = 3
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        sent = []
+
+        async def upgrade(route):
+            spent = json.loads(route.request.post_data)
+            sent.append(spent)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"card": card, "spent": spent, "left": 0}),
+            )
+
+        await page.route("**/api/upgrade", upgrade)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        box = page.locator("#upgrade")
+        assert await box.is_visible()
+        assert "Свободных очков: 3 из 3" in await box.inner_text()
+
+        # пока ничего не разложено, вкладывать нечего
+        apply_button = box.get_by_role("button", name="Вложить · 0")
+        assert await apply_button.is_disabled()
+
+        # два очка в силу, одно в интуицию
+        plus = box.locator(".up-row .step:last-child")
+        await plus.nth(0).click()
+        await plus.nth(0).click()
+        await plus.nth(2).click()
+        assert "Свободных очков: 0 из 3" in await box.inner_text()
+        assert "14 + 2" in await box.inner_text()  # своя сила плюс черновик
+
+        # больше очков нет — плюсы погасли
+        assert await plus.nth(1).is_disabled()
+
+        # минус возвращает очко в черновик, сервер об этом не знает
+        await box.locator(".up-row .step:first-of-type").nth(0).click()
+        assert "Свободных очков: 1 из 3" in await box.inner_text()
+        assert sent == []
+
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+        await box.get_by_role("button", name="Вложить · 2").click()
+        await page.wait_for_timeout(250)
+
+        assert sent == [{"strength": 1, "intuition": 1}]
+        await browser.close()
+
+
+async def test_a_fighter_without_points_sees_no_panel(server):
+    player = make_player()
+    player.free_points = 0
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#upgrade").is_hidden()
+        await browser.close()

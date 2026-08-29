@@ -10,6 +10,7 @@ from aiohttp import web
 
 from bot.config import Config
 from bot.database import Database
+from bot.game.classes import ALL_STATS
 from bot.game.equipment import Slot
 from bot.game.potions import get_potion
 from bot.inventory_service import (
@@ -23,6 +24,7 @@ from bot.looks_service import LookError, choose_look, wardrobe
 from bot.potions_service import PotionError, buy_potion, use_potion
 from bot.pro_service import ProError, claim_free_pro, promo_taken
 from bot.store_service import StoreError, StoreService
+from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.webapp.card import (
     build_card,
@@ -303,6 +305,25 @@ async def api_use(request: web.Request) -> web.Response:
     )
 
 
+async def api_upgrade(request: web.Request) -> web.Response:
+    """Разложить свободные очки по характеристикам."""
+    data = await _payload(request)
+    try:
+        player = await _own_player(request)
+        gain = await spend_points(request.app[DB_KEY], player, data)
+    except (InventoryError, UpgradeError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "spent": {stat.value: gain.get(stat) for stat in ALL_STATS},
+            "left": player.free_points,
+        }
+    )
+
+
 async def api_magic(request: web.Request) -> web.Response:
     """Лавка мага: товар только за звёзды."""
     try:
@@ -475,6 +496,7 @@ def create_app(
             web.get("/api/shop", api_shop),
             web.post("/api/buy", api_buy),
             web.post("/api/use", api_use),
+            web.post("/api/upgrade", api_upgrade),
             web.get("/api/club", api_club),
             web.get("/api/magic", api_magic),
             web.post("/api/pro", api_pro),

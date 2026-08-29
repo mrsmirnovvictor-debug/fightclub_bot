@@ -216,6 +216,51 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .rows .value.weapon { color: var(--muted); font-weight: 600; }
 .rule { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
 
+/* ---------- раздача свободных очков ---------- */
+
+.upgrade { margin-top: 10px; }
+.upgrade.hidden { display: none; }
+.up-head {
+  font-weight: 700;
+  color: var(--hp-green);
+  margin-bottom: 6px;
+}
+.up-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.up-row .label { flex: 1; min-width: 0; }
+.up-value {
+  min-width: 62px;
+  text-align: right;
+  font-weight: 700;
+}
+.up-value.added { color: var(--hp-green); }
+.step {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+.step:disabled { opacity: 0.35; cursor: default; }
+.step:not(:disabled):active { transform: scale(0.92); }
+.up-note {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
 /* ---------- вкладки и магазин ---------- */
 
 /* ---------- нижняя панель вкладок ---------- */

@@ -377,6 +377,138 @@ function renderBag(card) {
   });
 }
 
+// ---------- раздача свободных очков ----------
+
+// Черновик живёт на странице, пока его не применили: пока боец щёлкает
+// плюсами, сервер об этом ничего не знает и знать не должен.
+let draft = {};
+let cardStats = [];
+let freePoints = 0;
+
+function draftTotal() {
+  return Object.values(draft).reduce((sum, value) => sum + value, 0);
+}
+
+function draftLeft() {
+  return freePoints - draftTotal();
+}
+
+function statStep(stat) {
+  const row = document.createElement("li");
+  row.className = "up-row";
+
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = stat.emoji + " " + stat.title;
+
+  const value = document.createElement("span");
+  value.className = "up-value";
+  const added = draft[stat.code] || 0;
+  value.textContent = stat.base + (added ? " + " + added : "");
+  if (added) value.classList.add("added");
+
+  const minus = document.createElement("button");
+  minus.type = "button";
+  minus.className = "step";
+  minus.textContent = "−";
+  minus.disabled = !added;
+  minus.addEventListener("click", () => {
+    draft[stat.code] = Math.max(0, (draft[stat.code] || 0) - 1);
+    if (!draft[stat.code]) delete draft[stat.code];
+    paintUpgrade();
+  });
+
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "step";
+  plus.textContent = "+";
+  plus.disabled = draftLeft() <= 0;
+  plus.addEventListener("click", () => {
+    if (draftLeft() <= 0) return;
+    draft[stat.code] = (draft[stat.code] || 0) + 1;
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    paintUpgrade();
+  });
+
+  row.append(label, minus, value, plus);
+  return row;
+}
+
+function paintUpgrade() {
+  const box = el("upgrade");
+  box.textContent = "";
+  box.classList.toggle("hidden", freePoints <= 0);
+  if (freePoints <= 0) {
+    draft = {};
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "up-head";
+  head.textContent =
+    "✨ Свободных очков: " + draftLeft() + " из " + freePoints;
+  box.appendChild(head);
+
+  const rows = document.createElement("ul");
+  rows.className = "rows";
+  cardStats.forEach((stat) => rows.appendChild(statStep(stat)));
+  box.appendChild(rows);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Вложить · " + draftTotal(), {
+      disabled: draftTotal() <= 0,
+      onClick: applyUpgrade,
+    })
+  );
+  if (draftTotal() > 0) {
+    buttons.appendChild(
+      button("Сбросить", {
+        secondary: true,
+        onClick: () => {
+          draft = {};
+          paintUpgrade();
+        },
+      })
+    );
+  }
+  box.appendChild(buttons);
+
+  const note = document.createElement("div");
+  note.className = "up-note";
+  note.textContent =
+    "Очки ложатся в свои характеристики и обратно не вынимаются: "
+    + "пересобрать билд можно только за кредиты, командой /respec.";
+  box.appendChild(note);
+}
+
+async function applyUpgrade() {
+  if (busy || draftTotal() <= 0) return;
+  const ok = await confirmAction(
+    "Вложить очков: " + draftTotal() + "?\nОбратно они не вынимаются."
+  );
+  if (!ok) return;
+
+  busy = true;
+  const spent = draftTotal();
+  try {
+    const data = await post("api/upgrade", draft);
+    draft = {};
+    render(data.card, true);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    popup(
+      "✨ Характеристики выросли",
+      "Вложено очков: " + spent + "."
+        + (data.left ? "\nОсталось свободных: " + data.left + "." : "")
+    );
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
 // ---------- действующие эффекты ----------
 
 // Сколько эффекту осталось, считаем от отметки, снятой при отрисовке:
@@ -1398,6 +1530,11 @@ function render(card, keepTab) {
   card.stats.forEach((stat) => {
     stats.appendChild(row(stat.emoji + " " + stat.title, statValue(stat)));
   });
+
+  // Раздача очков — только на своей карточке: чужие характеристики не наши
+  cardStats = card.is_self ? card.stats : [];
+  freePoints = card.is_self ? card.progress.free_points : 0;
+  paintUpgrade();
 
   const progress = el("progress");
   progress.textContent = "";

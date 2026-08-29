@@ -358,7 +358,11 @@ async def cmd_upgrade(message: Message, state: FSMContext, db: Database) -> None
     await state.update_data(spent={}, left=player.free_points)
     await message.answer(
         distribution_text(
-            player.fclass, player.stats, {}, player.free_points, level=player.level
+            player.fclass,
+            player.base_stats,
+            {},
+            player.free_points,
+            level=player.level,
         ),
         reply_markup=stats_keyboard(player.free_points),
     )
@@ -387,12 +391,10 @@ async def upgrade_distribute(
     elif callback_data.action == "reset":
         spent, left = {}, player.free_points
     elif callback_data.action == "done":
-        gain = spent_stats(spent)
-        total = player.stats.merge(gain)
-        player.strength = total.strength
-        player.agility = total.agility
-        player.intuition = total.intuition
-        player.endurance = total.endurance
+        # Очки ложатся в свои характеристики: прибавка с вещей и от выпитого
+        # в базу попасть не должна — вещь снимут, эликсир кончится, а
+        # вписанное в базу останется.
+        player.apply_stats(player.base_stats.merge(spent_stats(spent)))
         player.free_points = left
         await db.save_player(player)
         await state.clear()
@@ -403,7 +405,9 @@ async def upgrade_distribute(
 
     await state.update_data(spent=spent, left=left)
     await callback.message.edit_text(
-        distribution_text(player.fclass, player.stats, spent, left, level=player.level),
+        distribution_text(
+            player.fclass, player.base_stats, spent, left, level=player.level
+        ),
         reply_markup=stats_keyboard(left),
     )
     await callback.answer()
