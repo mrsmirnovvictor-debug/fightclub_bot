@@ -144,6 +144,14 @@ function bonusList(item) {
       gain.text === undefined
         ? gain.emoji + " " + gain.title + " +" + gain.value
         : gain.emoji + " " + gain.title + ": " + gain.text;
+    // Класс проворачивает оружие по-своему: рядом с числом вещи говорим,
+    // во что оно превратится в этих руках.
+    if (gain.hint) {
+      const hint = document.createElement("span");
+      hint.className = "gain-hint";
+      hint.textContent = " (" + gain.hint + ")";
+      li.appendChild(hint);
+    }
     list.appendChild(li);
   });
   return list;
@@ -1409,7 +1417,9 @@ function render(card, keepTab) {
   const c = card.combat;
   const hit = c.weapon_damage.length
     ? c.damage_min + "–" + c.damage_max +
-      c.weapon_damage.map((w) => " + " + w.min + "–" + w.max).join("")
+      c.weapon_damage
+        .map((w) => " + " + (w.icon || "") + w.min + "–" + w.max)
+        .join("")
     : c.damage_min + "–" + c.damage_max;
   combat.appendChild(row("👊 Урон", hit));
   combat.appendChild(row("💥 Крит", c.crit_chance + "% ×" + c.crit_power));

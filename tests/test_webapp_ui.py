@@ -726,3 +726,31 @@ async def test_the_bag_warns_before_one_elixir_puts_out_another(server):
         await page.wait_for_timeout(250)
         assert json.loads(poured[0]) == {"code": "boost_agility"}
         await browser.close()
+
+
+async def test_the_bag_explains_what_the_weapon_does_in_your_hands(server):
+    """Рядом с уроном вещи стоит то, во что он превращается у этого класса."""
+    from bot.game.equipment import CATALOGUE
+
+    saber = CATALOGUE["lightsaber"]
+    player = make_player()  # воин, множитель 0.9
+    # один меч надет, второй лежит в рюкзаке: обе надписи видно разом
+    player.gear = [
+        OwnedItem(item=saber, id=9, slot=Slot.WEAPON),
+        OwnedItem(item=saber, id=10),
+    ]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag-list .thing")
+
+        bag = await page.locator("#bag-list").inner_text()
+        assert "👊 Урон: 7–15 (у воина 6–14)" in bag
+
+        # а в боевых показателях та же прибавка подписана значком меча
+        hero = await page.locator("#combat").inner_text()
+        assert "🗡6–14" in hero
+        await browser.close()

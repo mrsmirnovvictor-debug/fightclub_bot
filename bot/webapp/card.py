@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from bot.game.classes import ALL_STATS, ALL_ZONES, Stats, get_class
+from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats, get_class
 from bot.game.combat import (
     total_accuracy,
     total_anticrit,
@@ -136,11 +136,28 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "requirements": requirements_payload(player, item),
         "can_equip": player.can_equip(item),
         "bonus": item.describe_bonus(),
-        "bonuses": bonuses_payload(item),
+        "bonuses": bonuses_payload(item, player.fclass),
     }
 
 
-def bonuses_payload(item: Item) -> list[dict]:
+def weapon_in_hands(item: Item, fclass: FighterClass | None) -> str:
+    """Урон оружия в руках этого класса. Пусто — класс ничего не меняет.
+
+    Одну и ту же биту воин проворачивает хуже ассасина, и боевой движок это
+    считает. Значит и вещь должна говорить, во что она превратится: иначе на
+    карточке рядом стоят «7–15» у меча и «6–14» в ударе, и это читается как
+    ошибка, хотя оба числа верные.
+    """
+    if fclass is None or not item.damage_max:
+        return ""
+    low = round(item.damage_min * fclass.damage_mult)
+    high = round(item.damage_max * fclass.damage_mult)
+    if (low, high) == (item.damage_min, item.damage_max):
+        return ""
+    return f"{low}–{high}"
+
+
+def bonuses_payload(item: Item, fclass: FighterClass | None = None) -> list[dict]:
     """Что вещь даёт, когда надета.
 
     Строка с диапазоном («Урон: 13–21») приходит текстом, прибавка к
@@ -148,7 +165,11 @@ def bonuses_payload(item: Item) -> list[dict]:
     """
     rows: list[dict] = []
     if item.damage_max:
-        rows.append({"emoji": "👊", "title": "Урон", "text": item.describe_damage()})
+        row = {"emoji": "👊", "title": "Урон", "text": item.describe_damage()}
+        in_hands = weapon_in_hands(item, fclass)
+        if in_hands:
+            row["hint"] = f"у {fclass.title.lower()}а {in_hands}"
+        rows.append(row)
     if item.armor_max:
         rows.append({"emoji": "🛡", "title": "Броня", "text": item.describe_armor()})
     rows += [
@@ -197,7 +218,7 @@ def goods_payload(player: Player, item: Item, owned: int) -> dict:
         "can_equip": player.can_equip(item),
         "owned": owned,
         "requirements": requirements_payload(player, item),
-        "bonuses": bonuses_payload(item),
+        "bonuses": bonuses_payload(item, player.fclass),
         "suits": suits_payload(item),
     }
 
@@ -557,13 +578,18 @@ def build_card(
             "damage_min": derived.damage_min,
             "damage_max": derived.damage_max,
             # Класс проворачивает оружие по-своему, поэтому показываем то,
-            # что реально долетит до соперника
+            # что реально долетит до соперника. Значок оружия рядом нужен,
+            # чтобы «6–14» читалось как прибавка от меча, а не как загадка:
+            # у самого меча в описании стоит 7–15.
             "weapon_damage": [
                 {
                     "min": round(low * fclass.damage_mult),
                     "max": round(high * fclass.damage_mult),
+                    "icon": icon,
                 }
-                for low, high in equipment.weapon_damages
+                for (low, high), icon in zip(
+                    equipment.weapon_damages, equipment.weapon_icons
+                )
                 if high
             ],
             # Проценты считаем той же арифметикой, что и ринг: карточка

@@ -371,3 +371,60 @@ def test_the_card_never_promises_more_than_the_ring_allows():
     fighter = Fighter.from_player(player, armed=True)
 
     assert card["dodge_chance"] == round(fighter.dodge * 100) == 60
+
+
+# ---------- оружие в руках класса ----------
+
+
+def test_the_item_card_says_what_the_weapon_becomes_in_these_hands():
+    """У меча 7–15, у воина в руках 6–14 — и то и другое видно рядом.
+
+    Числа оба верные: боевой движок правда прогоняет урон оружия через
+    множитель класса. Но раньше «7–15» на вещи и «6–14» в ударе стояли на
+    одной карточке без всякой связи, и это читалось как ошибка.
+    """
+    player = make_player()  # воин, множитель 0.9
+    player.gear = [OwnedItem(item=SABER, id=1)]
+
+    row = next(
+        gain
+        for gain in build_card(player, TOKEN, viewer_id=42)["inventory"][0]["bonuses"]
+        if gain["title"] == "Урон"
+    )
+
+    assert row["text"] == "7–15"
+    assert row["hint"] == "у воина 6–14"
+
+
+def test_the_hint_is_silent_when_the_class_changes_nothing():
+    """У танка множитель почти единица: подсказка была бы шумом."""
+    player = make_player()
+    player.class_code = "tank"
+    player.gear = [OwnedItem(item=SABER, id=1)]
+
+    row = next(
+        gain
+        for gain in build_card(player, TOKEN, viewer_id=42)["inventory"][0]["bonuses"]
+        if gain["title"] == "Урон"
+    )
+
+    assert row["text"] == "7–15" and "hint" not in row
+
+
+def test_the_assassin_gets_more_out_of_the_same_blade():
+    from bot.webapp.card import weapon_in_hands
+    from bot.game.classes import get_class
+
+    assert weapon_in_hands(SABER, get_class("assassin")) == "8–17"
+    assert weapon_in_hands(SABER, get_class("warrior")) == "6–14"
+    assert weapon_in_hands(SABER, None) == ""
+    assert weapon_in_hands(CATALOGUE["wraps"], get_class("warrior")) == ""
+
+
+def test_the_damage_row_marks_which_part_came_from_the_weapon():
+    player = make_player()
+    player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
+
+    weapon = build_card(player, TOKEN, viewer_id=42)["combat"]["weapon_damage"]
+
+    assert weapon == [{"min": 6, "max": 14, "icon": SABER.emoji}]
