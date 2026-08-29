@@ -43,9 +43,14 @@ class BuyCB(CallbackData, prefix="buy"):
 
 
 class DrinkCB(CallbackData, prefix="drink"):
-    """Выпить эликсир из рюкзака прямо из чата."""
+    """Выпить эликсир из рюкзака прямо из чата.
+
+    confirm=1 — человек уже видел предупреждение о том, что нынешний
+    временный эффект погаснет, и всё равно согласен.
+    """
 
     code: str
+    confirm: int = 0
 
 
 class LobbyCB(CallbackData, prefix="lob"):

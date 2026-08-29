@@ -672,3 +672,57 @@ async def test_the_pro_card_always_leads_the_mage_counter(server):
             await page.wait_for_timeout(200)
             assert taken == ["{}"]
         await browser.close()
+
+
+async def test_the_bag_warns_before_one_elixir_puts_out_another(server):
+    """Другой временный эликсир гасит нынешний: спрашиваем до глотка."""
+    player = make_player()
+    player.potions = {"boost_agility": 1}
+    player.effects = [ActiveEffect(code="boost_strength", until=now_ts() + 3600)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        poured = []
+
+        async def pour(route):
+            poured.append(route.request.post_data)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "card": card,
+                        "used": {
+                            "code": "boost_agility",
+                            "title": "Эликсир ловкости",
+                            "healed": 0,
+                            "extended": False,
+                            "seconds_left": 7200,
+                            "left": 0,
+                            "replaced": ["Эликсир силы"],
+                        },
+                    }
+                ),
+            )
+
+        await page.route("**/api/use", pour)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        box = page.locator("#potion-box")
+
+        # предупреждение видно прямо на склянке, ещё до нажатия
+        assert "⚠️ Вытеснит «Эликсир силы»" in await box.inner_text()
+
+        # отказ ничего не тратит
+        page.once("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+        await box.locator(".btn").click()
+        await page.wait_for_timeout(200)
+        assert poured == []
+
+        # согласие — пьём
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+        await box.locator(".btn").click()
+        await page.wait_for_timeout(250)
+        assert json.loads(poured[0]) == {"code": "boost_agility"}
+        await browser.close()

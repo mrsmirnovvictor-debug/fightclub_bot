@@ -192,6 +192,14 @@ function thingCard(item, credits, shop) {
     have.className = "thing-have";
     have.textContent = "В рюкзаке: " + item.owned + " шт.";
     body.appendChild(have);
+
+    const running = item.boost ? runningBoost() : null;
+    if (running && running.code !== item.code) {
+      const warn = document.createElement("div");
+      warn.className = "thing-warn";
+      warn.textContent = "⚠️ Вытеснит «" + running.title + "»";
+      body.appendChild(warn);
+    }
   }
 
   if (!shop && !item.consumable) {
@@ -1035,8 +1043,26 @@ function boughtNote(bought) {
       + "в инвентаре.";
 }
 
+function runningBoost() {
+  // Временный эликсир на бойце один: возвращаем его, если он есть
+  return effects.find((effect) => effect.boost) || null;
+}
+
 async function usePotion(potion) {
   if (busy) return;
+
+  // Другой временный вытеснит нынешний, и человек должен узнать об этом
+  // до глотка, а не после: склянка тратится в любом случае.
+  const running = potion.boost ? runningBoost() : null;
+  if (running && running.code !== potion.code) {
+    const ok = await confirmAction(
+      "Сейчас действует «" + running.title + "»."
+        + "\nЕсли выпьешь «" + potion.title + "», прежний эффект закончится."
+        + "\nПродолжить?"
+    );
+    if (!ok) return;
+  }
+
   busy = true;
   try {
     const data = await post("api/use", { code: potion.code });
@@ -1047,12 +1073,15 @@ async function usePotion(potion) {
     const left = used.left
       ? "\nОсталось таких: " + used.left + " шт."
       : "\nЭто была последняя.";
+    const gone = (used.replaced || []).length
+      ? "\nЗакончилось действие: " + used.replaced.join(", ") + "."
+      : "";
     popup(
       potion.icon + " " + used.title,
       (used.healed
         ? "Здоровья прибавилось на " + used.healed + "."
         : (used.extended ? "Эффект продлён — держится " : "Эффект пошёл — держится ")
-          + spell(used.seconds_left) + ".") + left
+          + spell(used.seconds_left) + ".") + gone + left
     );
   } catch (error) {
     popup("Не вышло", error.message);

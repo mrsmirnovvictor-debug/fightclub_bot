@@ -233,6 +233,8 @@ def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
         "image": potion.picture,
         "kind": potion.kind.value,
         "consumable": True,
+        # Временный вытесняет другой временный, восстановление — никого
+        "boost": potion.is_boost,
         "slot": SECTION_CODE,
         "slot_title": SECTION_TITLE,
         "note": potion.note,
@@ -277,6 +279,7 @@ def effect_payload(effect: ActiveEffect, now: int) -> dict:
     left = effect.seconds_left(now)
     return {
         "code": effect.code,
+        "boost": bool(potion and potion.is_boost),
         "title": potion.title if potion else effect.code,
         "emoji": potion.emoji if potion else "🧪",
         "gain": potion.describe() if potion else "",

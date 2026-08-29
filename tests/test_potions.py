@@ -399,3 +399,121 @@ def test_the_shop_row_carries_the_potion_picture():
 
     assert rows["heal_small"]["image"] == get_potion("heal_small").picture
     assert all(row["image"] for row in misc["items"])
+
+
+# ---------- временный эликсир на бойце один ----------
+
+
+async def test_another_boost_puts_out_the_one_that_was_running(db):
+    """Выпил ловкость поверх силы — сила погасла, ловкость встала на её место."""
+    player = make_player()
+    await db.save_player(player)
+    await buy_potion(db, player, "boost_strength")
+    await buy_potion(db, player, "boost_agility")
+    now = now_ts()
+    await use_potion(db, player, "boost_strength", now=now)
+
+    result = await use_potion(db, player, "boost_agility", now=now)
+
+    assert [potion.code for potion in result.replaced] == ["boost_strength"]
+    assert [effect.code for effect in player.active_effects(now)] == ["boost_agility"]
+    assert player.stats.strength == 12  # прибавки силы больше нет
+    assert player.stats.agility == 18
+    assert await db.list_effects(player.user_id) == player.effects
+
+
+async def test_the_same_boost_is_extended_and_nothing_is_put_out(db):
+    player = make_player()
+    await db.save_player(player)
+    await buy_potion(db, player, "boost_strength")
+    await buy_potion(db, player, "boost_strength")
+    now = now_ts()
+    await use_potion(db, player, "boost_strength", now=now)
+
+    result = await use_potion(db, player, "boost_strength", now=now)
+
+    assert result.replaced == [] and result.extended
+    assert result.until == now + 2 * EFFECT_SECONDS
+
+
+async def test_healing_never_touches_the_running_effect(db):
+    """Восстановление ничего не держит и никого не гасит — их пьют подряд."""
+    player = make_player()
+    await db.save_player(player)
+    await buy_potion(db, player, "boost_strength")
+    await buy_potion(db, player, "heal_small")
+    await buy_potion(db, player, "heal_small")
+    now = now_ts()
+    await use_potion(db, player, "boost_strength", now=now)
+    player.set_hp(player.max_hp - 100, now)
+
+    first = await use_potion(db, player, "heal_small", now=now)
+    player.set_hp(player.max_hp - 100, now)
+    second = await use_potion(db, player, "heal_small", now=now)
+
+    assert first.replaced == [] and second.replaced == []
+    assert [effect.code for effect in player.active_effects(now)] == ["boost_strength"]
+    assert player.stats.strength == 22
+
+
+def test_the_warning_names_what_is_about_to_go_out():
+    """Что погаснет, спрашивают до глотка — и мини-апп, и лавка в личке."""
+    from bot.potions_service import running_boost, would_replace
+
+    player = make_player()
+    now = now_ts()
+    assert would_replace(player, "boost_agility", now) is None
+
+    player.effects = [ActiveEffect(code="boost_strength", until=now + EFFECT_SECONDS)]
+    assert running_boost(player, now).code == "boost_strength"
+    # другой временный вытеснит, тот же и восстановление — нет
+    assert would_replace(player, "boost_agility", now).code == "boost_strength"
+    assert would_replace(player, "boost_strength", now) is None
+    assert would_replace(player, "heal_small", now) is None
+    assert would_replace(player, "нетакого", now) is None
+
+
+async def test_a_leftover_pile_of_effects_is_swept_away_by_one_sip(db):
+    """У старожилов могло накопиться несколько эффектов — снимаем все."""
+    player = make_player()
+    await db.save_player(player)
+    now = now_ts()
+    for code in ("boost_strength", "boost_agility", "boost_intuition"):
+        await db.set_effect(player.user_id, code, now + EFFECT_SECONDS)
+    player.effects = await db.list_effects(player.user_id)
+    await buy_potion(db, player, "boost_hp")
+
+    result = await use_potion(db, player, "boost_hp", now=now)
+
+    assert len(result.replaced) == 3
+    assert [effect.code for effect in player.active_effects(now)] == ["boost_hp"]
+
+
+async def test_the_mini_app_says_what_it_put_out(client, db):
+    player = make_player(user_id=42, credits=500)
+    await db.save_player(player)
+    for code in ("boost_strength", "boost_agility"):
+        await client.post("/api/buy", json={"code": code}, headers=headers(42))
+    await client.post("/api/use", json={"code": "boost_strength"}, headers=headers(42))
+
+    response = await client.post(
+        "/api/use", json={"code": "boost_agility"}, headers=headers(42)
+    )
+    body = await response.json()
+
+    assert body["used"]["replaced"] == ["Эликсир силы"]
+    assert [row["code"] for row in body["card"]["effects"]] == ["boost_agility"]
+
+
+def test_the_card_marks_which_potions_are_temporary():
+    """Страница по этому флагу решает, спрашивать ли перед глотком."""
+    player = make_player()
+    player.potions = {"heal_small": 1, "boost_strength": 1}
+    player.effects = [ActiveEffect(code="boost_strength", until=now_ts() + 60)]
+
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    rows = {row["code"]: row for row in card["potions"]}
+
+    assert rows["boost_strength"]["boost"] is True
+    assert rows["heal_small"]["boost"] is False
+    assert card["effects"][0]["boost"] is True

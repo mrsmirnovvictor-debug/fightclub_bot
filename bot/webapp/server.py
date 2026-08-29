@@ -294,6 +294,7 @@ async def api_use(request: web.Request) -> web.Response:
                 "extended": result.extended,
                 "seconds_left": result.seconds_left(),
                 "left": result.left,
+                "replaced": [potion.title for potion in result.replaced],
             },
         }
     )

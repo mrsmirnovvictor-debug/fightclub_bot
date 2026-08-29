@@ -288,3 +288,54 @@ async def test_the_temporary_effect_shows_up_in_the_profile(client, dispatcher_e
     assert "🧪 Действует: 💪 Эликсир силы" in text
     # характеристики в профиле уже с прибавкой
     assert "Сила: <b>18</b>" in text
+
+
+async def test_the_chat_warns_before_swapping_a_running_elixir(client, dispatcher_env):
+    """Другой временный эликсир гасит нынешний — бот переспрашивает."""
+    db, _, session = dispatcher_env
+    player = await client.player()
+    player.level = 5
+    player.credits = 1000  # на два временных эликсира по 200
+    await db.save_player(player)
+
+    await client.press(BuyCB(code="boost_strength").pack())
+    await client.press(BuyCB(code="boost_agility").pack())
+    await client.press(DrinkCB(code="boost_strength").pack())
+    assert "Эффект пошёл" in session.texts[-1]
+
+    # первый заход по другому эликсиру только предупреждает
+    await client.press(DrinkCB(code="boost_agility").pack())
+    warning = session.texts[-1]
+    assert "Сейчас действует" in warning and "Эликсир силы" in warning
+    assert "действие предыдущего эликсира закончится" in warning
+    assert await db.list_potions(client.user.id) == {"boost_agility": 1}
+
+    # согласился — меняем, и бот говорит, что именно погасло
+    await client.press(DrinkCB(code="boost_agility", confirm=1).pack())
+    done = session.texts[-1]
+    assert "Закончилось действие: Эликсир силы" in done
+    assert [e.code for e in (await client.player()).active_effects()] == [
+        "boost_agility"
+    ]
+
+
+async def test_the_chat_pours_healing_without_any_questions(client, dispatcher_env):
+    """Восстановление ничего не гасит — переспрашивать не о чем."""
+    db, _, session = dispatcher_env
+    player = await client.player()
+    player.level = 5
+    player.credits = 1000
+    player.set_hp(player.max_hp - 100)
+    await db.save_player(player)
+
+    await client.press(BuyCB(code="boost_strength").pack())
+    await client.press(DrinkCB(code="boost_strength").pack())
+    await client.press(BuyCB(code="heal_small").pack())
+    await client.press(DrinkCB(code="heal_small").pack())
+
+    text = session.texts[-1]
+    assert "Здоровья прибавилось" in text
+    assert "Закончилось действие" not in text
+    assert [e.code for e in (await client.player()).active_effects()] == [
+        "boost_strength"
+    ]

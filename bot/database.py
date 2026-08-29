@@ -539,6 +539,13 @@ class Database:
             if get_potion(row["code"]) is not None
         ]
 
+    async def drop_effect(self, user_id: int, code: str) -> None:
+        """Погасить эффект досрочно: так уходит вытесненный эликсир."""
+        await self.conn.execute(
+            "DELETE FROM effects WHERE user_id = ? AND code = ?", (user_id, code)
+        )
+        await self.conn.commit()
+
     async def set_effect(self, user_id: int, code: str, until: int) -> None:
         """Завести эффект или сдвинуть его срок."""
         await self.conn.execute(

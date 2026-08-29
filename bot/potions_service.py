@@ -2,14 +2,21 @@
 
 Правила короткие. Купленная склянка ложится в рюкзак стопкой. Выпитая
 исчезает: восстановление доливает здоровье, но не выше потолка, а временный
-эликсир заводит эффект на два часа. Выпить второй такой же — не удвоить
-прибавку, а продлить срок: +10 остаётся +10, зато не пропадает даром.
+эликсир заводит эффект на два часа.
+
+Временный эликсир на бойце всегда один. Выпить второй такой же — продлить
+срок, а не удвоить прибавку: +10 остаётся +10, зато не пропадает даром.
+Выпить другой — сменить эффект: прежний гаснет сразу, и боец должен узнать
+об этом до глотка, а не после.
+
+Восстановления это не касается: их пьют сколько угодно и подряд, они ничего
+не держат и никому не мешают.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from bot.database import Database
 from bot.game.health import now_ts
@@ -32,9 +39,33 @@ class PotionResult:
     until: int = 0  # до какого момента держится эффект
     extended: bool = False  # эффект не завели, а продлили
     left: int = 0  # сколько таких склянок осталось в рюкзаке
+    # Что погасло, уступив место новому эликсиру
+    replaced: list[Potion] = field(default_factory=list)
 
     def seconds_left(self, now: int | None = None) -> int:
         return max(0, self.until - (now_ts() if now is None else now))
+
+
+def running_boost(player: Player, now: int | None = None) -> Potion | None:
+    """Временный эликсир, который сейчас на бойце. Он всегда один."""
+    for effect in player.active_effects(now):
+        potion = effect.potion
+        if potion is not None and potion.is_boost:
+            return potion
+    return None
+
+
+def would_replace(player: Player, code: str, now: int | None = None) -> Potion | None:
+    """Что погаснет, если выпить этот эликсир. None — ничего не погаснет.
+
+    Спрашивают до глотка: и мини-апп, и лавка в личке показывают этим
+    предупреждение, а решает всё равно человек.
+    """
+    potion = get_potion(code)
+    if potion is None or not potion.is_boost:
+        return None
+    running = running_boost(player, now)
+    return running if running is not None and running.code != potion.code else None
 
 
 def _find(code: str) -> Potion:
@@ -83,17 +114,18 @@ async def use_potion(
         await db.save_player(player)
         result = PotionResult(potion, healed=healed)
     else:
-        # Тот же эликсир поверх действующего продлевает срок, а не удваивает
-        # прибавку: иначе стопка склянок делала бы из бойца бога.
+        # Временный эликсир на бойце один. Чужой гасим, свой продлеваем:
+        # тот же эликсир поверх действующего добавляет срок, а не прибавку —
+        # иначе стопка склянок делала бы из бойца бога.
+        dropped = await _drop_other_boosts(db, player, potion, moment)
         running = player.effect_of(potion.code, moment)
         start = running.until if running else moment
         until = start + potion.seconds
         await db.set_effect(player.user_id, potion.code, until)
-        if running:
-            running.until = until
-        else:
-            player.effects = await db.list_effects(player.user_id)
-        result = PotionResult(potion, until=until, extended=bool(running))
+        player.effects = await db.list_effects(player.user_id)
+        result = PotionResult(
+            potion, until=until, extended=bool(running), replaced=dropped
+        )
 
     await db.take_potion(player.user_id, potion.code)
     left = max(0, player.potion_count(potion.code) - 1)
@@ -106,4 +138,29 @@ async def use_potion(
     return result
 
 
-__all__ = ["PotionError", "PotionResult", "buy_potion", "use_potion"]
+async def _drop_other_boosts(
+    db: Database, player: Player, potion: Potion, now: int
+) -> list[Potion]:
+    """Погасить все прочие временные эффекты. Вернуть, что погасили.
+
+    Список, а не один: пока действовало прежнее правило, боец мог набрать
+    несколько эффектов разом — этих старожилов тоже надо снять.
+    """
+    dropped: list[Potion] = []
+    for effect in player.active_effects(now):
+        running = effect.potion
+        if running is None or not running.is_boost or running.code == potion.code:
+            continue
+        await db.drop_effect(player.user_id, running.code)
+        dropped.append(running)
+    return dropped
+
+
+__all__ = [
+    "PotionError",
+    "PotionResult",
+    "buy_potion",
+    "running_boost",
+    "use_potion",
+    "would_replace",
+]

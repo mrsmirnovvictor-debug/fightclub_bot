@@ -31,7 +31,12 @@ from bot.game.narrator import esc
 from bot.game.potions import POTIONS, get_potion, spell_duration
 from bot.handlers.common import send_profile
 from bot.inventory_service import InventoryError, buy
-from bot.potions_service import PotionError, buy_potion, use_potion
+from bot.potions_service import (
+    PotionError,
+    buy_potion,
+    use_potion,
+    would_replace,
+)
 from bot.keyboards import (
     AvatarCB,
     BuyCB,
@@ -256,11 +261,28 @@ def potions_text(player: Player) -> str:
         lines += ["", f"🔒 Следующие склянки откроются на {min(locked)} уровне."]
     lines += [
         "",
-        "Восстановление доливает здоровье сразу, но не выше потолка. "
-        "Временный эликсир держится два часа и уходит сам; выпить второй "
-        "такой же — продлить срок, а не удвоить прибавку.",
+        "Восстановление доливает здоровье сразу, но не выше потолка. Их "
+        "можно пить сколько угодно и подряд.",
+        "",
+        "Временный эликсир на бойце один. Тот же самый продлевает срок, а не "
+        "удваивает прибавку; другой — гасит нынешний и встаёт на его место. "
+        "Перед такой заменой бот переспросит.",
     ]
     return "\n".join(lines)
+
+
+def swap_keyboard(potion) -> InlineKeyboardMarkup:
+    """Кнопка «всё равно выпить» — второй шаг после предупреждения."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"🥤 Всё равно выпить {potion.title}",
+                    callback_data=DrinkCB(code=potion.code, confirm=1).pack(),
+                )
+            ]
+        ]
+    )
 
 
 @router.message(Command("potions", "elixirs"))
@@ -281,6 +303,20 @@ async def on_drink(
     player = await db.get_player(callback.from_user.id)
     if player is None:
         await callback.answer("Сначала создай бойца: /start", show_alert=True)
+        return
+
+    # Другой временный эликсир погасит нынешний: спрашиваем до глотка,
+    # потому что склянка тратится в любом случае.
+    doomed = would_replace(player, callback_data.code)
+    if doomed is not None and not callback_data.confirm:
+        potion = get_potion(callback_data.code)
+        await callback.message.answer(
+            f"⚠️ Сейчас действует {doomed.emoji} <b>{esc(doomed.title)}</b>.\n"
+            f"Если выпьешь {potion.emoji} <b>{esc(potion.title)}</b>, "
+            "действие предыдущего эликсира закончится.",
+            reply_markup=swap_keyboard(potion),
+        )
+        await callback.answer()
         return
 
     try:
@@ -306,8 +342,15 @@ async def on_drink(
         if result.left
         else "Это была последняя."
     )
+    gone = (
+        "\n🚫 Закончилось действие: "
+        + ", ".join(esc(item.title) for item in result.replaced)
+        + "."
+        if result.replaced
+        else ""
+    )
     await callback.message.answer(
-        f"🥤 Выпит {potion.emoji} <b>{esc(potion.title)}</b>.\n{news}\n{left}",
+        f"🥤 Выпит {potion.emoji} <b>{esc(potion.title)}</b>.\n{news}{gone}\n{left}",
         reply_markup=potions_keyboard(player.level, player.credits, player.potions),
     )
     await callback.answer("До дна!")
