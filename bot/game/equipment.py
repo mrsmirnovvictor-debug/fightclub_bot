@@ -1249,6 +1249,7 @@ ITEMS: tuple[Item, ...] = (
         instrumental="световым мечом",
         # У мага картинка лежит в png: у клинка есть свечение по краям
         image=f"{MAGIC_ART}/lightsaber.png",
+        intuition=5,
         damage_min=7,
         damage_max=15,
         dodge=0.35,

@@ -82,10 +82,11 @@ def test_the_lightsaber_is_exactly_what_was_ordered():
     assert SABER.level_required == 2
     assert SABER.requires.strength == 10
     assert (SABER.damage_min, SABER.damage_max) == (7, 15)
+    assert SABER.intuition == 5
     assert SABER.dodge == 0.35
     assert SABER.counter == 0.25
     assert SABER.is_weapon and SABER.slot is Slot.WEAPON
-    assert SABER.describe_bonus() == "👊7–15 🌀+35% 🔄+25%"
+    assert SABER.describe_bonus() == "👊7–15 🔮+5 🌀+35% 🔄+25%"
 
 
 def test_the_saber_is_drawn_and_lives_in_the_mage_folder():
@@ -473,3 +474,28 @@ def test_the_slot_says_nothing_extra_when_the_class_changes_nothing():
 def test_bare_hands_never_add_a_weapon_line():
     card = build_card(make_player(), TOKEN, viewer_id=42)
     assert card["combat"]["weapon_damage"] == []
+
+
+
+def test_the_saber_lifts_intuition_and_everything_that_grows_from_it():
+    """Интуиция — не украшение: с ней растут крит, его сила и точность."""
+    player = make_player()
+    bare = Fighter.from_player(player, armed=True)
+    player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
+    armed = Fighter.from_player(player, armed=True)
+
+    assert armed.stats.intuition == bare.stats.intuition + 5
+    assert armed.crit > bare.crit
+    assert armed.derived.crit_power > bare.derived.crit_power
+    assert armed.accuracy > bare.accuracy
+
+
+def test_the_card_shows_the_intuition_the_saber_adds():
+    player = make_player()
+    player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
+
+    card = build_card(player, TOKEN, viewer_id=42)
+    intuition = next(row for row in card["stats"] if row["code"] == "intuition")
+
+    assert (intuition["base"], intuition["bonus"]) == (8, 5)
+    assert intuition["total"] == 13
