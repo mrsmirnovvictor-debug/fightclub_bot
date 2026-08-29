@@ -784,9 +784,12 @@ async def test_free_points_are_handed_out_right_on_the_hero_screen(server):
         assert await box.is_visible()
         assert "Свободных очков: 3 из 3" in await box.inner_text()
 
-        # пока ничего не разложено, вкладывать нечего
-        apply_button = box.get_by_role("button", name="Вложить · 0")
-        assert await apply_button.is_disabled()
+        # пока ничего не разложено, сохранять нечего
+        save = box.get_by_role("button", name="Сохранить")
+        assert await save.is_disabled()
+        assert "После сохранения поменять выбор будет уже нельзя" in (
+            await box.inner_text()
+        )
 
         # два очка в силу, одно в интуицию
         plus = box.locator(".up-row .step:last-child")
@@ -805,7 +808,8 @@ async def test_free_points_are_handed_out_right_on_the_hero_screen(server):
         assert sent == []
 
         page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
-        await box.get_by_role("button", name="Вложить · 2").click()
+        assert await save.is_enabled()
+        await save.click()
         await page.wait_for_timeout(250)
 
         assert sent == [{"strength": 1, "intuition": 1}]

@@ -457,7 +457,7 @@ function paintUpgrade() {
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
   buttons.appendChild(
-    button("Вложить · " + draftTotal(), {
+    button("Сохранить", {
       disabled: draftTotal() <= 0,
       onClick: applyUpgrade,
     })
@@ -477,16 +477,16 @@ function paintUpgrade() {
 
   const note = document.createElement("div");
   note.className = "up-note";
-  note.textContent =
-    "Очки ложатся в свои характеристики и обратно не вынимаются: "
-    + "пересобрать билд можно только за кредиты, командой /respec.";
+  note.textContent = "После сохранения поменять выбор будет уже нельзя";
   box.appendChild(note);
 }
 
 async function applyUpgrade() {
   if (busy || draftTotal() <= 0) return;
   const ok = await confirmAction(
-    "Вложить очков: " + draftTotal() + "?\nОбратно они не вынимаются."
+    "Сохранить выбор: " + draftTotal() + " "
+      + plural(draftTotal(), "очко", "очка", "очков")
+      + "?\nПоменять его будет уже нельзя."
   );
   if (!ok) return;
 
