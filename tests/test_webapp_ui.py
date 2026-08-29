@@ -807,9 +807,20 @@ async def test_free_points_are_handed_out_right_on_the_hero_screen(server):
         assert "Свободных очков: 1 из 3" in await box.inner_text()
         assert sent == []
 
-        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+        # окно называет сам выбор, а не число очков
+        asked = []
+
+        def agree(dialog):
+            asked.append(dialog.message)
+            asyncio.ensure_future(dialog.accept())
+
+        page.on("dialog", agree)
         assert await save.is_enabled()
         await save.click()
+        await page.wait_for_timeout(150)
+        assert asked and "Сохранить выбор:" in asked[0]
+        assert "+1 к силе" in asked[0] and "+1 к интуиции" in asked[0]
+        assert "Поменять его будет уже нельзя" in asked[0]
         await page.wait_for_timeout(250)
 
         assert sent == [{"strength": 1, "intuition": 1}]

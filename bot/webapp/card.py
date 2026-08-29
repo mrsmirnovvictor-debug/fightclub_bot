@@ -494,6 +494,8 @@ def stats_payload(base: Stats, bonus: Stats) -> list[dict]:
         {
             "code": stat.value,
             "title": stat.title.capitalize(),
+            # «+1 к силе»: прибавку страница называет по-русски
+            "dative": stat.dative,
             "emoji": stat.emoji,
             "base": base.get(stat),
             "bonus": bonus.get(stat),

@@ -210,3 +210,20 @@ def test_a_stranger_card_carries_no_points_to_spend():
 
     assert mine["is_self"] and mine["progress"]["free_points"] == 4
     assert not theirs["is_self"]
+
+
+def test_stats_carry_the_case_the_phrase_needs():
+    """«+1 к силе», а не «+1 сила»: падеж приходит с сервера, не из вёрстки."""
+    from bot.game.classes import ALL_STATS
+    from bot.webapp.card import build_card
+
+    assert [stat.dative for stat in ALL_STATS] == [
+        "силе",
+        "ловкости",
+        "интуиции",
+        "выносливости",
+    ]
+
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    rows = {row["code"]: row["dative"] for row in card["stats"]}
+    assert rows["strength"] == "силе" and rows["endurance"] == "выносливости"

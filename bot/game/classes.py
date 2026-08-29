@@ -99,6 +99,11 @@ class Stat(str, Enum):
         return STAT_EMOJI[self]
 
     @property
+    def dative(self) -> str:
+        """«к силе», «к ловкости» — для фраз вида «+1 к силе»."""
+        return STAT_DATIVE[self]
+
+    @property
     def label(self) -> str:
         return f"{self.emoji} {self.title}"
 
@@ -108,6 +113,14 @@ STAT_TITLES: dict[Stat, str] = {
     Stat.AGILITY: "ловкость",
     Stat.INTUITION: "интуиция",
     Stat.ENDURANCE: "выносливость",
+}
+
+# Дательный падеж: прибавку называют «+1 к силе», а не «+1 сила»
+STAT_DATIVE: dict[Stat, str] = {
+    Stat.STRENGTH: "силе",
+    Stat.AGILITY: "ловкости",
+    Stat.INTUITION: "интуиции",
+    Stat.ENDURANCE: "выносливости",
 }
 
 STAT_EMOJI: dict[Stat, str] = {

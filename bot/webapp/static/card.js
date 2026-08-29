@@ -483,10 +483,14 @@ function paintUpgrade() {
 
 async function applyUpgrade() {
   if (busy || draftTotal() <= 0) return;
+  // Называем выбор словами, а не числом очков: человек соглашается с тем,
+  // что увидит на карточке, — «+2 к силе», а не «2 очка».
+  const chosen = cardStats
+    .filter((stat) => draft[stat.code])
+    .map((stat) => "+" + draft[stat.code] + " к " + stat.dative)
+    .join("\n");
   const ok = await confirmAction(
-    "Сохранить выбор: " + draftTotal() + " "
-      + plural(draftTotal(), "очко", "очка", "очков")
-      + "?\nПоменять его будет уже нельзя."
+    "Сохранить выбор:\n" + chosen + "\n\nПоменять его будет уже нельзя."
   );
   if (!ok) return;
 
