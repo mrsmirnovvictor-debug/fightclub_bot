@@ -235,12 +235,8 @@ async def test_the_fighter_picks_a_gender_and_gets_the_looks_that_fit(dispatcher
         for row in session.markups[-1].inline_keyboard
         for button in row
     ]
-    assert offered == [
-        "💥 Бунтарка",
-        "🍸 Барменша",
-        "👟 Бегунья",
-        "📷 Загрузить своё фото",
-    ]
+    # только готовые образы своего пола — своё фото больше не грузят
+    assert offered == ["💥 Бунтарка", "🍸 Барменша", "👟 Бегунья"]
 
     await client.press(LookCB(code="barmaid").pack())
     for _ in range(4):
@@ -279,3 +275,19 @@ async def test_the_last_word_sends_the_newcomer_to_the_club(dispatcher_env):
     assert "Бойцовский клуб Вегас" in done
     assert "https://t.me/" in done
     assert "/arena" not in done
+
+
+async def test_the_club_does_not_take_your_own_picture_at_creation(dispatcher_env):
+    """Своё фото убрали: снимок в личку ничего не меняет и бойца не создаёт."""
+    db, _, session = dispatcher_env
+    client = Client(db)
+    await client.send("/start")
+    await client.press(ClassCB(code="warrior").pack())
+    await client.send("Тайлер")
+    await client.press(GenderCB(code="male").pack())
+
+    await client.send_photo("my-photo")
+
+    assert await client.player() is None
+    await client.press(LookCB(code="rookie").pack())
+    assert "Осталось очков" in session.texts[-1]

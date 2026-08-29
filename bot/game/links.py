@@ -33,6 +33,20 @@ def card_target(payload: str) -> int | None:
     return int(tail) if tail.isdigit() else None
 
 
+def short_name(value: str) -> str:
+    """Короткое имя мини-аппа из того, что написали в MINIAPP_NAME.
+
+    В переменную регулярно кладут не имя, а всю ссылку из BotFather
+    (`https://t.me/бот/card`) или имя со собачкой. Ссылка с таким «именем»
+    внутри выглядит рабочей, а Telegram по ней молча открывает чат с ботом —
+    поэтому берём последний кусок пути и отрезаем хвост запроса.
+    """
+    name = value.strip().split("?", 1)[0].split("#", 1)[0].strip("/")
+    if not name:
+        return ""
+    return name.rsplit("/", 1)[-1].lstrip("@")
+
+
 @dataclass
 class CardLinks:
     """Как превратить бойца в кликабельное имя."""
@@ -77,7 +91,7 @@ class CardLinks:
         self, bot_username: str, miniapp_name: str, main_app: bool = False
     ) -> None:
         self.bot_username = bot_username.lstrip("@")
-        self.miniapp_name = miniapp_name.strip().strip("/")
+        self.miniapp_name = short_name(miniapp_name)
         self.main_app = main_app
 
 

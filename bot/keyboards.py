@@ -31,7 +31,7 @@ class ClassCB(CallbackData, prefix="cls"):
 
 
 class AvatarCB(CallbackData, prefix="ava"):
-    value: str  # эмодзи или "custom"
+    value: str  # эмодзи бойца
 
 
 class StatCB(CallbackData, prefix="stat"):
@@ -125,7 +125,7 @@ def genders_keyboard() -> InlineKeyboardMarkup:
 
 
 def looks_keyboard(gender: str) -> InlineKeyboardMarkup:
-    """Открытые образы своего пола. Плюс своё фото, если готового мало."""
+    """Открытые образы своего пола — из них и выбирают лицо бойца."""
     builder = InlineKeyboardBuilder()
     for look in free_looks():
         if look.gender != gender:
@@ -135,12 +135,6 @@ def looks_keyboard(gender: str) -> InlineKeyboardMarkup:
             callback_data=LookCB(code=look.code),
         )
     builder.adjust(1)
-    builder.row(
-        InlineKeyboardButton(
-            text="📷 Загрузить своё фото",
-            callback_data=AvatarCB(value="custom").pack(),
-        )
-    )
     return builder.as_markup()
 
 
@@ -149,12 +143,6 @@ def avatars_keyboard() -> InlineKeyboardMarkup:
     for emoji in AVATARS:
         builder.button(text=emoji, callback_data=AvatarCB(value=emoji))
     builder.adjust(6)
-    builder.row(
-        InlineKeyboardButton(
-            text="📷 Загрузить своё фото",
-            callback_data=AvatarCB(value="custom").pack(),
-        )
-    )
     return builder.as_markup()
 
 

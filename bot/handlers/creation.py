@@ -41,7 +41,6 @@ from bot.handlers.common import (
     stats_block,
 )
 from bot.keyboards import (
-    AvatarCB,
     ClassCB,
     GenderCB,
     LookCB,
@@ -75,7 +74,6 @@ class Creation(StatesGroup):
     entering_nickname = State()
     choosing_gender = State()
     choosing_avatar = State()
-    waiting_photo = State()
     distributing = State()
 
 
@@ -289,46 +287,10 @@ async def pick_look(
     if look is None or look.paid or look.pro:
         await callback.answer("Этот образ на старте не выдаётся.", show_alert=True)
         return
-    await state.update_data(look=look.code, avatar=look.emoji, avatar_file_id=None)
+    await state.update_data(look=look.code, avatar=look.emoji)
     await callback.message.edit_text(f"Образ выбран: {look.emoji} {look.title}")
     await _ask_stats(callback.message, state, edit=False)
     await callback.answer()
-
-
-@router.callback_query(Creation.choosing_avatar, AvatarCB.filter())
-async def pick_avatar(
-    callback: CallbackQuery, callback_data: AvatarCB, state: FSMContext
-) -> None:
-    if callback_data.value == "custom":
-        await state.set_state(Creation.waiting_photo)
-        await callback.message.edit_text(
-            "Пришли фото одним сообщением — оно станет аватаром бойца.\n"
-            "Передумал? /skip — вернёмся к эмодзи."
-        )
-        await callback.answer()
-        return
-
-    await state.update_data(avatar=callback_data.value, avatar_file_id=None)
-    await _ask_stats(callback.message, state, edit=True)
-    await callback.answer()
-
-
-@router.message(Creation.waiting_photo, F.photo)
-async def set_photo(message: Message, state: FSMContext) -> None:
-    file_id = message.photo[-1].file_id
-    await state.update_data(avatar="📷", avatar_file_id=file_id)
-    await message.answer("Фото на месте. 📷")
-    await _ask_stats(message, state, edit=False)
-
-
-@router.message(Creation.waiting_photo, Command("skip"))
-async def skip_photo(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    await state.set_state(Creation.choosing_avatar)
-    await message.answer(
-        "Ладно, выбирай из готовых:",
-        reply_markup=looks_keyboard(data.get("gender", MALE)),
-    )
 
 
 async def _ask_stats(message: Message, state: FSMContext, edit: bool) -> None:
@@ -410,7 +372,6 @@ async def _create_player(
         nickname=data.get("nickname") or (callback.from_user.first_name or "Боец"),
         class_code=fclass.code,
         avatar=data.get("avatar", "🥊"),
-        avatar_file_id=data.get("avatar_file_id"),
         look=data.get("look", ""),
         gender=data.get("gender", ""),
         strength=total.strength,
@@ -556,9 +517,3 @@ async def on_reset(
 async def nickname_fallback(message: Message) -> None:
     await message.answer("Пришли прозвище текстом.")
 
-
-@router.message(StateFilter(Creation.waiting_photo))
-async def photo_fallback(message: Message) -> None:
-    await message.answer(
-        "Нужно именно фото (не файлом). Или /skip — вернёмся к эмодзи."
-    )

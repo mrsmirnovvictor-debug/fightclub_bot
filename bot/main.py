@@ -105,6 +105,9 @@ async def run(config: Config | None = None) -> None:
         me.username,
         "включена" if config.webapp_enabled else "выключена",
     )
+    # Ссылку печатаем целиком: чаще всего имя в чате не открывает карточку
+    # именно из-за неё, а по логу видно, какая из трёх схем сейчас в деле
+    logger.info("Имя бойца в чате ведёт на %s", links.href(me.id))
 
     runner = (
         await run_webapp(bot, db, config, duels, store)

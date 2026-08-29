@@ -370,6 +370,26 @@ def test_card_link_needs_both_username_and_app_name():
     )
 
 
+def test_the_short_name_survives_a_pasted_link():
+    """В MINIAPP_NAME часто кладут не имя, а всю ссылку из BotFather.
+
+    Ссылка с такой начинкой выглядит рабочей, а Telegram по ней молча
+    открывает чат с ботом вместо карточки — ровно тот случай, когда «имя в
+    чате не открывает карточку».
+    """
+    from bot.game.links import CardLinks, short_name
+
+    assert short_name("https://t.me/vegasfightclub_bot/card") == "card"
+    assert short_name("t.me/bot/card?startapp=1") == "card"
+    assert short_name("@card") == "card"
+    assert short_name("/card/") == "card"
+    assert short_name("   ") == ""
+
+    links = CardLinks()
+    links.configure("@bot", "https://t.me/bot/card")
+    assert links.card_url(7) == "https://t.me/bot/card?startapp=7"
+
+
 def test_the_main_mini_app_opens_without_a_short_name():
     """Мини-апп можно включить главным — тогда короткое имя не нужно."""
     from bot.game.links import CardLinks

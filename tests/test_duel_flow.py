@@ -47,6 +47,9 @@ class FakeBot:
 
     sent: list[SentMessage] = field(default_factory=list)
     edits: list[SentMessage] = field(default_factory=list)
+    # Всё сказанное подряд: итог раунда приходит правкой панели, а не новым
+    # сообщением, и по одному списку sent его уже не видно
+    said: list[SentMessage] = field(default_factory=list)
     _next_id: int = 100
 
     async def send_message(self, chat_id, text, message_thread_id=None, **kwargs):
@@ -59,6 +62,7 @@ class FakeBot:
             reply_markup=kwargs.get("reply_markup"),
         )
         self.sent.append(message)
+        self.said.append(message)
         return message
 
     async def edit_message_text(self, text, chat_id=None, message_id=None, **kwargs):
@@ -69,11 +73,17 @@ class FakeBot:
             reply_markup=kwargs.get("reply_markup"),
         )
         self.edits.append(message)
+        self.said.append(message)
         return message
 
     @property
     def texts(self) -> list[str]:
         return [m.text for m in self.sent]
+
+    @property
+    def log(self) -> list[str]:
+        """Лог боя целиком — и новые сообщения, и правки, по порядку."""
+        return [m.text for m in self.said]
 
 
 def make_player(user_id: int, nickname: str, class_code: str = "warrior") -> Player:
@@ -192,7 +202,7 @@ async def test_silence_on_both_sides_ends_in_technical_draw(bot, db):
 
     assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
     assert session.round_number == MAX_MISSED_TURNS
-    assert any("пропуск хода" in text for text in bot.texts)
+    assert any("пропуск хода" in text for text in bot.log)
     assert "перестали отвечать" in bot.texts[-1]
     # никто никого не бил — здоровье целое
     assert all(f.hp == f.max_hp for f in session.fighters.values())
@@ -263,7 +273,7 @@ async def test_partial_choice_goes_into_the_round_as_is(bot, db):
     assert session.fighters[2].hp == opponent_hp  # удара не было
     assert any(
         "бить не стал" in text or "глухую оборону" in text or "только защищается" in text
-        for text in bot.texts
+        for text in bot.log
     )
 
 
@@ -709,7 +719,7 @@ async def test_round_report_speaks_the_new_language(bot, db):
             break
         await play_round(service, session)
 
-    rounds = [text for text in bot.texts if text.startswith("<b>⚔️ Раунд")]
+    rounds = [text for text in bot.log if text.startswith("<b>⚔️ Раунд")]
     assert rounds
     body = "\n".join(rounds)
     assert "кулаком" in body  # без оружия бьют кулаком

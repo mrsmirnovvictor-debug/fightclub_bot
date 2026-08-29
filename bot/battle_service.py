@@ -16,6 +16,7 @@ import random
 from dataclasses import dataclass, field
 
 from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup
 
 from bot.config import Config
 from bot.database import Database
@@ -519,6 +520,7 @@ class BattleService:
             session.prompt_message_id,
             self._prompt_text(session),
             reply_markup=battle_keyboard(session.id, *session.panel),
+            cosmetic=True,
         )
         if session.everyone_ready:
             await self._resolve(session)
@@ -562,11 +564,6 @@ class BattleService:
                 )
             )
 
-        await self.voice.edit(
-            session.chat_id,
-            session.prompt_message_id,
-            f"🔒 Раунд {session.round_number}: ставки сделаны, судья считает.",
-        )
         fallen = [
             user_id
             for user_id in standing
@@ -574,10 +571,8 @@ class BattleService:
             and user_id not in session.announced_out
         ]
         session.announced_out.update(fallen)
-        await self.voice.send(
-            session.chat_id,
-            session.thread_id,
-            battle_round_report(session, results, fallen, self.rng),
+        await self._close_panel(
+            session, battle_round_report(session, results, fallen, self.rng)
         )
 
         outcome = judge(
@@ -592,13 +587,26 @@ class BattleService:
         weapons = session.fighters[user_id].attacks_per_round
         return session.choices.get(user_id, Choice()).to_action(weapons)
 
-    async def _finish(self, session: BattleSession, outcome: BattleOutcome) -> None:
-        self._cancel_timer(session)
+    async def _close_panel(self, session: BattleSession, text: str) -> None:
+        """Погасить панель раунда, оставив на её месте итог.
+
+        Кнопки убираем пустой разметкой: иначе по ним можно ходить в уже
+        сыгранном раунде.
+        """
         await self.voice.edit(
             session.chat_id,
             session.prompt_message_id,
-            f"🔒 Раунд {session.round_number}: бой окончен.",
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
         )
+        session.prompt_message_id = None
+
+    async def _finish(self, session: BattleSession, outcome: BattleOutcome) -> None:
+        self._cancel_timer(session)
+        # Обычно панель уже погашена итогом раунда. Осталась висеть — гасим
+        # здесь, чтобы под законченным боем не остались живые кнопки.
+        if session.prompt_message_id is not None:
+            await self._close_panel(session, "🔒 Бой окончен.")
         self._forget_battle(session)
 
         rewards = await self._apply_results(session, outcome)

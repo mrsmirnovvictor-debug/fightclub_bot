@@ -29,7 +29,6 @@ from bot.game.equipment import (
 )
 from bot.game.narrator import esc
 from bot.game.potions import POTIONS, get_potion, spell_duration
-from bot.handlers.common import send_profile
 from bot.inventory_service import InventoryError, buy, settle_gear
 from bot.potions_service import (
     PotionError,
@@ -62,7 +61,6 @@ class RespecCB(CallbackData, prefix="respec"):
 
 class Shop(StatesGroup):
     changing_avatar = State()
-    waiting_photo = State()
     changing_class = State()
 
 
@@ -487,14 +485,6 @@ async def cmd_avatar(message: Message, state: FSMContext, db: Database) -> None:
 async def on_avatar(
     callback: CallbackQuery, callback_data: AvatarCB, state: FSMContext, db: Database
 ) -> None:
-    if callback_data.value == "custom":
-        await state.set_state(Shop.waiting_photo)
-        await callback.message.edit_text(
-            "Пришли фото одним сообщением. /cancel — передумать."
-        )
-        await callback.answer()
-        return
-
     player = await _charge_appearance(callback, db, state)
     if player is None:
         return
@@ -509,31 +499,6 @@ async def on_avatar(
     )
     await callback.answer()
 
-
-@router.message(Shop.waiting_photo, F.photo)
-async def on_avatar_photo(message: Message, state: FSMContext, db: Database) -> None:
-    player = await db.get_player(message.from_user.id)
-    if player is None or not player.can_afford(PRICE_APPEARANCE):
-        await state.clear()
-        await message.answer("Кредитов не хватает.")
-        return
-    player.pay(PRICE_APPEARANCE)
-    player.avatar = "📷"
-    player.avatar_file_id = message.photo[-1].file_id
-    player.look = ""
-    await db.save_player(player)
-    await state.clear()
-    await message.answer(
-        f"🖼 Аватар обновлён. Списано {PRICE_APPEARANCE} 💰, "
-        f"осталось {player.credits} 💰."
-    )
-    await send_profile(message, player)
-
-
-@router.message(Shop.waiting_photo, Command("cancel"))
-async def cancel_photo(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await message.answer("Аватар остался прежним, кредиты целы.")
 
 
 async def _charge_appearance(

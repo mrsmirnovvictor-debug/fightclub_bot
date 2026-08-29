@@ -206,27 +206,22 @@ async def test_avatar_change_costs_credits(client, dispatcher_env):
     assert after.credits == before.credits - PRICE_APPEARANCE
 
 
-async def test_custom_photo_avatar_is_charged_once(client, dispatcher_env):
-    _, _, _ = dispatcher_env
-    before = await client.player()
-    await client.send("/avatar")
-    await client.press(AvatarCB(value="custom").pack())
-    await client.send_photo("my-photo")
-
-    after = await client.player()
-    assert after.avatar_file_id == "my-photo"
-    assert after.credits == before.credits - PRICE_APPEARANCE
-
-
-async def test_cancelling_photo_keeps_credits(client, dispatcher_env):
+async def test_nobody_can_hand_the_club_their_own_picture(client, dispatcher_env):
+    """Своё фото больше не грузят: ни кнопкой, ни присланным снимком."""
     _, _, session = dispatcher_env
     before = await client.player()
     await client.send("/avatar")
-    await client.press(AvatarCB(value="custom").pack())
-    await client.send("/cancel")
 
-    assert "кредиты целы" in session.texts[-1]
-    assert (await client.player()).credits == before.credits
+    offered = [
+        button.text for row in session.markups[-1].inline_keyboard for button in row
+    ]
+    assert not any("фото" in text.lower() for text in offered)
+
+    await client.send_photo("my-photo")
+
+    after = await client.player()
+    assert after.avatar_file_id is None
+    assert after.credits == before.credits  # ни списаний, ни аватара
 
 
 async def test_shop_needs_a_character(dispatcher_env):

@@ -11,6 +11,7 @@ import random
 from dataclasses import dataclass, field
 
 from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup
 
 from bot.config import Config
 from bot.database import Database
@@ -608,6 +609,7 @@ class DuelService:
             session.prompt_message_id,
             self._prompt_text(session),
             reply_markup=fight_keyboard(session.id, icons, block_width),
+            cosmetic=True,
         )
 
     async def _resolve(self, session: DuelSession) -> None:
@@ -630,15 +632,10 @@ class DuelService:
             self.rng,
         )
 
-        await self._edit(
-            session.chat_id,
-            session.prompt_message_id,
-            f"🔒 Раунд {session.round_number}: ставки сделаны, судья считает.",
-        )
-        await self._send(
-            session.chat_id,
-            session.thread_id,
-            round_report(result, session.fighters, self.rng),
+        # Итог раунда встаёт на место его же панели: так за раунд уходит
+        # два обращения к чату вместо четырёх, и бой не упирается в лимит
+        await self._close_panel(
+            session, round_report(result, session.fighters, self.rng)
         )
 
         if result.finished:
@@ -648,11 +645,10 @@ class DuelService:
 
     async def _finish(self, session: DuelSession, result: RoundResult) -> None:
         self._cancel_timer(session)
-        await self._edit(
-            session.chat_id,
-            session.prompt_message_id,
-            f"🔒 Раунд {session.round_number}: бой окончен.",
-        )
+        # Обычно панель уже погашена итогом раунда. Осталась висеть — гасим
+        # здесь, чтобы под законченным боем не остались живые кнопки.
+        if session.prompt_message_id is not None:
+            await self._close_panel(session, "🔒 Бой окончен.")
         self._forget(session)
 
         rewards = await self._apply_results(session, result)
@@ -791,6 +787,20 @@ class DuelService:
         self._busy.clear()
 
     # ---------- отправка ----------
+
+    async def _close_panel(self, session: DuelSession, text: str) -> None:
+        """Погасить панель раунда, оставив на её месте итог.
+
+        Кнопки убираем пустой разметкой: без неё Telegram оставит старые, и
+        по ним можно будет ходить в уже сыгранном раунде.
+        """
+        await self._edit(
+            session.chat_id,
+            session.prompt_message_id,
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
+        )
+        session.prompt_message_id = None
 
     async def _send(self, chat_id: int, thread_id: int | None, text: str, **kwargs):
         return await self.voice.send(chat_id, thread_id, text, **kwargs)
