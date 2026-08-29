@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from bot.game.art import potion as potion_art
 from bot.game.classes import ALL_STATS, Stats
 from bot.game.health import now_ts
 
@@ -50,6 +51,14 @@ class Potion:
     seconds: int = 0
     level_required: int = 1
     price: int = 0
+
+    @property
+    def picture(self) -> str:
+        """Картинка склянки лежит под её кодом: potions/heal_small.png.
+
+        Поле `image` остаётся на случай файла с другим именем.
+        """
+        return self.image or potion_art(self.code)
 
     @property
     def bonus(self) -> Stats:

@@ -369,7 +369,7 @@ def test_worn_gear_shows_its_wear_in_the_slot():
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     boots = next(s for s in card["slots"]["right"] if s["slot"] == "boots")
     assert boots["item"]["wear"] == 4
-    assert boots["item"]["image"].endswith(".jpeg")
+    assert boots["item"]["image"] == SNEAKERS.image
 
 
 # ---------- ручки мини-аппа ----------
@@ -975,3 +975,21 @@ def test_empty_slots_carry_their_own_placeholder():
     for row in rows:
         assert row["placeholder_image"] == f"{SLOTS}/{row['slot']}.jpeg"
         assert row["placeholder"], "значок остаётся запасным вариантом"
+
+
+def test_the_two_pairs_of_canvas_trousers_do_not_share_a_picture():
+    """Брезентовые и накладные разъезжались: у каждой своя картинка."""
+    plain = CATALOGUE["canvas_pants"]
+    padded = CATALOGUE["padded_pants"]
+
+    assert plain.image != padded.image
+    assert plain.image.endswith("Folded_work_trousers_game_icon_202608281512.jpeg")
+    assert padded.image.endswith("Canvas_trousers_game_inventory_icon_202608281512.jpeg")
+
+
+def test_the_whole_catalogue_lives_in_one_bucket():
+    """Первого бакета больше нет: всё лежит в общем, включая кеды."""
+    from bot.game.equipment import ART
+
+    for item in CATALOGUE.values():
+        assert item.image.startswith(ART), f"{item.code}: не из общего бакета"

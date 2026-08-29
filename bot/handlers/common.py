@@ -11,6 +11,13 @@ from aiogram.types import (
 
 from bot.config import Config
 from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats
+from bot.game.combat import (
+    total_accuracy,
+    total_anticrit,
+    total_counter,
+    total_crit,
+    total_dodge,
+)
 from bot.game.equipment import Equipment
 from bot.game.economy import MICRO_UPS_PER_LEVEL
 from bot.game.stats import derive
@@ -59,11 +66,13 @@ def combat_block(
     lines = [
         f"❤️ Запас здоровья: <b>{d.max_hp}</b>",
         f"👊 Урон: <b>{hit}</b>",
-        f"💥 Крит: <b>{d.crit_chance:.0%}</b> (×{d.crit_power})",
-        f"🚫 Антикрит: <b>{d.anticrit + equipment.anticrit:.0%}</b>",
-        f"🌀 Уворот: <b>{d.dodge_chance:.0%}</b>",
-        f"🎯 Точность: <b>{d.accuracy + equipment.accuracy:.0%}</b>",
-        f"🔄 Контрудар: <b>{d.counter_chance + equipment.counter:.0%}</b>",
+        f"💥 Крит: <b>{total_crit(d.crit_chance, equipment.crit):.0%}</b> "
+        f"(×{d.crit_power})",
+        f"🚫 Антикрит: <b>{total_anticrit(d.anticrit, equipment.anticrit):.0%}</b>",
+        f"🌀 Уворот: <b>{total_dodge(d.dodge_chance, equipment.dodge):.0%}</b>",
+        f"🎯 Точность: <b>{total_accuracy(d.accuracy, equipment.accuracy):.0%}</b>",
+        f"🔄 Контрудар: "
+        f"<b>{total_counter(d.counter_chance, equipment.counter):.0%}</b>",
         f"🪨 Сопротивление: <b>{d.resist:.0%}</b>",
         f"🪚 Пробивание: <b>{d.penetration:.0%}</b>",
     ]

@@ -91,6 +91,34 @@ class Action:
         return len(chosen) == weapons and bool(self.block)
 
 
+# ---------- итоговые доли: своё плюс вещи ----------
+#
+# Потолки здесь свои, не те, что внутри derive(): там прижимается то, что
+# боец набрал характеристиками, а тут — вместе с надетым. Считать это должны
+# и карточка, и профиль, и сам ринг, поэтому арифметика лежит в одном месте:
+# стоит её продублировать, и карточка начинает обещать одно, а бой — другое.
+
+
+def total_accuracy(base: float, gear: float) -> float:
+    return min(MAX_ACCURACY, base + gear)
+
+
+def total_anticrit(base: float, gear: float) -> float:
+    return min(MAX_ANTICRIT, base + gear)
+
+
+def total_dodge(base: float, gear: float) -> float:
+    return min(MAX_DODGE_CHANCE, base + gear)
+
+
+def total_crit(base: float, gear: float) -> float:
+    return min(MAX_CRIT_CHANCE, base + gear)
+
+
+def total_counter(base: float, gear: float) -> float:
+    return min(MAX_COUNTER_CHANCE, base + gear)
+
+
 @dataclass
 class Fighter:
     """Боец внутри дуэли."""
@@ -139,12 +167,12 @@ class Fighter:
     @property
     def accuracy(self) -> float:
         """Точность: ловкость плюс проценты с вещей. Сбивает чужой уворот."""
-        return min(MAX_ACCURACY, self.derived.accuracy + self.equipment.accuracy)
+        return total_accuracy(self.derived.accuracy, self.equipment.accuracy)
 
     @property
     def anticrit(self) -> float:
         """Антикрит: интуиция плюс проценты с вещей. Сбивает чужой крит."""
-        return min(MAX_ANTICRIT, self.derived.anticrit + self.equipment.anticrit)
+        return total_anticrit(self.derived.anticrit, self.equipment.anticrit)
 
     @property
     def resist(self) -> float:
@@ -163,19 +191,17 @@ class Fighter:
     @property
     def dodge(self) -> float:
         """Уворот: ловкость плюс проценты с вещей."""
-        return min(MAX_DODGE_CHANCE, self.derived.dodge_chance + self.equipment.dodge)
+        return total_dodge(self.derived.dodge_chance, self.equipment.dodge)
 
     @property
     def crit(self) -> float:
         """Шанс крита: интуиция плюс проценты с вещей."""
-        return min(MAX_CRIT_CHANCE, self.derived.crit_chance + self.equipment.crit)
+        return total_crit(self.derived.crit_chance, self.equipment.crit)
 
     @property
     def counter(self) -> float:
         """Шанс контрудара: ловкость плюс проценты с вещей."""
-        return min(
-            MAX_COUNTER_CHANCE, self.derived.counter_chance + self.equipment.counter
-        )
+        return total_counter(self.derived.counter_chance, self.equipment.counter)
 
     def dodge_against(self, attacker: "Fighter") -> float:
         """Шанс увернуться от этого соперника: свой уворот минус его точность."""

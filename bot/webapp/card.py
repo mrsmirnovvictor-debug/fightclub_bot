@@ -6,6 +6,13 @@ import time
 from datetime import datetime
 
 from bot.game.classes import ALL_STATS, ALL_ZONES, Stats, get_class
+from bot.game.combat import (
+    total_accuracy,
+    total_anticrit,
+    total_counter,
+    total_crit,
+    total_dodge,
+)
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
 from bot.game.equipment import (
     LEFT_SLOTS,
@@ -221,7 +228,7 @@ def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
         "code": potion.code,
         "title": potion.title,
         "icon": potion.emoji,
-        "image": potion.image,
+        "image": potion.picture,
         "kind": potion.kind.value,
         "consumable": True,
         "slot": SECTION_CODE,
@@ -522,13 +529,23 @@ def build_card(
                 for low, high in equipment.weapon_damages
                 if high
             ],
-            "crit_chance": round(derived.crit_chance * 100),
+            # Проценты считаем той же арифметикой, что и ринг: карточка
+            # показывает то, с чем боец действительно выйдет драться.
+            "crit_chance": round(
+                total_crit(derived.crit_chance, equipment.crit) * 100
+            ),
             "crit_power": derived.crit_power,
-            "anticrit": round((derived.anticrit + equipment.anticrit) * 100),
-            "dodge_chance": round(derived.dodge_chance * 100),
-            "accuracy": round((derived.accuracy + equipment.accuracy) * 100),
+            "anticrit": round(
+                total_anticrit(derived.anticrit, equipment.anticrit) * 100
+            ),
+            "dodge_chance": round(
+                total_dodge(derived.dodge_chance, equipment.dodge) * 100
+            ),
+            "accuracy": round(
+                total_accuracy(derived.accuracy, equipment.accuracy) * 100
+            ),
             "counter_chance": round(
-                (derived.counter_chance + equipment.counter) * 100
+                total_counter(derived.counter_chance, equipment.counter) * 100
             ),
             "resist": round(derived.resist * 100),
             "penetration": round(derived.penetration * 100),

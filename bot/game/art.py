@@ -16,9 +16,7 @@ SLOTS = f"{BUCKET}/slots"
 ITEMS = f"{BUCKET}/items"
 # Товар лавки мага
 MAGIC = f"{BUCKET}/magic"
-
-# Первый бакет, из которого пока не переехали кеды
-LEGACY = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/VEGAS%20Fight%20Club"
+POTIONS = f"{BUCKET}/potions"
 
 
 def avatar(code: str) -> str:
@@ -31,15 +29,21 @@ def slot(code: str) -> str:
     return f"{SLOTS}/{code}.jpeg"
 
 
+def potion(code: str) -> str:
+    """Склянка лежит под кодом эликсира: potions/heal_small.png."""
+    return f"{POTIONS}/{code}.png"
+
+
 __all__ = [
     "ADDED",
     "AVATARS",
     "BUCKET",
     "ITEMS",
     "MAGIC",
-    "LEGACY",
+    "POTIONS",
     "SLOTS",
     "WEAPONS",
     "avatar",
+    "potion",
     "slot",
 ]

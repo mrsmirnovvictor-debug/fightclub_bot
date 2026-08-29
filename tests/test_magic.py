@@ -317,3 +317,57 @@ async def test_a_gift_is_neither_a_purchase_nor_a_refund(db, store):
     assert await db.purchases_of(7) == []
     with pytest.raises(StoreError, match="подарок"):
         await store.refund(7, GIFT_ID)
+
+
+# ---------- карточка не должна расходиться с рингом ----------
+
+
+def test_the_card_shows_every_percent_the_ring_will_use():
+    """Проценты с вещей видны все до одной.
+
+    Уворот и крит на карточке считались без экипировки, пока ни одна вещь их
+    не давала: меч дал +35% уворота, и карточка молча показывала голое
+    значение — контрудар прибавился, а уворот нет.
+    """
+    player = make_player()
+    bare = build_card(player, TOKEN, viewer_id=player.user_id)["combat"]
+    player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
+    armed = build_card(player, TOKEN, viewer_id=player.user_id)["combat"]
+
+    assert armed["dodge_chance"] == bare["dodge_chance"] + 35
+    assert armed["counter_chance"] == bare["counter_chance"] + 25
+
+    # и ровно то же число, с которым боец выйдет на ринг
+    fighter = Fighter.from_player(player, armed=True)
+    assert armed["dodge_chance"] == round(fighter.dodge * 100)
+    assert armed["counter_chance"] == round(fighter.counter * 100)
+    assert armed["crit_chance"] == round(fighter.crit * 100)
+    assert armed["accuracy"] == round(fighter.accuracy * 100)
+    assert armed["anticrit"] == round(fighter.anticrit * 100)
+
+
+def test_the_profile_text_counts_gear_the_same_way():
+    from bot.handlers.common import combat_block
+
+    player = make_player()
+    player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
+    fighter = Fighter.from_player(player, armed=True)
+
+    text = combat_block(
+        player.fclass, player.stats, player.level, player.equipment
+    )
+
+    assert f"🌀 Уворот: <b>{fighter.dodge:.0%}</b>" in text
+    assert f"🔄 Контрудар: <b>{fighter.counter:.0%}</b>" in text
+
+
+def test_the_card_never_promises_more_than_the_ring_allows():
+    """Потолок боя виден и на карточке: 60% уворота — предел."""
+    player = make_player()
+    player.agility = 80
+    player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
+
+    card = build_card(player, TOKEN, viewer_id=player.user_id)["combat"]
+    fighter = Fighter.from_player(player, armed=True)
+
+    assert card["dodge_chance"] == round(fighter.dodge * 100) == 60

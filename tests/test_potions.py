@@ -379,3 +379,22 @@ async def test_a_reset_takes_the_bottles_and_the_buffs_with_it(db):
 
     assert await db.list_potions(player.user_id) == {}
     assert await db.list_effects(player.user_id) == []
+
+
+def test_every_potion_is_drawn_under_its_own_code():
+    """Файл склянки лежит в /potions под кодом эликсира — как образы и слоты."""
+    from bot.game import art
+
+    for potion in POTIONS:
+        assert potion.picture == f"{art.POTIONS}/{potion.code}.png"
+    assert len({potion.picture for potion in POTIONS}) == len(POTIONS)
+
+
+def test_the_shop_row_carries_the_potion_picture():
+    from bot.webapp.card import build_shop
+
+    misc = build_shop(make_player())["sections"][-1]
+    rows = {row["code"]: row for row in misc["items"]}
+
+    assert rows["heal_small"]["image"] == get_potion("heal_small").picture
+    assert all(row["image"] for row in misc["items"])

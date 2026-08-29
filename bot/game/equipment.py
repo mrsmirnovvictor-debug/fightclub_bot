@@ -444,8 +444,6 @@ WEAPON_ART = art.WEAPONS
 ADDED_ART = art.ADDED
 ITEM_ART = art.ITEMS
 MAGIC_ART = art.MAGIC
-# Обувь пока осталась в первом бакете, её стоит перенести туда же
-IMAGES = art.LEGACY
 
 WARRIOR, ROGUE, ASSASSIN, TANK = "warrior", "rogue", "assassin", "tank"
 
@@ -483,7 +481,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.PANTS,
         "👖",
         hp=6,
-        image=f"{ITEM_ART}/Canvas_trousers_game_inventory_icon_202608281512.jpeg",
+        image=f"{ITEM_ART}/Folded_work_trousers_game_icon_202608281512.jpeg",
         armor_min=0,
         armor_max=1,
         level_required=2,
@@ -510,7 +508,7 @@ ITEMS: tuple[Item, ...] = (
         "Кеды",
         Slot.BOOTS,
         "👟",
-        image=f"{IMAGES}/bots/Worn_sneakers_game_asset_202608261347.jpeg",
+        image=f"{ITEM_ART}/sneakers.png",
         agility=1,
         armor_min=0,
         armor_max=1,
@@ -688,7 +686,7 @@ ITEMS: tuple[Item, ...] = (
         Slot.PANTS,
         "👖",
         hp=6,
-        image=f"{ITEM_ART}/Folded_work_trousers_game_icon_202608281512.jpeg",
+        image=f"{ITEM_ART}/Canvas_trousers_game_inventory_icon_202608281512.jpeg",
         armor_min=2,
         armor_max=4,
         level_required=5,
