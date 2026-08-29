@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS players (
     hp_at          INTEGER NOT NULL DEFAULT 0,
     city           TEXT    NOT NULL DEFAULT 'Vegas City',
     look           TEXT    NOT NULL DEFAULT '',
+    gender         TEXT    NOT NULL DEFAULT '',
     pro_until      INTEGER NOT NULL DEFAULT 0,
     birthplace     TEXT,
     wins           INTEGER NOT NULL DEFAULT 0,
@@ -207,7 +208,7 @@ PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, look, strength, "
     "agility, intuition, endurance, free_points, level, exp, total_exp, "
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
-    "city, birthplace, pro_until, created_at"
+    "city, birthplace, pro_until, gender, created_at"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -222,6 +223,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("birthplace", "TEXT"),
     ("look", "TEXT NOT NULL DEFAULT ''"),
     ("pro_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — подписки нет
+    ("gender", "TEXT NOT NULL DEFAULT ''"),  # пусто — бойца заводили до выбора
 )
 
 
@@ -325,8 +327,9 @@ class Database:
                 user_id, nickname, class_code, avatar, avatar_file_id, look,
                 strength, agility, intuition, endurance, free_points, level,
                 exp, total_exp, micro_ups, credits, rating, hp, hp_at,
-                wins, losses, draws, city, birthplace, pro_until, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                wins, losses, draws, city, birthplace, pro_until, gender,
+                created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -351,7 +354,8 @@ class Database:
                 wins           = excluded.wins,
                 losses         = excluded.losses,
                 draws          = excluded.draws,
-                pro_until      = excluded.pro_until
+                pro_until      = excluded.pro_until,
+                gender         = excluded.gender
             """,
             (
                 player.user_id,
@@ -379,6 +383,7 @@ class Database:
                 player.city,
                 player.birthplace,
                 player.pro_until,
+                player.gender,
                 player.created_at,
             ),
         )

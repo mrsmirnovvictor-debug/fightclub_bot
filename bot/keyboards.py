@@ -17,6 +17,7 @@ from bot.game.classes import (
     block_title,
 )
 from bot.game.equipment import SHOWCASE, items_unlocked_at
+from bot.game.looks import FEMALE, MALE, free_looks
 from bot.game.potions import POTIONS
 
 AVATARS: tuple[str, ...] = (
@@ -40,6 +41,14 @@ class StatCB(CallbackData, prefix="stat"):
 
 class BuyCB(CallbackData, prefix="buy"):
     code: str
+
+
+class GenderCB(CallbackData, prefix="gender"):
+    code: str  # male | female
+
+
+class LookCB(CallbackData, prefix="look"):
+    code: str  # код образа из bot.game.looks
 
 
 class DrinkCB(CallbackData, prefix="drink"):
@@ -103,6 +112,35 @@ def classes_keyboard() -> InlineKeyboardMarkup:
     for fclass in FIGHTER_CLASSES.values():
         builder.button(text=fclass.label, callback_data=ClassCB(code=fclass.code))
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def genders_keyboard() -> InlineKeyboardMarkup:
+    """Пол бойца: от него зависит, какие образы предложить."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🙎‍♂️ Мужской", callback_data=GenderCB(code=MALE))
+    builder.button(text="🙎‍♀️ Женский", callback_data=GenderCB(code=FEMALE))
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def looks_keyboard(gender: str) -> InlineKeyboardMarkup:
+    """Открытые образы своего пола. Плюс своё фото, если готового мало."""
+    builder = InlineKeyboardBuilder()
+    for look in free_looks():
+        if look.gender != gender:
+            continue
+        builder.button(
+            text=f"{look.emoji} {look.title}",
+            callback_data=LookCB(code=look.code),
+        )
+    builder.adjust(1)
+    builder.row(
+        InlineKeyboardButton(
+            text="📷 Загрузить своё фото",
+            callback_data=AvatarCB(value="custom").pack(),
+        )
+    )
     return builder.as_markup()
 
 

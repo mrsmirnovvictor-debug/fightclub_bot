@@ -24,6 +24,9 @@ class Config:
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
     webapp_port: int = 8080
+    # Куда звать новичка после создания бойца: приглашение в группу клуба
+    club_url: str = "https://t.me/+7oXCRY4E4WAzZWJi"
+    club_title: str = "Бойцовский клуб Вегас"
     # Короткое имя мини-аппа из BotFather: по нему строятся ссылки на карточку
     miniapp_name: str = ""
     # Мини-апп включён главным (BotFather → Configure Mini App): тогда карточка
@@ -80,6 +83,8 @@ def load_config() -> Config:
         webapp_url=_webapp_url(),
         webapp_host=os.getenv("WEBAPP_HOST", "0.0.0.0").strip(),
         webapp_port=_webapp_port(),
+        club_url=os.getenv("CLUB_URL", "").strip() or Config.club_url,
+        club_title=os.getenv("CLUB_TITLE", "").strip() or Config.club_title,
         miniapp_name=os.getenv("MINIAPP_NAME", "").strip(),
         miniapp_main=_flag("MINIAPP_MAIN"),
     )

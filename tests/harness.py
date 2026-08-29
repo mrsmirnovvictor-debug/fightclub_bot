@@ -62,6 +62,19 @@ class FakeSession(BaseSession):
             )
         if name == "CreateInvoiceLink":
             return "https://t.me/$test-invoice"
+        if name == "SendMediaGroup":
+            # Альбом отдаёт список сообщений, по одному на картинку
+            self._message_id += 1
+            chat = Chat(id=method.chat_id, type="private")
+            return [
+                Message(
+                    message_id=self._message_id + index,
+                    date=datetime.now(timezone.utc),
+                    chat=chat,
+                    caption=getattr(item, "caption", ""),
+                ).as_(bot)
+                for index, item in enumerate(method.media)
+            ]
         if name in MESSAGE_METHODS:
             self._message_id += 1
             chat_id = getattr(method, "chat_id", 0) or 0
@@ -82,6 +95,16 @@ class FakeSession(BaseSession):
             getattr(call, "text", "") or getattr(call, "caption", "")
             for call in self.calls
             if type(call).__name__ in MESSAGE_METHODS
+        ]
+
+    @property
+    def markups(self) -> list:
+        """Клавиатуры отправленных сообщений — по ним видно, что предложили."""
+        return [
+            call.reply_markup
+            for call in self.calls
+            if type(call).__name__ in MESSAGE_METHODS
+            and getattr(call, "reply_markup", None) is not None
         ]
 
     @property

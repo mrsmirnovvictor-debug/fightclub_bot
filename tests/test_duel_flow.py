@@ -796,6 +796,8 @@ async def test_panel_is_one_for_both_fighters(bot, db):
 
 async def test_every_name_in_the_fight_log_opens_the_card(bot, db):
     """Имя бойца кликабельно везде: вызов, стойка, панель раунда, удары, итог."""
+    import re
+
     from bot.game.links import links
 
     links.configure("vegasfightclub_bot", "card")
@@ -820,10 +822,14 @@ async def test_every_name_in_the_fight_log_opens_the_card(bot, db):
             if "Тайлер" in text or "Марла" in text
         ]
         assert named, "в логе боя вообще нет имён"
+        # подсказка про свободные очки ведёт в ту же карточку, но имени в ней
+        # нет — иначе счёт ссылок и имён не сойдётся
+        hint = re.compile(r"<a href=\"[^\"]+\">карточке бойца</a>")
         for text in named:
+            bare = hint.sub("", text)
             for user_id, name in ((1, "Тайлер"), (2, "Марла")):
                 # каждое упоминание имени должно быть завёрнуто в ссылку
-                assert text.count(name) == text.count(links_by_id[user_id]), (
+                assert bare.count(name) == bare.count(links_by_id[user_id]), (
                     f"имя {name} где-то без ссылки на карточку: {text[:160]}"
                 )
     finally:
@@ -900,3 +906,36 @@ async def test_walking_away_from_an_armed_fight_says_so_too(bot, db):
     card = bot.edits[-1].text
     assert "Вызов принят. Бой с оружием." in card
     assert "отказывается от боя" in card
+
+
+async def test_the_ring_sends_the_winner_to_the_card_and_not_to_a_command(bot, db):
+    """В ветке боя команды не работают — за очками зовём в карточку.
+
+    Раньше строка кончалась на «— /upgrade», и люди пробовали набрать это
+    прямо на ринге: команды бота слушает личка, а не группа.
+    """
+    from bot.game.links import links
+    from bot.game.narrator import upgrade_hint
+
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "rogue"))
+
+    was = (links.bot_username, links.miniapp_name, links.main_app)
+    links.configure("vegasfightclub_bot", "card")
+    try:
+        session = await service.start_duel(CHAT_ID, THREAD_ID, *[
+            await db.get_player(uid) for uid in (1, 2)
+        ])
+        await fight_to_the_end(service, session)
+
+        rewards = next(text for text in bot.texts if "Итоги" in text)
+        assert "получает" in rewards or "уровень" in rewards
+        assert "/upgrade" not in rewards, "в ветке боя это не наберёшь"
+        assert "карточке бойца" in rewards
+
+        # а без настроенного мини-аппа честно зовём в личку
+        links.configure("", "", False)
+        assert "/upgrade" in upgrade_hint(await db.get_player(1))
+    finally:
+        links.configure(*was)

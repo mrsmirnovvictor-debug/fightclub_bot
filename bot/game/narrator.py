@@ -138,6 +138,23 @@ def player_link(player: "Player") -> str:
     return name_link(player.user_id, player.nickname, player.is_pro())
 
 
+def upgrade_hint(player: "Player") -> str:
+    """Куда идти раскладывать очки.
+
+    В ветке боя команды бота не работают — их слушает личка. Раньше здесь
+    стояло «— /upgrade», и люди честно пробовали набрать это прямо на ринге.
+    Поэтому зовём в карточку: она открывается поверх чата одним касанием.
+    """
+    free = player.free_points
+    where = links.card_url(player.user_id)
+    if where:
+        return (
+            f"Свободных очков: {free} — "
+            f'разложить в <a href="{where}">карточке бойца</a>'
+        )
+    return f"Свободных очков: {free} — разложить в личке бота: /upgrade"
+
+
 def hp_bar(current: int, maximum: int, width: int = 10) -> str:
     if maximum <= 0:
         return "▱" * width
@@ -461,14 +478,14 @@ def rewards_report(
             events.append(
                 f"🎉 {name} берёт <b>{player.level}</b> уровень! "
                 f"Здоровье выросло, {grown + ', ' if grown else ''}"
-                f"очков характеристик: +{report.points} "
-                f"(всего свободных {player.free_points}) — /upgrade"
+                f"очков характеристик: +{report.points}.\n"
+                f"{upgrade_hint(player)}"
             )
         elif report.ups:
             word = "ап" if report.ups == 1 else "апа"
             events.append(
                 f"⚡ {name} получает {report.ups} {word}: +{report.points} "
-                f"к характеристикам (всего свободных {player.free_points}) — /upgrade"
+                f"к характеристикам.\n{upgrade_hint(player)}"
             )
         if report.capped and report.exp:
             events.append(
@@ -624,13 +641,14 @@ def battle_rewards_report(rows, broken=None) -> str:
             events.append(
                 f"🎉 {title} берёт <b>{player.level}</b> уровень! "
                 f"Здоровье выросло, {grown + ', ' if grown else ''}"
-                f"очков характеристик: +{report.points} — /upgrade"
+                f"очков характеристик: +{report.points}.\n"
+                f"{upgrade_hint(player)}"
             )
         elif report.ups:
             word = "ап" if report.ups == 1 else "апа"
             events.append(
                 f"⚡ {title} получает {report.ups} {word}: +{report.points} "
-                f"к характеристикам — /upgrade"
+                f"к характеристикам.\n{upgrade_hint(player)}"
             )
 
     lines.append("")

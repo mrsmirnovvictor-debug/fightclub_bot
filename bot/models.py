@@ -73,6 +73,8 @@ class Player:
     avatar_file_id: str | None = None
     # Выбранный образ: код из bot.game.looks. Пусто — образ ещё не выбирали
     look: str = ""
+    # Пол бойца: по нему предлагают образы. Пусто — бойца заводили до выбора
+    gender: str = ""
     strength: int = 0
     agility: int = 0
     intuition: int = 0
