@@ -212,6 +212,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .rows .value { font-weight: 700; text-align: right; }
 .rows .value .bonus { color: var(--muted); font-weight: 500; }
 .rows .value.good { color: var(--hp-green); }
+/* Строка «во что класс проворачивает оружие» — пояснение, а не показатель */
+.rows .value.weapon { color: var(--muted); font-weight: 600; }
 .rule { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
 
 /* ---------- вкладки и магазин ---------- */

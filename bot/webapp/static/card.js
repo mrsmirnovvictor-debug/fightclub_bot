@@ -110,7 +110,8 @@ function renderSlots(container, slots, own) {
         });
       } else if (slot.item) {
         const bonus = slot.item.bonus ? "\n" + slot.item.bonus : "";
-        popup(slot.item.title, slot.title + bonus);
+        const hands = slot.item.in_hands ? "\n" + slot.item.in_hands : "";
+        popup(slot.item.title, slot.title + bonus + hands);
       } else {
         popup("Слот пуст", "Сюда надевается: " + slot.title + ".");
       }
@@ -1422,6 +1423,19 @@ function render(card, keepTab) {
         .join("")
     : c.damage_min + "–" + c.damage_max;
   combat.appendChild(row("👊 Урон", hit));
+  // Откуда взялась прибавка от оружия: у меча 7–15, а класс проворачивает
+  // его на 6–14. Без этой строки два числа на одном экране противоречат
+  // друг другу, хотя оба верны.
+  c.weapon_damage.forEach((w) => {
+    const same = w.base === w.min + "–" + w.max;
+    combat.appendChild(
+      row(
+        (w.icon || "") + " " + (w.title || "Оружие"),
+        same ? w.base : w.base + " → " + w.min + "–" + w.max,
+        "weapon"
+      )
+    );
+  });
   combat.appendChild(row("💥 Крит", c.crit_chance + "% ×" + c.crit_power));
   combat.appendChild(row("🚫 Антикрит", c.anticrit + "%"));
   combat.appendChild(row("🌀 Уворот", c.dodge_chance + "%"));

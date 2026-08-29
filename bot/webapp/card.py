@@ -64,8 +64,11 @@ def format_birthday(created_at: str | None) -> str:
     return created_at  # pragma: no cover - формат из будущей версии
 
 
-def slot_payload(equipment: Equipment, slot: Slot) -> dict:
+def slot_payload(
+    equipment: Equipment, slot: Slot, fclass: FighterClass | None = None
+) -> dict:
     owned = equipment.get(slot)
+    in_hands = weapon_in_hands(owned.item, fclass) if owned else ""
     return {
         "slot": slot.value,
         "title": slot.title,
@@ -80,6 +83,10 @@ def slot_payload(equipment: Equipment, slot: Slot) -> dict:
             "icon": owned.emoji,
             "image": owned.image,
             "bonus": owned.describe_bonus(),
+            # Класс меняет урон оружия — говорим об этом там же, где число
+            "in_hands": f"У {fclass.title.lower()}а в руках: {in_hands}"
+            if in_hands
+            else "",
             "wear": owned.wear,
             "max_wear": owned.max_wear,
         },
@@ -533,8 +540,8 @@ def build_card(
         },
         "stats": stats_payload(player.base_stats, equipment.bonus),
         "slots": {
-            "left": [slot_payload(equipment, slot) for slot in LEFT_SLOTS],
-            "right": [slot_payload(equipment, slot) for slot in RIGHT_SLOTS],
+            "left": [slot_payload(equipment, slot, fclass) for slot in LEFT_SLOTS],
+            "right": [slot_payload(equipment, slot, fclass) for slot in RIGHT_SLOTS],
         },
         # Рюкзак показываем только хозяину карточки
         "inventory": [item_payload(player, owned) for owned in player.backpack]
@@ -586,9 +593,14 @@ def build_card(
                     "min": round(low * fclass.damage_mult),
                     "max": round(high * fclass.damage_mult),
                     "icon": icon,
+                    "title": title,
+                    # Собственный урон вещи: рядом с итогом видно, откуда он
+                    "base": f"{low}–{high}",
                 }
-                for (low, high), icon in zip(
-                    equipment.weapon_damages, equipment.weapon_icons
+                for (low, high), icon, title in zip(
+                    equipment.weapon_damages,
+                    equipment.weapon_icons,
+                    equipment.weapon_titles,
                 )
                 if high
             ],

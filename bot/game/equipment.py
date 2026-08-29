@@ -1364,6 +1364,15 @@ class Equipment:
         return tuple(names)
 
     @property
+    def weapon_titles(self) -> tuple[str, ...]:
+        """Чем бьёт, по-человечески: для строки урона на карточке."""
+        titles = [self.weapon.title if self.weapon else "Кулаки"]
+        second = self.second_weapon
+        if second:
+            titles.append(second.title)
+        return tuple(titles)
+
+    @property
     def weapon_icons(self) -> tuple[str, ...]:
         """Чем подписывать колонки ударов: кулак или значок оружия."""
         icons = [self.weapon.emoji if self.weapon else BARE_HANDS_ICON]

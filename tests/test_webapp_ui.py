@@ -750,7 +750,9 @@ async def test_the_bag_explains_what_the_weapon_does_in_your_hands(server):
         bag = await page.locator("#bag-list").inner_text()
         assert "👊 Урон: 7–15 (у воина 6–14)" in bag
 
-        # а в боевых показателях та же прибавка подписана значком меча
+        # а в боевых показателях стоит отдельная строка про оружие
         hero = await page.locator("#combat").inner_text()
         assert "🗡6–14" in hero
+        assert "🗡 Световой меч" in hero
+        assert "7–15 → 6–14" in hero
         await browser.close()

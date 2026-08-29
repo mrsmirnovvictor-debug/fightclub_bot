@@ -427,4 +427,49 @@ def test_the_damage_row_marks_which_part_came_from_the_weapon():
 
     weapon = build_card(player, TOKEN, viewer_id=42)["combat"]["weapon_damage"]
 
-    assert weapon == [{"min": 6, "max": 14, "icon": SABER.emoji}]
+    assert weapon == [
+        {
+            "min": 6,
+            "max": 14,
+            "icon": SABER.emoji,
+            "title": SABER.title,
+            "base": "7–15",
+        }
+    ]
+
+
+def test_the_hero_screen_explains_the_weapon_line_where_it_stands():
+    """Подсказка нужна там, где стоит число: у надетого меча рюкзака нет.
+
+    Пояснение «(у воина 6–14)» живёт на карточке вещи в рюкзаке, а надетый
+    меч в рюкзаке не лежит — на «Персонаже» его не видно вовсе. Поэтому
+    строка урона несёт и собственное число оружия, и название.
+    """
+    player = make_player()
+    player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
+
+    card = build_card(player, TOKEN, viewer_id=42)
+    weapon = card["combat"]["weapon_damage"][0]
+    slot = next(s for s in card["slots"]["left"] if s["slot"] == "weapon")
+
+    assert weapon["base"] == "7–15" and (weapon["min"], weapon["max"]) == (6, 14)
+    assert weapon["title"] == "Световой меч"
+    # и по нажатию на слот куклы говорится то же самое
+    assert slot["item"]["in_hands"] == "У воина в руках: 6–14"
+
+
+def test_the_slot_says_nothing_extra_when_the_class_changes_nothing():
+    player = make_player()
+    player.class_code = "tank"
+    player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
+
+    card = build_card(player, TOKEN, viewer_id=42)
+    slot = next(s for s in card["slots"]["left"] if s["slot"] == "weapon")
+
+    assert slot["item"]["in_hands"] == ""
+    assert card["combat"]["weapon_damage"][0]["base"] == "7–15"
+
+
+def test_bare_hands_never_add_a_weapon_line():
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    assert card["combat"]["weapon_damage"] == []
