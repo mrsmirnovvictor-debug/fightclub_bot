@@ -27,7 +27,7 @@ from bot.game.equipment import MAGIC_ITEMS, Item, OwnedItem, get_item
 from bot.game.pro import BENEFITS, PRO_ITEM, PRO_LOOK
 from bot.game.pro import EMOJI as PRO_EMOJI
 from bot.game.pro import TITLE as PRO_TITLE
-from bot.game.pro import ProOffer, current_offer
+from bot.game.pro import ProOffer, paid_offer
 from bot.game.store import (
     PACK_KIND,
     PACKS,
@@ -166,12 +166,10 @@ class StoreService:
                 raise StoreError("Этого товара у мага больше нет.")
             return item
         if kind == PRO_KIND:
-            offer = current_offer()
-            if offer.free:
-                # По акции подписку не оплачивают, а забирают: счёт на ноль
-                # звёзд Telegram не примет, да и незачем.
-                raise StoreError("Сейчас подписка достаётся даром — её просто берут.")
-            return offer
+            # За звёзды подписку берут на обычных условиях всегда, даже пока
+            # идёт акция: акция — это разовый бесплатный вход, а не скидка на
+            # продление. Счёта на ноль звёзд Telegram и не примет.
+            return paid_offer()
         raise StoreError("Этой пачки больше нет в кассе.")
 
     async def grant(self, user_id: int, payment: SuccessfulPayment) -> Grant:

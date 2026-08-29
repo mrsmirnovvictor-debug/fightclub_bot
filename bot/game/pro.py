@@ -73,11 +73,22 @@ def promo_is_on(now: datetime | None = None) -> bool:
     return moment < PROMO_UNTIL
 
 
-def current_offer(now: datetime | None = None) -> ProOffer:
-    """Цена и срок на этот момент. Идёт акция — даром и на неделю."""
-    if promo_is_on(now):
-        return ProOffer(stars=PROMO_STARS, days=PROMO_DAYS, promo=True)
+def paid_offer() -> ProOffer:
+    """Обычные условия: месяц за звёзды.
+
+    Акция их не трогает. Она — единственный бесплатный вход в клуб, и берут
+    её один раз; продлевают подписку всегда за звёзды.
+    """
     return ProOffer(stars=PRO_STARS, days=PRO_DAYS)
+
+
+def promo_offer() -> ProOffer:
+    return ProOffer(stars=PROMO_STARS, days=PROMO_DAYS, promo=True)
+
+
+def current_offer(now: datetime | None = None) -> ProOffer:
+    """Что предлагают прямо сейчас: во время акции — неделю даром."""
+    return promo_offer() if promo_is_on(now) else paid_offer()
 
 
 TITLE = "Подписка PRO"
@@ -98,13 +109,19 @@ NOTE = (
 )
 
 
-def promo_note(offer: ProOffer) -> str:
+def promo_note(offer: ProOffer, claimed: bool = False) -> str:
     """Строка про акцию — пусто, когда акции нет."""
     if not offer.promo:
         return ""
+    if claimed:
+        return (
+            f"Бесплатную неделю ты уже забрал: она даётся один раз. "
+            f"Дальше подписка продлевается за {PRO_STARS} ⭐ на {PRO_DAYS} дней."
+        )
     return (
-        f"🔥 До 1 сентября подписка достаётся даром — на {offer.days} дней "
-        f"вместо месяца. Дальше {PRO_STARS} ⭐ за {PRO_DAYS} дней."
+        f"🔥 До 1 сентября первая подписка достаётся даром — на {offer.days} "
+        f"дней вместо месяца. Один раз на бойца; продление — "
+        f"{PRO_STARS} ⭐ за {PRO_DAYS} дней."
     )
 
 
@@ -126,6 +143,8 @@ __all__ = [
     "TITLE",
     "ProOffer",
     "current_offer",
+    "paid_offer",
+    "promo_offer",
     "promo_is_on",
     "promo_note",
 ]

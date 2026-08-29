@@ -328,10 +328,19 @@ def relic_payload(player: Player, item: Item, owned: int) -> dict:
     return row
 
 
-def pro_payload(player: Player, now: int | None = None) -> dict:
-    """Карточка подписки: она всегда стоит первой на прилавке мага."""
+def pro_payload(
+    player: Player, now: int | None = None, promo_claimed: bool = False
+) -> dict:
+    """Карточка подписки: она всегда стоит первой на прилавке мага.
+
+    `promo_claimed` — забирал ли боец бесплатную неделю. Она даётся один
+    раз, поэтому кнопка после этого всегда ведёт в счёт: иначе «продлить
+    бесплатно» тыкается до бесконечности.
+    """
     moment = int(time.time()) if now is None else now
     offer = current_offer()
+    paid = pro.paid_offer()
+    free = offer.promo and not promo_claimed
     left = player.pro_left(moment)
     return {
         "title": pro.TITLE,
@@ -339,20 +348,27 @@ def pro_payload(player: Player, now: int | None = None) -> dict:
         "image": pro.IMAGE,
         "benefits": list(pro.BENEFITS),
         "note": pro.NOTE,
-        "stars": offer.stars,
-        "days": offer.days,
-        "free": offer.free,
+        # Что предлагают этому бойцу: бесплатная неделя или обычный месяц
+        "stars": 0 if free else paid.stars,
+        "days": offer.days if free else paid.days,
+        "free": free,
         "promo": offer.promo,
-        "promo_note": pro.promo_note(offer),
-        "price_text": offer.price_text,
-        "term_text": offer.term_text,
+        "promo_claimed": promo_claimed,
+        "promo_note": pro.promo_note(offer, promo_claimed),
+        # Цена продления — всегда обычная, даже пока идёт акция
+        "renew_stars": paid.stars,
+        "renew_days": paid.days,
+        "price_text": "бесплатно" if free else paid.price_text,
+        "term_text": (offer if free else paid).term_text,
         "active": bool(left),
         "seconds_left": left,
         "left_text": spell_duration(left) if left else "",
     }
 
 
-def build_magic(player: Player, now: int | None = None) -> dict:
+def build_magic(
+    player: Player, now: int | None = None, promo_claimed: bool = False
+) -> dict:
     """Лавка мага: подписка сверху, за ней товар за звёзды."""
     mine: dict[str, int] = {}
     for owned in player.gear:
@@ -360,7 +376,7 @@ def build_magic(player: Player, now: int | None = None) -> dict:
     return {
         "credits": player.credits,
         "level": player.level,
-        "pro": pro_payload(player, now),
+        "pro": pro_payload(player, now, promo_claimed),
         "items": [
             relic_payload(player, item, mine.get(item.code, 0))
             for item in MAGIC_ITEMS

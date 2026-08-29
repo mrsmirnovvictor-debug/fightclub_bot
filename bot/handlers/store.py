@@ -24,7 +24,7 @@ from bot.game import pro
 from bot.game.potions import spell_duration
 from bot.game.pro import ProOffer, current_offer
 from bot.game.store import PACKS, get_pack, pro_payload
-from bot.pro_service import ProError, claim_free_pro
+from bot.pro_service import ProError, claim_free_pro, promo_taken
 from bot.keyboards import ProCB, TopUpCB
 from bot.store_service import StoreError, StoreService, spent_stars
 
@@ -168,7 +168,7 @@ async def on_paid(message: Message, store: StoreService) -> None:
 # ---------- подписка ----------
 
 
-def pro_text(player, offer: ProOffer) -> str:
+def pro_text(player, offer: ProOffer, claimed: bool = False) -> str:
     lines = [f"{pro.EMOJI} <b>{pro.TITLE}</b>", ""]
     left = player.pro_left()
     if left:
@@ -176,25 +176,27 @@ def pro_text(player, offer: ProOffer) -> str:
     lines.append("<b>Что даёт</b>")
     lines += [f"• {line}" for line in pro.BENEFITS]
     lines += ["", pro.NOTE]
-    promo = pro.promo_note(offer)
+    promo = pro.promo_note(offer, claimed)
     if promo:
         lines += ["", promo]
-    else:
-        lines += ["", f"Цена: <b>{offer.stars}</b> ⭐ за {offer.days} дней."]
+    if claimed or not offer.promo:
+        paid = pro.paid_offer()
+        lines += ["", f"Цена: <b>{paid.stars}</b> ⭐ за {paid.days} дней."]
     return "\n".join(lines)
 
 
-def pro_keyboard(offer: ProOffer, active: bool) -> InlineKeyboardMarkup:
-    verb = "Продлить" if active else ("Забрать" if offer.free else "Оформить")
-    tail = "бесплатно" if offer.free else f"{offer.stars} ⭐"
+def pro_keyboard(free: bool, active: bool) -> InlineKeyboardMarkup:
+    """Кнопка одна: либо разовая бесплатная неделя, либо звёзды."""
+    paid = pro.paid_offer()
+    verb = "Продлить" if active else "Оформить"
+    text = (
+        f"{pro.EMOJI} Забрать бесплатно"
+        if free
+        else f"{pro.EMOJI} {verb} · {paid.stars} ⭐"
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"{pro.EMOJI} {verb} · {tail}",
-                    callback_data=ProCB(free=int(offer.free)).pack(),
-                )
-            ]
+            [InlineKeyboardButton(text=text, callback_data=ProCB(free=int(free)).pack())]
         ]
     )
 
@@ -207,9 +209,11 @@ async def cmd_pro(message: Message, db: Database) -> None:
         await message.answer(NO_CHARACTER)
         return
     offer = current_offer()
+    claimed = await promo_taken(db, player.user_id)
+    free = offer.promo and not claimed
     await message.answer(
-        pro_text(player, offer),
-        reply_markup=pro_keyboard(offer, player.is_pro()),
+        pro_text(player, offer, claimed),
+        reply_markup=pro_keyboard(free, player.is_pro()),
     )
 
 
@@ -225,7 +229,7 @@ async def on_pro(
         return
 
     offer = current_offer()
-    if offer.free:
+    if offer.promo and callback_data.free:
         try:
             grant = await claim_free_pro(db, player)
         except ProError as error:
@@ -245,13 +249,14 @@ async def on_pro(
         await callback.answer("Добро пожаловать в PRO!")
         return
 
+    paid = pro.paid_offer()
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=f"{pro.EMOJI} {pro.TITLE}",
-        description=store.description(offer),
+        description=store.description(paid),
         payload=pro_payload(callback.from_user.id),
         currency="XTR",
-        prices=[{"label": pro.TITLE, "amount": offer.stars}],
+        prices=[{"label": pro.TITLE, "amount": paid.stars}],
     )
     await callback.answer()
 

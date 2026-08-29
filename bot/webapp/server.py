@@ -21,7 +21,7 @@ from bot.inventory_service import (
 )
 from bot.looks_service import LookError, choose_look, wardrobe
 from bot.potions_service import PotionError, buy_potion, use_potion
-from bot.pro_service import ProError, claim_free_pro
+from bot.pro_service import ProError, claim_free_pro, promo_taken
 from bot.store_service import StoreError, StoreService
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.webapp.card import (
@@ -306,7 +306,8 @@ async def api_magic(request: web.Request) -> web.Response:
         player = await _own_player(request)
     except InventoryError as error:  # pragma: no cover - лавка боем не занята
         return web.json_response({"error": str(error)}, status=409)
-    return web.json_response(build_magic(player))
+    claimed = await promo_taken(request.app[DB_KEY], player.user_id)
+    return web.json_response(build_magic(player, promo_claimed=claimed))
 
 
 async def api_pro(request: web.Request) -> web.Response:
@@ -321,7 +322,7 @@ async def api_pro(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "card": build_card(player, config.bot_token, player.user_id),
-            "magic": build_magic(player),
+            "magic": build_magic(player, promo_claimed=True),
             "pro": {
                 "days": grant.offer.days,
                 "renewed": grant.renewed,

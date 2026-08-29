@@ -17,8 +17,8 @@ from bot.game.pro import (
     PRO_ITEM,
     PRO_LOOK,
     ProOffer,
-    current_offer,
     promo_is_on,
+    promo_offer,
 )
 from bot.models import Player
 
@@ -78,16 +78,55 @@ async def grant_pro(
     )
 
 
+def promo_claim_id(user_id: int) -> str:
+    """Ключ бесплатной выдачи в журнале. Он же и защита от второй."""
+    return f"promo:pro:{user_id}"
+
+
+async def promo_taken(db: Database, user_id: int) -> bool:
+    """Забирал ли боец бесплатную неделю. Одна на бойца, навсегда."""
+    return await db.get_purchase(promo_claim_id(user_id)) is not None
+
+
 async def claim_free_pro(
     db: Database, player: Player, now: int | None = None
 ) -> ProGrant:
-    """Забрать подписку по акции. Вне акции — отказ, и это проверяет сервер."""
-    offer = current_offer()
-    if not offer.free or not promo_is_on():
+    """Забрать подписку по акции.
+
+    Бесплатная неделя даётся один раз на бойца: иначе кнопку «продлить
+    бесплатно» можно тыкать до бесконечности, и подписка перестаёт что-либо
+    стоить. Защита — запись в журнале с уникальным ключом, а не проверка
+    перед вставкой: две быстрые нажатия подряд не проскочат.
+
+    Идёт ли акция, решает сервер: со страницы дату не подделать.
+    """
+    if not promo_is_on():
         raise ProError(
             "Акция кончилась — подписку теперь берут за звёзды в лавке мага."
         )
-    return await grant_pro(db, player, offer, now)
+
+    first = await db.add_purchase(
+        user_id=player.user_id,
+        code="pro",
+        stars=0,
+        credits=0,
+        charge_id=promo_claim_id(player.user_id),
+        # Подарок, а не покупка: в историю не идёт и возврату не подлежит
+        kind="gift",
+    )
+    if not first:
+        raise ProError(
+            "Бесплатную неделю ты уже забирал — она даётся один раз. "
+            "Продлить подписку можно за звёзды в лавке мага."
+        )
+    return await grant_pro(db, player, promo_offer(), now)
 
 
-__all__ = ["ProError", "ProGrant", "claim_free_pro", "grant_pro"]
+__all__ = [
+    "ProError",
+    "ProGrant",
+    "claim_free_pro",
+    "grant_pro",
+    "promo_claim_id",
+    "promo_taken",
+]

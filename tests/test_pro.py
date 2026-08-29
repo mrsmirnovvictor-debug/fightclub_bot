@@ -28,7 +28,13 @@ from bot.game.pro import (
 from bot.game.store import parse_payload, pro_payload
 from bot.looks_service import LookError, choose_look, wardrobe
 from bot.models import Player
-from bot.pro_service import ProError, claim_free_pro, grant_pro
+from bot.pro_service import (
+    ProError,
+    claim_free_pro,
+    grant_pro,
+    promo_claim_id,
+    promo_taken,
+)
 from bot.store_service import StoreError, StoreService
 from bot.webapp.card import build_card, build_club, build_magic
 from bot.webapp.server import create_app
@@ -44,7 +50,7 @@ def make_player(user_id: int = 42, level: int = 5, **kwargs) -> Player:
     stats = Stats(strength=12, agility=8, intuition=8, endurance=12)
     return Player(
         user_id=user_id,
-        nickname="Тайлер",
+        nickname=kwargs.pop("nickname", "Тайлер"),
         class_code="warrior",
         level=level,
         **stats.as_dict(),
@@ -81,14 +87,6 @@ async def client(db):
 
 def headers(user_id: int = 42) -> dict:
     return {"X-Telegram-Init-Data": make_init_data(user_id=user_id)}
-
-
-@pytest.fixture
-def after_promo(monkeypatch):
-    """Акция кончилась: подписку продают за звёзды, как будет после 1 сентября."""
-    monkeypatch.setattr(
-        "bot.store_service.current_offer", lambda *a, **k: current_offer(AFTER_PROMO)
-    )
 
 
 # ---------- условия ----------
@@ -312,15 +310,15 @@ def test_the_payload_names_the_subscription():
     assert parse_payload(pro_payload(7)) == ("pro", "month")
 
 
-async def test_the_till_will_not_invoice_a_free_subscription(store):
-    """По акции подписку забирают, а не оплачивают: счёт на ноль звёзд не бывает."""
-    if not promo_is_on():
-        pytest.skip("акция уже кончилась")
-    with pytest.raises(StoreError, match="даром"):
-        store.check(pro_payload(42))
+def test_stars_always_buy_the_normal_month_even_during_the_promo(store):
+    """Акция — разовый бесплатный вход, а не скидка на продление."""
+    offer = store.check(pro_payload(42))
+
+    assert (offer.stars, offer.days) == (PRO_STARS, PRO_DAYS)
+    assert not offer.promo
 
 
-async def test_paying_for_pro_starts_the_term_and_hands_over_the_loot(after_promo, store, db):
+async def test_paying_for_pro_starts_the_term_and_hands_over_the_loot(store, db):
     await db.save_player(make_player())
 
     grant = await store.grant(42, paid())
@@ -331,7 +329,7 @@ async def test_paying_for_pro_starts_the_term_and_hands_over_the_loot(after_prom
     assert [owned.code for owned in player.gear] == [PRO_ITEM]
 
 
-async def test_the_same_pro_payment_is_counted_once(after_promo, store, db):
+async def test_the_same_pro_payment_is_counted_once(store, db):
     await db.save_player(make_player())
 
     await store.grant(42, paid())
@@ -342,7 +340,7 @@ async def test_the_same_pro_payment_is_counted_once(after_promo, store, db):
     assert (await db.get_player(42)).pro_until == until
 
 
-async def test_a_refund_takes_the_subscription_and_its_loot_back(after_promo, store, db, bot):
+async def test_a_refund_takes_the_subscription_and_its_loot_back(store, db, bot):
     """Забрал звёзды — вернул и то, что они принесли."""
     await db.save_player(make_player())
     await store.grant(42, paid())
@@ -384,3 +382,136 @@ async def test_the_free_claim_is_refused_when_the_promo_is_over(db, monkeypatch)
     with pytest.raises(ProError, match="Акция кончилась"):
         await claim_free_pro(db, player)
     assert not player.is_pro()
+
+
+# ---------- бесплатная неделя даётся один раз ----------
+
+
+async def test_the_free_week_is_handed_out_once_and_never_again(db):
+    """Кнопку «забрать даром» можно было тыкать без счёта — по неделе за раз."""
+    player = make_player()
+    await db.save_player(player)
+    now = now_ts()
+
+    first = await claim_free_pro(db, player, now)
+
+    assert first.offer.days == PROMO_DAYS
+    assert player.pro_until == now + PROMO_DAYS * 24 * 3600
+
+    for _ in range(3):
+        with pytest.raises(ProError, match="уже забирал"):
+            await claim_free_pro(db, player, now)
+
+    # срок не сдвинулся ни на секунду
+    assert player.pro_until == now + PROMO_DAYS * 24 * 3600
+    assert (await db.get_player(42)).pro_until == player.pro_until
+
+
+async def test_the_free_week_stays_spent_even_after_it_burns_out(db):
+    """Неделя кончилась — второй раз даром её всё равно не дают."""
+    player = make_player()
+    await db.save_player(player)
+    await claim_free_pro(db, player)
+    player.pro_until = now_ts() - 1
+    await db.save_player(player)
+
+    with pytest.raises(ProError, match="уже забирал"):
+        await claim_free_pro(db, player)
+    assert await promo_taken(db, 42)
+
+
+async def test_the_free_claim_leaves_no_trace_in_the_purchase_history(db, store):
+    """Подарок — не покупка: ни в истории, ни в возвратах его нет."""
+    player = make_player()
+    await db.save_player(player)
+    await claim_free_pro(db, player)
+
+    assert await db.purchases_of(42) == []
+    with pytest.raises(StoreError, match="подарок"):
+        await store.refund(42, promo_claim_id(42))
+
+
+async def test_the_counter_offers_stars_once_the_free_week_is_taken(db):
+    player = make_player()
+    await db.save_player(player)
+
+    before = build_magic(player, promo_claimed=False)["pro"]
+    await claim_free_pro(db, player)
+    after = build_magic(player, promo_claimed=True)["pro"]
+
+    assert before["free"] and before["stars"] == 0 and before["days"] == PROMO_DAYS
+    assert not after["free"]
+    assert after["stars"] == PRO_STARS and after["days"] == PRO_DAYS
+    assert after["promo_claimed"]
+    assert "уже забрал" in after["promo_note"]
+
+
+async def test_the_mini_app_refuses_the_second_free_claim(client, db):
+    if not promo_is_on():
+        pytest.skip("акция уже кончилась")
+    await db.save_player(make_player())
+
+    first = await client.post("/api/pro", json={}, headers=headers())
+    second = await client.post("/api/pro", json={}, headers=headers())
+    body = await second.json()
+
+    assert first.status == 200
+    assert second.status == 409
+    assert "уже забирал" in body["error"]
+    # и прилавок сразу показывает цену продления
+    magic = await (await client.get("/api/magic", headers=headers())).json()
+    assert not magic["pro"]["free"] and magic["pro"]["stars"] == PRO_STARS
+
+
+# ---------- разовая правка сроков ----------
+
+
+async def test_the_overrun_subscription_is_cut_back_to_one_week(db):
+    """Разовая правка: у бойца набежал месяц от повторных нажатий."""
+    from bot.game.pro import DAY
+    from bot.seed import TEST_FIGHTER, fix_promo_overrun
+
+    player = make_player(user_id=7, nickname=TEST_FIGHTER)
+    player.pro_until = now_ts() + 28 * DAY  # четыре нажатия по неделе
+    await db.save_player(player)
+
+    assert await fix_promo_overrun(db) is True
+
+    fixed = await db.get_player(7)
+    assert fixed.pro_left() <= PROMO_DAYS * DAY
+    assert fixed.pro_left() > (PROMO_DAYS - 1) * DAY
+    # акция теперь числится забранной: второй раз даром не дадут
+    assert await promo_taken(db, 7)
+    with pytest.raises(ProError, match="уже забирал"):
+        await claim_free_pro(db, fixed)
+
+
+async def test_the_fix_runs_once_and_never_touches_an_honest_term(db):
+    from bot.game.pro import DAY
+    from bot.seed import TEST_FIGHTER, fix_promo_overrun
+
+    player = make_player(user_id=7, nickname=TEST_FIGHTER)
+    player.pro_until = now_ts() + 28 * DAY
+    await db.save_player(player)
+    await fix_promo_overrun(db)
+    after_fix = (await db.get_player(7)).pro_until
+
+    # второй запуск ничего не трогает — даже если бойцу докупили месяц
+    player = await db.get_player(7)
+    player.pro_until += 30 * DAY
+    await db.save_player(player)
+    assert await fix_promo_overrun(db) is False
+    assert (await db.get_player(7)).pro_until == after_fix + 30 * DAY
+
+
+async def test_the_fix_leaves_a_short_term_alone(db):
+    """Срок короче обещанного не растягиваем: правка только урезает."""
+    from bot.game.pro import DAY
+    from bot.seed import TEST_FIGHTER, fix_promo_overrun
+
+    player = make_player(user_id=7, nickname=TEST_FIGHTER)
+    player.pro_until = now_ts() + 2 * DAY
+    await db.save_player(player)
+
+    assert await fix_promo_overrun(db) is False
+    assert (await db.get_player(7)).pro_left() <= 2 * DAY + 5

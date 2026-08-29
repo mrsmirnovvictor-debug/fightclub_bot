@@ -628,9 +628,11 @@ function proCard(pro) {
 
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
-  const text = pro.active
-    ? (pro.free ? "Продлить · бесплатно" : "Продлить · " + pro.stars + " ⭐")
-    : (pro.free ? "Забрать бесплатно" : "Оформить · " + pro.stars + " ⭐");
+  // Бесплатная неделя — разовый вход, а не способ продления: забрал один
+  // раз, дальше кнопка всегда ведёт в счёт.
+  const text = pro.free
+    ? "Забрать бесплатно"
+    : (pro.active ? "Продлить · " : "Оформить · ") + pro.stars + " ⭐";
   buttons.appendChild(button(text, { onClick: () => takePro(pro) }));
   body.appendChild(buttons);
 

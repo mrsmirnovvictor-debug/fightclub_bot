@@ -24,7 +24,7 @@ from bot.store_service import StoreService
 from bot.tournament_service import TournamentService
 from bot.game.links import links
 from bot.handlers import build_router
-from bot.seed import grant_test_relic
+from bot.seed import fix_promo_overrun, grant_test_relic
 from bot.webapp import run_webapp
 
 logger = logging.getLogger(__name__)
@@ -113,8 +113,9 @@ async def run(config: Config | None = None) -> None:
     )
     # Турниры живут дольше одного запуска: поднимаем недоигранные сетки
     await tournaments.resume()
-    # Разовая выдача на время тестов — см. bot/seed.py
+    # Разовые выдачи и правки на время тестов — см. bot/seed.py
     await grant_test_relic(db)
+    await fix_promo_overrun(db)
     try:
         await dispatcher.start_polling(
             bot, allowed_updates=dispatcher.resolve_used_update_types()
