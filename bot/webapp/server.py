@@ -21,6 +21,7 @@ from bot.inventory_service import (
 )
 from bot.looks_service import LookError, choose_look, wardrobe
 from bot.potions_service import PotionError, buy_potion, use_potion
+from bot.pro_service import ProError, claim_free_pro
 from bot.store_service import StoreError, StoreService
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.webapp.card import (
@@ -307,6 +308,30 @@ async def api_magic(request: web.Request) -> web.Response:
     return web.json_response(build_magic(player))
 
 
+async def api_pro(request: web.Request) -> web.Response:
+    """Забрать подписку по акции. Идёт ли акция — решает сервер, не страница."""
+    try:
+        player = await _own_player(request)
+        grant = await claim_free_pro(request.app[DB_KEY], player)
+    except (InventoryError, ProError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "magic": build_magic(player),
+            "pro": {
+                "days": grant.offer.days,
+                "renewed": grant.renewed,
+                "blade": grant.blade,
+                "look": grant.look,
+                "seconds_left": grant.seconds_left(),
+            },
+        }
+    )
+
+
 async def api_club(request: web.Request) -> web.Response:
     """Список клуба: все записанные бойцы с короткими карточками."""
     viewer = await _viewer(request)
@@ -372,7 +397,7 @@ async def api_invoice(request: web.Request) -> web.Response:
     # Касса и лавка мага ходят в одну ручку, различаясь только видом товара
     kind = str(data.get("kind") or "pack")
     try:
-        goods = store.check(f"{kind}:{data.get('code') or ''}")
+        goods = store.check(f"{kind}:{data.get('code') or 'month'}")
         link = await store.invoice_link(goods, viewer.user_id)
     except StoreError as error:
         return web.json_response({"error": str(error)}, status=409)
@@ -382,7 +407,11 @@ async def api_invoice(request: web.Request) -> web.Response:
             {"error": "Касса не отвечает. Попробуй ещё раз."}, status=502
         )
     return web.json_response(
-        {"link": link, "code": goods.code, "stars": goods.stars}
+        {
+            "link": link,
+            "code": getattr(goods, "code", kind),
+            "stars": goods.stars,
+        }
     )
 
 
@@ -443,6 +472,7 @@ def create_app(
             web.post("/api/use", api_use),
             web.get("/api/club", api_club),
             web.get("/api/magic", api_magic),
+            web.post("/api/pro", api_pro),
             web.get("/api/looks", api_looks),
             web.post("/api/look", api_look),
             web.get("/api/topup", api_topup),

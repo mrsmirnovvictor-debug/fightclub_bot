@@ -41,6 +41,7 @@ from bot.game.potions import (
     effects_hp,
     get_potion,
 )
+from bot.game.pro import PRO_BADGE
 from bot.game.stats import derive
 from bot.game.world import DEFAULT_BIRTHPLACE, DEFAULT_CITY
 
@@ -89,6 +90,8 @@ class Player:
     losses: int = 0
     draws: int = 0
     city: str = DEFAULT_CITY
+    # До какого момента жива подписка PRO (unix-время); 0 — подписки нет
+    pro_until: int = 0
     birthplace: str | None = None  # группа, где боец начал драться
     created_at: str | None = None  # когда персонаж появился на свет
     # Инвентарь: и надетое, и лежащее в рюкзаке. Подгружается из базы.
@@ -136,6 +139,32 @@ class Player:
 
     def drop_gear(self, owned: OwnedItem) -> None:
         self.gear = [item for item in self.gear if item.id != owned.id]
+
+    # ---------- подписка ----------
+
+    def is_pro(self, now: int | None = None) -> bool:
+        moment = now_ts() if now is None else now
+        return self.pro_until > moment
+
+    def pro_left(self, now: int | None = None) -> int:
+        """Сколько секунд подписке осталось. 0 — её нет."""
+        moment = now_ts() if now is None else now
+        return max(0, self.pro_until - moment)
+
+    def extend_pro(self, seconds: int, now: int | None = None) -> int:
+        """Продлить подписку. Живая продлевается с конца, мёртвая — с сейчас."""
+        moment = now_ts() if now is None else now
+        self.pro_until = max(self.pro_until, moment) + max(0, seconds)
+        return self.pro_until
+
+    @property
+    def badge(self) -> str:
+        """Значок у имени. Пусто — подписки нет."""
+        return PRO_BADGE if self.is_pro() else ""
+
+    def titled(self) -> str:
+        """Имя со значком: то, как бойца называют в текстах."""
+        return f"{self.nickname} {PRO_BADGE}" if self.is_pro() else self.nickname
 
     # ---------- эликсиры ----------
 

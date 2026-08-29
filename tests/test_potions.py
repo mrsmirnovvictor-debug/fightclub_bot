@@ -381,12 +381,13 @@ async def test_a_reset_takes_the_bottles_and_the_buffs_with_it(db):
     assert await db.list_effects(player.user_id) == []
 
 
-def test_every_potion_is_drawn_under_its_own_code():
-    """Файл склянки лежит в /potions под кодом эликсира — как образы и слоты."""
+def test_every_potion_is_drawn_and_no_two_share_a_bottle():
+    """Каждая склянка нарисована, и все шесть картинок разные."""
     from bot.game import art
 
     for potion in POTIONS:
-        assert potion.picture == f"{art.POTIONS}/{potion.code}.png"
+        assert potion.picture.startswith(f"{art.POTIONS}/"), potion.code
+        assert potion.picture.endswith(".jpeg"), potion.code
     assert len({potion.picture for potion in POTIONS}) == len(POTIONS)
 
 

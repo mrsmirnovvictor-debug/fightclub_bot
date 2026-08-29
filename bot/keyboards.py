@@ -70,6 +70,12 @@ class TopUpCB(CallbackData, prefix="topup"):
     code: str  # какая пачка кредитов
 
 
+class ProCB(CallbackData, prefix="pro"):
+    """Взять подписку. free=1 — по акции, даром."""
+
+    free: int = 0
+
+
 class ChallengeCB(CallbackData, prefix="chl"):
     action: str  # accept | cancel
     challenge_id: int

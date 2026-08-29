@@ -372,6 +372,17 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .thing-price { font-weight: 700; margin-top: 4px; }
 /* Цена мага — в звёздах, и видно это должно быть с первого взгляда */
 .thing-price.stars { color: var(--hp-yellow); }
+.thing-price.free { color: var(--hp-green); }
+/* Подписка стоит первой и выделена рамкой: это главный товар прилавка */
+.thing.pro { border-color: var(--hp-yellow); margin-bottom: 14px; }
+.thing.pro.on { border-color: var(--hp-green); }
+.thing-promo {
+  margin-top: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--hp-yellow);
+}
 .thing-suits { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
 .thing-owned { color: var(--hp-green); font-size: 12.5px; font-weight: 600; margin-top: 4px; }
 .thing-locked {

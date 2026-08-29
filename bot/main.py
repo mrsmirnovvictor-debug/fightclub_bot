@@ -37,6 +37,7 @@ PRIVATE_COMMANDS = [
     BotCommand(command="shop", description="Кредиты и траты"),
     BotCommand(command="buy", description="Лавка клуба: оружие и броня"),
     BotCommand(command="potions", description="Эликсиры: выпить и докупить"),
+    BotCommand(command="pro", description="Подписка PRO"),
     BotCommand(command="topup", description="Пополнить счёт звёздами"),
     BotCommand(command="respec", description="Пересобрать характеристики"),
     BotCommand(command="class", description="Сменить класс"),

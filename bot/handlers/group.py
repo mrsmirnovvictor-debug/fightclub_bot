@@ -17,7 +17,7 @@ from bot.game.battle import (
     BattleKind,
 )
 from bot.game.modes import FIST_RINGS, FightMode
-from bot.game.narrator import esc, name_link, plain
+from bot.game.narrator import esc, plain, player_link
 from bot.handlers.common import thread_id_of
 from bot.keyboards import BattleCB, ChallengeCB, FightCB, LobbyCB, StandoffCB, TourCB
 from bot.tournament_service import TournamentError, TournamentService
@@ -531,10 +531,10 @@ async def cmd_history(message: Message, db: Database) -> None:
         challenger = await db.get_player(row["challenger_id"])
         opponent = await db.get_player(row["opponent_id"])
         first = (
-            name_link(challenger.user_id, challenger.nickname) if challenger else "боец"
+            player_link(challenger) if challenger else "боец"
         )
         second = (
-            name_link(opponent.user_id, opponent.nickname) if opponent else "боец"
+            player_link(opponent) if opponent else "боец"
         )
         if row["winner_id"] is None:
             outcome = "ничья"

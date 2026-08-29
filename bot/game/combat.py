@@ -134,6 +134,8 @@ class Fighter:
     equipment: Equipment = field(default_factory=Equipment)
     # Запас здоровья сверх своего: от вещей и от выпитых эликсиров
     extra_hp: int = 0
+    # Подписчик: значок у имени судья ставит по этому полю
+    pro: bool = False
     derived: DerivedStats = field(init=False)
 
     def __post_init__(self) -> None:
@@ -264,6 +266,7 @@ class Fighter:
             level=player.level,
             equipment=equipment,
             extra_hp=getattr(player, "effect_hp", 0),
+            pro=bool(getattr(player, "is_pro", bool)()),
         )
         fighter.hp = max(1, min(player.current_hp(), fighter.max_hp))
         return fighter

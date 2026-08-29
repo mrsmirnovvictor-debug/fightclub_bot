@@ -472,9 +472,13 @@ async def test_nobody_touches_a_stranger_backpack(client, db):
 
 def test_catalogue_items_know_their_slot_and_price():
     for item in CATALOGUE.values():
-        # За что вещь берут: кредиты в лавке клуба или звёзды у мага
-        assert item.price > 0 or item.stars > 0
+        # За что вещь берут: кредиты в лавке клуба, звёзды у мага — или
+        # никак, если это награда: её выдают, а не продают.
+        assert item.price > 0 or item.stars > 0 or item.reward
         assert not (item.price and item.stars), f"{item.title}: и кредиты, и звёзды"
+        assert not (item.reward and (item.price or item.stars)), (
+            f"{item.title}: награда с ценником"
+        )
         assert item.slot in item.slots
         assert isinstance(item, Item)
         if item.kind is ItemKind.SHIELD:
@@ -812,7 +816,8 @@ async def test_wardrobe_shows_what_is_worn_and_what_is_for_sale(db):
     await db.save_player(player)
 
     rows = await wardrobe(db, player)
-    assert len(rows) == len(LOOKS)
+    # Образ подписки в гардеробе не висит, пока его не выдали
+    assert len(rows) == len([look for look in LOOKS if not look.pro])
     assert sum(1 for row in rows if row["price"] == 0) == 6
     assert sum(1 for row in rows if row["price"] == LOOK_PRICE) == 6
     assert {row["gender"] for row in rows} == {"male", "female"}

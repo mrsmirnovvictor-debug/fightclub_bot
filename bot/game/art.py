@@ -30,8 +30,8 @@ def slot(code: str) -> str:
 
 
 def potion(code: str) -> str:
-    """Склянка лежит под кодом эликсира: potions/heal_small.png."""
-    return f"{POTIONS}/{code}.png"
+    """Склянка лежит под кодом эликсира: potions/heal_small.jpeg."""
+    return f"{POTIONS}/{code}.jpeg"
 
 
 __all__ = [

@@ -20,8 +20,12 @@ from aiogram.types import (
 
 from bot.database import Database
 from bot.game.equipment import describe_requirements, get_item
-from bot.game.store import PACKS, get_pack
-from bot.keyboards import TopUpCB
+from bot.game import pro
+from bot.game.potions import spell_duration
+from bot.game.pro import ProOffer, current_offer
+from bot.game.store import PACKS, get_pack, pro_payload
+from bot.pro_service import ProError, claim_free_pro
+from bot.keyboards import ProCB, TopUpCB
 from bot.store_service import StoreError, StoreService, spent_stars
 
 logger = logging.getLogger(__name__)
@@ -129,6 +133,22 @@ async def on_paid(message: Message, store: StoreService) -> None:
         await message.answer(f"Этот платёж уже учтён: <b>{grant.label}</b>.")
         return
 
+    if grant.is_pro:
+        got = grant.pro
+        extras = []
+        if got and got.blade:
+            extras.append("🗡 Клинок ассасина — в инвентаре")
+        if got and got.look:
+            extras.append("🥷 Образ ассасина — в гардеробе")
+        await message.answer(
+            f"💎 <b>{grant.label}</b> "
+            f"{'продлена' if got and got.renewed else 'оформлена'} на "
+            f"{grant.goods.days} дней.\n"
+            + ("\n".join(extras) + "\n" if extras else "")
+            + "\nОпыт за бои теперь идёт в полтора раза. Подробности: /pro"
+        )
+        return
+
     if grant.is_relic:
         await message.answer(
             f"✨ <b>{grant.label}</b> — вещь мага уже в рюкзаке.\n"
@@ -143,6 +163,97 @@ async def on_paid(message: Message, store: StoreService) -> None:
         f"Начислено {grant.credits} 💰, на счету теперь <b>{grant.balance}</b> 💰.\n\n"
         "За вещами — в лавку: /buy"
     )
+
+
+# ---------- подписка ----------
+
+
+def pro_text(player, offer: ProOffer) -> str:
+    lines = [f"{pro.EMOJI} <b>{pro.TITLE}</b>", ""]
+    left = player.pro_left()
+    if left:
+        lines += [f"✅ Подписка активна, осталось <b>{spell_duration(left)}</b>.", ""]
+    lines.append("<b>Что даёт</b>")
+    lines += [f"• {line}" for line in pro.BENEFITS]
+    lines += ["", pro.NOTE]
+    promo = pro.promo_note(offer)
+    if promo:
+        lines += ["", promo]
+    else:
+        lines += ["", f"Цена: <b>{offer.stars}</b> ⭐ за {offer.days} дней."]
+    return "\n".join(lines)
+
+
+def pro_keyboard(offer: ProOffer, active: bool) -> InlineKeyboardMarkup:
+    verb = "Продлить" if active else ("Забрать" if offer.free else "Оформить")
+    tail = "бесплатно" if offer.free else f"{offer.stars} ⭐"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{pro.EMOJI} {verb} · {tail}",
+                    callback_data=ProCB(free=int(offer.free)).pack(),
+                )
+            ]
+        ]
+    )
+
+
+@router.message(Command("pro", "subscription"))
+async def cmd_pro(message: Message, db: Database) -> None:
+    """Подписка: что даёт, сколько стоит и как её взять."""
+    player = await db.get_player(message.from_user.id)
+    if player is None:
+        await message.answer(NO_CHARACTER)
+        return
+    offer = current_offer()
+    await message.answer(
+        pro_text(player, offer),
+        reply_markup=pro_keyboard(offer, player.is_pro()),
+    )
+
+
+@router.callback_query(ProCB.filter())
+async def on_pro(
+    callback: CallbackQuery, callback_data: ProCB, bot: Bot, db: Database,
+    store: StoreService,
+) -> None:
+    """Забрать подписку: даром по акции, иначе счётом в звёздах."""
+    player = await db.get_player(callback.from_user.id)
+    if player is None:
+        await callback.answer(NO_CHARACTER, show_alert=True)
+        return
+
+    offer = current_offer()
+    if offer.free:
+        try:
+            grant = await claim_free_pro(db, player)
+        except ProError as error:
+            await callback.answer(str(error), show_alert=True)
+            return
+        extras = []
+        if grant.blade:
+            extras.append("🗡 Клинок ассасина — в инвентаре")
+        if grant.look:
+            extras.append("🥷 Образ ассасина — в гардеробе")
+        await callback.message.answer(
+            f"💎 Подписка {'продлена' if grant.renewed else 'оформлена'} на "
+            f"{grant.offer.days} дней — бесплатно, по акции.\n"
+            + ("\n".join(extras) + "\n" if extras else "")
+            + "\nОпыт за бои теперь идёт в полтора раза."
+        )
+        await callback.answer("Добро пожаловать в PRO!")
+        return
+
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title=f"{pro.EMOJI} {pro.TITLE}",
+        description=store.description(offer),
+        payload=pro_payload(callback.from_user.id),
+        currency="XTR",
+        prices=[{"label": pro.TITLE, "amount": offer.stars}],
+    )
+    await callback.answer()
 
 
 @router.message(Command("refund"))

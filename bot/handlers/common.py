@@ -24,6 +24,7 @@ from bot.game.stats import derive
 from bot.game.links import links
 from bot.game.narrator import esc, health_line
 from bot.game.potions import spell_duration
+from bot.game.pro import PRO_BADGE
 from bot.models import Player
 
 PRIVATE_HINT = (
@@ -120,14 +121,20 @@ def effects_line(player: Player) -> str:
 def profile_text(player: Player, own: bool = True) -> str:
     """Профиль текстом. Чужому кошелёк и подсказки про очки не показываем."""
     fclass = player.fclass
+    badge = f" {player.badge}" if player.badge else ""
     lines = [
-        f"{player.avatar} <b>{esc(player.nickname)}</b>",
+        f"{player.avatar} <b>{esc(player.nickname)}</b>{badge}",
         f"{fclass.label} · {player.level} уровень · рейтинг <b>{player.rating}</b>",
         health_line(player),
         progress_line(player),
     ]
     if own:
         lines.append(f"💰 Кредиты: <b>{player.credits}</b>")
+    if own and player.is_pro():
+        lines.append(
+            f"{PRO_BADGE} Подписка PRO: осталось "
+            f"<b>{spell_duration(player.pro_left())}</b> · опыт ×1.5"
+        )
     effects = effects_line(player)
     if effects:
         lines.append(effects)

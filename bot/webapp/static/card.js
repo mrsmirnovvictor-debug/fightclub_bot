@@ -551,17 +551,120 @@ function showTopUp() {
 
 let magicData = null;
 
+function proCard(pro) {
+  const box = document.createElement("section");
+  box.className = "thing pro" + (pro.active ? " on" : "");
+
+  const pic = document.createElement("div");
+  pic.className = "thing-pic";
+  pic.appendChild(slotPicture({ image: pro.image, icon: pro.emoji, title: pro.title },
+    pro.emoji));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "thing-body";
+
+  const title = document.createElement("div");
+  title.className = "thing-title";
+  title.textContent = pro.emoji + " " + pro.title;
+  body.appendChild(title);
+
+  const price = document.createElement("div");
+  price.className = "thing-price" + (pro.free ? " free" : " stars");
+  price.textContent = pro.free
+    ? "Бесплатно · " + pro.term_text
+    : pro.stars + " ⭐ · " + pro.term_text;
+  body.appendChild(price);
+
+  if (pro.promo_note) {
+    const promo = document.createElement("div");
+    promo.className = "thing-promo";
+    promo.textContent = pro.promo_note;
+    body.appendChild(promo);
+  }
+
+  if (pro.active) {
+    const left = document.createElement("div");
+    left.className = "thing-have";
+    left.textContent = "✔ Подписка активна — осталось " + pro.left_text;
+    body.appendChild(left);
+  }
+
+  const label = document.createElement("div");
+  label.className = "thing-label";
+  label.textContent = "Что даёт";
+  body.appendChild(label);
+
+  const gains = document.createElement("ul");
+  gains.className = "thing-gain";
+  pro.benefits.forEach((line) => {
+    const li = document.createElement("li");
+    li.textContent = line;
+    gains.appendChild(li);
+  });
+  body.appendChild(gains);
+
+  const note = document.createElement("div");
+  note.className = "thing-note";
+  note.textContent = pro.note;
+  body.appendChild(note);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  const text = pro.active
+    ? (pro.free ? "Продлить · бесплатно" : "Продлить · " + pro.stars + " ⭐")
+    : (pro.free ? "Забрать бесплатно" : "Оформить · " + pro.stars + " ⭐");
+  buttons.appendChild(button(text, { onClick: () => takePro(pro) }));
+  body.appendChild(buttons);
+
+  box.appendChild(body);
+  return box;
+}
+
 function renderMagic(data) {
   magicData = data;
-  el("magic-note").textContent = data.items.length
-    ? "Товар мага берут за звёзды Telegram — кредиты тут не в ходу. "
-      + "Купленное падает в инвентарь."
-    : "";
+  el("magic-note").textContent =
+    "Товар мага берут за звёзды Telegram — кредиты тут не в ходу. "
+    + "Купленное падает в инвентарь.";
+  // Подписка стоит первой и никуда не девается: прилавок может быть пуст,
+  // а она — нет.
+  const head = el("pro-card");
+  head.textContent = "";
+  if (data.pro) head.appendChild(proCard(data.pro));
   el("magic-empty").classList.toggle("hidden", data.items.length > 0);
 
   const list = el("magic-list");
   list.textContent = "";
   data.items.forEach((item) => list.appendChild(thingCard(item, 0, true)));
+}
+
+async function takePro(pro) {
+  if (busy) return;
+  // Бесплатную забираем прямо здесь, платную — через счёт Telegram
+  if (!pro.free) {
+    await buyRelic({ code: "month", title: pro.title, kind: "pro" });
+    return;
+  }
+  busy = true;
+  try {
+    const data = await post("api/pro", {});
+    render(data.card, true);
+    renderMagic(data.magic);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    const got = data.pro;
+    const extras = [];
+    if (got.blade) extras.push("клинок ассасина — в инвентаре");
+    if (got.look) extras.push("образ ассасина — в гардеробе");
+    popup(
+      "💎 " + pro.title,
+      (got.renewed ? "Подписка продлена на " : "Подписка на ") + got.days + " дней."
+        + (extras.length ? "\n" + extras.join("\n") : "")
+    );
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
 }
 
 async function loadMagic() {
@@ -580,19 +683,27 @@ async function buyRelic(item) {
   if (busy) return;
   busy = true;
   try {
-    const data = await post("api/invoice", { code: item.code, kind: "relic" });
+    const data = await post("api/invoice", {
+      code: item.code,
+      kind: item.kind === "pro" ? "pro" : "relic",
+    });
     if (!tg || !tg.openInvoice) {
       popup("Оплата", "Счёт открывается только в Telegram.");
       return;
     }
     tg.openInvoice(data.link, (status) => {
       if (status === "paid") {
-        // Вещь кладёт в рюкзак бот, когда Telegram подтвердит списание,
-        // поэтому просто перечитываем карточку и прилавок.
+        // Товар выдаёт бот, когда Telegram подтвердит списание, — здесь
+        // просто перечитываем карточку и прилавок.
         magicData = null;
         refresh();
         loadMagic();
-        popup("✨ " + item.title, "Оплачено. Вещь ждёт в инвентаре.");
+        popup(
+          "✨ " + item.title,
+          item.kind === "pro"
+            ? "Оплачено. Подписка уже действует."
+            : "Оплачено. Вещь ждёт в инвентаре."
+        );
       } else if (status === "failed") {
         popup("Не вышло", "Telegram не принял оплату.");
       }
@@ -701,7 +812,8 @@ function fighterCard(card) {
 
 async function showFighter(fighter) {
   openSheet(
-    fighter.nickname + " [" + fighter.level + "]",
+    (fighter.pro ? fighter.nickname + " 💎" : fighter.nickname)
+      + " [" + fighter.level + "]",
     fighter.fclass.emoji + " " + fighter.fclass.title
   );
   try {
@@ -1209,7 +1321,9 @@ function startHealthTicker(hp) {
 
 function renderHead(prefix, card) {
   el(prefix + "class").textContent = card.fclass.emoji;
-  el(prefix + "name").textContent = card.name;
+  // Значок подписки идёт с именем везде, где боец назван по имени
+  el(prefix + "name").textContent =
+    card.pro && card.pro.active ? card.name + " " + card.pro.badge : card.name;
   el(prefix + "level").textContent = "[" + card.level + "]";
 }
 

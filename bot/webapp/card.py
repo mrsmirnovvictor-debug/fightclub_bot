@@ -26,6 +26,8 @@ from bot.game.equipment import (
 )
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
 from bot.game.looks import DEFAULT_LOOK, get_look
+from bot.game import pro
+from bot.game.pro import PRO_BADGE, current_offer
 from bot.game.potions import (
     POTIONS,
     SECTION_CODE,
@@ -295,14 +297,39 @@ def relic_payload(player: Player, item: Item, owned: int) -> dict:
     return row
 
 
-def build_magic(player: Player) -> dict:
-    """Лавка мага: товар только за звёзды Telegram."""
+def pro_payload(player: Player, now: int | None = None) -> dict:
+    """Карточка подписки: она всегда стоит первой на прилавке мага."""
+    moment = int(time.time()) if now is None else now
+    offer = current_offer()
+    left = player.pro_left(moment)
+    return {
+        "title": pro.TITLE,
+        "emoji": pro.EMOJI,
+        "image": pro.IMAGE,
+        "benefits": list(pro.BENEFITS),
+        "note": pro.NOTE,
+        "stars": offer.stars,
+        "days": offer.days,
+        "free": offer.free,
+        "promo": offer.promo,
+        "promo_note": pro.promo_note(offer),
+        "price_text": offer.price_text,
+        "term_text": offer.term_text,
+        "active": bool(left),
+        "seconds_left": left,
+        "left_text": spell_duration(left) if left else "",
+    }
+
+
+def build_magic(player: Player, now: int | None = None) -> dict:
+    """Лавка мага: подписка сверху, за ней товар за звёзды."""
     mine: dict[str, int] = {}
     for owned in player.gear:
         mine[owned.code] = mine.get(owned.code, 0) + 1
     return {
         "credits": player.credits,
         "level": player.level,
+        "pro": pro_payload(player, now),
         "items": [
             relic_payload(player, item, mine.get(item.code, 0))
             for item in MAGIC_ITEMS
@@ -367,6 +394,7 @@ def fighter_row(player: Player, viewer_id: int | None) -> dict:
         "user_id": player.user_id,
         "nickname": player.nickname,
         "level": player.level,
+        "pro": player.is_pro(),
         "is_self": player.user_id == viewer_id,
         "fclass": {
             "code": player.fclass.code,
@@ -452,6 +480,12 @@ def build_card(
         "name": player.nickname,
         "level": player.level,
         "is_self": is_self,
+        "pro": {
+            "active": player.is_pro(moment),
+            "seconds_left": player.pro_left(moment),
+            "left_text": spell_duration(player.pro_left(moment)),
+            "badge": PRO_BADGE,
+        },
         "fclass": {
             "code": fclass.code,
             "title": fclass.title,

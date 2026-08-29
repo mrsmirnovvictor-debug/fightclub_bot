@@ -13,6 +13,7 @@ from bot.game.economy import MAX_LEVEL
 from bot.game.health import READY_THRESHOLD, format_duration
 from bot.game.links import links
 from bot.game.modes import FightMode
+from bot.game.pro import PRO_BADGE
 from bot.game.stats import derive
 from bot.game.combat import (
     MAX_MISSED_TURNS,
@@ -119,12 +120,22 @@ def plain(text: str) -> str:
 
 
 def mention(fighter: Fighter) -> str:
-    return name_link(fighter.user_id, fighter.name)
+    return name_link(fighter.user_id, fighter.name, fighter.pro)
 
 
-def name_link(user_id: int, name: str) -> str:
-    """Имя-ссылка: открывает карточку бойца, если мини-апп настроен."""
-    return f'<a href="{links.href(user_id)}">{esc(name)}</a>'
+def name_link(user_id: int, name: str, pro: bool = False) -> str:
+    """Имя-ссылка: открывает карточку бойца, если мини-апп настроен.
+
+    У подписчика к имени приклеен значок — он должен быть виден везде, где
+    бойца вообще называют по имени, поэтому живёт здесь, а не в каждом тексте.
+    """
+    badge = f" {PRO_BADGE}" if pro else ""
+    return f'<a href="{links.href(user_id)}">{esc(name)}</a>{badge}'
+
+
+def player_link(player: "Player") -> str:
+    """Имя бойца со всем, что к нему прилагается."""
+    return name_link(player.user_id, player.nickname, player.is_pro())
 
 
 def hp_bar(current: int, maximum: int, width: int = 10) -> str:
@@ -293,7 +304,7 @@ def health_warning(player: "Player", is_self: bool = True) -> str:
     who = (
         "Ты ещё не в форме"
         if is_self
-        else f"<b>{name_link(player.user_id, player.nickname)}</b> не в форме"
+        else f"<b>{player_link(player)}</b> не в форме"
     )
     return (
         f"{state.emoji} {who}: {player.current_hp()}/{player.max_hp} "
@@ -327,7 +338,7 @@ def _fighter_brief(player: "Player", mode: FightMode = FightMode.FIST) -> str:
         )
     return (
         f"{player.fclass.emoji} "
-        f"<b>{name_link(player.user_id, player.nickname)}</b> — "
+        f"<b>{player_link(player)}</b> — "
         f"{player.fclass.title}, {player.level} ур.\n"
         f"❤️ {player.current_hp()}/{stats.max_hp} · "
         f"👊 {stats.damage_min}–{stats.damage_max} · "
@@ -356,7 +367,7 @@ def standoff_card(
         stronger = second if gap > 0 else first
         lines.append(
             f"⚖️ Разница в уровнях — {abs(gap)} в пользу "
-            f"<b>{name_link(stronger.user_id, stronger.nickname)}</b>."
+            f"<b>{player_link(stronger)}</b>."
         )
     else:
         lines.append("⚖️ Уровни равны.")
@@ -366,7 +377,7 @@ def standoff_card(
     else:
         lines += [
             "",
-            f"Слово за <b>{name_link(first.user_id, first.nickname)}</b>: "
+            f"Слово за <b>{player_link(first)}</b>: "
             "выходить на ринг или разойтись.",
         ]
     return "\n".join(lines)
@@ -397,7 +408,7 @@ def duel_intro(
 def recovery_line(players: list["Player"]) -> str:
     """Когда бойцы снова смогут выйти на ринг."""
     waiting = [
-        f"{name_link(player.user_id, player.nickname)} — "
+        f"{player_link(player)} — "
         f"через {format_duration(player.seconds_until_ready())}"
         for player in players
         if not player.can_fight()
@@ -413,7 +424,7 @@ def broken_gear_report(broken: list[tuple["Player", list]]) -> list[str]:
     for player, items in broken:
         for owned in items:
             lines.append(
-                f"💔 <b>{name_link(player.user_id, player.nickname)}</b>: "
+                f"💔 <b>{player_link(player)}</b>: "
                 f"«{owned.title}» доносили "
                 "до дыр — вещь рассыпалась в труху."
             )
@@ -440,11 +451,11 @@ def rewards_report(
             f"рейтинг {player.rating} ({sign}{abs(report.rating_delta)})"
         )
         lines.append(
-            f"{player.avatar} <b>{name_link(player.user_id, player.nickname)}</b>: "
+            f"{player.avatar} <b>{player_link(player)}</b>: "
             + ", ".join(parts)
         )
 
-        name = f"<b>{name_link(player.user_id, player.nickname)}</b>"
+        name = f"<b>{player_link(player)}</b>"
         if report.levels:
             grown = f"+{report.endurance} к выносливости" if report.endurance else ""
             events.append(
@@ -604,10 +615,10 @@ def battle_rewards_report(rows, broken=None) -> str:
             f"{sign}{delta} {plural(delta, 'очко', 'очка', 'очков')} рейтинга"
         )
         mark = "🎉" if won else "❌"
-        name = name_link(player.user_id, player.nickname)
+        name = player_link(player)
         lines.append(f"{mark} <b>{name}</b>: " + ", ".join(parts))
 
-        title = f"<b>{name_link(player.user_id, player.nickname)}</b>"
+        title = f"<b>{player_link(player)}</b>"
         if report.levels:
             grown = f"+{report.endurance} к выносливости" if report.endurance else ""
             events.append(
@@ -730,6 +741,6 @@ def tournament_winner(tournament, winner) -> str:
         return "🚫 Турнир закончился без победителя."
     return (
         "🏆 <b>Турнир взят!</b>\n"
-        f"Победитель: <b>{name_link(winner.user_id, winner.nickname)}</b> "
+        f"Победитель: <b>{player_link(winner)}</b> "
         f"({winner.fclass.label}, {winner.level} ур., рейтинг {winner.rating})"
     )

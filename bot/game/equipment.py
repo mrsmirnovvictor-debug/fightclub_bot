@@ -178,6 +178,9 @@ class Item:
     # Цена в звёздах Telegram. Больше нуля — вещь из лавки мага: за кредиты
     # её не купить, и на прилавке клуба она не лежит.
     stars: int = 0
+    # Награда, а не товар: такую вещь не купишь ни за кредиты, ни за звёзды —
+    # её выдают. Клинок ассасина приходит вместе с подпиской PRO.
+    reward: bool = False
     # Кому вещь в первую очередь: коды классов. Пустой набор — всем поровну.
     for_classes: tuple[str, ...] = ()
 
@@ -205,6 +208,11 @@ class Item:
     def is_magic(self) -> bool:
         """Вещь из лавки мага: продаётся только за звёзды."""
         return self.stars > 0
+
+    @property
+    def on_sale(self) -> bool:
+        """Вещь вообще продаётся: награду с полки не возьмёшь."""
+        return not self.reward
 
     @property
     def zones(self) -> tuple[Zone, ...]:
@@ -508,7 +516,7 @@ ITEMS: tuple[Item, ...] = (
         "Кеды",
         Slot.BOOTS,
         "👟",
-        image=f"{ITEM_ART}/sneakers.png",
+        image=f"{ITEM_ART}/sneakers.jpeg",
         agility=1,
         armor_min=0,
         armor_max=1,
@@ -1213,6 +1221,24 @@ ITEMS: tuple[Item, ...] = (
         price=400,
         for_classes=(TANK,),
     ),
+    # ---------- награды: их не покупают, их выдают ----------
+    Item(
+        "hidden_blade",
+        "Клинок ассасина",
+        Slot.WEAPON,
+        "🗡",
+        kind=ItemKind.WEAPON,
+        instrumental="скрытым клинком",
+        image=f"{WEAPON_ART}/Concealed_blade_game_inventory_icon_202608291031.jpeg",
+        intuition=2,
+        damage_min=3,
+        damage_max=9,
+        crit=0.15,
+        level_required=1,
+        requires=Stats(intuition=7),
+        reward=True,
+        for_classes=(ASSASSIN,),
+    ),
     # ---------- лавка мага: только за звёзды ----------
     Item(
         "lightsaber",
@@ -1240,14 +1266,17 @@ CATALOGUE: dict[str, Item] = {item.code: item for item in ITEMS}
 # купить, и висеть на прилавке рядом с кастетом им незачем.
 SHOWCASE: tuple[Item, ...] = tuple(
     sorted(
-        (item for item in ITEMS if not item.is_magic),
+        (item for item in ITEMS if not item.is_magic and item.on_sale),
         key=lambda item: (ALL_SLOTS.index(item.slot), item.level_required, item.price),
     )
 )
 
 # Прилавок мага: только за звёзды
 MAGIC_ITEMS: tuple[Item, ...] = tuple(
-    sorted((item for item in ITEMS if item.is_magic), key=lambda item: item.stars)
+    sorted(
+        (item for item in ITEMS if item.is_magic and item.on_sale),
+        key=lambda item: item.stars,
+    )
 )
 
 

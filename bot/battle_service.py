@@ -36,6 +36,7 @@ from bot.game.battle import (
 from bot.game.classes import BLOCK_WIDTH, Zone, block_combo, block_title
 from bot.game.combat import Action, Fighter, resolve_round
 from bot.game.economy import (
+    pro_exp,
     rating_delta,
     win_exp,
 )
@@ -651,7 +652,9 @@ class BattleService:
             if ruined:
                 broken.append((player, ruined))
             player.set_hp(fighter.hp)
-            report = player.grant_exp(exp)
+            # Подписка множит уже урезанное: полтора от того, что боец
+            # действительно заработал в этом бою
+            report = player.grant_exp(pro_exp(exp, player.is_pro()))
             report.rating_delta = delta
             player.apply_rating(delta)
             await self.db.save_player(player)

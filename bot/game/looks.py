@@ -34,6 +34,9 @@ class Look:
     price: int = 0
     image: str = ""  # пусто — берём файл по коду образа
     note: str = ""
+    # Образ подписки: за кредиты его не купить, он приходит с PRO и
+    # остаётся у бойца навсегда — как и клинок.
+    pro: bool = False
 
     @property
     def paid(self) -> bool:
@@ -102,6 +105,15 @@ LOOKS: tuple[Look, ...] = (
         price=LOOK_PRICE,
         note="Цепь на поясе не для красоты",
     ),
+    # ---------- только с подпиской ----------
+    Look(
+        "assassin",
+        "Ассасин",
+        "🥷",
+        MALE,
+        pro=True,
+        note="Приходит с подпиской PRO и остаётся навсегда",
+    ),
 )
 
 BY_CODE: dict[str, Look] = {look.code: look for look in LOOKS}
@@ -113,7 +125,12 @@ def get_look(code: str) -> Look | None:
 
 
 def free_looks() -> tuple[Look, ...]:
-    return tuple(look for look in LOOKS if not look.paid)
+    """Открытые всем. Образ подписки сюда не входит: он не бесплатный, он свой."""
+    return tuple(look for look in LOOKS if not look.paid and not look.pro)
+
+
+def pro_looks() -> tuple[Look, ...]:
+    return tuple(look for look in LOOKS if look.pro)
 
 
 def paid_looks() -> tuple[Look, ...]:
@@ -134,6 +151,7 @@ __all__ = [
     "MALE",
     "Look",
     "free_looks",
+    "pro_looks",
     "get_look",
     "looks_of_gender",
     "paid_looks",

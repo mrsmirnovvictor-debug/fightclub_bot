@@ -30,6 +30,7 @@ from bot.game.economy import (
     REPEAT_WINDOW_HOURS,
     apply_share,
     consolation_exp,
+    pro_exp,
     rating_delta,
     repeat_share,
     win_exp,
@@ -37,7 +38,7 @@ from bot.game.economy import (
 from bot.game.narrator import (
     duel_intro,
     mention,
-    name_link,
+    player_link,
     standoff_card,
     esc,
     finish_report,
@@ -222,16 +223,16 @@ class DuelService:
         # и написать про кулачный значит соврать ещё до первого удара.
         if target is None:
             text = (
-                f"{mode.emoji} <b>{name_link(challenger.user_id, challenger.nickname)}</b> "
+                f"{mode.emoji} <b>{player_link(challenger)}</b> "
                 f"({challenger.fclass.label}, {challenger.level} ур.) "
                 f"вызывает любого желающего на {mode.title}.\n\n"
                 "Кто примет вызов?"
             )
         else:
             text = (
-                f"{mode.emoji} <b>{name_link(challenger.user_id, challenger.nickname)}</b> "
+                f"{mode.emoji} <b>{player_link(challenger)}</b> "
                 f"({challenger.fclass.label}, {challenger.level} ур.) "
-                f"вызывает <b>{name_link(target.user_id, target.nickname)}</b> "
+                f"вызывает <b>{player_link(target)}</b> "
                 f"({target.fclass.label}, {target.level} ур.) на {mode.title}.\n\n"
                 "Слово за вызванным."
             )
@@ -734,7 +735,9 @@ class DuelService:
             if ruined:
                 broken.append((player, ruined))
             player.set_hp(fighter.hp)
-            report = player.grant_exp(exp)
+            # Подписка множит уже урезанное: полтора от того, что боец
+            # действительно заработал в этом бою
+            report = player.grant_exp(pro_exp(exp, player.is_pro()))
             report.rating_delta = delta
             player.apply_rating(delta)
             await self.db.save_player(player)

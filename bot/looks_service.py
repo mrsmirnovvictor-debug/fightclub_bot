@@ -36,7 +36,7 @@ def current_look(player: Player) -> Look:
 
 
 def is_owned(look: Look, owned: set[str]) -> bool:
-    return not look.paid or look.code in owned
+    return look.code in owned if (look.paid or look.pro) else True
 
 
 async def choose_look(db: Database, player: Player, code: str) -> LookChoice:
@@ -46,6 +46,9 @@ async def choose_look(db: Database, player: Player, code: str) -> LookChoice:
         raise LookError("Такого образа в клубе нет.")
 
     owned = await db.owned_looks(player.user_id)
+    if look.pro and look.code not in owned:
+        # Образ подписки за кредиты не берут: он приходит вместе с PRO
+        raise LookError("Этот образ приходит с подпиской PRO. Лавка мага — /pro")
     bought = False
     if look.paid and look.code not in owned:
         if player.credits < look.price:
@@ -67,7 +70,11 @@ async def choose_look(db: Database, player: Player, code: str) -> LookChoice:
 
 
 async def wardrobe(db: Database, player: Player) -> list[dict]:
-    """Все образы разом: какой надет, какие свои, какие ещё купить."""
+    """Все образы разом: какой надет, какие свои, какие ещё купить.
+
+    Образ подписки видит только тот, кому он достался: показывать его
+    остальным значило бы дразнить кнопкой, которая ничего не делает.
+    """
     owned = await db.owned_looks(player.user_id)
     chosen = current_look(player)
     return [
@@ -80,12 +87,14 @@ async def wardrobe(db: Database, player: Player) -> list[dict]:
             "price": look.price,
             "note": look.note,
             "owned": is_owned(look, owned),
+            "pro": look.pro,
             "current": bool(player.look)
             and look.code == chosen.code
             and not player.avatar_file_id,
             "affordable": player.credits >= look.price,
         }
         for look in LOOKS
+        if not look.pro or look.code in owned
     ]
 
 

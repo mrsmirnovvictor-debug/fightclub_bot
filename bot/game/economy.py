@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from bot.game.pro import PRO_EXP_SHARE
 
 # ---------- уровни и опыт ----------
 
@@ -125,3 +126,12 @@ def apply_share(value: int, share: float) -> int:
     if value <= 0 or share >= 1.0:
         return value
     return max(1, round(value * share))
+
+
+def pro_exp(exp: int, is_pro: bool) -> int:
+    """Опыт с учётом подписки: PRO приносит полтора.
+
+    Считаем в самом конце, после всех урезаний за повторные бои, — иначе
+    подписка вытаскивала бы награду за фарм одного и того же соперника.
+    """
+    return round(exp * PRO_EXP_SHARE) if is_pro else exp

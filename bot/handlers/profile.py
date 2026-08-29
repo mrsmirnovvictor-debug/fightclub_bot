@@ -27,7 +27,7 @@ from bot.game.economy import (
     REPEAT_SHARES,
     UP_CREDITS,
 )
-from bot.game.narrator import esc, name_link
+from bot.game.narrator import esc, player_link
 from bot.game.links import links
 from bot.handlers.common import card_keyboard, profile_text, send_profile
 
@@ -46,6 +46,7 @@ def help_text(turn_timeout: int = 30) -> str:
         "/shop — кредиты и на что их тратить\n"
         "/buy — витрина клуба: оружие, броня, обувь\n"
         "/potions — эликсиры: выпить свои и докупить новые\n"
+        "/pro — подписка PRO: полуторный опыт, клинок и образ ассасина\n"
         "/topup — пополнить счёт звёздами Telegram\n"
         "/respec — снести характеристики и раздать заново\n"
         "/class — сменить класс бойца\n"
@@ -308,7 +309,7 @@ async def cmd_top(message: Message, db: Database) -> None:
     for index, player in enumerate(players):
         lines.append(
             f"{medals.get(index, f'{index + 1}.')} {player.avatar} "
-            f"<b>{name_link(player.user_id, player.nickname)}</b> — "
+            f"<b>{player_link(player)}</b> — "
             f"<b>{player.rating}</b> · "
             f"{player.fclass.title}, {player.level} ур. · "
             f"{player.wins}—{player.losses}"

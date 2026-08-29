@@ -24,20 +24,27 @@ from aiogram.types import LabeledPrice, SuccessfulPayment
 from bot.config import Config
 from bot.database import Database
 from bot.game.equipment import MAGIC_ITEMS, Item, OwnedItem, get_item
+from bot.game.pro import BENEFITS, PRO_ITEM, PRO_LOOK
+from bot.game.pro import EMOJI as PRO_EMOJI
+from bot.game.pro import TITLE as PRO_TITLE
+from bot.game.pro import ProOffer, current_offer
 from bot.game.store import (
     PACK_KIND,
     PACKS,
+    PRO_KIND,
     RELIC_KIND,
     STARS,
     CreditPack,
     get_pack,
     parse_payload,
     payload_for,
+    pro_payload,
     relic_payload,
 )
+from bot.pro_service import grant_pro
 
-# Что вообще продаётся за звёзды
-Goods = CreditPack | Item
+# Что вообще продаётся за звёзды: пачка кредитов, вещь мага или подписка
+Goods = CreditPack | Item | ProOffer
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +62,25 @@ class Grant:
     balance: int
     already: bool = False
 
+    # Что пришло вместе с подпиской: клинок, образ и до какого часа она жива
+    pro: object | None = None
+
     @property
     def label(self) -> str:
         """Как назвать покупку в ответе: у пачки свой ярлык, у вещи — значок."""
         if isinstance(self.goods, CreditPack):
             return self.goods.label
+        if isinstance(self.goods, ProOffer):
+            return f"{PRO_EMOJI} {PRO_TITLE}"
         return f"{self.goods.emoji} {self.goods.title}"
 
     @property
     def is_relic(self) -> bool:
         return isinstance(self.goods, Item)
+
+    @property
+    def is_pro(self) -> bool:
+        return isinstance(self.goods, ProOffer)
 
 
 class StoreService:
@@ -92,16 +108,26 @@ class StoreService:
     def payload(goods: Goods, user_id: int) -> str:
         if isinstance(goods, CreditPack):
             return payload_for(goods, user_id)
+        if isinstance(goods, ProOffer):
+            return pro_payload(user_id)
         return relic_payload(goods.code, user_id)
 
     @staticmethod
     def label(goods: Goods) -> str:
         if isinstance(goods, CreditPack):
             return goods.label
+        if isinstance(goods, ProOffer):
+            return f"{PRO_EMOJI} {PRO_TITLE}"
         return f"{goods.emoji} {goods.title}"
 
     @staticmethod
     def description(goods: Goods) -> str:
+        if isinstance(goods, ProOffer):
+            return (
+                f"Подписка клуба на {goods.term_text}: "
+                + ", ".join(BENEFITS[:3]).lower()
+                + "."
+            )
         if isinstance(goods, Item):
             parts = [f"{goods.title} — вещь из лавки мага."]
             bonus = goods.describe_bonus()
@@ -136,9 +162,16 @@ class StoreService:
             return pack
         if kind == RELIC_KIND:
             item = get_item(code)
-            if item is None or not item.is_magic:
+            if item is None or not item.is_magic or not item.on_sale:
                 raise StoreError("Этого товара у мага больше нет.")
             return item
+        if kind == PRO_KIND:
+            offer = current_offer()
+            if offer.free:
+                # По акции подписку не оплачивают, а забирают: счёт на ноль
+                # звёзд Telegram не примет, да и незачем.
+                raise StoreError("Сейчас подписка достаётся даром — её просто берут.")
+            return offer
         raise StoreError("Этой пачки больше нет в кассе.")
 
     async def grant(self, user_id: int, payment: SuccessfulPayment) -> Grant:
@@ -153,22 +186,31 @@ class StoreService:
             raise StoreError("Сначала заведи бойца: /start")
 
         credits = goods.total if isinstance(goods, CreditPack) else 0
+        if isinstance(goods, CreditPack):
+            code, kind = goods.code, "credits"
+        elif isinstance(goods, ProOffer):
+            code, kind = PRO_KIND, PRO_KIND
+        else:
+            code, kind = goods.code, RELIC_KIND
         fresh = await self.db.add_purchase(
             user_id=user_id,
-            code=goods.code,
+            code=code,
             stars=payment.total_amount,
             credits=credits,
             charge_id=payment.telegram_payment_charge_id,
-            kind="credits" if isinstance(goods, CreditPack) else RELIC_KIND,
+            kind=kind,
         )
         if not fresh:
             logger.info("Повторный платёж %s, товар уже выдан",
                         payment.telegram_payment_charge_id)
             return Grant(goods=goods, credits=0, balance=player.credits, already=True)
 
+        pro = None
         if isinstance(goods, CreditPack):
             player.grant_credits(goods.total)
             await self.db.save_player(player)
+        elif isinstance(goods, ProOffer):
+            pro = await grant_pro(self.db, player, goods)
         else:
             # Вещь падает в рюкзак как обычная покупка: надеть её можно,
             # когда боец дорастёт до требований.
@@ -176,10 +218,12 @@ class StoreService:
         logger.info(
             "Оплата: боец %s, товар %s, %s ⭐",
             user_id,
-            goods.code,
+            code,
             payment.total_amount,
         )
-        return Grant(goods=goods, credits=credits, balance=player.credits)
+        return Grant(
+            goods=goods, credits=credits, balance=player.credits, pro=pro
+        )
 
     # ---------- возврат ----------
 
@@ -190,8 +234,13 @@ class StoreService:
         if player is None:  # pragma: no cover - персонажа удалили
             raise StoreError("Бойца больше нет — возвращать некому.")
 
-        relic = self._relic_to_take_back(row, player) if row["kind"] == RELIC_KIND else None
-        if relic is None and player.credits < row["credits"]:
+        is_pro = row["kind"] == PRO_KIND
+        relic = (
+            self._relic_to_take_back(row, player)
+            if row["kind"] == RELIC_KIND
+            else None
+        )
+        if relic is None and not is_pro and player.credits < row["credits"]:
             raise StoreError(
                 "Кредиты уже потрачены — вернуть звёзды нельзя. "
                 f"На счету {player.credits}, в покупке было {row['credits']}."
@@ -202,12 +251,32 @@ class StoreService:
         )
         if relic is not None:
             await self.db.delete_gear(relic.id)
+        elif is_pro:
+            await self._revoke_pro(player)
         else:
             player.grant_credits(-row["credits"])
             await self.db.save_player(player)
         await self.db.mark_refunded(row["charge_id"])
         logger.info("Возврат: боец %s, платёж %s", user_id, row["charge_id"])
         return row
+
+    async def _revoke_pro(self, player) -> None:
+        """Снять подписку целиком: срок, клинок и образ.
+
+        Клинок с образом называются вечными, но вечны они у того, кто за них
+        заплатил. Забрал звёзды — вернул и то, что они принесли.
+        """
+        player.pro_until = 0
+        if player.look == PRO_LOOK:
+            player.look = ""
+        blade = next(
+            (owned for owned in player.gear if owned.code == PRO_ITEM), None
+        )
+        if blade is not None:
+            await self.db.delete_gear(blade.id)
+            player.drop_gear(blade)
+        await self.db.drop_look(player.user_id, PRO_LOOK)
+        await self.db.save_player(player)
 
     @staticmethod
     def _relic_to_take_back(row: dict, player) -> "OwnedItem":

@@ -337,6 +337,7 @@ def wardrobe(current: str = "rookie") -> dict:
                 "affordable": True,
             }
             for look in LOOKS
+            if not look.pro  # образ подписки виден только своему хозяину
         ],
     }
 
@@ -608,6 +609,66 @@ async def test_the_mage_sells_for_stars_and_never_for_credits(server):
         for line in ("👊 Урон: 7–15", "🌀 Уворот: 35%", "🔄 Контрудар: 25%"):
             assert line in text
 
+        # первая кнопка — подписка, она всегда стоит сверху
         buttons = await counter.locator(".btn").all_inner_texts()
-        assert buttons == ["Купить · 250 ⭐"]
+        assert buttons[-1] == "Купить · 250 ⭐"
+        await browser.close()
+
+
+async def test_the_pro_card_always_leads_the_mage_counter(server):
+    """Подписка стоит первой, показывает акцию и забирается одной кнопкой."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    magic = build_magic(player)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), magic=magic
+        )
+        taken = []
+
+        async def give(route):
+            taken.append(route.request.post_data)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "card": card,
+                        "magic": magic,
+                        "pro": {
+                            "days": 7,
+                            "renewed": False,
+                            "blade": True,
+                            "look": True,
+                            "seconds_left": 7 * 24 * 3600,
+                        },
+                    }
+                ),
+            )
+
+        await page.route("**/api/pro", give)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-magic").click()
+        await page.wait_for_selector("#pro-card .thing")
+
+        pro = page.locator("#pro-card .thing")
+        text = await pro.inner_text()
+        assert "Подписка PRO" in text
+        assert "Полуторный опыт за каждый бой" in text
+        assert "Клинок ассасина в инвентарь — навсегда" in text
+
+        # подписка идёт раньше любого товара прилавка
+        first = page.locator("#magic .thing").first
+        assert "Подписка PRO" in await first.inner_text()
+
+        if magic["pro"]["promo"]:
+            assert "Бесплатно · 7 дней" in text
+            assert "До 1 сентября" in text
+            assert await pro.locator(".btn").inner_text() == "Забрать бесплатно"
+
+            page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+            await pro.locator(".btn").click()
+            await page.wait_for_timeout(200)
+            assert taken == ["{}"]
         await browser.close()
