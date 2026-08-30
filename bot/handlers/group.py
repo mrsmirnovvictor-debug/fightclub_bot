@@ -18,6 +18,7 @@ from bot.game.battle import (
 )
 from bot.game.modes import FIST_RINGS, FightMode
 from bot.game.narrator import esc, plain, player_link
+from bot.news_service import catch_up, pending
 from bot.handlers.common import thread_id_of
 from bot.keyboards import BattleCB, ChallengeCB, FightCB, LobbyCB, StandoffCB, TourCB
 from bot.tournament_service import TournamentError, TournamentService
@@ -142,6 +143,35 @@ async def cmd_arena_gear(
 ) -> None:
     """Ринг с оружием: здесь дерутся в полной экипировке."""
     await _mark_ring(message, command, db, bot, FightMode.ARMED, 1)
+
+
+@router.message(Command("updates", "news"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_updates(message: Message, db: Database, bot: Bot) -> None:
+    """Отметить ветку доской объявлений: сюда бот приносит изменения.
+
+    Ветка закрывается на ответы сразу после первого объявления — читать
+    её приходят все, а обсуждать идут в общий чат.
+    """
+    if not await _is_admin(bot, message.chat.id, message.from_user.id):
+        await message.reply("Ветку новостей назначают администраторы группы.")
+        return
+
+    thread_id = thread_id_of(message)
+    title = (message.reply_to_message.forum_topic_created.name
+             if message.reply_to_message
+             and message.reply_to_message.forum_topic_created
+             else "")
+    await db.set_noticeboard(message.chat.id, thread_id, title)
+
+    where = "Эта ветка" if thread_id is not None else "Этот чат"
+    left = len(await pending(db, message.chat.id))
+    await message.reply(
+        f"✅ {where} — доска объявлений клуба. Сюда бот сам принесёт всё, "
+        "что поменяется в игре, и закроет ветку: читают тут, обсуждают в "
+        "общем чате."
+        + ("\n\nСейчас покажу последнее изменение." if left else "")
+    )
+    await catch_up(bot, db, message.chat.id, thread_id)
 
 
 @router.message(Command("rings", "arenas"), F.chat.type.in_(GROUP_TYPES))

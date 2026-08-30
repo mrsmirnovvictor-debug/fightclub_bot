@@ -24,6 +24,7 @@ from bot.store_service import StoreService
 from bot.tournament_service import TournamentService
 from bot.game.links import links
 from bot.handlers import build_router
+from bot.news_service import publish_pending
 from bot.seed import fix_promo_overrun, grant_test_relic
 from bot.webapp import run_webapp
 
@@ -60,6 +61,7 @@ GROUP_COMMANDS = [
     BotCommand(command="rings", description="Ринги клуба и что свободно"),
     BotCommand(command="arena1", description="Отметить кулачный ринг (админы)"),
     BotCommand(command="arena_gear", description="Отметить ринг с оружием (админы)"),
+    BotCommand(command="updates", description="Отметить ветку новостей (админы)"),
     BotCommand(command="top", description="Чемпионы клуба"),
     BotCommand(command="history", description="Последние бои"),
     BotCommand(command="help", description="Как всё устроено"),
@@ -119,6 +121,11 @@ async def run(config: Config | None = None) -> None:
     # Разовые выдачи и правки на время тестов — см. bot/seed.py
     await grant_test_relic(db)
     await fix_promo_overrun(db)
+    # Что нового в клубе — в ветку новостей, если её отметили командой /updates
+    try:
+        await publish_pending(bot, db)
+    except Exception:  # pragma: no cover - объявления не стоят запуска бота
+        logger.exception("Не получилось разослать объявления")
     try:
         await dispatcher.start_polling(
             bot, allowed_updates=dispatcher.resolve_used_update_types()

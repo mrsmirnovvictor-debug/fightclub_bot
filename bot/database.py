@@ -202,6 +202,23 @@ CREATE TABLE IF NOT EXISTS purchases (
 
 CREATE INDEX IF NOT EXISTS idx_purchases_user
     ON purchases(user_id, created_at DESC);
+
+-- Ветка новостей: куда бот сам приносит объявления об изменениях.
+-- Одна на группу, поэтому chat_id и есть ключ.
+CREATE TABLE IF NOT EXISTS noticeboards (
+    chat_id   INTEGER PRIMARY KEY,
+    thread_id INTEGER,
+    title     TEXT NOT NULL DEFAULT ''
+);
+
+-- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
+-- ничего не задваивает, а новая группа получает всё с начала.
+CREATE TABLE IF NOT EXISTS announcements (
+    chat_id   INTEGER NOT NULL,
+    code      TEXT    NOT NULL,
+    posted_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (chat_id, code)
+);
 """
 
 PLAYER_COLUMNS = (
@@ -620,6 +637,70 @@ class Database:
         await self.conn.execute(
             "DELETE FROM rings WHERE chat_id = ? AND thread_id IS ?",
             (chat_id, thread_id),
+        )
+        await self.conn.commit()
+
+    # ---------- ветка новостей ----------
+
+    async def set_noticeboard(
+        self, chat_id: int, thread_id: int | None, title: str = ""
+    ) -> None:
+        """Отметить ветку доской объявлений. Одна на группу."""
+        await self.conn.execute(
+            """
+            INSERT INTO noticeboards (chat_id, thread_id, title) VALUES (?,?,?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                thread_id = excluded.thread_id,
+                title     = excluded.title
+            """,
+            (chat_id, thread_id, title),
+        )
+        await self.conn.commit()
+
+    async def get_noticeboard(self, chat_id: int) -> tuple[int | None, str] | None:
+        async with self.conn.execute(
+            "SELECT thread_id, title FROM noticeboards WHERE chat_id = ?",
+            (chat_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (row[0], row[1]) if row else None
+
+    async def list_noticeboards(self) -> list[tuple[int, int | None, str]]:
+        """Все доски объявлений: бот обходит их при запуске."""
+        async with self.conn.execute(
+            "SELECT chat_id, thread_id, title FROM noticeboards"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [(row[0], row[1], row[2]) for row in rows]
+
+    async def drop_noticeboard(self, chat_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM noticeboards WHERE chat_id = ?", (chat_id,)
+        )
+        await self.conn.commit()
+
+    async def announced(self, chat_id: int) -> set[str]:
+        """Коды объявлений, уже отправленных в эту группу."""
+        async with self.conn.execute(
+            "SELECT code FROM announcements WHERE chat_id = ?", (chat_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {row[0] for row in rows}
+
+    async def mark_announced(self, chat_id: int, code: str) -> bool:
+        """Отметить объявление отправленным. False — уже было."""
+        cursor = await self.conn.execute(
+            "INSERT OR IGNORE INTO announcements (chat_id, code) VALUES (?,?)",
+            (chat_id, code),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def forget_announcement(self, chat_id: int, code: str) -> None:
+        """Забыть отправленное — чтобы объявить заново."""
+        await self.conn.execute(
+            "DELETE FROM announcements WHERE chat_id = ? AND code = ?",
+            (chat_id, code),
         )
         await self.conn.commit()
 

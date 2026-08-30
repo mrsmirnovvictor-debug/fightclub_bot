@@ -473,3 +473,37 @@ async def test_tournament_is_announced_and_signed_up_from_the_chat(arena, tourna
     assert not await db.live_tournaments(GROUP.id)
     assert "остановлен" in session.texts[-1]
     assert not tournaments._timers
+
+
+# ---------- доска объявлений ----------
+
+
+async def test_updates_marks_the_thread_and_posts_the_latest_change(arena):
+    """/updates: ветка запомнена, свежее изменение объявлено, ответы закрыты."""
+    from bot.game.changelog import RELEASES
+
+    db, _, session = arena
+    admin = as_user(701, "Админ")
+
+    await send(admin, "/updates", thread_id=THREAD_ID)
+
+    assert await db.get_noticeboard(GROUP.id) == (THREAD_ID, "")
+    assert "доска объявлений" in session.texts[-2]
+    # последнее изменение ушло в ту же ветку и ветка закрыта на ответы
+    assert RELEASES[-1].title in session.texts[-1]
+    closed = session.method_calls("CloseForumTopic")
+    assert closed and closed[-1].message_thread_id == THREAD_ID
+
+
+async def test_the_board_does_not_repeat_itself(arena):
+    """Повторная команда не пересказывает то, что уже объявили."""
+    db, _, session = arena
+    admin = as_user(702, "Админ")
+    await send(admin, "/updates", thread_id=THREAD_ID)
+    before = len(session.texts)
+
+    await send(admin, "/updates", thread_id=THREAD_ID)
+
+    # ответ про доску есть, а объявления нет: всё уже прочитано
+    assert len(session.texts) == before + 1
+    assert "доска объявлений" in session.texts[-1]
