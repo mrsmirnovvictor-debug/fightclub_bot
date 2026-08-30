@@ -345,6 +345,7 @@ def test_the_card_shows_every_percent_the_ring_will_use():
     assert armed["crit_chance"] == round(fighter.crit * 100)
     assert armed["accuracy"] == round(fighter.accuracy * 100)
     assert armed["anticrit"] == round(fighter.anticrit * 100)
+    assert armed["block_hold"] == round(fighter.block_hold * 100)
 
 
 def test_the_profile_text_counts_gear_the_same_way():
@@ -360,6 +361,7 @@ def test_the_profile_text_counts_gear_the_same_way():
 
     assert f"🌀 Уворот: <b>{fighter.dodge:.0%}</b>" in text
     assert f"🔄 Контрудар: <b>{fighter.counter:.0%}</b>" in text
+    assert f"🛡🩸 Держит блок: <b>{fighter.block_hold:.0%}</b>" in text
 
 
 def test_the_card_never_promises_more_than_the_ring_allows():

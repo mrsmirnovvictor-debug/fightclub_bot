@@ -198,6 +198,11 @@ class FighterClass:
     accuracy_bonus: float = 0.0
     penetration_bonus: float = 0.0
     anticrit_bonus: float = 0.0
+    # Насколько крепко класс держит блок под критическим ударом. Крит,
+    # упёршийся в блок, всё равно может его проломить — вот эта доля и
+    # вычитается из шанса пробития. Танк держит лучше всех, ассасин хуже
+    # всех: он этот удар и наносит.
+    block_hold: float = 0.0
 
     @property
     def label(self) -> str:
@@ -212,7 +217,8 @@ WARRIOR = FighterClass(
     description=(
         "Крепкий кулачный боец. Сила у него весит больше, чем у остальных, "
         "а в круге камень-ножницы-бумага он не участвует: можно качаться "
-        "ровно, можно уходить в любую крайность."
+        "ровно, можно уходить в любую крайность. Блок держит крепко — "
+        "хуже танка, но лучше прочих."
     ),
     base_stats=Stats(strength=4, agility=3, intuition=3, endurance=4),
     hp_per_endurance=7,
@@ -220,6 +226,7 @@ WARRIOR = FighterClass(
     damage_gain=1.33,
     crit_bonus=0.02,
     counter_bonus=0.02,
+    block_hold=0.22,
 )
 
 ROGUE = FighterClass(
@@ -230,7 +237,8 @@ ROGUE = FighterClass(
     description=(
         "Скользкий тип. Ловкость у него весит больше, чем у остальных: "
         "уходит с линии удара чаще всех, отвечает контрударом и пробивает "
-        "чужое сопротивление. Бьёт танка, но сам вязнет против ассасина."
+        "чужое сопротивление. Бьёт танка, но сам вязнет против ассасина: "
+        "блок у него слабый, и крит его проламывает."
     ),
     base_stats=Stats(strength=3, agility=5, intuition=3, endurance=3),
     hp_per_endurance=4,
@@ -239,6 +247,7 @@ ROGUE = FighterClass(
     dodge_bonus=0.25,
     counter_bonus=0.19,
     penetration_bonus=0.08,
+    block_hold=0.12,
 )
 
 ASSASSIN = FighterClass(
@@ -249,7 +258,8 @@ ASSASSIN = FighterClass(
     description=(
         "Мастер точного удара. Интуиция у него весит больше, чем у остальных: "
         "огромный шанс крита, страшная критическая мощь и точность, от которой "
-        "не увернуться. Бьёт трикстера, но ломается о танка."
+        "не увернуться. Его крит и чужой блок проламывает чаще всех — а свой "
+        "он держит хуже всех. Бьёт трикстера, но ломается о танка."
     ),
     base_stats=Stats(strength=4, agility=4, intuition=4, endurance=2),
     hp_per_endurance=5,
@@ -259,6 +269,7 @@ ASSASSIN = FighterClass(
     crit_power_bonus=0.57,
     accuracy_bonus=0.08,
     dodge_bonus=0.02,
+    block_hold=0.05,
 )
 
 TANK = FighterClass(
@@ -268,8 +279,9 @@ TANK = FighterClass(
     tagline="держит удар дольше всех",
     description=(
         "Живая стена. Выносливость у него весит больше, чем у остальных: "
-        "запас здоровья, сопротивление урону и антикрит. Бьёт ассасина, "
-        "но не успевает за трикстером."
+        "запас здоровья, сопротивление урону и антикрит. Блок держит крепче "
+        "всех: крит его почти не проламывает. Бьёт ассасина, но не успевает "
+        "за трикстером."
     ),
     base_stats=Stats(strength=4, agility=2, intuition=2, endurance=6),
     hp_base=43,
@@ -277,6 +289,7 @@ TANK = FighterClass(
     damage_mult=0.98,
     resist_gain=1.52,
     anticrit_bonus=0.12,
+    block_hold=0.35,
 )
 
 FIGHTER_CLASSES: dict[str, FighterClass] = {

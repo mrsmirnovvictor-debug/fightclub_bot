@@ -1448,5 +1448,10 @@ class Equipment:
         weapon = self.weapon if index == 0 else self.second_weapon
         return weapon.item.roll_damage(rng) if weapon else 0
 
+    def weapon_damage_max(self, index: int) -> int:
+        """Потолок прибавки этого оружия — без броска."""
+        weapon = self.weapon if index == 0 else self.second_weapon
+        return weapon.item.damage_max if weapon else 0
+
     def __bool__(self) -> bool:
         return bool(self.items)

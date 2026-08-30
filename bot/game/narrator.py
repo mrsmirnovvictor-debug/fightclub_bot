@@ -27,13 +27,14 @@ from bot.game.combat import (
 if TYPE_CHECKING:  # только для подсказок типов: models импортирует не нас
     from bot.models import Player, ProgressReport
 
-# Эмодзи исхода: 👊 попадание, 🛡 блок, 🩸 крит, 🌀 уворот, 🔄 контрудар.
-# Те же значки стоят у этих показателей на карточке — чтобы лог боя читался
-# теми же символами, что и характеристики.
+# Эмодзи исхода: 👊 попадание, 🛡 блок, 🩸 крит, 🌀 уворот, 🔄 контрудар,
+# 🛡‍🩸 пробитый блок. Те же значки стоят у этих показателей на карточке —
+# чтобы лог боя читался теми же символами, что и характеристики.
 OUTCOME_EMOJI = {
     Outcome.HIT: "👊",
     Outcome.CRIT: "🩸",
     Outcome.BLOCK: "🛡",
+    Outcome.BREAK: "🛡🩸",
     Outcome.DODGE: "🌀",
     Outcome.COUNTER: "🔄",
 }
@@ -64,6 +65,13 @@ SHIELD_BLOCK_LINES = [
     "{a} метит {w} {zone}, {d} отбивает щитом",
     "{a} бьёт {w} {zone} — {d} подставляет щит",
     "Удар {w} {zone} от {a} гаснет о щит {d}",
+]
+
+BREAK_LINES = [
+    "{a} вкладывает всё {w} {zone} — блок {d} не выдерживает",
+    "{a} проламывает блок {d} {w} {zone}",
+    "{d} закрывается, но удар {w} {zone} проходит сквозь блок",
+    "{a} бьёт {w} {zone} так, что защита {d} складывается внутрь",
 ]
 
 DODGE_LINES = [
@@ -210,6 +218,13 @@ def describe_strike(
     if strike.outcome is Outcome.BLOCK:
         lines = SHIELD_BLOCK_LINES if strike.by_shield else BLOCK_LINES
         return f"{emoji} {rng.choice(lines).format(**names)}"
+
+    if strike.outcome is Outcome.BREAK:
+        line = rng.choice(BREAK_LINES).format(**names)
+        tail = damage_tail(
+            strike.damage, strike.defender_hp_after, defender.max_hp, crit=True
+        )
+        return f"{emoji} {line}{tail}"
 
     if strike.outcome is Outcome.DODGE:
         return f"{emoji} {rng.choice(DODGE_LINES).format(**names)}"

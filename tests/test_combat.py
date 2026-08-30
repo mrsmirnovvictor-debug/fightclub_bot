@@ -1,6 +1,7 @@
 """Тесты боевого движка."""
 
 import random
+from dataclasses import replace
 
 import pytest
 
@@ -23,6 +24,7 @@ from bot.game.combat import (
     MAX_MISSED_TURNS,
     MAX_ROUNDS,
     MIN_DODGE_CHANCE,
+    _max_damage,
     Action,
     DuelEnd,
     Fighter,
@@ -35,7 +37,13 @@ from bot.game.combat import (
 )
 from bot.game.equipment import CATALOGUE, Equipment, Item, ItemKind, Slot
 from bot.game.reference import developed_stats, reference_equipment
-from bot.game.stats import derive
+from bot.game.stats import (
+    BLOCK_BREAK_CHANCE,
+    BLOCK_BREAK_DAMAGE_SHARE,
+    MIN_BLOCK_BREAK,
+    SHIELD_BLOCK_HOLD,
+    derive,
+)
 
 SHIV = Item(
     "shiv",
@@ -163,6 +171,166 @@ def test_shield_block_is_marked_for_the_story():
     )
     assert result.strikes[0].outcome is Outcome.BLOCK
     assert result.strikes[0].by_shield is True
+
+
+# ---------- пробитие блока критом ----------
+
+
+class Loaded(random.Random):
+    """Кости с заранее заданными бросками: сначала список, потом как обычно."""
+
+    def __init__(self, rolls, seed=0):
+        super().__init__(seed)
+        self.rolls = list(rolls)
+
+    def random(self):
+        return self.rolls.pop(0) if self.rolls else super().random()
+
+
+def test_a_crit_that_hits_a_block_can_break_through():
+    """Классический порядок: блок, потом крит, потом бросок на пробитие."""
+    attacker = make(ASSASSIN, user_id=1)
+    defender = make(ROGUE, user_id=2)
+    # первый бросок — крит есть, второй — пробитие прошло
+    rng = Loaded([0.0, 0.0])
+
+    result = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.LEGS)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        round_number=1,
+        rng=rng,
+    )
+
+    strike = result.strikes[0]
+    assert strike.outcome is Outcome.BREAK
+    assert strike.damage > 0
+
+
+def test_a_block_that_holds_costs_the_attacker_nothing():
+    """Крит был, а пробитие не прошло — обычный блок, урона нет."""
+    attacker = make(ASSASSIN, user_id=1)
+    defender = make(TANK, user_id=2)
+    rng = Loaded([0.0, 0.99])  # крит есть, бросок на пробитие провален
+
+    result = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.LEGS)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        round_number=1,
+        rng=rng,
+    )
+
+    assert result.strikes[0].outcome is Outcome.BLOCK
+    assert result.strikes[0].damage == 0
+    assert defender.hp == defender.max_hp
+
+
+def test_an_ordinary_blocked_hit_never_breaks_a_block():
+    """Не крит — не пробитие: обычный удар вязнет в блоке при любом броске."""
+    attacker = make(WARRIOR, user_id=1)
+    defender = make(ROGUE, user_id=2)
+    rng = Loaded([0.99, 0.0])  # крита нет, а бросок на пробитие был бы удачным
+
+    result = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.LEGS)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        round_number=1,
+        rng=rng,
+    )
+
+    assert result.strikes[0].outcome is Outcome.BLOCK
+
+
+def test_a_broken_block_lets_through_half_of_the_maximum():
+    """Проходит ровно половина потолка — ни брони, ни сопротивления сверху."""
+    attacker = make(ASSASSIN, user_id=1)
+    # на защитнике полный доспех: он не должен срезать пробитие
+    armour = reference_equipment(ROGUE, 5)
+    defender = Fighter(
+        2, "Марла", ROGUE, ROGUE.base_stats.merge(armour.bonus), equipment=armour
+    )
+    assert defender.equipment.armor_range(Zone.HEAD)[1] > 0
+    rng = Loaded([0.0, 0.0])
+
+    result = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.LEGS)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        round_number=1,
+        rng=rng,
+    )
+
+    strike = result.strikes[0]
+    expected = round(_max_damage(attacker, 0, 1) * BLOCK_BREAK_DAMAGE_SHARE)
+    assert strike.outcome is Outcome.BREAK
+    assert strike.damage == expected
+    assert strike.armor == 0
+
+
+def test_the_classes_hold_a_block_in_the_right_order():
+    """Танк держит крепче всех, за ним воин, потом трикстер, потом ассасин."""
+    holds = [make(fclass).block_hold for fclass in (TANK, WARRIOR, ROGUE, ASSASSIN)]
+    assert holds == sorted(holds, reverse=True)
+    assert len(set(holds)) == 4  # ступеньки, а не общая полка
+
+    # и то же самое с обратной стороны: у ассасина блок ломают чаще всех
+    breaks = [
+        make(fclass, user_id=2).block_break_against(make(ASSASSIN))
+        for fclass in (TANK, WARRIOR, ROGUE, ASSASSIN)
+    ]
+    assert breaks == sorted(breaks)
+    assert breaks[0] == pytest.approx(BLOCK_BREAK_CHANCE - TANK.block_hold)
+    assert all(chance >= MIN_BLOCK_BREAK for chance in breaks)
+
+
+def test_nobody_closes_from_a_break_completely():
+    """Сколько ни держи, щёлочка остаётся: наглухо блок не запирается."""
+    stubborn = make(TANK, user_id=2)
+    stubborn.derived = replace(stubborn.derived, block_hold=0.99)
+
+    assert stubborn.block_break_against(make(ASSASSIN)) == MIN_BLOCK_BREAK
+
+
+def test_a_shield_helps_hold_the_block():
+    """Щит держит блок крепче предплечья — и под критом тоже."""
+    bare = make(TANK, user_id=2)
+    shielded = make(
+        TANK, user_id=2, equipment=Equipment.from_codes({"shield": "bar_lid"})
+    )
+
+    assert shielded.block_hold == pytest.approx(bare.block_hold + SHIELD_BLOCK_HOLD)
+    assert shielded.block_break_against(make(ASSASSIN)) < bare.block_break_against(
+        make(ASSASSIN)
+    )
+
+
+def test_the_judge_marks_a_broken_block_with_a_bleeding_shield():
+    """У пробития свой значок: щит с кровью, и урон в строке виден."""
+    from bot.game.narrator import OUTCOME_EMOJI, describe_strike
+
+    attacker = make(ASSASSIN, user_id=1, name="Тайлер")
+    defender = make(ROGUE, user_id=2, name="Марла")
+    result = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.LEGS)),
+        defender,
+        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        round_number=1,
+        rng=Loaded([0.0, 0.0]),
+    )
+    strike = result.strikes[0]
+
+    line = describe_strike(strike, attacker, defender, random.Random(1))
+    assert line.startswith(OUTCOME_EMOJI[Outcome.BREAK])
+    assert OUTCOME_EMOJI[Outcome.BREAK] == "🛡🩸"
+    assert f"−{strike.damage}" in line
+    assert f"[{strike.defender_hp_after}/{defender.max_hp}]" in line
 
 
 def test_unblocked_hit_deals_damage():
@@ -665,8 +833,17 @@ def duel_share(first: str, second: str, level: int, runs: int, seed: int) -> flo
 )
 @pytest.mark.parametrize("level", [1, 8])
 def test_the_circle_holds_on_every_level(winner, loser, why, level):
-    """Трикстер бьёт танка, танк — ассасина, ассасин — трикстера."""
-    share = duel_share(winner, loser, level=level, runs=120, seed=2024 + level)
+    """Трикстер бьёт танка, танк — ассасина, ассасин — трикстера.
+
+    Считаем по трём сидам: перевес в круге около шести очков, и на сотне
+    боёв с одного сида он тонет в разбросе. Такой тест ловил бы не правку
+    баланса, а любое смещение потока случайных чисел — например лишний
+    бросок на пробитие блока.
+    """
+    share = sum(
+        duel_share(winner, loser, level=level, runs=200, seed=seed + level)
+        for seed in (2024, 4048, 6072)
+    ) / 3
     assert share > 0.5, (
         f"{FIGHTER_CLASSES[winner].title} должен бить "
         f"{FIGHTER_CLASSES[loser].title} ({why}), а взял {share:.0%} на {level} уровне"

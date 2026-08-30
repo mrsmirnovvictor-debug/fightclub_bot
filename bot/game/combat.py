@@ -31,11 +31,16 @@ from bot.game.classes import (
 )
 from bot.game.equipment import BARE_HANDS, BARE_HANDS_ICON, Equipment
 from bot.game.stats import (
+    BLOCK_BREAK_CHANCE,
+    BLOCK_BREAK_DAMAGE_SHARE,
     COUNTER_DAMAGE_MULT,
     MAX_ACCURACY,
     MAX_ANTICRIT,
+    MAX_BLOCK_HOLD,
     MAX_COUNTER_CHANCE,
     MAX_CRIT_CHANCE,
+    MIN_BLOCK_BREAK,
+    SHIELD_BLOCK_HOLD,
     DerivedStats,
     derive,
 )
@@ -61,6 +66,7 @@ MAX_ARMOR_SHARE = 0.5
 class Outcome(str, Enum):
     SKIP = "skip"  # боец не выбрал зону удара
     BLOCK = "block"  # защитник закрыл зону
+    BREAK = "break"  # крит проломил блок
     DODGE = "dodge"  # ушёл с линии удара
     COUNTER = "counter"  # ушёл и ответил
     HIT = "hit"
@@ -117,6 +123,15 @@ def total_crit(base: float, gear: float) -> float:
 
 def total_counter(base: float, gear: float) -> float:
     return min(MAX_COUNTER_CHANCE, base + gear)
+
+
+def total_block_hold(base: float, gear: float) -> float:
+    return min(MAX_BLOCK_HOLD, base + gear)
+
+
+def shield_hold(equipment: Equipment) -> float:
+    """Сколько щит добавляет к устойчивости блока. Без щита — ничего."""
+    return SHIELD_BLOCK_HOLD if equipment.has_shield else 0.0
 
 
 @dataclass
@@ -204,6 +219,16 @@ class Fighter:
     def counter(self) -> float:
         """Шанс контрудара: ловкость плюс проценты с вещей."""
         return total_counter(self.derived.counter_chance, self.equipment.counter)
+
+    @property
+    def block_hold(self) -> float:
+        """Насколько крепко держится блок под критом. Щит держит крепче."""
+        shield = SHIELD_BLOCK_HOLD if self.has_shield else 0.0
+        return total_block_hold(self.derived.block_hold, shield)
+
+    def block_break_against(self, attacker: "Fighter") -> float:
+        """Шанс, что крит этого соперника проломит мой блок."""
+        return max(MIN_BLOCK_BREAK, BLOCK_BREAK_CHANCE - self.block_hold)
 
     def dodge_against(self, attacker: "Fighter") -> float:
         """Шанс увернуться от этого соперника: свой уворот минус его точность."""
@@ -354,6 +379,21 @@ def _resolve_strike(
     if zone in defender_action.block:
         strike.outcome = Outcome.BLOCK
         strike.by_shield = defender.has_shield
+        # Классический порядок: сначала блок, потом крит, потом пробитие.
+        # Удар, который должен был стать критическим, упирается в блок не
+        # насмерть — с какой-то вероятностью он этот блок проламывает.
+        crit = rng.random() < attacker.crit_against(defender)
+        if crit and rng.random() < defender.block_break_against(attacker):
+            strike.outcome = Outcome.BREAK
+            # Проходит ровно половина потолка — и всё. Ни выносливость, ни
+            # броня зоны её больше не режут: свою долю защита уже отработала
+            # тем, что блок вообще был. Иначе «половина максимального урона»
+            # доходила бы до тела слабее обычного попадания.
+            broken = (
+                _max_damage(attacker, weapon_index, round_number)
+                * BLOCK_BREAK_DAMAGE_SHARE
+            )
+            strike.damage = max(1, int(round(broken)))
         return strike
 
     if rng.random() < defender.dodge_against(attacker):
@@ -374,7 +414,23 @@ def _resolve_strike(
     else:
         strike.outcome = Outcome.HIT
 
-    # Удар доходит через выносливость и броню той зоны, куда пришёлся
+    _land_damage(strike, damage, attacker, defender, zone, rng)
+    return strike
+
+
+def _land_damage(
+    strike: Strike,
+    damage: float,
+    attacker: Fighter,
+    defender: Fighter,
+    zone: Zone,
+    rng: random.Random,
+) -> None:
+    """Довести удар до тела: выносливость и броня той зоны, куда пришёлся.
+
+    Пробитый блок идёт этой же дорогой: он проломил защиту рук, но не
+    доспех на зоне и не выносливость соперника.
+    """
     before = damage
     damage *= 1.0 - defender.resist_against(attacker)
     armor = min(defender.equipment.roll_armor(zone, rng), damage * MAX_ARMOR_SHARE)
@@ -382,7 +438,6 @@ def _resolve_strike(
     damage -= armor
     strike.damage = max(1, int(round(damage)))
     strike.absorbed = max(0, int(round(before)) - strike.damage)
-    return strike
 
 
 def _roll_damage(
@@ -397,6 +452,18 @@ def _roll_damage(
     raw = rng.randint(fighter.derived.damage_min, fighter.derived.damage_max)
     weapon = fighter.equipment.roll_weapon_damage(weapon_index, rng)
     raw += weapon * fighter.fclass.damage_mult
+    return raw * fatigue_multiplier(round_number)
+
+
+def _max_damage(fighter: Fighter, weapon_index: int, round_number: int) -> float:
+    """Самое большое, что этот боец может выбить этим оружием в этом раунде.
+
+    От него берётся половина, когда крит проламывает блок: пробитие не
+    бросок, а фиксированная доля потолка — иначе редкое событие ещё и
+    рулеткой решало бы, стоило ли оно того.
+    """
+    weapon = fighter.equipment.weapon_damage_max(weapon_index)
+    raw = fighter.derived.damage_max + weapon * fighter.fclass.damage_mult
     return raw * fatigue_multiplier(round_number)
 
 

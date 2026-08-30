@@ -1594,6 +1594,9 @@ function render(card, keepTab) {
   combat.appendChild(row("🌀 Уворот", c.dodge_chance + "%"));
   combat.appendChild(row("🎯 Точность", c.accuracy + "%"));
   combat.appendChild(row("🔄 Контрудар", c.counter_chance + "%"));
+  // Насколько крепко держится блок, когда в него упирается крит: то, что
+  // не удержалось, проходит половиной максимального урона
+  combat.appendChild(row("🛡🩸 Держит блок", c.block_hold + "%"));
   combat.appendChild(row("🪨 Сопротивление", c.resist + "%"));
   combat.appendChild(row("🪚 Пробивание", c.penetration + "%"));
   const armor = card.armor.filter((zone) => zone.max > 0);

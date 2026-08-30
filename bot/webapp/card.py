@@ -9,6 +9,8 @@ from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats, get_clas
 from bot.game.combat import (
     total_accuracy,
     total_anticrit,
+    shield_hold,
+    total_block_hold,
     total_counter,
     total_crit,
     total_dodge,
@@ -647,6 +649,11 @@ def build_card(
             ),
             "resist": round(derived.resist * 100),
             "penetration": round(derived.penetration * 100),
+            # Устойчивость блока к пробитию критом. Щит держит крепче, поэтому
+            # число считается вместе с надетым — как и все остальные проценты.
+            "block_hold": round(
+                total_block_hold(derived.block_hold, shield_hold(equipment)) * 100
+            ),
         },
         "armor": [
             {

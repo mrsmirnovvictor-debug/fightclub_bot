@@ -55,6 +55,17 @@ COUNTER_PER_AGILITY = 0.007
 MAX_COUNTER_CHANCE = 0.5
 COUNTER_DAMAGE_MULT = 0.85  # контрудар бьёт почти в полную силу
 
+# Пробитие блока: крит, упёршийся в блок, всё равно может его проломить.
+# Столько шансов у него без всякой защиты; устойчивость блока вычитается.
+BLOCK_BREAK_CHANCE = 0.5
+# Ниже этого шанс не опускается: наглухо от пробития не закрывается никто
+MIN_BLOCK_BREAK = 0.05
+# Пробитый блок гасит удар вполовину: проходит половина максимального урона
+BLOCK_BREAK_DAMAGE_SHARE = 0.5
+# Щит держится крепче предплечья — и под критом тоже
+SHIELD_BLOCK_HOLD = 0.12
+MAX_BLOCK_HOLD = 0.6
+
 HP_PER_LEVEL = 5  # прибавка к здоровью за каждый уровень
 
 
@@ -73,6 +84,8 @@ class DerivedStats:
     accuracy: float
     resist: float
     penetration: float
+    # Устойчивость блока под критом: доля, на которую падает шанс пробития
+    block_hold: float = 0.0
 
 
 def derive(
@@ -146,6 +159,7 @@ def derive(
             ),
             4,
         ),
+        block_hold=round(min(MAX_BLOCK_HOLD, fclass.block_hold), 4),
         penetration=round(
             min(
                 MAX_PENETRATION,

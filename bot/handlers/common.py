@@ -12,8 +12,10 @@ from aiogram.types import (
 from bot.config import Config
 from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats
 from bot.game.combat import (
+    shield_hold,
     total_accuracy,
     total_anticrit,
+    total_block_hold,
     total_counter,
     total_crit,
     total_dodge,
@@ -74,6 +76,8 @@ def combat_block(
         f"🎯 Точность: <b>{total_accuracy(d.accuracy, equipment.accuracy):.0%}</b>",
         f"🔄 Контрудар: "
         f"<b>{total_counter(d.counter_chance, equipment.counter):.0%}</b>",
+        f"🛡🩸 Держит блок: "
+        f"<b>{total_block_hold(d.block_hold, shield_hold(equipment)):.0%}</b>",
         f"🪨 Сопротивление: <b>{d.resist:.0%}</b>",
         f"🪚 Пробивание: <b>{d.penetration:.0%}</b>",
     ]
