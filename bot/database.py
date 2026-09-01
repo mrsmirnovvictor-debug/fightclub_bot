@@ -10,7 +10,7 @@ from typing import Any, Iterable
 import aiosqlite
 
 from bot.game.economy import RATING_START
-from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
+from bot.game.equipment import ALL_SLOTS, MAX_WEAR, OwnedItem, Slot, get_item
 from bot.game.health import now_ts
 from bot.game.modes import FightMode, mode_of
 from bot.game.potions import ActiveEffect, get_potion
@@ -457,6 +457,35 @@ class Database:
         return [_to_player(row) for row in rows]
 
     # ---------- инвентарь ----------
+
+    async def retire_gear(self, codes: set[str]) -> dict[int, list[str]]:
+        """Убрать из инвентарей вещи, которых больше нет в игре.
+
+        Возвращает, у кого что забрали, — чтобы вернуть деньги. Заодно
+        освобождает слоты, которых не стало: вещь из такого слота просто
+        уходит в рюкзак.
+        """
+        taken: dict[int, list[str]] = {}
+        if codes:
+            marks = ",".join("?" * len(codes))
+            async with self.conn.execute(
+                f"SELECT user_id, code FROM inventory WHERE code IN ({marks})",
+                tuple(codes),
+            ) as cursor:
+                for user_id, code in await cursor.fetchall():
+                    taken.setdefault(user_id, []).append(code)
+            await self.conn.execute(
+                f"DELETE FROM inventory WHERE code IN ({marks})", tuple(codes)
+            )
+
+        known = ",".join("?" * len(ALL_SLOTS))
+        await self.conn.execute(
+            f"UPDATE inventory SET slot = NULL "
+            f"WHERE slot IS NOT NULL AND slot NOT IN ({known})",
+            tuple(slot.value for slot in ALL_SLOTS),
+        )
+        await self.conn.commit()
+        return taken
 
     async def list_gear(self, user_id: int) -> list[OwnedItem]:
         """Всё, что у бойца есть: и надетое, и лежащее в рюкзаке."""

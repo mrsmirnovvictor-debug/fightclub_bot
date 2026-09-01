@@ -528,3 +528,48 @@ async def test_the_fix_leaves_a_short_term_alone(db):
 
     assert await fix_promo_overrun(db) is False
     assert (await db.get_player(7)).pro_left() <= 2 * DAY + 5
+
+
+# ---------- щиты ушли из игры ----------
+
+
+async def test_shields_are_taken_away_and_paid_back(db):
+    """Щита в игре больше нет — за него возвращают кредиты по цене покупки."""
+    from bot.seed import RETIRED_GEAR, refund_retired_gear
+
+    player = make_player()
+    player.credits = 0
+    await db.save_player(player)
+    # вещи давно нет в каталоге, поэтому кладём строку в инвентарь напрямую
+    await db.conn.execute(
+        "INSERT INTO inventory (user_id, code, slot) VALUES (?,?,?)",
+        (42, "road_sign", "shield"),
+    )
+    await db.conn.commit()
+
+    assert await refund_retired_gear(db) == 1
+
+    assert (await db.get_player(42)).credits == RETIRED_GEAR["road_sign"]
+    assert await db.list_gear(42) == []
+    # и во второй раз денег за то же самое не дают
+    assert await refund_retired_gear(db) == 0
+    assert (await db.get_player(42)).credits == RETIRED_GEAR["road_sign"]
+
+
+async def test_a_second_weapon_comes_back_out_of_the_vanished_hand(db):
+    """Оружие из второй руки не пропадает: оно просто уходит в рюкзак."""
+    from bot.seed import refund_retired_gear
+
+    player = make_player()
+    await db.save_player(player)
+    blade = await db.add_gear(42, "knuckles")
+    await db.conn.execute(
+        "UPDATE inventory SET slot = 'shield' WHERE id = ?", (blade.id,)
+    )
+    await db.conn.commit()
+
+    await refund_retired_gear(db)
+
+    stored = await db.list_gear(42)
+    assert [owned.code for owned in stored] == ["knuckles"]
+    assert stored[0].slot is None  # рука исчезла, кастет цел

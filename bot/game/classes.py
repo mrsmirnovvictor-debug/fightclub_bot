@@ -35,7 +35,7 @@ class Zone(str, Enum):
 
 ZONE_TITLES: dict[Zone, str] = {
     Zone.HEAD: "голова",
-    Zone.CHEST: "грудь",
+    Zone.CHEST: "корпус",
     Zone.BELLY: "живот",
     Zone.BELT: "пояс",
     Zone.LEGS: "ноги",
@@ -61,7 +61,7 @@ ZONE_SHORT: dict[Zone, str] = {
 
 ZONE_PREPOSITIONAL: dict[Zone, str] = {
     Zone.HEAD: "в голову",
-    Zone.CHEST: "в грудь",
+    Zone.CHEST: "в корпус",
     Zone.BELLY: "в живот",
     Zone.BELT: "по поясу",
     Zone.LEGS: "по ногам",
@@ -71,9 +71,9 @@ ZONE_PREPOSITIONAL: dict[Zone, str] = {
 # Блок закрывает только смежные зоны, поэтому порядок здесь — часть правил.
 ALL_ZONES: tuple[Zone, ...] = tuple(Zone)
 
-# Сколько зон закрывает обычный блок и блок со щитом
+# Сколько зон закрывает блок. Больше не бывает: щитов в клубе нет,
+# и три зоны разом не закрывает никто.
 BLOCK_WIDTH = 2
-SHIELD_BLOCK_WIDTH = 3
 
 
 def block_combo(start: Zone, width: int = BLOCK_WIDTH) -> tuple[Zone, ...]:
@@ -91,18 +91,14 @@ def block_combos(width: int = BLOCK_WIDTH) -> tuple[tuple[Zone, ...], ...]:
 
 
 def block_button(combo: tuple[Zone, ...]) -> str:
-    """Надпись на кнопке блока: «🛡 Г+К» или «🛡 Г+К (+Ж🛡)» со щитом.
+    """Надпись на кнопке блока: «🛡 Голова + Корпус».
 
-    Третья зона вынесена в скобки со щитом не для красоты: её закрывает не
-    боец, а вещь, и, сняв щит, он эту зону потеряет.
+    Столбцов на панели два, так что зоны помещаются названиями целиком —
+    сокращения нужны были, пока оружий было два.
     """
     if not combo:
         return "🛡 —"
-    own = "+".join(zone.short for zone in combo[:BLOCK_WIDTH])
-    extra = combo[BLOCK_WIDTH:]
-    if not extra:
-        return f"🛡 {own}"
-    return f"🛡 {own} (+{''.join(zone.short for zone in extra)}🛡)"
+    return "🛡 " + " + ".join(zone.title.capitalize() for zone in combo)
 
 
 def block_title(combo: tuple[Zone, ...]) -> str:

@@ -84,8 +84,7 @@ async def choose_all(service: BattleService, session) -> None:
             if not fighter.alive:
                 continue  # упавший кнопки уже не жмёт
             zone = ZONES[(index + offset) % len(ZONES)]
-            for slot in range(fighter.attacks_per_round):
-                await service.handle_choice(session.id, user_id, "attack", zone, slot)
+            await service.handle_choice(session.id, user_id, "attack", zone)
             await service.handle_choice(
                 session.id, user_id, "block", ZONES[(index + offset + 1) % len(ZONES)]
             )
@@ -380,14 +379,14 @@ async def test_fist_battle_leaves_the_gear_behind(bot, db):
 
     fist = await gather(101, FightMode.FIST)
     assert all(
-        fighter.weapons == ("кулаком",) for fighter in fist.fighters.values()
+        fighter.weapon == "кулаком" for fighter in fist.fighters.values()
     )
     for user_id in list(fist.fighters):
         service._busy.pop(user_id, None)
     service._forget_battle(fist)
 
     armed = await gather(102, FightMode.ARMED)
-    assert all(fighter.weapons == ("битой",) for fighter in armed.fighters.values())
+    assert all(fighter.weapon == "битой" for fighter in armed.fighters.values())
     await service.shutdown()
 
 
@@ -540,6 +539,6 @@ async def test_the_group_board_stacks_the_pairs_one_under_another(bot, db):
     pairs = [line for line in board if "VS." in line]
     assert len(pairs) == len(session.pairs) == 2
     assert board.count("") >= 2  # пары разделены пустой строкой
-    assert all("│" in line for line in board if line.startswith("["))
+    assert "<pre>" in "\n".join(board)  # табло идёт моноширинным блоком
     assert board[-1].endswith("Выберите удар и блок.")
     await service.shutdown()

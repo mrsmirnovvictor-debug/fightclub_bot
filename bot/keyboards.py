@@ -9,6 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.game.classes import (
     ALL_STATS,
     ALL_ZONES,
+    BLOCK_WIDTH,
     FIGHTER_CLASSES,
     FighterClass,
     Stat,
@@ -269,15 +270,12 @@ def tournament_keyboard(tournament_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def battle_keyboard(
-    battle_id: int, icons: tuple[str, ...] = ("👊",), block_width: int = 2
-) -> InlineKeyboardMarkup:
+def battle_keyboard(battle_id: int, icon: str = "👊") -> InlineKeyboardMarkup:
     """Та же панель, что в дуэли, но нажатия уходят в групповой бой."""
     return _fight_panel(
-        icons,
-        block_width,
-        lambda zone, slot: BattleCB(
-            action="attack", battle_id=battle_id, zone=zone.value, slot=slot
+        icon,
+        lambda zone: BattleCB(
+            action="attack", battle_id=battle_id, zone=zone.value
         ).pack(),
         lambda zone: BattleCB(
             action="block", battle_id=battle_id, zone=zone.value
@@ -285,51 +283,38 @@ def battle_keyboard(
     )
 
 
-def _fight_panel(
-    icons: tuple[str, ...],
-    block_width: int,
-    attack_data,
-    block_data,
-) -> InlineKeyboardMarkup:
-    """Панель раунда: столбец на каждое оружие, справа столбец блоков.
+def _fight_panel(icon: str, attack_data, block_data) -> InlineKeyboardMarkup:
+    """Панель хода: слева удар по зоне, справа блок на две смежные.
 
-    Зоны на кнопках сокращены до буквы — с двумя оружиями и щитом три
-    столбца названий целиком в ширину экрана не влезают, и кнопки уезжают
-    в две строки. Значок оружия сверху столбца говорит, чем бьём, буква —
-    куда.
+    Столбца ровно два, и зоны помещаются названиями целиком: рука одна,
+    удар один, блок один — второго оружия и щитов в клубе нет.
     """
-    blocks = block_combos(block_width)
     rows: list[list[InlineKeyboardButton]] = []
-    for index, zone in enumerate(ALL_ZONES):
-        row = [
-            InlineKeyboardButton(
-                text=f"{icon}{zone.short}", callback_data=attack_data(zone, slot)
-            )
-            for slot, icon in enumerate(icons)
-        ]
-        combo = blocks[index]
-        row.append(
-            InlineKeyboardButton(
-                text=block_button(combo), callback_data=block_data(combo[0])
-            )
+    for zone, combo in zip(ALL_ZONES, block_combos(BLOCK_WIDTH)):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{icon}{zone.title.capitalize()}",
+                    callback_data=attack_data(zone),
+                ),
+                InlineKeyboardButton(
+                    text=block_button(combo), callback_data=block_data(combo[0])
+                ),
+            ]
         )
-        rows.append(row)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def fight_keyboard(
-    duel_id: int, icons: tuple[str, ...] = ("👊",), block_width: int = 2
-) -> InlineKeyboardMarkup:
-    """Панель раунда одна на обоих бойцов — так проще читать ветку.
+def fight_keyboard(duel_id: int, icon: str = "👊") -> InlineKeyboardMarkup:
+    """Панель хода одна на обоих бойцов — так проще читать ветку.
 
     Кто нажал, тому и засчитали: бот отвечает всплывающей подсказкой лично
     нажавшему.
     """
     return _fight_panel(
-        icons,
-        block_width,
-        lambda zone, slot: FightCB(
-            action="attack", duel_id=duel_id, zone=zone.value, slot=slot
+        icon,
+        lambda zone: FightCB(
+            action="attack", duel_id=duel_id, zone=zone.value
         ).pack(),
         lambda zone: FightCB(action="block", duel_id=duel_id, zone=zone.value).pack(),
     )

@@ -26,6 +26,40 @@ from bot.pro_service import promo_claim_id
 
 logger = logging.getLogger(__name__)
 
+# Щиты и вторая рука ушли из игры. Кто их купил — получает кредиты назад
+# по той же цене: вещь пропала не по вине бойца.
+RETIRED_GEAR: dict[str, int] = {"bar_lid": 70, "road_sign": 130, "buckler": 130}
+RETIREMENT_ID = "refund:shields"
+
+
+async def refund_retired_gear(db: Database) -> int:
+    """Забрать щиты и вернуть за них кредиты. Возвращает число бойцов.
+
+    Слот второй руки исчез вместе со щитами, поэтому заодно освобождаются
+    вещи, которые в нём стояли: второе оружие уходит в рюкзак целым.
+    """
+    taken = await db.retire_gear(set(RETIRED_GEAR))
+    for user_id, codes in taken.items():
+        back = sum(RETIRED_GEAR[code] for code in codes)
+        player = await db.get_player(user_id)
+        if player is None:  # pragma: no cover - боец удалился, возвращать некому
+            continue
+        first = await db.add_purchase(
+            user_id=user_id,
+            code=RETIREMENT_ID,
+            stars=0,
+            credits=back,
+            charge_id=f"{RETIREMENT_ID}:{user_id}",
+            kind="gift",
+        )
+        if not first:  # pragma: no cover - деньги за щиты уже возвращали
+            continue
+        player.grant_credits(back)
+        await db.save_player(player)
+        logger.info("Боец %s получил %s кредитов за щиты", user_id, back)
+    return len(taken)
+
+
 # Кому и что: прозвище бойца и код вещи из каталога
 TEST_FIGHTER = "Victor"
 TEST_RELIC = "lightsaber"

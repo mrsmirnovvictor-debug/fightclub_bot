@@ -125,12 +125,10 @@ ZONES = ["head", "chest", "belly", "belt", "legs"]
 
 
 async def choose(service: DuelService, session, user_id: int, index: int = 0) -> None:
-    """Полный выбор бойца: удар каждым оружием и один блок."""
-    fighter = session.fighters[user_id]
-    for slot in range(fighter.attacks_per_round):
-        await service.handle_choice(
-            session.id, user_id, "attack", ZONES[(index + slot) % len(ZONES)], slot
-        )
+    """Полный выбор бойца: один удар и один блок."""
+    await service.handle_choice(
+        session.id, user_id, "attack", ZONES[index % len(ZONES)]
+    )
     await service.handle_choice(
         session.id, user_id, "block", ZONES[(index + 1) % len(ZONES)]
     )
@@ -315,7 +313,7 @@ async def test_choice_is_private_and_toggleable(bot, db):
     assert "Осталось выбрать блок" in hint
 
     hint = await service.handle_choice(session.id, 1, "block", "chest")
-    assert "Грудь + живот" in hint  # блок закрывает смежные зоны
+    assert "Корпус + живот" in hint  # блок закрывает смежные зоны
     assert session.is_ready(1)
 
     # новый блок заменяет прежний целиком
@@ -804,9 +802,7 @@ async def test_panel_is_one_for_both_fighters(bot, db):
         CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
     )
 
-    icons, block_width = session.panel
-    assert icons == ("👊",)
-    assert block_width == 2  # у танка тоже две зоны
+    assert session.panel == "👊"  # кулаки у обоих
     # панель одна: за раунд ушло приглашение и ничего больше
     prompts = [m for m in bot.sent if m.reply_markup is not None]
     assert len(prompts) == 1
@@ -844,8 +840,11 @@ async def test_every_name_in_the_fight_log_opens_the_card(bot, db):
         # подсказка про свободные очки ведёт в ту же карточку, но имени в ней
         # нет — иначе счёт ссылок и имён не сойдётся
         hint = re.compile(r"<a href=\"[^\"]+\">карточке бойца</a>")
+        # табло раунда идёт моноширинным блоком: ссылке внутри такого блока
+        # Telegram жить не даёт, поэтому имена там намеренно без ссылок
+        board = re.compile(r"<pre>.*?</pre>", re.S)
         for text in named:
-            bare = hint.sub("", text)
+            bare = hint.sub("", board.sub("", text))
             for user_id, name in ((1, "Тайлер"), (2, "Марла")):
                 # каждое упоминание имени должно быть завёрнуто в ссылку
                 assert bare.count(name) == bare.count(links_by_id[user_id]), (
@@ -1089,44 +1088,33 @@ async def test_two_boxing_rounds_fit_one_minute_of_chat_budget(bot, db):
 # ---------- панель и табло ----------
 
 
-def test_the_panel_gives_every_weapon_its_own_column():
-    """Два оружия и щит — три столбца, и зоны сокращены до буквы.
-
-    Названиями целиком три столбца не влезают в ширину телефона: кнопки
-    уезжают в две строки, и панель перестаёт читаться.
-    """
-    from bot.game.classes import BLOCK_WIDTH, SHIELD_BLOCK_WIDTH
+def test_the_panel_is_two_columns_of_full_names():
+    """Столбца два — удар и блок, — и зоны помещаются целиком."""
     from bot.keyboards import fight_keyboard
 
-    two_weapons = fight_keyboard(1, ("🗡️", "⚔️"), BLOCK_WIDTH).inline_keyboard
-    assert [button.text for button in two_weapons[0]] == ["🗡️Г", "⚔️Г", "🛡 Г+К"]
-    assert [row[0].text for row in two_weapons] == ["🗡️Г", "🗡️К", "🗡️Ж", "🗡️П", "🗡️Н"]
-    assert [row[-1].text for row in two_weapons] == [
-        "🛡 Г+К", "🛡 К+Ж", "🛡 Ж+П", "🛡 П+Н", "🛡 Н+Г"
+    rows = fight_keyboard(1).inline_keyboard
+    assert [[button.text for button in row] for row in rows] == [
+        ["👊Голова", "🛡 Голова + Корпус"],
+        ["👊Корпус", "🛡 Корпус + Живот"],
+        ["👊Живот", "🛡 Живот + Пояс"],
+        ["👊Пояс", "🛡 Пояс + Ноги"],
+        ["👊Ноги", "🛡 Ноги + Голова"],
     ]
-
-    # со щитом третья зона идёт в скобках: её закрывает вещь, а не боец
-    shielded = fight_keyboard(1, ("🗡️",), SHIELD_BLOCK_WIDTH).inline_keyboard
-    assert [row[-1].text for row in shielded] == [
-        "🛡 Г+К (+Ж🛡)",
-        "🛡 К+Ж (+П🛡)",
-        "🛡 Ж+П (+Н🛡)",
-        "🛡 П+Н (+Г🛡)",
-        "🛡 Н+Г (+К🛡)",
-    ]
+    # значок берётся с оружия: с ножом в руке кнопки подписаны ножом
+    armed = fight_keyboard(1, "🔪").inline_keyboard
+    assert [row[0].text for row in armed][0] == "🔪Голова"
 
 
-def test_the_panel_buttons_still_point_at_the_right_zones():
-    """Буквы — только надпись: под ними те же зоны и те же слоты оружия."""
-    from bot.game.classes import BLOCK_WIDTH, ALL_ZONES
+def test_the_panel_buttons_point_at_the_right_zones():
+    """Под надписями — те же зоны, и ни одной лишней кнопки удара."""
+    from bot.game.classes import ALL_ZONES
     from bot.keyboards import FightCB, fight_keyboard
 
-    rows = fight_keyboard(7, ("🗡️", "⚔️"), BLOCK_WIDTH).inline_keyboard
-    for index, zone in enumerate(ALL_ZONES):
-        first, second, block = rows[index]
-        for slot, button in enumerate((first, second)):
-            data = FightCB.unpack(button.callback_data)
-            assert (data.action, data.zone, data.slot) == ("attack", zone.value, slot)
+    rows = fight_keyboard(7).inline_keyboard
+    assert all(len(row) == 2 for row in rows)  # второго удара на панели нет
+    for zone, (hit, block) in zip(ALL_ZONES, rows):
+        data = FightCB.unpack(hit.callback_data)
+        assert (data.action, data.zone) == ("attack", zone.value)
         guard = FightCB.unpack(block.callback_data)
         assert (guard.action, guard.zone, guard.duel_id) == ("block", zone.value, 7)
 
@@ -1145,12 +1133,23 @@ async def test_the_board_shows_both_fighters_side_by_side(bot, db):
 
     board = service._prompt_text(session).splitlines()
 
-    assert "Victor" in board[2] and "VS." in board[2] and "x RED x" in board[2]
-    assert board[2].endswith("[1]")  # уровень стоит у каждого имени
-    assert board[3].startswith("[2/") and "│" in board[3]
+    assert board[2].startswith("<pre>") and board[5].endswith("</pre>")
+    head = board[2].removeprefix("<pre>")
+    assert "Victor" in head and "VS." in head and "x RED x" in head
+    assert head.endswith("[1]")  # уровень стоит у каждого имени
+    assert board[3].startswith("[2/")
     assert board[4].startswith("🟥") and "🟩" in board[4]
-    assert board[5] == "✅ Готов │ ⏳ Думает"
+    assert board[5].startswith("✅ Готов") and "⏳ Думает" in board[5]
     assert board[-1].endswith("Выберите удар и блок.")
+
+    # и правая колонка на всех четырёх строках начинается с одного места
+    from bot.game.narrator import BOARD_COLUMN, cells
+
+    rows = [head] + board[3:5] + [board[5].removesuffix("</pre>")]
+    for row in rows:
+        left, _, right = row.partition("  ")
+        assert cells(left) < BOARD_COLUMN
+        assert cells(row) - cells(right.lstrip()) == BOARD_COLUMN
     await service.shutdown()
 
 

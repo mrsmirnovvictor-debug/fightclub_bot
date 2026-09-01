@@ -20,7 +20,6 @@ from bot.game.equipment import (
     MAX_WEAR,
     Equipment,
     Item,
-    ItemKind,
     OwnedItem,
     Slot,
     apply_fight_wear,
@@ -193,7 +192,7 @@ async def test_equipping_moves_the_item_from_the_backpack_into_the_slot(db):
     assert saved.backpack == []
     assert saved.gear_in_slot(Slot.WEAPON).code == "knuckles"
     assert saved.stats.strength == player.base_stats.strength + KNUCKLES.strength
-    assert saved.equipment.weapon_names == ("кастетом",)
+    assert saved.equipment.weapon_name == "кастетом"
     assert saved.max_hp >= before
 
 
@@ -211,18 +210,19 @@ async def test_the_slot_holds_one_thing_at_a_time(db):
     assert [item.id for item in saved.backpack] == [first.id]
 
 
-async def test_a_second_weapon_goes_into_the_shield_hand(db):
+async def test_a_second_weapon_has_nowhere_to_go(db):
+    """Рука одна: второй кастет вытесняет первый, а не встаёт рядом."""
     player = make_player()
     await db.save_player(player)
     weapon = await buy(db, player, "knuckles")
     offhand = await buy(db, player, "knuckles")
 
     await equip(db, player, weapon.id)
-    await equip(db, player, offhand.id, Slot.SHIELD)
+    await equip(db, player, offhand.id)
 
     saved = await db.get_player(player.user_id)
-    assert saved.equipment.second_weapon is not None
-    assert not saved.equipment.has_shield
+    assert saved.gear_in_slot(Slot.WEAPON).id == offhand.id
+    assert [item.id for item in saved.backpack] == [weapon.id]
 
     boots = await buy(db, player, "sneakers")
     with pytest.raises(InventoryError, match="в этот слот не надевается"):
@@ -352,8 +352,8 @@ def test_inventory_rows_carry_everything_the_screen_draws():
     assert gain["Урон"]["text"] == CATALOGUE["knuckles"].describe_damage()
     # уровень и сила не дотягивают — обе строки требований помечены красным
     assert [need["ok"] for need in row["requirements"]] == [False, False]
-    # оружие можно взять и во вторую руку
-    assert [slot["slot"] for slot in row["slots"]] == ["weapon", "shield"]
+    # у оружия одно место на карточке: рука одна
+    assert [slot["slot"] for slot in row["slots"]] == ["weapon"]
 
 
 def test_strangers_do_not_see_the_backpack():
@@ -481,8 +481,7 @@ def test_catalogue_items_know_their_slot_and_price():
         )
         assert item.slot in item.slots
         assert isinstance(item, Item)
-        if item.kind is ItemKind.SHIELD:
-            assert item.slot is Slot.SHIELD
+        assert item.slots == (item.slot,)  # второго места у вещи нет
 
 
 def test_the_magic_counter_is_kept_out_of_the_club_shop():
@@ -747,8 +746,7 @@ def test_armour_covers_the_zone_it_is_worn_on():
     }
     for code, zones in coverage.items():
         assert CATALOGUE[code].zones == zones, code
-    # щит держит всё сразу, перчатки и оружие брони не дают вовсе
-    assert set(CATALOGUE["road_sign"].zones) == set(Zone)
+    # перчатки и оружие брони не дают вовсе
     assert CATALOGUE["battered_gloves"].zones == ()
     assert CATALOGUE["cleaver"].zones == ()
 
@@ -783,7 +781,7 @@ def test_pictures_are_wired_to_the_right_bucket():
     assert all(picture.startswith("https://") for picture in pictures)
 
     for item in SHOWCASE:
-        if item.is_weapon or item.is_shield:
+        if item.is_weapon:
             assert item.image.startswith(ART), f"{item.code}: не из бакета клуба"
 
 
@@ -936,15 +934,16 @@ def test_shop_sections_are_named_after_body_parts():
     assert [slot.section for slot in ALL_SLOTS] == [
         "голова",
         "оружие",
-        "тело",
+        "футболки",
         "пояс",
         "перчатки",
-        "щиты",
+        "верхняя одежда",
         "ноги",
         "обувь",
     ]
-    # в предложении слот по-прежнему называется вещью: «сюда надевается щит»
-    assert Slot.SHIELD.title == "щит"
+    # в предложении слот называется вещью: «сюда надевается футболка»
+    assert Slot.SHIRT.title == "футболка"
+    assert Slot.JACKET.title == "верхняя одежда"
     assert Slot.PANTS.title == "штаны"
     assert build_shop(make_player())["sections"][0]["title"] == "Голова"
 
@@ -1006,39 +1005,39 @@ def test_the_whole_catalogue_lives_in_one_bucket():
 async def test_a_stat_from_gear_opens_the_door_to_the_next_item(db):
     """Меч даёт +5 интуиции, и под него надевается клинок с требованием 7."""
     player = make_player(user_id=1, level=5, stats=Stats(
-        strength=12, agility=8, intuition=3, endurance=12
+        strength=12, agility=8, intuition=2, endurance=12
     ))
     await db.save_player(player)
     saber = await db.add_gear(1, "lightsaber")
-    blade = await db.add_gear(1, "hidden_blade")
-    player.gear += [saber, blade]
+    bandana = await db.add_gear(1, "bandana")
+    player.gear += [saber, bandana]
 
     # своей интуиции не хватает
-    with pytest.raises(InventoryError, match="интуиция 7"):
-        await equip(db, player, blade.id, Slot.SHIELD)
+    with pytest.raises(InventoryError, match="интуиция 4"):
+        await equip(db, player, bandana.id, Slot.HEAD)
 
     await equip(db, player, saber.id, Slot.WEAPON)
-    assert player.worn_stats.intuition == 8
-    await equip(db, player, blade.id, Slot.SHIELD)
+    assert player.worn_stats.intuition == 7
+    await equip(db, player, bandana.id, Slot.HEAD)
 
-    assert player.gear_in_slot(Slot.SHIELD) is blade
+    assert player.gear_in_slot(Slot.HEAD) is bandana
 
 
 async def test_taking_off_the_support_takes_off_what_stood_on_it(db):
     """Сняли меч — интуиция упала, клинок ушёл в рюкзак вслед за ним."""
     player = make_player(user_id=1, level=5, stats=Stats(
-        strength=12, agility=8, intuition=3, endurance=12
+        strength=12, agility=8, intuition=2, endurance=12
     ))
     await db.save_player(player)
     saber = await db.add_gear(1, "lightsaber")
-    blade = await db.add_gear(1, "hidden_blade")
-    player.gear += [saber, blade]
+    bandana = await db.add_gear(1, "bandana")
+    player.gear += [saber, bandana]
     await equip(db, player, saber.id, Slot.WEAPON)
-    await equip(db, player, blade.id, Slot.SHIELD)
+    await equip(db, player, bandana.id, Slot.HEAD)
 
     await unequip(db, player, Slot.WEAPON)
 
-    assert [owned.title for owned in player.dropped_gear] == ["Клинок ассасина"]
+    assert [owned.title for owned in player.dropped_gear] == ["Бандана"]
     assert player.equipped == []
     # и в базе тоже: слоты сняты, вещи целы
     stored = await db.list_gear(1)
@@ -1067,17 +1066,17 @@ async def test_an_item_never_props_itself_up_while_being_replaced(db):
 async def test_the_cascade_keeps_going_until_the_gear_stands_on_its_own(db):
     """Снятие идёт не в один заход: за первой вещью может уйти вторая."""
     player = make_player(user_id=1, level=5, stats=Stats(
-        strength=12, agility=8, intuition=3, endurance=12
+        strength=12, agility=8, intuition=2, endurance=12
     ))
     saber = OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON)
-    blade = OwnedItem(item=CATALOGUE["hidden_blade"], id=2, slot=Slot.SHIELD)
-    player.gear = [saber, blade]
-    assert player.worn_stats.intuition == 10  # 3 + 5 от меча + 2 от клинка
+    bandana = OwnedItem(item=CATALOGUE["bandana"], id=2, slot=Slot.HEAD)
+    player.gear = [saber, bandana]
+    assert player.worn_stats.intuition == 8  # 2 + 5 от меча + 1 от банданы
 
     saber.slot = None  # сняли руками, как это делает unequip
     dropped = player.settle_gear()
 
-    assert [owned.title for owned in dropped] == ["Клинок ассасина"]
+    assert [owned.title for owned in dropped] == ["Бандана"]
     assert player.equipped == []
 
 

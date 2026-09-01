@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import random
+import unicodedata
 import re
 
 from typing import TYPE_CHECKING
@@ -62,12 +63,6 @@ BLOCK_LINES = [
     "{a} метит {w} {zone}, {d} отбивает",
     "{a} бьёт {w} {zone} — {d} закрывается вовремя",
     "Удар {w} {zone} от {a} вязнет в блоке {d}",
-]
-
-SHIELD_BLOCK_LINES = [
-    "{a} метит {w} {zone}, {d} отбивает щитом",
-    "{a} бьёт {w} {zone} — {d} подставляет щит",
-    "Удар {w} {zone} от {a} гаснет о щит {d}",
 ]
 
 BREAK_LINES = [
@@ -185,9 +180,9 @@ BAR_EMPTY = "⬛"
 # Столько клеток в полоске на панели: два бойца в строке, и десять клеток
 # на каждого телефон переносит.
 BOARD_BAR = 5
-# Разделитель колонок: ровно выровнять их в Telegram нельзя — шрифт не
-# моноширинный, — но черта читается как граница между бойцами.
-COLUMN = "│"
+# С какого знакоместа начинается правая колонка. Табло рисуется
+# моноширинным блоком, поэтому ширину можно считать честно.
+BOARD_COLUMN = 22
 
 
 def bar_color(percent: float) -> str:
@@ -208,30 +203,61 @@ def color_bar(current: int, maximum: int, width: int = BOARD_BAR) -> str:
     return bar_color(current / maximum) * filled + BAR_EMPTY * (width - filled)
 
 
+def cells(text: str) -> int:
+    """Ширина строки в знакоместах моноширинного шрифта.
+
+    Значок занимает два места, модификаторы вроде VS16 — ни одного.
+    Без этого счёта колонки разъезжаются ровно там, где стоят эмодзи.
+    """
+    width = 0
+    for char in text:
+        if unicodedata.combining(char) or char in "\ufe0f\ufe0e\u200d":
+            continue
+        if unicodedata.east_asian_width(char) in "WF" or unicodedata.category(
+            char
+        ) == "So":
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def columns(left: str, right: str, width: int = BOARD_COLUMN) -> str:
+    """Две колонки: левая от края, правая — от постоянного места."""
+    gap = max(1, width - cells(left))
+    return f"{left}{' ' * gap}{right}"
+
+
 def fighter_head(fighter: Fighter) -> str:
-    """«⚔️ Victor [3]» — класс, имя-ссылка и уровень."""
-    return f"{fighter.fclass.emoji} {mention(fighter)} [{fighter.level}]"
+    """«⚔️ Victor [3]» — класс, имя и уровень."""
+    return f"{fighter.fclass.emoji} {esc(fighter.name)} [{fighter.level}]"
 
 
 def fight_board(pairs, ready) -> list[str]:
     """Табло раунда: пара бойцов — четыре строки, по колонке на каждого.
 
-    Порядок строк один и в дуэли, и в групповом бою: кто с кем, сколько
-    здоровья, полоска и готовность. Пары разделены пустой строкой.
+    Табло идёт моноширинным блоком: только так колонки встают друг под
+    другом. Плата за это — имена здесь не ссылки: Telegram не разрешает
+    ссылке жить внутри такого блока. Имя со ссылкой на карточку осталось
+    везде, где боец упоминается по ходу боя.
     """
     lines: list[str] = []
     for first, second in pairs:
         if lines:
             lines.append("")
-        lines.append(f"{fighter_head(first)}  VS.  {fighter_head(second)}")
+        lines.append(columns(fighter_head(first), f"VS.  {fighter_head(second)}"))
         lines.append(
-            f"[{first.hp}/{first.max_hp}] {COLUMN} [{second.hp}/{second.max_hp}]"
+            columns(
+                f"[{first.hp}/{first.max_hp}]", f"[{second.hp}/{second.max_hp}]"
+            )
         )
         lines.append(
-            f"{color_bar(first.hp, first.max_hp)} {COLUMN} "
-            f"{color_bar(second.hp, second.max_hp)}"
+            columns(
+                color_bar(first.hp, first.max_hp),
+                color_bar(second.hp, second.max_hp),
+            )
         )
-        lines.append(f"{ready(first)} {COLUMN} {ready(second)}")
+        lines.append(columns(ready(first), ready(second)))
     return lines
 
 
@@ -283,8 +309,7 @@ def describe_strike(
 
     emoji = OUTCOME_EMOJI[strike.outcome]
     if strike.outcome is Outcome.BLOCK:
-        lines = SHIELD_BLOCK_LINES if strike.by_shield else BLOCK_LINES
-        return f"{emoji} {rng.choice(lines).format(**names)}"
+        return f"{emoji} {rng.choice(BLOCK_LINES).format(**names)}"
 
     if strike.outcome is Outcome.BREAK:
         line = rng.choice(BREAK_LINES).format(**names)

@@ -62,8 +62,6 @@ BLOCK_BREAK_CHANCE = 0.5
 MIN_BLOCK_BREAK = 0.05
 # Пробитый блок гасит удар вполовину: проходит половина максимального урона
 BLOCK_BREAK_DAMAGE_SHARE = 0.5
-# Щит держится крепче предплечья — и под критом тоже
-SHIELD_BLOCK_HOLD = 0.12
 MAX_BLOCK_HOLD = 0.6
 
 HP_PER_LEVEL = 5  # прибавка к здоровью за каждый уровень

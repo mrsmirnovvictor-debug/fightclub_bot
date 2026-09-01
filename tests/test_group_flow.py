@@ -88,17 +88,14 @@ async def test_duel_from_arena_setup_to_result(arena):
         if duels.duel_in_chat(GROUP.id, THREAD_ID) is None:
             break
         for index, user in enumerate((first, second)):
-            fighter = duel.fighters[user.id]
-            for slot in range(fighter.attacks_per_round):
-                await press(
-                    user,
-                    FightCB(
-                        action="attack",
-                        duel_id=duel_id,
-                        zone=ZONES[(index + slot) % len(ZONES)],
-                        slot=slot,
-                    ).pack(),
-                )
+            await press(
+                user,
+                FightCB(
+                    action="attack",
+                    duel_id=duel_id,
+                    zone=ZONES[index % len(ZONES)],
+                ).pack(),
+            )
             await press(
                 user,
                 FightCB(
@@ -344,8 +341,8 @@ async def test_fists_leave_the_gear_in_the_locker_room(arena):
 
     bare = fist.fighters[first.id]
     kitted = armed.fighters[first.id]
-    assert bare.weapons == ("кулаком",)
-    assert kitted.weapons == (CATALOGUE["bat"].instrumental,)
+    assert bare.weapon == "кулаком"
+    assert kitted.weapon == CATALOGUE["bat"].instrumental
     assert kitted.derived.damage_max > bare.derived.damage_max  # бита даёт силу
     assert kitted.max_hp >= bare.max_hp
 

@@ -606,7 +606,9 @@ function renderFilters(data) {
 function shelf(section) {
   const shown = shownItems(section);
   const locked = hiddenItems(section);
-  if (!shown.length && !locked.length) return null;
+  // Пустую полку прячем, только когда её отфильтровали. Раздел, в котором
+  // товара ещё нет вовсе, показываем: пусть видно, что он готовится.
+  if (!shown.length && !locked.length && section.items.length) return null;
 
   const box = document.createElement("section");
   box.className = "shelf";
@@ -622,6 +624,12 @@ function shelf(section) {
 
   const list = document.createElement("div");
   list.className = "shelf-list";
+  if (!section.items.length) {
+    const soon = document.createElement("p");
+    soon.className = "shelf-empty";
+    soon.textContent = "Скоро завезут.";
+    list.appendChild(soon);
+  }
   shown.forEach((item) => list.appendChild(thingCard(item, 0, true)));
   box.appendChild(list);
 

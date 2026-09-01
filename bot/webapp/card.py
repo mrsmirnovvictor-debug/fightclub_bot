@@ -9,7 +9,6 @@ from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats, get_clas
 from bot.game.combat import (
     total_accuracy,
     total_anticrit,
-    shield_hold,
     total_block_hold,
     total_counter,
     total_crit,
@@ -617,16 +616,12 @@ def build_card(
                 {
                     "min": round(low * fclass.damage_mult),
                     "max": round(high * fclass.damage_mult),
-                    "icon": icon,
-                    "title": title,
+                    "icon": equipment.weapon_icon,
+                    "title": equipment.weapon_title,
                     # Собственный урон вещи: рядом с итогом видно, откуда он
                     "base": f"{low}–{high}",
                 }
-                for (low, high), icon, title in zip(
-                    equipment.weapon_damages,
-                    equipment.weapon_icons,
-                    equipment.weapon_titles,
-                )
+                for low, high in [equipment.weapon_damage]
                 if high
             ],
             # Проценты считаем той же арифметикой, что и ринг: карточка
@@ -651,9 +646,7 @@ def build_card(
             "penetration": round(derived.penetration * 100),
             # Устойчивость блока к пробитию критом. Щит держит крепче, поэтому
             # число считается вместе с надетым — как и все остальные проценты.
-            "block_hold": round(
-                total_block_hold(derived.block_hold, shield_hold(equipment)) * 100
-            ),
+            "block_hold": round(total_block_hold(derived.block_hold) * 100),
         },
         "armor": [
             {

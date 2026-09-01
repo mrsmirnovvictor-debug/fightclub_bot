@@ -12,7 +12,6 @@ from aiogram.types import (
 from bot.config import Config
 from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats
 from bot.game.combat import (
-    shield_hold,
     total_accuracy,
     total_anticrit,
     total_block_hold,
@@ -60,7 +59,7 @@ def combat_block(
     """extra_hp — запас сверх вещей: то, что дал выпитый эликсир."""
     equipment = equipment or Equipment()
     d = derive(fclass, stats, level, equipment.hp_bonus + extra_hp)
-    weapon = equipment.weapon_damages[0] if equipment.weapon_damages else (0, 0)
+    weapon = equipment.weapon_damage
     hit = f"{d.damage_min}–{d.damage_max}"
     if weapon[1]:
         # оружие тоже проходит через множитель класса
@@ -76,8 +75,7 @@ def combat_block(
         f"🎯 Точность: <b>{total_accuracy(d.accuracy, equipment.accuracy):.0%}</b>",
         f"🔄 Контрудар: "
         f"<b>{total_counter(d.counter_chance, equipment.counter):.0%}</b>",
-        f"🛡🩸 Держит блок: "
-        f"<b>{total_block_hold(d.block_hold, shield_hold(equipment)):.0%}</b>",
+        f"🛡🩸 Держит блок: <b>{total_block_hold(d.block_hold):.0%}</b>",
         f"🪨 Сопротивление: <b>{d.resist:.0%}</b>",
         f"🪚 Пробивание: <b>{d.penetration:.0%}</b>",
     ]

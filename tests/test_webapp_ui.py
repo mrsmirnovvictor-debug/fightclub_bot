@@ -144,10 +144,16 @@ async def visible_titles(page) -> list[str]:
 
 async def test_shop_opens_with_all_types_on_the_counter(shop_page):
     # восемь полок с экипировкой плюс «Прочее» — эликсиры
-    assert len(await shelves(shop_page)) == 9
+    heads = await shelves(shop_page)
+    assert len(heads) == 9
     titles = await visible_titles(shop_page)
     assert "Кастет" in titles  # открыто по уровню
     assert "Бита" not in titles  # закрыто, лежит под кнопкой
+
+    # пустой раздел с прилавка не пропадает: видно, что его готовят
+    shirts = next(head for head in heads if "Футболки" in head)
+    assert "открыто 0 из 0" in shirts
+    assert await shop_page.get_by_text("Скоро завезут.").is_visible()
 
 
 async def test_type_filter_leaves_one_shelf(shop_page):

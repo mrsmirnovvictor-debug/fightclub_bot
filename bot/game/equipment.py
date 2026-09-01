@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Iterable
 
 from bot.game import art
-from bot.game.classes import ALL_STATS, ALL_ZONES, Stats, Zone
+from bot.game.classes import ALL_STATS, Stats, Zone
 
 
 class Slot(str, Enum):
@@ -21,10 +21,10 @@ class Slot(str, Enum):
 
     HEAD = "head"
     WEAPON = "weapon"
-    JACKET = "jacket"
+    SHIRT = "shirt"
     BELT = "belt"
     GLOVES = "gloves"
-    SHIELD = "shield"
+    JACKET = "jacket"
     PANTS = "pants"
     BOOTS = "boots"
 
@@ -51,10 +51,10 @@ class Slot(str, Enum):
 SLOT_TITLES: dict[Slot, str] = {
     Slot.HEAD: "головной убор",
     Slot.WEAPON: "оружие",
-    Slot.JACKET: "куртка",
+    Slot.SHIRT: "футболка",
     Slot.BELT: "пояс",
     Slot.GLOVES: "перчатки",
-    Slot.SHIELD: "щит",
+    Slot.JACKET: "верхняя одежда",
     Slot.PANTS: "штаны",
     Slot.BOOTS: "обувь",
 }
@@ -64,10 +64,10 @@ SLOT_TITLES: dict[Slot, str] = {
 SLOT_SECTIONS: dict[Slot, str] = {
     Slot.HEAD: "голова",
     Slot.WEAPON: "оружие",
-    Slot.JACKET: "тело",
+    Slot.SHIRT: "футболки",
     Slot.BELT: "пояс",
     Slot.GLOVES: "перчатки",
-    Slot.SHIELD: "щиты",
+    Slot.JACKET: "верхняя одежда",
     Slot.PANTS: "ноги",
     Slot.BOOTS: "обувь",
 }
@@ -75,10 +75,10 @@ SLOT_SECTIONS: dict[Slot, str] = {
 SLOT_EMOJI: dict[Slot, str] = {
     Slot.HEAD: "🎩",
     Slot.WEAPON: "🔪",
-    Slot.JACKET: "🧥",
+    Slot.SHIRT: "👕",
     Slot.BELT: "🥋",
     Slot.GLOVES: "🥊",
-    Slot.SHIELD: "🛡",
+    Slot.JACKET: "🧥",
     Slot.PANTS: "👖",
     Slot.BOOTS: "👟",
 }
@@ -88,19 +88,20 @@ BARE_HANDS = "кулаком"
 BARE_HANDS_ICON = "👊"
 
 # Какие зоны прикрывает одежда из слота. Перчатки и оружие брони не дают:
-# кулаки и ладони — не зона удара. Щит закрывает всё, но только если он щит.
+# кулаки и ладони — не зона удара. Футболка и верхняя одежда прикрывают одно
+# и то же — их броня складывается, как слои и складываются на самом деле.
 SLOT_ZONES: dict[Slot, tuple[Zone, ...]] = {
     Slot.HEAD: (Zone.HEAD,),
+    Slot.SHIRT: (Zone.CHEST, Zone.BELLY),
     Slot.JACKET: (Zone.CHEST, Zone.BELLY),
     Slot.BELT: (Zone.BELT,),
     Slot.PANTS: (Zone.BELT, Zone.LEGS),
     Slot.BOOTS: (Zone.LEGS,),
-    Slot.SHIELD: ALL_ZONES,
 }
 
 # Слева направо на карточке: две колонки по четыре слота
-LEFT_SLOTS: tuple[Slot, ...] = (Slot.HEAD, Slot.WEAPON, Slot.JACKET, Slot.BELT)
-RIGHT_SLOTS: tuple[Slot, ...] = (Slot.GLOVES, Slot.SHIELD, Slot.PANTS, Slot.BOOTS)
+LEFT_SLOTS: tuple[Slot, ...] = (Slot.HEAD, Slot.WEAPON, Slot.SHIRT, Slot.BELT)
+RIGHT_SLOTS: tuple[Slot, ...] = (Slot.GLOVES, Slot.JACKET, Slot.PANTS, Slot.BOOTS)
 ALL_SLOTS: tuple[Slot, ...] = LEFT_SLOTS + RIGHT_SLOTS
 
 # ---------- износ ----------
@@ -129,15 +130,10 @@ LATE_SHARE_CAP = 0.10
 
 
 class ItemKind(str, Enum):
-    """Чем предмет является в бою.
-
-    В слот щита можно поставить и второе оружие — тогда боец бьёт дважды
-    за раунд, но лишается прибавки к блоку.
-    """
+    """Чем предмет является в бою: оружие бьёт, остальное держит удар."""
 
     GEAR = "gear"  # просто вещь с бонусами
     WEAPON = "weapon"
-    SHIELD = "shield"
 
 
 @dataclass(frozen=True)
@@ -201,10 +197,6 @@ class Item:
         return self.kind is ItemKind.WEAPON
 
     @property
-    def is_shield(self) -> bool:
-        return self.kind is ItemKind.SHIELD
-
-    @property
     def is_magic(self) -> bool:
         """Вещь из лавки мага: продаётся только за звёзды."""
         return self.stars > 0
@@ -216,11 +208,9 @@ class Item:
 
     @property
     def zones(self) -> tuple[Zone, ...]:
-        """Куда вещь принимает удар. Щитом считается только настоящий щит."""
+        """Куда вещь принимает удар."""
         if not (self.armor_min or self.armor_max):
             return ()
-        if self.slot is Slot.SHIELD and not self.is_shield:
-            return ()  # во второй руке оружие, а не щит
         return SLOT_ZONES.get(self.slot, ())
 
     def roll_armor(self, rng: random.Random | None = None) -> int:
@@ -247,9 +237,7 @@ class Item:
 
     @property
     def slots(self) -> tuple[Slot, ...]:
-        """Куда вещь можно надеть. Оружие берут и во вторую руку."""
-        if self.is_weapon:
-            return (Slot.WEAPON, Slot.SHIELD)
+        """Куда вещь можно надеть. Слот у вещи ровно один: рука одна."""
         return (self.slot,)
 
     def describe_bonus(self) -> str:
@@ -316,10 +304,6 @@ class OwnedItem:
     @property
     def is_weapon(self) -> bool:
         return self.item.is_weapon
-
-    @property
-    def is_shield(self) -> bool:
-        return self.item.is_shield
 
     @property
     def bonus(self) -> Stats:
@@ -524,22 +508,6 @@ ITEMS: tuple[Item, ...] = (
         requires=Stats(agility=5),
         price=60,
         for_classes=(ROGUE,),
-    ),
-    Item(
-        "bar_lid",
-        "Крышка от бочки",
-        Slot.SHIELD,
-        "🛢",
-        kind=ItemKind.SHIELD,
-        image=f"{ADDED_ART}/Game_inventory_shield_icon_202608280250.jpeg",
-        hp=6,
-        armor_min=1,
-        armor_max=2,
-        anticrit=0.03,
-        level_required=3,
-        requires=Stats(strength=6, endurance=5),
-        price=70,
-        for_classes=(TANK,),
     ),
     Item(
         "knuckles",
@@ -1014,39 +982,6 @@ ITEMS: tuple[Item, ...] = (
         price=130,
         for_classes=(ASSASSIN,),
     ),
-    Item(
-        "road_sign",
-        "Дорожный знак",
-        Slot.SHIELD,
-        "🚧",
-        kind=ItemKind.SHIELD,
-        image=f"{ADDED_ART}/Shield_made_from_road_sign_202608280250.jpeg",
-        hp=22,
-        armor_min=3,
-        armor_max=4,
-        anticrit=0.06,
-        level_required=7,
-        requires=Stats(strength=15, endurance=17),
-        price=130,
-        for_classes=(TANK,),
-    ),
-    Item(
-        "buckler",
-        "Щиток",
-        Slot.SHIELD,
-        "🛡",
-        kind=ItemKind.SHIELD,
-        image=f"{ADDED_ART}/Game_inventory_steel_buckler_icon_202608280250.jpeg",
-        agility=1,
-        hp=6,
-        armor_min=2,
-        armor_max=3,
-        dodge=0.03,
-        level_required=7,
-        requires=Stats(agility=17),
-        price=130,
-        for_classes=(ROGUE, WARRIOR),
-    ),
     # ---------- 8 уровень: последнее оружие ----------
     Item(
         "cleaver",
@@ -1341,46 +1276,19 @@ class Equipment:
         return item if item and item.is_weapon else None
 
     @property
-    def offhand(self) -> OwnedItem | None:
-        """Что во второй руке: щит или второе оружие."""
-        return self.items.get(Slot.SHIELD)
+    def weapon_name(self) -> str:
+        """Чем боец бьёт. Без оружия — кулаком."""
+        return self.weapon.instrumental if self.weapon else BARE_HANDS
 
     @property
-    def has_shield(self) -> bool:
-        offhand = self.offhand
-        return bool(offhand and offhand.is_shield)
-
-    @property
-    def second_weapon(self) -> OwnedItem | None:
-        offhand = self.offhand
-        return offhand if offhand and offhand.is_weapon else None
-
-    @property
-    def weapon_names(self) -> tuple[str, ...]:
-        """Чем боец бьёт в этом раунде. Без оружия — кулаком."""
-        names = [self.weapon.instrumental if self.weapon else BARE_HANDS]
-        second = self.second_weapon
-        if second:
-            names.append(second.instrumental or BARE_HANDS)
-        return tuple(names)
-
-    @property
-    def weapon_titles(self) -> tuple[str, ...]:
+    def weapon_title(self) -> str:
         """Чем бьёт, по-человечески: для строки урона на карточке."""
-        titles = [self.weapon.title if self.weapon else "Кулаки"]
-        second = self.second_weapon
-        if second:
-            titles.append(second.title)
-        return tuple(titles)
+        return self.weapon.title if self.weapon else "Кулаки"
 
     @property
-    def weapon_icons(self) -> tuple[str, ...]:
-        """Чем подписывать колонки ударов: кулак или значок оружия."""
-        icons = [self.weapon.emoji if self.weapon else BARE_HANDS_ICON]
-        second = self.second_weapon
-        if second:
-            icons.append(second.emoji)
-        return tuple(icons)
+    def weapon_icon(self) -> str:
+        """Чем подписывать кнопки ударов: кулак или значок оружия."""
+        return self.weapon.emoji if self.weapon else BARE_HANDS_ICON
 
     @property
     def bonus(self) -> Stats:
@@ -1431,27 +1339,20 @@ class Equipment:
         )
 
     @property
-    def weapon_damages(self) -> tuple[tuple[int, int], ...]:
-        """Прибавка к урону от каждого оружия — по порядку ударов."""
-        damages = [
-            (self.weapon.item.damage_min, self.weapon.item.damage_max)
-            if self.weapon
-            else (0, 0)
-        ]
-        second = self.second_weapon
-        if second:
-            damages.append((second.item.damage_min, second.item.damage_max))
-        return tuple(damages)
+    def weapon_damage(self) -> tuple[int, int]:
+        """Прибавка к урону от оружия. Без оружия — ничего."""
+        if not self.weapon:
+            return (0, 0)
+        return (self.weapon.item.damage_min, self.weapon.item.damage_max)
 
-    def roll_weapon_damage(self, index: int, rng: random.Random | None = None) -> int:
-        """Что добавит оружие этого удара. Кулак не добавляет ничего."""
-        weapon = self.weapon if index == 0 else self.second_weapon
-        return weapon.item.roll_damage(rng) if weapon else 0
+    def roll_weapon_damage(self, rng: random.Random | None = None) -> int:
+        """Что добавит оружие. Кулак не добавляет ничего."""
+        return self.weapon.item.roll_damage(rng) if self.weapon else 0
 
-    def weapon_damage_max(self, index: int) -> int:
-        """Потолок прибавки этого оружия — без броска."""
-        weapon = self.weapon if index == 0 else self.second_weapon
-        return weapon.item.damage_max if weapon else 0
+    @property
+    def weapon_damage_max(self) -> int:
+        """Потолок прибавки оружия — без броска."""
+        return self.weapon.item.damage_max if self.weapon else 0
 
     def __bool__(self) -> bool:
         return bool(self.items)

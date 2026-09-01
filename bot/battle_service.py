@@ -34,7 +34,7 @@ from bot.game.battle import (
     pair_up,
     team_name,
 )
-from bot.game.classes import BLOCK_WIDTH, Zone, block_combo, block_title
+from bot.game.classes import Zone, block_combo, block_title
 from bot.game.combat import Action, Fighter, resolve_round
 from bot.game.economy import (
     pro_exp,
@@ -75,22 +75,19 @@ class BattleError(Exception):
 class Choice:
     """Незавершённый выбор бойца на раунд."""
 
-    attacks: dict[int, Zone] = field(default_factory=dict)
+    attack: Zone | None = None
     block: tuple[Zone, ...] = ()
 
-    def is_ready(self, weapons: int) -> bool:
-        chosen = [slot for slot in range(weapons) if slot in self.attacks]
-        return len(chosen) == weapons and bool(self.block)
+    @property
+    def is_ready(self) -> bool:
+        return self.attack is not None and bool(self.block)
 
-    def to_action(self, weapons: int) -> Action:
-        return Action(
-            attacks=tuple(self.attacks.get(slot) for slot in range(weapons)),
-            block=self.block,
-        )
+    def to_action(self) -> Action:
+        return Action(attack=self.attack, block=self.block)
 
     @property
     def is_empty(self) -> bool:
-        return not self.attacks and not self.block
+        return self.attack is None and not self.block
 
 
 @dataclass
@@ -180,8 +177,7 @@ class BattleSession:
 
     def is_ready(self, user_id: int) -> bool:
         choice = self.choices.get(user_id)
-        fighter = self.fighters[user_id]
-        return bool(choice and choice.is_ready(fighter.attacks_per_round))
+        return bool(choice and choice.is_ready)
 
     @property
     def everyone_ready(self) -> bool:
@@ -194,16 +190,15 @@ class BattleSession:
         )
 
     @property
-    def panel(self) -> tuple[tuple[str, ...], int]:
-        """Одна панель на всех: общие значки и общая ширина блока."""
+    def panel(self) -> str:
+        """Значок удара на кнопках — один на всех.
+
+        Оружие у бойцов разное, а панель одна: не сошлись значки — рисуем
+        кулак, а бьёт каждый тем, что у него в руке.
+        """
         sides = [self.fighters[user_id] for user_id in self.fighters]
-        icons = sides[0].weapon_icons
-        if any(side.weapon_icons != icons for side in sides):
-            icons = (BARE_HANDS_ICON,) * max(s.attacks_per_round for s in sides)
-        width = sides[0].block_width
-        if any(side.block_width != width for side in sides):
-            width = BLOCK_WIDTH
-        return icons, width
+        icon = sides[0].weapon_icon
+        return icon if all(side.weapon_icon == icon for side in sides) else BARE_HANDS_ICON
 
 
 class BattleService:
@@ -445,14 +440,13 @@ class BattleService:
             ))
             return
 
-        icons, width = session.panel
         text = self._prompt_text(session)
         session.announced_idle = tuple(session.idle)
         message = await self.voice.send(
             session.chat_id,
             session.thread_id,
             text,
-            reply_markup=battle_keyboard(session.id, icons, width),
+            reply_markup=battle_keyboard(session.id, session.panel),
         )
         session.prompt_message_id = message.message_id if message else None
         session.timer = asyncio.create_task(
@@ -461,13 +455,14 @@ class BattleService:
 
     def _prompt_text(self, session: BattleSession) -> str:
         lines = [f"<b>🔔 Раунд {session.round_number}. Пары этого хода:</b>", ""]
-        lines += fight_board(
+        board = fight_board(
             [
                 (session.fighters[first], session.fighters[second])
                 for first, second in session.pairs
             ],
             lambda side: ready_mark(session.is_ready(side.user_id)),
         )
+        lines.append("<pre>" + "\n".join(board) + "</pre>")
         if session.idle and tuple(session.idle) != session.announced_idle:
             names = ", ".join(
                 esc(session.fighters[user_id].name) for user_id in session.idle
@@ -505,7 +500,7 @@ class BattleService:
 
         choice = session.choices.setdefault(user_id, Choice())
         if action == "attack":
-            choice.attacks[slot] = Zone(zone)
+            choice.attack = Zone(zone)
         else:
             choice.block = block_combo(Zone(zone), fighter.block_width)
 
@@ -513,7 +508,7 @@ class BattleService:
             session.chat_id,
             session.prompt_message_id,
             self._prompt_text(session),
-            reply_markup=battle_keyboard(session.id, *session.panel),
+            reply_markup=battle_keyboard(session.id, session.panel),
             cosmetic=True,
         )
         if session.everyone_ready:
@@ -523,12 +518,9 @@ class BattleService:
     def _hint(self, session: BattleSession, user_id: int) -> str:
         choice = session.choices.get(user_id, Choice())
         fighter = session.fighters[user_id]
-        parts = []
-        for slot, icon in enumerate(fighter.weapon_icons):
-            zone = choice.attacks.get(slot)
-            parts.append(f"{icon} {zone.title if zone else '—'}")
+        zone = choice.attack.title if choice.attack else "—"
         block = block_title(choice.block) if choice.block else "—"
-        return "   ".join(parts) + f"\n🛡 {block}"
+        return f"{fighter.weapon_icon} {zone}\n🛡 {block}"
 
     async def _resolve(self, session: BattleSession) -> None:
         if session.resolving:
@@ -578,8 +570,7 @@ class BattleService:
             await self._start_round(session)
 
     def _action_of(self, session: BattleSession, user_id: int) -> Action:
-        weapons = session.fighters[user_id].attacks_per_round
-        return session.choices.get(user_id, Choice()).to_action(weapons)
+        return session.choices.get(user_id, Choice()).to_action()
 
     async def _close_panel(self, session: BattleSession, text: str) -> None:
         """Погасить панель раунда, оставив на её месте итог.

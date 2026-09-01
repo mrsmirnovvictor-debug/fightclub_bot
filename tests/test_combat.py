@@ -10,7 +10,6 @@ from bot.game.classes import (
     ASSASSIN,
     BLOCK_WIDTH,
     FIGHTER_CLASSES,
-    SHIELD_BLOCK_WIDTH,
     ROGUE,
     TANK,
     WARRIOR,
@@ -41,26 +40,14 @@ from bot.game.combat import (
     resolve_round,
     validate_action,
 )
-from bot.game.equipment import CATALOGUE, Equipment, Item, ItemKind, Slot
+from bot.game.equipment import CATALOGUE, Equipment, ItemKind, Slot
 from bot.game.reference import developed_stats, reference_equipment
 from bot.game.stats import (
     BLOCK_BREAK_CHANCE,
     BLOCK_BREAK_DAMAGE_SHARE,
     MIN_BLOCK_BREAK,
-    SHIELD_BLOCK_HOLD,
     derive,
 )
-
-SHIV = Item(
-    "shiv",
-    "Заточка",
-    Slot.SHIELD,
-    "🗡",
-    kind=ItemKind.WEAPON,
-    instrumental="заточкой",
-    strength=1,
-)
-
 
 def make(fclass=WARRIOR, user_id=1, name="Боец", **kwargs):
     return Fighter(
@@ -73,7 +60,7 @@ def guard(zone: Zone, width: int = BLOCK_WIDTH) -> tuple[Zone, ...]:
 
 
 def strike_at(zone: Zone, block: tuple[Zone, ...] = ()) -> Action:
-    return Action(attacks=(zone,), block=block)
+    return Action(attack=zone, block=block)
 
 
 # ---------- зоны и блоки ----------
@@ -88,15 +75,22 @@ def test_zones_form_a_ring():
     assert all(len(combo) == BLOCK_WIDTH for combo in combos)
 
 
-def test_shield_block_covers_three_adjacent_zones():
-    combos = block_combos(SHIELD_BLOCK_WIDTH)
-    assert combos[0] == (Zone.HEAD, Zone.CHEST, Zone.BELLY)
-    assert combos[-1] == (Zone.LEGS, Zone.HEAD, Zone.CHEST)
+def test_the_block_never_covers_more_than_two_zones():
+    """Три зоны разом не закрывает никто: щитов в клубе нет."""
+    from bot.game.classes import block_button
+
+    assert all(len(combo) == 2 for combo in block_combos())
+    assert [block_button(combo) for combo in block_combos()] == [
+        "🛡 Голова + Корпус",
+        "🛡 Корпус + Живот",
+        "🛡 Живот + Пояс",
+        "🛡 Пояс + Ноги",
+        "🛡 Ноги + Голова",
+    ]
 
 
 def test_block_title_reads_like_a_button():
-    assert block_title((Zone.HEAD, Zone.CHEST)) == "Голова + грудь"
-    assert block_title(guard(Zone.BELLY, 3)) == "Живот + пояс + ноги"
+    assert block_title((Zone.HEAD, Zone.CHEST)) == "Голова + корпус"
 
 
 # ---------- снаряжение бойца ----------
@@ -104,39 +98,34 @@ def test_block_title_reads_like_a_button():
 
 def test_bare_fighter_punches_with_fists():
     fighter = make()
-    assert fighter.weapons == ("кулаком",)
-    assert fighter.attacks_per_round == 1
+    assert fighter.weapon == "кулаком"
     assert fighter.block_width == BLOCK_WIDTH
 
 
 def test_weapon_changes_what_the_judge_calls_it():
     fighter = make(equipment=Equipment.from_codes({"weapon": "knuckles"}))
-    assert fighter.weapons == ("кастетом",)
+    assert fighter.weapon == "кастетом"
 
 
-def test_shield_widens_the_block():
-    fighter = make(equipment=Equipment.from_codes({"shield": "bar_lid"}))
-    assert fighter.has_shield
-    assert fighter.block_width == SHIELD_BLOCK_WIDTH
+def test_nobody_gets_a_second_strike_or_a_wider_block():
+    """Рука одна: двух ударов за ход не сделать никаким снаряжением.
 
+    Раньше во вторую руку брали второе оружие или щит — от этого зависели
+    и число ударов, и ширина блока. Ни того, ни другого больше нет.
+    """
+    from bot.game.equipment import ALL_SLOTS
 
-def test_class_does_not_change_attacks_or_blocks():
-    """В кулачном бою у всех один удар и блок на две зоны."""
+    assert not hasattr(Fighter, "attacks_per_round")
+    assert not hasattr(Equipment, "second_weapon")
+    assert not hasattr(Equipment, "has_shield")
+    # щита нет ни как слота, ни как вида предмета
+    assert "shield" not in {slot.value for slot in ALL_SLOTS}
+    assert {kind.value for kind in ItemKind} == {"gear", "weapon"}
+    # у оружия ровно одно место на карточке
+    assert CATALOGUE["knuckles"].slots == (Slot.WEAPON,)
+
     for fclass in FIGHTER_CLASSES.values():
-        fighter = make(fclass=fclass)
-        assert fighter.attacks_per_round == 1
-        assert fighter.block_width == BLOCK_WIDTH
-    assert make(fclass=TANK).block_width == make(fclass=WARRIOR).block_width
-
-
-def test_second_weapon_gives_a_second_strike():
-    fighter = make(
-        equipment=Equipment(items={Slot.WEAPON: CATALOGUE["knuckles"], Slot.SHIELD: SHIV})
-    )
-    assert fighter.attacks_per_round == 2
-    assert fighter.weapons == ("кастетом", "заточкой")
-    assert not fighter.has_shield  # вторая рука занята оружием
-    assert fighter.block_width == BLOCK_WIDTH
+        assert make(fclass=fclass).block_width == BLOCK_WIDTH
 
 
 # ---------- размен ударами ----------
@@ -164,21 +153,6 @@ def test_block_absorbs_damage_completely():
     assert result.strikes[1].outcome is not Outcome.BLOCK
 
 
-def test_shield_block_is_marked_for_the_story():
-    attacker = make(user_id=1)
-    defender = make(user_id=2, equipment=Equipment.from_codes({"shield": "bar_lid"}))
-    result = resolve_round(
-        attacker,
-        strike_at(Zone.BELLY, guard(Zone.LEGS)),
-        defender,
-        strike_at(Zone.LEGS, guard(Zone.HEAD, SHIELD_BLOCK_WIDTH)),
-        round_number=1,
-        rng=random.Random(2),
-    )
-    assert result.strikes[0].outcome is Outcome.BLOCK
-    assert result.strikes[0].by_shield is True
-
-
 # ---------- пробитие блока критом ----------
 
 
@@ -204,7 +178,7 @@ def test_a_crit_that_hits_a_block_can_break_through():
         attacker,
         strike_at(Zone.HEAD, guard(Zone.LEGS)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        Action(block=guard(Zone.HEAD)),
         round_number=1,
         rng=rng,
     )
@@ -224,7 +198,7 @@ def test_a_block_that_holds_costs_the_attacker_nothing():
         attacker,
         strike_at(Zone.HEAD, guard(Zone.LEGS)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        Action(block=guard(Zone.HEAD)),
         round_number=1,
         rng=rng,
     )
@@ -244,7 +218,7 @@ def test_an_ordinary_blocked_hit_never_breaks_a_block():
         attacker,
         strike_at(Zone.HEAD, guard(Zone.LEGS)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        Action(block=guard(Zone.HEAD)),
         round_number=1,
         rng=rng,
     )
@@ -267,13 +241,13 @@ def test_a_broken_block_lets_through_half_of_the_maximum():
         attacker,
         strike_at(Zone.HEAD, guard(Zone.LEGS)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        Action(block=guard(Zone.HEAD)),
         round_number=1,
         rng=rng,
     )
 
     strike = result.strikes[0]
-    expected = round(_max_damage(attacker, 0, 1) * BLOCK_BREAK_DAMAGE_SHARE)
+    expected = round(_max_damage(attacker, 1) * BLOCK_BREAK_DAMAGE_SHARE)
     assert strike.outcome is Outcome.BREAK
     assert strike.damage == expected
     assert strike.armor == 0
@@ -303,19 +277,6 @@ def test_nobody_closes_from_a_break_completely():
     assert stubborn.block_break_against(make(ASSASSIN)) == MIN_BLOCK_BREAK
 
 
-def test_a_shield_helps_hold_the_block():
-    """Щит держит блок крепче предплечья — и под критом тоже."""
-    bare = make(TANK, user_id=2)
-    shielded = make(
-        TANK, user_id=2, equipment=Equipment.from_codes({"shield": "bar_lid"})
-    )
-
-    assert shielded.block_hold == pytest.approx(bare.block_hold + SHIELD_BLOCK_HOLD)
-    assert shielded.block_break_against(make(ASSASSIN)) < bare.block_break_against(
-        make(ASSASSIN)
-    )
-
-
 def test_the_judge_marks_a_broken_block_with_a_bleeding_shield():
     """У пробития свой значок: щит с кровью, и урон в строке виден."""
     from bot.game.narrator import OUTCOME_EMOJI, describe_strike
@@ -326,7 +287,7 @@ def test_the_judge_marks_a_broken_block_with_a_bleeding_shield():
         attacker,
         strike_at(Zone.HEAD, guard(Zone.LEGS)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.HEAD)),
+        Action(block=guard(Zone.HEAD)),
         round_number=1,
         rng=Loaded([0.0, 0.0]),
     )
@@ -353,23 +314,22 @@ def test_unblocked_hit_deals_damage():
     assert defender.hp < start_hp
 
 
-def test_two_weapons_produce_two_strikes():
-    attacker = make(
-        user_id=1,
-        equipment=Equipment(items={Slot.WEAPON: CATALOGUE["knuckles"], Slot.SHIELD: SHIV}),
-    )
+def test_a_turn_is_exactly_one_strike_from_each_side():
+    """За ход ровно два удара на двоих — по одному с каждой стороны."""
+    attacker = make(user_id=1, equipment=Equipment.from_codes({"weapon": "knuckles"}))
     defender = make(user_id=2)
     result = resolve_round(
         attacker,
-        Action(attacks=(Zone.HEAD, Zone.BELLY), block=guard(Zone.LEGS)),
+        Action(attack=Zone.HEAD, block=guard(Zone.LEGS)),
         defender,
         strike_at(Zone.CHEST, guard(Zone.HEAD)),
         round_number=1,
         rng=random.Random(4),
     )
+    assert len(result.strikes) == 2
     mine = [s for s in result.strikes if s.attacker_id == 1]
-    assert len(mine) == 2
-    assert [s.weapon for s in mine] == ["кастетом", "заточкой"]
+    assert len(mine) == 1
+    assert mine[0].weapon == "кастетом"
 
 
 def test_damage_is_simultaneous():
@@ -495,9 +455,8 @@ def test_partial_choice_is_allowed_but_junk_is_not():
     validate_action(Action(), fighter)  # вообще ничего
     validate_action(strike_at(Zone.HEAD, guard(Zone.HEAD)), fighter)
     with pytest.raises(ValueError):  # блок не по смежным зонам
-        validate_action(Action(attacks=(Zone.HEAD,), block=(Zone.HEAD, Zone.LEGS)), fighter)
-    with pytest.raises(ValueError):  # второго оружия нет
-        validate_action(Action(attacks=(Zone.HEAD, Zone.CHEST)), fighter)
+        validate_action(Action(attack=Zone.HEAD, block=(Zone.HEAD, Zone.LEGS)), fighter)
+
 
 
 def test_fighter_without_attack_zone_does_not_strike():
@@ -735,7 +694,7 @@ def test_weapon_damage_lands_on_top_of_the_strength_damage():
         attacker,
         strike_at(Zone.HEAD, guard(Zone.LEGS)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        Action(block=guard(Zone.CHEST)),
         round_number=1,
         rng=rng,
     )
@@ -754,7 +713,7 @@ def test_resistance_shaves_a_share_off_every_hit():
         attacker,
         strike_at(Zone.HEAD, guard(Zone.LEGS)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        Action(block=guard(Zone.CHEST)),
         round_number=1,
         rng=rng,
     )
@@ -778,7 +737,7 @@ def test_armor_holds_the_zone_it_covers():
         attacker,
         strike_at(Zone.HEAD, guard(Zone.BELT)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        Action(block=guard(Zone.CHEST)),
         round_number=1,
         rng=rng,
     ).strikes[0]
@@ -790,32 +749,26 @@ def test_armor_holds_the_zone_it_covers():
         attacker,
         strike_at(Zone.LEGS, guard(Zone.BELT)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        Action(block=guard(Zone.CHEST)),
         round_number=1,
         rng=rng,
     ).strikes[0]
     assert (legs.damage, legs.armor) == (30, 0)
 
 
-def test_shield_covers_every_zone_but_a_second_weapon_covers_none():
-    shielded = dressed("bar_lid", user_id=1)
-    assert all(shielded.armor_range(zone)[1] > 0 for zone in ALL_ZONES)
+def test_a_shirt_and_a_jacket_stack_on_the_same_zones():
+    """Футболка и верхняя одежда лежат слоями: их броня складывается."""
+    from bot.game.equipment import SLOT_ZONES
 
-    # то же место занято оружием — брони нет
-    armed = Fighter(
-        user_id=2,
-        name="Боец",
-        fclass=WARRIOR,
-        stats=WARRIOR.base_stats,
-        equipment=Equipment(items={Slot.SHIELD: SHIV}),
-    )
-    assert all(armed.armor_range(zone) == (0, 0) for zone in ALL_ZONES)
+    assert SLOT_ZONES[Slot.SHIRT] == SLOT_ZONES[Slot.JACKET] == (Zone.CHEST, Zone.BELLY)
+    assert Slot.SHIRT.section == "футболки"
+    assert Slot.JACKET.section == "верхняя одежда"
 
 
 def test_armor_never_eats_more_than_half_of_a_hit():
     """Иначе комплект брони делает лёгкие классы безвредными."""
     attacker = make(user_id=1)
-    defender = dressed("moto_helmet", "bar_lid", user_id=2)
+    defender = dressed("moto_helmet", user_id=2)
     object.__setattr__(defender.derived, "resist", 0.0)
     object.__setattr__(attacker.derived, "penetration", 0.0)
 
@@ -824,7 +777,7 @@ def test_armor_never_eats_more_than_half_of_a_hit():
         attacker,
         strike_at(Zone.HEAD, guard(Zone.BELT)),
         defender,
-        Action(attacks=(None,), block=guard(Zone.CHEST)),
+        Action(block=guard(Zone.CHEST)),
         round_number=1,
         rng=rng,
     ).strikes[0]

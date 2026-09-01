@@ -15,7 +15,7 @@ from aiogram.types import InlineKeyboardMarkup
 
 from bot.config import Config
 from bot.database import Database
-from bot.game.classes import BLOCK_WIDTH, Zone, block_combo, block_title
+from bot.game.classes import Zone, block_combo, block_title
 from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.modes import FightMode
 from bot.game.combat import (
@@ -84,33 +84,27 @@ class Challenge:
 
 @dataclass
 class Choice:
-    """Незавершённый выбор бойца на раунд."""
+    """Незавершённый выбор бойца на ход: один удар и один блок."""
 
-    attacks: dict[int, Zone] = field(default_factory=dict)
+    attack: Zone | None = None
     block: tuple[Zone, ...] = ()
 
-    def is_ready(self, weapons: int) -> bool:
-        chosen = [slot for slot in range(weapons) if slot in self.attacks]
-        return len(chosen) == weapons and bool(self.block)
+    @property
+    def is_ready(self) -> bool:
+        return self.attack is not None and bool(self.block)
 
-    def to_action(self, weapons: int) -> Action:
-        """Что боец успел нажать, то и уходит в раунд."""
-        return Action(
-            attacks=tuple(self.attacks.get(slot) for slot in range(weapons)),
-            block=self.block,
-        )
+    def to_action(self) -> Action:
+        """Что боец успел нажать, то и уходит в ход."""
+        return Action(attack=self.attack, block=self.block)
 
     @property
     def is_empty(self) -> bool:
-        return not self.attacks and not self.block
+        return self.attack is None and not self.block
 
     def describe(self, fighter: Fighter) -> str:
-        parts = []
-        for slot, icon in enumerate(fighter.weapon_icons):
-            zone = self.attacks.get(slot)
-            parts.append(f"{icon} {zone.title if zone else '—'}")
+        zone = self.attack.title if self.attack else "—"
         block = block_title(self.block) if self.block else "—"
-        return "   ".join(parts) + f"\n🛡 {block}"
+        return f"{fighter.weapon_icon} {zone}\n🛡 {block}"
 
 
 @dataclass
@@ -151,25 +145,18 @@ class DuelSession:
         return self.order[0]
 
     def is_ready(self, user_id: int) -> bool:
-        fighter = self.fighters[user_id]
-        return self.choice_of(user_id).is_ready(fighter.attacks_per_round)
+        return self.choice_of(user_id).is_ready
 
     @property
-    def panel(self) -> tuple[tuple[str, ...], int]:
-        """Одна панель на двоих: значки ударов и ширина блока.
+    def panel(self) -> str:
+        """Значок удара на кнопках — один на двоих.
 
-        В кулачном бою у обоих всё одинаково. Если однажды снаряжение
-        разойдётся, панель показывает общий знаменатель, а нажатие
-        считается по снаряжению того, кто нажал.
+        Оружие у бойцов может быть разное, а панель одна: если значки не
+        сошлись, показываем кулак, а бьёт каждый тем, что у него в руке.
         """
         sides = [self.fighters[user_id] for user_id in self.order]
-        icons = sides[0].weapon_icons
-        if any(side.weapon_icons != icons for side in sides):
-            icons = (BARE_HANDS_ICON,) * max(s.attacks_per_round for s in sides)
-        width = sides[0].block_width
-        if any(side.block_width != width for side in sides):
-            width = BLOCK_WIDTH
-        return icons, width
+        icon = sides[0].weapon_icon
+        return icon if all(side.weapon_icon == icon for side in sides) else BARE_HANDS_ICON
 
 
 class DuelService:
@@ -500,12 +487,11 @@ class DuelService:
         session.round_number += 1
         session.choices = {}
         session.resolving = False
-        icons, block_width = session.panel
         message = await self._send(
             session.chat_id,
             session.thread_id,
             self._prompt_text(session),
-            reply_markup=fight_keyboard(session.id, icons, block_width),
+            reply_markup=fight_keyboard(session.id, session.panel),
         )
         session.prompt_message_id = message.message_id if message else None
         session.timer = asyncio.create_task(
@@ -520,9 +506,10 @@ class DuelService:
             f" из {TURNS_PER_ROUND}. Бойцы, выбирайте.</b>",
             "",
         ]
-        lines += fight_board(
+        board = fight_board(
             [(first, second)], lambda side: ready_mark(session.is_ready(side.user_id))
         )
+        lines.append("<pre>" + "\n".join(board) + "</pre>")
         skipping = [side for side in (first, second) if side.missed_turns]
         if skipping:
             lines.append("")
@@ -554,6 +541,8 @@ class DuelService:
     async def handle_choice(
         self, duel_id: int, user_id: int, action: str, zone_value: str, slot: int = 0
     ) -> str:
+        # slot остался в кнопках прошлой версии: второго оружия больше нет,
+        # и номер удара ни на что не влияет
         """Обработать нажатие бойца. Возвращает текст для приватного ответа."""
         session = self._duels.get(duel_id)
         if session is None:
@@ -568,7 +557,7 @@ class DuelService:
                 raise DuelError("Раунд уже считается, поздно.")
             fighter = session.fighters[user_id]
             choice = session.choice_of(user_id)
-            was_ready = choice.is_ready(fighter.attacks_per_round)
+            was_ready = choice.is_ready
             if action not in {"attack", "block"}:
                 raise DuelError("Непонятное действие.")
             try:
@@ -577,13 +566,11 @@ class DuelService:
                 raise DuelError("Эта кнопка уже не работает.") from error
 
             if action == "attack":
-                if not 0 <= slot < fighter.attacks_per_round:
-                    raise DuelError("Такого оружия у тебя нет.")
-                choice.attacks[slot] = zone
+                choice.attack = zone
             else:
                 choice.block = block_combo(zone, fighter.block_width)
 
-            now_ready = choice.is_ready(fighter.attacks_per_round)
+            now_ready = choice.is_ready
             both_ready = all(session.is_ready(uid) for uid in session.order)
             if both_ready:
                 session.resolving = True
@@ -596,13 +583,8 @@ class DuelService:
         return f"{choice.describe(fighter)}{self._hint(choice, fighter)}"
 
     def _hint(self, choice: Choice, fighter: Fighter) -> str:
-        missing = [
-            fighter.weapon_icons[slot]
-            for slot in range(fighter.attacks_per_round)
-            if slot not in choice.attacks
-        ]
-        if missing:
-            return "\nОсталось выбрать удар: " + " ".join(missing)
+        if choice.attack is None:
+            return "\nОсталось выбрать удар."
         if not choice.block:
             return "\nОсталось выбрать блок."
         return "\nГотов. Ждём соперника."
@@ -613,12 +595,11 @@ class DuelService:
         Правка косметическая: если Telegram упрётся в лимит, её просто
         не будет, а бой поедет дальше.
         """
-        icons, block_width = session.panel
         await self._edit(
             session.chat_id,
             session.prompt_message_id,
             self._prompt_text(session),
-            reply_markup=fight_keyboard(session.id, icons, block_width),
+            reply_markup=fight_keyboard(session.id, session.panel),
             cosmetic=True,
         )
 
@@ -627,9 +608,7 @@ class DuelService:
         first_id, second_id = session.order
         first, second = session.fighters[first_id], session.fighters[second_id]
         actions = {
-            user_id: session.choices.get(user_id, Choice()).to_action(
-                session.fighters[user_id].attacks_per_round
-            )
+            user_id: session.choices.get(user_id, Choice()).to_action()
             for user_id in session.order
         }
 
