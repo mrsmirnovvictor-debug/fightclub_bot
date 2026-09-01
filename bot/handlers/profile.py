@@ -9,7 +9,12 @@ from aiogram.types import Message
 from bot.config import Config
 from bot.database import Database
 from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES
-from bot.game.combat import MAX_MISSED_TURNS, MAX_ROUNDS
+from bot.game.combat import (
+    MATCH_ROUNDS,
+    MAX_MISSED_TURNS,
+    MAX_TURNS,
+    TURNS_PER_ROUND,
+)
 from bot.game.potions import EFFECT_SECONDS, spell_duration
 from bot.game.equipment import (
     MAX_WEAR,
@@ -139,10 +144,18 @@ def help_text(turn_timeout: int = 30) -> str:
         "Профильная характеристика приносит своему классу больше: сила у воина "
         "даёт больше урона, ловкость у трикстера — больше уворота, интуиция у "
         "ассасина — больше крита, выносливость у танка — больше сопротивления.\n"
-        f"Зоны: {', '.join(z.label for z in ALL_ZONES)}.\n"
-        f"С 6-го раунда бойцы устают и бьют всё сильнее, "
-        f"через {MAX_ROUNDS} раундов победу присуждает судья по остатку здоровья.\n"
-        "Взаимный нокаут и равное здоровье по решению судьи — ничья.\n\n"
+        f"Зоны: {', '.join(z.label for z in ALL_ZONES)}.\n\n"
+        "<b>Раунды и перерывы</b>\n"
+        f"Бой боксёрский: раунд — это {TURNS_PER_ROUND} удара, "
+        f"всего раундов {MATCH_ROUNDS} (то есть {MAX_TURNS} ударов).\n"
+        "После каждого раунда гонг: судья разводит бойцов по углам и даёт "
+        "минуту отдыха, а в перерыве показывает, кто сколько нанёс. Через "
+        "минуту следующий раунд начинается сам — кнопки придут в ветку.\n"
+        "С 6-го удара бойцы устают и бьют всё сильнее.\n"
+        f"Никто не упал за {MATCH_ROUNDS} раундов — победу присуждает судья "
+        "по нанесённому урону, а не по остатку здоровья: выигрывает тот, кто "
+        "дрался, а не тот, у кого запас больше.\n"
+        "Ничья одна: когда бойцы роняют друг друга одним разменом.\n\n"
         "<b>Здоровье между боями</b>\n"
         "Здоровье не восстанавливается мгновенно: после боя остаётся ровно то, "
         "с чем ты его закончил, и затягивается полностью за "

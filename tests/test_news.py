@@ -56,6 +56,19 @@ def test_the_changelog_speaks_to_players_not_to_developers():
             assert word not in body, f"{release.code}: техника в тексте — {word}"
 
 
+def test_the_changelog_never_tells_the_group_to_type_a_command():
+    """Команды слушает личка бота: в ветке группы они не сработают.
+
+    «Проверить своё — /card» в новостях выглядит как подсказка, а на деле
+    отправляет человека нажимать то, на что здесь никто не ответит.
+    """
+    for release in RELEASES:
+        body = release.render()
+        assert "/" not in body.replace("</b>", "").replace("<b>", ""), (
+            f"{release.code}: в объявлении осталась команда"
+        )
+
+
 def test_every_release_code_is_unique():
     """Код — ключ отправленного: два одинаковых означали бы потерянное объявление."""
     codes = [release.code for release in RELEASES]

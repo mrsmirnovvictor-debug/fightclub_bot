@@ -357,9 +357,7 @@ async def test_a_refund_takes_the_subscription_and_its_loot_back(store, db, bot)
 # ---------- акция через мини-апп ----------
 
 
-async def test_the_free_subscription_is_claimed_in_one_tap(client, db):
-    if not promo_is_on():
-        pytest.skip("акция уже кончилась")
+async def test_the_free_subscription_is_claimed_in_one_tap(client, db, promo_running):
     await db.save_player(make_player())
 
     response = await client.post("/api/pro", json={}, headers=headers())
@@ -371,6 +369,23 @@ async def test_the_free_subscription_is_claimed_in_one_tap(client, db):
     assert body["card"]["pro"]["active"]
     assert body["magic"]["pro"]["active"]
     assert [owned.code for owned in await db.list_gear(42)] == [PRO_ITEM]
+
+
+@pytest.fixture
+def promo_running(monkeypatch):
+    """Акция идёт — независимо от того, какое сегодня число.
+
+    Правило «бесплатная неделя даётся один раз» живёт дольше самой акции,
+    и проверять его надо всегда, а не до первого сентября. Календарь здесь
+    ни при чём: у него свой тест.
+    """
+    from datetime import datetime, timezone
+
+    # Двигаем сам календарь, а не отдельные проверки: и лавка мага, и выдача
+    # смотрят на одну дату, значит и подменять надо её одну.
+    monkeypatch.setattr(
+        "bot.game.pro.PROMO_UNTIL", datetime(2099, 1, 1, tzinfo=timezone.utc)
+    )
 
 
 async def test_the_free_claim_is_refused_when_the_promo_is_over(db, monkeypatch):
@@ -387,7 +402,7 @@ async def test_the_free_claim_is_refused_when_the_promo_is_over(db, monkeypatch)
 # ---------- бесплатная неделя даётся один раз ----------
 
 
-async def test_the_free_week_is_handed_out_once_and_never_again(db):
+async def test_the_free_week_is_handed_out_once_and_never_again(db, promo_running):
     """Кнопку «забрать даром» можно было тыкать без счёта — по неделе за раз."""
     player = make_player()
     await db.save_player(player)
@@ -407,7 +422,7 @@ async def test_the_free_week_is_handed_out_once_and_never_again(db):
     assert (await db.get_player(42)).pro_until == player.pro_until
 
 
-async def test_the_free_week_stays_spent_even_after_it_burns_out(db):
+async def test_the_free_week_stays_spent_even_after_it_burns_out(db, promo_running):
     """Неделя кончилась — второй раз даром её всё равно не дают."""
     player = make_player()
     await db.save_player(player)
@@ -420,7 +435,7 @@ async def test_the_free_week_stays_spent_even_after_it_burns_out(db):
     assert await promo_taken(db, 42)
 
 
-async def test_the_free_claim_leaves_no_trace_in_the_purchase_history(db, store):
+async def test_the_free_claim_leaves_no_trace_in_the_purchase_history(db, store, promo_running):
     """Подарок — не покупка: ни в истории, ни в возвратах его нет."""
     player = make_player()
     await db.save_player(player)
@@ -431,7 +446,7 @@ async def test_the_free_claim_leaves_no_trace_in_the_purchase_history(db, store)
         await store.refund(42, promo_claim_id(42))
 
 
-async def test_the_counter_offers_stars_once_the_free_week_is_taken(db):
+async def test_the_counter_offers_stars_once_the_free_week_is_taken(db, promo_running):
     player = make_player()
     await db.save_player(player)
 
@@ -446,9 +461,7 @@ async def test_the_counter_offers_stars_once_the_free_week_is_taken(db):
     assert "уже забрал" in after["promo_note"]
 
 
-async def test_the_mini_app_refuses_the_second_free_claim(client, db):
-    if not promo_is_on():
-        pytest.skip("акция уже кончилась")
+async def test_the_mini_app_refuses_the_second_free_claim(client, db, promo_running):
     await db.save_player(make_player())
 
     first = await client.post("/api/pro", json={}, headers=headers())
@@ -466,7 +479,7 @@ async def test_the_mini_app_refuses_the_second_free_claim(client, db):
 # ---------- разовая правка сроков ----------
 
 
-async def test_the_overrun_subscription_is_cut_back_to_one_week(db):
+async def test_the_overrun_subscription_is_cut_back_to_one_week(db, promo_running):
     """Разовая правка: у бойца набежал месяц от повторных нажатий."""
     from bot.game.pro import DAY
     from bot.seed import TEST_FIGHTER, fix_promo_overrun

@@ -21,10 +21,16 @@ from bot.game.classes import (
     block_title,
 )
 from bot.game.combat import (
+    MATCH_ROUNDS,
     MAX_MISSED_TURNS,
     MAX_ROUNDS,
+    MAX_TURNS,
     MIN_DODGE_CHANCE,
+    TURNS_PER_ROUND,
     _max_damage,
+    boxing_round,
+    round_is_over,
+    turn_in_round,
     Action,
     DuelEnd,
     Fighter,
@@ -416,11 +422,46 @@ def test_ko_finishes_duel():
     assert result.winner_id == 1
 
 
-def test_judge_decision_by_remaining_hp():
+# ---------- боксёрские раунды ----------
+
+
+def test_eighteen_turns_make_six_rounds_of_three():
+    assert (TURNS_PER_ROUND, MATCH_ROUNDS, MAX_TURNS) == (3, 6, 18)
+    assert [boxing_round(turn) for turn in range(1, 10)] == [1, 1, 1, 2, 2, 2, 3, 3, 3]
+    assert [turn_in_round(turn) for turn in range(1, 7)] == [1, 2, 3, 1, 2, 3]
+    # перерыв — после каждого третьего удара, и после последнего тоже
+    assert [turn for turn in range(1, MAX_TURNS + 1) if round_is_over(turn)] == [
+        3, 6, 9, 12, 15, 18
+    ]
+
+
+def test_the_judge_counts_damage_dealt_not_health_left():
+    """Победа тому, кто дрался, а не тому, у кого запас больше.
+
+    У танка здоровья вдвое против ассасина: считай судья по остатку, танк
+    выигрывал бы решения, ни разу толком не попав.
+    """
+    puncher, wall = make(ASSASSIN, user_id=1), make(TANK, user_id=2)
+    puncher.hp, wall.hp = 10, 90
+    puncher.damage_dealt, wall.damage_dealt = 80, 30
+
+    assert judge_decision(puncher, wall) == 1
+
+
+def test_equal_damage_falls_back_to_who_took_less():
     first, second = make(user_id=1), make(user_id=2)
+    first.damage_dealt = second.damage_dealt = 40
     first.hp, second.hp = 50, 20
+
     assert judge_decision(first, second) == 1
-    second.hp = 50
+
+
+def test_a_judged_draw_needs_both_the_damage_and_the_health_to_match():
+    """Ничья по решению судьи — редкость: всё должно совпасть до цифры."""
+    first, second = make(user_id=1), make(user_id=2)
+    first.damage_dealt = second.damage_dealt = 40
+    first.hp = second.hp = 50
+
     assert judge_decision(first, second) is None
 
 
@@ -432,7 +473,7 @@ def test_round_limit_ends_with_judge_call():
         strike_at(Zone.HEAD, guard(Zone.HEAD)),
         second,
         strike_at(Zone.HEAD, guard(Zone.HEAD)),
-        round_number=MAX_ROUNDS,
+        round_number=MAX_TURNS,
         rng=random.Random(7),
     )
     assert result.finished

@@ -26,7 +26,12 @@ async def db(tmp_path):
 @pytest.fixture
 async def dispatcher_env(db):
     """Общий диспетчер, но со свежей базой и пустой историей вызовов."""
-    config = Config(bot_token="42:TESTTOKEN", db_path=":memory:", turn_timeout=600)
+    config = Config(
+        bot_token="42:TESTTOKEN",
+        db_path=":memory:",
+        turn_timeout=600,
+        round_break=0,  # ходы идут подряд: отдых по часам проверяют отдельно
+    )
     duels = DuelService(bot=BOT, db=db, config=config)
     battles = BattleService(bot=BOT, db=db, config=config)
     tournaments = TournamentService(bot=BOT, db=db, config=config, duels=duels)

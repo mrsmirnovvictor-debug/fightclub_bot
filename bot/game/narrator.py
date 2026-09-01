@@ -16,12 +16,15 @@ from bot.game.modes import FightMode
 from bot.game.pro import PRO_BADGE
 from bot.game.stats import derive
 from bot.game.combat import (
+    MATCH_ROUNDS,
     MAX_MISSED_TURNS,
     DuelEnd,
     Fighter,
     Outcome,
     RoundResult,
     Strike,
+    boxing_round,
+    turn_in_round,
 )
 
 if TYPE_CHECKING:  # только для подсказок типов: models импортирует не нас
@@ -249,13 +252,53 @@ def describe_strike(
     return f"{emoji} {line}{tail}"
 
 
+def corner_break(
+    first: Fighter,
+    second: Fighter,
+    round_number: int,
+    total: int,
+    seconds: int,
+) -> str:
+    """Гонг в конце раунда: счёт по углам и сколько ещё отдыхать."""
+    lines = [f"<b>🔔 Гонг! Раунд {round_number} из {total} окончен.</b>", ""]
+    for fighter in (first, second):
+        lines.append(
+            f"{fighter.fclass.emoji} {mention(fighter)} "
+            f"{hp_bar(fighter.hp, fighter.max_hp)} {fighter.hp}/{fighter.max_hp} "
+            f"— нанёс {fighter.damage_dealt}"
+        )
+    lines.append("")
+    if seconds > 0:
+        lines.append(
+            f"Судья разводит по углам. Отдых {rest_phrase(seconds)} — "
+            f"и выходим на раунд {round_number + 1}."
+        )
+    else:
+        lines.append(f"По углам — и сразу на раунд {round_number + 1}.")
+    return "\n".join(lines)
+
+
+def rest_phrase(seconds: int) -> str:
+    """«минута», «30 секунд» — то, что судья говорит про отдых."""
+    if seconds == 60:
+        return "минута"
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} минуты" if 2 <= minutes <= 4 else f"{minutes} минут"
+    return f"{seconds} секунд"
+
+
 def round_report(
     result: RoundResult,
     fighters: dict[int, Fighter],
     rng: random.Random | None = None,
 ) -> str:
     rng = rng or random
-    lines = [f"<b>⚔️ Раунд {result.number}</b>", ""]
+    lines = [
+        f"<b>⚔️ Раунд {boxing_round(result.number)}, "
+        f"удар {turn_in_round(result.number)}</b>",
+        "",
+    ]
     for strike in result.strikes:
         lines.append(
             describe_strike(
@@ -295,11 +338,15 @@ def finish_report(
         else:
             lines.append("🤝 Оба бойца перестали отвечать. Судья закрывает бой ничьёй.")
     elif result.end_reason is DuelEnd.JUDGE:
-        lines.append("🔔 Гонг! Раунды кончились, решение за судьёй.")
+        lines.append(
+            f"🔔 Финальный гонг! Все {MATCH_ROUNDS} раундов позади, "
+            "никто не упал — решение за судьёй."
+        )
         if winner:
+            other = next(f for f in fighters.values() if f.user_id != winner.user_id)
             lines.append(
-                f"🏆 По остатку здоровья побеждает {mention(winner)} "
-                f"({winner.hp}/{winner.max_hp})."
+                f"🏆 По нанесённому урону побеждает {mention(winner)} — "
+                f"{winner.damage_dealt} против {other.damage_dealt}."
             )
         else:
             lines.append("🤝 Судья фиксирует ничью — бойцы неотличимы.")

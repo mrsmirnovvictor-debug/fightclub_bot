@@ -21,6 +21,9 @@ class Config:
     # Сколько идёт запись на турнир: по умолчанию сутки
     tournament_registration: int = 24 * 60 * 60
     # Публичный HTTPS-адрес мини-аппа. Пусто — карточка не поднимается.
+    # Минута отдыха между раундами: судья разводит бойцов по углам.
+    # Ноль — драться без перерывов (так гоняют тесты и симулятор).
+    round_break: int = 60
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
     webapp_port: int = 8080
@@ -80,6 +83,7 @@ def load_config() -> Config:
         tournament_registration=int(
             os.getenv("TOURNAMENT_REGISTRATION", str(24 * 60 * 60))
         ),
+        round_break=int(os.getenv("ROUND_BREAK", str(Config.round_break))),
         webapp_url=_webapp_url(),
         webapp_host=os.getenv("WEBAPP_HOST", "0.0.0.0").strip(),
         webapp_port=_webapp_port(),

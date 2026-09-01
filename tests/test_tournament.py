@@ -42,6 +42,7 @@ def make_services(bot, db, registration: int = 600):
         turn_timeout=600,
         challenge_timeout=600,
         tournament_registration=registration,
+        round_break=0,
     )
     duels = DuelService(bot=bot, db=db, config=config, rng=random.Random(2024))
     tournaments = TournamentService(bot=bot, db=db, config=config, duels=duels)

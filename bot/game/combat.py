@@ -45,12 +45,21 @@ from bot.game.stats import (
     derive,
 )
 
-# После этого раунда бойцы начинают уставать и бьют всё больнее —
+# После этого хода бойцы начинают уставать и бьют всё больнее —
 # чтобы дуэль не превращалась в бесконечное перетягивание блоков.
 FATIGUE_FROM_ROUND = 6
 FATIGUE_STEP = 0.12
-# Жёсткий лимит: дальше судья останавливает бой и считает по здоровью.
-MAX_ROUNDS = 20
+
+# Бой идёт по-боксёрски: ходы собраны в раунды, между раундами перерыв.
+# Три хода на раунд — это и есть те самые три минуты, за которые в боксе
+# успевают размяться и устать, а заодно ровно столько сообщений, сколько
+# Telegram разрешает сказать в группу без пауз посреди боя.
+TURNS_PER_ROUND = 3
+MATCH_ROUNDS = 6
+# Жёсткий лимит: восемнадцать ходов, дальше решение судьи.
+MAX_TURNS = TURNS_PER_ROUND * MATCH_ROUNDS
+# Прежнее имя того же числа — на него смотрит справка и групповой бой
+MAX_ROUNDS = MAX_TURNS
 # Столько пропусков подряд, и судья засчитывает техническое поражение.
 MAX_MISSED_TURNS = 3
 # Уворот нельзя сбить точностью в ноль: сколько бы ни было точности,
@@ -326,6 +335,21 @@ class RoundResult:
     end_reason: DuelEnd | None = None
 
 
+def boxing_round(turn: int) -> int:
+    """В каком раунде идёт этот ход. Ходы считаются с единицы."""
+    return (turn - 1) // TURNS_PER_ROUND + 1
+
+
+def turn_in_round(turn: int) -> int:
+    """Который это удар внутри своего раунда: первый, второй или третий."""
+    return (turn - 1) % TURNS_PER_ROUND + 1
+
+
+def round_is_over(turn: int) -> bool:
+    """Последний ход раунда — после него бойцов разводят по углам."""
+    return turn % TURNS_PER_ROUND == 0
+
+
 def fatigue_multiplier(round_number: int) -> float:
     """Множитель урона за раунд: с какого-то момента бойцы «раскрываются»."""
     extra = max(0, round_number - FATIGUE_FROM_ROUND)
@@ -586,24 +610,41 @@ def _apply_ending(result: RoundResult, first: Fighter, second: Fighter) -> None:
             result.winner_id = second.user_id
         elif second.gave_up and not first.gave_up:
             result.winner_id = first.user_id
-    elif result.number >= MAX_ROUNDS:
+    elif result.number >= MAX_TURNS:
         result.finished = True
         result.end_reason = DuelEnd.JUDGE
         result.winner_id = judge_decision(first, second)
 
 
 def judge_decision(first: Fighter, second: Fighter) -> int | None:
-    """Решение судьи по остатку здоровья, если раунды кончились."""
-    if first.hp_percent > second.hp_percent:
-        return first.user_id
-    if second.hp_percent > first.hp_percent:
-        return second.user_id
+    """Решение судьи, когда шесть раундов отбоксировали без нокаута.
+
+    Считаем по нанесённому урону, а не по остатку здоровья: победа должна
+    достаться тому, кто дрался, а не тому, у кого запас больше. У танка
+    здоровья изначально вдвое против ассасина — по остатку он выигрывал бы
+    судейские решения, ни разу толком не попав.
+
+    Урон вровень — смотрим, кто меньше пропустил. Вровень и это — ничья, но
+    случается такое примерно никогда: ничья в клубе бывает, когда бойцы
+    роняют друг друга одним разменом.
+    """
+    if first.damage_dealt != second.damage_dealt:
+        return (
+            first.user_id
+            if first.damage_dealt > second.damage_dealt
+            else second.user_id
+        )
+    if first.hp_percent != second.hp_percent:
+        return first.user_id if first.hp_percent > second.hp_percent else second.user_id
     return None
 
 
 __all__ = [
+    "MATCH_ROUNDS",
     "MAX_MISSED_TURNS",
     "MAX_ROUNDS",
+    "MAX_TURNS",
+    "TURNS_PER_ROUND",
     "Action",
     "DuelEnd",
     "Fighter",
@@ -611,9 +652,12 @@ __all__ = [
     "RoundResult",
     "Strike",
     "block_combo",
+    "boxing_round",
     "fatigue_multiplier",
     "judge_decision",
     "random_action",
+    "round_is_over",
     "resolve_round",
+    "turn_in_round",
     "validate_action",
 ]

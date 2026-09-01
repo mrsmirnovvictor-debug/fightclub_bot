@@ -154,7 +154,7 @@ async def test_the_round_result_takes_the_place_of_its_own_panel(db, duel_bits):
 
     # последняя правка панели — та, что гасит её итогом раунда
     closed = [m for m in bot.edits if m.message_id == panel_id][-1]
-    assert closed.text.startswith("<b>⚔️ Раунд 1</b>")
+    assert closed.text.startswith("<b>⚔️ Раунд 1, удар 1</b>")
     assert closed.reply_markup.inline_keyboard == []  # ходить в нём уже нельзя
     assert not any("ставки сделаны" in text for text in bot.log)
 

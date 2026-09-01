@@ -54,6 +54,7 @@ def make_service(bot, db, lobby_timeout: int = 600) -> BattleService:
         db_path=":memory:",
         turn_timeout=600,
         lobby_timeout=lobby_timeout,
+        round_break=0,
     )
     return BattleService(bot=bot, db=db, config=config, rng=random.Random(7))
 

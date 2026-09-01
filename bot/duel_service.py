@@ -19,11 +19,16 @@ from bot.game.classes import BLOCK_WIDTH, Zone, block_combo, block_title
 from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.modes import FightMode
 from bot.game.combat import (
+    MATCH_ROUNDS,
     MAX_MISSED_TURNS,
+    TURNS_PER_ROUND,
     Action,
     Fighter,
     RoundResult,
+    boxing_round,
     resolve_round,
+    round_is_over,
+    turn_in_round,
 )
 from bot.game.economy import (
     DRAW_EXP_SHARE,
@@ -37,6 +42,7 @@ from bot.game.economy import (
     win_exp,
 )
 from bot.game.narrator import (
+    corner_break,
     duel_intro,
     mention,
     player_link,
@@ -506,7 +512,12 @@ class DuelService:
         )
 
     def _prompt_text(self, session: DuelSession) -> str:
-        lines = [f"<b>🔔 Раунд {session.round_number}. Бойцы, выбирайте.</b>", ""]
+        lines = [
+            f"<b>🔔 Раунд {boxing_round(session.round_number)}"
+            f", удар {turn_in_round(session.round_number)}"
+            f" из {TURNS_PER_ROUND}. Бойцы, выбирайте.</b>",
+            "",
+        ]
         for user_id in session.order:
             side = session.fighters[user_id]
             mark = "✅ готов" if session.is_ready(user_id) else "⏳ думает"
@@ -640,8 +651,46 @@ class DuelService:
 
         if result.finished:
             await self._finish(session, result)
+        elif round_is_over(session.round_number):
+            await self._call_a_break(session)
         else:
             await self._start_round(session)
+
+    async def _call_a_break(self, session: DuelSession) -> None:
+        """Раунд отбоксирован — судья разводит бойцов по углам.
+
+        Минута отдыха здесь не только для красоты: за неё успевает
+        освободиться минутный запас обращений к чату, и следующий раунд
+        начинается без пауз посреди боя.
+        """
+        finished = boxing_round(session.round_number)
+        rest = self.config.round_break
+        await self._send(
+            session.chat_id,
+            session.thread_id,
+            corner_break(
+                *(session.fighters[uid] for uid in session.order),
+                round_number=finished,
+                total=MATCH_ROUNDS,
+                seconds=rest,
+            ),
+        )
+        if rest <= 0:
+            await self._start_round(session)
+            return
+        session.timer = asyncio.create_task(self._break_timer(session, rest))
+
+    async def _break_timer(self, session: DuelSession, seconds: int) -> None:
+        """Отсчитать перерыв и вывести бойцов на новый раунд."""
+        turn = session.round_number
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return
+        # За минуту бой мог закончиться иначе — проверяем, что он всё ещё наш
+        if self._duels.get(session.id) is not session or session.round_number != turn:
+            return
+        await self._start_round(session)
 
     async def _finish(self, session: DuelSession, result: RoundResult) -> None:
         self._cancel_timer(session)

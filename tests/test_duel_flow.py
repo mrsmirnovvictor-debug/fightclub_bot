@@ -105,9 +105,18 @@ def bot():
     return FakeBot()
 
 
-def make_service(bot, db, turn_timeout: int = 600) -> DuelService:
+def make_service(bot, db, turn_timeout: int = 600, round_break: int = 0) -> DuelService:
+    """Бой без перерывов между раундами: тесты гоняют ходы подряд.
+
+    Перерыв — это ожидание по часам, а в тестах часов нет. Отдых проверяют
+    отдельные тесты, которые заводят его явно.
+    """
     config = Config(
-        bot_token="test", db_path=":memory:", turn_timeout=turn_timeout, challenge_timeout=600
+        bot_token="test",
+        db_path=":memory:",
+        turn_timeout=turn_timeout,
+        challenge_timeout=600,
+        round_break=round_break,
     )
     return DuelService(bot=bot, db=db, config=config, rng=random.Random(2024))
 
@@ -949,3 +958,122 @@ async def test_the_ring_sends_the_winner_to_the_card_and_not_to_a_command(bot, d
         assert "/upgrade" in upgrade_hint(await db.get_player(1))
     finally:
         links.configure(*was)
+
+
+# ---------- боксёрские раунды и перерывы ----------
+
+
+async def three_turns(service, session) -> None:
+    """Отбоксировать раунд целиком — три хода."""
+    from bot.game.combat import TURNS_PER_ROUND
+
+    for _ in range(TURNS_PER_ROUND):
+        await play_round(service, session)
+
+
+async def test_after_three_turns_the_judge_sends_them_to_the_corners(bot, db):
+    """Раунд — три удара, дальше гонг и минута отдыха."""
+    from bot.game.combat import MATCH_ROUNDS
+
+    service = make_service(bot, db, round_break=60)
+    await db.save_player(make_player(1, "Тайлер", "tank"))
+    await db.save_player(make_player(2, "Марла", "tank"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    await three_turns(service, session)
+
+    gong = bot.log[-1]
+    assert f"Раунд 1 из {MATCH_ROUNDS} окончен" in gong
+    assert "Отдых минута" in gong and "на раунд 2" in gong
+    # следующий удар не начался: бойцы в углах
+    assert session.round_number == 3
+    assert session.prompt_message_id is None
+    await service.shutdown()
+
+
+async def test_the_next_round_starts_when_the_rest_is_over(bot, db):
+    """Перерыв кончился — судья зовёт на новый раунд сам."""
+    service = make_service(bot, db, round_break=60)
+    await db.save_player(make_player(1, "Тайлер", "tank"))
+    await db.save_player(make_player(2, "Марла", "tank"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    await three_turns(service, session)
+
+    # прогоняем отдых, не дожидаясь настоящей минуты
+    session.timer.cancel()
+    await service._start_round(session)
+
+    assert session.round_number == 4
+    assert "Раунд 2, удар 1 из 3" in bot.log[-1]
+    assert session.prompt_message_id is not None
+    await service.shutdown()
+
+
+async def test_a_knockout_in_the_third_turn_skips_the_break(bot, db):
+    """Бой кончился — по углам никого не разводят."""
+    service = make_service(bot, db, round_break=60)
+    await db.save_player(make_player(1, "Тайлер", "assassin"))
+    await db.save_player(make_player(2, "Марла", "assassin"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    session.fighters[2].hp = 1
+
+    await play_round(service, session)
+
+    assert service.duel_in_chat(CHAT_ID, THREAD_ID) is None
+    assert not any("окончен" in text for text in bot.log)
+    await service.shutdown()
+
+
+async def test_a_fight_that_goes_the_distance_is_decided_by_damage(bot, db):
+    """Шесть раундов без нокаута — побеждает тот, кто больше нанёс."""
+    from bot.game.combat import MAX_TURNS
+
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "tank"))
+    await db.save_player(make_player(2, "Марла", "tank"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    # первый бьёт, второй только закрывается: нокаута не выйдет, урон будет
+    session.fighters[1].hp = session.fighters[2].hp = 5000
+    for _ in range(MAX_TURNS):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        # бьём в живот, а закрывается соперник по голове: удар доходит
+        await service.handle_choice(session.id, 1, "attack", "belly")
+        await service.handle_choice(session.id, 1, "block", "legs")
+        await service.handle_choice(session.id, 2, "block", "head")
+        await service._resolve(session)
+
+    assert session.round_number == MAX_TURNS
+    verdict = next(text for text in bot.log if "Финальный гонг" in text)
+    assert "6 раундов позади" in verdict
+    assert "По нанесённому урону побеждает" in verdict
+    assert session.fighters[1].damage_dealt > session.fighters[2].damage_dealt
+    assert (await db.get_player(1)).wins == 1
+    await service.shutdown()
+
+
+async def test_a_boxing_round_fits_the_chat_budget_with_room_to_spare(bot, db):
+    """Раунд с перерывом стоит чату меньше, чем он разрешает за минуту."""
+    from bot.messaging import CHAT_WRITES_PER_MINUTE
+
+    service = make_service(bot, db, round_break=60)
+    await db.save_player(make_player(1, "Тайлер", "tank"))
+    await db.save_player(make_player(2, "Марла", "tank"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    await three_turns(service, session)
+
+    # три удара, гонг и вступление — и всё это влезает в минутный запас
+    assert len(bot.said) <= CHAT_WRITES_PER_MINUTE
+    assert service.voice.budget.left(CHAT_ID) > 0
+    await service.shutdown()
