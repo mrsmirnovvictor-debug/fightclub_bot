@@ -49,10 +49,10 @@ from bot.game.narrator import (
     battle_rewards_report,
     battle_round_report,
     esc,
+    fight_board,
     health_warning,
-    hp_bar,
     lobby_card,
-    mention,
+    ready_mark,
 )
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import BattleCB, LobbyCB, battle_keyboard, lobby_keyboard
@@ -461,11 +461,13 @@ class BattleService:
 
     def _prompt_text(self, session: BattleSession) -> str:
         lines = [f"<b>🔔 Раунд {session.round_number}. Пары этого хода:</b>", ""]
-        for first, second in session.pairs:
-            lines.append(
-                f"{self._fighter_line(session, first)}  ⚔️  "
-                f"{self._fighter_line(session, second)}"
-            )
+        lines += fight_board(
+            [
+                (session.fighters[first], session.fighters[second])
+                for first, second in session.pairs
+            ],
+            lambda side: ready_mark(session.is_ready(side.user_id)),
+        )
         if session.idle and tuple(session.idle) != session.announced_idle:
             names = ", ".join(
                 esc(session.fighters[user_id].name) for user_id in session.idle
@@ -476,14 +478,6 @@ class BattleService:
             )
         lines += ["", f"⏱️ {self.config.turn_timeout} сек. Выберите удар и блок."]
         return "\n".join(lines)
-
-    def _fighter_line(self, session: BattleSession, user_id: int) -> str:
-        fighter = session.fighters[user_id]
-        mark = "✅" if session.is_ready(user_id) else "⏳"
-        return (
-            f"{mark} {fighter.fclass.emoji} {mention(fighter)} "
-            f"{hp_bar(fighter.hp, fighter.max_hp)} {fighter.hp}"
-        )
 
     async def _round_timer(self, session: BattleSession, round_number: int) -> None:
         try:

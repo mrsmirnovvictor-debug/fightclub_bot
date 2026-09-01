@@ -32,18 +32,18 @@ from bot.game.economy import (
     REPEAT_SHARES,
     UP_CREDITS,
 )
-from bot.game.narrator import esc, player_link
+from bot.game.narrator import esc, player_link, rest_phrase
 from bot.game.links import links
 from bot.handlers.common import card_keyboard, profile_text, send_profile
 
 router = Router(name="profile")
 
 
-def help_text(turn_timeout: int = 30) -> str:
+def help_text(turn_timeout: int = 30, round_break: int = 30) -> str:
     return (
         "🥊 <b>Бойцовский клуб — как это работает</b>\n\n"
         "<b>В личке бота</b>\n"
-        "/start — создать бойца (класс → прозвище → аватар → характеристики)\n"
+        "/start — создать бойца (класс → прозвище → пол → образ → характеристики)\n"
         "/card — карточка бойца в мини-аппе\n"
         "/miniapp — проверить ссылку на карточку, если она не открывается\n"
         "/profile — то же самое текстом\n"
@@ -149,8 +149,9 @@ def help_text(turn_timeout: int = 30) -> str:
         f"Бой боксёрский: раунд — это {TURNS_PER_ROUND} удара, "
         f"всего раундов {MATCH_ROUNDS} (то есть {MAX_TURNS} ударов).\n"
         "После каждого раунда гонг: судья разводит бойцов по углам и даёт "
-        "минуту отдыха, а в перерыве показывает, кто сколько нанёс. Через "
-        "минуту следующий раунд начинается сам — кнопки придут в ветку.\n"
+        f"{rest_phrase(round_break)} отдыха, а в перерыве показывает, "
+        "кто сколько нанёс. Дальше следующий раунд начинается сам — кнопки "
+        "придут в ветку.\n"
         "С 6-го удара бойцы устают и бьют всё сильнее.\n"
         f"Никто не упал за {MATCH_ROUNDS} раундов — победу присуждает судья "
         "по нанесённому урону, а не по остатку здоровья: выигрывает тот, кто "
@@ -225,7 +226,7 @@ def help_text(turn_timeout: int = 30) -> str:
 
 @router.message(Command("help"))
 async def cmd_help(message: Message, config: Config) -> None:
-    await message.answer(help_text(config.turn_timeout))
+    await message.answer(help_text(config.turn_timeout, config.round_break))
 
 
 @router.message(Command("classes"))

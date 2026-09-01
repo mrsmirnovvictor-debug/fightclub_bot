@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from bot.game.classes import ZONE_PREPOSITIONAL, Zone
 from bot.game.economy import MAX_LEVEL
-from bot.game.health import READY_THRESHOLD, format_duration
+from bot.game.health import HURT_THRESHOLD, READY_THRESHOLD, format_duration
 from bot.game.links import links
 from bot.game.modes import FightMode
 from bot.game.pro import PRO_BADGE
@@ -173,6 +173,70 @@ def hp_bar(current: int, maximum: int, width: int = 10) -> str:
     if current > 0 and filled == 0:
         filled = 1
     return "▰" * filled + "▱" * (width - filled)
+
+
+# Полоска в цвете: зелёная, пока боец свеж, жёлтая на середине, красная
+# под нокаутом. Цветного текста Telegram не умеет, а цветные квадраты — да,
+# и на панели раунда это единственный способ увидеть беду одним взглядом.
+BAR_FULL = "🟩"
+BAR_HURT = "🟨"
+BAR_LOW = "🟥"
+BAR_EMPTY = "⬛"
+# Столько клеток в полоске на панели: два бойца в строке, и десять клеток
+# на каждого телефон переносит.
+BOARD_BAR = 5
+# Разделитель колонок: ровно выровнять их в Telegram нельзя — шрифт не
+# моноширинный, — но черта читается как граница между бойцами.
+COLUMN = "│"
+
+
+def bar_color(percent: float) -> str:
+    if percent < HURT_THRESHOLD:
+        return BAR_LOW
+    if percent < READY_THRESHOLD:
+        return BAR_HURT
+    return BAR_FULL
+
+
+def color_bar(current: int, maximum: int, width: int = BOARD_BAR) -> str:
+    """Полоска здоровья цветными клетками."""
+    if maximum <= 0:
+        return BAR_EMPTY * width
+    filled = max(0, min(width, round(width * current / maximum)))
+    if current > 0 and filled == 0:
+        filled = 1
+    return bar_color(current / maximum) * filled + BAR_EMPTY * (width - filled)
+
+
+def fighter_head(fighter: Fighter) -> str:
+    """«⚔️ Victor [3]» — класс, имя-ссылка и уровень."""
+    return f"{fighter.fclass.emoji} {mention(fighter)} [{fighter.level}]"
+
+
+def fight_board(pairs, ready) -> list[str]:
+    """Табло раунда: пара бойцов — четыре строки, по колонке на каждого.
+
+    Порядок строк один и в дуэли, и в групповом бою: кто с кем, сколько
+    здоровья, полоска и готовность. Пары разделены пустой строкой.
+    """
+    lines: list[str] = []
+    for first, second in pairs:
+        if lines:
+            lines.append("")
+        lines.append(f"{fighter_head(first)}  VS.  {fighter_head(second)}")
+        lines.append(
+            f"[{first.hp}/{first.max_hp}] {COLUMN} [{second.hp}/{second.max_hp}]"
+        )
+        lines.append(
+            f"{color_bar(first.hp, first.max_hp)} {COLUMN} "
+            f"{color_bar(second.hp, second.max_hp)}"
+        )
+        lines.append(f"{ready(first)} {COLUMN} {ready(second)}")
+    return lines
+
+
+def ready_mark(is_ready: bool) -> str:
+    return "✅ Готов" if is_ready else "⏳ Думает"
 
 
 def hp_line(fighter: Fighter) -> str:

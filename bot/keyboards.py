@@ -13,8 +13,8 @@ from bot.game.classes import (
     FighterClass,
     Stat,
     Zone,
+    block_button,
     block_combos,
-    block_title,
 )
 from bot.game.equipment import SHOWCASE, items_unlocked_at
 from bot.game.looks import FEMALE, MALE, free_looks
@@ -273,25 +273,44 @@ def battle_keyboard(
     battle_id: int, icons: tuple[str, ...] = ("👊",), block_width: int = 2
 ) -> InlineKeyboardMarkup:
     """Та же панель, что в дуэли, но нажатия уходят в групповой бой."""
+    return _fight_panel(
+        icons,
+        block_width,
+        lambda zone, slot: BattleCB(
+            action="attack", battle_id=battle_id, zone=zone.value, slot=slot
+        ).pack(),
+        lambda zone: BattleCB(
+            action="block", battle_id=battle_id, zone=zone.value
+        ).pack(),
+    )
+
+
+def _fight_panel(
+    icons: tuple[str, ...],
+    block_width: int,
+    attack_data,
+    block_data,
+) -> InlineKeyboardMarkup:
+    """Панель раунда: столбец на каждое оружие, справа столбец блоков.
+
+    Зоны на кнопках сокращены до буквы — с двумя оружиями и щитом три
+    столбца названий целиком в ширину экрана не влезают, и кнопки уезжают
+    в две строки. Значок оружия сверху столбца говорит, чем бьём, буква —
+    куда.
+    """
     blocks = block_combos(block_width)
     rows: list[list[InlineKeyboardButton]] = []
     for index, zone in enumerate(ALL_ZONES):
         row = [
             InlineKeyboardButton(
-                text=f"{icon} {zone.title.capitalize()}",
-                callback_data=BattleCB(
-                    action="attack", battle_id=battle_id, zone=zone.value, slot=slot
-                ).pack(),
+                text=f"{icon}{zone.short}", callback_data=attack_data(zone, slot)
             )
             for slot, icon in enumerate(icons)
         ]
         combo = blocks[index]
         row.append(
             InlineKeyboardButton(
-                text=f"🛡 {block_title(combo)}",
-                callback_data=BattleCB(
-                    action="block", battle_id=battle_id, zone=combo[0].value
-                ).pack(),
+                text=block_button(combo), callback_data=block_data(combo[0])
             )
         )
         rows.append(row)
@@ -301,36 +320,19 @@ def battle_keyboard(
 def fight_keyboard(
     duel_id: int, icons: tuple[str, ...] = ("👊",), block_width: int = 2
 ) -> InlineKeyboardMarkup:
-    """Панель раунда: слева удары по зонам, справа блоки.
+    """Панель раунда одна на обоих бойцов — так проще читать ветку.
 
-    Панель одна на обоих бойцов — так проще читать ветку. Кто нажал, тому
-    и засчитали: бот отвечает всплывающей подсказкой лично нажавшему.
+    Кто нажал, тому и засчитали: бот отвечает всплывающей подсказкой лично
+    нажавшему.
     """
-    blocks = block_combos(block_width)
-    rows: list[list[InlineKeyboardButton]] = []
-
-    for index, zone in enumerate(ALL_ZONES):
-        row = [
-            InlineKeyboardButton(
-                text=f"{icon} {zone.title.capitalize()}",
-                callback_data=FightCB(
-                    action="attack", duel_id=duel_id, zone=zone.value, slot=slot
-                ).pack(),
-            )
-            for slot, icon in enumerate(icons)
-        ]
-        combo = blocks[index]
-        row.append(
-            InlineKeyboardButton(
-                text=f"🛡 {block_title(combo)}",
-                callback_data=FightCB(
-                    action="block", duel_id=duel_id, zone=combo[0].value
-                ).pack(),
-            )
-        )
-        rows.append(row)
-
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return _fight_panel(
+        icons,
+        block_width,
+        lambda zone, slot: FightCB(
+            action="attack", duel_id=duel_id, zone=zone.value, slot=slot
+        ).pack(),
+        lambda zone: FightCB(action="block", duel_id=duel_id, zone=zone.value).pack(),
+    )
 
 
 def standoff_keyboard(duel_id: int) -> InlineKeyboardMarkup:

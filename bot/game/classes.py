@@ -27,6 +27,11 @@ class Zone(str, Enum):
     def label(self) -> str:
         return f"{self.emoji} {self.title}"
 
+    @property
+    def short(self) -> str:
+        """Одна буква для кнопки: в три столбца названия целиком не влезают."""
+        return ZONE_SHORT[self]
+
 
 ZONE_TITLES: dict[Zone, str] = {
     Zone.HEAD: "голова",
@@ -42,6 +47,16 @@ ZONE_EMOJI: dict[Zone, str] = {
     Zone.BELLY: "🍺",
     Zone.BELT: "🥋",
     Zone.LEGS: "🦵",
+}
+
+# Буква на кнопке. Голова и грудь обе на «г», поэтому грудь идёт корпусом:
+# на панели важнее, чтобы буквы не путались между собой.
+ZONE_SHORT: dict[Zone, str] = {
+    Zone.HEAD: "Г",
+    Zone.CHEST: "К",
+    Zone.BELLY: "Ж",
+    Zone.BELT: "П",
+    Zone.LEGS: "Н",
 }
 
 ZONE_PREPOSITIONAL: dict[Zone, str] = {
@@ -73,6 +88,21 @@ def block_combo(start: Zone, width: int = BLOCK_WIDTH) -> tuple[Zone, ...]:
 def block_combos(width: int = BLOCK_WIDTH) -> tuple[tuple[Zone, ...], ...]:
     """Все допустимые блоки заданной ширины — по одному на каждую зону."""
     return tuple(block_combo(zone, width) for zone in ALL_ZONES)
+
+
+def block_button(combo: tuple[Zone, ...]) -> str:
+    """Надпись на кнопке блока: «🛡 Г+К» или «🛡 Г+К (+Ж🛡)» со щитом.
+
+    Третья зона вынесена в скобки со щитом не для красоты: её закрывает не
+    боец, а вещь, и, сняв щит, он эту зону потеряет.
+    """
+    if not combo:
+        return "🛡 —"
+    own = "+".join(zone.short for zone in combo[:BLOCK_WIDTH])
+    extra = combo[BLOCK_WIDTH:]
+    if not extra:
+        return f"🛡 {own}"
+    return f"🛡 {own} (+{''.join(zone.short for zone in extra)}🛡)"
 
 
 def block_title(combo: tuple[Zone, ...]) -> str:

@@ -522,3 +522,24 @@ async def test_a_group_win_pays_no_credits_either(bot, db):
         # прибавка к счёту ровно та, что дали апы и уровни за этот бой
         assert fresh.credits - was == earned_credits(fresh) - grown, fresh.nickname
     await service.shutdown()
+
+
+async def test_the_group_board_stacks_the_pairs_one_under_another(bot, db):
+    """Табло группового боя — те же четыре строки на пару, через пустую."""
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in zip(players[1:], (RED, BLUE, BLUE)):
+        await service.join(lobby.id, player, team)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+
+    board = service._prompt_text(session).splitlines()
+
+    pairs = [line for line in board if "VS." in line]
+    assert len(pairs) == len(session.pairs) == 2
+    assert board.count("") >= 2  # пары разделены пустой строкой
+    assert all("│" in line for line in board if line.startswith("["))
+    assert board[-1].endswith("Выберите удар и блок.")
+    await service.shutdown()

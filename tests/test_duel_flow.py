@@ -256,7 +256,7 @@ async def test_missed_turn_counter_resets_after_any_press(bot, db):
         await force_round(service, session)
     assert session.fighters[1].missed_turns == 2
     assert session.fighters[2].missed_turns == 0
-    assert "пропусков подряд: 2" in bot.texts[-1]  # предупреждение в шапке раунда
+    assert "пропусков подряд 2" in bot.texts[-1]  # предупреждение под табло
 
     await service.handle_choice(session.id, 1, "block", "head")
     await service.handle_choice(session.id, 2, "block", "head")
@@ -1060,11 +1060,16 @@ async def test_a_fight_that_goes_the_distance_is_decided_by_damage(bot, db):
     await service.shutdown()
 
 
-async def test_a_boxing_round_fits_the_chat_budget_with_room_to_spare(bot, db):
-    """Раунд с перерывом стоит чату меньше, чем он разрешает за минуту."""
+async def test_two_boxing_rounds_fit_one_minute_of_chat_budget(bot, db):
+    """Ради этого перерыв и придуман: за минуту в лимит влезают два раунда.
+
+    Отдых по умолчанию — полминуты, значит за минуту чат успевает увидеть
+    два раунда. Если раунд станет дороже или отдых короче, здесь и вылезет.
+    """
+    from bot.config import Config
     from bot.messaging import CHAT_WRITES_PER_MINUTE
 
-    service = make_service(bot, db, round_break=60)
+    service = make_service(bot, db, round_break=Config.round_break)
     await db.save_player(make_player(1, "Тайлер", "tank"))
     await db.save_player(make_player(2, "Марла", "tank"))
     session = await service.start_duel(
@@ -1072,8 +1077,90 @@ async def test_a_boxing_round_fits_the_chat_budget_with_room_to_spare(bot, db):
     )
 
     await three_turns(service, session)
+    session.timer.cancel()
+    await service._start_round(session)
+    await three_turns(service, session)
 
-    # три удара, гонг и вступление — и всё это влезает в минутный запас
     assert len(bot.said) <= CHAT_WRITES_PER_MINUTE
     assert service.voice.budget.left(CHAT_ID) > 0
     await service.shutdown()
+
+
+# ---------- панель и табло ----------
+
+
+def test_the_panel_gives_every_weapon_its_own_column():
+    """Два оружия и щит — три столбца, и зоны сокращены до буквы.
+
+    Названиями целиком три столбца не влезают в ширину телефона: кнопки
+    уезжают в две строки, и панель перестаёт читаться.
+    """
+    from bot.game.classes import BLOCK_WIDTH, SHIELD_BLOCK_WIDTH
+    from bot.keyboards import fight_keyboard
+
+    two_weapons = fight_keyboard(1, ("🗡️", "⚔️"), BLOCK_WIDTH).inline_keyboard
+    assert [button.text for button in two_weapons[0]] == ["🗡️Г", "⚔️Г", "🛡 Г+К"]
+    assert [row[0].text for row in two_weapons] == ["🗡️Г", "🗡️К", "🗡️Ж", "🗡️П", "🗡️Н"]
+    assert [row[-1].text for row in two_weapons] == [
+        "🛡 Г+К", "🛡 К+Ж", "🛡 Ж+П", "🛡 П+Н", "🛡 Н+Г"
+    ]
+
+    # со щитом третья зона идёт в скобках: её закрывает вещь, а не боец
+    shielded = fight_keyboard(1, ("🗡️",), SHIELD_BLOCK_WIDTH).inline_keyboard
+    assert [row[-1].text for row in shielded] == [
+        "🛡 Г+К (+Ж🛡)",
+        "🛡 К+Ж (+П🛡)",
+        "🛡 Ж+П (+Н🛡)",
+        "🛡 П+Н (+Г🛡)",
+        "🛡 Н+Г (+К🛡)",
+    ]
+
+
+def test_the_panel_buttons_still_point_at_the_right_zones():
+    """Буквы — только надпись: под ними те же зоны и те же слоты оружия."""
+    from bot.game.classes import BLOCK_WIDTH, ALL_ZONES
+    from bot.keyboards import FightCB, fight_keyboard
+
+    rows = fight_keyboard(7, ("🗡️", "⚔️"), BLOCK_WIDTH).inline_keyboard
+    for index, zone in enumerate(ALL_ZONES):
+        first, second, block = rows[index]
+        for slot, button in enumerate((first, second)):
+            data = FightCB.unpack(button.callback_data)
+            assert (data.action, data.zone, data.slot) == ("attack", zone.value, slot)
+        guard = FightCB.unpack(block.callback_data)
+        assert (guard.action, guard.zone, guard.duel_id) == ("block", zone.value, 7)
+
+
+async def test_the_board_shows_both_fighters_side_by_side(bot, db):
+    """Табло: кто с кем, здоровье, цветная полоска и готовность."""
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Victor", "warrior"))
+    await db.save_player(make_player(2, "x RED x", "assassin"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    session.fighters[1].hp = 2  # почти нокаут: полоска должна покраснеть
+    await service.handle_choice(session.id, 1, "attack", "head")
+    await service.handle_choice(session.id, 1, "block", "legs")
+
+    board = service._prompt_text(session).splitlines()
+
+    assert "Victor" in board[2] and "VS." in board[2] and "x RED x" in board[2]
+    assert board[2].endswith("[1]")  # уровень стоит у каждого имени
+    assert board[3].startswith("[2/") and "│" in board[3]
+    assert board[4].startswith("🟥") and "🟩" in board[4]
+    assert board[5] == "✅ Готов │ ⏳ Думает"
+    assert board[-1].endswith("Выберите удар и блок.")
+    await service.shutdown()
+
+
+def test_the_bar_changes_colour_with_the_damage():
+    """Зелёный, пока цел, жёлтый на середине, красный под нокаутом."""
+    from bot.game.narrator import BOARD_BAR, color_bar
+
+    assert color_bar(100, 100) == "🟩" * BOARD_BAR
+    assert color_bar(50, 100).startswith("🟨")
+    assert color_bar(5, 100).startswith("🟥")
+    assert color_bar(0, 100) == "⬛" * BOARD_BAR
+    # живой боец не остаётся с пустой полоской, сколько бы ни пропустил
+    assert color_bar(1, 1000) == "🟥" + "⬛" * (BOARD_BAR - 1)

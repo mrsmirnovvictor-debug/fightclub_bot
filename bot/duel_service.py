@@ -44,13 +44,14 @@ from bot.game.economy import (
 from bot.game.narrator import (
     corner_break,
     duel_intro,
+    fight_board,
     mention,
     player_link,
     standoff_card,
     esc,
     finish_report,
     health_warning,
-    hp_bar,
+    ready_mark,
     rewards_report,
     round_report,
 )
@@ -512,27 +513,25 @@ class DuelService:
         )
 
     def _prompt_text(self, session: DuelSession) -> str:
+        first, second = (session.fighters[uid] for uid in session.order)
         lines = [
             f"<b>🔔 Раунд {boxing_round(session.round_number)}"
             f", удар {turn_in_round(session.round_number)}"
             f" из {TURNS_PER_ROUND}. Бойцы, выбирайте.</b>",
             "",
         ]
-        for user_id in session.order:
-            side = session.fighters[user_id]
-            mark = "✅ готов" if session.is_ready(user_id) else "⏳ думает"
-            warning = ""
-            if side.missed_turns:
+        lines += fight_board(
+            [(first, second)], lambda side: ready_mark(session.is_ready(side.user_id))
+        )
+        skipping = [side for side in (first, second) if side.missed_turns]
+        if skipping:
+            lines.append("")
+            for side in skipping:
                 left = MAX_MISSED_TURNS - side.missed_turns
-                warning = (
-                    f" — ⚠️ пропусков подряд: {side.missed_turns}, осталось {left}"
+                lines.append(
+                    f"⚠️ {mention(side)}: пропусков подряд {side.missed_turns}, "
+                    f"осталось {left}"
                 )
-            lines.append(
-                f"{side.fclass.emoji} {mention(side)} "
-                f"{hp_bar(side.hp, side.max_hp)} {side.hp}/{side.max_hp} "
-                f"— {mark}{warning}"
-            )
-
         lines += [
             "",
             f"⏱️ {self.config.turn_timeout} сек. Выберите удар и блок.",
