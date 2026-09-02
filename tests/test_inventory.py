@@ -977,8 +977,11 @@ def test_empty_slots_carry_their_own_placeholder():
 
     assert len(rows) == len(ALL_SLOTS)
     for row in rows:
-        assert row["placeholder_image"] == f"{SLOTS}/{row['slot']}.jpeg"
+        # png, а не jpeg: подложке нужна прозрачность, чтобы садиться на
+        # фон слота, а не нести с собой собственный чёрный квадрат
+        assert row["placeholder_image"] == f"{SLOTS}/{row['slot']}.png"
         assert row["placeholder"], "значок остаётся запасным вариантом"
+    assert len({row["placeholder_image"] for row in rows}) == len(ALL_SLOTS)
 
 
 def test_the_two_pairs_of_canvas_trousers_do_not_share_a_picture():
