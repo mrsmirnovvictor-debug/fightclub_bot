@@ -72,7 +72,9 @@ ChatKey = tuple[int, int | None]
 @dataclass
 class Challenge:
     id: int
-    chat_id: int
+    # Чата может не быть: вызов, брошенный в мини-аппе, не привязан к ветке.
+    # Тогда судья молчит, а всё остальное идёт своим чередом.
+    chat_id: int | None
     thread_id: int | None
     challenger: Player
     target_id: int | None = None
@@ -80,6 +82,10 @@ class Challenge:
     task: asyncio.Task | None = None
     chat_title: str = ""
     mode: FightMode = FightMode.FIST
+
+    @property
+    def key(self) -> ChatKey | None:
+        return None if self.chat_id is None else (self.chat_id, self.thread_id)
 
 
 @dataclass
@@ -110,7 +116,7 @@ class Choice:
 @dataclass
 class DuelSession:
     id: int
-    chat_id: int
+    chat_id: int | None
     thread_id: int | None
     fighters: dict[int, Fighter]
     order: tuple[int, int]
@@ -126,11 +132,25 @@ class DuelSession:
     started: bool = False  # гонг прозвучал
     timer: asyncio.Task | None = None
     resolving: bool = False
+    # Бойцы разведены по углам и ждут гонга: панели в этот момент нет
+    resting: bool = False
+    # Сколько бойцы отдыхают между раундами. У боя в мини-аппе — нисколько:
+    # там некого ждать, обе стороны уже смотрят на экран.
+    round_break: int = 0
+    # Ходы боя как их посчитал движок. В ветке они уходят словами судьи, а
+    # мини-апп рисует по ним разбор сам — и тем же списком потом ляжет лог
+    # в историю боёв.
+    rounds: list[RoundResult] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
-    def key(self) -> ChatKey:
-        return (self.chat_id, self.thread_id)
+    def key(self) -> ChatKey | None:
+        """Ветка, которую занял бой. None — бой идёт в мини-аппе."""
+        return None if self.chat_id is None else (self.chat_id, self.thread_id)
+
+    @property
+    def in_app(self) -> bool:
+        return self.chat_id is None
 
     def opponent_of(self, user_id: int) -> Fighter:
         other_id = next(uid for uid in self.order if uid != user_id)
@@ -184,7 +204,7 @@ class DuelService:
 
     async def open_challenge(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         challenger: Player,
         target: Player | None = None,
@@ -202,7 +222,7 @@ class DuelService:
                 raise DuelError(f"{target.nickname} сейчас на ринге. Дождись конца боя.")
             if not target.can_fight():
                 raise DuelError(health_warning(target, is_self=False))
-        if (chat_id, thread_id) in self._duel_by_chat:
+        if chat_id is not None and (chat_id, thread_id) in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой. Один ринг — одна пара.")
 
         challenge = Challenge(
@@ -234,7 +254,7 @@ class DuelService:
         message = await self._send(
             chat_id, thread_id, text, reply_markup=challenge_keyboard(challenge.id)
         )
-        challenge.message_id = message.message_id
+        challenge.message_id = message.message_id if message else None
         challenge.task = asyncio.create_task(self._expire_challenge(challenge))
         self._challenges[challenge.id] = challenge
         self._busy[challenger.user_id] = "challenge"
@@ -302,7 +322,7 @@ class DuelService:
         if self._busy.get(opponent.user_id) == "challenge":
             # у принимающего висел свой вызов — снимаем его, драка важнее
             await self._withdraw_challenges_of(opponent.user_id)
-        if (challenge.chat_id, challenge.thread_id) in self._duel_by_chat:
+        if challenge.key is not None and challenge.key in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой.")
 
         self._drop_challenge(challenge)
@@ -320,6 +340,18 @@ class DuelService:
             f"🥊 <b>{esc(opponent.nickname)}</b> принимает вызов "
             f"<b>{esc(challenger.nickname)}</b>. Ринг занят!",
         )
+        if challenge.chat_id is None:
+            # Вызов из мини-аппа: стойки нет. Она нужна, чтобы вызвавший
+            # успел посмотреть на соперника в ветке; здесь он и так смотрит
+            # на экран, и лишний экран между «принял» и гонгом только мешает.
+            return await self.start_duel(
+                None,
+                None,
+                challenger,
+                opponent,
+                challenge.chat_title,
+                challenge.mode,
+            )
         return await self.open_standoff(
             challenge.chat_id,
             challenge.thread_id,
@@ -348,7 +380,7 @@ class DuelService:
             standoff_card(first, second, mode=mode),
             reply_markup=standoff_keyboard(session.id),
         )
-        session.standoff_message_id = message.message_id
+        session.standoff_message_id = message.message_id if message else None
         session.timer = asyncio.create_task(self._standoff_timer(session))
         return session
 
@@ -424,14 +456,14 @@ class DuelService:
 
     def _make_session(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         first: Player,
         second: Player,
         chat_title: str = "",
         mode: FightMode = FightMode.FIST,
     ) -> DuelSession:
-        if (chat_id, thread_id) in self._duel_by_chat:
+        if chat_id is not None and (chat_id, thread_id) in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой.")
         for player in (first, second):
             if not player.can_fight():
@@ -448,22 +480,26 @@ class DuelService:
             chat_title=chat_title,
             mode=mode,
             players={first.user_id: first, second.user_id: second},
+            # В ветке бойцы расходятся по углам, в мини-аппе — нет
+            round_break=0 if chat_id is None else self.config.round_break,
         )
         self._duels[session.id] = session
-        self._duel_by_chat[session.key] = session.id
+        if session.key is not None:
+            self._duel_by_chat[session.key] = session.id
         self._busy[fighter_a.user_id] = "duel"
         self._busy[fighter_b.user_id] = "duel"
         return session
 
     def _forget(self, session: DuelSession) -> None:
         self._duels.pop(session.id, None)
-        self._duel_by_chat.pop(session.key, None)
+        if session.key is not None:
+            self._duel_by_chat.pop(session.key, None)
         for user_id in session.order:
             self._busy.pop(user_id, None)
 
     async def start_duel(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         first: Player,
         second: Player,
@@ -487,6 +523,7 @@ class DuelService:
         session.round_number += 1
         session.choices = {}
         session.resolving = False
+        session.resting = False
         message = await self._send(
             session.chat_id,
             session.thread_id,
@@ -621,6 +658,7 @@ class DuelService:
             self.rng,
         )
 
+        session.rounds.append(result)
         # Итог раунда встаёт на место его же панели: так за раунд уходит
         # два обращения к чату вместо четырёх, и бой не упирается в лимит
         await self._close_panel(
@@ -642,7 +680,8 @@ class DuelService:
         начинается без пауз посреди боя.
         """
         finished = boxing_round(session.round_number)
-        rest = self.config.round_break
+        rest = session.round_break
+        session.resting = rest > 0
         await self._send(
             session.chat_id,
             session.thread_id,
@@ -785,6 +824,40 @@ class DuelService:
     def duel_in_chat(self, chat_id: int, thread_id: int | None) -> DuelSession | None:
         duel_id = self._duel_by_chat.get((chat_id, thread_id))
         return self._duels.get(duel_id) if duel_id else None
+
+    # ---------- то, что нужно мини-аппу ----------
+
+    def open_challenges(self) -> list[Challenge]:
+        """Вызовы, ждущие соперника, — свежие сверху.
+
+        Мини-апп показывает их списком: адресный вызов виден только тому,
+        кому он брошен, и самому вызвавшему, чтобы было что отозвать.
+        """
+        return sorted(self._challenges.values(), key=lambda c: c.id, reverse=True)
+
+    def challenge_for(self, user_id: int, challenge: Challenge) -> bool:
+        """Видит ли этот боец этот вызов."""
+        if challenge.challenger.user_id == user_id:
+            return True
+        return challenge.target_id in (None, user_id)
+
+    def challenge_of_user(self, user_id: int) -> Challenge | None:
+        """Свой вызов, который висит в ожидании ответа."""
+        for challenge in self._challenges.values():
+            if challenge.challenger.user_id == user_id:
+                return challenge
+        return None
+
+    def get_challenge(self, challenge_id: int) -> Challenge | None:
+        return self._challenges.get(challenge_id)
+
+    async def withdraw_challenge(self, user_id: int) -> bool:
+        """Отозвать свой вызов. False — отзывать было нечего."""
+        challenge = self.challenge_of_user(user_id)
+        if challenge is None:
+            return False
+        await self._withdraw_challenges_of(user_id)
+        return True
 
     def duel_of_user(self, user_id: int) -> DuelSession | None:
         for session in self._duels.values():

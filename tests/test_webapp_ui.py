@@ -57,6 +57,18 @@ def make_player() -> Player:
     return player
 
 
+# Пустой ринг: никто никого не вызвал, драться не с кем
+EMPTY_RING = {
+    "attacks": [{"zone": "head", "title": "Голова"}],
+    "blocks": [{"zone": "head", "title": "Голова + Корпус"}],
+    "modes": [{"code": "fist", "title": "кулачный бой", "emoji": "🥊"}],
+    "duel": None,
+    "challenge": None,
+    "challenges": [],
+    "can_fight": True,
+}
+
+
 class FakeBot:  # pragma: no cover - аватар в этом тесте не трогаем
     async def get_file(self, file_id):
         raise AssertionError
@@ -67,7 +79,7 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
 
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
-    magic=None,
+    magic=None, fights=None,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -85,6 +97,7 @@ async def open_page(
     await page.route("**/api/looks*", canned(looks or {"looks": [], "credits": 0}))
     await page.route("**/api/club*", canned(club or {"fighters": [], "total": 0}))
     await page.route("**/api/magic*", canned(magic or {"items": [], "credits": 0}))
+    await page.route("**/api/fights*", canned(fights or EMPTY_RING))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body=""
     ))
@@ -125,6 +138,7 @@ async def shop_page(db):
 
         await page.route("**/api/club*", canned({"fighters": [], "total": 0}))
         await page.route("**/api/magic*", canned({"items": [], "credits": 0}))
+        await page.route("**/api/fights*", canned(EMPTY_RING))
         await page.goto(f"{server.make_url('/')}")
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-shop").click()
@@ -170,7 +184,8 @@ async def test_type_filter_leaves_one_shelf(shop_page):
 
 async def test_the_counter_has_no_level_filter_any_more(shop_page):
     """Фильтр остался один — тип вещи, и он не лента, а пузыри в несколько строк."""
-    labels = await shop_page.locator(".bubbles .chip").all_inner_texts()
+    # именно фильтры прилавка: пузыри с разделами клуба живут своей жизнью
+    labels = await shop_page.locator("#filter-type .chip").all_inner_texts()
 
     assert labels[0] == "Все"
     assert "Оружие" in labels
@@ -472,6 +487,8 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
+        # вкладка открывается на боях: за списком идём в «Игроки»
+        await page.get_by_role("button", name="Игроки", exact=True).click()
         await page.wait_for_selector(".fighter")
 
         assert await page.locator(".fighter").count() == 2
@@ -843,4 +860,192 @@ async def test_a_fighter_without_points_sees_no_panel(server):
         await page.wait_for_selector("#hero:not(.hidden)")
 
         assert await page.locator("#upgrade").is_hidden()
+        await browser.close()
+
+
+# ---------- ринг в мини-аппе ----------
+
+
+def ring_with_duel(chosen=None) -> dict:
+    """Ответ ринга: идёт бой, ход первый, боец кое-что уже нажал."""
+    return {
+        "attacks": [
+            {"zone": "head", "title": "Голова"},
+            {"zone": "chest", "title": "Корпус"},
+        ],
+        "blocks": [
+            {"zone": "head", "title": "Голова + Корпус"},
+            {"zone": "chest", "title": "Корпус + Живот"},
+        ],
+        "modes": [{"code": "fist", "title": "кулачный бой", "emoji": "🥊"}],
+        "challenge": None,
+        "challenges": [],
+        "can_fight": True,
+        "duel": {
+            "id": 1,
+            "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
+            "in_app": True,
+            "started": True,
+            "round": 1,
+            "turn": 2,
+            "turns_per_round": 3,
+            "rounds": 6,
+            "resting": False,
+            "yours": True,
+            "chosen": chosen or {"attack": None, "block": None},
+            "fighters": [
+                {
+                    "user_id": 42, "name": "Растафарайчик", "level": 5,
+                    "emoji": "⚔️", "fclass": "Воин", "hp": 40, "max_hp": 100,
+                    "percent": 40, "damage_dealt": 30, "ready": True, "you": True,
+                    "weapon": "кулаком", "weapon_icon": "👊",
+                },
+                {
+                    "user_id": 43, "name": "Марла", "level": 4,
+                    "emoji": "🗡️", "fclass": "Ассасин", "hp": 90, "max_hp": 95,
+                    "percent": 95, "damage_dealt": 60, "ready": False, "you": False,
+                    "weapon": "ножом", "weapon_icon": "🔪",
+                },
+            ],
+            "log": [
+                {
+                    "number": 1, "round": 1, "turn": 1, "finished": False,
+                    "winner_id": None, "hp_after": {"42": 40, "43": 90},
+                    "strikes": [
+                        {
+                            "attacker_id": 42, "defender_id": 43, "zone": "belly",
+                            "zone_title": "Живот", "zone_where": "в живот",
+                            "outcome": "hit", "emoji": "👊",
+                            "title": "попал", "weapon": "кулаком", "damage": 5,
+                            "counter": 0, "armor": 0, "hp_after": 90,
+                            "missed_turn": False,
+                        },
+                        {
+                            "attacker_id": 43, "defender_id": 42, "zone": "head",
+                            "zone_title": "Голова", "zone_where": "в голову",
+                            "outcome": "crit", "emoji": "🩸",
+                            "title": "крит", "weapon": "ножом", "damage": 60,
+                            "counter": 0, "armor": 0, "hp_after": 40,
+                            "missed_turn": False,
+                        },
+                    ],
+                }
+            ],
+        },
+    }
+
+
+async def open_ring(pw, server, fights):
+    """Открыть вкладку клуба на разделе боёв."""
+    browser, page = await open_page(
+        pw, server, build_card(make_player(), TOKEN, viewer_id=42), fights=fights
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.locator("#tab-club").click()
+    await page.wait_for_selector("#club:not(.hidden)")
+    return browser, page
+
+
+async def test_the_club_tab_opens_on_the_ring_and_switches_to_players(server):
+    """Два раздела на одной вкладке: бои и игроки."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, None)
+
+        sections = await page.locator("#club-sections .chip").all_inner_texts()
+        assert sections == ["Бои", "Игроки"]
+        assert await page.locator("#club-fights").is_visible()
+        assert await page.locator("#club-players").is_hidden()
+
+        await page.get_by_role("button", name="Игроки", exact=True).click()
+        assert await page.locator("#club-players").is_visible()
+        assert await page.locator("#club-fights").is_hidden()
+        await browser.close()
+
+
+async def test_an_empty_ring_offers_to_throw_a_challenge(server):
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, None)
+
+        body = await page.locator("#fights-body").inner_text()
+        assert "Вызвать на кулачный бой" in body
+        assert "Брось вызов" in await page.locator("#fights-note").inner_text()
+        await browser.close()
+
+
+async def test_the_fight_panel_shows_the_board_and_both_rows_of_zones(server):
+    """Панель боя: табло сверху, удары и блоки кнопками."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring_with_duel())
+
+        assert "Раунд 1 из 6, удар 2 из 3" in await page.locator(
+            ".fight-round"
+        ).inner_text()
+        board = await page.locator(".fight-board").inner_text()
+        for line in ("Растафарайчик", "VS.", "Марла", "40/100", "✅ Готов", "⏳ Думает"):
+            assert line in board
+
+        zones = await page.locator(".zone").all_inner_texts()
+        assert zones == ["👊Голова", "👊Корпус", "🛡 Голова + Корпус", "🛡 Корпус + Живот"]
+        assert not await page.locator(".zone.on").count()  # ничего не нажато
+        await browser.close()
+
+
+async def test_the_panel_highlights_what_the_server_already_took(server):
+    """Подсветка идёт от сервера, а не от нажатия: видно принятое."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(
+            pw, server, ring_with_duel({"attack": "chest", "block": "head"})
+        )
+
+        lit = await page.locator(".zone.on").all_inner_texts()
+        assert lit == ["👊Корпус", "🛡 Голова + Корпус"]
+        await browser.close()
+
+
+async def test_the_log_shows_who_hit_where_in_each_turn(server):
+    """Разбор по ходам: куда бил каждый и сколько снял."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring_with_duel())
+
+        log = await page.locator(".fight-log").inner_text()
+        assert "Раунд 1, удар 1" in log
+        assert "Растафарайчик в живот" in log and "попал −5" in log
+        assert "Марла в голову" in log and "крит −60" in log
+        await browser.close()
+
+
+async def test_a_pressed_zone_goes_to_the_server(server):
+    """Нажатие уходит на ринг, а панель перерисовывается ответом."""
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring_with_duel())
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(ring_with_duel({"attack": "head", "block": None})),
+            )
+
+        await page.route("**/api/fight", catch)
+        await page.get_by_role("button", name="👊Голова", exact=True).click()
+        await page.wait_for_selector(".zone.on")
+
+        assert sent == [{"action": "attack", "zone": "head"}]
+        assert await page.locator(".zone.on").inner_text() == "👊Голова"
+        await browser.close()
+
+
+async def test_the_corner_break_hides_the_buttons(server):
+    """В перерыве бить некуда: панель ждёт вместе с бойцами."""
+    resting = ring_with_duel()
+    resting["duel"]["resting"] = True
+
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, resting)
+
+        assert await page.locator(".zone").count() == 0
+        assert "по углам" in await page.locator("#fights-body").inner_text()
         await browser.close()

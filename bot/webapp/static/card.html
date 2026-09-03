@@ -21,8 +21,21 @@
       <h1 class="screen-title">🥊 Бойцовский клуб</h1>
       <span class="screen-count" id="club-count"></span>
     </header>
-    <p class="screen-note" id="club-note"></p>
-    <div id="club-list"></div>
+
+    <!-- Два раздела на одной вкладке: где дерутся и кто в клубе -->
+    <div class="bubbles" id="club-sections"></div>
+
+    <!-- Бои: вызовы, свой вызов или панель идущего боя -->
+    <section id="club-fights" class="hidden">
+      <p class="screen-note" id="fights-note"></p>
+      <div id="fights-body"></div>
+    </section>
+
+    <!-- Игроки -->
+    <section id="club-players">
+      <p class="screen-note" id="club-note"></p>
+      <div id="club-list"></div>
+    </section>
   </main>
 
   <!-- ---------- 2. Магазин ---------- -->

@@ -81,12 +81,16 @@ class Announcer:
 
     async def send(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         text: str,
         cosmetic: bool = False,
         **kwargs,
     ):
+        # Чата может не быть вовсе: бой, заведённый в мини-аппе, живёт без
+        # ветки, и судье там просто некому говорить вслух.
+        if chat_id is None:
+            return None
         if cosmetic and self._skip_cosmetic(chat_id):
             return None
         for attempt in range(SEND_ATTEMPTS):
@@ -109,13 +113,13 @@ class Announcer:
 
     async def edit(
         self,
-        chat_id: int,
+        chat_id: int | None,
         message_id: int | None,
         text: str,
         cosmetic: bool = False,
         **kwargs,
     ):
-        if message_id is None:
+        if chat_id is None or message_id is None:
             return None
         if cosmetic and self._skip_cosmetic(chat_id):
             return None

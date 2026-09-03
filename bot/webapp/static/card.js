@@ -698,6 +698,9 @@ function showTab(name) {
   if (name === "shop" && !shopData) loadShop();
   if (name === "club" && !clubData) loadClub();
   if (name === "magic" && !magicData) loadMagic();
+  // Ринг опрашиваем, только пока на него смотрят: ушли со вкладки — молчим
+  if (name === "club") startWatchingFights();
+  else stopWatchingFights();
 }
 
 // Касса — не вкладка, а лист поверх экрана: в панель она не попадает
@@ -992,6 +995,297 @@ async function showFighter(fighter) {
   } catch (error) {
     el("sheet-note").textContent = error.message;
   }
+}
+
+// ---------- бои ----------
+//
+// Правил здесь нет: страница показывает то, что отдал сервер, и шлёт
+// обратно нажатия. Ходы считает тот же движок, что и в ветке, поэтому
+// драться можно откуда удобнее — экран и чат ведут один и тот же бой.
+
+let fightsData = null;
+let fightsTimer = null;
+let clubSection = "fights";
+// Пока запрос в пути, второй не шлём: иначе двойное нажатие уходит дважды
+let fightBusy = false;
+
+function startWatchingFights() {
+  if (fightsTimer) return;
+  loadFights();
+  fightsTimer = setInterval(loadFights, 2000);
+}
+
+function stopWatchingFights() {
+  if (!fightsTimer) return;
+  clearInterval(fightsTimer);
+  fightsTimer = null;
+}
+
+function pickClubSection(name) {
+  clubSection = name;
+  el("club-fights").classList.toggle("hidden", name !== "fights");
+  el("club-players").classList.toggle("hidden", name !== "players");
+  renderClubSections();
+  if (name === "players" && !clubData) loadClub();
+}
+
+function renderClubSections() {
+  const box = el("club-sections");
+  box.textContent = "";
+  box.appendChild(chip("Бои", clubSection === "fights", () =>
+    pickClubSection("fights")
+  ));
+  box.appendChild(chip("Игроки", clubSection === "players", () =>
+    pickClubSection("players")
+  ));
+}
+
+async function loadFights() {
+  try {
+    const response = await fetch("api/fights", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (response.status === 404) {
+      el("fights-note").textContent = "Сначала заведи бойца в личке бота.";
+      return;
+    }
+    if (!response.ok) throw new Error("Ринг не отвечает.");
+    renderFights(await response.json());
+  } catch (error) {
+    el("fights-note").textContent = error.message;
+  }
+}
+
+async function fightAction(payload) {
+  if (fightBusy) return;
+  fightBusy = true;
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  try {
+    const response = await fetch("api/fight", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      popup("Ринг", body.error || "Не вышло.");
+      return;
+    }
+    renderFights(body);
+  } catch (error) {
+    popup("Ринг", error.message);
+  } finally {
+    fightBusy = false;
+  }
+}
+
+function renderFights(data) {
+  fightsData = data;
+  const body = el("fights-body");
+  body.textContent = "";
+  if (data.duel) {
+    el("fights-note").textContent = "";
+    body.appendChild(duelPanel(data));
+  } else if (data.challenge) {
+    el("fights-note").textContent = "Вызов брошен. Ждём, кто выйдет.";
+    body.appendChild(myChallenge(data.challenge));
+    if (data.challenges.length) body.appendChild(challengeList(data));
+  } else {
+    el("fights-note").textContent = data.can_fight
+      ? "Брось вызов или прими чужой."
+      : "Здоровье не то — сначала отдышись.";
+    body.appendChild(openForm(data));
+    if (data.challenges.length) body.appendChild(challengeList(data));
+  }
+}
+
+function openForm(data) {
+  const box = document.createElement("div");
+  box.className = "fight-open";
+  data.modes.forEach((mode) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn wide";
+    btn.textContent = mode.emoji + " Вызвать на " + mode.title;
+    btn.disabled = !data.can_fight;
+    btn.addEventListener("click", () =>
+      fightAction({ action: "open", mode: mode.code })
+    );
+    box.appendChild(btn);
+  });
+  return box;
+}
+
+function myChallenge(challenge) {
+  const box = document.createElement("div");
+  box.className = "fight-card";
+  const head = document.createElement("p");
+  head.className = "fight-line";
+  head.textContent = challenge.mode.emoji + " Твой вызов на " + challenge.mode.title;
+  box.appendChild(head);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn secondary wide";
+  btn.textContent = "Отозвать";
+  btn.addEventListener("click", () => fightAction({ action: "cancel" }));
+  box.appendChild(btn);
+  return box;
+}
+
+function challengeList(data) {
+  const box = document.createElement("div");
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Кто зовёт драться";
+  box.appendChild(head);
+  data.challenges.forEach((challenge) => {
+    const card = document.createElement("div");
+    card.className = "fight-card";
+    const line = document.createElement("p");
+    line.className = "fight-line";
+    line.textContent =
+      challenge.mode.emoji + " " + challenge.challenger.emoji + " " +
+      challenge.challenger.name + " [" + challenge.challenger.level + "] — " +
+      challenge.mode.title + (challenge.personal ? ", лично тебе" : "");
+    card.appendChild(line);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn wide";
+    btn.textContent = "Принять вызов";
+    btn.disabled = !data.can_fight;
+    btn.addEventListener("click", () =>
+      fightAction({ action: "join", challenge_id: challenge.id })
+    );
+    card.appendChild(btn);
+    box.appendChild(card);
+  });
+  return box;
+}
+
+function fightBar(fighter) {
+  const bar = document.createElement("div");
+  bar.className = "fight-bar";
+  const fill = document.createElement("span");
+  fill.style.width = Math.max(0, Math.min(100, fighter.percent)) + "%";
+  fill.className =
+    fighter.percent < 20 ? "low" : fighter.percent < 80 ? "hurt" : "full";
+  bar.appendChild(fill);
+  return bar;
+}
+
+function fighterSide(fighter) {
+  const box = document.createElement("div");
+  box.className = "fight-side" + (fighter.you ? " you" : "");
+  const name = document.createElement("p");
+  name.className = "fight-name";
+  name.textContent = fighter.emoji + " " + fighter.name + " [" + fighter.level + "]";
+  const hp = document.createElement("p");
+  hp.className = "fight-hp";
+  hp.textContent = fighter.hp + "/" + fighter.max_hp;
+  const mark = document.createElement("p");
+  mark.className = "fight-mark";
+  mark.textContent = fighter.ready ? "✅ Готов" : "⏳ Думает";
+  box.appendChild(name);
+  box.appendChild(hp);
+  box.appendChild(fightBar(fighter));
+  box.appendChild(mark);
+  return box;
+}
+
+function zoneButtons(rows, chosen, action, icon) {
+  const box = document.createElement("div");
+  box.className = "zone-list";
+  rows.forEach((row) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "zone" + (chosen === row.zone ? " on" : "");
+    btn.textContent = (icon || "") + row.title;
+    btn.addEventListener("click", () =>
+      fightAction({ action: action, zone: row.zone })
+    );
+    box.appendChild(btn);
+  });
+  return box;
+}
+
+function duelPanel(data) {
+  const duel = data.duel;
+  const box = document.createElement("div");
+  box.className = "fight-panel";
+
+  const head = document.createElement("p");
+  head.className = "fight-round";
+  head.textContent =
+    duel.started
+      ? "🔔 Раунд " + duel.round + " из " + duel.rounds +
+        ", удар " + duel.turn + " из " + duel.turns_per_round
+      : "Гонга ещё не было";
+  box.appendChild(head);
+
+  const board = document.createElement("div");
+  board.className = "fight-board";
+  duel.fighters.forEach((fighter, index) => {
+    if (index) {
+      const vs = document.createElement("span");
+      vs.className = "fight-vs";
+      vs.textContent = "VS.";
+      board.appendChild(vs);
+    }
+    board.appendChild(fighterSide(fighter));
+  });
+  box.appendChild(board);
+
+  if (duel.yours && duel.started && !duel.resting) {
+    const you = duel.fighters.find((fighter) => fighter.you);
+    box.appendChild(zoneButtons(data.attacks, duel.chosen.attack, "attack",
+      (you && you.weapon_icon) || "👊"));
+    box.appendChild(zoneButtons(data.blocks, duel.chosen.block, "block", "🛡 "));
+  } else if (duel.resting) {
+    const rest = document.createElement("p");
+    rest.className = "fight-line";
+    rest.textContent = "Судья развёл по углам. Следующий раунд вот-вот.";
+    box.appendChild(rest);
+  }
+
+  if (duel.log.length) box.appendChild(fightLog(duel));
+  return box;
+}
+
+function fightLog(duel) {
+  const box = document.createElement("div");
+  box.className = "fight-log";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Как шёл бой";
+  box.appendChild(head);
+  const names = {};
+  duel.fighters.forEach((fighter) => {
+    names[fighter.user_id] = fighter.name;
+  });
+  duel.log.slice().reverse().forEach((turn) => {
+    const row = document.createElement("div");
+    row.className = "log-turn";
+    const head = document.createElement("p");
+    head.className = "log-head";
+    head.textContent = "Раунд " + turn.round + ", удар " + turn.turn;
+    row.appendChild(head);
+    turn.strikes.forEach((strike) => {
+      const line = document.createElement("p");
+      line.className = "log-line";
+      const where = strike.zone_where ? " " + strike.zone_where : "";
+      const hit = strike.damage ? " −" + strike.damage : "";
+      const back = strike.counter ? " ответка −" + strike.counter : "";
+      line.textContent =
+        strike.emoji + " " + (names[strike.attacker_id] || "?") + where +
+        ": " + strike.title + hit + back;
+      row.appendChild(line);
+    });
+    box.appendChild(row);
+  });
+  return box;
 }
 
 function renderClub(data) {
@@ -1635,6 +1929,7 @@ function render(card, keepTab) {
   el("loader").classList.add("hidden");
   // Чужую карточку показываем одним экраном: ни панели, ни рюкзака
   el("bar").classList.toggle("hidden", !card.is_self);
+  pickClubSection(clubSection);
   if (!keepTab) showTab("hero");
 }
 

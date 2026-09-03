@@ -10,8 +10,10 @@ from aiohttp import web
 
 from bot.config import Config
 from bot.database import Database
+from bot.duel_service import DuelError
 from bot.game.classes import ALL_STATS
 from bot.game.equipment import Slot
+from bot.game.modes import mode_of
 from bot.game.potions import get_potion
 from bot.inventory_service import (
     InventoryError,
@@ -26,6 +28,7 @@ from bot.pro_service import ProError, claim_free_pro, promo_taken
 from bot.store_service import StoreError, StoreService
 from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
+from bot.webapp.fight import build_fights
 from bot.webapp.card import (
     build_card,
     build_club,
@@ -365,6 +368,62 @@ async def api_club(request: web.Request) -> web.Response:
     return web.json_response(build_club(players, viewer.user_id))
 
 
+# ---------- бои ----------
+
+
+async def _fighter(request: web.Request):
+    """Боец, который смотрит на вкладку боёв. Без персонажа драться нечем."""
+    viewer = await _viewer(request)
+    player = await request.app[DB_KEY].get_player(viewer.user_id)
+    if player is None:
+        raise web.HTTPNotFound(text="У тебя ещё нет персонажа")
+    return player
+
+
+async def api_fights(request: web.Request) -> web.Response:
+    """Состояние вкладки «Бои» целиком: вызовы, свой вызов или идущий бой.
+
+    Страница опрашивает эту ручку раз в пару секунд, поэтому ответ всегда
+    полный: по нему видно, что рисовать, и не нужно помнить, что было.
+    """
+    player = await _fighter(request)
+    return web.json_response(build_fights(player, request.app.get(DUELS_KEY)))
+
+
+async def api_fight(request: web.Request) -> web.Response:
+    """Действие на ринге: бросить вызов, принять, отозвать, ударить, закрыться."""
+    player = await _fighter(request)
+    duels = request.app.get(DUELS_KEY)
+    if duels is None:  # pragma: no cover - бот без сервиса боёв не поднимается
+        return web.json_response({"error": "Бои сейчас недоступны."}, status=503)
+
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    try:
+        if action == "open":
+            await duels.open_challenge(
+                None, None, player, mode=mode_of(str(data.get("mode", "")))
+            )
+        elif action == "cancel":
+            await duels.withdraw_challenge(player.user_id)
+        elif action == "join":
+            await duels.accept_challenge(_int_field(data, "challenge_id"), player)
+        elif action in {"attack", "block"}:
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Ты сейчас не на ринге.")
+            await duels.handle_choice(
+                duel.id, player.user_id, action, str(data.get("zone", ""))
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except DuelError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await request.app[DB_KEY].get_player(player.user_id)
+    return web.json_response(build_fights(fresh or player, duels))
+
+
 async def api_looks(request: web.Request) -> web.Response:
     """Гардероб: все образы, какой надет и что уже куплено."""
     try:
@@ -498,6 +557,8 @@ def create_app(
             web.post("/api/use", api_use),
             web.post("/api/upgrade", api_upgrade),
             web.get("/api/club", api_club),
+            web.get("/api/fights", api_fights),
+            web.post("/api/fight", api_fight),
             web.get("/api/magic", api_magic),
             web.post("/api/pro", api_pro),
             web.get("/api/looks", api_looks),

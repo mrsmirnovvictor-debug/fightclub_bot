@@ -738,3 +738,69 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .sheet-doll .slot { min-height: 0; }
 .sheet-doll .avatar { min-height: 0; }
+
+/* ---------- ринг в мини-аппе ---------- */
+/* Экран боя повторяет панель из ветки: табло сверху, кнопки хода снизу.
+   Кнопки — не радио, а обычные: выбор уходит на сервер сразу, и подсветка
+   показывает то, что сервер уже принял, а не то, что мы нажали. */
+.btn.wide { width: 100%; padding: 11px 10px; }
+.fight-open { display: grid; gap: 8px; margin-bottom: 12px; }
+.fight-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--slot);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.fight-line { margin: 0 0 8px; font-size: 14px; }
+.fight-panel { display: grid; gap: 10px; }
+.fight-round { margin: 0; font-weight: 600; font-size: 14px; }
+.fight-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.fight-vs { color: var(--muted); font-size: 12px; font-weight: 700; }
+.fight-side { min-width: 0; }
+.fight-side.you .fight-name { font-weight: 700; }
+.fight-name, .fight-hp, .fight-mark { margin: 0; font-size: 13px; }
+.fight-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fight-hp { color: var(--muted); font-size: 12px; }
+.fight-mark { font-size: 12px; margin-top: 2px; }
+.fight-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--slot-line);
+  overflow: hidden;
+  margin: 4px 0 2px;
+}
+.fight-bar span { display: block; height: 100%; }
+.fight-bar .full { background: #4caf50; }
+.fight-bar .hurt { background: #e5a53b; }
+.fight-bar .low { background: #e05656; }
+
+.zone-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.zone {
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 8px;
+  cursor: pointer;
+}
+.zone.on { border-color: var(--accent, #4caf50); font-weight: 700; }
+.zone:active { transform: scale(0.97); }
+
+.fight-log { margin-top: 4px; }
+.log-turn {
+  border-top: 1px solid var(--line);
+  padding: 8px 2px;
+}
+.log-head { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.log-line { margin: 0 0 2px; font-size: 13px; }
