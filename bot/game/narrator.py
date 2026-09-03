@@ -614,10 +614,12 @@ def rewards_report(
         parts.append(f"+{report.exp} опыта" if report.exp else "без опыта")
         if report.credits:
             parts.append(f"+{report.credits} 💰 (всего {player.credits})")
-        sign = "+" if report.rating_delta >= 0 else "−"
-        parts.append(
-            f"рейтинг {player.rating} ({sign}{abs(report.rating_delta)})"
-        )
+        if report.rating_delta:
+            sign = "+" if report.rating_delta > 0 else "−"
+            parts.append(f"рейтинг {player.rating} ({sign}{abs(report.rating_delta)})")
+        else:
+            # Ничья: рейтинг на месте, и «(+0)» рядом с ним только сбивает
+            parts.append(f"рейтинг {player.rating} — без изменений")
         lines.append(
             f"{player.avatar} <b>{player_link(player)}</b>: "
             + ", ".join(parts)
@@ -778,10 +780,13 @@ def battle_rewards_report(rows, broken=None) -> str:
         if report.credits:
             parts.append(f"+{report.credits} кр.")
         delta = abs(report.rating_delta)
-        sign = "+" if report.rating_delta >= 0 else "-"
-        parts.append(
-            f"{sign}{delta} {plural(delta, 'очко', 'очка', 'очков')} рейтинга"
-        )
+        if delta:
+            sign = "+" if report.rating_delta > 0 else "-"
+            parts.append(
+                f"{sign}{delta} {plural(delta, 'очко', 'очка', 'очков')} рейтинга"
+            )
+        else:
+            parts.append("рейтинг без изменений")
         mark = "🎉" if won else "❌"
         name = player_link(player)
         lines.append(f"{mark} <b>{name}</b>: " + ", ".join(parts))

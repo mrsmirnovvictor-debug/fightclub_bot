@@ -778,7 +778,9 @@ class DuelService:
                 player.losses += 1
                 exp = consolation_exp(full_exp, LOSS_EXP_SHARE)
 
-            delta = rating_delta(won, my_level, opponent_level)
+            # Ничья рейтинг не двигает: won=None вместо False
+            drawn = result.winner_id is None
+            delta = rating_delta(None if drawn else won, my_level, opponent_level)
             if share < 1.0:
                 exp = apply_share(exp, share)
                 delta = int(math.copysign(apply_share(abs(delta), share), delta))

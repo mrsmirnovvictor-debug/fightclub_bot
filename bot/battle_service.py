@@ -634,7 +634,10 @@ class BattleService:
                 player.losses += 1
                 exp = 0
 
-            delta = rating_delta(won, levels[user_id], rival_level)
+            # Ничья рейтинг не двигает: won=None вместо False
+            delta = rating_delta(
+                None if outcome.draw else won, levels[user_id], rival_level
+            )
             if player.birthplace is None and session.chat_title:
                 player.birthplace = session.chat_title
             ruined = (

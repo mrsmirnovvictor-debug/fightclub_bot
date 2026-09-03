@@ -101,11 +101,16 @@ def consolation_exp(winner_exp: int, share: float) -> int:
     return max(1, round(winner_exp * share))
 
 
-def rating_delta(won: bool, my_level: int, opponent_level: int) -> int:
+def rating_delta(won: bool | None, my_level: int, opponent_level: int) -> int:
     """Изменение рейтинга: побить старшего дорого стоит, младшего — почти нет.
 
-    Ничья считается поражением для обоих, поэтому отдельного случая нет.
+    `won=None` — ничья: рейтинг не двигается ни у кого. Раньше ничья шла
+    поражением обоим, и двое равных бойцов, честно отбоксировавших шесть
+    раундов, уходили с ринга беднее, чем пришли. За то, что никто не уступил,
+    наказывать не за что.
     """
+    if won is None:
+        return 0
     difference = opponent_level - my_level if won else my_level - opponent_level
     raw = RATING_BASE * (1.0 + RATING_LEVEL_STEP * difference)
     delta = max(RATING_MIN_DELTA, min(RATING_MAX_DELTA, round(raw)))

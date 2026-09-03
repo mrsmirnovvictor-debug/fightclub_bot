@@ -459,8 +459,12 @@ async def test_exp_depends_on_damage_dealt(bot, db):
     assert win_exp(60, 1, 5) > win_exp(60, 1, 1) > win_exp(60, 5, 1)
 
 
-async def test_draw_gives_nothing_but_costs_rating(bot, db):
-    """Ничья считается поражением обоим."""
+async def test_a_draw_leaves_the_rating_where_it_was(bot, db):
+    """Ничья не двигает рейтинг: никто не уступил — наказывать не за что.
+
+    Раньше ничья шла поражением обоим, и двое равных бойцов уходили с ринга
+    беднее, чем пришли.
+    """
     service = make_service(bot, db)
     await db.save_player(make_player(1, "Тайлер", "warrior"))
     await db.save_player(make_player(2, "Марла", "warrior"))
@@ -475,7 +479,10 @@ async def test_draw_gives_nothing_but_costs_rating(bot, db):
         assert player.draws == 1
         assert player.total_exp == 0
         assert player.credits == 0
-        assert player.rating < RATING_START
+        assert player.rating == RATING_START
+
+    rewards = next(text for text in bot.log if "Итоги" in text)
+    assert "без изменений" in rewards and "(−" not in rewards
 
 
 async def test_repeat_fights_pay_less(bot, db):
