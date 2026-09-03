@@ -1080,6 +1080,29 @@ async def test_the_log_speaks_the_words_of_the_judge(server):
         await browser.close()
 
 
+async def test_the_damage_is_coloured_by_the_kind_of_strike(server):
+    """Обычный урон синим, критический — красным: размен видно с ходу."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring_with_duel())
+
+        marks = page.locator(".fight-log .dmg")
+        assert await marks.all_inner_texts() == ["−5", "−60"]
+        assert await marks.nth(0).get_attribute("class") == "dmg"
+        assert await marks.nth(1).get_attribute("class") == "dmg crit"
+
+        colours = [
+            await marks.nth(index).evaluate("node => getComputedStyle(node).color")
+            for index in range(2)
+        ]
+        assert colours[0] != colours[1]  # цвет и правда разный, а не только класс
+
+        # строка от подсветки не рассыпалась
+        log = await page.locator(".fight-log").inner_text()
+        assert "Марла ловит момент и лупит ножом в голову" in log
+        assert "−60 [40/100]" in log
+        await browser.close()
+
+
 async def test_the_corner_break_hides_the_buttons(server):
     """В перерыве бить некуда: панель ждёт вместе с бойцами."""
     resting = ring_with_duel()
@@ -1169,7 +1192,7 @@ async def test_the_end_of_the_fight_shows_the_result(server):
             )
 
         await page.route("**/api/fight", catch)
-        await page.get_by_role("button", name="Закрыть").click()
+        await page.get_by_role("button", name="Завершить бой").click()
         await page.wait_for_selector(".fight-finish", state="detached")
 
         assert sent == [{"action": "done"}]

@@ -12,6 +12,8 @@
   --hp-green: #3ea842;
   --hp-yellow: #d8a417;
   --hp-red: #cc3b30;
+  --dmg: #1a63c4;
+  --dmg-crit: #cc2f22;
 }
 
 /* Telegram обычно сам подставляет цвета темы; тут — тёмные запасные,
@@ -28,6 +30,8 @@ body.dark {
   --hp-green: #4cbf52;
   --hp-yellow: #e0b02a;
   --hp-red: #e04b3f;
+  --dmg: #6cb6ff;
+  --dmg-crit: #ff6a5c;
 }
 
 * { box-sizing: border-box; }
@@ -836,6 +840,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .log-head { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
 .log-line { margin: 0 0 2px; font-size: 13px; }
+/* Урон в словах судьи: обычный синим, критический и пробитый блок — красным.
+   По ленте боя так видно, где размен был обычный, а где решающий. */
+.dmg { font-weight: 700; color: var(--dmg); }
+.dmg.crit { color: var(--dmg-crit); }
 
 /* ---------- статистика боёв ---------- */
 /* Строка боя — кнопка: тап проваливает в разбор по ходам. Цветная кромка

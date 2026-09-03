@@ -1382,10 +1382,40 @@ function finishCard(duel) {
   const close = document.createElement("button");
   close.type = "button";
   close.className = "btn wide";
-  close.textContent = "Закрыть";
+  close.textContent = "Завершить бой";
   close.addEventListener("click", () => fightAction({ action: "done" }));
   box.appendChild(close);
   return box;
+}
+
+// Слова судьи об одном ударе. Урон в них подсвечен: обычный синим,
+// критический и пробитый блок — красным. Порядок строк и ударов один и тот
+// же, поэтому по номеру строки видно, каким был размен.
+const DAMAGE = /−\d+/;
+
+function judgeLine(text, strike) {
+  const line = document.createElement("p");
+  line.className = "log-line";
+  const hit = DAMAGE.exec(text);
+  if (!hit) {
+    line.textContent = text;
+    return line;
+  }
+  const heavy = strike && (strike.outcome === "crit" || strike.outcome === "break");
+  const amount = document.createElement("span");
+  amount.className = heavy ? "dmg crit" : "dmg";
+  amount.textContent = hit[0];
+  line.appendChild(document.createTextNode(text.slice(0, hit.index)));
+  line.appendChild(amount);
+  line.appendChild(document.createTextNode(text.slice(hit.index + hit[0].length)));
+  return line;
+}
+
+function judgeLines(turn, into) {
+  (turn.lines || []).forEach((said, index) => {
+    into.appendChild(judgeLine(said, (turn.strikes || [])[index]));
+  });
+  return into;
 }
 
 function fightLog(duel) {
@@ -1397,14 +1427,7 @@ function fightLog(duel) {
   head.className = "shelf-head";
   head.textContent = "Ход боя";
   box.appendChild(head);
-  duel.log.slice().reverse().forEach((turn) => {
-    (turn.lines || []).forEach((said) => {
-      const line = document.createElement("p");
-      line.className = "log-line";
-      line.textContent = said;
-      box.appendChild(line);
-    });
-  });
+  duel.log.slice().reverse().forEach((turn) => judgeLines(turn, box));
   return box;
 }
 
@@ -1535,14 +1558,7 @@ function turnList(turns) {
   // Разбор старого боя — теми же словами, какими судья говорил тогда
   const box = document.createElement("div");
   box.className = "fight-log";
-  turns.forEach((turn) => {
-    (turn.lines || []).forEach((said) => {
-      const line = document.createElement("p");
-      line.className = "log-line";
-      line.textContent = said;
-      box.appendChild(line);
-    });
-  });
+  turns.forEach((turn) => judgeLines(turn, box));
   return box;
 }
 
