@@ -121,8 +121,12 @@ def esc(text: str) -> str:
 
 
 def plain(text: str) -> str:
-    """Без разметки — для всплывающих ответов, где HTML не разбирается."""
-    return TAGS.sub("", text)
+    """Без разметки — для всплывающих ответов, где HTML не разбирается.
+
+    Экранированное возвращаем как было: иначе боец с ником «Кот&Пёс» вместо
+    имени получает «Кот&amp;Пёс».
+    """
+    return html.unescape(TAGS.sub("", text))
 
 
 def mention(fighter: Fighter) -> str:
@@ -377,24 +381,40 @@ def rest_phrase(seconds: int) -> str:
     return f"{seconds} секунд"
 
 
+def strike_lines(
+    result: RoundResult,
+    fighters: dict[int, Fighter],
+    rng: random.Random | None = None,
+) -> list[str]:
+    """Слова судьи об этом ходе — по строке на удар.
+
+    Формулировку судья выбирает броском, поэтому строки собираются один раз
+    и дальше передаются как есть: и в ветку, и в мини-апп, и в лог боя.
+    Позовёшь второй раз — получишь другие слова про тот же удар.
+    """
+    rng = rng or random
+    return [
+        describe_strike(
+            strike, fighters[strike.attacker_id], fighters[strike.defender_id], rng
+        )
+        for strike in result.strikes
+    ]
+
+
 def round_report(
     result: RoundResult,
     fighters: dict[int, Fighter],
     rng: random.Random | None = None,
+    lines: list[str] | None = None,
 ) -> str:
-    rng = rng or random
-    lines = [
+    """Разбор хода для ветки: заголовок и уже сказанные слова судьи."""
+    said = strike_lines(result, fighters, rng) if lines is None else lines
+    head = [
         f"<b>⚔️ Раунд {boxing_round(result.number)}, "
         f"удар {turn_in_round(result.number)}</b>",
         "",
     ]
-    for strike in result.strikes:
-        lines.append(
-            describe_strike(
-                strike, fighters[strike.attacker_id], fighters[strike.defender_id], rng
-            )
-        )
-    return "\n".join(lines)
+    return "\n".join(head + said)
 
 
 def finish_report(

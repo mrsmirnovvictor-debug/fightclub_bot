@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from bot.game.classes import ZONE_PREPOSITIONAL
+from bot.game.narrator import plain
 from bot.game.combat import Outcome, RoundResult, Strike, boxing_round, turn_in_round
 
 # Как назвать исход удара. Значки те же, что в логе боя в ветке: лог один,
@@ -51,8 +52,13 @@ def strike_payload(strike: Strike) -> dict[str, Any]:
     }
 
 
-def turn_payload(result: RoundResult) -> dict[str, Any]:
-    """Ход целиком: номер раунда, номер удара и оба размена."""
+def turn_payload(result: RoundResult, lines: list[str] | None = None) -> dict[str, Any]:
+    """Ход целиком: номера, оба размена и слова судьи о них.
+
+    `lines` — то, что судья уже сказал в ветку, слово в слово. Их передают
+    сюда, а не собирают заново: формулировку судья выбирает броском, и
+    второй заход дал бы про тот же удар другие слова.
+    """
     return {
         "number": result.number,
         "round": boxing_round(result.number),
@@ -61,6 +67,8 @@ def turn_payload(result: RoundResult) -> dict[str, Any]:
         "hp_after": {str(uid): hp for uid, hp in result.hp_after.items()},
         "finished": result.finished,
         "winner_id": result.winner_id,
+        # Комментарий судьи без разметки: мини-апп рисует его как текст
+        "lines": [plain(line) for line in lines or []],
     }
 
 

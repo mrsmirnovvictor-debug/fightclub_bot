@@ -784,19 +784,38 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .fight-bar .hurt { background: #e5a53b; }
 .fight-bar .low { background: #e05656; }
 
-.zone-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.zone {
-  border: 1px solid var(--slot-line);
+/* Выбор хода: два столбца радиокнопок и одна кнопка отправки — как в
+   классическом бойцовском клубе. Пока не нажали «Вперёд!», выбор живёт
+   только на странице, и передумать можно сколько угодно. */
+.turn-form { display: grid; gap: 10px; }
+.zone-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--slot);
-  color: inherit;
-  font: inherit;
+  padding: 10px;
+}
+.zone-column { display: grid; gap: 2px; align-content: start; }
+.zone-head {
+  margin: 0 0 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
   font-size: 13px;
-  padding: 9px 8px;
+  font-weight: 700;
+}
+.zone {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  padding: 6px 4px;
+  border-radius: 6px;
   cursor: pointer;
 }
-.zone.on { border-color: var(--accent, #4caf50); font-weight: 700; }
-.zone:active { transform: scale(0.97); }
+.zone input { accent-color: var(--accent); margin: 0; flex: none; }
+.zone.on { background: var(--slot); font-weight: 600; }
+.zone:active { transform: scale(0.99); }
 
 .fight-log { margin-top: 4px; }
 .log-turn {

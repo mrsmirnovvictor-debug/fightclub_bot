@@ -22,7 +22,6 @@ from bot.game.combat import (
     boxing_round,
     turn_in_round,
 )
-from bot.game.fightlog import turn_payload
 from bot.game.modes import FightMode, mode_of
 from bot.models import Player
 
@@ -107,7 +106,7 @@ def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
         },
         "yours": viewer_id in session.fighters,
         # Разбор по ходам: свежий ход последний, как в ветке
-        "log": [turn_payload(result) for result in session.rounds],
+        "log": session.rounds,
     }
 
 

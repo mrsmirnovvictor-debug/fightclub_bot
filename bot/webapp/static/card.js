@@ -1098,7 +1098,16 @@ async function fightAction(payload) {
   }
 }
 
+let lastTurn = null;
+
 function renderFights(data) {
+  // Новый ход — намётки прошлого сбрасываем: иначе на экран вернётся
+  // подсвеченным то, что уже ушло судье
+  const turn = data.duel ? data.duel.id + ":" + data.duel.round + ":" + data.duel.turn : null;
+  if (turn !== lastTurn) {
+    lastTurn = turn;
+    turnDraft = { attack: null, block: null };
+  }
   fightsData = data;
   const body = el("fights-body");
   body.textContent = "";
@@ -1211,19 +1220,71 @@ function fighterSide(fighter) {
   return box;
 }
 
-function zoneButtons(rows, chosen, action, icon) {
+// Что боец наметил, но ещё не отправил. Выбор живёт на странице до
+// нажатия «Вперёд!»: передумать можно сколько угодно, судья узнает один раз.
+let turnDraft = { attack: null, block: null };
+
+function zoneColumn(title, rows, field) {
   const box = document.createElement("div");
-  box.className = "zone-list";
+  box.className = "zone-column";
+  const head = document.createElement("p");
+  head.className = "zone-head";
+  head.textContent = title;
+  box.appendChild(head);
   rows.forEach((row) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "zone" + (chosen === row.zone ? " on" : "");
-    btn.textContent = (icon || "") + row.title;
-    btn.addEventListener("click", () =>
-      fightAction({ action: action, zone: row.zone })
-    );
-    box.appendChild(btn);
+    const label = document.createElement("label");
+    label.className = "zone" + (turnDraft[field] === row.zone ? " on" : "");
+    const dot = document.createElement("input");
+    dot.type = "radio";
+    dot.name = "turn-" + field;
+    dot.value = row.zone;
+    dot.checked = turnDraft[field] === row.zone;
+    dot.addEventListener("change", () => {
+      turnDraft[field] = row.zone;
+      paintDraft();
+    });
+    const text = document.createElement("span");
+    text.textContent = row.title;
+    label.appendChild(dot);
+    label.appendChild(text);
+    box.appendChild(label);
   });
+  return box;
+}
+
+function paintDraft() {
+  // Подсветка выбранного и кнопка отправки: пока не выбрано и то, и другое,
+  // отправлять нечего
+  document.querySelectorAll(".zone").forEach((label) => {
+    const dot = label.querySelector("input");
+    label.classList.toggle("on", Boolean(dot && dot.checked));
+  });
+  const go = el("turn-go");
+  if (go) go.disabled = !(turnDraft.attack && turnDraft.block);
+}
+
+function turnForm(data) {
+  const box = document.createElement("div");
+  box.className = "turn-form";
+
+  const columns = document.createElement("div");
+  columns.className = "zone-columns";
+  columns.appendChild(zoneColumn("Атака", data.attacks, "attack"));
+  columns.appendChild(zoneColumn("Защита", data.blocks, "block"));
+  box.appendChild(columns);
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.id = "turn-go";
+  go.className = "btn wide";
+  go.textContent = "Вперёд!";
+  go.disabled = !(turnDraft.attack && turnDraft.block);
+  go.addEventListener("click", () => {
+    const move = { action: "turn", attack: turnDraft.attack, block: turnDraft.block };
+    turnDraft = { attack: null, block: null };
+    fightAction(move);
+  });
+  box.appendChild(go);
   return box;
 }
 
@@ -1254,11 +1315,13 @@ function duelPanel(data) {
   });
   box.appendChild(board);
 
-  if (duel.yours && duel.started && !duel.resting) {
-    const you = duel.fighters.find((fighter) => fighter.you);
-    box.appendChild(zoneButtons(data.attacks, duel.chosen.attack, "attack",
-      (you && you.weapon_icon) || "👊"));
-    box.appendChild(zoneButtons(data.blocks, duel.chosen.block, "block", "🛡 "));
+  if (duel.yours && duel.started && !duel.resting && !duel.chosen.attack) {
+    box.appendChild(turnForm(data));
+  } else if (duel.yours && duel.started && duel.chosen.attack) {
+    const wait = document.createElement("p");
+    wait.className = "fight-line";
+    wait.textContent = "Выбор принят. Ждём соперника.";
+    box.appendChild(wait);
   } else if (duel.resting) {
     const rest = document.createElement("p");
     rest.className = "fight-line";
@@ -1271,35 +1334,21 @@ function duelPanel(data) {
 }
 
 function fightLog(duel) {
+  // Слова судьи сплошным текстом, свежее сверху. Раундов не считаем: в
+  // ветке их держит заголовок сообщения, а здесь лента и так короткая.
   const box = document.createElement("div");
   box.className = "fight-log";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = "Как шёл бой";
+  head.textContent = "Что говорит судья";
   box.appendChild(head);
-  const names = {};
-  duel.fighters.forEach((fighter) => {
-    names[fighter.user_id] = fighter.name;
-  });
   duel.log.slice().reverse().forEach((turn) => {
-    const row = document.createElement("div");
-    row.className = "log-turn";
-    const head = document.createElement("p");
-    head.className = "log-head";
-    head.textContent = "Раунд " + turn.round + ", удар " + turn.turn;
-    row.appendChild(head);
-    turn.strikes.forEach((strike) => {
+    (turn.lines || []).forEach((said) => {
       const line = document.createElement("p");
       line.className = "log-line";
-      const where = strike.zone_where ? " " + strike.zone_where : "";
-      const hit = strike.damage ? " −" + strike.damage : "";
-      const back = strike.counter ? " ответка −" + strike.counter : "";
-      line.textContent =
-        strike.emoji + " " + (names[strike.attacker_id] || "?") + where +
-        ": " + strike.title + hit + back;
-      row.appendChild(line);
+      line.textContent = said;
+      box.appendChild(line);
     });
-    box.appendChild(row);
   });
   return box;
 }
@@ -1426,31 +1475,20 @@ function renderFightLog(data) {
     body.appendChild(empty);
     return;
   }
-  body.appendChild(turnList(data.turns, data.names));
+  body.appendChild(turnList(data.turns));
 }
 
-function turnList(turns, names) {
+function turnList(turns) {
+  // Разбор старого боя — теми же словами, какими судья говорил тогда
   const box = document.createElement("div");
   box.className = "fight-log";
   turns.forEach((turn) => {
-    const row = document.createElement("div");
-    row.className = "log-turn";
-    const head = document.createElement("p");
-    head.className = "log-head";
-    head.textContent = "Раунд " + turn.round + ", удар " + turn.turn;
-    row.appendChild(head);
-    turn.strikes.forEach((strike) => {
+    (turn.lines || []).forEach((said) => {
       const line = document.createElement("p");
       line.className = "log-line";
-      const where = strike.zone_where ? " " + strike.zone_where : "";
-      const hit = strike.damage ? " −" + strike.damage : "";
-      const back = strike.counter ? " ответка −" + strike.counter : "";
-      line.textContent =
-        strike.emoji + " " + (names[strike.attacker_id] || "?") + where +
-        ": " + strike.title + hit + back;
-      row.appendChild(line);
+      line.textContent = said;
+      box.appendChild(line);
     });
-    box.appendChild(row);
   });
   return box;
 }

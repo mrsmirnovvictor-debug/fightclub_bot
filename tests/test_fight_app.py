@@ -431,3 +431,78 @@ async def test_history_of_nobody_is_a_clean_refusal(arena):
 
     assert response.status == 404
     assert "нет" in (await response.json())["error"]
+
+
+# ---------- судья говорит одно и то же ----------
+
+
+async def test_the_app_hears_the_same_words_as_the_thread(db):
+    """Комментарий судьи в аппе — тот же, что ушёл в ветку, слово в слово.
+
+    Формулировку судья выбирает броском: собери разбор второй раз — и про
+    тот же удар получишь другие слова. Поэтому они собираются один раз.
+    """
+    from bot.game.narrator import plain
+    from tests.test_duel_flow import (
+        CHAT_ID, THREAD_ID, make_player as duel_player, make_service, play_round,
+    )
+
+    bot = DuelBot()
+    duels = make_service(bot, db)
+    await db.save_player(duel_player(1, "Тайлер", "warrior"))
+    await db.save_player(duel_player(2, "Марла", "rogue"))
+    session = await duels.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    await play_round(duels, session)
+
+    said = session.rounds[0]["lines"]
+    thread = next(text for text in bot.log if text.startswith("<b>⚔️ Раунд"))
+    assert said, "судья промолчал"
+    for line in said:
+        assert line in plain(thread), f"в ветке этих слов не было: {line}"
+    await duels.shutdown()
+
+
+async def test_the_words_survive_the_end_of_the_fight(arena):
+    """Те же слова поднимаются из базы, когда бой давно кончился."""
+    client, duels, db = arena
+    await act(client, 42, action="open", mode="fist")
+    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    session = duels.duel_of_user(42)
+    live = list(session.rounds)
+    await fight_to_the_end(duels, session)
+
+    stored = await db.duel_log((await db.fights_of(42))[0]["id"])
+
+    assert [turn["lines"] for turn in stored][: len(live)] == [
+        turn["lines"] for turn in live
+    ]
+    assert all(turn["lines"] for turn in stored)
+
+
+async def test_a_turn_is_sent_as_one_move(arena):
+    """Кнопка «Вперёд!» шлёт удар и блок разом."""
+    client, duels, _ = arena
+    await act(client, 42, action="open", mode="fist")
+    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+
+    status, body = await act(client, 42, action="turn", attack="head", block="belt")
+
+    assert status == 200
+    assert body["duel"]["chosen"] == {"attack": "head", "block": "belt"}
+    assert [row["ready"] for row in body["duel"]["fighters"]] == [True, False]
+
+
+async def test_half_a_turn_is_refused(arena):
+    """Ход целиком — значит целиком: без блока судья его не берёт."""
+    client, duels, _ = arena
+    await act(client, 42, action="open", mode="fist")
+    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+
+    status, body = await act(client, 42, action="turn", attack="head")
+
+    assert status == 409
+    assert "и удар, и блок" in body["error"]
+    assert duels.duel_of_user(42).choice_of(42).attack is None

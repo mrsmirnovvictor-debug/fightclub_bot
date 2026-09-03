@@ -921,6 +921,12 @@ def ring_with_duel(chosen=None) -> dict:
                 {
                     "number": 1, "round": 1, "turn": 1, "finished": False,
                     "winner_id": None, "hp_after": {"42": 40, "43": 90},
+                    "lines": [
+                        "👊 Растафарайчик вкладывается кулаком в живот, "
+                        "Марла не отбивает, −5 [90/95]",
+                        "🩸 Марла ловит момент и лупит ножом в голову, "
+                        "Растафарайчик едва держится, −60 [40/100]",
+                    ],
                     "strikes": [
                         {
                             "attacker_id": 42, "defender_id": 43, "zone": "belly",
@@ -982,8 +988,8 @@ async def test_an_empty_ring_offers_to_throw_a_challenge(server):
         await browser.close()
 
 
-async def test_the_fight_panel_shows_the_board_and_both_rows_of_zones(server):
-    """Панель боя: табло сверху, удары и блоки кнопками."""
+async def test_the_fight_panel_shows_the_board_and_two_columns_of_choices(server):
+    """Панель боя: табло сверху, под ним два столбца радиокнопок."""
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, ring_with_duel())
 
@@ -994,38 +1000,22 @@ async def test_the_fight_panel_shows_the_board_and_both_rows_of_zones(server):
         for line in ("Растафарайчик", "VS.", "Марла", "40/100", "✅ Готов", "⏳ Думает"):
             assert line in board
 
-        zones = await page.locator(".zone").all_inner_texts()
-        assert zones == ["👊Голова", "👊Корпус", "🛡 Голова + Корпус", "🛡 Корпус + Живот"]
-        assert not await page.locator(".zone.on").count()  # ничего не нажато
+        heads = await page.locator(".zone-head").all_inner_texts()
+        assert heads == ["Атака", "Защита"]
+        columns = page.locator(".zone-column")
+        assert await columns.nth(0).locator(".zone").all_inner_texts() == [
+            "Голова", "Корпус"
+        ]
+        assert await columns.nth(1).locator(".zone").all_inner_texts() == [
+            "Голова + Корпус", "Корпус + Живот"
+        ]
+        # пока ничего не выбрано, отправлять нечего
+        assert await page.locator("#turn-go").is_disabled()
         await browser.close()
 
 
-async def test_the_panel_highlights_what_the_server_already_took(server):
-    """Подсветка идёт от сервера, а не от нажатия: видно принятое."""
-    async with async_playwright() as pw:
-        browser, page = await open_ring(
-            pw, server, ring_with_duel({"attack": "chest", "block": "head"})
-        )
-
-        lit = await page.locator(".zone.on").all_inner_texts()
-        assert lit == ["👊Корпус", "🛡 Голова + Корпус"]
-        await browser.close()
-
-
-async def test_the_log_shows_who_hit_where_in_each_turn(server):
-    """Разбор по ходам: куда бил каждый и сколько снял."""
-    async with async_playwright() as pw:
-        browser, page = await open_ring(pw, server, ring_with_duel())
-
-        log = await page.locator(".fight-log").inner_text()
-        assert "Раунд 1, удар 1" in log
-        assert "Растафарайчик в живот" in log and "попал −5" in log
-        assert "Марла в голову" in log and "крит −60" in log
-        await browser.close()
-
-
-async def test_a_pressed_zone_goes_to_the_server(server):
-    """Нажатие уходит на ринг, а панель перерисовывается ответом."""
+async def test_the_turn_goes_to_the_judge_in_one_press(server):
+    """Выбор живёт на странице, судья узнаёт о нём один раз — по «Вперёд!»."""
     sent = []
 
     async with async_playwright() as pw:
@@ -1036,15 +1026,53 @@ async def test_a_pressed_zone_goes_to_the_server(server):
             await route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps(ring_with_duel({"attack": "head", "block": None})),
+                body=json.dumps(ring_with_duel({"attack": "head", "block": "chest"})),
             )
 
         await page.route("**/api/fight", catch)
-        await page.get_by_role("button", name="👊Голова", exact=True).click()
-        await page.wait_for_selector(".zone.on")
 
-        assert sent == [{"action": "attack", "zone": "head"}]
-        assert await page.locator(".zone.on").inner_text() == "👊Голова"
+        # выбрали удар — отправлять всё ещё рано, блока нет
+        await page.locator(".zone-column").nth(0).get_by_text("Голова").click()
+        assert await page.locator("#turn-go").is_disabled()
+        assert sent == []
+
+        await page.locator(".zone-column").nth(1).get_by_text("Корпус + Живот").click()
+        assert await page.locator("#turn-go").is_enabled()
+        assert sent == []  # до нажатия «Вперёд!» судья ничего не знает
+
+        await page.locator("#turn-go").click()
+        await page.wait_for_selector("#turn-go", state="detached")
+
+        assert sent == [{"action": "turn", "attack": "head", "block": "chest"}]
+        # выбор принят: вместо кнопок ожидание соперника
+        assert "Ждём соперника" in await page.locator("#fights-body").inner_text()
+        await browser.close()
+
+
+async def test_the_choice_can_be_changed_before_it_is_sent(server):
+    """Передумать можно сколько угодно: пока не нажали «Вперёд!», выбор свой."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring_with_duel())
+        column = page.locator(".zone-column").nth(0)
+
+        await column.get_by_text("Голова").click()
+        await column.get_by_text("Корпус").click()
+
+        lit = await page.locator(".zone-column").nth(0).locator(".zone.on").all_inner_texts()
+        assert lit == ["Корпус"]  # горит одно, последнее
+        await browser.close()
+
+
+async def test_the_log_speaks_the_words_of_the_judge(server):
+    """В аппе тот же комментарий, что в ветке, — сплошным текстом, без раундов."""
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, ring_with_duel())
+
+        log = await page.locator(".fight-log").inner_text()
+        assert "Что говорит судья" in log
+        assert "Растафарайчик вкладывается кулаком в живот" in log
+        assert "Марла ловит момент" in log
+        assert "Раунд 1" not in log  # раунды в аппе не считаем
         await browser.close()
 
 
@@ -1117,6 +1145,11 @@ FIGHT_LOG = {
         {
             "number": 1, "round": 1, "turn": 1, "finished": False,
             "winner_id": None, "hp_after": {"42": 70, "43": 60},
+            "lines": [
+                "👊 Растафарайчик вламывает кулаком по поясу, "
+                "Марла теряет равновесие, −12 [60/95]",
+                "🛡 Удар ножом по ногам от Марла вязнет в блоке Растафарайчик",
+            ],
             "strikes": [
                 {
                     "attacker_id": 42, "defender_id": 43, "zone": "belt",
@@ -1171,18 +1204,18 @@ async def test_the_statistics_section_lists_fights_by_day(server):
         await browser.close()
 
 
-async def test_a_fight_opens_into_its_turn_by_turn_log(server):
-    """Тап по бою проваливает в разбор: куда бил каждый в свой ход."""
+async def test_a_fight_opens_into_the_words_of_the_judge(server):
+    """Тап по бою проваливает в разбор — теми же словами, что были в ветке."""
     async with async_playwright() as pw:
         browser, page = await open_stats(pw, server, HISTORY, FIGHT_LOG)
 
         await page.locator(".fight-row").first.click()
-        await page.wait_for_selector(".log-turn")
+        await page.wait_for_selector(".log-line")
 
         log = await page.locator("#stats-body").inner_text()
-        assert "Раунд 1, удар 1" in log
-        assert "Растафарайчик по поясу: попал −12" in log
-        assert "Марла по ногам: в блок" in log
+        assert "Растафарайчик вламывает кулаком по поясу" in log
+        assert "вязнет в блоке" in log
+        assert "Раунд 1" not in log
 
         # и обратно к списку
         await page.get_by_role("button", name="← К списку боёв").click()
@@ -1202,7 +1235,7 @@ async def test_an_old_fight_says_it_has_no_log(server):
         await page.wait_for_selector("#stats-body .screen-note")
 
         assert "начал вести разбор" in await page.locator("#stats-body").inner_text()
-        assert await page.locator(".log-turn").count() == 0
+        assert await page.locator(".log-line").count() == 0
         await browser.close()
 
 

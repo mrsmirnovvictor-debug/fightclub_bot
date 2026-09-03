@@ -55,6 +55,7 @@ from bot.game.narrator import (
     ready_mark,
     rewards_report,
     round_report,
+    strike_lines,
 )
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import challenge_keyboard, fight_keyboard, standoff_keyboard
@@ -141,7 +142,7 @@ class DuelSession:
     # Ходы боя как их посчитал движок. В ветке они уходят словами судьи, а
     # мини-апп рисует по ним разбор сам — и тем же списком потом ляжет лог
     # в историю боёв.
-    rounds: list[RoundResult] = field(default_factory=list)
+    rounds: list[dict] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
@@ -659,11 +660,15 @@ class DuelService:
             self.rng,
         )
 
-        session.rounds.append(result)
+        # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
+        # уходит ровно то, что он сказал. Позвать разбор дважды — значит
+        # получить про один и тот же удар два разных описания.
+        said = strike_lines(result, session.fighters, self.rng)
+        session.rounds.append(turn_payload(result, said))
         # Итог раунда встаёт на место его же панели: так за раунд уходит
         # два обращения к чату вместо четырёх, и бой не упирается в лимит
         await self._close_panel(
-            session, round_report(result, session.fighters, self.rng)
+            session, round_report(result, session.fighters, lines=said)
         )
 
         if result.finished:
@@ -735,8 +740,8 @@ class DuelService:
             end_reason=result.end_reason.value if result.end_reason else None,
             mode=session.mode,
             # Разбор по ходам ложится в базу целиком: по нему потом видно,
-            # куда бил каждый и чем это кончилось
-            log=[turn_payload(turn) for turn in session.rounds],
+            # куда бил каждый и что судья об этом сказал
+            log=session.rounds,
         )
 
     async def _apply_results(self, session: DuelSession, result: RoundResult) -> str:

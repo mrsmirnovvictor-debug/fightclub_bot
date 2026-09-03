@@ -408,6 +408,19 @@ async def api_fight(request: web.Request) -> web.Response:
             await duels.withdraw_challenge(player.user_id)
         elif action == "join":
             await duels.accept_challenge(_int_field(data, "challenge_id"), player)
+        elif action == "turn":
+            # Ход целиком: удар и блок уходят одной кнопкой «Вперёд!».
+            # Порядок важен — блок последним, чтобы выбор считался готовым
+            # только когда выбрано и то, и другое.
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Ты сейчас не на ринге.")
+            attack = str(data.get("attack", ""))
+            block = str(data.get("block", ""))
+            if not attack or not block:
+                raise DuelError("Выбери и удар, и блок.")
+            await duels.handle_choice(duel.id, player.user_id, "attack", attack)
+            await duels.handle_choice(duel.id, player.user_id, "block", block)
         elif action in {"attack", "block"}:
             duel = duels.duel_of_user(player.user_id)
             if duel is None:
