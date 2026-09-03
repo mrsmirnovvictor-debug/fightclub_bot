@@ -687,7 +687,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   white-space: nowrap;
 }
 .fighter-level { color: var(--muted); font-weight: 700; }
-.fighter-info {
+.fighter-info,
+.fighter-stats {
   width: 26px;
   height: 26px;
   flex: none;
@@ -804,3 +805,30 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .log-head { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
 .log-line { margin: 0 0 2px; font-size: 13px; }
+
+/* ---------- статистика боёв ---------- */
+/* Строка боя — кнопка: тап проваливает в разбор по ходам. Цветная кромка
+   слева говорит исход быстрее, чем значок. */
+.fight-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.fight-row.win { border-left-color: #4caf50; }
+.fight-row.loss { border-left-color: #e05656; }
+.fight-row.draw { border-left-color: var(--muted); }
+.fight-row:active { transform: scale(0.99); }
+.fight-row-line { font-size: 13.5px; }
+.fight-row-note { font-size: 12px; color: var(--muted); }
+/* Значок статистики — эмодзи: курсив и жирность ему не нужны */
+.fighter-stats { font-style: normal; font-weight: 400; }

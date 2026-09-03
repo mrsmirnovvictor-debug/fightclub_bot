@@ -30,6 +30,7 @@ from bot.game.combat import (
     round_is_over,
     turn_in_round,
 )
+from bot.game.fightlog import turn_payload
 from bot.game.economy import (
     DRAW_EXP_SHARE,
     LOSS_EXP_SHARE,
@@ -733,6 +734,9 @@ class DuelService:
             rounds=session.round_number,
             end_reason=result.end_reason.value if result.end_reason else None,
             mode=session.mode,
+            # Разбор по ходам ложится в базу целиком: по нему потом видно,
+            # куда бил каждый и чем это кончилось
+            log=[turn_payload(turn) for turn in session.rounds],
         )
 
     async def _apply_results(self, session: DuelSession, result: RoundResult) -> str:

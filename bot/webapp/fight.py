@@ -14,37 +14,17 @@ from __future__ import annotations
 from typing import Any
 
 from bot.duel_service import Challenge, DuelService, DuelSession
-from bot.game.classes import (
-    ALL_ZONES,
-    BLOCK_WIDTH,
-    ZONE_PREPOSITIONAL,
-    block_button,
-    block_combos,
-)
+from bot.game.classes import ALL_ZONES, BLOCK_WIDTH, block_button, block_combos
 from bot.game.combat import (
     MATCH_ROUNDS,
     TURNS_PER_ROUND,
     Fighter,
-    Outcome,
-    RoundResult,
-    Strike,
     boxing_round,
     turn_in_round,
 )
-from bot.game.modes import FightMode
+from bot.game.fightlog import turn_payload
+from bot.game.modes import FightMode, mode_of
 from bot.models import Player
-
-# Как назвать исход удара на экране. Значки те же, что в логе боя в ветке:
-# лог один, читается одинаково и там, и здесь.
-OUTCOME_TITLES: dict[Outcome, tuple[str, str]] = {
-    Outcome.HIT: ("👊", "попал"),
-    Outcome.CRIT: ("🩸", "крит"),
-    Outcome.BREAK: ("🛡🩸", "пробил блок"),
-    Outcome.BLOCK: ("🛡", "в блок"),
-    Outcome.DODGE: ("🌀", "мимо"),
-    Outcome.COUNTER: ("🔄", "контрудар"),
-    Outcome.SKIP: ("🤲", "не бил"),
-}
 
 # Кнопки хода: они одни на весь клуб и от боя не зависят, поэтому
 # считаются один раз при импорте.
@@ -55,42 +35,6 @@ BLOCK_BUTTONS: tuple[dict[str, str], ...] = tuple(
     {"zone": combo[0].value, "title": block_button(combo)[2:]}
     for combo in block_combos(BLOCK_WIDTH)
 )
-
-
-def strike_payload(strike: Strike) -> dict[str, Any]:
-    """Один удар: кто, куда, чем кончилось и сколько снял."""
-    emoji, title = OUTCOME_TITLES[strike.outcome]
-    return {
-        "attacker_id": strike.attacker_id,
-        "defender_id": strike.defender_id,
-        "zone": strike.zone.value if strike.zone else None,
-        "zone_title": strike.zone.title.capitalize() if strike.zone else "",
-        # «в голову», «по ногам» — падеж берём из той же таблицы, по которой
-        # говорит судья в ветке: иначе выходит «в голова»
-        "zone_where": ZONE_PREPOSITIONAL[strike.zone] if strike.zone else "",
-        "outcome": strike.outcome.value,
-        "emoji": emoji,
-        "title": title,
-        "weapon": strike.weapon,
-        "damage": strike.damage,
-        "counter": strike.counter_damage,
-        "armor": strike.armor,
-        "hp_after": strike.defender_hp_after,
-        "missed_turn": strike.missed_turn,
-    }
-
-
-def turn_payload(result: RoundResult) -> dict[str, Any]:
-    """Ход целиком: номер раунда, номер удара и оба размена."""
-    return {
-        "number": result.number,
-        "round": boxing_round(result.number),
-        "turn": turn_in_round(result.number),
-        "strikes": [strike_payload(strike) for strike in result.strikes],
-        "hp_after": {str(uid): hp for uid, hp in result.hp_after.items()},
-        "finished": result.finished,
-        "winner_id": result.winner_id,
-    }
 
 
 def mode_payload(mode: FightMode) -> dict[str, Any]:
@@ -199,11 +143,98 @@ def build_fights(player: Player, service: DuelService | None) -> dict[str, Any]:
     return body
 
 
+# ---------- история боёв ----------
+
+
+def outcome_of(row: dict[str, Any], user_id: int) -> str:
+    """Чем бой кончился для этого бойца: победа, поражение или ничья."""
+    if row["winner_id"] is None:
+        return "draw"
+    return "win" if row["winner_id"] == user_id else "loss"
+
+
+OUTCOME_MARKS = {"win": ("🏆", "Победа"), "loss": ("❌", "Поражение"),
+                 "draw": ("🤝", "Ничья")}
+
+
+def fight_row(row: dict[str, Any], user_id: int) -> dict[str, Any]:
+    """Строка списка боёв: с кем, чем кончилось и когда."""
+    rival_id = (
+        row["opponent_id"] if row["challenger_id"] == user_id else row["challenger_id"]
+    )
+    rival_name = (
+        row["opponent_name"] if row["challenger_id"] == user_id
+        else row["challenger_name"]
+    )
+    result = outcome_of(row, user_id)
+    emoji, title = OUTCOME_MARKS[result]
+    mode = mode_of(row["mode"])
+    return {
+        "id": row["id"],
+        "rival_id": rival_id,
+        "rival": rival_name or "боец без имени",
+        "result": result,
+        "emoji": emoji,
+        "result_title": title,
+        "rounds": row["rounds"],
+        "mode": mode_payload(mode),
+        "in_app": row["chat_id"] is None,
+        "created_at": row["created_at"],
+        "date": (row["created_at"] or "")[:10],
+    }
+
+
+def build_history(
+    rows: list[dict[str, Any]], user_id: int, name: str
+) -> dict[str, Any]:
+    """Список боёв бойца, разложенный по дням — свежий день сверху."""
+    fights = [fight_row(row, user_id) for row in rows]
+    days: list[dict[str, Any]] = []
+    for fight in fights:
+        if not days or days[-1]["date"] != fight["date"]:
+            days.append({"date": fight["date"], "fights": []})
+        days[-1]["fights"].append(fight)
+    counts = {"win": 0, "loss": 0, "draw": 0}
+    for fight in fights:
+        counts[fight["result"]] += 1
+    return {
+        "user_id": user_id,
+        "name": name,
+        "days": days,
+        "total": len(fights),
+        "counts": counts,
+        # Куда листать дальше: последний бой этой страницы
+        "before": fights[-1]["id"] if fights else None,
+    }
+
+
+def build_fight_log(
+    row: dict[str, Any], log: list[dict[str, Any]], viewer_id: int
+) -> dict[str, Any]:
+    """Один бой целиком: кто с кем, чем кончился и как шёл по ходам."""
+    names = {
+        row["challenger_id"]: row["challenger_name"] or "боец без имени",
+        row["opponent_id"]: row["opponent_name"] or "боец без имени",
+    }
+    return {
+        "fight": fight_row(row, viewer_id),
+        "names": {str(user_id): name for user_id, name in names.items()},
+        "sides": [
+            {"user_id": user_id, "name": name, "you": user_id == viewer_id}
+            for user_id, name in names.items()
+        ],
+        "turns": log,
+        # Лог мог не сохраниться: бои до этой версии писались только итогом
+        "has_log": bool(log),
+    }
+
+
 __all__ = [
     "ATTACK_BUTTONS",
     "BLOCK_BUTTONS",
     "build_fights",
     "challenge_payload",
+    "build_fight_log",
+    "build_history",
     "duel_payload",
-    "turn_payload",
 ]

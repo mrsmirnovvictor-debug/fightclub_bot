@@ -69,6 +69,13 @@ EMPTY_RING = {
 }
 
 
+# Никто ещё не дрался
+EMPTY_HISTORY = {
+    "user_id": 42, "name": "Растафарайчик", "days": [], "total": 0,
+    "counts": {"win": 0, "loss": 0, "draw": 0}, "before": None,
+}
+
+
 class FakeBot:  # pragma: no cover - аватар в этом тесте не трогаем
     async def get_file(self, file_id):
         raise AssertionError
@@ -79,7 +86,7 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
 
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
-    magic=None, fights=None,
+    magic=None, fights=None, history=None, fight_log=None,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -98,6 +105,9 @@ async def open_page(
     await page.route("**/api/club*", canned(club or {"fighters": [], "total": 0}))
     await page.route("**/api/magic*", canned(magic or {"items": [], "credits": 0}))
     await page.route("**/api/fights*", canned(fights or EMPTY_RING))
+    await page.route("**/api/history*", canned(history or EMPTY_HISTORY))
+    if fight_log is not None:
+        await page.route("**/api/fight/*", canned(fight_log))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body=""
     ))
@@ -952,7 +962,7 @@ async def test_the_club_tab_opens_on_the_ring_and_switches_to_players(server):
         browser, page = await open_ring(pw, server, None)
 
         sections = await page.locator("#club-sections .chip").all_inner_texts()
-        assert sections == ["Бои", "Игроки"]
+        assert sections == ["Бои", "Игроки", "Статистика"]
         assert await page.locator("#club-fights").is_visible()
         assert await page.locator("#club-players").is_hidden()
 
@@ -1048,4 +1058,158 @@ async def test_the_corner_break_hides_the_buttons(server):
 
         assert await page.locator(".zone").count() == 0
         assert "по углам" in await page.locator("#fights-body").inner_text()
+        await browser.close()
+
+
+# ---------- статистика боёв ----------
+
+
+HISTORY = {
+    "user_id": 42,
+    "name": "Растафарайчик",
+    "total": 3,
+    "counts": {"win": 2, "loss": 1, "draw": 0},
+    "before": 7,
+    "days": [
+        {
+            "date": "2026-09-03",
+            "fights": [
+                {
+                    "id": 9, "rival_id": 43, "rival": "Марла", "result": "win",
+                    "emoji": "🏆", "result_title": "Победа", "rounds": 4,
+                    "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
+                    "in_app": True, "created_at": "2026-09-03 20:30:00",
+                    "date": "2026-09-03",
+                },
+                {
+                    "id": 8, "rival_id": 44, "rival": "Тайлер", "result": "loss",
+                    "emoji": "❌", "result_title": "Поражение", "rounds": 9,
+                    "mode": {"code": "armed", "title": "бой с оружием", "emoji": "⚔️"},
+                    "in_app": False, "created_at": "2026-09-03 19:00:00",
+                    "date": "2026-09-03",
+                },
+            ],
+        },
+        {
+            "date": "2026-09-01",
+            "fights": [
+                {
+                    "id": 7, "rival_id": 43, "rival": "Марла", "result": "win",
+                    "emoji": "🏆", "result_title": "Победа", "rounds": 6,
+                    "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
+                    "in_app": False, "created_at": "2026-09-01 12:00:00",
+                    "date": "2026-09-01",
+                }
+            ],
+        },
+    ],
+}
+
+FIGHT_LOG = {
+    "fight": HISTORY["days"][0]["fights"][0],
+    "names": {"42": "Растафарайчик", "43": "Марла"},
+    "sides": [
+        {"user_id": 42, "name": "Растафарайчик", "you": True},
+        {"user_id": 43, "name": "Марла", "you": False},
+    ],
+    "has_log": True,
+    "turns": [
+        {
+            "number": 1, "round": 1, "turn": 1, "finished": False,
+            "winner_id": None, "hp_after": {"42": 70, "43": 60},
+            "strikes": [
+                {
+                    "attacker_id": 42, "defender_id": 43, "zone": "belt",
+                    "zone_title": "Пояс", "zone_where": "по поясу",
+                    "outcome": "hit", "emoji": "👊", "title": "попал",
+                    "weapon": "кулаком", "damage": 12, "counter": 0, "armor": 0,
+                    "hp_after": 60, "missed_turn": False,
+                },
+                {
+                    "attacker_id": 43, "defender_id": 42, "zone": "legs",
+                    "zone_title": "Ноги", "zone_where": "по ногам",
+                    "outcome": "block", "emoji": "🛡", "title": "в блок",
+                    "weapon": "ножом", "damage": 0, "counter": 0, "armor": 0,
+                    "hp_after": 70, "missed_turn": False,
+                },
+            ],
+        }
+    ],
+}
+
+
+async def open_stats(pw, server, history=None, fight_log=None):
+    browser, page = await open_page(
+        pw, server, build_card(make_player(), TOKEN, viewer_id=42),
+        history=history, fight_log=fight_log,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.locator("#tab-club").click()
+    await page.get_by_role("button", name="Статистика", exact=True).click()
+    await page.wait_for_selector("#club-stats:not(.hidden)")
+    # История приходит запросом: ждём, пока «Открываем...» сменится ответом
+    await page.wait_for_function(
+        "!document.getElementById('stats-note').textContent.includes('Открываем')"
+    )
+    return browser, page
+
+
+async def test_the_statistics_section_lists_fights_by_day(server):
+    """Бои разложены по дням, свежий день сверху, дата — по-человечески."""
+    async with async_playwright() as pw:
+        browser, page = await open_stats(pw, server, HISTORY)
+
+        note = await page.locator("#stats-note").inner_text()
+        assert "3 боя" in note and "2 побед" in note
+
+        days = await page.locator("#club-stats .shelf-head").all_inner_texts()
+        assert days == ["3 сентября", "1 сентября"]
+
+        rows = await page.locator(".fight-row").all_inner_texts()
+        assert "Победа — Марла" in rows[0] and "кулачный бой, раундов 4" in rows[0]
+        assert "Поражение — Тайлер" in rows[1]
+        await browser.close()
+
+
+async def test_a_fight_opens_into_its_turn_by_turn_log(server):
+    """Тап по бою проваливает в разбор: куда бил каждый в свой ход."""
+    async with async_playwright() as pw:
+        browser, page = await open_stats(pw, server, HISTORY, FIGHT_LOG)
+
+        await page.locator(".fight-row").first.click()
+        await page.wait_for_selector(".log-turn")
+
+        log = await page.locator("#stats-body").inner_text()
+        assert "Раунд 1, удар 1" in log
+        assert "Растафарайчик по поясу: попал −12" in log
+        assert "Марла по ногам: в блок" in log
+
+        # и обратно к списку
+        await page.get_by_role("button", name="← К списку боёв").click()
+        await page.wait_for_selector(".fight-row")
+        assert await page.locator(".fight-row").count() == 3
+        await browser.close()
+
+
+async def test_an_old_fight_says_it_has_no_log(server):
+    """Бои до этой версии писались одним итогом — экран честно об этом говорит."""
+    old = dict(FIGHT_LOG, has_log=False, turns=[])
+
+    async with async_playwright() as pw:
+        browser, page = await open_stats(pw, server, HISTORY, old)
+
+        await page.locator(".fight-row").first.click()
+        await page.wait_for_selector("#stats-body .screen-note")
+
+        assert "начал вести разбор" in await page.locator("#stats-body").inner_text()
+        assert await page.locator(".log-turn").count() == 0
+        await browser.close()
+
+
+async def test_an_empty_history_says_so(server):
+    async with async_playwright() as pw:
+        browser, page = await open_stats(pw, server)
+
+        assert "ещё не дрался" in await page.locator("#stats-note").inner_text()
+        assert await page.locator(".fight-row").count() == 0
         await browser.close()

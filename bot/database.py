@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -104,7 +105,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_rings_thread
 
 CREATE TABLE IF NOT EXISTS duels (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id       INTEGER NOT NULL,
+    -- Пусто — бой шёл в мини-аппе, ветки у него нет
+    chat_id       INTEGER,
     thread_id     INTEGER,
     challenger_id INTEGER NOT NULL,
     opponent_id   INTEGER NOT NULL,
@@ -116,6 +118,27 @@ CREATE TABLE IF NOT EXISTS duels (
 );
 
 CREATE INDEX IF NOT EXISTS idx_duels_chat ON duels(chat_id, created_at DESC);
+
+-- Кто с кем дрался: по строке на бойца. Отдельной таблицей, потому что
+-- история бойца — это выборка по нему, а не по чату, и без неё пришлось бы
+-- каждый раз просматривать оба столбца боя.
+CREATE TABLE IF NOT EXISTS duel_sides (
+    duel_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (duel_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_duel_sides_user ON duel_sides(user_id, duel_id DESC);
+
+-- Разбор боя по ходам: строка на ход, удары внутри — json.
+-- Json, а не колонки: удары читаются целиком и только на экране одного боя,
+-- искать по ним нечего, а форма у них ровно та, что уходит в мини-апп.
+CREATE TABLE IF NOT EXISTS duel_log (
+    duel_id INTEGER NOT NULL,
+    number  INTEGER NOT NULL,
+    strikes TEXT    NOT NULL,
+    PRIMARY KEY (duel_id, number)
+);
 
 CREATE TABLE IF NOT EXISTS battles (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -274,12 +297,49 @@ class Database:
     async def _migrate_duels(self) -> None:
         """Записи боёв прошлой версии — кулачные: другого режима тогда не было."""
         async with self.conn.execute("PRAGMA table_info(duels)") as cursor:
-            columns = {row["name"] for row in await cursor.fetchall()}
+            columns = {row["name"]: row for row in await cursor.fetchall()}
         if "mode" not in columns:
             await self.conn.execute(
                 "ALTER TABLE duels ADD COLUMN mode TEXT NOT NULL DEFAULT 'fist'"
             )
             logger.info("База обновлена: у боёв появился режим")
+        chat = columns.get("chat_id")
+        if chat is not None and chat["notnull"]:
+            # У боя из мини-аппа ветки нет, и chat_id должен уметь быть пустым.
+            # Снять NOT NULL в SQLite можно только пересборкой таблицы.
+            await self._rebuild_duels()
+
+    async def _rebuild_duels(self) -> None:
+        """Пересобрать таблицу боёв, чтобы chat_id мог быть пустым."""
+        await self.conn.executescript(
+            """
+            ALTER TABLE duels RENAME TO duels_old;
+            CREATE TABLE duels (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id       INTEGER,
+                thread_id     INTEGER,
+                challenger_id INTEGER NOT NULL,
+                opponent_id   INTEGER NOT NULL,
+                winner_id     INTEGER,
+                rounds        INTEGER NOT NULL DEFAULT 0,
+                end_reason    TEXT,
+                mode          TEXT NOT NULL DEFAULT 'fist',
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO duels (
+                id, chat_id, thread_id, challenger_id, opponent_id,
+                winner_id, rounds, end_reason, mode, created_at
+            )
+            SELECT id, chat_id, thread_id, challenger_id, opponent_id,
+                   winner_id, rounds, end_reason, mode, created_at
+            FROM duels_old;
+            DROP TABLE duels_old;
+            CREATE INDEX IF NOT EXISTS idx_duels_chat
+                ON duels(chat_id, created_at DESC);
+            """
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: бой может идти без ветки")
 
     async def _migrate_arenas(self) -> None:
         """Единственная арена прошлой версии становится первым кулачным рингом."""
@@ -737,7 +797,7 @@ class Database:
 
     async def add_duel(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         challenger_id: int,
         opponent_id: int,
@@ -745,6 +805,7 @@ class Database:
         rounds: int,
         end_reason: str | None,
         mode: FightMode = FightMode.FIST,
+        log: list[dict[str, Any]] | None = None,
     ) -> int:
         cursor = await self.conn.execute(
             """
@@ -764,8 +825,76 @@ class Database:
                 mode.value,
             ),
         )
+        duel_id = int(cursor.lastrowid or 0)
+        # Обе стороны отдельными строками: история бойца — выборка по нему
+        await self.conn.executemany(
+            "INSERT OR IGNORE INTO duel_sides (duel_id, user_id) VALUES (?,?)",
+            [(duel_id, challenger_id), (duel_id, opponent_id)],
+        )
+        if log:
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO duel_log (duel_id, number, strikes) "
+                "VALUES (?,?,?)",
+                [
+                    (duel_id, turn["number"], json.dumps(turn, ensure_ascii=False))
+                    for turn in log
+                ],
+            )
         await self.conn.commit()
-        return int(cursor.lastrowid or 0)
+        return duel_id
+
+    async def fights_of(
+        self, user_id: int, limit: int = 30, before: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Бои этого бойца, свежие сверху. `before` — листать дальше вглубь.
+
+        Отдаём как есть, вместе с прозвищами обеих сторон: экрану истории
+        нужен соперник по имени, а ходить за игроками по одному — лишние
+        запросы на каждую строку списка.
+        """
+        async with self.conn.execute(
+            """
+            SELECT d.id, d.chat_id, d.challenger_id, d.opponent_id, d.winner_id,
+                   d.rounds, d.end_reason, d.mode, d.created_at,
+                   first.nickname AS challenger_name,
+                   second.nickname AS opponent_name
+            FROM duel_sides AS side
+            JOIN duels AS d ON d.id = side.duel_id
+            LEFT JOIN players AS first ON first.user_id = d.challenger_id
+            LEFT JOIN players AS second ON second.user_id = d.opponent_id
+            WHERE side.user_id = ? AND (? IS NULL OR d.id < ?)
+            ORDER BY d.id DESC LIMIT ?
+            """,
+            (user_id, before, before, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def duel_by_id(self, duel_id: int) -> dict[str, Any] | None:
+        async with self.conn.execute(
+            """
+            SELECT d.id, d.chat_id, d.challenger_id, d.opponent_id, d.winner_id,
+                   d.rounds, d.end_reason, d.mode, d.created_at,
+                   first.nickname AS challenger_name,
+                   second.nickname AS opponent_name
+            FROM duels AS d
+            LEFT JOIN players AS first ON first.user_id = d.challenger_id
+            LEFT JOIN players AS second ON second.user_id = d.opponent_id
+            WHERE d.id = ?
+            """,
+            (duel_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def duel_log(self, duel_id: int) -> list[dict[str, Any]]:
+        """Разбор боя по ходам. Пусто — бой шёл до того, как их начали писать."""
+        async with self.conn.execute(
+            "SELECT strikes FROM duel_log WHERE duel_id = ? ORDER BY number",
+            (duel_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [json.loads(row["strikes"]) for row in rows]
 
     async def add_battle(self, session, outcome) -> int:
         """Записать групповой бой и всех, кто в нём был."""

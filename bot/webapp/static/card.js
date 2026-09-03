@@ -909,7 +909,20 @@ function fighterRow(fighter) {
   info.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
   info.addEventListener("click", () => showFighter(fighter));
 
-  box.append(face, name, level, info);
+  const stats = document.createElement("button");
+  stats.type = "button";
+  // Своим классом, а не «fighter-info»: две одинаковые кнопки в строке —
+  // это неоднозначность и для теста, и для читалки экрана
+  stats.className = "fighter-stats";
+  stats.textContent = "📊";
+  stats.title = "Статистика боёв";
+  stats.setAttribute("aria-label", "Статистика боёв " + fighter.nickname);
+  stats.addEventListener("click", () => {
+    pickClubSection("stats");
+    loadHistory(fighter.is_self ? null : fighter.user_id);
+  });
+
+  box.append(face, name, level, stats, info);
   return box;
 }
 
@@ -1023,21 +1036,24 @@ function stopWatchingFights() {
 
 function pickClubSection(name) {
   clubSection = name;
-  el("club-fights").classList.toggle("hidden", name !== "fights");
-  el("club-players").classList.toggle("hidden", name !== "players");
+  ["fights", "players", "stats"].forEach((section) => {
+    el("club-" + section).classList.toggle("hidden", section !== name);
+  });
   renderClubSections();
   if (name === "players" && !clubData) loadClub();
+  if (name === "stats" && !statsData) loadHistory(statsWho);
 }
 
 function renderClubSections() {
   const box = el("club-sections");
   box.textContent = "";
-  box.appendChild(chip("Бои", clubSection === "fights", () =>
-    pickClubSection("fights")
-  ));
-  box.appendChild(chip("Игроки", clubSection === "players", () =>
-    pickClubSection("players")
-  ));
+  [
+    ["fights", "Бои"],
+    ["players", "Игроки"],
+    ["stats", "Статистика"],
+  ].forEach(([code, label]) => {
+    box.appendChild(chip(label, clubSection === code, () => pickClubSection(code)));
+  });
 }
 
 async function loadFights() {
@@ -1266,6 +1282,157 @@ function fightLog(duel) {
     names[fighter.user_id] = fighter.name;
   });
   duel.log.slice().reverse().forEach((turn) => {
+    const row = document.createElement("div");
+    row.className = "log-turn";
+    const head = document.createElement("p");
+    head.className = "log-head";
+    head.textContent = "Раунд " + turn.round + ", удар " + turn.turn;
+    row.appendChild(head);
+    turn.strikes.forEach((strike) => {
+      const line = document.createElement("p");
+      line.className = "log-line";
+      const where = strike.zone_where ? " " + strike.zone_where : "";
+      const hit = strike.damage ? " −" + strike.damage : "";
+      const back = strike.counter ? " ответка −" + strike.counter : "";
+      line.textContent =
+        strike.emoji + " " + (names[strike.attacker_id] || "?") + where +
+        ": " + strike.title + hit + back;
+      row.appendChild(line);
+    });
+    box.appendChild(row);
+  });
+  return box;
+}
+
+// ---------- статистика боёв ----------
+//
+// Список боёв по дням, а из него — провал в разбор одного боя по ходам.
+// Смотреть можно и чужую историю: кнопка «i» в списке клуба ведёт сюда же.
+
+let statsData = null;
+let statsWho = null; // null — своя история
+
+async function loadHistory(userId) {
+  statsWho = userId || null;
+  el("stats-note").textContent = "Открываем...";
+  try {
+    const query = statsWho ? "?user_id=" + statsWho : "";
+    const response = await fetch("api/history" + query, {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Историю не открыть.");
+    renderHistory(body);
+  } catch (error) {
+    el("stats-note").textContent = error.message;
+    el("stats-body").textContent = "";
+  }
+}
+
+function renderHistory(data) {
+  statsData = data;
+  const counts = data.counts;
+  el("stats-note").textContent = data.total
+    ? data.name + ": " + data.total + " " +
+      plural(data.total, "бой", "боя", "боёв") + " — " +
+      counts.win + " побед, " + counts.loss + " поражений, " +
+      counts.draw + " ничьих"
+    : data.name + " ещё не дрался.";
+
+  const body = el("stats-body");
+  body.textContent = "";
+  if (statsWho) {
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "btn secondary wide";
+    back.textContent = "← Моя статистика";
+    back.addEventListener("click", () => loadHistory(null));
+    body.appendChild(back);
+  }
+  data.days.forEach((day) => {
+    const head = document.createElement("h2");
+    head.className = "shelf-head";
+    head.textContent = prettyDay(day.date);
+    body.appendChild(head);
+    day.fights.forEach((fight) => body.appendChild(fightRow(fight)));
+  });
+}
+
+function prettyDay(date) {
+  // «2026-09-03» → «3 сентября»: год в списке за сегодня только мешает
+  const months = [
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+  ];
+  const parts = (date || "").split("-");
+  if (parts.length !== 3) return date || "";
+  const month = months[Number(parts[1]) - 1];
+  return month ? Number(parts[2]) + " " + month : date;
+}
+
+function fightRow(fight) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "fight-row " + fight.result;
+  const line = document.createElement("span");
+  line.className = "fight-row-line";
+  line.textContent =
+    fight.emoji + " " + fight.result_title + " — " + fight.rival;
+  const note = document.createElement("span");
+  note.className = "fight-row-note";
+  note.textContent =
+    fight.mode.emoji + " " + fight.mode.title + ", раундов " + fight.rounds;
+  row.appendChild(line);
+  row.appendChild(note);
+  row.addEventListener("click", () => openFightLog(fight.id));
+  return row;
+}
+
+async function openFightLog(fightId) {
+  try {
+    const response = await fetch("api/fight/" + fightId, {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Бой не открылся.");
+    renderFightLog(body);
+  } catch (error) {
+    popup("Бой", error.message);
+  }
+}
+
+function renderFightLog(data) {
+  const body = el("stats-body");
+  body.textContent = "";
+
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "btn secondary wide";
+  back.textContent = "← К списку боёв";
+  back.addEventListener("click", () => renderHistory(statsData));
+  body.appendChild(back);
+
+  const head = document.createElement("p");
+  head.className = "fight-line";
+  head.textContent =
+    data.fight.emoji + " " + data.fight.result_title + " — " +
+    data.fight.rival + ", " + data.fight.mode.title;
+  body.appendChild(head);
+
+  if (!data.has_log) {
+    const empty = document.createElement("p");
+    empty.className = "screen-note";
+    empty.textContent = "Этот бой шёл до того, как клуб начал вести разбор.";
+    body.appendChild(empty);
+    return;
+  }
+  body.appendChild(turnList(data.turns, data.names));
+}
+
+function turnList(turns, names) {
+  const box = document.createElement("div");
+  box.className = "fight-log";
+  turns.forEach((turn) => {
     const row = document.createElement("div");
     row.className = "log-turn";
     const head = document.createElement("p");

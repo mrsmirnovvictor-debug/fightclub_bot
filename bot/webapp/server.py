@@ -28,7 +28,7 @@ from bot.pro_service import ProError, claim_free_pro, promo_taken
 from bot.store_service import StoreError, StoreService
 from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
-from bot.webapp.fight import build_fights
+from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.card import (
     build_card,
     build_club,
@@ -424,6 +424,40 @@ async def api_fight(request: web.Request) -> web.Response:
     return web.json_response(build_fights(fresh or player, duels))
 
 
+async def api_history(request: web.Request) -> web.Response:
+    """Бои бойца, разложенные по дням. Чужую историю смотреть можно."""
+    viewer = await _viewer(request)
+    db = request.app[DB_KEY]
+
+    target_id = viewer.user_id
+    requested = request.query.get("user_id")
+    if requested and requested.lstrip("-").isdigit():
+        target_id = int(requested)
+
+    player = await db.get_player(target_id)
+    if player is None:
+        return web.json_response({"error": "Такого бойца нет."}, status=404)
+
+    before = request.query.get("before")
+    rows = await db.fights_of(
+        target_id, before=int(before) if before and before.isdigit() else None
+    )
+    return web.json_response(build_history(rows, target_id, player.nickname))
+
+
+async def api_fight_log(request: web.Request) -> web.Response:
+    """Один бой по ходам: куда бил каждый и чем это кончилось."""
+    viewer = await _viewer(request)
+    db = request.app[DB_KEY]
+
+    fight_id = request.match_info["fight_id"]
+    row = await db.duel_by_id(int(fight_id)) if fight_id.isdigit() else None
+    if row is None:
+        return web.json_response({"error": "Такого боя не было."}, status=404)
+    log = await db.duel_log(row["id"])
+    return web.json_response(build_fight_log(row, log, viewer.user_id))
+
+
 async def api_looks(request: web.Request) -> web.Response:
     """Гардероб: все образы, какой надет и что уже куплено."""
     try:
@@ -559,6 +593,8 @@ def create_app(
             web.get("/api/club", api_club),
             web.get("/api/fights", api_fights),
             web.post("/api/fight", api_fight),
+            web.get("/api/history", api_history),
+            web.get("/api/fight/{fight_id}", api_fight_log),
             web.get("/api/magic", api_magic),
             web.post("/api/pro", api_pro),
             web.get("/api/looks", api_looks),
