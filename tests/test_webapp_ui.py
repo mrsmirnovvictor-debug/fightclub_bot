@@ -896,6 +896,10 @@ def ring_with_duel(chosen=None) -> dict:
             "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
             "in_app": True,
             "started": True,
+            "challenger_id": 42,
+            "yours_to_start": True,
+            "finished": False,
+            "summary": [],
             "round": 1,
             "turn": 2,
             "turns_per_round": 3,
@@ -1069,7 +1073,7 @@ async def test_the_log_speaks_the_words_of_the_judge(server):
         browser, page = await open_ring(pw, server, ring_with_duel())
 
         log = await page.locator(".fight-log").inner_text()
-        assert "Что говорит судья" in log
+        assert "Ход боя" in log
         assert "Растафарайчик вкладывается кулаком в живот" in log
         assert "Марла ловит момент" in log
         assert "Раунд 1" not in log  # раунды в аппе не считаем
@@ -1089,6 +1093,90 @@ async def test_the_corner_break_hides_the_buttons(server):
         await browser.close()
 
 
+async def test_the_ring_waits_for_the_gong_of_the_one_who_called(server):
+    """Соперник вышел — бой ждёт: гонг даёт тот, кто звал."""
+    waiting = ring_with_duel()
+    waiting["duel"]["started"] = False
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, waiting)
+
+        assert await page.locator(".zone").count() == 0  # бить ещё нечем
+        body = await page.locator("#fights-body").inner_text()
+        assert "Гонга ещё не было" in body and "Соперник вышел" in body
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(ring_with_duel()),
+            )
+
+        await page.route("**/api/fight", catch)
+        await page.get_by_role("button", name="🥊 Выйти на ринг").click()
+        await page.wait_for_selector("#turn-go")
+
+        assert sent == [{"action": "go"}]
+        await browser.close()
+
+
+async def test_the_one_who_was_called_only_waits(server):
+    """Второму бойцу решать нечего: он может только уйти."""
+    waiting = ring_with_duel()
+    waiting["duel"]["started"] = False
+    waiting["duel"]["yours_to_start"] = False
+
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, waiting)
+
+        body = await page.locator("#fights-body").inner_text()
+        assert "Ждём, пока вызвавший даст гонг" in body
+        assert await page.get_by_role("button", name="🥊 Выйти на ринг").count() == 0
+        assert await page.get_by_role("button", name="Отказаться").count() == 1
+        await browser.close()
+
+
+async def test_the_end_of_the_fight_shows_the_result(server):
+    """Бой кончился — на экране итог теми же словами, что и в ветке."""
+    over = ring_with_duel()
+    over["duel"]["finished"] = True
+    over["duel"]["summary"] = [
+        "🏆 Победа: Растафарайчик (Воин)",
+        "",
+        "📊 Итоги",
+        "💀 Растафарайчик: Нанесено урона 133, получено +114 опыта, "
+        "+20 💰, рейтинг 1054 (+20)",
+        "🥷 Марла: Нанесено урона 61, получено 0 опыта, рейтинг 993 (−20)",
+    ]
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, over)
+
+        assert "Бой окончен" in await page.locator(".fight-round").inner_text()
+        assert await page.locator(".zone").count() == 0  # драться уже нечем
+        card = await page.locator(".fight-finish").inner_text()
+        assert "🏆 Победа: Растафарайчик" in card
+        assert "Нанесено урона 133, получено +114 опыта" in card
+        assert "рейтинг 993 (−20)" in card
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({**ring_with_duel(), "duel": None}),
+            )
+
+        await page.route("**/api/fight", catch)
+        await page.get_by_role("button", name="Закрыть").click()
+        await page.wait_for_selector(".fight-finish", state="detached")
+
+        assert sent == [{"action": "done"}]
+        assert "Брось вызов" in await page.locator("#fights-note").inner_text()
+        await browser.close()
+
+
 # ---------- статистика боёв ----------
 
 
@@ -1105,6 +1193,7 @@ HISTORY = {
                 {
                     "id": 9, "rival_id": 43, "rival": "Марла", "result": "win",
                     "emoji": "🏆", "result_title": "Победа", "rounds": 4,
+                    "caption": "Победа — бой против Марла",
                     "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
                     "in_app": True, "created_at": "2026-09-03 20:30:00",
                     "date": "2026-09-03",
@@ -1112,6 +1201,7 @@ HISTORY = {
                 {
                     "id": 8, "rival_id": 44, "rival": "Тайлер", "result": "loss",
                     "emoji": "❌", "result_title": "Поражение", "rounds": 9,
+                    "caption": "Поражение — бой против Тайлер",
                     "mode": {"code": "armed", "title": "бой с оружием", "emoji": "⚔️"},
                     "in_app": False, "created_at": "2026-09-03 19:00:00",
                     "date": "2026-09-03",
@@ -1124,6 +1214,7 @@ HISTORY = {
                 {
                     "id": 7, "rival_id": 43, "rival": "Марла", "result": "win",
                     "emoji": "🏆", "result_title": "Победа", "rounds": 6,
+                    "caption": "Победа — бой против Марла",
                     "mode": {"code": "fist", "title": "кулачный бой", "emoji": "🥊"},
                     "in_app": False, "created_at": "2026-09-01 12:00:00",
                     "date": "2026-09-01",
@@ -1199,8 +1290,10 @@ async def test_the_statistics_section_lists_fights_by_day(server):
         assert days == ["3 сентября", "1 сентября"]
 
         rows = await page.locator(".fight-row").all_inner_texts()
-        assert "Победа — Марла" in rows[0] and "кулачный бой, раундов 4" in rows[0]
-        assert "Поражение — Тайлер" in rows[1]
+        # «Победа — Марла» читалось так, будто победила Марла
+        assert "Победа — бой против Марла" in rows[0]
+        assert "кулачный бой, раундов 4" in rows[0]
+        assert "Поражение — бой против Тайлер" in rows[1]
         await browser.close()
 
 

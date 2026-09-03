@@ -624,16 +624,27 @@ def rewards_report(
     share: float = 1.0,
     previous_fights: int = 0,
     broken: list[tuple["Player", list]] | None = None,
+    damage: dict[int, int] | None = None,
 ) -> str:
-    """Что каждый унёс с ринга: опыт, кредиты, рейтинг, апы и уровни."""
+    """Что каждый унёс с ринга: урон, опыт, кредиты, рейтинг, апы и уровни.
+
+    `damage` — сколько каждый боец успел нанести. Урон стоит первым: по нему
+    судья и решает бой, дошедший до последнего гонга.
+    """
     lines = ["📊 <b>Итоги</b>"]
     events: list[str] = []
 
     for player, report in rows:
         parts: list[str] = []
-        parts.append(f"+{report.exp} опыта" if report.exp else "без опыта")
+        dealt = (damage or {}).get(player.user_id)
+        if dealt is not None:
+            parts.append(f"Нанесено урона {dealt}")
+        parts.append(
+            f"получено +{report.exp} опыта" if report.exp else "получено 0 опыта"
+        )
         if report.credits:
-            parts.append(f"+{report.credits} 💰 (всего {player.credits})")
+            # Кошелёк целиком тут не к месту: это итог боя, а не карточка
+            parts.append(f"+{report.credits} 💰")
         if report.rating_delta:
             sign = "+" if report.rating_delta > 0 else "−"
             parts.append(f"рейтинг {player.rating} ({sign}{abs(report.rating_delta)})")

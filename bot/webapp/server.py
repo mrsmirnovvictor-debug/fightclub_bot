@@ -391,7 +391,7 @@ async def api_fights(request: web.Request) -> web.Response:
 
 
 async def api_fight(request: web.Request) -> web.Response:
-    """Действие на ринге: бросить вызов, принять, отозвать, ударить, закрыться."""
+    """Действие на ринге: бросить вызов, принять, выйти, ударить, закрыть итог."""
     player = await _fighter(request)
     duels = request.app.get(DUELS_KEY)
     if duels is None:  # pragma: no cover - бот без сервиса боёв не поднимается
@@ -408,6 +408,20 @@ async def api_fight(request: web.Request) -> web.Response:
             await duels.withdraw_challenge(player.user_id)
         elif action == "join":
             await duels.accept_challenge(_int_field(data, "challenge_id"), player)
+        elif action == "go":
+            # Гонг даёт тот, кто звал: соперник вышел, и его надо разглядеть
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Этого боя уже нет.")
+            await duels.confirm_duel(duel.id, player.user_id)
+        elif action == "back":
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Этого боя уже нет.")
+            await duels.decline_duel(duel.id, player.user_id)
+        elif action == "done":
+            # Итог прочитан — убираем его с экрана
+            duels.forget_result(player.user_id)
         elif action == "turn":
             # Ход целиком: удар и блок уходят одной кнопкой «Вперёд!».
             # Порядок важен — блок последним, чтобы выбор считался готовым

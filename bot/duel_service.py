@@ -54,6 +54,7 @@ from bot.game.narrator import (
     health_warning,
     ready_mark,
     rewards_report,
+    plain,
     round_report,
     strike_lines,
 )
@@ -143,6 +144,11 @@ class DuelSession:
     # мини-апп рисует по ним разбор сам — и тем же списком потом ляжет лог
     # в историю боёв.
     rounds: list[dict] = field(default_factory=list)
+    # Слова судьи в конце боя — уже без разметки. В ветке они остаются
+    # сообщением, а в мини-аппе показывать нечего: бой из списка исчезает
+    # ровно в тот момент, когда игроку и надо прочитать итог.
+    summary: list[str] = field(default_factory=list)
+    finished: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
@@ -201,6 +207,9 @@ class DuelService:
         self._duels: dict[int, DuelSession] = {}
         self._duel_by_chat: dict[ChatKey, int] = {}
         self._busy: dict[int, str] = {}  # user_id -> "challenge" | "duel"
+        # Последний законченный бой каждого бойца: мини-апп показывает по нему
+        # итог, пока боец не закроет его сам или не выйдет драться снова.
+        self._results: dict[int, DuelSession] = {}
 
     # ---------- вызовы ----------
 
@@ -260,6 +269,8 @@ class DuelService:
         challenge.task = asyncio.create_task(self._expire_challenge(challenge))
         self._challenges[challenge.id] = challenge
         self._busy[challenger.user_id] = "challenge"
+        # Зовёт драться дальше — итог прошлого боя ему уже не нужен
+        self._results.pop(challenger.user_id, None)
         return challenge
 
     async def _expire_challenge(self, challenge: Challenge) -> None:
@@ -342,18 +353,6 @@ class DuelService:
             f"🥊 <b>{esc(opponent.nickname)}</b> принимает вызов "
             f"<b>{esc(challenger.nickname)}</b>. Ринг занят!",
         )
-        if challenge.chat_id is None:
-            # Вызов из мини-аппа: стойки нет. Она нужна, чтобы вызвавший
-            # успел посмотреть на соперника в ветке; здесь он и так смотрит
-            # на экран, и лишний экран между «принял» и гонгом только мешает.
-            return await self.start_duel(
-                None,
-                None,
-                challenger,
-                opponent,
-                challenge.chat_title,
-                challenge.mode,
-            )
         return await self.open_standoff(
             challenge.chat_id,
             challenge.thread_id,
@@ -367,14 +366,18 @@ class DuelService:
 
     async def open_standoff(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         first: Player,
         second: Player,
         chat_title: str = "",
         mode: FightMode = FightMode.FIST,
     ) -> DuelSession:
-        """Свести бойцов лицом к лицу и дать вызвавшему посмотреть на соперника."""
+        """Свести бойцов лицом к лицу и дать вызвавшему посмотреть на соперника.
+
+        В мини-аппе судья молчит, а стойка остаётся: гонг всё равно даёт тот,
+        кто бросил вызов, и увидеть соперника до первого удара он должен и там.
+        """
         session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
         message = await self._send(
             chat_id,
@@ -490,6 +493,9 @@ class DuelService:
             self._duel_by_chat[session.key] = session.id
         self._busy[fighter_a.user_id] = "duel"
         self._busy[fighter_b.user_id] = "duel"
+        for user_id in session.order:
+            # Вышел драться снова — итог прошлого боя прочитан
+            self._results.pop(user_id, None)
         return session
 
     def _forget(self, session: DuelSession) -> None:
@@ -728,6 +734,7 @@ class DuelService:
         if rewards:
             text += "\n\n" + rewards
         await self._send(session.chat_id, session.thread_id, text)
+        self._remember_result(session, text)
         if session.on_finish is not None:
             await session.on_finish(session, result)
         await self.db.add_duel(
@@ -816,7 +823,16 @@ class DuelService:
             await self.db.save_player(player)
             rows.append((player, report))
 
-        return rewards_report(rows, share, previous_fights, broken)
+        return rewards_report(
+            rows,
+            share,
+            previous_fights,
+            broken,
+            damage={
+                user_id: session.fighters[user_id].damage_dealt
+                for user_id in session.order
+            },
+        )
 
     def _cancel_timer(self, session: DuelSession) -> None:
         """Снять таймер раунда.
@@ -876,6 +892,26 @@ class DuelService:
                 return session
         return None
 
+    def _remember_result(self, session: DuelSession, text: str) -> None:
+        """Отложить итог боя для мини-аппа.
+
+        В ветке итог остаётся сообщением, а на экране бой исчезает из списка
+        сразу после последнего удара — и прочитать, чем он кончился, негде.
+        Держим последний бой за каждым бойцом до тех пор, пока он не закроет
+        итог сам или не выйдет драться снова.
+        """
+        session.finished = True
+        session.summary = [plain(line) for line in text.split("\n")]
+        for user_id in session.order:
+            self._results[user_id] = session
+
+    def result_of_user(self, user_id: int) -> DuelSession | None:
+        """Законченный бой, итог которого боец ещё не закрыл."""
+        return self._results.get(user_id)
+
+    def forget_result(self, user_id: int) -> None:
+        self._results.pop(user_id, None)
+
     def is_busy(self, user_id: int) -> bool:
         return user_id in self._busy
 
@@ -896,6 +932,7 @@ class DuelService:
         self._duel_by_chat.clear()
         self._challenges.clear()
         self._busy.clear()
+        self._results.clear()
 
     # ---------- отправка ----------
 

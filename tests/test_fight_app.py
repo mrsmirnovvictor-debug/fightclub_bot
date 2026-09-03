@@ -59,6 +59,14 @@ async def act(client, user_id: int, **payload) -> tuple[int, dict]:
     return response.status, await response.json()
 
 
+async def start_fight(client, duels, mode: str = "fist") -> dict:
+    """Вызов, приём и гонг: выйти на ринг решает тот, кто звал."""
+    await act(client, 42, action="open", mode=mode)
+    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    _, body = await act(client, 42, action="go")
+    return body["duel"]
+
+
 # ---------- вызов и приём ----------
 
 
@@ -81,9 +89,14 @@ async def test_a_fight_is_opened_and_joined_without_leaving_the_app(arena):
     )
     assert status == 200
     duel = joined["duel"]
-    assert duel is not None and duel["in_app"] and duel["started"]
+    # Соперник вышел, но гонга ещё не было: слово за тем, кто звал
+    assert duel is not None and duel["in_app"] and duel["started"] is False
     assert {row["name"] for row in duel["fighters"]} == {"Тайлер", "Марла"}
-    assert duel["round"] == 1 and duel["turn"] == 1
+
+    status, gong = await act(client, 42, action="go")
+    assert status == 200
+    assert gong["duel"]["started"]
+    assert gong["duel"]["round"] == 1 and gong["duel"]["turn"] == 1
 
 
 async def test_your_own_challenge_is_not_offered_back_to_you(arena):
@@ -112,10 +125,8 @@ async def test_a_fight_in_the_app_never_touches_a_chat(arena):
     client, duels, _ = arena
     bot = duels.bot
 
-    await act(client, 42, action="open", mode="fist")
-    joined = await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    await start_fight(client, duels)
 
-    assert joined[0] == 200
     duel = duels.duel_of_user(42)
     assert duel.in_app and duel.chat_id is None
     assert bot.sent == [] and bot.edits == []
@@ -125,11 +136,7 @@ async def test_a_fight_in_the_app_never_touches_a_chat(arena):
 
 
 async def fight_pair(client, duels) -> dict:
-    await act(client, 42, action="open", mode="fist")
-    _, joined = await act(
-        client, 43, action="join", challenge_id=duels.open_challenges()[0].id
-    )
-    return joined["duel"]
+    return await start_fight(client, duels)
 
 
 async def test_a_turn_resolves_as_soon_as_both_have_chosen(arena):
@@ -281,8 +288,7 @@ async def test_a_fight_in_the_app_survives_to_the_final_gong(arena):
     колонка её требовала. Один ход этого не показывал — падало на финише.
     """
     client, duels, db = arena
-    await act(client, 42, action="open", mode="fist")
-    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    await start_fight(client, duels, "fist")
     session = duels.duel_of_user(42)
 
     await fight_to_the_end(duels, session)
@@ -296,8 +302,7 @@ async def test_a_fight_in_the_app_survives_to_the_final_gong(arena):
 async def test_the_log_of_a_finished_fight_lands_in_the_database(arena):
     """Разбор по ходам переживает конец боя: по нему и строится история."""
     client, duels, db = arena
-    await act(client, 42, action="open", mode="fist")
-    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    await start_fight(client, duels, "fist")
     session = duels.duel_of_user(42)
     await fight_to_the_end(duels, session)
 
@@ -335,8 +340,7 @@ async def test_the_history_lists_fights_newest_first_grouped_by_day(arena):
     client, duels, db = arena
     for _ in range(2):
         await heal(db)
-        await act(client, 42, action="open", mode="fist")
-        await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+        await start_fight(client, duels)
         await fight_to_the_end(duels, duels.duel_of_user(42))
 
     body = await history(client, 42)
@@ -351,8 +355,7 @@ async def test_the_history_lists_fights_newest_first_grouped_by_day(arena):
 
 async def test_every_row_says_who_and_how_it_ended(arena):
     client, duels, db = arena
-    await act(client, 42, action="open", mode="armed")
-    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    await start_fight(client, duels, "armed")
     await fight_to_the_end(duels, duels.duel_of_user(42))
 
     mine = (await history(client, 42))["days"][0]["fights"][0]
@@ -369,8 +372,7 @@ async def test_every_row_says_who_and_how_it_ended(arena):
 async def test_a_fight_opens_into_a_turn_by_turn_log(arena):
     """Провалиться в бой: видно, куда бил каждый в свой ход."""
     client, duels, db = arena
-    await act(client, 42, action="open", mode="fist")
-    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    await start_fight(client, duels, "fist")
     await fight_to_the_end(duels, duels.duel_of_user(42))
     fight_id = (await history(client, 42))["days"][0]["fights"][0]["id"]
 
@@ -391,8 +393,7 @@ async def test_a_fight_opens_into_a_turn_by_turn_log(arena):
 async def test_the_history_of_a_stranger_is_open_to_read(arena):
     """Чужую статистику смотреть можно: клуб на то и клуб."""
     client, duels, db = arena
-    await act(client, 42, action="open", mode="fist")
-    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    await start_fight(client, duels, "fist")
     await fight_to_the_end(duels, duels.duel_of_user(42))
 
     body = await history(client, 43, viewer=42)
@@ -468,8 +469,7 @@ async def test_the_app_hears_the_same_words_as_the_thread(db):
 async def test_the_words_survive_the_end_of_the_fight(arena):
     """Те же слова поднимаются из базы, когда бой давно кончился."""
     client, duels, db = arena
-    await act(client, 42, action="open", mode="fist")
-    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    await start_fight(client, duels, "fist")
     session = duels.duel_of_user(42)
     live = list(session.rounds)
     await fight_to_the_end(duels, session)
@@ -485,8 +485,7 @@ async def test_the_words_survive_the_end_of_the_fight(arena):
 async def test_a_turn_is_sent_as_one_move(arena):
     """Кнопка «Вперёд!» шлёт удар и блок разом."""
     client, duels, _ = arena
-    await act(client, 42, action="open", mode="fist")
-    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    await start_fight(client, duels, "fist")
 
     status, body = await act(client, 42, action="turn", attack="head", block="belt")
 
@@ -498,11 +497,112 @@ async def test_a_turn_is_sent_as_one_move(arena):
 async def test_half_a_turn_is_refused(arena):
     """Ход целиком — значит целиком: без блока судья его не берёт."""
     client, duels, _ = arena
-    await act(client, 42, action="open", mode="fist")
-    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+    await start_fight(client, duels, "fist")
 
     status, body = await act(client, 42, action="turn", attack="head")
 
     assert status == 409
     assert "и удар, и блок" in body["error"]
     assert duels.duel_of_user(42).choice_of(42).attack is None
+
+
+# ---------- гонг даёт тот, кто звал ----------
+
+
+async def test_the_gong_is_given_by_the_one_who_called(arena):
+    """Соперник вышел — бой ждёт: начинать или нет, решает вызвавший."""
+    client, duels, _ = arena
+    await act(client, 42, action="open", mode="fist")
+    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+
+    status, refused = await act(client, 43, action="go")
+
+    assert status == 409 and refused["error"]
+    assert duels.duel_of_user(42).started is False
+
+    status, gong = await act(client, 42, action="go")
+
+    assert status == 200 and gong["duel"]["started"]
+    assert gong["duel"]["yours_to_start"] is True
+    assert (await state(client, 43))["duel"]["yours_to_start"] is False
+
+
+async def test_the_standoff_can_be_walked_away_from(arena):
+    """Из стойки можно уйти — ринг снова свободен для обоих."""
+    client, duels, _ = arena
+    await act(client, 42, action="open", mode="fist")
+    await act(client, 43, action="join", challenge_id=duels.open_challenges()[0].id)
+
+    status, after = await act(client, 43, action="back")
+
+    assert status == 200
+    assert after["duel"] is None and after["challenge"] is None
+    assert duels.duel_of_user(42) is None
+    assert not duels.is_busy(42) and not duels.is_busy(43)
+
+
+# ---------- итог боя ----------
+
+
+async def test_the_result_holds_the_screen_until_it_is_closed(arena):
+    """Бой кончился — итог остаётся на экране: прочитать его больше негде."""
+    client, duels, _ = arena
+    await start_fight(client, duels)
+    await fight_to_the_end(duels, duels.duel_of_user(42))
+
+    body = await state(client, 42)
+    duel = body["duel"]
+
+    assert duel["finished"] is True
+    summary = "\n".join(duel["summary"])
+    assert "📊 Итоги" in summary
+    assert "Нанесено урона" in summary and "рейтинг" in summary
+    assert "<b>" not in summary  # разметка на экране ни к чему
+    # соперник видит тот же итог
+    assert (await state(client, 43))["duel"]["finished"] is True
+
+    status, after = await act(client, 42, action="done")
+
+    assert status == 200 and after["duel"] is None
+    assert (await state(client, 43))["duel"]["finished"] is True
+
+
+async def test_a_new_challenge_clears_the_old_result(arena):
+    """Позвал драться снова — старый итог с экрана уходит сам."""
+    client, duels, db = arena
+    await start_fight(client, duels)
+    await fight_to_the_end(duels, duels.duel_of_user(42))
+    await heal(db)
+
+    status, body = await act(client, 42, action="open", mode="fist")
+
+    assert status == 200
+    assert body["duel"] is None and body["challenge"]["mine"]
+
+
+async def test_fights_from_before_the_sides_table_come_back(arena):
+    """История начиналась с первого боя новой версии — старые бои вернулись.
+
+    Бои в базе лежали и раньше, но выбирать их было не по кому: таблицы
+    сторон тогда не было. Миграция дописывает стороны по самим боям.
+    """
+    client, _, db = arena
+    fight_id = await db.add_duel(
+        chat_id=CHAT_ID,
+        thread_id=THREAD_ID,
+        challenger_id=42,
+        opponent_id=43,
+        winner_id=42,
+        rounds=4,
+        end_reason="ko",
+    )
+    # база, написанная до появления сторон
+    await db.conn.execute("DELETE FROM duel_sides")
+    await db.conn.commit()
+    assert await db.fights_of(42) == []
+
+    await db._migrate()
+
+    assert [row["id"] for row in await db.fights_of(42)] == [fight_id]
+    assert [row["id"] for row in await db.fights_of(43)] == [fight_id]
+    assert (await history(client, 42))["total"] == 1

@@ -77,13 +77,19 @@ def challenge_payload(challenge: Challenge, viewer_id: int) -> dict[str, Any]:
 
 
 def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
-    """Панель идущего боя: кто с кем, чей ход и что уже нажато."""
+    """Панель боя: кто с кем, чей ход, что уже нажато и чем всё кончилось."""
     mine = session.choices.get(viewer_id)
     return {
         "id": session.id,
         "mode": mode_payload(session.mode),
         "in_app": session.in_app,
         "started": session.started,
+        # Гонга ещё не было: соперник вышел, и слово за тем, кто звал
+        "challenger_id": session.challenger_id,
+        "yours_to_start": viewer_id == session.challenger_id,
+        # Бой доигран: панель держится на экране, пока итог не закроют
+        "finished": session.finished,
+        "summary": session.summary,
         "round": boxing_round(session.round_number) if session.round_number else 0,
         "turn": turn_in_round(session.round_number) if session.round_number else 0,
         "turns_per_round": TURNS_PER_ROUND,
@@ -124,7 +130,10 @@ def build_fights(player: Player, service: DuelService | None) -> dict[str, Any]:
     if service is None:  # pragma: no cover - бот без сервиса боёв не живёт
         return body
 
-    duel = service.duel_of_user(player.user_id)
+    # Итог законченного боя показываем на месте боя: закроет — вернётся ринг
+    duel = service.duel_of_user(player.user_id) or service.result_of_user(
+        player.user_id
+    )
     if duel is not None:
         body["duel"] = duel_payload(duel, player.user_id)
         return body
@@ -168,13 +177,17 @@ def fight_row(row: dict[str, Any], user_id: int) -> dict[str, Any]:
     result = outcome_of(row, user_id)
     emoji, title = OUTCOME_MARKS[result]
     mode = mode_of(row["mode"])
+    rival = rival_name or "боец без имени"
     return {
         "id": row["id"],
         "rival_id": rival_id,
-        "rival": rival_name or "боец без имени",
+        "rival": rival,
         "result": result,
         "emoji": emoji,
         "result_title": title,
+        # Строкой: «Победа — бой против Марлы». Без «боя против» одно имя
+        # рядом с исходом читается так, будто это имя победителя.
+        "caption": f"{title} — бой против {rival}",
         "rounds": row["rounds"],
         "mode": mode_payload(mode),
         "in_app": row["chat_id"] is None,

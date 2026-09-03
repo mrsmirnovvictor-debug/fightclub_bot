@@ -525,7 +525,10 @@ async def test_rewards_block_is_shown_in_the_thread(bot, db):
     final = bot.texts[-1]
     assert "📊" in final
     assert "опыта" in final and "рейтинг" in final
-    assert "без опыта" in final  # строка проигравшего
+    assert "получено 0 опыта" in final  # строка проигравшего
+    # Урон — первым: по нему судья и решает бой, дошедший до последнего гонга
+    assert "Нанесено урона" in final
+    assert "всего" not in final  # кошелёк целиком в итог боя не пишем
 
 
 async def test_rating_transfer_stays_symmetric_when_the_winner_levels_up(bot, db):

@@ -817,6 +817,18 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .zone.on { background: var(--slot); font-weight: 600; }
 .zone:active { transform: scale(0.99); }
 
+/* Стойка и итог — те же карточки, что и панель хода: рамка держит их
+   отдельно от ленты слов судьи под ними. */
+.fight-standoff,
+.fight-finish {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+.fight-finish .log-line { margin: 0; }
+
 .fight-log { margin-top: 4px; }
 .log-turn {
   border-top: 1px solid var(--line);

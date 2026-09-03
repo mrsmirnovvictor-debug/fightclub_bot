@@ -1295,11 +1295,12 @@ function duelPanel(data) {
 
   const head = document.createElement("p");
   head.className = "fight-round";
-  head.textContent =
-    duel.started
+  head.textContent = duel.finished
+    ? "🔔 Бой окончен"
+    : duel.started
       ? "🔔 Раунд " + duel.round + " из " + duel.rounds +
         ", удар " + duel.turn + " из " + duel.turns_per_round
-      : "Гонга ещё не было";
+      : "🥊 Бойцы сошлись. Гонга ещё не было";
   box.appendChild(head);
 
   const board = document.createElement("div");
@@ -1315,9 +1316,13 @@ function duelPanel(data) {
   });
   box.appendChild(board);
 
-  if (duel.yours && duel.started && !duel.resting && !duel.chosen.attack) {
+  if (duel.finished) {
+    box.appendChild(finishCard(duel));
+  } else if (!duel.started) {
+    box.appendChild(standoff(duel));
+  } else if (duel.yours && !duel.resting && !duel.chosen.attack) {
     box.appendChild(turnForm(data));
-  } else if (duel.yours && duel.started && duel.chosen.attack) {
+  } else if (duel.yours && duel.chosen.attack) {
     const wait = document.createElement("p");
     wait.className = "fight-line";
     wait.textContent = "Выбор принят. Ждём соперника.";
@@ -1333,6 +1338,56 @@ function duelPanel(data) {
   return box;
 }
 
+function standoff(duel) {
+  // Гонг даёт тот, кто звал: соперник вышел, и его надо разглядеть до
+  // первого удара. Второй в это время ждёт и может уйти.
+  const box = document.createElement("div");
+  box.className = "fight-standoff";
+  const line = document.createElement("p");
+  line.className = "fight-line";
+  line.textContent = duel.yours_to_start
+    ? "Соперник вышел. Начинать?"
+    : "Ждём, пока вызвавший даст гонг.";
+  box.appendChild(line);
+  if (duel.yours_to_start) {
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "btn wide";
+    go.textContent = "🥊 Выйти на ринг";
+    go.addEventListener("click", () => fightAction({ action: "go" }));
+    box.appendChild(go);
+  }
+  if (duel.yours) {
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "btn secondary wide";
+    back.textContent = "Отказаться";
+    back.addEventListener("click", () => fightAction({ action: "back" }));
+    box.appendChild(back);
+  }
+  return box;
+}
+
+function finishCard(duel) {
+  // Итог теми же словами, что судья сказал в ветке
+  const box = document.createElement("div");
+  box.className = "fight-finish";
+  (duel.summary || []).forEach((said) => {
+    if (!said) return;
+    const line = document.createElement("p");
+    line.className = "log-line";
+    line.textContent = said;
+    box.appendChild(line);
+  });
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "btn wide";
+  close.textContent = "Закрыть";
+  close.addEventListener("click", () => fightAction({ action: "done" }));
+  box.appendChild(close);
+  return box;
+}
+
 function fightLog(duel) {
   // Слова судьи сплошным текстом, свежее сверху. Раундов не считаем: в
   // ветке их держит заголовок сообщения, а здесь лента и так короткая.
@@ -1340,7 +1395,7 @@ function fightLog(duel) {
   box.className = "fight-log";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = "Что говорит судья";
+  head.textContent = "Ход боя";
   box.appendChild(head);
   duel.log.slice().reverse().forEach((turn) => {
     (turn.lines || []).forEach((said) => {
@@ -1425,8 +1480,7 @@ function fightRow(fight) {
   row.className = "fight-row " + fight.result;
   const line = document.createElement("span");
   line.className = "fight-row-line";
-  line.textContent =
-    fight.emoji + " " + fight.result_title + " — " + fight.rival;
+  line.textContent = fight.emoji + " " + fight.caption;
   const note = document.createElement("span");
   note.className = "fight-row-note";
   note.textContent =
@@ -1464,8 +1518,7 @@ function renderFightLog(data) {
   const head = document.createElement("p");
   head.className = "fight-line";
   head.textContent =
-    data.fight.emoji + " " + data.fight.result_title + " — " +
-    data.fight.rival + ", " + data.fight.mode.title;
+    data.fight.emoji + " " + data.fight.caption + ", " + data.fight.mode.title;
   body.appendChild(head);
 
   if (!data.has_log) {

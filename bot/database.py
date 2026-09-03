@@ -308,6 +308,31 @@ class Database:
             # У боя из мини-аппа ветки нет, и chat_id должен уметь быть пустым.
             # Снять NOT NULL в SQLite можно только пересборкой таблицы.
             await self._rebuild_duels()
+        await self._fill_duel_sides()
+
+    async def _fill_duel_sides(self) -> None:
+        """Записать в стороны боёв тех, кто дрался до появления этой таблицы.
+
+        Без этого история бойца начиналась с первого боя новой версии: сами
+        бои в базе лежали, но выбирать их было не по кому.
+        """
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS lost FROM duels "
+            "WHERE id NOT IN (SELECT duel_id FROM duel_sides)"
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row or not row["lost"]:
+            return
+        await self.conn.executescript(
+            """
+            INSERT OR IGNORE INTO duel_sides (duel_id, user_id)
+                SELECT id, challenger_id FROM duels;
+            INSERT OR IGNORE INTO duel_sides (duel_id, user_id)
+                SELECT id, opponent_id FROM duels;
+            """
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: в историю вернулись %s боёв", row["lost"])
 
     async def _rebuild_duels(self) -> None:
         """Пересобрать таблицу боёв, чтобы chat_id мог быть пустым."""
