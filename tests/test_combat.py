@@ -845,7 +845,15 @@ def test_the_circle_holds_on_every_level(winner, loser, why, level):
 
 
 def test_the_warrior_stays_out_of_the_circle():
-    """Воин ровен со всеми: его дело урон, а не круг."""
+    """Воин ровен со всеми: его дело урон, а не круг.
+
+    Считаем по трём сидам, как и круг: с одного сида доля гуляет на пять-семь
+    очков, и такой тест ловил бы не баланс, а смещение потока случайных чисел —
+    хоть лишний бросок брони от новой вещи.
+    """
     for rival in ("rogue", "assassin", "tank"):
-        share = duel_share("warrior", rival, level=8, runs=200, seed=77)
+        share = sum(
+            duel_share("warrior", rival, level=8, runs=200, seed=seed)
+            for seed in (2032, 4056, 6080)
+        ) / 3
         assert 0.40 < share < 0.62, f"воин против {rival}: {share:.0%}"

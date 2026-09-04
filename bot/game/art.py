@@ -14,6 +14,8 @@ ADDED = f"{BUCKET}/add"
 AVATARS = f"{BUCKET}/avatars"
 SLOTS = f"{BUCKET}/slots"
 ITEMS = f"{BUCKET}/items"
+# Футболки — самый молодой раздел, его рисовали отдельным заходом
+SHIRTS = f"{BUCKET}/shirts"
 # Товар лавки мага
 MAGIC = f"{BUCKET}/magic"
 POTIONS = f"{BUCKET}/potions"
@@ -35,6 +37,11 @@ def slot(code: str) -> str:
     return f"{SLOTS}/{code}.png"
 
 
+def shirt(code: str) -> str:
+    """Футболка лежит под кодом вещи: shirts/club_tee.jpeg."""
+    return f"{SHIRTS}/{code}.jpeg"
+
+
 def potion(code: str) -> str:
     """Склянка лежит под кодом эликсира: potions/heal_small.jpeg."""
     return f"{POTIONS}/{code}.jpeg"
@@ -47,9 +54,11 @@ __all__ = [
     "ITEMS",
     "MAGIC",
     "POTIONS",
+    "SHIRTS",
     "SLOTS",
     "WEAPONS",
     "avatar",
     "potion",
+    "shirt",
     "slot",
 ]

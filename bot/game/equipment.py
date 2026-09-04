@@ -540,6 +540,29 @@ ITEMS: tuple[Item, ...] = (
         price=90,
         for_classes=(TANK, WARRIOR),
     ),
+    # Футболки — базовый слой под верхней одеждой. Броня у них меньше, чем
+    # у куртки того же уровня: они прикрывают те же корпус и живот, и их
+    # брони складываются. Первые две без требований намеренно — слот новый,
+    # и на первых уровнях в него должно быть что надеть.
+    Item(
+        "wife_beater",
+        "Майка-алкоголичка",
+        Slot.SHIRT,
+        "🎽",
+        hp=3,
+        image=art.shirt("wife_beater"),
+        price=30,
+    ),
+    Item(
+        "club_tee",
+        "Клубная футболка",
+        Slot.SHIRT,
+        "👕",
+        hp=5,
+        image=art.shirt("club_tee"),
+        level_required=2,
+        price=50,
+    ),
     # ---------- 4 уровень: первое настоящее оружие ----------
     Item(
         "pipe",
@@ -623,6 +646,18 @@ ITEMS: tuple[Item, ...] = (
         price=110,
         # Ни процентов, ни требований: первое, что берут, когда не накопил
         # на своё. Дешевле классового оружия ровно потому, что голое.
+    ),
+    Item(
+        "skull_tee",
+        "Футболка с черепом",
+        Slot.SHIRT,
+        "💀",
+        hp=6,
+        image=art.shirt("skull_tee"),
+        level_required=4,
+        requires=Stats(strength=12),
+        price=70,
+        for_classes=(WARRIOR, TANK),
     ),
     # ---------- 5 уровень: куртки, штаны, наручи, пояса ----------
     Item(
@@ -872,6 +907,19 @@ ITEMS: tuple[Item, ...] = (
         price=100,
         for_classes=(ROGUE, ASSASSIN),
     ),
+    Item(
+        "rashguard",
+        "Компрессионная футболка",
+        Slot.SHIRT,
+        "🥋",
+        agility=1,
+        image=art.shirt("rashguard"),
+        dodge=0.04,
+        level_required=6,
+        requires=Stats(agility=15),
+        price=100,
+        for_classes=(ROGUE, ASSASSIN),
+    ),
     # ---------- 7 уровень: оружие, перчатки, щиты ----------
     Item(
         "fire_axe",
@@ -1082,6 +1130,19 @@ ITEMS: tuple[Item, ...] = (
         requires=Stats(strength=20),
         price=270,
         for_classes=(WARRIOR, TANK),
+    ),
+    Item(
+        "kevlar_tee",
+        "Кевларовая футболка",
+        Slot.SHIRT,
+        "🦺",
+        hp=8,
+        image=art.shirt("kevlar_tee"),
+        level_required=8,
+        anticrit=0.05,
+        requires=Stats(endurance=20),
+        price=140,
+        for_classes=(TANK, WARRIOR),
     ),
     # ---------- 9 уровень: чем добивают на потолке ----------
     # До этой ступени доходят единицы, поэтому цена кусается, а требования

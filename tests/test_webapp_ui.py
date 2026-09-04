@@ -174,10 +174,34 @@ async def test_shop_opens_with_all_types_on_the_counter(shop_page):
     assert "Кастет" in titles  # открыто по уровню
     assert "Бита" not in titles  # закрыто, лежит под кнопкой
 
-    # пустой раздел с прилавка не пропадает: видно, что его готовят
+    # футболки на прилавке: пять штук, часть открыта по уровню
     shirts = next(head for head in heads if "Футболки" in head)
-    assert "открыто 0 из 0" in shirts
-    assert await shop_page.get_by_text("Скоро завезут.").is_visible()
+    assert "из 5" in shirts
+    assert "Майка-алкоголичка" in titles
+
+
+async def test_an_empty_shelf_says_the_goods_are_coming(server):
+    """Пустой раздел с прилавка не пропадает: видно, что его готовят."""
+    empty = {
+        "credits": 100,
+        "level": 3,
+        "fclass": {"code": "warrior", "title": "Воин"},
+        "sections": [
+            {"slot": "shirt", "title": "Футболки", "emoji": "👕", "open": 0,
+             "items": []}
+        ],
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player(), TOKEN, viewer_id=42), shop=empty
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-shop").click()
+        await page.wait_for_selector(".shelf")
+
+        assert "открыто 0 из 0" in (await shelves(page))[0]
+        assert await page.get_by_text("Скоро завезут.").is_visible()
+        await browser.close()
 
 
 async def test_type_filter_leaves_one_shelf(shop_page):
