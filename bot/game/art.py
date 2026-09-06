@@ -38,8 +38,13 @@ def slot(code: str) -> str:
 
 
 def shirt(code: str) -> str:
-    """Футболка лежит под кодом вещи: shirts/club_tee.jpeg."""
-    return f"{SHIRTS}/{code}.jpeg"
+    """Футболка лежит под кодом вещи: shirts/club_tee.png.
+
+    Png, а не jpeg, как у остального товара: футболки нарисованы отдельным
+    заходом и залиты как есть. Формату здесь всё равно — адрес берётся из
+    каталога целиком.
+    """
+    return f"{SHIRTS}/{code}.png"
 
 
 def potion(code: str) -> str:
