@@ -87,12 +87,22 @@ function emptySlotPicture(slot, box) {
   );
 }
 
+function slotHint(slot) {
+  // Подсказка при наведении: что надето и что это даёт. Пустой слот
+  // рассказывает, что сюда вообще надевается.
+  if (!slot.item) return "Пусто: " + slot.title;
+  const parts = [slot.item.title + " — " + slot.title];
+  if (slot.item.bonus) parts.push(slot.item.bonus);
+  if (slot.item.in_hands) parts.push(slot.item.in_hands);
+  return parts.join("\n");
+}
+
 function renderSlots(container, slots, own) {
   container.textContent = "";
   slots.forEach((slot) => {
     const box = document.createElement("div");
     box.className = "slot" + (slot.item ? "" : " empty");
-    box.title = slot.title;
+    box.title = slotHint(slot);
     box.appendChild(
       slot.item
         ? slotPicture(slot.item, slot.placeholder)

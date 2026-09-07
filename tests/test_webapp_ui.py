@@ -532,6 +532,30 @@ async def test_taking_a_worn_item_off_asks_first(server):
         await browser.close()
 
 
+async def test_a_slot_tells_what_is_worn_when_you_hover_it(server):
+    """Наведение на слот: что надето и что оно даёт, а не просто «оружие»."""
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, wear=3, slot=Slot.WEAPON)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        worn = page.locator("#hero-slots-left .slot:not(.empty)").first
+        hint = await worn.get_attribute("title")
+
+        assert hint.startswith("Деревянная бита — оружие")
+        assert "👊4–7" in hint  # урон вещи
+        assert "У воина в руках" in hint  # и что с ним делает класс
+
+        empty = await page.locator("#hero-slots-left .slot.empty").first.get_attribute(
+            "title"
+        )
+        assert empty.startswith("Пусто: ")
+        await browser.close()
+
+
 async def test_an_empty_slot_falls_back_to_its_icon(server):
     """Подложка не доехала — слот гаснет и показывает значок, как раньше."""
     player = make_player()
