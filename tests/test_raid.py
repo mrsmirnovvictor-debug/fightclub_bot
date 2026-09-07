@@ -209,8 +209,12 @@ async def test_the_party_size_has_edges(bot, db):
 
 
 async def test_one_raid_a_day_from_one_fighter(bot, db):
-    """Свой рейд — раз в сутки. В чужой можно идти хоть сразу."""
-    service = make_service(bot, db)
+    """Свой рейд — раз в сутки. В чужой можно идти хоть сразу.
+
+    Запрет задаём тесту явно: в настройках клуба он сейчас снят на время
+    ручных проверок, а правило от этого никуда не делось.
+    """
+    service = make_service(bot, db, raid_cooldown=24 * 60 * 60)
     players = await fill(db, 3)
     lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], 2)
     await service.leave(lobby.id, players[0].user_id)  # сбор закрылся сам собой

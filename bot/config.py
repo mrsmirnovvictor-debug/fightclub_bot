@@ -10,6 +10,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+# ---------- рейд без ожиданий ----------
+#
+# Временно, на время ручных проверок: суточный запрет на свой рейд снят,
+# сбор отряда идёт минуту вместо десяти, передышки между волнами нет.
+# Вернуть — поставить False: прежние числа стоят рядом, в тех же строках.
+# Переменные окружения сильнее этого флага, так что на Railway любое из
+# чисел можно поправить и не трогая код.
+RAID_NO_WAITS = True
+
+
 @dataclass(frozen=True)
 class Config:
     bot_token: str
@@ -29,14 +39,14 @@ class Config:
     # Сколько стоит собрать рейд. Ноль — пока бесплатно.
     raid_price: int = 0
     # Один рейд в сутки на созывающего; в чужие рейды это не мешает ходить
-    raid_cooldown: int = 24 * 60 * 60
+    raid_cooldown: int = 0 if RAID_NO_WAITS else 24 * 60 * 60
     # Сколько ждём отряд после /raid
-    raid_lobby_timeout: int = 10 * 60
+    raid_lobby_timeout: int = 60 if RAID_NO_WAITS else 10 * 60
     # Сколько у бойца есть на свой удар в волне; не успел — пропустил
     raid_turn_timeout: int = 30
     # Передышка после того, как отряд отработал столько ударов
     raid_strikes_per_break: int = 6
-    raid_break: int = 30
+    raid_break: int = 0 if RAID_NO_WAITS else 30
     # Кредиты каждому за победу
     raid_reward: int = 50
     # Насколько босс прибавляет в здоровье с каждым лишним бойцом отряда
