@@ -7,6 +7,12 @@ from datetime import datetime
 
 from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats, get_class
 from bot.game.combat import (
+    MAX_ACCURACY,
+    MAX_ANTICRIT,
+    MAX_BLOCK_HOLD,
+    MAX_COUNTER_CHANCE,
+    MAX_CRIT_CHANCE,
+    MAX_DODGE_CHANCE,
     total_accuracy,
     total_anticrit,
     total_block_hold,
@@ -215,6 +221,24 @@ def suits_payload(item: Item) -> list[dict]:
         {"code": code, "title": get_class(code).title, "emoji": get_class(code).emoji}
         for code in item.for_classes
     ]
+
+
+def capped_share(base: float, gear: float, total, cap: float) -> dict:
+    """Доля вместе с надетым — и что от неё отрезал потолок.
+
+    Без этого карточка молча съедает лишнее: вещи дают +100% уворота, в
+    строке стоит 60%, и выглядит это как ошибка счёта, хотя выше потолка
+    уворот просто не растёт — ни в карточке, ни на ринге.
+    """
+    raw = base + gear
+    return {
+        "value": round(total(base, gear) * 100),
+        "own": round(base * 100),
+        "gear": round(gear * 100),
+        "raw": round(raw * 100),
+        "cap": round(cap * 100),
+        "capped": raw > cap + 1e-9,
+    }
 
 
 def goods_payload(player: Player, item: Item, owned: int) -> dict:
@@ -740,6 +764,30 @@ def build_card(
             # Устойчивость блока к пробитию критом. Щит держит крепче, поэтому
             # число считается вместе с надетым — как и все остальные проценты.
             "block_hold": round(total_block_hold(derived.block_hold) * 100),
+            # Те же числа, но с потолком и слагаемыми: карточка показывает,
+            # сколько дали характеристики, сколько вещи и что срезал потолок
+            "caps": {
+                "crit_chance": capped_share(
+                    derived.crit_chance, equipment.crit, total_crit, MAX_CRIT_CHANCE
+                ),
+                "anticrit": capped_share(
+                    derived.anticrit, equipment.anticrit, total_anticrit, MAX_ANTICRIT
+                ),
+                "dodge_chance": capped_share(
+                    derived.dodge_chance, equipment.dodge, total_dodge,
+                    MAX_DODGE_CHANCE,
+                ),
+                "accuracy": capped_share(
+                    derived.accuracy, equipment.accuracy, total_accuracy, MAX_ACCURACY
+                ),
+                "counter_chance": capped_share(
+                    derived.counter_chance, equipment.counter, total_counter,
+                    MAX_COUNTER_CHANCE,
+                ),
+                "block_hold": capped_share(
+                    derived.block_hold, 0.0, total_block_hold, MAX_BLOCK_HOLD
+                ),
+            },
         },
         "armor": [
             {

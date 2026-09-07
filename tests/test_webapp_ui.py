@@ -722,6 +722,38 @@ async def test_taking_a_worn_item_off_asks_first(server):
         await browser.close()
 
 
+async def test_a_percentage_says_when_the_ceiling_cut_it(server):
+    """Вещи дают +100% уворота, в строке 60% — карточка объясняет почему."""
+    player = make_player()
+    player.gear = [
+        OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON),
+        OwnedItem(item=CATALOGUE["wraps"], id=2, slot=Slot.GLOVES),
+        OwnedItem(item=CATALOGUE["sneakers"], id=3, slot=Slot.BOOTS),
+        OwnedItem(item=CATALOGUE["shadow_coat"], id=4, slot=Slot.JACKET),
+        OwnedItem(item=CATALOGUE["sheath_pants"], id=5, slot=Slot.PANTS),
+    ]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    assert card["combat"]["caps"]["dodge_chance"]["gear"] == 100
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-hero").click()
+
+        dodge = page.locator("#combat li").filter(has_text="Уворот").first
+        assert "60% · потолок" in await dodge.inner_text()
+        assert "вещи 100%" in await dodge.get_attribute("title")
+        assert "но выше 60% не растёт" in (
+            await dodge.get_attribute("title")
+        )
+
+        # непотолочная строка объясняет то же самое, но без «потолка» в числе
+        crit = page.locator("#combat li").filter(has_text="Крит").first
+        assert "потолок" not in await crit.inner_text()
+        assert "потолок 55%" in await crit.get_attribute("title")
+        await browser.close()
+
+
 async def test_a_slot_tells_what_is_worn_when_you_hover_it(server):
     """Наведение на слот: что надето и что оно даёт, а не просто «оружие»."""
     player = make_player()

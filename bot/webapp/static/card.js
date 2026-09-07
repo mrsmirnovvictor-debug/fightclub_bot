@@ -6,6 +6,22 @@ const el = (id) => document.getElementById(id);
 const numberFormat = new Intl.NumberFormat("ru-RU");
 const num = (value) => numberFormat.format(value);
 
+function share(combat, name, label, text) {
+  // Строка процента: если потолок срезал лишнее, так и говорим. Иначе
+  // «+100% уворота с вещей» и «60%» в строке выглядят как ошибка счёта.
+  const cap = (combat.caps || {})[name];
+  const value = text || combat[name] + "%";
+  const line = row(label, cap && cap.capped ? value + " · потолок" : value);
+  if (cap) {
+    line.title = cap.capped
+      ? label + ": своё " + cap.own + "% + вещи " + cap.gear + "% = " +
+        cap.raw + "%, но выше " + cap.cap + "% не растёт"
+      : label + ": своё " + cap.own + "% + вещи " + cap.gear + "%" +
+        " (потолок " + cap.cap + "%)";
+  }
+  return line;
+}
+
 function row(label, value, extraClass) {
   const li = document.createElement("li");
   const left = document.createElement("span");
@@ -2914,14 +2930,16 @@ function render(card, keepTab) {
       )
     );
   });
-  combat.appendChild(row("💥 Крит", c.crit_chance + "% ×" + c.crit_power));
-  combat.appendChild(row("🚫 Антикрит", c.anticrit + "%"));
-  combat.appendChild(row("🌀 Уворот", c.dodge_chance + "%"));
-  combat.appendChild(row("🎯 Точность", c.accuracy + "%"));
-  combat.appendChild(row("🔄 Контрудар", c.counter_chance + "%"));
+  combat.appendChild(
+    share(c, "crit_chance", "💥 Крит", c.crit_chance + "% ×" + c.crit_power)
+  );
+  combat.appendChild(share(c, "anticrit", "🚫 Антикрит"));
+  combat.appendChild(share(c, "dodge_chance", "🌀 Уворот"));
+  combat.appendChild(share(c, "accuracy", "🎯 Точность"));
+  combat.appendChild(share(c, "counter_chance", "🔄 Контрудар"));
   // Насколько крепко держится блок, когда в него упирается крит: то, что
   // не удержалось, проходит половиной максимального урона
-  combat.appendChild(row("🛡🩸 Держит блок", c.block_hold + "%"));
+  combat.appendChild(share(c, "block_hold", "🛡🩸 Держит блок"));
   combat.appendChild(row("🪨 Сопротивление", c.resist + "%"));
   combat.appendChild(row("🪚 Пробивание", c.penetration + "%"));
   const armor = card.armor.filter((zone) => zone.max > 0);
