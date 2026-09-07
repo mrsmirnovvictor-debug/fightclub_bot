@@ -396,7 +396,9 @@ async def test_a_lot_is_bought_by_its_number(server):
         browser, page = await open_market(pw, server)
 
         async def catch(route):
-            sent.append(route.request.post_data_json)
+            # GET и POST у комиссионки один адрес: считаем только действия
+            if route.request.method == "POST":
+                sent.append(route.request.post_data_json)
             await route.fulfill(
                 status=200, content_type="application/json",
                 body=json.dumps({**MARKET, "sections": []}),
@@ -417,7 +419,9 @@ async def test_your_own_lot_is_taken_back_not_bought(server):
         browser, page = await open_market(pw, server)
 
         async def catch(route):
-            sent.append(route.request.post_data_json)
+            # GET и POST у комиссионки один адрес: считаем только действия
+            if route.request.method == "POST":
+                sent.append(route.request.post_data_json)
             await route.fulfill(
                 status=200, content_type="application/json",
                 body=json.dumps({**MARKET, "sections": []}),
@@ -446,7 +450,8 @@ async def test_your_gear_goes_on_sale_with_a_price(server):
         assert await price.input_value() == "20"
 
         async def catch(route):
-            sent.append(route.request.post_data_json)
+            if route.request.method == "POST":
+                sent.append(route.request.post_data_json)
             await route.fulfill(
                 status=200, content_type="application/json",
                 body=json.dumps({**MARKET, "sellable": []}),
@@ -458,6 +463,51 @@ async def test_your_gear_goes_on_sale_with_a_price(server):
         await page.wait_for_timeout(200)
 
         assert sent == [{"action": "sell", "item_id": 21, "price": 90}]
+        await browser.close()
+
+
+async def test_the_market_rereads_the_backpack_when_you_come_back(server):
+    """Комиссионка не показывает вещь, которой в рюкзаке уже нет.
+
+    Экран грузился один раз за сеанс: наденешь вещь или продай её — а в
+    списке «выставить своё» она висела как живая, и Victor видел два бинта
+    при одном в рюкзаке.
+    """
+    listings = [
+        {**MARKET},
+        {**MARKET, "sellable": []},  # бинт надели, выставлять больше нечего
+    ]
+
+    async def market_route(route):
+        body = listings.pop(0) if len(listings) > 1 else listings[0]
+        await route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        )
+
+    async with async_playwright() as pw:
+        player = make_player()
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.route("**/api/market*", market_route)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-shop").click()
+        await page.wait_for_selector(".shelf")
+        await page.get_by_role("button", name="Комиссионка", exact=True).click()
+        await page.wait_for_selector("#shop-market:not(.hidden)")
+
+        assert "Бандана" in await page.locator("#market-body").inner_text()
+
+        # ушли на другую вкладку и вернулись — список перечитан
+        await page.locator("#tab-hero").click()
+        await page.locator("#tab-shop").click()
+        await page.wait_for_selector("text=В рюкзаке пусто")
+
+        body = await page.locator("#market-body").inner_text()
+        assert "Бандана" not in body
+        # и это по-прежнему комиссионка, а не лавка клуба
+        assert await page.locator("#shop-market").is_visible()
         await browser.close()
 
 

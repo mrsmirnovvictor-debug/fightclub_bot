@@ -790,6 +790,14 @@ async function marketAction(payload) {
   }
 }
 
+function marketFollowsBag() {
+  // Открыта комиссионка — перечитываем сразу, закрыта — забываем прошлый
+  // ответ, чтобы при следующем заходе он не подсунул старый рюкзак
+  const open = shopSection === "market" && !el("shop").classList.contains("hidden");
+  if (open) loadMarket();
+  else marketData = null;
+}
+
 function renderMarket(data) {
   marketData = data;
   el("shop-purse").textContent = "";
@@ -985,6 +993,9 @@ function showTab(name) {
   lastTab = name;
   window.scrollTo(0, 0);
   if (name === "shop" && !shopData) loadShop();
+  // Комиссионку перечитываем при каждом заходе: её полка меняется чужими
+  // руками, а рюкзак — своими
+  if (name === "shop") pickShopSection(shopSection);
   if (name === "club" && !clubData) loadClub();
   if (name === "magic" && !magicData) loadMagic();
   // Ринг опрашиваем, только пока на него смотрят: ушли со вкладки — молчим
@@ -2870,6 +2881,10 @@ function render(card, keepTab) {
   renderSlots(el("hero-slots-left"), card.slots.left, card.is_self);
   renderSlots(el("hero-slots-right"), card.slots.right, card.is_self);
   renderBag(card);
+  // Рюкзак поменялся — значит поменялось и то, что можно выставить на
+  // комиссию. Без этого экран комиссионки остаётся с прежним списком: он
+  // грузится один раз, и надетая или проданная вещь висит в нём как живая.
+  marketFollowsBag();
   el("city").textContent = card.city;
   el("hero-city").textContent = card.city;
 
