@@ -724,6 +724,10 @@ async def test_taking_a_worn_item_off_asks_first(server):
 
 async def test_a_percentage_says_when_the_ceiling_cut_it(server):
     """Вещи дают +100% уворота, в строке 60% — карточка объясняет почему."""
+    from bot.game.stats import NO_LIMITS
+
+    if NO_LIMITS:
+        pytest.skip("потолки сняты в bot/game/stats.py")
     player = make_player()
     player.gear = [
         OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON),
@@ -751,6 +755,28 @@ async def test_a_percentage_says_when_the_ceiling_cut_it(server):
         crit = page.locator("#combat li").filter(has_text="Крит").first
         assert "потолок" not in await crit.inner_text()
         assert "потолок 55%" in await crit.get_attribute("title")
+        await browser.close()
+
+
+async def test_a_percentage_says_when_there_is_no_ceiling(server):
+    """Пока потолки сняты, строка не выдумывает предел, которого нет."""
+    from bot.game.stats import NO_LIMITS
+
+    if not NO_LIMITS:
+        pytest.skip("потолки на месте — эта строка про их отсутствие")
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["sneakers"], id=1, slot=Slot.BOOTS)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-hero").click()
+
+        dodge = page.locator("#combat li").filter(has_text="Уворот").first
+
+        assert "потолок" not in await dodge.inner_text()
+        assert "потолков сейчас нет" in await dodge.get_attribute("title")
         await browser.close()
 
 

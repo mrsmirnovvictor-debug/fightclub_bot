@@ -30,6 +30,7 @@ from bot.game.classes import (
 )
 from bot.game.equipment import BARE_HANDS, BARE_HANDS_ICON, Equipment
 from bot.game.stats import (
+    NO_LIMITS,
     BLOCK_BREAK_CHANCE,
     BLOCK_BREAK_DAMAGE_SHARE,
     COUNTER_DAMAGE_MULT,
@@ -63,8 +64,9 @@ MAX_MISSED_TURNS = 3
 # Уворот нельзя сбить точностью в ноль: сколько бы ни было точности,
 # у защищающегося остаётся эта надежда уйти с линии удара.
 MIN_DODGE_CHANCE = 0.02
-# И потолок сверху, чтобы бой не превращался в танцы вокруг трикстера
-MAX_DODGE_CHANCE = 0.6
+# И потолок сверху, чтобы бой не превращался в танцы вокруг трикстера.
+# Пока потолки сняты (NO_LIMITS в bot/game/stats.py), он тоже поднят.
+MAX_DODGE_CHANCE = 1.0 if NO_LIMITS else 0.6
 # Броня не может съесть больше половины удара: иначе комплект брони делает
 # лёгкие классы безвредными, а бой — бесконечным.
 MAX_ARMOR_SHARE = 0.5

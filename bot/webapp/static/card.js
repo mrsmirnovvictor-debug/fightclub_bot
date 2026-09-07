@@ -10,14 +10,17 @@ function share(combat, name, label, text) {
   // Строка процента: если потолок срезал лишнее, так и говорим. Иначе
   // «+100% уворота с вещей» и «60%» в строке выглядят как ошибка счёта.
   const cap = (combat.caps || {})[name];
+  // Потолок в 100% — это снятый потолок: писать о нём нечего
+  const limited = Boolean(cap) && cap.cap < 100;
   const value = text || combat[name] + "%";
-  const line = row(label, cap && cap.capped ? value + " · потолок" : value);
+  const line = row(label, limited && cap.capped ? value + " · потолок" : value);
   if (cap) {
-    line.title = cap.capped
-      ? label + ": своё " + cap.own + "% + вещи " + cap.gear + "% = " +
-        cap.raw + "%, но выше " + cap.cap + "% не растёт"
-      : label + ": своё " + cap.own + "% + вещи " + cap.gear + "%" +
-        " (потолок " + cap.cap + "%)";
+    const sum = label + ": своё " + cap.own + "% + вещи " + cap.gear + "%";
+    line.title = !limited
+      ? sum + " (потолков сейчас нет)"
+      : cap.capped
+        ? sum + " = " + cap.raw + "%, но выше " + cap.cap + "% не растёт"
+        : sum + " (потолок " + cap.cap + "%)";
   }
   return line;
 }

@@ -366,6 +366,10 @@ def test_the_profile_text_counts_gear_the_same_way():
 
 def test_the_card_never_promises_more_than_the_ring_allows():
     """Потолок боя виден и на карточке: 60% уворота — предел."""
+    from bot.game.stats import NO_LIMITS
+
+    if NO_LIMITS:
+        pytest.skip("потолки сняты в bot/game/stats.py — проверять нечего")
     player = make_player()
     player.agility = 80
     player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
