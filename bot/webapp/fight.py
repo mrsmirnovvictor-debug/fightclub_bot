@@ -179,6 +179,7 @@ def fight_row(row: dict[str, Any], user_id: int) -> dict[str, Any]:
     mode = mode_of(row["mode"])
     rival = rival_name or "боец без имени"
     return {
+        "kind": "duel",
         "id": row["id"],
         "rival_id": rival_id,
         "rival": rival,
@@ -197,10 +198,21 @@ def fight_row(row: dict[str, Any], user_id: int) -> dict[str, Any]:
 
 
 def build_history(
-    rows: list[dict[str, Any]], user_id: int, name: str
+    rows: list[dict[str, Any]],
+    user_id: int,
+    name: str,
+    raids: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Список боёв бойца, разложенный по дням — свежий день сверху."""
+    """Список боёв бойца, разложенный по дням — свежий день сверху.
+
+    Рейды лежат в своей таблице, но для бойца это такие же бои, и в списке
+    они идут вперемешку с дуэлями, по времени.
+    """
+    from bot.webapp.raid import raid_row
+
     fights = [fight_row(row, user_id) for row in rows]
+    fights += [raid_row(row) for row in raids or []]
+    fights.sort(key=lambda fight: (fight["created_at"] or "", fight["id"]), reverse=True)
     days: list[dict[str, Any]] = []
     for fight in fights:
         if not days or days[-1]["date"] != fight["date"]:

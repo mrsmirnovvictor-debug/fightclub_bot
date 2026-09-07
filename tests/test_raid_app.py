@@ -183,5 +183,45 @@ async def test_the_history_of_raids_is_open_to_read(cellar):
     assert response.status == 200
     row = body["raids"][0]
     assert row["boss"] == "Босс Подвала"
-    assert row["result"] == "win" and row["result_title"] == "Босс повержен"
+    # В списке боёв важно не «босс повержен», а что вышло у тебя
+    assert row["result"] == "win" and row["result_title"] == "Победа"
+    assert row["caption"] == "Победа (с Марла) — рейд против Босса Подвала"
+    assert row["verdict"] == "Босс повержен"
     assert row["damage"] > 0 and row["waves"] == 1
+
+
+async def test_a_raid_lands_in_the_list_of_fights(cellar):
+    """Рейд стоит в статистике рядом с дуэлями и читается так же."""
+    client, raids, db = cellar
+    await start(client, raids)
+    raids.raid_of_user(42).enemy.hp = 1
+    await act(client, 42, action="turn", attack="head", block="belt")
+
+    response = await client.get("/api/history?user_id=42", headers=headers(42))
+    body = await response.json()
+
+    row = body["days"][0]["fights"][0]
+    assert row["kind"] == "raid"
+    assert row["caption"] == "Победа (с Марла) — рейд против Босса Подвала"
+    assert row["waves"] == 1 and row["damage"] > 0
+    assert body["total"] == 1 and body["counts"]["win"] == 1
+
+
+async def test_the_boss_card_comes_with_the_section(cellar):
+    """Кнопка «i» рисуется по тому, что пришло вместе с разделом."""
+    client, raids, _ = cellar
+
+    idle = (await state(client, 42))["boss"]
+
+    assert idle["live"] is False
+    assert idle["title"] == "Босс Подвала"
+    assert idle["level"] > 0 and idle["max_hp"] > 0
+    assert idle["weapon"] == "Кувалда"
+    assert len(idle["kit"]) == 8
+    assert idle["combat"]["resist"] > 0
+
+    await start(client, raids)
+    live = (await state(client, 42))["boss"]
+
+    assert live["live"] is True
+    assert live["level"] == raids.raid_of_user(42).enemy.level

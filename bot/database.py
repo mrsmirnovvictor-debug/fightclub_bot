@@ -1026,11 +1026,17 @@ class Database:
         return max(0, seconds - int(row["ago"]))
 
     async def raids_of(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
-        """Рейды этого бойца, свежие сверху."""
+        """Рейды этого бойца, свежие сверху — вместе с теми, с кем ходил."""
         async with self.conn.execute(
             """
             SELECT r.id, r.boss, r.boss_level, r.outcome, r.waves, r.created_at,
-                   m.damage, m.alive, m.prize
+                   m.damage, m.alive, m.prize,
+                   (
+                       SELECT group_concat(p.nickname, ', ')
+                       FROM raid_members AS other
+                       LEFT JOIN players AS p ON p.user_id = other.user_id
+                       WHERE other.raid_id = r.id AND other.user_id != m.user_id
+                   ) AS allies
             FROM raid_members AS m
             JOIN raids AS r ON r.id = m.raid_id
             WHERE m.user_id = ? AND r.outcome IS NOT NULL

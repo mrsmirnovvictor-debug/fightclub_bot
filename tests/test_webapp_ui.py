@@ -76,6 +76,27 @@ EMPTY_HISTORY = {
 }
 
 
+BOSS_CARD = {
+    "code": "cellar_boss", "title": "Босс Подвала", "emoji": "🩸", "image": "",
+    "tagline": "Он тут всё построил и всех похоронил.", "live": False,
+    "levels_above": 4, "level": 9, "fclass": "Танк", "fclass_emoji": "🛡️",
+    "max_hp": 304, "weapon": "Кувалда", "weapon_icon": "🔨", "damage": [15, 25],
+    "stats": {"strength": 16, "agility": 2, "intuition": 11, "endurance": 33},
+    "combat": {
+        "crit_chance": 15, "crit_power": 1.94, "anticrit": 50,
+        "dodge_chance": 4, "accuracy": 16, "counter_chance": 3,
+        "resist": 31, "penetration": 2, "block_hold": 35,
+    },
+    "armor": [
+        {"zone": "head", "title": "Голова", "emoji": "🤕", "min": 3, "max": 5},
+        {"zone": "legs", "title": "Ноги", "emoji": "🦵", "min": 0, "max": 0},
+    ],
+    "kit": [
+        {"slot": "weapon", "title": "Кувалда", "emoji": "🔨"},
+        {"slot": "head", "title": "Мотошлем", "emoji": "🪖"},
+    ],
+}
+
 EMPTY_RAID = {
     "attacks": [
         {"zone": "head", "title": "Голова"},
@@ -86,7 +107,7 @@ EMPTY_RAID = {
         {"zone": "chest", "title": "Корпус + Живот"},
     ],
     "min_party": 2, "max_party": 10, "can_fight": True,
-    "raid": None, "lobby": None, "lobbies": [],
+    "raid": None, "lobby": None, "lobbies": [], "boss": BOSS_CARD,
 }
 
 
@@ -1292,7 +1313,7 @@ def raid_with_wave(over=None) -> dict:
         ],
     }
     raid.update(over or {})
-    return {**EMPTY_RAID, "raid": raid}
+    return {**EMPTY_RAID, "raid": raid, "boss": {**BOSS_CARD, "live": True}}
 
 
 async def open_raid(pw, server, raid=None):
@@ -1305,6 +1326,43 @@ async def open_raid(pw, server, raid=None):
     await page.get_by_role("button", name="Рейд", exact=True).click()
     await page.wait_for_selector("#club-raid:not(.hidden)")
     return browser, page
+
+
+async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
+    """Заголовок раздела и кнопка «i»: под ней всё, с чем босс выйдет."""
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server)
+
+        head = await page.locator(".raid-head").inner_text()
+        assert "Рейд против Босса Подвала" in head
+        assert await page.locator(".boss-stats").count() == 0
+
+        await page.locator("#boss-info").click()
+        await page.wait_for_selector(".boss-stats")
+
+        card = await page.locator(".boss-stats").inner_text()
+        assert "Он тут всё построил" in card
+        assert "на 4 уровня выше отряда" in card  # прикидка, а не живой босс
+        for line in ("Уровень", "304", "Кувалда", "15–25", "🪨 Сопротивление", "31%"):
+            assert line in card
+        assert "Броня: Голова" in card and "Броня: Ноги" not in card  # нулевую не пишем
+        assert "Мотошлем" in card
+
+        # вторым нажатием карточка закрывается
+        await page.locator("#boss-info").click()
+        await page.wait_for_selector(".boss-stats", state="detached")
+        await browser.close()
+
+
+async def test_the_boss_card_of_a_live_raid_says_so(server):
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave())
+
+        await page.locator("#boss-info").click()
+        await page.wait_for_selector(".boss-stats")
+
+        assert "босс идущего рейда" in await page.locator(".boss-stats").inner_text()
+        await browser.close()
 
 
 async def test_an_empty_cellar_offers_to_gather_a_party(server):
@@ -1471,8 +1529,8 @@ async def test_the_raid_log_speaks_the_words_of_the_judge(server):
 HISTORY = {
     "user_id": 42,
     "name": "Растафарайчик",
-    "total": 3,
-    "counts": {"win": 2, "loss": 1, "draw": 0},
+    "total": 4,
+    "counts": {"win": 2, "loss": 2, "draw": 0},
     "before": 7,
     "days": [
         {
@@ -1494,6 +1552,21 @@ HISTORY = {
                     "in_app": False, "created_at": "2026-09-03 19:00:00",
                     "date": "2026-09-03",
                 },
+            ],
+        },
+        {
+            "date": "2026-09-02",
+            "fights": [
+                {
+                    "kind": "raid", "id": 3, "boss": "Босс Подвала",
+                    "boss_emoji": "🩸", "emoji": "❌", "result": "loss",
+                    "result_title": "Поражение",
+                    "caption": "Поражение (с Марла) — рейд против Босса Подвала",
+                    "verdict": "Отряд не вышел из подвала", "allies": "Марла",
+                    "boss_level": 9, "waves": 5, "damage": 120, "alive": False,
+                    "prize": None, "created_at": "2026-09-02 21:00:00",
+                    "date": "2026-09-02",
+                }
             ],
         },
         {
@@ -1572,10 +1645,10 @@ async def test_the_statistics_section_lists_fights_by_day(server):
         browser, page = await open_stats(pw, server, HISTORY)
 
         note = await page.locator("#stats-note").inner_text()
-        assert "3 боя" in note and "2 побед" in note
+        assert "4 боя" in note and "2 побед" in note
 
         days = await page.locator("#club-stats .shelf-head").all_inner_texts()
-        assert days == ["3 сентября", "1 сентября"]
+        assert days == ["3 сентября", "2 сентября", "1 сентября"]
 
         rows = await page.locator(".fight-row").all_inner_texts()
         # «Победа — Марла» читалось так, будто победила Марла
@@ -1601,7 +1674,29 @@ async def test_a_fight_opens_into_the_words_of_the_judge(server):
         # и обратно к списку
         await page.get_by_role("button", name="← К списку боёв").click()
         await page.wait_for_selector(".fight-row")
-        assert await page.locator(".fight-row").count() == 3
+        assert await page.locator(".fight-row").count() == 4
+        await browser.close()
+
+
+async def test_a_raid_stands_in_the_list_of_fights(server):
+    """Рейд читается как бой: исход, с кем ходили и против кого."""
+    async with async_playwright() as pw:
+        browser, page = await open_stats(pw, server, HISTORY)
+
+        rows = await page.locator(".fight-row").all_inner_texts()
+        raid = next(row for row in rows if "рейд" in row)
+        assert "❌ Поражение (с Марла) — рейд против Босса Подвала" in raid
+        assert "🩸 Босс Подвала, 9 ур. · волн 5 · урона 120" in raid
+
+        # тап открывает итог рейда, а не разбор по ходам: его там нет
+        await page.get_by_text("рейд против Босса Подвала").click()
+        await page.wait_for_selector(".boss-rows")
+
+        card = await page.locator("#stats-body").inner_text()
+        assert "Отряд не вышел из подвала" in card
+        assert "Нанесено урона" in card and "120" in card
+        assert "Ходили вместе" in card and "Марла" in card
+        assert "Разбор по ходам в рейде не ведётся" in card
         await browser.close()
 
 

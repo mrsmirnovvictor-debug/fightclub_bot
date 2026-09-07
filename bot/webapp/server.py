@@ -533,10 +533,14 @@ async def api_history(request: web.Request) -> web.Response:
         return web.json_response({"error": "Такого бойца нет."}, status=404)
 
     before = request.query.get("before")
-    rows = await db.fights_of(
-        target_id, before=int(before) if before and before.isdigit() else None
+    deeper = int(before) if before and before.isdigit() else None
+    rows = await db.fights_of(target_id, before=deeper)
+    # Рейды лежат в своей таблице и своей нумерации, поэтому вглубь списка
+    # они не листаются: на первой странице их видно все, что были.
+    raids = await db.raids_of(target_id) if deeper is None else []
+    return web.json_response(
+        build_history(rows, target_id, player.nickname, raids)
     )
-    return web.json_response(build_history(rows, target_id, player.nickname))
 
 
 async def api_fight_log(request: web.Request) -> web.Response:

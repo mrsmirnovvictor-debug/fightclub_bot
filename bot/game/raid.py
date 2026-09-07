@@ -91,11 +91,19 @@ class Boss:
     emoji: str
     class_code: str
     weapon: str
+    # «рейд против Босса Подвала»: падеж хранится рядом с именем, а не
+    # угадывается по окончанию — прозвища не склоняются по правилам
+    genitive: str = ""
     tagline: str = ""
 
     @property
     def image(self) -> str:
         return art.boss(self.code)
+
+    @property
+    def whom(self) -> str:
+        """Кого бьём: «рейд против Босса Подвала»."""
+        return self.genitive or self.title
 
 
 BOSSES: tuple[Boss, ...] = (
@@ -105,6 +113,7 @@ BOSSES: tuple[Boss, ...] = (
         emoji="🩸",
         class_code="tank",
         weapon="sledge",
+        genitive="Босса Подвала",
         tagline="Он тут всё построил и всех похоронил.",
     ),
 )

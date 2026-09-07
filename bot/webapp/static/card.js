@@ -1443,6 +1443,8 @@ function fightLog(duel) {
 
 let raidData = null;
 let raidTimer = null;
+// Развёрнута ли карточка босса под заголовком
+let bossOpen = false;
 let raidBusy = false;
 let raidDraft = { attack: null, block: null };
 let raidWave = null;
@@ -1512,6 +1514,10 @@ function renderRaid(data) {
   raidData = data;
   const body = el("raid-body");
   body.textContent = "";
+  if (data.boss) {
+    body.appendChild(raidHead(data.boss));
+    if (bossOpen) body.appendChild(bossStats(data.boss));
+  }
   if (data.raid) {
     el("raid-note").textContent = "";
     body.appendChild(raidPanel(data));
@@ -1525,6 +1531,109 @@ function renderRaid(data) {
     body.appendChild(raidOpenForm(data));
     data.lobbies.forEach((lobby) => body.appendChild(raidLobby(lobby, false)));
   }
+}
+
+function raidHead(boss) {
+  // «Рейд против Босса Подвала (i)» — заголовок и всё о нём под кнопкой
+  const box = document.createElement("div");
+  box.className = "raid-head";
+  const title = document.createElement("h2");
+  title.className = "shelf-head";
+  title.textContent = "Рейд против " + bossGenitive(boss.title);
+  box.appendChild(title);
+
+  const info = document.createElement("button");
+  info.type = "button";
+  info.className = "info-btn";
+  info.id = "boss-info";
+  info.textContent = "i";
+  info.title = "Характеристики босса";
+  info.addEventListener("click", () => {
+    bossOpen = !bossOpen;
+    renderRaid(raidData);
+  });
+  box.appendChild(info);
+  return box;
+}
+
+function bossGenitive(title) {
+  // «Босс Подвала» → «Босса Подвала»: склоняем только то, что знаем сами.
+  // Незнакомое имя оставляем как есть — лучше косо, чем неверно.
+  return title.startsWith("Босс ") ? "Босса " + title.slice(5) : title;
+}
+
+function bossStats(boss) {
+  const box = document.createElement("div");
+  box.className = "boss-stats";
+
+  if (boss.image) {
+    const img = document.createElement("img");
+    img.className = "boss-portrait";
+    img.src = boss.image;
+    img.alt = boss.title;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.addEventListener("error", () => img.remove());
+    box.appendChild(img);
+  }
+  if (boss.tagline) {
+    const line = document.createElement("p");
+    line.className = "screen-note";
+    line.textContent = boss.tagline;
+    box.appendChild(line);
+  }
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = boss.live
+    ? "Это босс идущего рейда."
+    : "Так он выйдет на твой уровень: он всегда на " + boss.levels_above +
+      " уровня выше отряда, а здоровья набирает с каждым бойцом.";
+  box.appendChild(note);
+
+  const rows = document.createElement("div");
+  rows.className = "boss-rows";
+  const add = (label, value) => {
+    const row = document.createElement("p");
+    row.className = "boss-row";
+    const name = document.createElement("span");
+    name.textContent = label;
+    const val = document.createElement("b");
+    val.textContent = value;
+    row.appendChild(name);
+    row.appendChild(val);
+    rows.appendChild(row);
+  };
+  add("Уровень", String(boss.level));
+  add("Класс", boss.fclass_emoji + " " + boss.fclass);
+  add("Здоровье", String(boss.max_hp));
+  add(
+    "Удар " + boss.weapon_icon + " " + boss.weapon,
+    boss.damage[0] + "–" + boss.damage[1]
+  );
+  add("💪 Сила", String(boss.stats.strength));
+  add("🤸 Ловкость", String(boss.stats.agility));
+  add("🔮 Интуиция", String(boss.stats.intuition));
+  add("🫀 Выносливость", String(boss.stats.endurance));
+  add("🎯 Точность", boss.combat.accuracy + "%");
+  add("🌀 Уворот", boss.combat.dodge_chance + "%");
+  add("💥 Крит", boss.combat.crit_chance + "%");
+  add("🚫 Антикрит", boss.combat.anticrit + "%");
+  add("🔄 Контрудар", boss.combat.counter_chance + "%");
+  add("🪨 Сопротивление", boss.combat.resist + "%");
+  add("🗡 Пробивание", boss.combat.penetration + "%");
+  add("🛡🩸 Держит блок", boss.combat.block_hold + "%");
+  boss.armor.forEach((zone) => {
+    if (zone.max) add(zone.emoji + " Броня: " + zone.title, zone.min + "–" + zone.max);
+  });
+  box.appendChild(rows);
+
+  const kit = document.createElement("p");
+  kit.className = "screen-note";
+  kit.textContent =
+    "Надето: " + boss.kit.map((row) => row.emoji + " " + row.title).join(", ");
+  box.appendChild(kit);
+  return box;
 }
 
 function raidOpenForm(data) {
@@ -1839,12 +1948,62 @@ function fightRow(fight) {
   line.textContent = fight.emoji + " " + fight.caption;
   const note = document.createElement("span");
   note.className = "fight-row-note";
-  note.textContent =
-    fight.mode.emoji + " " + fight.mode.title + ", раундов " + fight.rounds;
+  const raid = fight.kind === "raid";
+  note.textContent = raid
+    ? fight.boss_emoji + " " + fight.boss + ", " + fight.boss_level +
+      " ур. · волн " + fight.waves + " · урона " + fight.damage
+    : fight.mode.emoji + " " + fight.mode.title + ", раундов " + fight.rounds;
   row.appendChild(line);
   row.appendChild(note);
-  row.addEventListener("click", () => openFightLog(fight.id));
+  // У рейда разбора по ходам нет: показываем, чем он кончился и что унесли
+  row.addEventListener("click", () =>
+    raid ? renderRaidRow(fight) : openFightLog(fight.id)
+  );
   return row;
+}
+
+function renderRaidRow(fight) {
+  const body = el("stats-body");
+  body.textContent = "";
+
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "btn secondary wide";
+  back.textContent = "← К списку боёв";
+  back.addEventListener("click", () => renderHistory(statsData));
+  body.appendChild(back);
+
+  const head = document.createElement("p");
+  head.className = "fight-line";
+  head.textContent = fight.emoji + " " + fight.caption;
+  body.appendChild(head);
+
+  const rows = document.createElement("div");
+  rows.className = "boss-rows";
+  const add = (label, value) => {
+    const row = document.createElement("p");
+    row.className = "boss-row";
+    const name = document.createElement("span");
+    name.textContent = label;
+    const val = document.createElement("b");
+    val.textContent = value;
+    row.appendChild(name);
+    row.appendChild(val);
+    rows.appendChild(row);
+  };
+  add("Чем кончилось", fight.verdict);
+  add("Босс", fight.boss + ", " + fight.boss_level + " ур.");
+  add("Волн", String(fight.waves));
+  add("Нанесено урона", String(fight.damage));
+  add("Вышел из подвала", fight.alive ? "да" : "нет");
+  if (fight.allies) add("Ходили вместе", fight.allies);
+  if (fight.prize) add("Приз", fight.prize);
+  body.appendChild(rows);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = "Разбор по ходам в рейде не ведётся — только итог.";
+  body.appendChild(note);
 }
 
 async function openFightLog(fightId) {

@@ -692,7 +692,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .fighter-level { color: var(--muted); font-weight: 700; }
 .fighter-info,
-.fighter-stats {
+.fighter-stats,
+.info-btn {
   width: 26px;
   height: 26px;
   flex: none;
@@ -706,7 +707,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   line-height: 1;
   cursor: pointer;
 }
-.fighter-info:active { background: var(--accent); color: #fff; }
+.fighter-info:active,
+.info-btn:active { background: var(--accent); color: #fff; }
 
 /* ---------- пузыри фильтров ---------- */
 
@@ -822,6 +824,38 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .zone:active { transform: scale(0.99); }
 
 /* ---------- рейд ---------- */
+/* Заголовок раздела и кнопка «i» рядом: под ней разворачивается всё, что
+   известно о боссе. */
+.raid-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.raid-head .shelf-head { margin: 0; flex: 1; min-width: 0; }
+.boss-stats {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--slot);
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.boss-portrait {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--slot-line);
+  margin-bottom: 8px;
+}
+.boss-rows { display: grid; gap: 2px; margin: 8px 0; }
+.boss-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  font-size: 13px;
+}
 /* Босс сверху крупно, под ним отряд списком: в рейде важно видеть, у кого
    осталось здоровье и кто уже отработал волну. */
 .boss-card {
