@@ -225,3 +225,22 @@ async def test_the_boss_card_comes_with_the_section(cellar):
 
     assert live["live"] is True
     assert live["level"] == raids.raid_of_user(42).enemy.level
+
+
+async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
+    """Кукла босса собирается тем же payload, что и карточка бойца."""
+    client, _, _ = cellar
+
+    boss = (await state(client, 42))["boss"]
+
+    assert boss["avatar"]["url"].endswith("bosses/cellar_boss.png")
+    left = boss["slots"]["left"]
+    right = boss["slots"]["right"]
+    assert [row["slot"] for row in left] == ["head", "weapon", "shirt", "belt"]
+    assert [row["slot"] for row in right] == ["gloves", "jacket", "pants", "boots"]
+    # у босса заняты все восемь, но форма слота та же, что у пустого
+    assert all(row["item"] for row in left + right)
+    assert all(row["placeholder_image"] for row in left + right)
+    assert next(row for row in left if row["slot"] == "weapon")["item"]["title"] == (
+        "Кувалда"
+    )

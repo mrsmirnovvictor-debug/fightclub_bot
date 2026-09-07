@@ -20,7 +20,7 @@ from bot.game.combat import (
     total_crit,
     total_dodge,
 )
-from bot.game.equipment import get_item
+from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS, get_item
 from bot.game.raid import (
     BOSS_HP_SHARE,
     LEVELS_ABOVE,
@@ -32,6 +32,7 @@ from bot.game.raid import (
 )
 from bot.models import Player
 from bot.raid_service import RaidLobby, RaidService, RaidSession
+from bot.webapp.card import slot_payload
 from bot.webapp.fight import ATTACK_BUTTONS, BLOCK_BUTTONS
 
 
@@ -78,6 +79,18 @@ def boss_card(enemy: Fighter, boss: Boss, live: bool) -> dict[str, Any]:
     return {
         "code": boss.code,
         "title": boss.title,
+        # Кукла босса собирается тем же кодом, что и карточка бойца: те же
+        # слоты, те же подложки под пустыми, тот же аватар в середине
+        "name": boss.title,
+        "avatar": {"url": boss.image, "emoji": boss.emoji},
+        "slots": {
+            "left": [
+                slot_payload(equipment, slot, enemy.fclass) for slot in LEFT_SLOTS
+            ],
+            "right": [
+                slot_payload(equipment, slot, enemy.fclass) for slot in RIGHT_SLOTS
+            ],
+        },
         "emoji": boss.emoji,
         "image": boss.image,
         "tagline": boss.tagline,

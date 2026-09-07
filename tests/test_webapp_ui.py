@@ -95,6 +95,36 @@ BOSS_CARD = {
         {"slot": "weapon", "title": "Кувалда", "emoji": "🔨"},
         {"slot": "head", "title": "Мотошлем", "emoji": "🪖"},
     ],
+    "name": "Босс Подвала",
+    "avatar": {"url": "", "emoji": "🩸"},
+    "slots": {
+        "left": [
+            {
+                "slot": "head", "title": "головной убор", "placeholder": "🎩",
+                "placeholder_image": "",
+                "item": {
+                    "id": 0, "code": "moto_helmet", "title": "Мотошлем",
+                    "icon": "🪖", "image": "", "bonus": "🛡3–5", "in_hands": "",
+                    "wear": 0, "max_wear": 20,
+                },
+            },
+            {
+                "slot": "weapon", "title": "оружие", "placeholder": "🔪",
+                "placeholder_image": "",
+                "item": {
+                    "id": 0, "code": "sledge", "title": "Кувалда", "icon": "🔨",
+                    "image": "", "bonus": "👊8–10", "in_hands": "",
+                    "wear": 0, "max_wear": 20,
+                },
+            },
+        ],
+        "right": [
+            {
+                "slot": "gloves", "title": "перчатки", "placeholder": "🥊",
+                "placeholder_image": "", "item": None,
+            },
+        ],
+    },
 }
 
 EMPTY_RAID = {
@@ -1346,7 +1376,14 @@ async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
         for line in ("Уровень", "304", "Кувалда", "15–25", "🪨 Сопротивление", "31%"):
             assert line in card
         assert "Броня: Голова" in card and "Броня: Ноги" not in card  # нулевую не пишем
-        assert "Мотошлем" in card
+
+        # босс стоит куклой, как боец: надетое по слотам, пустые — тенью
+        doll = page.locator(".boss-stats .sheet-doll")
+        assert await doll.locator(".slot").count() == 3
+        assert await doll.locator(".slot.empty").count() == 1
+        assert await doll.locator(".avatar").count() == 1
+        # тап по слоту рассказывает, что там надето
+        await doll.locator(".slot").first.click()
 
         # вторым нажатием карточка закрывается
         await page.locator("#boss-info").click()

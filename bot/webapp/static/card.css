@@ -840,14 +840,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   padding: 10px;
   margin-bottom: 10px;
 }
-.boss-portrait {
-  width: 100%;
-  max-height: 220px;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid var(--slot-line);
-  margin-bottom: 8px;
-}
+/* Кукла босса живёт по правилам чужой карточки, только с отступом снизу */
+.boss-stats .sheet-doll { margin-bottom: 8px; }
 .boss-rows { display: grid; gap: 2px; margin: 8px 0; }
 .boss-row {
   display: flex;

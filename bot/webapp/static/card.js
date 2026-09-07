@@ -1566,16 +1566,9 @@ function bossStats(boss) {
   const box = document.createElement("div");
   box.className = "boss-stats";
 
-  if (boss.image) {
-    const img = document.createElement("img");
-    img.className = "boss-portrait";
-    img.src = boss.image;
-    img.alt = boss.title;
-    img.loading = "lazy";
-    img.decoding = "async";
-    img.addEventListener("error", () => img.remove());
-    box.appendChild(img);
-  }
+  // Кукла босса — тем же кодом, что и карточка бойца: аватар в середине,
+  // слоты по бокам, под пустыми — подложки
+  if (boss.slots) box.appendChild(sheetDoll(boss));
   if (boss.tagline) {
     const line = document.createElement("p");
     line.className = "screen-note";
@@ -1627,12 +1620,6 @@ function bossStats(boss) {
     if (zone.max) add(zone.emoji + " Броня: " + zone.title, zone.min + "–" + zone.max);
   });
   box.appendChild(rows);
-
-  const kit = document.createElement("p");
-  kit.className = "screen-note";
-  kit.textContent =
-    "Надето: " + boss.kit.map((row) => row.emoji + " " + row.title).join(", ");
-  box.appendChild(kit);
   return box;
 }
 
