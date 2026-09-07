@@ -821,6 +821,35 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .zone.on { background: var(--slot); font-weight: 600; }
 .zone:active { transform: scale(0.99); }
 
+/* ---------- рейд ---------- */
+/* Босс сверху крупно, под ним отряд списком: в рейде важно видеть, у кого
+   осталось здоровье и кто уже отработал волну. */
+.boss-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--slot);
+  padding: 10px;
+}
+.boss-face {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--slot-line);
+}
+.boss-side { flex: 1; min-width: 0; }
+.raid-party { display: grid; gap: 6px; }
+.raid-member {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.raid-member.down { opacity: 0.55; }
+.raid-sizes { display: grid; gap: 8px; }
+
 /* Стойка и итог — те же карточки, что и панель хода: рамка держит их
    отдельно от ленты слов судьи под ними. */
 .fight-standoff,

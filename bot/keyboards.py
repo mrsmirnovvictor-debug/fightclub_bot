@@ -103,6 +103,17 @@ class FightCB(CallbackData, prefix="fight"):
     slot: int = 0  # каким оружием бьём: 0 — основное, 1 — второе
 
 
+class RaidLobbyCB(CallbackData, prefix="rlob"):
+    action: str  # join | leave
+    lobby_id: int
+
+
+class RaidCB(CallbackData, prefix="raid"):
+    action: str  # attack | block
+    raid_id: int
+    zone: str = ""
+
+
 class StandoffCB(CallbackData, prefix="stand"):
     action: str  # start | decline
     duel_id: int
@@ -268,6 +279,29 @@ def tournament_keyboard(tournament_id: int) -> InlineKeyboardMarkup:
     )
     builder.adjust(1)
     return builder.as_markup()
+
+
+def raid_lobby_keyboard(lobby) -> InlineKeyboardMarkup:
+    """Кнопки записи в рейд: место в отряде одно на всех, сторон тут нет."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=f"🩸 В отряд ({lobby.total}/{lobby.size})",
+        callback_data=RaidLobbyCB(action="join", lobby_id=lobby.id),
+    )
+    builder.button(
+        text="🚪 Выйти", callback_data=RaidLobbyCB(action="leave", lobby_id=lobby.id)
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def raid_keyboard(raid_id: int, icon: str = "👊") -> InlineKeyboardMarkup:
+    """Та же панель хода, что в дуэли, но нажатия уходят в рейд."""
+    return _fight_panel(
+        icon,
+        lambda zone: RaidCB(action="attack", raid_id=raid_id, zone=zone.value).pack(),
+        lambda zone: RaidCB(action="block", raid_id=raid_id, zone=zone.value).pack(),
+    )
 
 
 def battle_keyboard(battle_id: int, icon: str = "👊") -> InlineKeyboardMarkup:

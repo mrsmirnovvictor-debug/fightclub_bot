@@ -11,6 +11,7 @@ from aiohttp import web
 from bot.config import Config
 from bot.database import Database
 from bot.duel_service import DuelError
+from bot.raid_service import RaidError
 from bot.game.classes import ALL_STATS
 from bot.game.equipment import Slot
 from bot.game.modes import mode_of
@@ -29,6 +30,7 @@ from bot.store_service import StoreError, StoreService
 from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.webapp.fight import build_fight_log, build_fights, build_history
+from bot.webapp.raid import build_raid, raid_row
 from bot.webapp.card import (
     build_card,
     build_club,
@@ -53,6 +55,8 @@ STAMP_KEY: web.AppKey[str] = web.AppKey("stamp", str)
 DUELS_KEY: web.AppKey = web.AppKey("duels")
 # Касса: выставляет счета в звёздах для кнопки «+» рядом с кредитами
 STORE_KEY: web.AppKey = web.AppKey("store")
+# Рейды: тот же сервис, что и в ветке группы — апп ему второй пульт
+RAIDS_KEY: web.AppKey = web.AppKey("raids")
 # Кто может смотреть чужие карточки — все: клуб маленький, прятать нечего
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
 
@@ -451,6 +455,69 @@ async def api_fight(request: web.Request) -> web.Response:
     return web.json_response(build_fights(fresh or player, duels))
 
 
+# ---------- рейды ----------
+
+
+async def api_raid(request: web.Request) -> web.Response:
+    """Состояние раздела «Рейд» целиком: сбор, идущая волна или итог."""
+    player = await _fighter(request)
+    return web.json_response(build_raid(player, request.app.get(RAIDS_KEY)))
+
+
+async def api_raid_action(request: web.Request) -> web.Response:
+    """Действие в рейде: собрать, записаться, выйти, ударить, закрыть итог."""
+    player = await _fighter(request)
+    raids = request.app.get(RAIDS_KEY)
+    if raids is None:  # pragma: no cover - бот без рейдов не поднимается
+        return web.json_response({"error": "Рейды сейчас недоступны."}, status=503)
+
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    try:
+        if action == "open":
+            await raids.open_raid(None, None, player, _int_field(data, "size"))
+        elif action == "join":
+            await raids.join(_int_field(data, "lobby_id"), player)
+        elif action == "leave":
+            lobby = raids.lobby_of_user(player.user_id)
+            if lobby is None:
+                raise RaidError("Ты никуда не записан.")
+            await raids.leave(lobby.id, player.user_id)
+        elif action == "turn":
+            # Ход целиком: удар и блок уходят одной кнопкой «Вперёд!»
+            session = raids.raid_of_user(player.user_id)
+            if session is None:
+                raise RaidError("Ты сейчас не в рейде.")
+            attack = str(data.get("attack", ""))
+            block = str(data.get("block", ""))
+            if not attack or not block:
+                raise RaidError("Выбери и удар, и блок.")
+            await raids.handle_choice(session.id, player.user_id, "attack", attack)
+            await raids.handle_choice(session.id, player.user_id, "block", block)
+        elif action == "done":
+            raids.forget_result(player.user_id)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except RaidError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await request.app[DB_KEY].get_player(player.user_id)
+    return web.json_response(build_raid(fresh or player, raids))
+
+
+async def api_raids_history(request: web.Request) -> web.Response:
+    """Рейды бойца: с кем дрался, чем кончилось и что унёс."""
+    viewer = await _viewer(request)
+    db = request.app[DB_KEY]
+    requested = request.query.get("user_id")
+    target_id = (
+        int(requested) if requested and requested.lstrip("-").isdigit()
+        else viewer.user_id
+    )
+    rows = await db.raids_of(target_id)
+    return web.json_response({"raids": [raid_row(row) for row in rows]})
+
+
 async def api_history(request: web.Request) -> web.Response:
     """Бои бойца, разложенные по дням. Чужую историю смотреть можно."""
     viewer = await _viewer(request)
@@ -595,7 +662,7 @@ async def healthz(request: web.Request) -> web.Response:
 
 
 def create_app(
-    bot, db: Database, config: Config, duels=None, store=None
+    bot, db: Database, config: Config, duels=None, store=None, raids=None
 ) -> web.Application:
     app = web.Application()
     app[BOT_KEY] = bot
@@ -606,6 +673,8 @@ def create_app(
         app[DUELS_KEY] = duels
     if store is not None:
         app[STORE_KEY] = store
+    if raids is not None:
+        app[RAIDS_KEY] = raids
     app.add_routes(
         [
             web.get("/", index),
@@ -621,6 +690,9 @@ def create_app(
             web.get("/api/fights", api_fights),
             web.post("/api/fight", api_fight),
             web.get("/api/history", api_history),
+            web.get("/api/raid", api_raid),
+            web.post("/api/raid", api_raid_action),
+            web.get("/api/raids", api_raids_history),
             web.get("/api/fight/{fight_id}", api_fight_log),
             web.get("/api/magic", api_magic),
             web.post("/api/pro", api_pro),
@@ -637,10 +709,10 @@ def create_app(
 
 
 async def run_webapp(
-    bot, db: Database, config: Config, duels=None, store=None
+    bot, db: Database, config: Config, duels=None, store=None, raids=None
 ) -> web.AppRunner:
     """Поднять сервер мини-аппа рядом с ботом. Вернуть runner для остановки."""
-    runner = web.AppRunner(create_app(bot, db, config, duels, store))
+    runner = web.AppRunner(create_app(bot, db, config, duels, store, raids))
     await runner.setup()
     site = web.TCPSite(runner, config.webapp_host, config.webapp_port)
     await site.start()

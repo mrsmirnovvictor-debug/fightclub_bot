@@ -56,17 +56,24 @@ def test_the_changelog_speaks_to_players_not_to_developers():
             assert word not in body, f"{release.code}: техника в тексте — {word}"
 
 
-def test_the_changelog_never_tells_the_group_to_type_a_command():
-    """Команды слушает личка бота: в ветке группы они не сработают.
+def test_the_changelog_only_names_commands_the_group_can_use():
+    """Команды личка и группа слушают разные: в ветке сработают не все.
 
     «Проверить своё — /card» в новостях выглядит как подсказка, а на деле
-    отправляет человека нажимать то, на что здесь никто не ответит.
+    отправляет человека нажимать то, на что здесь никто не ответит. А вот
+    «/raid 10» назвать можно: эту команду группа как раз и слушает.
     """
+    import re
+
+    from bot.main import GROUP_COMMANDS
+
+    allowed = {command.command for command in GROUP_COMMANDS}
     for release in RELEASES:
-        body = release.render()
-        assert "/" not in body.replace("</b>", "").replace("<b>", ""), (
-            f"{release.code}: в объявлении осталась команда"
-        )
+        body = release.render().replace("</b>", "").replace("<b>", "")
+        for name in re.findall(r"/([a-z_]+)", body):
+            assert name in allowed, (
+                f"{release.code}: /{name} в группе не работает"
+            )
 
 
 def test_every_release_code_is_unique():

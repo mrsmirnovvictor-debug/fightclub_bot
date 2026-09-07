@@ -140,6 +140,36 @@ CREATE TABLE IF NOT EXISTS duel_log (
     PRIMARY KEY (duel_id, number)
 );
 
+-- Рейды: отряд живых бойцов против одного босса. Запись заводится в момент
+-- сбора — по ней же считается «один рейд в сутки на созывающего», — и
+-- закрывается итогом, когда бой кончился.
+CREATE TABLE IF NOT EXISTS raids (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER,
+    thread_id  INTEGER,
+    opener_id  INTEGER NOT NULL,
+    boss       TEXT    NOT NULL,
+    boss_level INTEGER NOT NULL DEFAULT 0,
+    size       INTEGER NOT NULL,
+    outcome    TEXT,
+    waves      INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_raids_opener ON raids(opener_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS raid_members (
+    raid_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    damage  INTEGER NOT NULL DEFAULT 0,
+    alive   INTEGER NOT NULL DEFAULT 1,
+    prize   TEXT,
+    PRIMARY KEY (raid_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_raid_members_user
+    ON raid_members(user_id, raid_id DESC);
+
 CREATE TABLE IF NOT EXISTS battles (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id    INTEGER NOT NULL,
@@ -920,6 +950,96 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [json.loads(row["strikes"]) for row in rows]
+
+    # ---------- рейды ----------
+
+    async def open_raid_record(
+        self,
+        chat_id: int | None,
+        thread_id: int | None,
+        opener_id: int,
+        boss: str,
+        size: int,
+    ) -> int:
+        """Завести запись рейда в момент сбора.
+
+        Пишем сразу, а не по итогу: по этой записи считается суточный запрет
+        на новый сбор, и она должна появиться раньше, чем первый удар.
+        """
+        cursor = await self.conn.execute(
+            "INSERT INTO raids (chat_id, thread_id, opener_id, boss, size) "
+            "VALUES (?,?,?,?,?)",
+            (chat_id, thread_id, opener_id, boss, size),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def drop_raid_record(self, raid_id: int) -> None:
+        """Убрать запись несостоявшегося рейда: попытка не должна пропадать."""
+        if not raid_id:
+            return
+        await self.conn.execute("DELETE FROM raid_members WHERE raid_id = ?", (raid_id,))
+        await self.conn.execute("DELETE FROM raids WHERE id = ?", (raid_id,))
+        await self.conn.commit()
+
+    async def close_raid_record(
+        self,
+        raid_id: int,
+        outcome: str,
+        waves: int,
+        boss_level: int,
+        members: list[tuple[int, int, bool, str | None]],
+    ) -> None:
+        """Записать итог рейда и что вышло у каждого."""
+        if not raid_id:
+            return
+        await self.conn.execute(
+            "UPDATE raids SET outcome = ?, waves = ?, boss_level = ? WHERE id = ?",
+            (outcome, waves, boss_level, raid_id),
+        )
+        await self.conn.executemany(
+            "INSERT OR REPLACE INTO raid_members (raid_id, user_id, damage, alive, prize)"
+            " VALUES (?,?,?,?,?)",
+            [
+                (raid_id, user_id, damage, 1 if alive else 0, prize)
+                for user_id, damage, alive, prize in members
+            ],
+        )
+        await self.conn.commit()
+
+    async def raid_cooldown(self, user_id: int, seconds: int) -> int:
+        """Сколько ещё ждать этому бойцу до своего следующего рейда.
+
+        Ноль — можно собирать. Считаем от последнего сбора: ходить в чужие
+        рейды это не мешает, запрет только на свой.
+        """
+        if seconds <= 0:
+            return 0
+        async with self.conn.execute(
+            "SELECT strftime('%s','now') - strftime('%s', created_at) AS ago "
+            "FROM raids WHERE opener_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None or row["ago"] is None:
+            return 0
+        return max(0, seconds - int(row["ago"]))
+
+    async def raids_of(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        """Рейды этого бойца, свежие сверху."""
+        async with self.conn.execute(
+            """
+            SELECT r.id, r.boss, r.boss_level, r.outcome, r.waves, r.created_at,
+                   m.damage, m.alive, m.prize
+            FROM raid_members AS m
+            JOIN raids AS r ON r.id = m.raid_id
+            WHERE m.user_id = ? AND r.outcome IS NOT NULL
+            ORDER BY r.id DESC LIMIT ?
+            """,
+            (user_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     async def add_battle(self, session, outcome) -> int:
         """Записать групповой бой и всех, кто в нём был."""

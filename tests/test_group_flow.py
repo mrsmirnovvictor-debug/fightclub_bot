@@ -504,3 +504,59 @@ async def test_the_board_does_not_repeat_itself(arena):
     # ответ про доску есть, а объявления нет: всё уже прочитано
     assert len(session.texts) == before + 1
     assert "доска объявлений" in session.texts[-1]
+
+
+# ---------- рейд ----------
+
+
+async def test_a_raid_is_gathered_and_fought_from_the_chat(arena, raids):
+    """/raid собирает отряд кнопкой и ведёт волну против босса."""
+    from bot.keyboards import RaidCB, RaidLobbyCB
+
+    db, _, session = arena
+    people = [as_user(900 + i, f"Рейдер{i}") for i in range(2)]
+    for user in people:
+        player = make_player(user.id, user.first_name, "warrior")
+        player.level = 5
+        await db.save_player(player)
+
+    await send(people[0], "/raid 2", thread_id=601)
+
+    lobby = raids.lobby_of_user(people[0].id)
+    assert lobby is not None and lobby.size == 2
+    assert "Босс Подвала" in session.texts[-1]
+
+    await feed_callback(
+        people[1],
+        GROUP,
+        RaidLobbyCB(action="join", lobby_id=lobby.id).pack(),
+        message_thread_id=601,
+        is_topic_message=True,
+    )
+
+    raid = raids.raid_of_user(people[0].id)
+    assert raid is not None and len(raid.fighters) == 2
+    assert any("Волна 1" in text for text in session.texts)
+
+    # удар и блок одного бойца — размен считается сразу
+    for action, zone in (("attack", "head"), ("block", "belt")):
+        await feed_callback(
+            people[0],
+            GROUP,
+            RaidCB(action=action, raid_id=raid.id, zone=zone).pack(),
+            message_thread_id=601,
+            is_topic_message=True,
+        )
+
+    assert people[0].id in raid.acted
+    assert raid.enemy.hp < raid.enemy.max_hp or raid.rounds
+
+
+async def test_a_raid_needs_a_character(arena, raids):
+    db, _, session = arena
+    stranger = as_user(950, "Прохожий")
+
+    await send(stranger, "/raid 3", thread_id=602)
+
+    assert raids.lobby_of_user(stranger.id) is None
+    assert "нет бойца" in session.texts[-1]

@@ -25,6 +25,22 @@ class Config:
     # Полминуты хватает, чтобы минутный запас обращений к чату успел
     # освободиться. Ноль — драться без перерывов (так гоняют тесты).
     round_break: int = 30
+    # ---------- рейды ----------
+    # Сколько стоит собрать рейд. Ноль — пока бесплатно.
+    raid_price: int = 0
+    # Один рейд в сутки на созывающего; в чужие рейды это не мешает ходить
+    raid_cooldown: int = 24 * 60 * 60
+    # Сколько ждём отряд после /raid
+    raid_lobby_timeout: int = 10 * 60
+    # Сколько у бойца есть на свой удар в волне; не успел — пропустил
+    raid_turn_timeout: int = 30
+    # Передышка после того, как отряд отработал столько ударов
+    raid_strikes_per_break: int = 6
+    raid_break: int = 30
+    # Кредиты каждому за победу
+    raid_reward: int = 50
+    # Насколько босс прибавляет в здоровье с каждым лишним бойцом отряда
+    raid_boss_hp_share: float = 0.4
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
     webapp_port: int = 8080
@@ -85,6 +101,22 @@ def load_config() -> Config:
             os.getenv("TOURNAMENT_REGISTRATION", str(24 * 60 * 60))
         ),
         round_break=int(os.getenv("ROUND_BREAK", str(Config.round_break))),
+        raid_price=int(os.getenv("RAID_PRICE", str(Config.raid_price))),
+        raid_cooldown=int(os.getenv("RAID_COOLDOWN", str(Config.raid_cooldown))),
+        raid_lobby_timeout=int(
+            os.getenv("RAID_LOBBY_TIMEOUT", str(Config.raid_lobby_timeout))
+        ),
+        raid_turn_timeout=int(
+            os.getenv("RAID_TURN_TIMEOUT", str(Config.raid_turn_timeout))
+        ),
+        raid_strikes_per_break=int(
+            os.getenv("RAID_STRIKES_PER_BREAK", str(Config.raid_strikes_per_break))
+        ),
+        raid_break=int(os.getenv("RAID_BREAK", str(Config.raid_break))),
+        raid_reward=int(os.getenv("RAID_REWARD", str(Config.raid_reward))),
+        raid_boss_hp_share=float(
+            os.getenv("RAID_BOSS_HP_SHARE", str(Config.raid_boss_hp_share))
+        ),
         webapp_url=_webapp_url(),
         webapp_host=os.getenv("WEBAPP_HOST", "0.0.0.0").strip(),
         webapp_port=_webapp_port(),

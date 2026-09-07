@@ -17,10 +17,21 @@ from bot.game.battle import (
     BattleKind,
 )
 from bot.game.modes import FIST_RINGS, FightMode
+from bot.game.raid import MAX_PARTY
 from bot.game.narrator import esc, plain, player_link
 from bot.news_service import catch_up, pending
 from bot.handlers.common import thread_id_of
-from bot.keyboards import BattleCB, ChallengeCB, FightCB, LobbyCB, StandoffCB, TourCB
+from bot.keyboards import (
+    BattleCB,
+    ChallengeCB,
+    FightCB,
+    LobbyCB,
+    RaidCB,
+    RaidLobbyCB,
+    StandoffCB,
+    TourCB,
+)
+from bot.raid_service import RaidError, RaidService
 from bot.tournament_service import TournamentError, TournamentService
 from bot.models import Player, Ring
 
@@ -359,6 +370,78 @@ async def on_battle_choice(
         await callback.answer(plain(str(error)), show_alert=True)
     except Exception:  # pragma: no cover - чтобы бой не завис из-за случайной ошибки
         logger.exception("Ошибка при обработке хода группового боя")
+        await callback.answer("Судья запутался. Попробуй ещё раз.", show_alert=True)
+    else:
+        await callback.answer(hint)
+
+
+# ---------- рейды ----------
+
+
+@router.message(Command("raid"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_raid(
+    message: Message, command: CommandObject, db: Database, raids: RaidService
+) -> None:
+    """Собрать рейд на босса: /raid 10 — отряд до десяти человек."""
+    player = await db.get_player(message.from_user.id)
+    if player is None:
+        await message.reply(NO_CHARACTER)
+        return
+
+    parts = (command.args or "").split()
+    size = int(parts[0]) if parts and parts[0].isdigit() else MAX_PARTY
+    try:
+        await raids.open_raid(
+            message.chat.id,
+            thread_id_of(message),
+            player,
+            size,
+            chat_title=message.chat.title or "",
+        )
+    except RaidError as error:
+        await message.reply(str(error))
+
+
+@router.callback_query(RaidLobbyCB.filter())
+async def on_raid_lobby(
+    callback: CallbackQuery, callback_data: RaidLobbyCB, db: Database, raids: RaidService
+) -> None:
+    if callback_data.action == "leave":
+        try:
+            await raids.leave(callback_data.lobby_id, callback.from_user.id)
+        except RaidError as error:
+            await callback.answer(plain(str(error)), show_alert=True)
+        else:
+            await callback.answer("Вышел из отряда.")
+        return
+
+    player = await db.get_player(callback.from_user.id)
+    if player is None:
+        await callback.answer(NO_CHARACTER, show_alert=True)
+        return
+    try:
+        await raids.join(callback_data.lobby_id, player)
+    except RaidError as error:
+        await callback.answer(plain(str(error)), show_alert=True)
+    else:
+        await callback.answer("Идёшь в подвал!")
+
+
+@router.callback_query(RaidCB.filter())
+async def on_raid_choice(
+    callback: CallbackQuery, callback_data: RaidCB, raids: RaidService
+) -> None:
+    try:
+        hint = await raids.handle_choice(
+            callback_data.raid_id,
+            callback.from_user.id,
+            callback_data.action,
+            callback_data.zone,
+        )
+    except RaidError as error:
+        await callback.answer(plain(str(error)), show_alert=True)
+    except Exception:  # pragma: no cover - чтобы рейд не завис из-за ошибки
+        logger.exception("Ошибка при обработке хода рейда")
         await callback.answer("Судья запутался. Попробуй ещё раз.", show_alert=True)
     else:
         await callback.answer(hint)

@@ -76,6 +76,20 @@ EMPTY_HISTORY = {
 }
 
 
+EMPTY_RAID = {
+    "attacks": [
+        {"zone": "head", "title": "Голова"},
+        {"zone": "chest", "title": "Корпус"},
+    ],
+    "blocks": [
+        {"zone": "head", "title": "Голова + Корпус"},
+        {"zone": "chest", "title": "Корпус + Живот"},
+    ],
+    "min_party": 2, "max_party": 10, "can_fight": True,
+    "raid": None, "lobby": None, "lobbies": [],
+}
+
+
 class FakeBot:  # pragma: no cover - аватар в этом тесте не трогаем
     async def get_file(self, file_id):
         raise AssertionError
@@ -86,7 +100,7 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
 
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
-    magic=None, fights=None, history=None, fight_log=None,
+    magic=None, fights=None, history=None, fight_log=None, raid=None,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -106,6 +120,7 @@ async def open_page(
     await page.route("**/api/magic*", canned(magic or {"items": [], "credits": 0}))
     await page.route("**/api/fights*", canned(fights or EMPTY_RING))
     await page.route("**/api/history*", canned(history or EMPTY_HISTORY))
+    await page.route("**/api/raid*", canned(raid or EMPTY_RAID))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
@@ -996,7 +1011,7 @@ async def test_the_club_tab_opens_on_the_ring_and_switches_to_players(server):
         browser, page = await open_ring(pw, server, None)
 
         sections = await page.locator("#club-sections .chip").all_inner_texts()
-        assert sections == ["Бои", "Игроки", "Статистика"]
+        assert sections == ["Бои", "Рейд", "Игроки", "Статистика"]
         assert await page.locator("#club-fights").is_visible()
         assert await page.locator("#club-players").is_hidden()
 
@@ -1221,6 +1236,232 @@ async def test_the_end_of_the_fight_shows_the_result(server):
 
         assert sent == [{"action": "done"}]
         assert "Брось вызов" in await page.locator("#fights-note").inner_text()
+        await browser.close()
+
+
+# ---------- рейд ----------
+
+
+def raid_with_wave(over=None) -> dict:
+    """Ответ подвала: идёт волна, один боец уже отработал."""
+    raid = {
+        "id": 1, "wave": 2, "in_app": True, "resting": False,
+        "finished": False, "summary": [],
+        "boss": {
+            "code": "cellar_boss", "title": "Босс Подвала", "emoji": "🩸",
+            "image": "", "level": 9, "hp": 180, "max_hp": 300, "percent": 60,
+            "weapon": "кувалдой",
+        },
+        "party": [
+            {
+                "user_id": 42, "name": "Растафарайчик", "level": 5, "emoji": "⚔️",
+                "hp": 70, "max_hp": 100, "percent": 70, "damage_dealt": 45,
+                "alive": True, "acted": False, "you": True,
+            },
+            {
+                "user_id": 43, "name": "Марла", "level": 4, "emoji": "🗡️",
+                "hp": 20, "max_hp": 95, "percent": 21, "damage_dealt": 60,
+                "alive": True, "acted": True, "you": False,
+            },
+            {
+                "user_id": 44, "name": "Зевака", "level": 3, "emoji": "🛡️",
+                "hp": 0, "max_hp": 90, "percent": 0, "damage_dealt": 10,
+                "alive": False, "acted": True, "you": False,
+            },
+        ],
+        "yours": True, "alive": True, "acted": False,
+        "chosen": {"attack": None, "block": None},
+        "log": [
+            {
+                "number": 1, "round": 1, "turn": 1, "finished": False,
+                "winner_id": None, "hp_after": {"42": 70, "-1": 180},
+                "lines": [
+                    "👊 Растафарайчик вламывает кулаком в живот, "
+                    "Босс Подвала оседает, −45 [180/300]",
+                ],
+                "strikes": [
+                    {
+                        "attacker_id": 42, "defender_id": -1, "zone": "belly",
+                        "zone_title": "Живот", "zone_where": "в живот",
+                        "outcome": "hit", "emoji": "👊", "title": "попал",
+                        "weapon": "кулаком", "damage": 45, "counter": 0,
+                        "armor": 0, "hp_after": 180, "missed_turn": False,
+                    }
+                ],
+            }
+        ],
+    }
+    raid.update(over or {})
+    return {**EMPTY_RAID, "raid": raid}
+
+
+async def open_raid(pw, server, raid=None):
+    """Открыть вкладку клуба на разделе рейда."""
+    browser, page = await open_page(
+        pw, server, build_card(make_player(), TOKEN, viewer_id=42), raid=raid
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.locator("#tab-club").click()
+    await page.get_by_role("button", name="Рейд", exact=True).click()
+    await page.wait_for_selector("#club-raid:not(.hidden)")
+    return browser, page
+
+
+async def test_an_empty_cellar_offers_to_gather_a_party(server):
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server)
+
+        body = await page.locator("#raid-body").inner_text()
+        assert "Собрать на 2" in body and "Собрать на 10" in body
+        assert "Собери отряд" in await page.locator("#raid-note").inner_text()
+        await browser.close()
+
+
+async def test_a_gathering_party_can_be_joined(server):
+    lobby = {
+        **EMPTY_RAID,
+        "lobbies": [
+            {
+                "id": 5, "size": 4, "total": 2, "mine": False, "joined": False,
+                "in_app": True,
+                "boss": {
+                    "code": "cellar_boss", "title": "Босс Подвала",
+                    "emoji": "🩸", "image": "", "tagline": "",
+                },
+                "members": [
+                    {"user_id": 43, "name": "Марла", "level": 4},
+                    {"user_id": 44, "name": "Зевака", "level": 3},
+                ],
+            }
+        ],
+    }
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, lobby)
+
+        card = await page.locator(".fight-card").inner_text()
+        assert "Босс Подвала — отряд 2/4" in card
+        assert "Марла [4]" in card
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(raid_with_wave()),
+            )
+
+        await page.route("**/api/raid", catch)
+        await page.get_by_role("button", name="🩸 В отряд").click()
+        await page.wait_for_selector("#raid-go")
+
+        assert sent == [{"action": "join", "lobby_id": 5}]
+        await browser.close()
+
+
+async def test_the_wave_shows_the_boss_and_the_whole_party(server):
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave())
+
+        assert "Волна 2" in await page.locator(".fight-round").inner_text()
+        boss = await page.locator(".boss-card").inner_text()
+        assert "Босс Подвала [9]" in boss and "180/300" in boss
+
+        members = await page.locator(".raid-member").all_inner_texts()
+        assert "⏳ ⚔️ Растафарайчик [5] — ты" in members[0]
+        assert "✅" in members[1]  # Марла отработала волну
+        assert "💀" in members[2]  # Зеваку вынесли
+        assert await page.locator(".raid-member.down").count() == 1
+        await browser.close()
+
+
+async def test_the_raid_turn_goes_in_one_press(server):
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave())
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(raid_with_wave({"acted": True})),
+            )
+
+        await page.route("**/api/raid", catch)
+        assert await page.locator("#raid-go").is_disabled()
+
+        await page.locator("#club-raid .zone-column").nth(0).get_by_text(
+            "Голова"
+        ).click()
+        await page.locator("#club-raid .zone-column").nth(1).get_by_text(
+            "Корпус + Живот"
+        ).click()
+        assert sent == []  # до «Вперёд!» судья ничего не знает
+
+        await page.locator("#raid-go").click()
+        await page.wait_for_selector("#raid-go", state="detached")
+
+        assert sent == [{"action": "turn", "attack": "head", "block": "chest"}]
+        assert "Ждём остальных" in await page.locator("#raid-body").inner_text()
+        await browser.close()
+
+
+async def test_the_fallen_watch_from_the_side(server):
+    down = raid_with_wave({"alive": False})
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, down)
+
+        assert await page.locator(".zone").count() == 0
+        assert "Тебя вынесли" in await page.locator("#raid-body").inner_text()
+        await browser.close()
+
+
+async def test_the_end_of_the_raid_shows_the_result(server):
+    over = raid_with_wave({
+        "finished": True,
+        "summary": [
+            "🏆 Босс повержен",
+            "",
+            "📊 Кто сколько набил",
+            "1. 🗡️ Марла — урона 60, приз: 🔪 Нож",
+            "2. ⚔️ Растафарайчик — урона 45",
+            "",
+            "💰 Каждому по 50 💰.",
+        ],
+    })
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, over)
+
+        assert "Рейд окончен" in await page.locator(".fight-round").inner_text()
+        card = await page.locator(".fight-finish").inner_text()
+        assert "Босс повержен" in card and "приз: 🔪 Нож" in card
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(EMPTY_RAID)
+            )
+
+        await page.route("**/api/raid", catch)
+        await page.get_by_role("button", name="Завершить рейд").click()
+        await page.wait_for_selector(".fight-finish", state="detached")
+
+        assert sent == [{"action": "done"}]
+        await browser.close()
+
+
+async def test_the_raid_log_speaks_the_words_of_the_judge(server):
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave())
+
+        log = await page.locator("#club-raid .fight-log").inner_text()
+        assert "Ход рейда" in log
+        assert "Босс Подвала оседает" in log
+        marks = page.locator("#club-raid .fight-log .dmg")
+        assert await marks.all_inner_texts() == ["−45"]
         await browser.close()
 
 

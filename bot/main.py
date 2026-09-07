@@ -20,6 +20,7 @@ from bot.config import Config, load_config
 from bot.database import Database
 from bot.battle_service import BattleService
 from bot.duel_service import DuelService
+from bot.raid_service import RaidService
 from bot.store_service import StoreService
 from bot.tournament_service import TournamentService
 from bot.game.links import links
@@ -55,6 +56,7 @@ GROUP_COMMANDS = [
     BotCommand(command="fight", description="Вызов с оружием"),
     BotCommand(command="battle", description="Командный бой: /battle 3"),
     BotCommand(command="royale", description="Королевская битва: /royale 6"),
+    BotCommand(command="raid", description="Рейд на босса: /raid 10"),
     BotCommand(command="tournament", description="Объявить турнир (админы)"),
     BotCommand(command="bracket", description="Сетка турнира"),
     BotCommand(command="card", description="Карточка бойца"),
@@ -84,12 +86,14 @@ async def run(config: Config | None = None) -> None:
     duels = DuelService(bot=bot, db=db, config=config)
     battles = BattleService(bot=bot, db=db, config=config)
     tournaments = TournamentService(bot=bot, db=db, config=config, duels=duels)
+    raids = RaidService(bot=bot, db=db, config=config)
     store = StoreService(bot=bot, db=db, config=config)
 
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher["db"] = db
     dispatcher["duels"] = duels
     dispatcher["battles"] = battles
+    dispatcher["raids"] = raids
     dispatcher["tournaments"] = tournaments
     dispatcher["store"] = store
     dispatcher["config"] = config
@@ -112,7 +116,7 @@ async def run(config: Config | None = None) -> None:
     logger.info("Имя бойца в чате ведёт на %s", links.href(me.id))
 
     runner = (
-        await run_webapp(bot, db, config, duels, store)
+        await run_webapp(bot, db, config, duels, store, raids)
         if config.webapp_enabled
         else None
     )
@@ -135,6 +139,7 @@ async def run(config: Config | None = None) -> None:
     finally:
         await duels.shutdown()
         await battles.shutdown()
+        await raids.shutdown()
         await tournaments.shutdown()
         if runner is not None:
             await runner.cleanup()

@@ -1,0 +1,730 @@
+"""Рейды: отряд живых бойцов против одного босса.
+
+Сначала сбор: игрок объявляет рейд на столько-то человек, остальные
+записываются кнопкой, пока не выйдет время или не наберётся состав. Потом
+бой волнами.
+
+**Волна** — это по разу на каждого, кто ещё стоит. Нажал удар и блок —
+размен с боссом считается сразу, не нажал за отпущенное время — пропустил,
+а босс своё отработал. Волна закрывается, когда отстрелялись все живые или
+вышло время; слова судьи за всю волну уходят одним сообщением, иначе десять
+человек выберут минутный запас чата за одну волну.
+
+Правила рейда — в `bot/game/raid.py`, здесь таймеры, сообщения и база.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import itertools
+import logging
+import random
+from dataclasses import dataclass, field
+
+from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup
+
+from bot.config import Config
+from bot.database import Database
+from bot.game.classes import Zone, block_combo, block_title
+from bot.game.combat import Action, Fighter, resolve_round
+from bot.game.equipment import BARE_HANDS_ICON
+from bot.game.fightlog import turn_payload
+from bot.game.narrator import (
+    esc,
+    health_warning,
+    plain,
+    raid_break,
+    raid_intro,
+    raid_lobby_card,
+    raid_panel,
+    raid_result,
+    strike_lines,
+)
+from bot.game.raid import (
+    BOSS_ID,
+    MAX_PARTY,
+    MAX_WAVES,
+    MIN_PARTY,
+    Boss,
+    CELLAR_BOSS,
+    RaidEnd,
+    RaidOutcome,
+    boss_action,
+    boss_fighter,
+    damage_board,
+    judge_raid,
+    prize_for,
+)
+from bot.inventory_service import wear_after_fight
+from bot.keyboards import raid_keyboard, raid_lobby_keyboard
+from bot.messaging import Announcer
+from bot.models import Player
+
+logger = logging.getLogger(__name__)
+
+ChatKey = tuple[int, int | None]
+
+
+class RaidError(Exception):
+    """Ошибка, которую можно показать игроку как есть."""
+
+
+@dataclass
+class Choice:
+    """Незавершённый выбор бойца на его размен."""
+
+    attack: Zone | None = None
+    block: tuple[Zone, ...] = ()
+
+    @property
+    def is_ready(self) -> bool:
+        return self.attack is not None and bool(self.block)
+
+    def to_action(self) -> Action:
+        return Action(attack=self.attack, block=self.block)
+
+
+@dataclass
+class RaidLobby:
+    """Сбор отряда: кто записался и сколько ждём."""
+
+    id: int
+    chat_id: int | None
+    thread_id: int | None
+    boss: Boss
+    size: int
+    opener_id: int
+    chat_title: str = ""
+    # Номер записи в базе: по нему считается «один рейд в сутки»
+    record_id: int = 0
+    price: int = 0
+    members: dict[int, str] = field(default_factory=dict)  # боец → прозвище
+    levels: dict[int, int] = field(default_factory=dict)
+    message_id: int | None = None
+    task: asyncio.Task | None = None
+
+    @property
+    def total(self) -> int:
+        return len(self.members)
+
+    @property
+    def is_full(self) -> bool:
+        return self.total >= self.size
+
+    @property
+    def can_start(self) -> bool:
+        return self.total >= MIN_PARTY
+
+    @property
+    def key(self) -> ChatKey | None:
+        return None if self.chat_id is None else (self.chat_id, self.thread_id)
+
+
+@dataclass
+class RaidSession:
+    """Идущий рейд: отряд, босс и текущая волна."""
+
+    id: int
+    chat_id: int | None
+    thread_id: int | None
+    boss: Boss
+    enemy: Fighter
+    fighters: dict[int, Fighter]
+    chat_title: str = ""
+    record_id: int = 0
+    wave: int = 0
+    # Ударов игроков с последней передышки
+    strikes: int = 0
+    # Сквозной номер размена: по нему судья считает удары в рассказе
+    turn_number: int = 0
+    choices: dict[int, Choice] = field(default_factory=dict)
+    acted: set[int] = field(default_factory=set)
+    # Слова судьи за текущую волну и разбор по ходам за весь рейд
+    said: list[str] = field(default_factory=list)
+    rounds: list[dict] = field(default_factory=list)
+    fallen: list[int] = field(default_factory=list)
+    prompt_message_id: int | None = None
+    timer: asyncio.Task | None = None
+    resting: bool = False
+    finished: bool = False
+    summary: list[str] = field(default_factory=list)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @property
+    def key(self) -> ChatKey | None:
+        return None if self.chat_id is None else (self.chat_id, self.thread_id)
+
+    @property
+    def alive_ids(self) -> list[int]:
+        return [uid for uid, fighter in self.fighters.items() if fighter.alive]
+
+    @property
+    def wave_over(self) -> bool:
+        """Все живые отстрелялись — волну можно закрывать."""
+        return all(uid in self.acted for uid in self.alive_ids)
+
+    def choice_of(self, user_id: int) -> Choice:
+        return self.choices.setdefault(user_id, Choice())
+
+    def waiting_for(self) -> list[int]:
+        return [uid for uid in self.alive_ids if uid not in self.acted]
+
+    @property
+    def panel_icon(self) -> str:
+        """Значок удара на кнопках — один на весь отряд.
+
+        Оружие у бойцов разное, а панель одна: не сошлись значки — рисуем
+        кулак, а бьёт каждый тем, что у него в руке.
+        """
+        icons = {fighter.weapon_icon for fighter in self.fighters.values()}
+        return icons.pop() if len(icons) == 1 else BARE_HANDS_ICON
+
+
+class RaidService:
+    """Сбор отряда, волны рейда и раздача призов."""
+
+    def __init__(
+        self,
+        bot: Bot,
+        db: Database,
+        config: Config,
+        rng: random.Random | None = None,
+    ) -> None:
+        self.bot = bot
+        self.db = db
+        self.config = config
+        self.voice = Announcer(bot)
+        self.rng = rng or random.Random()
+        self._ids = itertools.count(1)
+        self._lobbies: dict[int, RaidLobby] = {}
+        self._raids: dict[int, RaidSession] = {}
+        self._by_chat: dict[ChatKey, int] = {}
+        self._busy: dict[int, str] = {}  # боец → «lobby» или «raid»
+        self._results: dict[int, RaidSession] = {}
+
+    # ---------- сбор отряда ----------
+
+    async def open_raid(
+        self,
+        chat_id: int | None,
+        thread_id: int | None,
+        opener: Player,
+        size: int,
+        boss: Boss = CELLAR_BOSS,
+        chat_title: str = "",
+    ) -> RaidLobby:
+        if not MIN_PARTY <= size <= MAX_PARTY:
+            raise RaidError(
+                f"В рейд идут от {MIN_PARTY} до {MAX_PARTY} человек. "
+                f"Например: /raid {MAX_PARTY}"
+            )
+        if chat_id is not None and (chat_id, thread_id) in self._by_chat:
+            raise RaidError("В этой ветке уже собирают рейд или дерутся.")
+        if self._busy.get(opener.user_id):
+            raise RaidError("Ты уже записан в рейд.")
+        if not opener.can_fight():
+            raise RaidError(health_warning(opener))
+
+        left = await self.db.raid_cooldown(opener.user_id, self.config.raid_cooldown)
+        if left > 0:
+            raise RaidError(
+                "Рейд можно собирать раз в сутки. Следующий — через "
+                f"{_hours(left)}. Чужой рейд это не трогает: в него иди хоть сейчас."
+            )
+        price = self.config.raid_price
+        if price and not opener.can_afford(price):
+            raise RaidError(
+                f"Сбор рейда стоит {price} 💰, а на счету {opener.credits} 💰."
+            )
+        if price:
+            opener.pay(price)
+            await self.db.save_player(opener)
+
+        record_id = await self.db.open_raid_record(
+            chat_id=chat_id,
+            thread_id=thread_id,
+            opener_id=opener.user_id,
+            boss=boss.code,
+            size=size,
+        )
+        lobby = RaidLobby(
+            id=next(self._ids),
+            chat_id=chat_id,
+            thread_id=thread_id,
+            boss=boss,
+            size=size,
+            opener_id=opener.user_id,
+            chat_title=chat_title,
+            record_id=record_id,
+            price=price,
+        )
+        lobby.members[opener.user_id] = opener.nickname
+        lobby.levels[opener.user_id] = opener.level
+        self._lobbies[lobby.id] = lobby
+        if lobby.key is not None:
+            self._by_chat[lobby.key] = lobby.id
+        self._busy[opener.user_id] = "lobby"
+        self._results.pop(opener.user_id, None)
+
+        message = await self.voice.send(
+            chat_id,
+            thread_id,
+            raid_lobby_card(lobby, self.config.raid_lobby_timeout),
+            reply_markup=raid_lobby_keyboard(lobby),
+        )
+        lobby.message_id = message.message_id if message else None
+        lobby.task = asyncio.create_task(self._lobby_timer(lobby))
+        return lobby
+
+    async def join(self, lobby_id: int, player: Player) -> RaidLobby:
+        lobby = self._lobbies.get(lobby_id)
+        if lobby is None:
+            raise RaidError("Этот сбор уже закрыт.")
+        if player.user_id in lobby.members:
+            raise RaidError("Ты уже записан.")
+        if self._busy.get(player.user_id):
+            raise RaidError("Ты уже записан в другой бой.")
+        if not player.can_fight():
+            raise RaidError(health_warning(player))
+        if lobby.is_full:
+            raise RaidError("Мест в отряде больше нет.")
+
+        lobby.members[player.user_id] = player.nickname
+        lobby.levels[player.user_id] = player.level
+        self._busy[player.user_id] = "lobby"
+        self._results.pop(player.user_id, None)
+
+        if lobby.is_full:
+            await self._start_from_lobby(lobby)
+        else:
+            await self._refresh_lobby(lobby)
+        return lobby
+
+    async def leave(self, lobby_id: int, user_id: int) -> RaidLobby:
+        lobby = self._lobbies.get(lobby_id)
+        if lobby is None:
+            raise RaidError("Этот сбор уже закрыт.")
+        if user_id not in lobby.members:
+            raise RaidError("Тебя и так нет в отряде.")
+        lobby.members.pop(user_id, None)
+        lobby.levels.pop(user_id, None)
+        self._busy.pop(user_id, None)
+        if not lobby.members:
+            await self._cancel_lobby(lobby, "Все разошлись — рейд отменён.")
+        else:
+            await self._refresh_lobby(lobby)
+        return lobby
+
+    async def _refresh_lobby(self, lobby: RaidLobby) -> None:
+        await self.voice.edit(
+            lobby.chat_id,
+            lobby.message_id,
+            raid_lobby_card(lobby, self.config.raid_lobby_timeout),
+            reply_markup=raid_lobby_keyboard(lobby),
+            cosmetic=True,
+        )
+
+    async def _lobby_timer(self, lobby: RaidLobby) -> None:
+        try:
+            await asyncio.sleep(self.config.raid_lobby_timeout)
+        except asyncio.CancelledError:  # pragma: no cover - обычная отмена
+            return
+        if lobby.id not in self._lobbies:
+            return
+        if lobby.can_start:
+            await self._start_from_lobby(lobby)
+        else:
+            await self._cancel_lobby(
+                lobby, f"Отряд не собрался: нужно хотя бы {MIN_PARTY} бойца."
+            )
+
+    async def _cancel_lobby(self, lobby: RaidLobby, why: str) -> None:
+        """Сбор не состоялся: попытка и деньги возвращаются созвавшему."""
+        self._forget_lobby(lobby)
+        await self.db.drop_raid_record(lobby.record_id)
+        if lobby.price:
+            opener = await self.db.get_player(lobby.opener_id)
+            if opener is not None:
+                opener.credits += lobby.price
+                await self.db.save_player(opener)
+        await self.voice.edit(lobby.chat_id, lobby.message_id, f"🚫 {why}")
+
+    def _forget_lobby(self, lobby: RaidLobby) -> None:
+        self._lobbies.pop(lobby.id, None)
+        if lobby.key is not None and self._by_chat.get(lobby.key) == lobby.id:
+            self._by_chat.pop(lobby.key, None)
+        for user_id in lobby.members:
+            if self._busy.get(user_id) == "lobby":
+                self._busy.pop(user_id, None)
+        if lobby.task and not lobby.task.done():
+            if lobby.task is not asyncio.current_task():
+                lobby.task.cancel()
+
+    # ---------- бой ----------
+
+    async def _start_from_lobby(self, lobby: RaidLobby) -> RaidSession | None:
+        members = dict(lobby.members)
+        self._forget_lobby(lobby)
+
+        players: dict[int, Player] = {}
+        for user_id in members:
+            player = await self.db.get_player(user_id)
+            if player is not None and player.can_fight():
+                players[user_id] = player
+        if len(players) < MIN_PARTY:
+            await self.db.drop_raid_record(lobby.record_id)
+            await self.voice.edit(
+                lobby.chat_id, lobby.message_id, "🚫 Отряд разбежался — рейд отменён."
+            )
+            return None
+
+        fighters = {
+            user_id: Fighter.from_player(player, armed=True)
+            for user_id, player in players.items()
+        }
+        enemy = boss_fighter(
+            lobby.boss,
+            [fighter.level for fighter in fighters.values()],
+            self.config.raid_boss_hp_share,
+        )
+        session = RaidSession(
+            id=next(self._ids),
+            chat_id=lobby.chat_id,
+            thread_id=lobby.thread_id,
+            boss=lobby.boss,
+            enemy=enemy,
+            fighters=fighters,
+            chat_title=lobby.chat_title,
+            record_id=lobby.record_id,
+        )
+        self._raids[session.id] = session
+        if session.key is not None:
+            self._by_chat[session.key] = session.id
+        for user_id in fighters:
+            self._busy[user_id] = "raid"
+
+        await self.voice.edit(
+            lobby.chat_id, lobby.message_id, "🔔 Отряд собран, дверь в подвал открыта."
+        )
+        await self.voice.send(session.chat_id, session.thread_id, raid_intro(session))
+        await self._start_wave(session)
+        return session
+
+    async def _start_wave(self, session: RaidSession) -> None:
+        session.wave += 1
+        session.choices = {}
+        session.acted = set()
+        session.said = []
+        session.fallen = []
+        session.resting = False
+        message = await self.voice.send(
+            session.chat_id,
+            session.thread_id,
+            raid_panel(session, self.config.raid_turn_timeout),
+            reply_markup=raid_keyboard(session.id, session.panel_icon),
+        )
+        session.prompt_message_id = message.message_id if message else None
+        session.timer = asyncio.create_task(self._wave_timer(session, session.wave))
+
+    async def _wave_timer(self, session: RaidSession, wave: int) -> None:
+        try:
+            await asyncio.sleep(self.config.raid_turn_timeout)
+        except asyncio.CancelledError:  # pragma: no cover - обычная отмена
+            return
+        if self._raids.get(session.id) is not session or session.wave != wave:
+            return
+        # Время вышло: кто не нажал, тот пропустил удар — но босс своё берёт
+        await self.skip_the_rest(session)
+
+    async def skip_the_rest(self, session: RaidSession) -> None:
+        """Дожать волну за тех, кто промолчал."""
+        async with session.lock:
+            if session.finished:
+                return
+            for user_id in session.waiting_for():
+                self._exchange(session, user_id, Action())
+                if self._judge(session) is not None:
+                    break
+            await self._close_wave(session)
+
+    async def handle_choice(
+        self, raid_id: int, user_id: int, action: str, zone_value: str
+    ) -> str:
+        """Нажатие бойца. Выбрал и удар, и блок — размен считается сразу."""
+        session = self._raids.get(raid_id)
+        if session is None:
+            raise RaidError("Этот рейд уже закончился.")
+        fighter = session.fighters.get(user_id)
+        if fighter is None:
+            raise RaidError("Ты не в этом рейде. Болей за своих.")
+        if not fighter.alive:
+            raise RaidError("Тебя уже вынесли — смотри со стороны.")
+        if session.resting:
+            raise RaidError("Передышка. Босс отдыхает, и ты пока тоже.")
+        if user_id in session.acted:
+            raise RaidError("В этой волне ты уже отработал. Жди следующую.")
+        if action not in {"attack", "block"}:
+            raise RaidError("Непонятное действие.")
+        try:
+            zone = Zone(zone_value)
+        except ValueError as error:  # устаревшая кнопка из прошлой версии
+            raise RaidError("Эта кнопка уже не работает.") from error
+
+        async with session.lock:
+            if user_id in session.acted:  # успел проскочить, пока ждали замок
+                raise RaidError("В этой волне ты уже отработал.")
+            choice = session.choice_of(user_id)
+            if action == "attack":
+                choice.attack = zone
+            else:
+                choice.block = block_combo(zone, fighter.block_width)
+            if not choice.is_ready:
+                await self._repaint(session)
+                return self._hint(choice, fighter)
+
+            self._exchange(session, user_id, choice.to_action())
+            if self._judge(session) is not None or session.wave_over:
+                await self._close_wave(session)
+            else:
+                await self._repaint(session)
+        return self._hint(choice, fighter)
+
+    def _exchange(self, session: RaidSession, user_id: int, action: Action) -> None:
+        """Один размен: боец против босса. Босс бьёт наугад."""
+        fighter = session.fighters[user_id]
+        session.turn_number += 1
+        session.acted.add(user_id)
+        result = resolve_round(
+            fighter,
+            action,
+            session.enemy,
+            boss_action(self.rng),
+            session.turn_number,
+            self.rng,
+        )
+        # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
+        said = strike_lines(result, {user_id: fighter, BOSS_ID: session.enemy}, self.rng)
+        session.said.extend(said)
+        session.rounds.append(turn_payload(result, said))
+        session.strikes += 1
+        if not fighter.alive:
+            session.fallen.append(user_id)
+
+    def _judge(self, session: RaidSession) -> RaidOutcome | None:
+        return judge_raid(session.enemy, session.fighters)
+
+    def _hint(self, choice: Choice, fighter: Fighter) -> str:
+        zone = choice.attack.title if choice.attack else "—"
+        block = block_title(choice.block) if choice.block else "—"
+        tail = "\nЖдём остальных." if choice.is_ready else "\nОсталось выбрать второе."
+        return f"{fighter.weapon_icon} {zone}\n🛡 {block}{tail}"
+
+    async def _repaint(self, session: RaidSession) -> None:
+        """Обновить панель волны. Правка косметическая: не дойдёт — не беда."""
+        await self.voice.edit(
+            session.chat_id,
+            session.prompt_message_id,
+            raid_panel(session, self.config.raid_turn_timeout),
+            reply_markup=raid_keyboard(session.id, session.panel_icon),
+            cosmetic=True,
+        )
+
+    async def _close_wave(self, session: RaidSession) -> None:
+        """Волна отработана: рассказать, что вышло, и позвать следующую."""
+        self._cancel_timer(session)
+        await self._close_panel(session, self._wave_report(session))
+
+        outcome = self._judge(session)
+        if outcome is None and session.wave >= MAX_WAVES:
+            # Рейд не может длиться вечно: босс на ногах — отряд ушёл ни с чем
+            outcome = RaidOutcome(
+                end=RaidEnd.LOSS,
+                survivors=session.alive_ids,
+                damage=damage_board(session.fighters),
+            )
+        if outcome is not None:
+            await self._finish(session, outcome)
+        elif session.strikes >= self.config.raid_strikes_per_break:
+            await self._take_a_break(session)
+        else:
+            await self._start_wave(session)
+
+    def _wave_report(self, session: RaidSession) -> str:
+        lines = [f"<b>⚔️ Волна {session.wave}</b>", ""]
+        lines += session.said or ["Все промолчали — босс бил один."]
+        if session.fallen:
+            names = ", ".join(
+                f"<b>{esc(session.fighters[uid].name)}</b>" for uid in session.fallen
+            )
+            lines += ["", f"💀 Больше не встают: {names}"]
+        return "\n".join(lines)
+
+    async def _take_a_break(self, session: RaidSession) -> None:
+        """Передышка после шести ударов: отряд переводит дух."""
+        session.strikes = 0
+        rest = self.config.raid_break
+        session.resting = rest > 0
+        await self.voice.send(
+            session.chat_id, session.thread_id, raid_break(session, rest)
+        )
+        if rest <= 0:
+            await self._start_wave(session)
+            return
+        session.timer = asyncio.create_task(self._break_timer(session, rest))
+
+    async def _break_timer(self, session: RaidSession, seconds: int) -> None:
+        wave = session.wave
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:  # pragma: no cover - обычная отмена
+            return
+        if self._raids.get(session.id) is not session or session.wave != wave:
+            return
+        await self._start_wave(session)
+
+    async def _close_panel(self, session: RaidSession, text: str) -> None:
+        """Погасить панель волны, оставив на её месте рассказ."""
+        await self.voice.edit(
+            session.chat_id,
+            session.prompt_message_id,
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
+        )
+        session.prompt_message_id = None
+
+    async def _finish(self, session: RaidSession, outcome: RaidOutcome) -> None:
+        self._cancel_timer(session)
+        if session.prompt_message_id is not None:
+            await self._close_panel(session, "🔒 Рейд окончен.")
+        self._forget_raid(session)
+
+        prizes = await self._apply_results(session, outcome)
+        text = raid_result(session, outcome, prizes, self.config.raid_reward)
+        await self.voice.send(session.chat_id, session.thread_id, text)
+        session.finished = True
+        session.summary = [plain(line) for line in text.split("\n")]
+        for user_id in session.fighters:
+            self._results[user_id] = session
+        await self.db.close_raid_record(
+            session.record_id,
+            outcome=outcome.end.value,
+            waves=session.wave,
+            boss_level=session.enemy.level,
+            members=[
+                (
+                    user_id,
+                    fighter.damage_dealt,
+                    fighter.alive,
+                    prizes.get(user_id),
+                )
+                for user_id, fighter in session.fighters.items()
+            ],
+        )
+
+    async def _apply_results(
+        self, session: RaidSession, outcome: RaidOutcome
+    ) -> dict[int, str]:
+        """Кредиты всем и вещи троим лучшим. Проигравшим — ничего.
+
+        Здоровье и износ вещей записываются в любом случае: подвал не
+        разбирает, победил ты или нет.
+        """
+        prizes: dict[int, str] = {}
+        top = set(outcome.top) if outcome.won else set()
+        for user_id, fighter in session.fighters.items():
+            player = await self.db.get_player(user_id)
+            if player is None:  # pragma: no cover - персонажа удалили по ходу
+                continue
+            if outcome.won:
+                player.wins += 1
+                player.credits += self.config.raid_reward
+            elif outcome.draw:
+                player.draws += 1
+            else:
+                player.losses += 1
+            ruined = await wear_after_fight(self.db, player, outcome.won, self.rng)
+            if ruined:  # pragma: no cover - износ считается своим тестом
+                logger.info("Рейд износил вещи бойца %s: %s", user_id, len(ruined))
+            if player.birthplace is None and session.chat_title:
+                player.birthplace = session.chat_title
+            player.set_hp(fighter.hp)
+            await self.db.save_player(player)
+            if user_id in top:
+                code = prize_for(player.level, self.rng)
+                if code:
+                    await self.db.add_gear(user_id, code)
+                    prizes[user_id] = code
+        return prizes
+
+    def _cancel_timer(self, session: RaidSession) -> None:
+        timer = session.timer
+        session.timer = None
+        if timer and not timer.done() and timer is not asyncio.current_task():
+            timer.cancel()
+
+    def _forget_raid(self, session: RaidSession) -> None:
+        self._raids.pop(session.id, None)
+        if session.key is not None and self._by_chat.get(session.key) == session.id:
+            self._by_chat.pop(session.key, None)
+        for user_id in session.fighters:
+            if self._busy.get(user_id) == "raid":
+                self._busy.pop(user_id, None)
+
+    # ---------- состояние ----------
+
+    def lobby_of_user(self, user_id: int) -> RaidLobby | None:
+        for lobby in self._lobbies.values():
+            if user_id in lobby.members:
+                return lobby
+        return None
+
+    def open_lobbies(self) -> list[RaidLobby]:
+        return sorted(self._lobbies.values(), key=lambda row: row.id, reverse=True)
+
+    def raid_of_user(self, user_id: int) -> RaidSession | None:
+        for session in self._raids.values():
+            if user_id in session.fighters:
+                return session
+        return None
+
+    def result_of_user(self, user_id: int) -> RaidSession | None:
+        return self._results.get(user_id)
+
+    def forget_result(self, user_id: int) -> None:
+        self._results.pop(user_id, None)
+
+    def get_lobby(self, lobby_id: int) -> RaidLobby | None:
+        return self._lobbies.get(lobby_id)
+
+    def is_busy(self, user_id: int) -> bool:
+        return user_id in self._busy
+
+    async def shutdown(self) -> None:
+        tasks = [lobby.task for lobby in self._lobbies.values() if lobby.task]
+        tasks += [raid.timer for raid in self._raids.values() if raid.timer]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        self._lobbies.clear()
+        self._raids.clear()
+        self._by_chat.clear()
+        self._busy.clear()
+        self._results.clear()
+
+
+def _hours(seconds: int) -> str:
+    hours, rest = divmod(max(0, seconds), 3600)
+    minutes = rest // 60
+    if hours and minutes:
+        return f"{hours} ч {minutes} мин"
+    if hours:
+        return f"{hours} ч"
+    return f"{minutes} мин"
+
+
+__all__ = ["RaidError", "RaidLobby", "RaidService", "RaidSession"]

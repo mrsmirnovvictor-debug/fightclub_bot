@@ -1036,12 +1036,15 @@ function stopWatchingFights() {
 
 function pickClubSection(name) {
   clubSection = name;
-  ["fights", "players", "stats"].forEach((section) => {
+  ["fights", "raid", "players", "stats"].forEach((section) => {
     el("club-" + section).classList.toggle("hidden", section !== name);
   });
   renderClubSections();
   if (name === "players" && !clubData) loadClub();
   if (name === "stats" && !statsData) loadHistory(statsWho);
+  // Рейд живёт волнами: пока раздел открыт, спрашиваем состояние
+  if (name === "raid") startWatchingRaid();
+  else stopWatchingRaid();
 }
 
 function renderClubSections() {
@@ -1049,6 +1052,7 @@ function renderClubSections() {
   box.textContent = "";
   [
     ["fights", "Бои"],
+    ["raid", "Рейд"],
     ["players", "Игроки"],
     ["stats", "Статистика"],
   ].forEach(([code, label]) => {
@@ -1428,6 +1432,335 @@ function fightLog(duel) {
   head.textContent = "Ход боя";
   box.appendChild(head);
   duel.log.slice().reverse().forEach((turn) => judgeLines(turn, box));
+  return box;
+}
+
+// ---------- рейд ----------
+//
+// Отряд против одного босса. Волна — это по разу на каждого: нажал «Вперёд!» —
+// размен посчитан сразу, не нажал за полминуты — пропустил удар. Экран
+// опрашивает сервер, потому что волна может кончиться и без тебя.
+
+let raidData = null;
+let raidTimer = null;
+let raidBusy = false;
+let raidDraft = { attack: null, block: null };
+let raidWave = null;
+
+function startWatchingRaid() {
+  if (raidTimer) return;
+  loadRaid();
+  raidTimer = setInterval(loadRaid, 2000);
+}
+
+function stopWatchingRaid() {
+  if (!raidTimer) return;
+  clearInterval(raidTimer);
+  raidTimer = null;
+}
+
+async function loadRaid() {
+  try {
+    const response = await fetch("api/raid", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (response.status === 404) {
+      el("raid-note").textContent = "Сначала заведи бойца в личке бота.";
+      return;
+    }
+    if (!response.ok) throw new Error("Подвал не отвечает.");
+    renderRaid(await response.json());
+  } catch (error) {
+    el("raid-note").textContent = error.message;
+  }
+}
+
+async function raidAction(payload) {
+  if (raidBusy) return;
+  raidBusy = true;
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  try {
+    const response = await fetch("api/raid", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      popup("Рейд", body.error || "Не вышло.");
+      return;
+    }
+    renderRaid(body);
+  } catch (error) {
+    popup("Рейд", error.message);
+  } finally {
+    raidBusy = false;
+  }
+}
+
+function renderRaid(data) {
+  // Новая волна — намётки прошлой сбрасываем: то, что ушло судье, обратно
+  // подсвечивать нечего
+  const wave = data.raid ? data.raid.id + ":" + data.raid.wave : null;
+  if (wave !== raidWave) {
+    raidWave = wave;
+    raidDraft = { attack: null, block: null };
+  }
+  raidData = data;
+  const body = el("raid-body");
+  body.textContent = "";
+  if (data.raid) {
+    el("raid-note").textContent = "";
+    body.appendChild(raidPanel(data));
+  } else if (data.lobby) {
+    el("raid-note").textContent = "Отряд собирается. Ждём остальных.";
+    body.appendChild(raidLobby(data.lobby, true));
+  } else {
+    el("raid-note").textContent = data.can_fight
+      ? "Собери отряд или влезь в чужой."
+      : "Здоровье не то — сначала отдышись.";
+    body.appendChild(raidOpenForm(data));
+    data.lobbies.forEach((lobby) => body.appendChild(raidLobby(lobby, false)));
+  }
+}
+
+function raidOpenForm(data) {
+  const box = document.createElement("div");
+  box.className = "fight-open";
+  const line = document.createElement("p");
+  line.className = "fight-line";
+  line.textContent =
+    "Рейд собирают раз в сутки. Сколько человек берём — " +
+    data.min_party + "–" + data.max_party + ".";
+  box.appendChild(line);
+
+  const row = document.createElement("div");
+  row.className = "raid-sizes";
+  [data.min_party, 4, 6, data.max_party].forEach((size) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn wide";
+    btn.textContent = "🩸 Собрать на " + size;
+    btn.disabled = !data.can_fight;
+    btn.addEventListener("click", () => raidAction({ action: "open", size: size }));
+    row.appendChild(btn);
+  });
+  box.appendChild(row);
+  return box;
+}
+
+function raidLobby(lobby, mine) {
+  const box = document.createElement("div");
+  box.className = "fight-card";
+  const head = document.createElement("p");
+  head.className = "fight-line";
+  head.textContent =
+    lobby.boss.emoji + " " + lobby.boss.title + " — отряд " +
+    lobby.total + "/" + lobby.size;
+  box.appendChild(head);
+
+  const names = document.createElement("p");
+  names.className = "fight-row-note";
+  names.textContent = lobby.members
+    .map((row) => row.name + " [" + row.level + "]")
+    .join(", ");
+  box.appendChild(names);
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = mine ? "btn secondary wide" : "btn wide";
+  btn.textContent = mine ? "Выйти из отряда" : "🩸 В отряд";
+  btn.addEventListener("click", () =>
+    raidAction(mine ? { action: "leave" } : { action: "join", lobby_id: lobby.id })
+  );
+  box.appendChild(btn);
+  return box;
+}
+
+function raidPanel(data) {
+  const raid = data.raid;
+  const box = document.createElement("div");
+  box.className = "fight-panel";
+
+  const head = document.createElement("p");
+  head.className = "fight-round";
+  head.textContent = raid.finished
+    ? "🔔 Рейд окончен"
+    : raid.resting
+      ? "😮‍💨 Передышка"
+      : "🔔 Волна " + raid.wave;
+  box.appendChild(head);
+  box.appendChild(bossCard(raid.boss));
+  box.appendChild(partyBoard(raid.party));
+
+  if (raid.finished) {
+    box.appendChild(raidFinish(raid));
+  } else if (!raid.alive) {
+    const out = document.createElement("p");
+    out.className = "fight-line";
+    out.textContent = "Тебя вынесли. Отряд дерётся дальше.";
+    box.appendChild(out);
+  } else if (raid.resting) {
+    const rest = document.createElement("p");
+    rest.className = "fight-line";
+    rest.textContent = "Отряд переводит дух. Следующая волна вот-вот.";
+    box.appendChild(rest);
+  } else if (raid.acted) {
+    const wait = document.createElement("p");
+    wait.className = "fight-line";
+    wait.textContent = "Удар засчитан. Ждём остальных.";
+    box.appendChild(wait);
+  } else {
+    box.appendChild(raidTurnForm(data));
+  }
+
+  if (raid.log.length) box.appendChild(raidLog(raid));
+  return box;
+}
+
+function bossCard(boss) {
+  const box = document.createElement("div");
+  box.className = "boss-card";
+  if (boss.image) {
+    const img = document.createElement("img");
+    img.className = "boss-face";
+    img.src = boss.image;
+    img.alt = boss.title;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.addEventListener("error", () => img.remove());
+    box.appendChild(img);
+  }
+  const side = document.createElement("div");
+  side.className = "boss-side";
+  const name = document.createElement("p");
+  name.className = "fight-name";
+  name.textContent = boss.emoji + " " + boss.title + " [" + boss.level + "]";
+  const hp = document.createElement("p");
+  hp.className = "fight-hp";
+  hp.textContent = boss.hp + "/" + boss.max_hp;
+  side.appendChild(name);
+  side.appendChild(hp);
+  side.appendChild(fightBar(boss));
+  box.appendChild(side);
+  return box;
+}
+
+function partyBoard(party) {
+  const box = document.createElement("div");
+  box.className = "raid-party";
+  party.forEach((member) => {
+    const row = document.createElement("div");
+    row.className = "raid-member" + (member.alive ? "" : " down");
+    const name = document.createElement("p");
+    name.className = "fight-name";
+    name.textContent =
+      (member.alive ? (member.acted ? "✅ " : "⏳ ") : "💀 ") +
+      member.emoji + " " + member.name + " [" + member.level + "]" +
+      (member.you ? " — ты" : "");
+    const hp = document.createElement("p");
+    hp.className = "fight-hp";
+    hp.textContent = member.hp + "/" + member.max_hp + " · урона " +
+      member.damage_dealt;
+    row.appendChild(name);
+    row.appendChild(hp);
+    row.appendChild(fightBar(member));
+    box.appendChild(row);
+  });
+  return box;
+}
+
+function raidTurnForm(data) {
+  const box = document.createElement("div");
+  box.className = "turn-form";
+  const columns = document.createElement("div");
+  columns.className = "zone-columns";
+  columns.appendChild(raidColumn("Атака", data.attacks, "attack"));
+  columns.appendChild(raidColumn("Защита", data.blocks, "block"));
+  box.appendChild(columns);
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.id = "raid-go";
+  go.className = "btn wide";
+  go.textContent = "Вперёд!";
+  go.disabled = !(raidDraft.attack && raidDraft.block);
+  go.addEventListener("click", () => {
+    const move = { action: "turn", attack: raidDraft.attack, block: raidDraft.block };
+    raidDraft = { attack: null, block: null };
+    raidAction(move);
+  });
+  box.appendChild(go);
+  return box;
+}
+
+function raidColumn(title, rows, field) {
+  const box = document.createElement("div");
+  box.className = "zone-column";
+  const head = document.createElement("p");
+  head.className = "zone-head";
+  head.textContent = title;
+  box.appendChild(head);
+  rows.forEach((row) => {
+    const label = document.createElement("label");
+    label.className = "zone" + (raidDraft[field] === row.zone ? " on" : "");
+    const dot = document.createElement("input");
+    dot.type = "radio";
+    dot.name = "raid-" + field;
+    dot.value = row.zone;
+    dot.checked = raidDraft[field] === row.zone;
+    dot.addEventListener("change", () => {
+      raidDraft[field] = row.zone;
+      paintRaidDraft();
+    });
+    const text = document.createElement("span");
+    text.textContent = row.title;
+    label.appendChild(dot);
+    label.appendChild(text);
+    box.appendChild(label);
+  });
+  return box;
+}
+
+function paintRaidDraft() {
+  document.querySelectorAll("#club-raid .zone").forEach((label) => {
+    const dot = label.querySelector("input");
+    label.classList.toggle("on", Boolean(dot && dot.checked));
+  });
+  const go = el("raid-go");
+  if (go) go.disabled = !(raidDraft.attack && raidDraft.block);
+}
+
+function raidFinish(raid) {
+  const box = document.createElement("div");
+  box.className = "fight-finish";
+  (raid.summary || []).forEach((said) => {
+    if (!said) return;
+    const line = document.createElement("p");
+    line.className = "log-line";
+    line.textContent = said;
+    box.appendChild(line);
+  });
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "btn wide";
+  close.textContent = "Завершить рейд";
+  close.addEventListener("click", () => raidAction({ action: "done" }));
+  box.appendChild(close);
+  return box;
+}
+
+function raidLog(raid) {
+  const box = document.createElement("div");
+  box.className = "fight-log";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Ход рейда";
+  box.appendChild(head);
+  raid.log.slice().reverse().forEach((turn) => judgeLines(turn, box));
   return box;
 }
 
