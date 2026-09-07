@@ -830,6 +830,45 @@ async def test_a_percentage_says_when_there_is_no_ceiling(server):
         await browser.close()
 
 
+async def test_the_card_catches_up_with_a_level_taken_in_a_fight(server):
+    """Уровень взяли в бою — карточка догоняет сама, без перезапуска аппа.
+
+    Раньше её читали один раз за сеанс: новый уровень и свободные очки
+    появлялись только после того, как мини-апп закроют и откроют заново.
+    """
+    player = make_player()
+    grown = make_player()
+    grown.level = player.level + 1
+    grown.free_points = 3
+    cards = [
+        build_card(player, TOKEN, viewer_id=player.user_id),
+        build_card(grown, TOKEN, viewer_id=grown.user_id),
+    ]
+
+    async def card_route(route):
+        body = cards.pop(0) if len(cards) > 1 else cards[0]
+        await route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, cards[0], build_shop(player))
+        await page.route("**/api/card*", card_route)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        level = await page.locator("#hero-level").inner_text()
+        assert await page.locator("#upgrade").is_hidden()
+
+        # ушли в чат, подрались, вернулись
+        await page.locator("#tab-shop").click()
+        await page.locator("#tab-hero").click()
+        await page.wait_for_selector("#upgrade:not(.hidden)")
+
+        assert await page.locator("#hero-level").inner_text() != level
+        assert "Свободных очков: 3" in await page.locator("#upgrade").inner_text()
+        await browser.close()
+
+
 async def test_a_slot_tells_what_is_worn_when_you_hover_it(server):
     """Наведение на слот: что надето и что оно даёт, а не просто «оружие»."""
     player = make_player()

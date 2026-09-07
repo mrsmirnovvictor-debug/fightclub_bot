@@ -992,6 +992,8 @@ function showTab(name) {
   el("topup").classList.add("hidden");
   lastTab = name;
   window.scrollTo(0, 0);
+  // На этих двух экранах живут уровень и свободные очки: заходим — сверяемся
+  if (name === "hero" || name === "bag") catchUp();
   if (name === "shop" && !shopData) loadShop();
   // Комиссионку перечитываем при каждом заходе: её полка меняется чужими
   // руками, а рюкзак — своими
@@ -1318,6 +1320,8 @@ async function showFighter(fighter) {
 
 let fightsData = null;
 let fightsTimer = null;
+// Итог прошлого ответа: по нему видно, что бой только что кончился
+let fightWasOver = false;
 let clubSection = "fights";
 // Пока запрос в пути, второй не шлём: иначе двойное нажатие уходит дважды
 let fightBusy = false;
@@ -1412,6 +1416,9 @@ function renderFights(data) {
     lastTurn = turn;
     turnDraft = { attack: null, block: null };
   }
+  // Бой доигран — уровень и награда уже записаны: перечитываем карточку
+  if (data.duel && data.duel.finished && !fightWasOver) catchUp();
+  fightWasOver = Boolean(data.duel && data.duel.finished);
   fightsData = data;
   const body = el("fights-body");
   body.textContent = "";
@@ -1743,6 +1750,7 @@ function fightLog(duel) {
 
 let raidData = null;
 let raidTimer = null;
+let raidWasOver = false;
 // Развёрнута ли карточка босса под заголовком
 let bossOpen = false;
 let raidBusy = false;
@@ -1811,6 +1819,8 @@ function renderRaid(data) {
     raidWave = wave;
     raidDraft = { attack: null, block: null };
   }
+  if (data.raid && data.raid.finished && !raidWasOver) catchUp();
+  raidWasOver = Boolean(data.raid && data.raid.finished);
   raidData = data;
   const body = el("raid-body");
   body.textContent = "";
@@ -2506,6 +2516,26 @@ async function refresh() {
   }
 }
 
+// ---------- карточка не отстаёт от боя ----------
+//
+// Уровень берут в бою — в ветке группы или на ринге, — а карточка грузится
+// один раз за сеанс. Поэтому перечитываем её сами: когда вернулись в
+// приложение, когда открыли «Персонажа» или рюкзак, и понемногу, пока
+// приложение открыто. Иначе новый уровень и свободные очки видно только
+// после того, как мини-апп закроют и откроют заново.
+const CARD_HEARTBEAT = 20000;
+
+function cardIsBusy() {
+  // Человек раскладывает очки — перечитать карточку значит стереть то,
+  // что он уже нащёлкал. Дождёмся, пока применит или откажется.
+  return draftTotal() > 0;
+}
+
+async function catchUp() {
+  if (document.hidden || cardIsBusy()) return;
+  await refresh();
+}
+
 async function loadShop() {
   try {
     const response = await fetch("api/shop", {
@@ -3058,5 +3088,13 @@ if (tg) {
     });
   }
 }
+
+// Вернулись в приложение из чата — сверяемся с базой: пока нас не было,
+// боец мог подраться и взять уровень
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) catchUp();
+});
+window.addEventListener("focus", catchUp);
+setInterval(catchUp, CARD_HEARTBEAT);
 
 load();
