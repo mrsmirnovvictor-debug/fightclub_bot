@@ -16,6 +16,7 @@ from bot.game.combat import (
 )
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
 from bot.game.equipment import (
+    ALL_SLOTS,
     LEFT_SLOTS,
     MAGIC_ITEMS,
     RIGHT_SLOTS,
@@ -23,8 +24,10 @@ from bot.game.equipment import (
     Item,
     OwnedItem,
     Slot,
+    get_item,
     shop_sections,
 )
+from bot.game.market import FEE as MARKET_FEE
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
@@ -415,6 +418,96 @@ def build_shop(player: Player) -> dict:
         "level": player.level,
         "fclass": {"code": player.fclass.code, "title": player.fclass.title},
         "sections": sections,
+    }
+
+
+# ---------- комиссионка ----------
+
+
+def lot_payload(player: Player, lot: dict) -> dict:
+    """Строка комиссионки: чья вещь, с каким износом и за сколько."""
+    from bot.game.equipment import MAX_WEAR
+    from bot.game.market import fee_of, payout
+
+    item = get_item(lot["code"])
+    owned = OwnedItem(
+        item=item, wear=lot["wear"], max_wear=lot["max_wear"] or MAX_WEAR
+    )
+    price = int(lot["price"])
+    return {
+        "id": lot["id"],
+        "code": item.code,
+        "title": item.title,
+        "icon": item.emoji,
+        "image": item.image,
+        "slot": item.slot.value,
+        "slot_title": item.slot.section.capitalize(),
+        "price": price,
+        # Продавцу видно, сколько дойдёт до него, покупателю — сколько отдать
+        "payout": payout(price),
+        "fee": fee_of(price),
+        "seller_id": lot["seller_id"],
+        "seller": lot["seller"] or "боец без имени",
+        "mine": lot["seller_id"] == player.user_id,
+        "wear": owned.wear,
+        "max_wear": owned.max_wear,
+        "wear_text": owned.describe_wear(),
+        "affordable": player.can_afford(price),
+        "can_equip": player.can_equip(item),
+        "requirements": requirements_payload(player, item),
+        "bonuses": bonuses_payload(item, player.fclass),
+        "shop_price": item.price if item.on_sale and not item.is_magic else 0,
+    }
+
+
+def sellable_payload(player: Player, owned: OwnedItem) -> dict:
+    """Вещь из рюкзака, которую можно выставить: с рамками цены."""
+    from bot.game.market import price_range
+    from bot.market_service import price_hint
+
+    limits = price_range(owned.item)
+    return {
+        "id": owned.id,
+        "code": owned.code,
+        "title": owned.title,
+        "icon": owned.emoji,
+        "image": owned.image,
+        "slot": owned.item.slot.value,
+        "slot_title": owned.item.slot.section.capitalize(),
+        "wear": owned.wear,
+        "max_wear": owned.max_wear,
+        "wear_text": owned.describe_wear(),
+        "min_price": limits[0] if limits else 1,
+        "max_price": limits[1] if limits else 0,  # 0 — потолка нет
+        "hint": price_hint(owned.item),
+        "shop_price": owned.item.price if limits else 0,
+    }
+
+
+def build_market(player: Player, lots: list[dict]) -> dict:
+    """Комиссионка: полки по типам вещей, свои лоты и что можно выставить."""
+    rows = [lot_payload(player, lot) for lot in lots]
+    sections = []
+    for slot in ALL_SLOTS:
+        goods = [row for row in rows if row["slot"] == slot.value]
+        if not goods:
+            continue
+        sections.append(
+            {
+                "slot": slot.value,
+                "title": slot.section.capitalize(),
+                "emoji": slot.emoji,
+                "open": len(goods),
+                "items": goods,
+            }
+        )
+    return {
+        "credits": player.credits,
+        "fee": round(MARKET_FEE * 100),
+        "sections": sections,
+        "mine": [row for row in rows if row["mine"]],
+        # Выставить можно только то, что не надето: надетое сначала снимают
+        "sellable": [sellable_payload(player, owned) for owned in player.backpack],
     }
 
 

@@ -674,11 +674,36 @@ function shopNote(data) {
     : "Открыто всё, что есть на прилавке.";
 }
 
+// Какая лавка открыта на вкладке магазинов
+let shopSection = "club";
+
+function pickShopSection(name) {
+  shopSection = name;
+  el("shop-club").classList.toggle("hidden", name !== "club");
+  el("shop-market").classList.toggle("hidden", name !== "market");
+  el("shop-title").textContent =
+    name === "club" ? "🏪 Лавка клуба" : "🤝 Комиссионный магазин";
+  renderShopSections();
+  if (name === "market") loadMarket();
+}
+
+function renderShopSections() {
+  const box = el("shop-sections");
+  box.textContent = "";
+  [
+    ["club", "Лавка клуба"],
+    ["market", "Комиссионка"],
+  ].forEach(([code, label]) => {
+    box.appendChild(chip(label, shopSection === code, () => pickShopSection(code)));
+  });
+}
+
 function renderShop(data) {
   shopData = data;
   el("shop-purse").textContent = "";
   el("shop-purse").appendChild(purse(data.credits));
   el("shop-note").textContent = shopNote(data);
+  renderShopSections();
   renderFilters(data);
 
   const list = el("shop-list");
@@ -690,6 +715,241 @@ function renderShop(data) {
       if (shelved) list.appendChild(shelved);
     });
   el("shop-empty").classList.toggle("hidden", list.childElementCount > 0);
+}
+
+// ---------- комиссионка ----------
+//
+// Вещи игроков лежат на тех же полках по типам, что и товар лавки. Всё, что
+// тут можно сделать, уходит одной ручкой: выставить своё, снять своё, купить
+// чужое — и в ответ приходит вся полка целиком.
+
+let marketData = null;
+let marketBusy = false;
+
+async function loadMarket() {
+  try {
+    const response = await fetch("api/market", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (response.status === 404) {
+      el("market-note").textContent = "Сначала заведи бойца в личке бота.";
+      return;
+    }
+    if (!response.ok) throw new Error("Комиссионка не отвечает.");
+    renderMarket(await response.json());
+  } catch (error) {
+    el("market-note").textContent = error.message;
+  }
+}
+
+async function marketAction(payload) {
+  if (marketBusy) return;
+  marketBusy = true;
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  try {
+    const response = await fetch("api/market", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      popup("Комиссионка", body.error || "Не вышло.");
+      return;
+    }
+    renderMarket(body);
+    // Кошелёк и рюкзак поменялись — перечитываем карточку и лавку
+    shopData = null;
+    refresh();
+  } catch (error) {
+    popup("Комиссионка", error.message);
+  } finally {
+    marketBusy = false;
+  }
+}
+
+function renderMarket(data) {
+  marketData = data;
+  el("shop-purse").textContent = "";
+  el("shop-purse").appendChild(purse(data.credits));
+  const count = data.sections.reduce((all, row) => all + row.items.length, 0);
+  el("market-note").textContent = count
+    ? "Вещи игроков клуба. Клуб берёт " + data.fee + "% с каждой продажи."
+    : "На комиссии пусто. Выставь своё — заберут.";
+
+  const body = el("market-body");
+  body.textContent = "";
+  body.appendChild(sellBox(data));
+  data.sections.forEach((section) => body.appendChild(marketShelf(section)));
+}
+
+function sellBox(data) {
+  // Что можно выставить: всё, что лежит в рюкзаке и не надето
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🤝 Выставить своё";
+  box.appendChild(head);
+
+  if (!data.sellable.length) {
+    const empty = document.createElement("p");
+    empty.className = "shelf-empty";
+    empty.textContent = "В рюкзаке пусто. Надетое сначала снимают.";
+    box.appendChild(empty);
+    return box;
+  }
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  data.sellable.forEach((row) => list.appendChild(sellCard(row)));
+  box.appendChild(list);
+  return box;
+}
+
+function sellCard(row) {
+  const box = document.createElement("div");
+  box.className = "thing";
+
+  const pic = document.createElement("div");
+  pic.className = "thing-pic";
+  pic.appendChild(slotPicture(row, row.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "thing-body";
+
+  const title = document.createElement("div");
+  title.className = "thing-title";
+  title.textContent = row.title;
+  const kind = document.createElement("div");
+  kind.className = "thing-kind";
+  kind.textContent = row.slot_title;
+  const wear = document.createElement("div");
+  wear.className = "thing-wear" + (row.wear ? " worn" : "");
+  wear.textContent = "🔧 Износ: " + row.wear_text;
+  const hint = document.createElement("div");
+  hint.className = "thing-note";
+  hint.textContent = row.hint;
+  body.append(title, kind, wear, hint);
+
+  const line = document.createElement("div");
+  line.className = "sell-line";
+  const price = document.createElement("input");
+  price.type = "number";
+  price.className = "sell-price";
+  price.min = String(row.min_price);
+  if (row.max_price) price.max = String(row.max_price);
+  price.value = String(row.min_price);
+  price.setAttribute("aria-label", "Цена");
+  line.appendChild(price);
+  line.appendChild(
+    button("Выставить", {
+      onClick: () =>
+        marketAction({
+          action: "sell",
+          item_id: row.id,
+          price: Number(price.value) || 0,
+        }),
+    })
+  );
+  body.appendChild(line);
+
+  box.appendChild(body);
+  return box;
+}
+
+function marketShelf(section) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = section.emoji + " " + section.title;
+  const count = document.createElement("span");
+  count.className = "shelf-count";
+  count.textContent = "лотов " + section.items.length;
+  head.appendChild(count);
+  box.appendChild(head);
+
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  section.items.forEach((lot) => list.appendChild(lotCard(lot)));
+  box.appendChild(list);
+  return box;
+}
+
+function lotCard(lot) {
+  const box = document.createElement("div");
+  box.className = "thing" + (lot.mine ? " mine" : "");
+
+  const pic = document.createElement("div");
+  pic.className = "thing-pic";
+  pic.appendChild(slotPicture(lot, lot.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "thing-body";
+
+  const title = document.createElement("div");
+  title.className = "thing-title";
+  title.textContent = lot.title;
+  const kind = document.createElement("div");
+  kind.className = "thing-kind";
+  kind.textContent = lot.slot_title;
+  const seller = document.createElement("div");
+  seller.className = "thing-seller";
+  seller.textContent = lot.mine ? "Твой лот" : "Продаёт: " + lot.seller;
+  const wear = document.createElement("div");
+  wear.className = "thing-wear" + (lot.wear ? " worn" : "");
+  wear.textContent = "🔧 Износ: " + lot.wear_text;
+  const price = document.createElement("div");
+  price.className = "thing-price";
+  price.textContent = lot.price + " 💰";
+  if (lot.shop_price) price.textContent += " · в лавке " + lot.shop_price + " 💰";
+  body.append(title, kind, seller, wear, price);
+
+  if (lot.mine) {
+    const take = document.createElement("div");
+    take.className = "thing-note";
+    take.textContent = "Продадут — придёт " + lot.payout + " 💰 (клуб возьмёт " +
+      lot.fee + ")";
+    body.appendChild(take);
+  }
+
+  const reqLabel = document.createElement("div");
+  reqLabel.className = "thing-label";
+  reqLabel.textContent = "Требования";
+  body.append(reqLabel, requirementList(lot));
+
+  if (lot.bonuses.length) {
+    const gainLabel = document.createElement("div");
+    gainLabel.className = "thing-label";
+    gainLabel.textContent = "Даёт надетой";
+    body.append(gainLabel, bonusList(lot));
+  }
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    lot.mine
+      ? button("Снять с продажи", {
+          secondary: true,
+          onClick: () => marketAction({ action: "withdraw", lot_id: lot.id }),
+        })
+      : button(
+          lot.affordable ? "Купить · " + lot.price + " 💰" : "Не хватает кредитов",
+          {
+            disabled: !lot.affordable,
+            onClick: () => marketAction({ action: "buy", lot_id: lot.id }),
+          }
+        )
+  );
+  body.appendChild(buttons);
+
+  box.appendChild(body);
+  return box;
 }
 
 const SCREENS = ["club", "shop", "magic", "bag", "hero"];

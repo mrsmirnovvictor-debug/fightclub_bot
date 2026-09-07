@@ -29,9 +29,11 @@ from bot.pro_service import ProError, claim_free_pro, promo_taken
 from bot.store_service import StoreError, StoreService
 from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
+from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, raid_row
 from bot.webapp.card import (
+    build_market,
     build_card,
     build_club,
     build_magic,
@@ -455,6 +457,43 @@ async def api_fight(request: web.Request) -> web.Response:
     return web.json_response(build_fights(fresh or player, duels))
 
 
+# ---------- комиссионка ----------
+
+
+async def _market(request: web.Request, player) -> web.Response:
+    lots = await request.app[DB_KEY].market_lots()
+    return web.json_response(build_market(player, lots))
+
+
+async def api_market(request: web.Request) -> web.Response:
+    """Что лежит на комиссии, что там твоего и что можно выставить."""
+    player = await _own_player(request)
+    return await _market(request, player)
+
+
+async def api_market_action(request: web.Request) -> web.Response:
+    """Выставить свою вещь, снять её с продажи или купить чужую."""
+    db = request.app[DB_KEY]
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    try:
+        player = await _own_player(request)
+        if action == "sell":
+            await sell_lot(
+                db, player, _int_field(data, "item_id"), _int_field(data, "price")
+            )
+        elif action == "withdraw":
+            await withdraw_lot(db, player, _int_field(data, "lot_id"))
+        elif action == "buy":
+            await buy_lot(db, player, _int_field(data, "lot_id"))
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except (InventoryError, MarketError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    return await _market(request, player)
+
+
 # ---------- рейды ----------
 
 
@@ -694,6 +733,8 @@ def create_app(
             web.get("/api/fights", api_fights),
             web.post("/api/fight", api_fight),
             web.get("/api/history", api_history),
+            web.get("/api/market", api_market),
+            web.post("/api/market", api_market_action),
             web.get("/api/raid", api_raid),
             web.post("/api/raid", api_raid_action),
             web.get("/api/raids", api_raids_history),

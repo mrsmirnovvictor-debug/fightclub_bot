@@ -50,20 +50,30 @@
     </section>
   </main>
 
-  <!-- ---------- 2. Магазин ---------- -->
+  <!-- ---------- 2. Магазины: лавка клуба и комиссионка ---------- -->
   <main id="shop" class="screen shop hidden">
     <header class="screen-head">
-      <h1 class="screen-title">🏪 Лавка клуба</h1>
+      <h1 class="screen-title" id="shop-title">🏪 Лавка клуба</h1>
       <span class="shop-purse" id="shop-purse"></span>
     </header>
-    <p class="screen-note" id="shop-note"></p>
 
-    <div class="bubbles" id="filter-type"></div>
+    <div class="bubbles" id="shop-sections"></div>
 
-    <p class="shop-empty hidden" id="shop-empty">
-      Под этот фильтр на прилавке ничего нет.
-    </p>
-    <div id="shop-list"></div>
+    <!-- Лавка клуба: товар по типам вещей -->
+    <section id="shop-club">
+      <p class="screen-note" id="shop-note"></p>
+      <div class="bubbles" id="filter-type"></div>
+      <p class="shop-empty hidden" id="shop-empty">
+        Под этот фильтр на прилавке ничего нет.
+      </p>
+      <div id="shop-list"></div>
+    </section>
+
+    <!-- Комиссионка: вещи игроков -->
+    <section id="shop-market" class="hidden">
+      <p class="screen-note" id="market-note"></p>
+      <div id="market-body"></div>
+    </section>
   </main>
 
   <!-- ---------- 3. Лавка мага ---------- -->
@@ -108,7 +118,7 @@
       <h2 class="bag-head">🎒 Инвентарь <span class="bag-count" id="bag-count"></span></h2>
       <div class="bag-list" id="bag-list"></div>
       <p class="bag-empty hidden" id="bag-empty">
-        Рюкзак пуст. Вещи покупаются в лавке клуба — вкладка «Магазин».
+        Рюкзак пуст. Вещи покупаются в лавке клуба — вкладка «Магазины».
       </p>
 
       <div id="potion-box" class="hidden">
@@ -175,7 +185,7 @@
       <span class="bar-icon">🥊</span><span class="bar-label">Клуб</span>
     </button>
     <button type="button" class="bar-tab" id="tab-shop">
-      <span class="bar-icon">🏪</span><span class="bar-label">Магазин</span>
+      <span class="bar-icon">🏪</span><span class="bar-label">Магазины</span>
     </button>
     <button type="button" class="bar-tab" id="tab-magic">
       <span class="bar-icon">🔮</span><span class="bar-label">Лавка мага</span>

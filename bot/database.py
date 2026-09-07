@@ -140,6 +140,20 @@ CREATE TABLE IF NOT EXISTS duel_log (
     PRIMARY KEY (duel_id, number)
 );
 
+-- Комиссионка: вещь ушла из инвентаря продавца и ждёт покупателя. Износ
+-- переезжает вместе с ней — покупают её такой, какая есть.
+CREATE TABLE IF NOT EXISTS market (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    seller_id INTEGER NOT NULL,
+    code      TEXT    NOT NULL,
+    wear      INTEGER NOT NULL DEFAULT 0,
+    max_wear  INTEGER NOT NULL,
+    price     INTEGER NOT NULL,
+    listed_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_seller ON market(seller_id, id DESC);
+
 -- Рейды: отряд живых бойцов против одного босса. Запись заводится в момент
 -- сбора — по ней же считается «один рейд в сутки на созывающего», — и
 -- закрывается итогом, когда бой кончился.
@@ -615,18 +629,24 @@ class Database:
         return [owned for owned in map(_to_owned_item, rows) if owned is not None]
 
     async def add_gear(
-        self, user_id: int, code: str, max_wear: int = MAX_WEAR
+        self, user_id: int, code: str, max_wear: int = MAX_WEAR, wear: int = 0
     ) -> OwnedItem:
-        """Положить купленную вещь в инвентарь."""
+        """Положить вещь в инвентарь. `wear` — если вещь уже пожили.
+
+        Из лавки вещи приходят новыми, из комиссионки — с тем износом, с
+        каким их сдали: покупают её такой, какая есть.
+        """
         item = get_item(code)
         if item is None:
             raise ValueError(f"Неизвестный предмет: {code}")
         cursor = await self.conn.execute(
-            "INSERT INTO inventory (user_id, code, max_wear) VALUES (?,?,?)",
-            (user_id, code, max_wear),
+            "INSERT INTO inventory (user_id, code, max_wear, wear) VALUES (?,?,?,?)",
+            (user_id, code, max_wear, wear),
         )
         await self.conn.commit()
-        return OwnedItem(item=item, id=int(cursor.lastrowid or 0), max_wear=max_wear)
+        return OwnedItem(
+            item=item, id=int(cursor.lastrowid or 0), max_wear=max_wear, wear=wear
+        )
 
     async def save_gear(self, owned: OwnedItem) -> None:
         await self.conn.execute(
@@ -950,6 +970,57 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [json.loads(row["strikes"]) for row in rows]
+
+    # ---------- комиссионка ----------
+
+    async def add_lot(
+        self, seller_id: int, code: str, wear: int, max_wear: int, price: int
+    ) -> int:
+        cursor = await self.conn.execute(
+            "INSERT INTO market (seller_id, code, wear, max_wear, price) "
+            "VALUES (?,?,?,?,?)",
+            (seller_id, code, wear, max_wear, price),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def market_lots(self) -> list[dict[str, Any]]:
+        """Всё, что сейчас лежит на комиссии, вместе с прозвищем продавца."""
+        async with self.conn.execute(
+            """
+            SELECT m.id, m.seller_id, m.code, m.wear, m.max_wear, m.price,
+                   m.listed_at, p.nickname AS seller
+            FROM market AS m
+            LEFT JOIN players AS p ON p.user_id = m.seller_id
+            ORDER BY m.id DESC
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def market_lot(self, lot_id: int) -> dict[str, Any] | None:
+        async with self.conn.execute(
+            """
+            SELECT m.id, m.seller_id, m.code, m.wear, m.max_wear, m.price,
+                   m.listed_at, p.nickname AS seller
+            FROM market AS m
+            LEFT JOIN players AS p ON p.user_id = m.seller_id
+            WHERE m.id = ?
+            """,
+            (lot_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def take_lot(self, lot_id: int) -> bool:
+        """Снять лот с полки. False — его уже кто-то забрал.
+
+        Это же и есть защита от двойной продажи: строку забирает тот, чей
+        DELETE прошёл первым, а деньги и вещь считаются уже после.
+        """
+        cursor = await self.conn.execute("DELETE FROM market WHERE id = ?", (lot_id,))
+        await self.conn.commit()
+        return bool(cursor.rowcount)
 
     # ---------- рейды ----------
 

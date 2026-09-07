@@ -76,6 +76,10 @@ EMPTY_HISTORY = {
 }
 
 
+EMPTY_MARKET = {
+    "credits": 0, "fee": 5, "sections": [], "mine": [], "sellable": [],
+}
+
 BOSS_CARD = {
     "code": "cellar_boss", "title": "Босс Подвала", "emoji": "🩸", "image": "",
     "tagline": "Он тут всё построил и всех похоронил.", "live": False,
@@ -151,7 +155,7 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
 
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
-    magic=None, fights=None, history=None, fight_log=None, raid=None,
+    magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -172,6 +176,7 @@ async def open_page(
     await page.route("**/api/fights*", canned(fights or EMPTY_RING))
     await page.route("**/api/history*", canned(history or EMPTY_HISTORY))
     await page.route("**/api/raid*", canned(raid or EMPTY_RAID))
+    await page.route("**/api/market*", canned(market or EMPTY_MARKET))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
@@ -280,6 +285,191 @@ async def test_type_filter_leaves_one_shelf(shop_page):
             "Монтировка", "Нож")
         for title in await visible_titles(shop_page)
     )
+
+
+MARKET = {
+    "credits": 300,
+    "fee": 5,
+    "sections": [
+        {
+            "slot": "weapon", "title": "Оружие", "emoji": "🔪", "open": 2,
+            "items": [
+                {
+                    "id": 11, "code": "knife", "title": "Нож", "icon": "🔪",
+                    "image": "", "slot": "weapon", "slot_title": "Оружие",
+                    "price": 200, "payout": 190, "fee": 10, "seller_id": 43,
+                    "seller": "Марла", "mine": False, "wear": 6, "max_wear": 20,
+                    "wear_text": "6 из 20", "affordable": True, "can_equip": True,
+                    "requirements": [], "bonuses": [], "shop_price": 110,
+                },
+                {
+                    "id": 12, "code": "pipe", "title": "Деревянная бита",
+                    "icon": "🏏", "image": "", "slot": "weapon",
+                    "slot_title": "Оружие", "price": 400, "payout": 380,
+                    "fee": 20, "seller_id": 42, "seller": "Растафарайчик",
+                    "mine": True, "wear": 0, "max_wear": 20, "wear_text": "новая",
+                    "affordable": False, "can_equip": True, "requirements": [],
+                    "bonuses": [], "shop_price": 150,
+                },
+            ],
+        }
+    ],
+    "mine": [],
+    "sellable": [
+        {
+            "id": 21, "code": "bandana", "title": "Бандана", "icon": "🧢",
+            "image": "", "slot": "head", "slot_title": "Голова", "wear": 2,
+            "max_wear": 20, "wear_text": "2 из 20", "min_price": 20,
+            "max_price": 120, "hint": "От 20 до 120 💰", "shop_price": 40,
+        }
+    ],
+}
+
+
+async def open_market(pw, server, market=None):
+    """Открыть вкладку магазинов на комиссионке."""
+    player = make_player()
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), market=market or MARKET,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.locator("#tab-shop").click()
+    await page.wait_for_selector(".shelf")
+    await page.get_by_role("button", name="Комиссионка", exact=True).click()
+    await page.wait_for_selector("#shop-market:not(.hidden)")
+    return browser, page
+
+
+async def test_the_shop_tab_holds_two_shops(server):
+    """Вкладка «Магазины»: лавка клуба и комиссионка на одном экране."""
+    async with async_playwright() as pw:
+        player = make_player()
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-shop").click()
+        await page.wait_for_selector(".shelf")
+
+        assert await page.locator("#tab-shop").inner_text() == "🏪\nМагазины"
+        sections = await page.locator("#shop-sections .chip").all_inner_texts()
+        assert sections == ["Лавка клуба", "Комиссионка"]
+        assert await page.locator("#shop-club").is_visible()
+        assert await page.locator("#shop-market").is_hidden()
+
+        await page.get_by_role("button", name="Комиссионка", exact=True).click()
+        await page.wait_for_selector("#shop-market:not(.hidden)")
+
+        assert await page.locator("#shop-club").is_hidden()
+        assert "Комиссионный магазин" in await page.locator("#shop-title").inner_text()
+        await browser.close()
+
+
+async def test_the_market_shows_lots_on_shelves_by_type(server):
+    """Чужие вещи лежат по полкам, и видно, кто их выставил."""
+    async with async_playwright() as pw:
+        browser, page = await open_market(pw, server)
+
+        assert "Клуб берёт 5%" in await page.locator("#market-note").inner_text()
+        shelves = await page.locator("#market-body .shelf-head").all_inner_texts()
+        assert "🤝 Выставить своё" in shelves[0]
+        assert "🔪 Оружие" in shelves[1] and "лотов 2" in shelves[1]
+
+        lots = await page.locator("#market-body .shelf").nth(1).locator(
+            ".thing"
+        ).all_inner_texts()
+        assert "Продаёт: Марла" in lots[0]
+        assert "🔧 Износ: 6 из 20" in lots[0]
+        assert "200 💰 · в лавке 110 💰" in lots[0]
+        # свой лот подписан по-своему и снимается, а не покупается
+        assert "Твой лот" in lots[1]
+        assert "придёт 380 💰" in lots[1]
+        await browser.close()
+
+
+async def test_a_lot_is_bought_by_its_number(server):
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_market(pw, server)
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({**MARKET, "sections": []}),
+            )
+
+        await page.route("**/api/market", catch)
+        await page.get_by_role("button", name="Купить · 200 💰").click()
+        await page.wait_for_timeout(200)
+
+        assert sent == [{"action": "buy", "lot_id": 11}]
+        await browser.close()
+
+
+async def test_your_own_lot_is_taken_back_not_bought(server):
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_market(pw, server)
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({**MARKET, "sections": []}),
+            )
+
+        await page.route("**/api/market", catch)
+        await page.get_by_role("button", name="Снять с продажи").click()
+        await page.wait_for_timeout(200)
+
+        assert sent == [{"action": "withdraw", "lot_id": 12}]
+        await browser.close()
+
+
+async def test_your_gear_goes_on_sale_with_a_price(server):
+    """Выставить можно то, что лежит в рюкзаке, и только в рамках цены."""
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_market(pw, server)
+
+        card = page.locator("#market-body .shelf").first
+        assert "От 20 до 120 💰" in await card.inner_text()
+        price = card.locator(".sell-price")
+        assert await price.get_attribute("min") == "20"
+        assert await price.get_attribute("max") == "120"
+        assert await price.input_value() == "20"
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({**MARKET, "sellable": []}),
+            )
+
+        await page.route("**/api/market", catch)
+        await price.fill("90")
+        await page.get_by_role("button", name="Выставить").click()
+        await page.wait_for_timeout(200)
+
+        assert sent == [{"action": "sell", "item_id": 21, "price": 90}]
+        await browser.close()
+
+
+async def test_an_empty_market_says_so(server):
+    async with async_playwright() as pw:
+        browser, page = await open_market(
+            pw, server, {**EMPTY_MARKET, "credits": 100}
+        )
+
+        assert "На комиссии пусто" in await page.locator("#market-note").inner_text()
+        assert "В рюкзаке пусто" in await page.locator("#market-body").inner_text()
+        await browser.close()
 
 
 async def test_the_counter_has_no_level_filter_any_more(shop_page):

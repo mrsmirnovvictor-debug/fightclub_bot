@@ -823,6 +823,23 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .zone.on { background: var(--slot); font-weight: 600; }
 .zone:active { transform: scale(0.99); }
 
+/* ---------- комиссионка ---------- */
+/* Лот отличается от товара лавки только строкой продавца и полем цены у
+   своих вещей — карточка та же. */
+.thing-seller { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.thing.mine { border-color: var(--accent); }
+.sell-line { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.sell-price {
+  width: 92px;
+  padding: 7px 8px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+}
+.sell-line .btn { flex: 1; }
+
 /* ---------- рейд ---------- */
 /* Заголовок раздела и кнопка «i» рядом: под ней разворачивается всё, что
    известно о боссе. */
