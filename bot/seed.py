@@ -6,6 +6,7 @@
 
 1. Световой меч бойцу Victor, чтобы вещь мага можно было пощупать в бою,
    не покупая её за звёзды.
+1a. Четыре усиленные вещи двум бойцам, на которых гоняют бой руками.
 2. Правка сроков подписки: бесплатную неделю по акции можно было забирать
    сколько угодно раз, и у бойца набежал месяц вместо недели.
 
@@ -133,10 +134,53 @@ async def fix_promo_overrun(db: Database) -> bool:
     return True
 
 
+# ---------- усиленные вещи под ручные тесты ----------
+#
+# Числа у этих четырёх задал хозяин клуба, и они нарочно выше потолка,
+# который держит остальной прилавок: так в бою видно и крит, и уворот, и
+# контрудар, не отыгрывая до девятого уровня. Пока они такие, лавка продаёт
+# их всем — это не подарочные копии, а сам товар.
+TEST_GEAR: tuple[str, ...] = ("bandana", "wraps", "sneakers", "wife_beater")
+# Кому кладём их в рюкзак без покупки
+TEST_FIGHTERS: tuple[str, ...] = ("Victor", "x RED x")
+
+
+async def grant_test_gear(db: Database) -> int:
+    """Выдать усиленные вещи бойцам, на которых гоняют бой. Сколько выдали.
+
+    Как и меч, ровно один раз на бойца и вещь: защита — строка в журнале
+    покупок. Бойца ещё нет — молча ждём следующего запуска.
+    """
+    given = 0
+    for nickname in TEST_FIGHTERS:
+        player = await db.find_by_nickname(nickname)
+        if player is None:
+            logger.info("Бойца %s пока нет — усиленные вещи подождут", nickname)
+            continue
+        for code in TEST_GEAR:
+            fresh = await db.add_purchase(
+                user_id=player.user_id,
+                code=code,
+                stars=0,
+                credits=0,
+                charge_id=f"gift:{code}:{player.user_id}",
+                kind="gift",
+            )
+            if not fresh:
+                continue
+            await db.add_gear(player.user_id, code)
+            given += 1
+            logger.info("Тестовая выдача: %s получает %s", nickname, code)
+    return given
+
+
 __all__ = [
     "GIFT_ID",
+    "TEST_FIGHTERS",
+    "TEST_GEAR",
     "TEST_FIGHTER",
     "TEST_RELIC",
     "fix_promo_overrun",
+    "grant_test_gear",
     "grant_test_relic",
 ]

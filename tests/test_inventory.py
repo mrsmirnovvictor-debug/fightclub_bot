@@ -689,8 +689,16 @@ def test_percent_bonuses_stay_within_their_caps():
     Потолок держит лавку клуба — то, что берут за кредиты и что определяет
     баланс между классами. Товар мага живёт по своим правилам: он и должен
     быть заметно сильнее, иначе за него не платили бы звёздами.
+
+    Четыре вещи из `bot/seed.py` сейчас нарочно выведены за потолок: на них
+    гоняют бой руками, и числа им задал хозяин клуба. Уйдёт seed — вернётся
+    и правило, проверять его тогда будет нечего.
     """
+    from bot.seed import TEST_GEAR
+
     for item in SHOWCASE:
+        if item.code in TEST_GEAR:
+            continue
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
         cap = EARLY_SHARE_CAP if item.level_required <= EARLY_LEVELS else LATE_SHARE_CAP
         assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%} > {cap:.0%}"
@@ -1027,20 +1035,24 @@ async def test_a_stat_from_gear_opens_the_door_to_the_next_item(db):
 
 
 async def test_taking_off_the_support_takes_off_what_stood_on_it(db):
-    """Сняли меч — интуиция упала, клинок ушёл в рюкзак вслед за ним."""
+    """Сняли меч — интуиция упала, наручи ушли в рюкзак вслед за ним.
+
+    Опорой берём вещь, которая себя не держит: у наручей прибавка меньше
+    их же требования, поэтому без чужой поддержки они не стоят.
+    """
     player = make_player(user_id=1, level=5, stats=Stats(
-        strength=12, agility=8, intuition=2, endurance=12
+        strength=12, agility=8, intuition=9, endurance=12
     ))
     await db.save_player(player)
     saber = await db.add_gear(1, "lightsaber")
-    bandana = await db.add_gear(1, "bandana")
-    player.gear += [saber, bandana]
+    bracers = await db.add_gear(1, "dealer_bracers")
+    player.gear += [saber, bracers]
     await equip(db, player, saber.id, Slot.WEAPON)
-    await equip(db, player, bandana.id, Slot.HEAD)
+    await equip(db, player, bracers.id, Slot.GLOVES)
 
     await unequip(db, player, Slot.WEAPON)
 
-    assert [owned.title for owned in player.dropped_gear] == ["Бандана"]
+    assert [owned.title for owned in player.dropped_gear] == ["Наручи шулера"]
     assert player.equipped == []
     # и в базе тоже: слоты сняты, вещи целы
     stored = await db.list_gear(1)
@@ -1069,17 +1081,17 @@ async def test_an_item_never_props_itself_up_while_being_replaced(db):
 async def test_the_cascade_keeps_going_until_the_gear_stands_on_its_own(db):
     """Снятие идёт не в один заход: за первой вещью может уйти вторая."""
     player = make_player(user_id=1, level=5, stats=Stats(
-        strength=12, agility=8, intuition=2, endurance=12
+        strength=12, agility=8, intuition=9, endurance=12
     ))
     saber = OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON)
-    bandana = OwnedItem(item=CATALOGUE["bandana"], id=2, slot=Slot.HEAD)
-    player.gear = [saber, bandana]
-    assert player.worn_stats.intuition == 8  # 2 + 5 от меча + 1 от банданы
+    bracers = OwnedItem(item=CATALOGUE["dealer_bracers"], id=2, slot=Slot.GLOVES)
+    player.gear = [saber, bracers]
+    assert player.worn_stats.intuition == 15  # 9 + 5 от меча + 1 от наручей
 
     saber.slot = None  # сняли руками, как это делает unequip
     dropped = player.settle_gear()
 
-    assert [owned.title for owned in dropped] == ["Бандана"]
+    assert [owned.title for owned in dropped] == ["Наручи шулера"]
     assert player.equipped == []
 
 
@@ -1117,3 +1129,54 @@ async def test_a_respec_undresses_what_it_can_no_longer_carry(db):
 
     assert [owned.title for owned in dropped] == ["Клинок ассасина"]
     assert (await db.get_player(1)).equipped == []
+
+
+# ---------- разовая выдача под ручные тесты ----------
+
+
+async def test_the_boosted_gear_lands_in_the_backpacks_once(db):
+    """Усиленные вещи выдаются обоим бойцам и ровно по одному разу."""
+    from bot.models import Player
+    from bot.seed import TEST_FIGHTERS, TEST_GEAR, grant_test_gear
+
+    for user_id, nickname in enumerate(TEST_FIGHTERS, start=100):
+        await db.save_player(
+            Player(user_id=user_id, nickname=nickname, class_code="warrior")
+        )
+
+    given = await grant_test_gear(db)
+
+    assert given == len(TEST_FIGHTERS) * len(TEST_GEAR)
+    for user_id in range(100, 100 + len(TEST_FIGHTERS)):
+        codes = sorted(owned.code for owned in await db.list_gear(user_id))
+        assert codes == sorted(TEST_GEAR)
+
+    # второй запуск бота ничего не задваивает
+    assert await grant_test_gear(db) == 0
+    assert len(await db.list_gear(100)) == len(TEST_GEAR)
+
+
+async def test_the_boosted_gear_waits_for_a_missing_fighter(db):
+    """Бойца ещё нет — выдача молча ждёт следующего запуска."""
+    from bot.seed import grant_test_gear
+
+    assert await grant_test_gear(db) == 0
+
+
+def test_the_boosted_gear_is_what_the_owner_asked_for():
+    """Числа этих четырёх заданы вручную — держим их под присмотром."""
+    from bot.game.equipment import get_item
+
+    bandana = get_item("bandana")
+    assert (bandana.intuition, bandana.crit, bandana.anticrit) == (5, 0.35, 0.25)
+
+    wraps = get_item("wraps")
+    assert (wraps.strength, wraps.dodge, wraps.counter, wraps.accuracy) == (
+        5, 0.15, 0.15, 0.05
+    )
+
+    sneakers = get_item("sneakers")
+    assert (sneakers.agility, sneakers.dodge, sneakers.crit) == (5, 0.15, 0.15)
+
+    shirt = get_item("wife_beater")
+    assert (shirt.strength, shirt.agility, shirt.intuition, shirt.hp) == (3, 3, 3, 60)
