@@ -411,3 +411,23 @@ async def test_health_survives_the_raid(bot, db):
     await punch(service, session, players[1].user_id)
 
     assert (await db.get_player(players[0].user_id)).current_hp() == 17
+
+
+async def test_the_fatigue_counts_waves_not_swings(bot, db):
+    """Усталость растёт от волны, а не от числа ударов отряда.
+
+    Движок берёт номер раунда, чтобы под конец боя бить сильнее. Волна —
+    это по разу на каждого, то есть один раунд для всех. Если считать
+    сквозняком, отряд из десяти человек прошёл бы всю шкалу усталости за
+    полторы волны, и обычный удар выбивал бы под сотню.
+    """
+    service = make_service(bot, db)
+    players, session = await gather(service, db, 4, size=4)
+
+    for _ in range(2):  # две полные волны — восемь разменов
+        await storm(service, session, players)
+
+    assert session.turn_number >= 8, "разменов было много"
+    assert session.wave <= 3
+    # каждому ходу движок отдавал номер волны, а не номер размена
+    assert max(turn["number"] for turn in session.rounds) <= session.wave

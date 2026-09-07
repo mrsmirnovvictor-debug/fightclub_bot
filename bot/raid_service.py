@@ -492,7 +492,14 @@ class RaidService:
         return self._hint(choice, fighter)
 
     def _exchange(self, session: RaidSession, user_id: int, action: Action) -> None:
-        """Один размен: боец против босса. Босс бьёт наугад."""
+        """Один размен: боец против босса. Босс бьёт наугад.
+
+        Движку отдаём номер волны, а не сквозной номер размена. Номер раунда
+        он берёт для усталости: чем дольше идёт бой, тем сильнее бьют оба.
+        Волна — это по разу на каждого, то есть ровно один раунд для всех, а
+        сквозной счётчик рос бы вдесятеро быстрее в отряде из десяти человек:
+        к пятой волне обычный удар выбивал бы под сотню.
+        """
         fighter = session.fighters[user_id]
         session.turn_number += 1
         session.acted.add(user_id)
@@ -501,7 +508,7 @@ class RaidService:
             action,
             session.enemy,
             boss_action(self.rng),
-            session.turn_number,
+            session.wave,
             self.rng,
         )
         # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
