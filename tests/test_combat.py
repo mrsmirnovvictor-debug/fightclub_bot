@@ -824,14 +824,15 @@ def duel_share(first: str, second: str, level: int, runs: int, seed: int) -> flo
 def boosted_shop() -> bool:
     """Лежат ли в лавке вещи, нарочно выведенные за потолок процентов.
 
-    Пока они там, первый уровень считать нечего: эти вещи открыты с первого,
-    и +35% крита с банданы перевешивают всё, чем классы отличаются друг от
-    друга. Уберут их числа — проверка вернётся сама.
+    Пока они там, круг считать нечего: эти вещи открыты с первого и третьего
+    уровня и перевешивают всё, чем классы отличаются друг от друга, — а набор
+    ассасина к тому же единственный в своём слоте, и эталонный боец надевает
+    его на любом уровне. Уберут их числа — проверка вернётся сама.
     """
     from bot.game.equipment import EARLY_SHARE_CAP, get_item
-    from bot.seed import TEST_GEAR
+    from bot.seed import BOOSTED_GEAR
 
-    for code in TEST_GEAR:
+    for code in BOOSTED_GEAR:
         item = get_item(code)
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
         if item and max(shares) > EARLY_SHARE_CAP + 1e-9:
@@ -856,8 +857,8 @@ def test_the_circle_holds_on_every_level(winner, loser, why, level):
     баланса, а любое смещение потока случайных чисел — например лишний
     бросок на пробитие блока.
     """
-    if level == 1 and boosted_shop():
-        pytest.skip("на первом уровне в комплект попадают усиленные вещи из seed")
+    if boosted_shop():
+        pytest.skip("в комплект попадают усиленные вещи из seed — круг на них не считается")
     share = sum(
         duel_share(winner, loser, level=level, runs=200, seed=seed + level)
         for seed in (2024, 4048, 6072)
@@ -875,6 +876,8 @@ def test_the_warrior_stays_out_of_the_circle():
     очков, и такой тест ловил бы не баланс, а смещение потока случайных чисел —
     хоть лишний бросок брони от новой вещи.
     """
+    if boosted_shop():
+        pytest.skip("усиленные вещи из seed перекашивают комплекты")
     for rival in ("rogue", "assassin", "tank"):
         share = sum(
             duel_share("warrior", rival, level=8, runs=200, seed=seed)

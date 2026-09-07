@@ -144,6 +144,20 @@ TEST_GEAR: tuple[str, ...] = ("bandana", "wraps", "sneakers", "wife_beater")
 # Кому кладём их в рюкзак без покупки
 TEST_FIGHTERS: tuple[str, ...] = ("Victor", "x RED x")
 
+# Набор ассасина той же породы: числа заданы вручную и тоже выше потолка,
+# но эти вещи никому не выдаются — они лежат на прилавке с третьего уровня и
+# покупаются за кредиты, как обычный товар.
+ASSASSIN_GEAR: tuple[str, ...] = (
+    "assassin_stiletto",
+    "throwing_belt",
+    "shadow_coat",
+    "sheath_pants",
+)
+
+# Всё, что сознательно выведено за потолок процентов. По этому списку тесты
+# понимают, что правило сейчас нарочно нарушено, и не спорят с хозяином клуба.
+BOOSTED_GEAR: tuple[str, ...] = TEST_GEAR + ASSASSIN_GEAR
+
 
 async def grant_test_gear(db: Database) -> int:
     """Выдать усиленные вещи бойцам, на которых гоняют бой. Сколько выдали.
@@ -175,6 +189,8 @@ async def grant_test_gear(db: Database) -> int:
 
 
 __all__ = [
+    "ASSASSIN_GEAR",
+    "BOOSTED_GEAR",
     "GIFT_ID",
     "TEST_FIGHTERS",
     "TEST_GEAR",

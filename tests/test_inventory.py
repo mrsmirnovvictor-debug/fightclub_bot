@@ -694,10 +694,10 @@ def test_percent_bonuses_stay_within_their_caps():
     гоняют бой руками, и числа им задал хозяин клуба. Уйдёт seed — вернётся
     и правило, проверять его тогда будет нечего.
     """
-    from bot.seed import TEST_GEAR
+    from bot.seed import BOOSTED_GEAR
 
     for item in SHOWCASE:
-        if item.code in TEST_GEAR:
+        if item.code in BOOSTED_GEAR:
             continue
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
         cap = EARLY_SHARE_CAP if item.level_required <= EARLY_LEVELS else LATE_SHARE_CAP
@@ -705,8 +705,16 @@ def test_percent_bonuses_stay_within_their_caps():
 
 
 def test_every_weapon_adds_damage_and_it_grows_with_the_tier():
-    """Лестница ступеней — про лавку клуба: у мага своя цена и свой отсчёт."""
-    weapons = [item for item in SHOWCASE if item.is_weapon]
+    """Лестница ступеней — про лавку клуба: у мага своя цена и свой отсчёт.
+
+    Усиленные вещи из `bot/seed.py` в лестницу не встают: их числа заданы
+    вручную и нарочно выбиваются вверх. Уйдёт seed — вернутся и они в строй.
+    """
+    from bot.seed import BOOSTED_GEAR
+
+    weapons = [
+        item for item in SHOWCASE if item.is_weapon and item.code not in BOOSTED_GEAR
+    ]
     assert weapons
     by_level: dict[int, list[float]] = {}
     for item in weapons:

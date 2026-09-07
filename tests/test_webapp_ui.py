@@ -282,7 +282,7 @@ async def test_type_filter_leaves_one_shelf(shop_page):
     assert all(
         title
         in ("Кастет", "Деревянная бита", "Выкидуха", "Строительный нож",
-            "Монтировка", "Нож")
+            "Монтировка", "Нож", "Стилет ассасина")
         for title in await visible_titles(shop_page)
     )
 
