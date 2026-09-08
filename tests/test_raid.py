@@ -104,14 +104,21 @@ def test_the_boss_stands_four_levels_above_the_party():
     assert boss_level([]) == 1 + LEVELS_ABOVE
 
 
-def test_the_boss_comes_dressed():
-    """Все слоты заняты, а в руке — оружие этого босса."""
+def test_the_boss_comes_dressed_and_shielded():
+    """Все слоты заняты, в руке оружие этого босса, во второй — щит."""
+    from bot.game.equipment import ALL_SLOTS, get_item
+
     enemy = boss_fighter(CELLAR_BOSS, [6, 6], hp_share=0)
 
     kit = {slot.value: owned.code for slot, owned in enemy.equipment.items.items()}
 
-    assert len(kit) == 8  # восемь слотов, пустых нет
+    assert len(kit) == len(ALL_SLOTS)  # пустых слотов нет
     assert kit["weapon"] == CELLAR_BOSS.weapon
+    # щит: блок в три зоны и броня по всему телу
+    shield = get_item(kit["offhand"])
+    assert shield.is_shield and enemy.has_shield
+    assert enemy.block_width == 3
+    assert shield.armor_max >= 10
     assert enemy.user_id == BOSS_ID
     assert enemy.level == 6 + LEVELS_ABOVE
 
@@ -130,8 +137,8 @@ def test_the_boss_swings_at_random():
     """Босс не выбирает зону с умыслом — и удар, и блок у него случайные."""
     rng = random.Random(1)
     moves = {
-        (action.attack.value, action.block[0].value)
-        for action in (boss_action(rng) for _ in range(50))
+        (action.attacks[0].value, action.block[0].value)
+        for action in (boss_action(rng=rng) for _ in range(50))
     }
     assert len(moves) > 5
 
@@ -340,8 +347,10 @@ async def test_a_dead_boss_pays_everyone_and_the_top_three(bot, db):
     service = make_service(bot, db, raid_reward=50)
     players, session = await gather(service, db, 4, size=4)
 
-    # первая волна — чтобы у каждого был свой счёт по урону
-    await storm(service, session, players)
+    # несколько волн — чтобы у каждого был свой счёт по урону: босс со щитом
+    # держит удар, и с первой волны кто-нибудь да остаётся с нулём
+    for _ in range(4):
+        await storm(service, session, players)
     weaken(session, hp=1)
     await storm(service, session, players)
 

@@ -9,6 +9,7 @@ from bot.game.classes import (
     ALL_ZONES,
     ASSASSIN,
     BLOCK_WIDTH,
+    SHIELD_BLOCK_WIDTH,
     FIGHTER_CLASSES,
     ROGUE,
     TANK,
@@ -40,7 +41,7 @@ from bot.game.combat import (
     resolve_round,
     validate_action,
 )
-from bot.game.equipment import CATALOGUE, Equipment, ItemKind, Slot
+from bot.game.equipment import CATALOGUE, Equipment, Slot
 from bot.game.reference import developed_stats, reference_equipment
 from bot.game.stats import (
     BLOCK_BREAK_CHANCE,
@@ -60,7 +61,7 @@ def guard(zone: Zone, width: int = BLOCK_WIDTH) -> tuple[Zone, ...]:
 
 
 def strike_at(zone: Zone, block: tuple[Zone, ...] = ()) -> Action:
-    return Action(attack=zone, block=block)
+    return Action(attacks=(zone,), block=block)
 
 
 # ---------- зоны и блоки ----------
@@ -107,22 +108,26 @@ def test_weapon_changes_what_the_judge_calls_it():
     assert fighter.weapon == "кастетом"
 
 
-def test_nobody_gets_a_second_strike_or_a_wider_block():
-    """Рука одна: двух ударов за ход не сделать никаким снаряжением.
+def test_the_second_hand_gives_a_second_strike():
+    """Второе оружие — второй удар за ход, и бьёт им своя рука."""
+    both = Equipment.from_codes({"weapon": "knuckles", "offhand": "knife"})
+    fighter = make(equipment=both)
 
-    Раньше во вторую руку брали второе оружие или щит — от этого зависели
-    и число ударов, и ширина блока. Ни того, ни другого больше нет.
-    """
-    from bot.game.equipment import ALL_SLOTS
+    assert fighter.attacks_per_round == 2
+    assert fighter.weapons == ("кастетом", "ножом")
+    assert CATALOGUE["knuckles"].slots == (Slot.WEAPON, Slot.OFFHAND)
 
-    assert not hasattr(Fighter, "attacks_per_round")
-    assert not hasattr(Equipment, "second_weapon")
-    assert not hasattr(Equipment, "has_shield")
-    # щита нет ни как слота, ни как вида предмета
-    assert "shield" not in {slot.value for slot in ALL_SLOTS}
-    assert {kind.value for kind in ItemKind} == {"gear", "weapon"}
-    # у оружия ровно одно место на карточке
-    assert CATALOGUE["knuckles"].slots == (Slot.WEAPON,)
+
+def test_a_shield_widens_the_block_and_covers_every_zone():
+    """Щит держит три смежные зоны вместо двух и прикрывает всё тело."""
+    shield = CATALOGUE["riot_shield"]
+    fighter = make(equipment=Equipment.from_codes({"offhand": "riot_shield"}))
+
+    assert fighter.has_shield and fighter.block_width == SHIELD_BLOCK_WIDTH
+    assert all(len(combo) == SHIELD_BLOCK_WIDTH for combo in fighter.block_options())
+    assert set(shield.zones) == set(ALL_ZONES)
+    # но ударов от него не прибавляется: щитом не бьют
+    assert fighter.attacks_per_round == 1
 
     for fclass in FIGHTER_CLASSES.values():
         assert make(fclass=fclass).block_width == BLOCK_WIDTH
@@ -324,7 +329,7 @@ def test_a_turn_is_exactly_one_strike_from_each_side():
     defender = make(user_id=2)
     result = resolve_round(
         attacker,
-        Action(attack=Zone.HEAD, block=guard(Zone.LEGS)),
+        Action(attacks=(Zone.HEAD,), block=guard(Zone.LEGS)),
         defender,
         strike_at(Zone.CHEST, guard(Zone.HEAD)),
         round_number=1,
@@ -459,7 +464,7 @@ def test_partial_choice_is_allowed_but_junk_is_not():
     validate_action(Action(), fighter)  # вообще ничего
     validate_action(strike_at(Zone.HEAD, guard(Zone.HEAD)), fighter)
     with pytest.raises(ValueError):  # блок не по смежным зонам
-        validate_action(Action(attack=Zone.HEAD, block=(Zone.HEAD, Zone.LEGS)), fighter)
+        validate_action(Action(attacks=(Zone.HEAD,), block=(Zone.HEAD, Zone.LEGS)), fighter)
 
 
 

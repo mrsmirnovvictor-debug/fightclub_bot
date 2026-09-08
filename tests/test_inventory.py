@@ -353,7 +353,8 @@ def test_inventory_rows_carry_everything_the_screen_draws():
     # уровень и сила не дотягивают — обе строки требований помечены красным
     assert [need["ok"] for need in row["requirements"]] == [False, False]
     # у оружия одно место на карточке: рука одна
-    assert [slot["slot"] for slot in row["slots"]] == ["weapon"]
+    # оружие берут и во вторую руку — на карточке два места
+    assert [slot["slot"] for slot in row["slots"]] == ["weapon", "offhand"]
 
 
 def test_strangers_do_not_see_the_backpack():
@@ -481,7 +482,10 @@ def test_catalogue_items_know_their_slot_and_price():
         )
         assert item.slot in item.slots
         assert isinstance(item, Item)
-        assert item.slots == (item.slot,)  # второго места у вещи нет
+        # второе место есть только у оружия: его берут во вторую руку
+        assert item.slots == (
+            (Slot.WEAPON, Slot.OFFHAND) if item.is_weapon else (item.slot,)
+        )
 
 
 def test_the_magic_counter_is_kept_out_of_the_club_shop():
@@ -950,6 +954,7 @@ def test_shop_sections_are_named_after_body_parts():
     assert [slot.section for slot in ALL_SLOTS] == [
         "голова",
         "оружие",
+        "вторая рука",
         "футболки",
         "пояс",
         "перчатки",
@@ -958,6 +963,7 @@ def test_shop_sections_are_named_after_body_parts():
         "обувь",
     ]
     # в предложении слот называется вещью: «сюда надевается футболка»
+    assert Slot.OFFHAND.title == "вторая рука"
     assert Slot.SHIRT.title == "футболка"
     assert Slot.JACKET.title == "верхняя одежда"
     assert Slot.PANTS.title == "штаны"
@@ -988,16 +994,20 @@ def test_empty_slots_carry_their_own_placeholder():
     from bot.game.art import SLOTS
     from bot.game.equipment import ALL_SLOTS
 
+    from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS
+
     card = build_card(make_player(), TOKEN, viewer_id=1)
     rows = card["slots"]["left"] + card["slots"]["right"]
 
-    assert len(rows) == len(ALL_SLOTS)
+    # Футболка своей клетки на кукле не занимает: она надевается под верхнюю
+    # одежду и живёт в той же клетке «тело»
+    assert len(rows) == len(LEFT_SLOTS) + len(RIGHT_SLOTS) == len(ALL_SLOTS) - 1
     for row in rows:
         # png, а не jpeg: подложке нужна прозрачность, чтобы садиться на
         # фон слота, а не нести с собой собственный чёрный квадрат
         assert row["placeholder_image"] == f"{SLOTS}/{row['slot']}.png"
         assert row["placeholder"], "значок остаётся запасным вариантом"
-    assert len({row["placeholder_image"] for row in rows}) == len(ALL_SLOTS)
+    assert len({row["placeholder_image"] for row in rows}) == len(rows)
 
 
 def test_the_two_pairs_of_canvas_trousers_do_not_share_a_picture():

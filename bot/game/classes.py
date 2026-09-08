@@ -74,6 +74,8 @@ ALL_ZONES: tuple[Zone, ...] = tuple(Zone)
 # Сколько зон закрывает блок. Больше не бывает: щитов в клубе нет,
 # и три зоны разом не закрывает никто.
 BLOCK_WIDTH = 2
+# Со щитом в руке блок закрывает три смежные зоны вместо двух
+SHIELD_BLOCK_WIDTH = 3
 
 
 def block_combo(start: Zone, width: int = BLOCK_WIDTH) -> tuple[Zone, ...]:
@@ -93,12 +95,16 @@ def block_combos(width: int = BLOCK_WIDTH) -> tuple[tuple[Zone, ...], ...]:
 def block_button(combo: tuple[Zone, ...]) -> str:
     """Надпись на кнопке блока: «🛡 Голова + Корпус».
 
-    Столбцов на панели два, так что зоны помещаются названиями целиком —
-    сокращения нужны были, пока оружий было два.
+    Третью зону, которую держит щит, выносим в скобки со значком: её
+    закрывает не боец, а вещь, и, сняв щит, он её потеряет.
     """
     if not combo:
         return "🛡 —"
-    return "🛡 " + " + ".join(zone.title.capitalize() for zone in combo)
+    own = " + ".join(zone.title.capitalize() for zone in combo[:BLOCK_WIDTH])
+    extra = combo[BLOCK_WIDTH:]
+    if not extra:
+        return "🛡 " + own
+    return f"🛡 {own} (+{' '.join(zone.title for zone in extra)} 🛡)"
 
 
 def block_title(combo: tuple[Zone, ...]) -> str:

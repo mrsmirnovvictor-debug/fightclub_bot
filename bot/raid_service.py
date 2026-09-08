@@ -73,17 +73,28 @@ class RaidError(Exception):
 
 @dataclass
 class Choice:
-    """Незавершённый выбор бойца на его размен."""
+    """Незавершённый выбор бойца на свой размен: удар каждой рукой и один блок."""
 
-    attack: Zone | None = None
+    attacks: dict[int, Zone] = field(default_factory=dict)
     block: tuple[Zone, ...] = ()
 
-    @property
-    def is_ready(self) -> bool:
-        return self.attack is not None and bool(self.block)
+    def ready_for(self, weapons: int = 1) -> bool:
+        chosen = [self.attacks.get(hand) for hand in range(weapons)]
+        return all(zone is not None for zone in chosen) and bool(self.block)
 
-    def to_action(self) -> Action:
-        return Action(attack=self.attack, block=self.block)
+    def to_action(self, weapons: int = 1) -> Action:
+        return Action(
+            attacks=tuple(self.attacks.get(hand) for hand in range(weapons)),
+            block=self.block,
+        )
+
+    @property
+    def attack(self) -> Zone | None:
+        return self.attacks.get(0)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.attacks and not self.block
 
 
 @dataclass
@@ -450,7 +461,7 @@ class RaidService:
             await self._close_wave(session)
 
     async def handle_choice(
-        self, raid_id: int, user_id: int, action: str, zone_value: str
+        self, raid_id: int, user_id: int, action: str, zone_value: str, hand: int = 0
     ) -> str:
         """Нажатие бойца. Выбрал и удар, и блок — размен считается сразу."""
         session = self._raids.get(raid_id)
@@ -477,14 +488,16 @@ class RaidService:
                 raise RaidError("В этой волне ты уже отработал.")
             choice = session.choice_of(user_id)
             if action == "attack":
-                choice.attack = zone
+                choice.attacks[hand] = zone
             else:
                 choice.block = block_combo(zone, fighter.block_width)
-            if not choice.is_ready:
+            if not choice.ready_for(fighter.attacks_per_round):
                 await self._repaint(session)
                 return self._hint(choice, fighter)
 
-            self._exchange(session, user_id, choice.to_action())
+            self._exchange(
+                session, user_id, choice.to_action(fighter.attacks_per_round)
+            )
             if self._judge(session) is not None or session.wave_over:
                 await self._close_wave(session)
             else:
@@ -507,7 +520,7 @@ class RaidService:
             fighter,
             action,
             session.enemy,
-            boss_action(self.rng),
+            boss_action(session.enemy, self.rng),
             session.wave,
             self.rng,
         )
@@ -523,10 +536,16 @@ class RaidService:
         return judge_raid(session.enemy, session.fighters)
 
     def _hint(self, choice: Choice, fighter: Fighter) -> str:
-        zone = choice.attack.title if choice.attack else "—"
-        block = block_title(choice.block) if choice.block else "—"
-        tail = "\nЖдём остальных." if choice.is_ready else "\nОсталось выбрать второе."
-        return f"{fighter.weapon_icon} {zone}\n🛡 {block}{tail}"
+        icons = fighter.weapon_icons
+        lines = [
+            f"{icons[hand] if hand < len(icons) else '👊'} "
+            f"{choice.attacks[hand].title if hand in choice.attacks else '—'}"
+            for hand in range(fighter.attacks_per_round)
+        ]
+        lines.append(f"🛡 {block_title(choice.block) if choice.block else '—'}")
+        ready = choice.ready_for(fighter.attacks_per_round)
+        lines.append("Ждём остальных." if ready else "Осталось выбрать ещё.")
+        return "\n".join(lines)
 
     async def _repaint(self, session: RaidSession) -> None:
         """Обновить панель волны. Правка косметическая: не дойдёт — не беда."""

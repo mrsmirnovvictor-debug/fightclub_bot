@@ -182,12 +182,18 @@ def boss_fighter(
     )
 
 
-def boss_action(rng: random.Random | None = None) -> Action:
-    """Босс бьёт наугад: ни зону, ни блок он не выбирает с умыслом."""
+def boss_action(enemy: Fighter | None = None, rng: random.Random | None = None) -> Action:
+    """Босс бьёт наугад: ни зону, ни блок он не выбирает с умыслом.
+
+    Рук у него столько же, сколько у любого бойца: со щитом одна, со вторым
+    оружием две. Блок он держит той же ширины, что и его снаряжение.
+    """
     rng = rng or random
+    hands = enemy.attacks_per_round if enemy else 1
+    width = enemy.block_width if enemy else BLOCK_WIDTH
     return Action(
-        attack=rng.choice(ALL_ZONES),
-        block=block_combo(rng.choice(ALL_ZONES), BLOCK_WIDTH),
+        attacks=tuple(rng.choice(ALL_ZONES) for _ in range(hands)),
+        block=block_combo(rng.choice(ALL_ZONES), width),
     )
 
 

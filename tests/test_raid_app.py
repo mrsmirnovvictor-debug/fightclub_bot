@@ -217,7 +217,7 @@ async def test_the_boss_card_comes_with_the_section(cellar):
     assert idle["title"] == "Босс Подвала"
     assert idle["level"] > 0 and idle["max_hp"] > 0
     assert idle["weapon"] == "Кувалда"
-    assert len(idle["kit"]) == 8
+    assert len(idle["kit"]) == 9  # девять слотов, включая вторую руку
     assert idle["combat"]["resist"] > 0
 
     await start(client, raids)
@@ -236,7 +236,7 @@ async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
     assert boss["avatar"]["url"].endswith("bosses/cellar_boss.png")
     left = boss["slots"]["left"]
     right = boss["slots"]["right"]
-    assert [row["slot"] for row in left] == ["head", "weapon", "shirt", "belt"]
+    assert [row["slot"] for row in left] == ["head", "weapon", "offhand", "belt"]
     assert [row["slot"] for row in right] == ["gloves", "jacket", "pants", "boots"]
     # у босса заняты все восемь, но форма слота та же, что у пустого
     assert all(row["item"] for row in left + right)

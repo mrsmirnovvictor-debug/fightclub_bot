@@ -238,9 +238,9 @@ async def visible_titles(page) -> list[str]:
 
 
 async def test_shop_opens_with_all_types_on_the_counter(shop_page):
-    # восемь полок с экипировкой плюс «Прочее» — эликсиры
+    # девять полок с экипировкой плюс «Прочее» — эликсиры
     heads = await shelves(shop_page)
-    assert len(heads) == 9
+    assert len(heads) == 10
     titles = await visible_titles(shop_page)
     assert "Кастет" in titles  # открыто по уровню
     assert "Бита" not in titles  # закрыто, лежит под кнопкой

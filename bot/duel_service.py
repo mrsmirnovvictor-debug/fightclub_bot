@@ -93,27 +93,42 @@ class Challenge:
 
 @dataclass
 class Choice:
-    """Незавершённый выбор бойца на ход: один удар и один блок."""
+    """Незавершённый выбор бойца на ход: удар каждой рукой и один блок."""
 
-    attack: Zone | None = None
+    # Рука → зона. Рук одна или две: вторая появляется со вторым оружием.
+    attacks: dict[int, Zone] = field(default_factory=dict)
     block: tuple[Zone, ...] = ()
 
-    @property
-    def is_ready(self) -> bool:
-        return self.attack is not None and bool(self.block)
+    def ready_for(self, weapons: int = 1) -> bool:
+        """Выбрано всё: удар каждой рукой и блок."""
+        chosen = [self.attacks.get(hand) for hand in range(weapons)]
+        return all(zone is not None for zone in chosen) and bool(self.block)
 
-    def to_action(self) -> Action:
+    def to_action(self, weapons: int = 1) -> Action:
         """Что боец успел нажать, то и уходит в ход."""
-        return Action(attack=self.attack, block=self.block)
+        return Action(
+            attacks=tuple(self.attacks.get(hand) for hand in range(weapons)),
+            block=self.block,
+        )
+
+    @property
+    def attack(self) -> Zone | None:
+        """Удар основной руки — им подписывают подсказку."""
+        return self.attacks.get(0)
 
     @property
     def is_empty(self) -> bool:
-        return self.attack is None and not self.block
+        return not self.attacks and not self.block
 
     def describe(self, fighter: Fighter) -> str:
-        zone = self.attack.title if self.attack else "—"
-        block = block_title(self.block) if self.block else "—"
-        return f"{fighter.weapon_icon} {zone}\n🛡 {block}"
+        icons = fighter.weapon_icons
+        lines = [
+            f"{icons[hand] if hand < len(icons) else '👊'} "
+            f"{self.attacks[hand].title if hand in self.attacks else '—'}"
+            for hand in range(fighter.attacks_per_round)
+        ]
+        lines.append(f"🛡 {block_title(self.block) if self.block else '—'}")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -173,7 +188,8 @@ class DuelSession:
         return self.order[0]
 
     def is_ready(self, user_id: int) -> bool:
-        return self.choice_of(user_id).is_ready
+        fighter = self.fighters[user_id]
+        return self.choice_of(user_id).ready_for(fighter.attacks_per_round)
 
     @property
     def panel(self) -> str:
@@ -584,11 +600,13 @@ class DuelService:
         await self._resolve(session)
 
     async def handle_choice(
-        self, duel_id: int, user_id: int, action: str, zone_value: str, slot: int = 0
+        self, duel_id: int, user_id: int, action: str, zone_value: str, hand: int = 0
     ) -> str:
-        # slot остался в кнопках прошлой версии: второго оружия больше нет,
-        # и номер удара ни на что не влияет
-        """Обработать нажатие бойца. Возвращает текст для приватного ответа."""
+        """Обработать нажатие бойца. Возвращает текст для приватного ответа.
+
+        `hand` — какой рукой бьём: 0 основная, 1 вторая. В ветке рука всегда
+        одна: там дерутся на кулаках.
+        """
         session = self._duels.get(duel_id)
         if session is None:
             raise DuelError("Этот бой уже закончился.")
@@ -602,7 +620,7 @@ class DuelService:
                 raise DuelError("Раунд уже считается, поздно.")
             fighter = session.fighters[user_id]
             choice = session.choice_of(user_id)
-            was_ready = choice.is_ready
+            was_ready = session.is_ready(user_id)
             if action not in {"attack", "block"}:
                 raise DuelError("Непонятное действие.")
             try:
@@ -611,11 +629,11 @@ class DuelService:
                 raise DuelError("Эта кнопка уже не работает.") from error
 
             if action == "attack":
-                choice.attack = zone
+                choice.attacks[hand] = zone
             else:
                 choice.block = block_combo(zone, fighter.block_width)
 
-            now_ready = choice.is_ready
+            now_ready = session.is_ready(user_id)
             both_ready = all(session.is_ready(uid) for uid in session.order)
             if both_ready:
                 session.resolving = True
@@ -628,7 +646,7 @@ class DuelService:
         return f"{choice.describe(fighter)}{self._hint(choice, fighter)}"
 
     def _hint(self, choice: Choice, fighter: Fighter) -> str:
-        if choice.attack is None:
+        if len(choice.attacks) < fighter.attacks_per_round:
             return "\nОсталось выбрать удар."
         if not choice.block:
             return "\nОсталось выбрать блок."
@@ -653,7 +671,9 @@ class DuelService:
         first_id, second_id = session.order
         first, second = session.fighters[first_id], session.fighters[second_id]
         actions = {
-            user_id: session.choices.get(user_id, Choice()).to_action()
+            user_id: session.choices.get(user_id, Choice()).to_action(
+                session.fighters[user_id].attacks_per_round
+            )
             for user_id in session.order
         }
 

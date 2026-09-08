@@ -73,21 +73,28 @@ class BattleError(Exception):
 
 @dataclass
 class Choice:
-    """Незавершённый выбор бойца на раунд."""
+    """Незавершённый выбор бойца на раунд: удар каждой рукой и один блок."""
 
-    attack: Zone | None = None
+    attacks: dict[int, Zone] = field(default_factory=dict)
     block: tuple[Zone, ...] = ()
 
-    @property
-    def is_ready(self) -> bool:
-        return self.attack is not None and bool(self.block)
+    def ready_for(self, weapons: int = 1) -> bool:
+        chosen = [self.attacks.get(hand) for hand in range(weapons)]
+        return all(zone is not None for zone in chosen) and bool(self.block)
 
-    def to_action(self) -> Action:
-        return Action(attack=self.attack, block=self.block)
+    def to_action(self, weapons: int = 1) -> Action:
+        return Action(
+            attacks=tuple(self.attacks.get(hand) for hand in range(weapons)),
+            block=self.block,
+        )
+
+    @property
+    def attack(self) -> Zone | None:
+        return self.attacks.get(0)
 
     @property
     def is_empty(self) -> bool:
-        return self.attack is None and not self.block
+        return not self.attacks and not self.block
 
 
 @dataclass
@@ -177,7 +184,8 @@ class BattleSession:
 
     def is_ready(self, user_id: int) -> bool:
         choice = self.choices.get(user_id)
-        return bool(choice and choice.is_ready)
+        weapons = self.fighters[user_id].attacks_per_round
+        return bool(choice and choice.ready_for(weapons))
 
     @property
     def everyone_ready(self) -> bool:
@@ -500,7 +508,7 @@ class BattleService:
 
         choice = session.choices.setdefault(user_id, Choice())
         if action == "attack":
-            choice.attack = Zone(zone)
+            choice.attacks[slot] = Zone(zone)
         else:
             choice.block = block_combo(Zone(zone), fighter.block_width)
 
@@ -518,9 +526,14 @@ class BattleService:
     def _hint(self, session: BattleSession, user_id: int) -> str:
         choice = session.choices.get(user_id, Choice())
         fighter = session.fighters[user_id]
-        zone = choice.attack.title if choice.attack else "—"
-        block = block_title(choice.block) if choice.block else "—"
-        return f"{fighter.weapon_icon} {zone}\n🛡 {block}"
+        icons = fighter.weapon_icons
+        lines = [
+            f"{icons[hand] if hand < len(icons) else '👊'} "
+            f"{choice.attacks[hand].title if hand in choice.attacks else '—'}"
+            for hand in range(fighter.attacks_per_round)
+        ]
+        lines.append(f"🛡 {block_title(choice.block) if choice.block else '—'}")
+        return "\n".join(lines)
 
     async def _resolve(self, session: BattleSession) -> None:
         if session.resolving:
@@ -570,7 +583,8 @@ class BattleService:
             await self._start_round(session)
 
     def _action_of(self, session: BattleSession, user_id: int) -> Action:
-        return session.choices.get(user_id, Choice()).to_action()
+        weapons = session.fighters[user_id].attacks_per_round
+        return session.choices.get(user_id, Choice()).to_action(weapons)
 
     async def _close_panel(self, session: BattleSession, text: str) -> None:
         """Погасить панель раунда, оставив на её месте итог.
