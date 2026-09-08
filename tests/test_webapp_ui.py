@@ -81,7 +81,8 @@ EMPTY_MARKET = {
 }
 
 BOSS_CARD = {
-    "code": "cellar_boss", "title": "Босс Подвала", "emoji": "🩸", "image": "",
+    "code": "cellar_boss", "title": "Босс подпольного казино", "emoji": "🩸",
+    "image": "", "raid_name": "Ограбление Босса подпольного казино",
     "tagline": "Он тут всё построил и всех похоронил.", "live": False,
     "levels_above": 4, "level": 9, "fclass": "Танк", "fclass_emoji": "🛡️",
     "max_hp": 304, "weapon": "Кувалда", "weapon_icon": "🔨", "damage": [15, 25],
@@ -306,7 +307,8 @@ async def test_an_empty_shelf_says_the_goods_are_coming(server):
 async def test_type_filter_leaves_one_shelf(shop_page):
     await shop_page.get_by_role("button", name="Оружие", exact=True).click()
 
-    assert [head.split("\n")[0] for head in await shelves(shop_page)] == ["🔪 Оружие"]
+    # значков в заголовках полок нет: тип и так назван словом
+    assert [head.split("\n")[0] for head in await shelves(shop_page)] == ["Оружие"]
     assert all(
         title
         in ("Кастет", "Деревянная бита", "Выкидуха", "Строительный нож",
@@ -483,8 +485,8 @@ async def test_the_market_shows_lots_on_shelves_by_type(server):
 
         assert "Клуб берёт 5%" in await page.locator("#market-note").inner_text()
         shelves = await page.locator("#market-body .shelf-head").all_inner_texts()
-        assert "🤝 Выставить своё" in shelves[0]
-        assert "🔪 Оружие" in shelves[1] and "лотов 2" in shelves[1]
+        assert "Выставить своё" in shelves[0]
+        assert "Оружие" in shelves[1] and "лотов 2" in shelves[1]
 
         lots = await page.locator("#market-body .shelf").nth(1).locator(
             ".thing"
@@ -953,6 +955,33 @@ async def test_only_the_shirt_still_fills_the_body_cell(server):
         await browser.close()
 
 
+async def test_the_hero_screen_reads_without_extra_icons(server):
+    """Характеристики без значков, броня по строке на зону, «До улучшения»."""
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["moto_helmet"], id=1, slot=Slot.HEAD)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        stats = await page.locator("#stats li .label").all_inner_texts()
+        assert stats == ["Сила", "Ловкость", "Интуиция", "Выносливость"]
+
+        progress = await page.locator("#progress").inner_text()
+        assert "До улучшения" in progress and "До апа" not in progress
+
+        combat = await page.locator("#combat li .label").all_inner_texts()
+        assert "🩸 Крит" in combat  # крит помечен каплей крови
+        assert "🛡💥 Пробивание" in combat
+        # броня — по строке на зону, без значков и без общей строки «Броня»
+        head = page.locator("#combat li").filter(has_text="Голова").first
+        low, high = CATALOGUE["moto_helmet"].armor_min, CATALOGUE["moto_helmet"].armor_max
+        assert await head.inner_text() == f"Голова\n{low}–{high}"
+        assert "🛡 Броня" not in await page.locator("#combat").inner_text()
+        await browser.close()
+
+
 async def test_a_percentage_says_when_the_ceiling_cut_it(server):
     """Вещи дают +100% уворота, в строке 60% — карточка объясняет почему."""
     from bot.game.combat import MAX_DODGE_CHANCE
@@ -978,15 +1007,17 @@ async def test_a_percentage_says_when_the_ceiling_cut_it(server):
         await page.locator("#tab-hero").click()
 
         dodge = page.locator("#combat li").filter(has_text="Уворот").first
-        assert f"{ceiling}% · потолок" in await dodge.inner_text()
+        # срезанный процент подписью не помечают — его красят золотом
+        assert await dodge.inner_text() == f"🌀 Уворот\n{ceiling}%"
+        assert await dodge.locator(".value.capped").count() == 1
         assert "вещи 100%" in await dodge.get_attribute("title")
         assert f"но выше {ceiling}% не растёт" in (
             await dodge.get_attribute("title")
         )
 
-        # непотолочная строка объясняет то же самое, но без «потолка» в числе
+        # непотолочная строка объясняет то же самое, но золотом не горит
         crit = page.locator("#combat li").filter(has_text="Крит").first
-        assert "потолок" not in await crit.inner_text()
+        assert await crit.locator(".value.capped").count() == 0
         assert f"потолок {round(MAX_CRIT_CHANCE * 100)}%" in (
             await crit.get_attribute("title")
         )
@@ -1422,9 +1453,9 @@ async def test_the_bag_explains_what_the_weapon_does_in_your_hands(server):
 
         # а в боевых показателях стоит отдельная строка про оружие
         hero = await page.locator("#combat").inner_text()
-        assert "🗡6–14" in hero
-        assert "🗡 Световой меч" in hero
-        assert "7–15 → 6–14" in hero
+        # у оружия одна характеристика — реальный урон в этих руках
+        assert "Световой меч🗡6–14" in hero.replace("\n", "")
+        assert "7–15" not in hero  # своё число вещи живёт в рюкзаке
         await browser.close()
 
 
@@ -1644,7 +1675,7 @@ async def test_the_fight_panel_shows_the_board_and_two_columns_of_choices(server
         heads = await page.locator(".zone-head").all_inner_texts()
         # столбец удара подписан рукой, которой бьют
         assert heads == ["👊 Атака", "🛡 Защита"]
-        columns = page.locator(".zone-column")
+        columns = page.locator(".zone-list")
         assert await columns.nth(0).locator(".zone").all_inner_texts() == [
             "Голова", "Корпус"
         ]
@@ -1653,6 +1684,35 @@ async def test_the_fight_panel_shows_the_board_and_two_columns_of_choices(server
         ]
         # пока ничего не выбрано, отправлять нечего
         assert await page.locator("#turn-go").is_disabled()
+        await browser.close()
+
+
+async def test_the_buttons_line_up_under_headers_of_the_same_height(server):
+    """Длинное название оружия переносит заголовки во всех столбцах сразу.
+
+    Заголовки и списки лежат двумя рядами одной сетки, поэтому кнопки во
+    всех столбцах начинаются на одной высоте — иначе один перенос сдвигал
+    бы свой столбец вниз, а соседние оставлял на месте.
+    """
+    long_named = ring_with_duel({
+        "hands": [
+            {"hand": 0, "icon": "🔪", "title": "Стилет ассасина"},
+            {"hand": 1, "icon": "🔩", "title": "Кастет"},
+        ],
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, long_named)
+
+        heads = await page.locator(".zone-head").evaluate_all(
+            "nodes => nodes.map(one => one.getBoundingClientRect().height)"
+        )
+        assert len(set(round(height) for height in heads)) == 1
+
+        tops = await page.locator(".zone-list").evaluate_all(
+            "nodes => nodes.map(one => Math.round("
+            "one.getBoundingClientRect().top))"
+        )
+        assert len(set(tops)) == 1, "кнопки в столбцах разъехались по высоте"
         await browser.close()
 
 
@@ -1674,11 +1734,11 @@ async def test_the_turn_goes_to_the_judge_in_one_press(server):
         await page.route("**/api/fight", catch)
 
         # выбрали удар — отправлять всё ещё рано, блока нет
-        await page.locator(".zone-column").nth(0).get_by_text("Голова").click()
+        await page.locator(".zone-list").nth(0).get_by_text("Голова").click()
         assert await page.locator("#turn-go").is_disabled()
         assert sent == []
 
-        await page.locator(".zone-column").nth(1).get_by_text("Корпус + Живот").click()
+        await page.locator(".zone-list").nth(1).get_by_text("Корпус + Живот").click()
         assert await page.locator("#turn-go").is_enabled()
         assert sent == []  # до нажатия «Вперёд!» судья ничего не знает
 
@@ -1710,7 +1770,7 @@ async def test_two_weapons_give_two_columns_and_a_shield_widens_the_block(server
         heads = await page.locator(".zone-head").all_inner_texts()
         assert heads == ["🔪 Нож", "🔩 Кастет", "🛡 Защита"]
         assert await page.locator(".zone-columns.three").count() == 1
-        assert "(+живот 🛡)" in await page.locator(".zone-column").nth(2).inner_text()
+        assert "(+живот 🛡)" in await page.locator(".zone-list").nth(2).inner_text()
 
         async def catch(route):
             sent.append(route.request.post_data_json)
@@ -1725,13 +1785,13 @@ async def test_two_weapons_give_two_columns_and_a_shield_widens_the_block(server
         await page.route("**/api/fight", catch)
 
         # пока выбрана только одна рука, отправлять нельзя
-        await page.locator(".zone-column").nth(0).get_by_text("Голова").click()
-        await page.locator(".zone-column").nth(2).get_by_text(
+        await page.locator(".zone-list").nth(0).get_by_text("Голова").click()
+        await page.locator(".zone-list").nth(2).get_by_text(
             "Голова + Корпус (+живот 🛡)"
         ).click()
         assert await page.locator("#turn-go").is_disabled()
 
-        await page.locator(".zone-column").nth(1).get_by_text("Корпус").click()
+        await page.locator(".zone-list").nth(1).get_by_text("Корпус").click()
         assert await page.locator("#turn-go").is_enabled()
 
         await page.locator("#turn-go").click()
@@ -1749,12 +1809,12 @@ async def test_the_choice_can_be_changed_before_it_is_sent(server):
     """Передумать можно сколько угодно: пока не нажали «Вперёд!», выбор свой."""
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, ring_with_duel())
-        column = page.locator(".zone-column").nth(0)
+        column = page.locator(".zone-list").nth(0)
 
         await column.get_by_text("Голова").click()
         await column.get_by_text("Корпус").click()
 
-        lit = await page.locator(".zone-column").nth(0).locator(".zone.on").all_inner_texts()
+        lit = await page.locator(".zone-list").nth(0).locator(".zone.on").all_inner_texts()
         assert lit == ["Корпус"]  # горит одно, последнее
         await browser.close()
 
@@ -1966,7 +2026,7 @@ async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
         browser, page = await open_raid(pw, server)
 
         head = await page.locator(".raid-head").inner_text()
-        assert "Рейд против Босса Подвала" in head
+        assert "Ограбление Босса подпольного казино" in head
         assert await page.locator(".boss-stats").count() == 0
 
         await page.locator("#boss-info").click()
@@ -2070,6 +2130,52 @@ async def test_an_empty_pocket_offers_to_buy_a_pass(server):
 
         assert "Купить Рейд-пасс за 10 кредитов и войти?" in asked[0]
         assert sent == [{"action": "open", "buy": True}]
+        await browser.close()
+
+
+async def test_the_wave_puts_a_vs_between_the_boss_and_the_party(server):
+    """Кто против кого: карточка босса, «VS», отряд."""
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave())
+
+        body = page.locator("#raid-body")
+        assert await body.locator(".versus").inner_text() == "VS"
+        # порядок на экране: сперва босс, потом «VS», потом отряд
+        order = await body.evaluate(
+            "node => Array.from(node.querySelectorAll("
+            "'.boss-card, .versus, .raid-party')).map(one => one.className)"
+        )
+        assert order == ["boss-card", "versus", "raid-party"]
+        await browser.close()
+
+
+async def test_the_opener_starts_the_raid_by_that_name(server):
+    """Кнопка созвавшего называется «Начать сейчас» и не липнет к соседней."""
+    mine = {
+        **EMPTY_RAID,
+        "lobby": {
+            "id": 9, "size": 10, "total": 2, "mine": True, "joined": True,
+            "in_app": True, "seconds_left": 65, "timeout": 120,
+            "can_start": True,
+            "boss": {
+                "code": "cellar_boss", "title": "Босс подпольного казино",
+                "emoji": "🩸", "image": "", "tagline": "",
+            },
+            "members": [
+                {"user_id": 42, "name": "Растафарайчик", "level": 5},
+                {"user_id": 43, "name": "Марла", "level": 4},
+            ],
+        },
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, mine)
+
+        start = page.locator("#raid-start-now")
+        assert await start.inner_text() == "⚔️ Начать сейчас"
+        gap = await start.evaluate(
+            "node => parseFloat(getComputedStyle(node).marginBottom)"
+        )
+        assert gap > 0, "кнопка «Начать сейчас» наезжает на «Выйти из отряда»"
         await browser.close()
 
 
@@ -2255,10 +2361,10 @@ async def test_the_raid_turn_goes_in_one_press(server):
         await page.route("**/api/raid", catch)
         assert await page.locator("#raid-go").is_disabled()
 
-        await page.locator("#club-raid .zone-column").nth(0).get_by_text(
+        await page.locator("#club-raid .zone-list").nth(0).get_by_text(
             "Голова"
         ).click()
-        await page.locator("#club-raid .zone-column").nth(1).get_by_text(
+        await page.locator("#club-raid .zone-list").nth(1).get_by_text(
             "Корпус + Живот"
         ).click()
         assert sent == []  # до «Вперёд!» судья ничего не знает
@@ -2572,7 +2678,7 @@ async def test_the_group_round_shows_the_board_and_the_pair(server):
         assert "Растафарайчик" in board and "против Марла" in board
         assert "Красные" in board and "Синие" in board
         # столбцов два: одна рука и блок
-        assert await page.locator("#club-battle .zone-column").count() == 2
+        assert await page.locator("#club-battle .zone-list").count() == 2
         await browser.close()
 
 
@@ -2592,10 +2698,10 @@ async def test_the_group_turn_goes_in_one_press(server):
         await page.route("**/api/battle", catch)
         assert await page.locator("#battle-go").is_disabled()
 
-        await page.locator("#club-battle .zone-column").nth(0).get_by_text(
+        await page.locator("#club-battle .zone-list").nth(0).get_by_text(
             "Голова"
         ).click()
-        await page.locator("#club-battle .zone-column").nth(1).get_by_text(
+        await page.locator("#club-battle .zone-list").nth(1).get_by_text(
             "Корпус + Живот"
         ).click()
         assert sent == []  # до «Вперёд!» судья ничего не знает

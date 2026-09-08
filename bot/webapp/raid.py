@@ -82,6 +82,9 @@ def boss_card(enemy: Fighter, boss: Boss, live: bool) -> dict[str, Any]:
     return {
         "code": boss.code,
         "title": boss.title,
+        # Как называется сам рейд: заголовок раздела берётся отсюда, а не
+        # склеивается на странице — склонять имена там нечем
+        "raid_name": boss.raid_name,
         # Кукла босса собирается тем же кодом, что и карточка бойца: те же
         # слоты, те же подложки под пустыми, тот же аватар в середине
         "name": boss.title,

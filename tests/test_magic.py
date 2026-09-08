@@ -438,6 +438,7 @@ def test_the_damage_row_marks_which_part_came_from_the_weapon():
 
     assert weapon == [
         {
+            "hand": 0,
             "min": 6,
             "max": 14,
             "icon": SABER.emoji,
@@ -445,6 +446,23 @@ def test_the_damage_row_marks_which_part_came_from_the_weapon():
             "base": "7–15",
         }
     ]
+
+
+def test_the_second_hand_gets_a_row_of_its_own():
+    """Два оружия — две строки: каждое бьёт своим уроном."""
+    from bot.game.equipment import CATALOGUE
+
+    player = make_player()
+    player.gear = [
+        OwnedItem(item=SABER, id=1, slot=Slot.WEAPON),
+        OwnedItem(item=CATALOGUE["knife"], id=2, slot=Slot.OFFHAND),
+    ]
+
+    weapon = build_card(player, TOKEN, viewer_id=42)["combat"]["weapon_damage"]
+
+    assert [row["hand"] for row in weapon] == [0, 1]
+    assert [row["title"] for row in weapon] == [SABER.title, "Нож"]
+    assert all(row["max"] > 0 for row in weapon)
 
 
 def test_the_hero_screen_explains_the_weapon_line_where_it_stands():

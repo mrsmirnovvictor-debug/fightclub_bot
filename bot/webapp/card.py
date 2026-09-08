@@ -766,16 +766,26 @@ def build_card(
             # что реально долетит до соперника. Значок оружия рядом нужен,
             # чтобы «6–14» читалось как прибавка от меча, а не как загадка:
             # у самого меча в описании стоит 7–15.
+            # По строке на руку с оружием: во второй руке может быть второе
+            # оружие, и оно бьёт своим уроном. Числа тут реальные — то, что
+            # долетит до соперника в руках этого класса: у меча в описании
+            # 7–15, а воин проворачивает его на 6–14.
             "weapon_damage": [
                 {
+                    "hand": hand,
                     "min": round(low * fclass.damage_mult),
                     "max": round(high * fclass.damage_mult),
-                    "icon": equipment.weapon_icon,
-                    "title": equipment.weapon_title,
-                    # Собственный урон вещи: рядом с итогом видно, откуда он
+                    "icon": icon,
+                    "title": title,
                     "base": f"{low}–{high}",
                 }
-                for low, high in [equipment.weapon_damage]
+                for hand, ((low, high), icon, title) in enumerate(
+                    zip(
+                        equipment.weapon_damages,
+                        equipment.weapon_icons,
+                        equipment.weapon_titles,
+                    )
+                )
                 if high
             ],
             # Проценты считаем той же арифметикой, что и ринг: карточка

@@ -14,6 +14,7 @@
   --hp-red: #cc3b30;
   --dmg: #1a63c4;
   --dmg-crit: #cc2f22;
+  --gold: #b8860b;
 }
 
 /* Telegram обычно сам подставляет цвета темы; тут — тёмные запасные,
@@ -32,6 +33,7 @@ body.dark {
   --hp-red: #e04b3f;
   --dmg: #6cb6ff;
   --dmg-crit: #ff6a5c;
+  --gold: #e8c04a;
 }
 
 * { box-sizing: border-box; }
@@ -216,6 +218,9 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .rows .value { font-weight: 700; text-align: right; }
 .rows .value .bonus { color: var(--muted); font-weight: 500; }
 .rows .value.good { color: var(--hp-green); }
+/* Процент, упёршийся в потолок клуба. Золотом, а не подписью: подпись
+   ломала строку, а объяснение и так живёт в подсказке. */
+.rows .value.capped { color: var(--gold); }
 /* Строка «во что класс проворачивает оружие» — пояснение, а не показатель */
 .rows .value.weapon { color: var(--muted); font-weight: 600; }
 .rule { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
@@ -794,10 +799,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    классическом бойцовском клубе. Пока не нажали «Вперёд!», выбор живёт
    только на странице, и передумать можно сколько угодно. */
 .turn-form { display: grid; gap: 10px; }
+/* Заголовки лежат первым рядом сетки, списки — вторым. Поэтому все
+   заголовки одной высоты: длинное название оружия переносится на вторую
+   строку сразу во всех столбцах, а кнопки под ними остаются на одном
+   уровне. Отдельными подсетками этого не выходит: каждая мерила бы себя. */
 .zone-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 0 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px;
@@ -806,13 +815,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .zone-columns.three { grid-template-columns: 1fr 1fr 1fr; }
 .zone-columns.three .zone { font-size: 12px; }
 
-.zone-column { display: grid; gap: 2px; align-content: start; }
+.zone-list { display: grid; gap: 2px; align-content: start; }
 .zone-head {
   margin: 0 0 6px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--line);
   font-size: 13px;
   font-weight: 700;
+  align-self: end;
 }
 .zone {
   display: flex;
@@ -898,6 +908,16 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .raid-member.down { opacity: 0.55; }
 .raid-sizes { display: grid; gap: 8px; }
+/* Кнопка, которой нужен воздух: иначе она липнет к соседней снизу */
+.btn.spaced { margin-bottom: 10px; }
+/* «VS» между карточкой босса и отрядом: кто против кого */
+.versus {
+  margin: 10px 0 6px;
+  text-align: center;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--muted);
+}
 
 /* Поле с подписью: подпись сверху, само поле под ней во всю ширину.
    Список рисуем сами — системный на тёмной теме уезжает в белое. */

@@ -10,7 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
 from bot.game.potions import RAID_PASS, get_potion
-from bot.game.raid import BOSS_ID, MAX_PARTY
+from bot.game.raid import BOSS_ID, CELLAR_BOSS, MAX_PARTY
 from bot.webapp.server import create_app
 from tests.test_duel_flow import FakeBot as DuelBot
 from tests.test_raid import make_service
@@ -65,7 +65,7 @@ async def test_a_raid_is_gathered_without_leaving_the_app(cellar):
     assert status == 200
     assert mine["lobby"]["mine"] and mine["lobby"]["total"] == 1
     assert mine["lobby"]["size"] == MAX_PARTY  # мест всегда десять
-    assert mine["lobby"]["boss"]["title"] == "Босс Подвала"
+    assert mine["lobby"]["boss"]["title"] == CELLAR_BOSS.title
     assert mine["raid"] is None
     # пропуск ушёл на входе
     assert (await db.get_player(42)).potion_count(RAID_PASS) == 0
@@ -246,10 +246,10 @@ async def test_the_history_of_raids_is_open_to_read(cellar):
 
     assert response.status == 200
     row = body["raids"][0]
-    assert row["boss"] == "Босс Подвала"
+    assert row["boss"] == CELLAR_BOSS.title
     # В списке боёв важно не «босс повержен», а что вышло у тебя
     assert row["result"] == "win" and row["result_title"] == "Победа"
-    assert row["caption"] == "Победа (с Марла) — рейд против Босса Подвала"
+    assert row["caption"] == f"Победа (с Марла) — рейд против {CELLAR_BOSS.whom}"
     assert row["verdict"] == "Босс повержен"
     assert row["damage"] > 0 and row["waves"] == 1
 
@@ -266,7 +266,7 @@ async def test_a_raid_lands_in_the_list_of_fights(cellar):
 
     row = body["days"][0]["fights"][0]
     assert row["kind"] == "raid"
-    assert row["caption"] == "Победа (с Марла) — рейд против Босса Подвала"
+    assert row["caption"] == f"Победа (с Марла) — рейд против {CELLAR_BOSS.whom}"
     assert row["waves"] == 1 and row["damage"] > 0
     assert body["total"] == 1 and body["counts"]["win"] == 1
 
@@ -278,7 +278,7 @@ async def test_the_boss_card_comes_with_the_section(cellar):
     idle = (await state(client, 42))["boss"]
 
     assert idle["live"] is False
-    assert idle["title"] == "Босс Подвала"
+    assert idle["title"] == CELLAR_BOSS.title
     assert idle["level"] > 0 and idle["max_hp"] > 0
     assert idle["weapon"] == "Кувалда"
     assert len(idle["kit"]) == 9  # девять слотов, включая вторую руку

@@ -188,10 +188,17 @@ class Boss:
     # угадывается по окончанию — прозвища не склоняются по правилам
     genitive: str = ""
     tagline: str = ""
+    # Как называется сам рейд на этого босса. Пусто — «Рейд против кого-то»
+    raid_title: str = ""
 
     @property
     def image(self) -> str:
         return art.boss(self.code)
+
+    @property
+    def raid_name(self) -> str:
+        """Заголовок рейда: у босса он свой, а не «рейд против такого-то»."""
+        return self.raid_title or f"Рейд против {self.whom}"
 
     @property
     def whom(self) -> str:
@@ -201,13 +208,15 @@ class Boss:
 
 BOSSES: tuple[Boss, ...] = (
     Boss(
+        # Код не трогаем: по нему лежат картинка и вся прошлая история рейдов
         code="cellar_boss",
-        title="Босс Подвала",
+        title="Босс подпольного казино",
         emoji="🩸",
         class_code="tank",
         weapon="sledge",
-        genitive="Босса Подвала",
+        genitive="Босса подпольного казино",
         tagline="Он тут всё построил и всех похоронил.",
+        raid_title="Ограбление Босса подпольного казино",
     ),
 )
 

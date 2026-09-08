@@ -13,7 +13,9 @@ function share(combat, name, label, text) {
   // Потолок в 100% — это снятый потолок: писать о нём нечего
   const limited = Boolean(cap) && cap.cap < 100;
   const value = text || combat[name] + "%";
-  const line = row(label, limited && cap.capped ? value + " · потолок" : value);
+  // Срезанный потолком процент красим золотом, а не подписываем: подпись
+  // ломала строку, а объяснение всё равно живёт в подсказке
+  const line = row(label, value, limited && cap.capped ? "capped" : "");
   if (cap) {
     const sum = label + ": своё " + cap.own + "% + вещи " + cap.gear + "%";
     line.title = !limited
@@ -704,7 +706,7 @@ function shelf(section) {
 
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = section.emoji + " " + section.title;
+  head.textContent = section.title;
   const count = document.createElement("span");
   count.className = "shelf-count";
   count.textContent = "открыто " + section.open + " из " + section.items.length;
@@ -963,7 +965,7 @@ function marketShelf(section) {
   box.className = "shelf";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = section.emoji + " " + section.title;
+  head.textContent = section.title;
   const count = document.createElement("span");
   count.className = "shelf-count";
   count.textContent = "лотов " + section.items.length;
@@ -1618,24 +1620,20 @@ function turnPayload() {
   return { action: "turn", attacks: turnDraft.attacks, block: turnDraft.block };
 }
 
-function zoneColumn(title, rows, pick, chosen, name) {
+function zoneList(column, repaint) {
   const box = document.createElement("div");
-  box.className = "zone-column";
-  const head = document.createElement("p");
-  head.className = "zone-head";
-  head.textContent = title;
-  box.appendChild(head);
-  rows.forEach((row) => {
+  box.className = "zone-list";
+  column.rows.forEach((row) => {
     const label = document.createElement("label");
-    label.className = "zone" + (chosen() === row.zone ? " on" : "");
+    label.className = "zone" + (column.chosen() === row.zone ? " on" : "");
     const dot = document.createElement("input");
     dot.type = "radio";
-    dot.name = name;
+    dot.name = column.name;
     dot.value = row.zone;
-    dot.checked = chosen() === row.zone;
+    dot.checked = column.chosen() === row.zone;
     dot.addEventListener("change", () => {
-      pick(row.zone);
-      paintDraft();
+      column.pick(row.zone);
+      repaint();
     });
     const text = document.createElement("span");
     text.textContent = row.title;
@@ -1643,6 +1641,41 @@ function zoneColumn(title, rows, pick, chosen, name) {
     label.appendChild(text);
     box.appendChild(label);
   });
+  return box;
+}
+
+function zoneColumns(hands, attacks, blocks, draft, prefix, repaint) {
+  // Столбцы выбора хода: по столбцу на руку с оружием и один на защиту.
+  const box = document.createElement("div");
+  box.className = "zone-columns" + (hands.length > 1 ? " three" : "");
+  const columns = hands.map((hand) => ({
+    title: hand.icon + " " + (hands.length > 1 ? hand.title : "Атака"),
+    rows: attacks,
+    name: prefix + "-attack-" + hand.hand,
+    pick: (zone) => {
+      draft().attacks[hand.hand] = zone;
+    },
+    chosen: () => draft().attacks[hand.hand],
+  }));
+  columns.push({
+    title: "🛡 Защита",
+    rows: blocks,
+    name: prefix + "-block",
+    pick: (zone) => {
+      draft().block = zone;
+    },
+    chosen: () => draft().block,
+  });
+  // Сначала все заголовки, потом все списки: они лежат двумя рядами одной
+  // сетки, поэтому кнопки во всех столбцах начинаются на одной высоте —
+  // даже когда длинное название оружия переносится на вторую строку.
+  columns.forEach((column) => {
+    const head = document.createElement("p");
+    head.className = "zone-head";
+    head.textContent = column.title;
+    box.appendChild(head);
+  });
+  columns.forEach((column) => box.appendChild(zoneList(column, repaint)));
   return box;
 }
 
@@ -1667,33 +1700,11 @@ function turnForm(data) {
   const hands = data.duel.hands || [{ hand: 0, icon: "👊", title: "Кулаки" }];
   const blocks = data.duel.blocks || data.blocks;
 
-  const columns = document.createElement("div");
-  columns.className = "zone-columns" + (hands.length > 1 ? " three" : "");
-  hands.forEach((row) => {
-    columns.appendChild(
-      zoneColumn(
-        row.icon + " " + (hands.length > 1 ? row.title : "Атака"),
-        data.attacks,
-        (zone) => {
-          turnDraft.attacks[row.hand] = zone;
-        },
-        () => turnDraft.attacks[row.hand],
-        "turn-attack-" + row.hand
-      )
-    );
-  });
-  columns.appendChild(
-    zoneColumn(
-      "🛡 Защита",
-      blocks,
-      (zone) => {
-        turnDraft.block = zone;
-      },
-      () => turnDraft.block,
-      "turn-block"
+  box.appendChild(
+    zoneColumns(
+      hands, data.attacks, blocks, () => turnDraft, "turn", paintDraft
     )
   );
-  box.appendChild(columns);
 
   const go = document.createElement("button");
   go.type = "button";
@@ -2017,12 +2028,12 @@ function renderRaid(data) {
 }
 
 function raidHead(boss) {
-  // «Рейд против Босса Подвала (i)» — заголовок и всё о нём под кнопкой
+  // «Ограбление Босса подпольного казино (i)» — заголовок и всё о нём
   const box = document.createElement("div");
   box.className = "raid-head";
   const title = document.createElement("h2");
   title.className = "shelf-head";
-  title.textContent = "Рейд против " + bossGenitive(boss.title);
+  title.textContent = boss.raid_name || "Рейд против " + bossGenitive(boss.title);
   box.appendChild(title);
 
   const info = document.createElement("button");
@@ -2203,8 +2214,8 @@ function raidLobby(lobby, mine) {
     const go = document.createElement("button");
     go.type = "button";
     go.id = "raid-start-now";
-    go.className = "btn wide";
-    go.textContent = "⚔️ Выходим сейчас";
+    go.className = "btn wide spaced";
+    go.textContent = "⚔️ Начать сейчас";
     go.addEventListener("click", () => raidAction({ action: "go" }));
     box.appendChild(go);
   }
@@ -2241,6 +2252,10 @@ function raidPanel(data) {
       : "🔔 Волна " + raid.wave;
   box.appendChild(head);
   box.appendChild(bossCard(raid.boss));
+  const versus = document.createElement("p");
+  versus.className = "versus";
+  versus.textContent = "VS";
+  box.appendChild(versus);
   box.appendChild(partyBoard(raid.party));
 
   if (raid.finished) {
@@ -2334,33 +2349,11 @@ function raidTurnForm(data) {
   const hands = raidHands(data);
   const blocks = (data.raid && data.raid.blocks) || data.blocks;
 
-  const columns = document.createElement("div");
-  columns.className = "zone-columns" + (hands.length > 1 ? " three" : "");
-  hands.forEach((row) => {
-    columns.appendChild(
-      raidColumn(
-        row.icon + " " + (hands.length > 1 ? row.title : "Атака"),
-        data.attacks,
-        (zone) => {
-          raidDraft.attacks[row.hand] = zone;
-        },
-        () => raidDraft.attacks[row.hand],
-        "raid-attack-" + row.hand
-      )
-    );
-  });
-  columns.appendChild(
-    raidColumn(
-      "🛡 Защита",
-      blocks,
-      (zone) => {
-        raidDraft.block = zone;
-      },
-      () => raidDraft.block,
-      "raid-block"
+  box.appendChild(
+    zoneColumns(
+      hands, data.attacks, blocks, () => raidDraft, "raid", paintRaidDraft
     )
   );
-  box.appendChild(columns);
 
   const go = document.createElement("button");
   go.type = "button";
@@ -2374,34 +2367,6 @@ function raidTurnForm(data) {
     raidAction(move);
   });
   box.appendChild(go);
-  return box;
-}
-
-function raidColumn(title, rows, pick, chosen, name) {
-  const box = document.createElement("div");
-  box.className = "zone-column";
-  const head = document.createElement("p");
-  head.className = "zone-head";
-  head.textContent = title;
-  box.appendChild(head);
-  rows.forEach((row) => {
-    const label = document.createElement("label");
-    label.className = "zone" + (chosen() === row.zone ? " on" : "");
-    const dot = document.createElement("input");
-    dot.type = "radio";
-    dot.name = name;
-    dot.value = row.zone;
-    dot.checked = chosen() === row.zone;
-    dot.addEventListener("change", () => {
-      pick(row.zone);
-      paintRaidDraft();
-    });
-    const text = document.createElement("span");
-    text.textContent = row.title;
-    label.appendChild(dot);
-    label.appendChild(text);
-    box.appendChild(label);
-  });
   return box;
 }
 
@@ -2691,33 +2656,11 @@ function battleTurnForm(data) {
   const hands = battleHands(data);
   const blocks = (data.battle && data.battle.blocks) || data.blocks;
 
-  const columns = document.createElement("div");
-  columns.className = "zone-columns" + (hands.length > 1 ? " three" : "");
-  hands.forEach((row) => {
-    columns.appendChild(
-      battleColumn(
-        row.icon + " " + (hands.length > 1 ? row.title : "Атака"),
-        data.attacks,
-        (zone) => {
-          battleDraft.attacks[row.hand] = zone;
-        },
-        () => battleDraft.attacks[row.hand],
-        "battle-attack-" + row.hand
-      )
-    );
-  });
-  columns.appendChild(
-    battleColumn(
-      "🛡 Защита",
-      blocks,
-      (zone) => {
-        battleDraft.block = zone;
-      },
-      () => battleDraft.block,
-      "battle-block"
+  box.appendChild(
+    zoneColumns(
+      hands, data.attacks, blocks, () => battleDraft, "battle", paintBattleDraft
     )
   );
-  box.appendChild(columns);
 
   const go = document.createElement("button");
   go.type = "button";
@@ -2735,34 +2678,6 @@ function battleTurnForm(data) {
     battleAction(move);
   });
   box.appendChild(go);
-  return box;
-}
-
-function battleColumn(title, rows, pick, chosen, name) {
-  const box = document.createElement("div");
-  box.className = "zone-column";
-  const head = document.createElement("p");
-  head.className = "zone-head";
-  head.textContent = title;
-  box.appendChild(head);
-  rows.forEach((row) => {
-    const label = document.createElement("label");
-    label.className = "zone" + (chosen() === row.zone ? " on" : "");
-    const dot = document.createElement("input");
-    dot.type = "radio";
-    dot.name = name;
-    dot.value = row.zone;
-    dot.checked = chosen() === row.zone;
-    dot.addEventListener("change", () => {
-      pick(row.zone);
-      paintBattleDraft();
-    });
-    const text = document.createElement("span");
-    text.textContent = row.title;
-    label.appendChild(dot);
-    label.appendChild(text);
-    box.appendChild(label);
-  });
   return box;
 }
 
@@ -3588,7 +3503,7 @@ function render(card, keepTab) {
   const stats = el("stats");
   stats.textContent = "";
   card.stats.forEach((stat) => {
-    stats.appendChild(row(stat.emoji + " " + stat.title, statValue(stat)));
+    stats.appendChild(row(stat.title, statValue(stat)));
   });
 
   // Раздача очков — только на своей карточке: чужие характеристики не наши
@@ -3608,7 +3523,7 @@ function render(card, keepTab) {
     );
     progress.appendChild(
       row(
-        "До апа",
+        "До улучшения",
         num(card.progress.exp_to_next_up) +
           " (" +
           card.progress.micro_ups +
@@ -3625,28 +3540,17 @@ function render(card, keepTab) {
   const combat = el("combat");
   combat.textContent = "";
   const c = card.combat;
-  const hit = c.weapon_damage.length
-    ? c.damage_min + "–" + c.damage_max +
-      c.weapon_damage
-        .map((w) => " + " + (w.icon || "") + w.min + "–" + w.max)
-        .join("")
-    : c.damage_min + "–" + c.damage_max;
-  combat.appendChild(row("👊 Урон", hit));
-  // Откуда взялась прибавка от оружия: у меча 7–15, а класс проворачивает
-  // его на 6–14. Без этой строки два числа на одном экране противоречат
-  // друг другу, хотя оба верны.
+  // В строке урона — только своё: то, что боец выбивает руками. Оружие
+  // стоит отдельными строками, по строке на руку, и там уже реальный
+  // урон — тот, что долетит до соперника в руках этого класса.
+  combat.appendChild(row("👊 Урон", c.damage_min + "–" + c.damage_max));
   c.weapon_damage.forEach((w) => {
-    const same = w.base === w.min + "–" + w.max;
     combat.appendChild(
-      row(
-        (w.icon || "") + " " + (w.title || "Оружие"),
-        same ? w.base : w.base + " → " + w.min + "–" + w.max,
-        "weapon"
-      )
+      row(w.title || "Оружие", (w.icon || "") + w.min + "–" + w.max, "weapon")
     );
   });
   combat.appendChild(
-    share(c, "crit_chance", "💥 Крит", c.crit_chance + "% ×" + c.crit_power)
+    share(c, "crit_chance", "🩸 Крит", c.crit_chance + "% ×" + c.crit_power)
   );
   combat.appendChild(share(c, "anticrit", "🚫 Антикрит"));
   combat.appendChild(share(c, "dodge_chance", "🌀 Уворот"));
@@ -3656,16 +3560,13 @@ function render(card, keepTab) {
   // не удержалось, проходит половиной максимального урона
   combat.appendChild(share(c, "block_hold", "🛡🩸 Держит блок"));
   combat.appendChild(row("🪨 Сопротивление", c.resist + "%"));
-  combat.appendChild(row("🪚 Пробивание", c.penetration + "%"));
-  const armor = card.armor.filter((zone) => zone.max > 0);
-  if (armor.length) {
-    combat.appendChild(
-      row(
-        "🛡 Броня",
-        armor.map((z) => z.emoji + " " + z.min + "–" + z.max).join("  ")
-      )
-    );
-  }
+  combat.appendChild(row("🛡💥 Пробивание", c.penetration + "%"));
+  // Броня — по строке на зону: в одну строку пять диапазонов не читаются
+  card.armor
+    .filter((zone) => zone.max > 0)
+    .forEach((zone) => {
+      combat.appendChild(row(zone.title, zone.min + "–" + zone.max));
+    });
 
   const record = el("record");
   record.textContent = "";

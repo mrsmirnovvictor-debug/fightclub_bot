@@ -527,7 +527,7 @@ async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raid
     """/raid собирает отряд кнопкой, а бьют по боссу уже в карточке."""
     from bot.keyboards import RaidLobbyCB
 
-    from bot.game.raid import MAX_PARTY
+    from bot.game.raid import CELLAR_BOSS, MAX_PARTY
 
     db, _, session = arena
     people = [as_user(900 + i, f"Рейдер{i}") for i in range(2)]
@@ -538,7 +538,7 @@ async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raid
 
     lobby = raids.lobby_of_user(people[0].id)
     assert lobby is not None and lobby.size == MAX_PARTY
-    assert "Босс Подвала" in session.texts[-1]
+    assert CELLAR_BOSS.title in session.texts[-1]
 
     await feed_callback(
         people[1],
