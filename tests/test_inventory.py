@@ -809,15 +809,11 @@ def test_percent_bonuses_stay_within_their_caps():
     баланс между классами. Товар мага живёт по своим правилам: он и должен
     быть заметно сильнее, иначе за него не платили бы звёздами.
 
-    Четыре вещи из `bot/seed.py` сейчас нарочно выведены за потолок: на них
-    гоняют бой руками, и числа им задал хозяин клуба. Уйдёт seed — вернётся
-    и правило, проверять его тогда будет нечего.
+    Вещи с числами выше потолка в игре есть — те, что выдают руками на
+    тестовых бойцов. Но они помечены наградой, на прилавок не попадают, и
+    правило их не касается: витрина проверяется целиком, без исключений.
     """
-    from bot.seed import BOOSTED_GEAR
-
     for item in SHOWCASE:
-        if item.code in BOOSTED_GEAR:
-            continue
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
         cap = EARLY_SHARE_CAP if item.level_required <= EARLY_LEVELS else LATE_SHARE_CAP
         assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%} > {cap:.0%}"
@@ -826,14 +822,10 @@ def test_percent_bonuses_stay_within_their_caps():
 def test_every_weapon_adds_damage_and_it_grows_with_the_tier():
     """Лестница ступеней — про лавку клуба: у мага своя цена и свой отсчёт.
 
-    Усиленные вещи из `bot/seed.py` в лестницу не встают: их числа заданы
-    вручную и нарочно выбиваются вверх. Уйдёт seed — вернутся и они в строй.
+    Исключений в лестнице нет: всё, что лежит на прилавке, в неё встаёт.
+    Вещи с ручными числами торгуются не здесь — их выдают.
     """
-    from bot.seed import BOOSTED_GEAR
-
-    weapons = [
-        item for item in SHOWCASE if item.is_weapon and item.code not in BOOSTED_GEAR
-    ]
+    weapons = [item for item in SHOWCASE if item.is_weapon]
     assert weapons
     by_level: dict[int, list[float]] = {}
     for item in weapons:
@@ -1320,16 +1312,37 @@ def test_the_boosted_gear_is_what_the_owner_asked_for():
     """Числа этих четырёх заданы вручную — держим их под присмотром."""
     from bot.game.equipment import get_item
 
-    bandana = get_item("bandana")
+    bandana = get_item("test_bandana")
     assert (bandana.intuition, bandana.crit, bandana.anticrit) == (5, 0.35, 0.25)
 
-    wraps = get_item("wraps")
+    wraps = get_item("test_wraps")
     assert (wraps.strength, wraps.dodge, wraps.counter, wraps.accuracy) == (
         5, 0.15, 0.15, 0.05
     )
 
-    sneakers = get_item("sneakers")
+    sneakers = get_item("test_sneakers")
     assert (sneakers.agility, sneakers.dodge, sneakers.crit) == (5, 0.15, 0.15)
 
-    shirt = get_item("wife_beater")
+    shirt = get_item("test_shirt")
     assert (shirt.strength, shirt.agility, shirt.intuition, shirt.hp) == (3, 3, 3, 60)
+
+
+def test_the_boosted_gear_never_reaches_the_counter():
+    """Стендовые вещи — награды: их не купить и в эталонный комплект не взять.
+
+    Это и есть шов между стендом и балансом: числа выше потолка живут
+    только в руках тестовых бойцов, а витрину держит потолок.
+    """
+    from bot.game.equipment import SHOWCASE, get_item
+    from bot.game.reference import best_kit
+    from bot.seed import GRANTED_GEAR
+
+    shelf = {item.code for item in SHOWCASE}
+    for code in GRANTED_GEAR:
+        assert get_item(code).reward, code
+        assert code not in shelf, code
+
+    for fclass in FIGHTER_CLASSES.values():
+        for level in range(1, 11):
+            kit = {item.code for item in best_kit(fclass, level).values()}
+            assert not kit & set(GRANTED_GEAR), (fclass.code, level)

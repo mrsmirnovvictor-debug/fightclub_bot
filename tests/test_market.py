@@ -254,7 +254,7 @@ async def test_the_market_endpoint_shows_shelves_and_your_own_gear(db):
     assert lot["mine"] is False and lot["wear"] == 5
     # своё из рюкзака можно выставить, и видно, в каких рамках
     assert [row["title"] for row in body["sellable"]] == ["Бандана"]
-    assert body["sellable"][0]["hint"] == "От 20 до 120 💰"
+    assert body["sellable"][0]["hint"] == "От 22 до 135 💰"
 
 
 async def test_the_market_endpoint_sells_withdraws_and_buys(db):

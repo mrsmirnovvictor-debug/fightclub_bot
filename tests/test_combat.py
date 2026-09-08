@@ -881,25 +881,6 @@ def duel_share(first: str, second: str, level: int, runs: int, seed: int) -> flo
     return wins / runs
 
 
-def boosted_shop() -> bool:
-    """Лежат ли в лавке вещи, нарочно выведенные за потолок процентов.
-
-    Пока они там, круг считать нечего: эти вещи открыты с первого и третьего
-    уровня и перевешивают всё, чем классы отличаются друг от друга, — а набор
-    ассасина к тому же единственный в своём слоте, и эталонный боец надевает
-    его на любом уровне. Уберут их числа — проверка вернётся сама.
-    """
-    from bot.game.equipment import EARLY_SHARE_CAP, get_item
-    from bot.seed import BOOSTED_GEAR
-
-    for code in BOOSTED_GEAR:
-        item = get_item(code)
-        shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
-        if item and max(shares) > EARLY_SHARE_CAP + 1e-9:
-            return True
-    return False
-
-
 @pytest.mark.parametrize(
     "winner,loser,why",
     [
@@ -908,25 +889,46 @@ def boosted_shop() -> bool:
         ("assassin", "rogue", "интуиция ловит уворот точностью"),
     ],
 )
-@pytest.mark.parametrize("level", [1, 8])
+@pytest.mark.parametrize("level", [1, 6, 8])
 def test_the_circle_holds_on_every_level(winner, loser, why, level):
     """Трикстер бьёт танка, танк — ассасина, ассасин — трикстера.
 
-    Считаем по трём сидам: перевес в круге около шести очков, и на сотне
-    боёв с одного сида он тонет в разбросе. Такой тест ловил бы не правку
-    баланса, а любое смещение потока случайных чисел — например лишний
-    бросок на пробитие блока.
+    Считаем по четырём сидам: перевес в круге кое-где всего три очка, и на
+    сотне боёв с одного сида он тонет в разбросе. Такой тест ловил бы не
+    правку баланса, а любое смещение потока случайных чисел — например
+    лишний бросок на пробитие блока.
+
+    Уровни взяты те, где перевес уверенный: первый — голые статы, шестой —
+    полный комплект своего класса, восьмой — потолок оружия. Середину
+    (3–5 уровни), где круг сужается до полутора очков, проверяет
+    следующий тест: там честнее держать коридор, чем спорить с разбросом.
     """
-    if boosted_shop():
-        pytest.skip("в комплект попадают усиленные вещи из seed — круг на них не считается")
     share = sum(
-        duel_share(winner, loser, level=level, runs=200, seed=seed + level)
-        for seed in (2024, 4048, 6072)
-    ) / 3
+        duel_share(winner, loser, level=level, runs=400, seed=seed + level)
+        for seed in (2024, 4048, 6072, 8096)
+    ) / 4
     assert share > 0.5, (
         f"{FIGHTER_CLASSES[winner].title} должен бить "
         f"{FIGHTER_CLASSES[loser].title} ({why}), а взял {share:.0%} на {level} уровне"
     )
+
+
+@pytest.mark.parametrize("level", [3, 4, 5])
+def test_the_circle_narrows_but_does_not_flip_in_the_middle(level):
+    """На середине лестницы танк держит ассасина еле-еле — но держит.
+
+    С третьего по пятый уровень у ассасина уже есть свой набор, а танк
+    донашивает предыдущий: перевес у него сходится к полутора очкам. Это
+    и есть самое узкое место круга, поэтому проверяем не «больше
+    половины» (столько разброса не переспорить), а коридор. Круг тут
+    ломался по-крупному — усиленные вещи с прилавка роняли танка до 15%,
+    — и коридор такое ловит.
+    """
+    share = sum(
+        duel_share("tank", "assassin", level=level, runs=400, seed=seed + level)
+        for seed in (2024, 4048, 6072, 8096)
+    ) / 4
+    assert 0.45 < share < 0.62, f"танк против ассасина: {share:.0%} на {level} уровне"
 
 
 def test_the_warrior_stays_out_of_the_circle():
@@ -936,8 +938,6 @@ def test_the_warrior_stays_out_of_the_circle():
     очков, и такой тест ловил бы не баланс, а смещение потока случайных чисел —
     хоть лишний бросок брони от новой вещи.
     """
-    if boosted_shop():
-        pytest.skip("усиленные вещи из seed перекашивают комплекты")
     for rival in ("rogue", "assassin", "tank"):
         share = sum(
             duel_share("warrior", rival, level=8, runs=200, seed=seed)

@@ -983,7 +983,7 @@ async def test_the_hero_screen_reads_without_extra_icons(server):
 
 
 async def test_a_percentage_says_when_the_ceiling_cut_it(server):
-    """Вещи дают +100% уворота, в строке 60% — карточка объясняет почему."""
+    """Вещи дают уворота выше потолка, в строке потолок — карточка объясняет."""
     from bot.game.combat import MAX_DODGE_CHANCE
     from bot.game.stats import MAX_CRIT_CHANCE, NO_LIMITS
 
@@ -993,13 +993,14 @@ async def test_a_percentage_says_when_the_ceiling_cut_it(server):
     player = make_player()
     player.gear = [
         OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON),
-        OwnedItem(item=CATALOGUE["wraps"], id=2, slot=Slot.GLOVES),
-        OwnedItem(item=CATALOGUE["sneakers"], id=3, slot=Slot.BOOTS),
+        OwnedItem(item=CATALOGUE["test_wraps"], id=2, slot=Slot.GLOVES),
+        OwnedItem(item=CATALOGUE["test_sneakers"], id=3, slot=Slot.BOOTS),
         OwnedItem(item=CATALOGUE["shadow_coat"], id=4, slot=Slot.JACKET),
         OwnedItem(item=CATALOGUE["sheath_pants"], id=5, slot=Slot.PANTS),
     ]
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    assert card["combat"]["caps"]["dodge_chance"]["gear"] == 100
+    gear = round(sum(owned.item.dodge for owned in player.gear) * 100)
+    assert card["combat"]["caps"]["dodge_chance"]["gear"] == gear > ceiling
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
@@ -1010,7 +1011,7 @@ async def test_a_percentage_says_when_the_ceiling_cut_it(server):
         # срезанный процент подписью не помечают — его красят золотом
         assert await dodge.inner_text() == f"🌀 Уворот\n{ceiling}%"
         assert await dodge.locator(".value.capped").count() == 1
-        assert "вещи 100%" in await dodge.get_attribute("title")
+        assert f"вещи {gear}%" in await dodge.get_attribute("title")
         assert f"но выше {ceiling}% не растёт" in (
             await dodge.get_attribute("title")
         )
