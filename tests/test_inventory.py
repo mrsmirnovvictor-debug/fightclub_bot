@@ -948,13 +948,16 @@ async def test_the_wardrobe_is_yours_alone(client):
 
 
 def test_shop_sections_are_named_after_body_parts():
-    """В лавке разделы называются частью тела, а не самой вещью."""
+    """В лавке разделы называются частью тела, а не самой вещью.
+
+    Полка второй руки — исключение: там лежат щиты, и подписана она ими.
+    """
     from bot.game.equipment import ALL_SLOTS, Slot
 
     assert [slot.section for slot in ALL_SLOTS] == [
         "голова",
         "оружие",
-        "вторая рука",
+        "щиты",
         "футболки",
         "пояс",
         "перчатки",
