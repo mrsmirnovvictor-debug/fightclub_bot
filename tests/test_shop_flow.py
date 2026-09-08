@@ -78,7 +78,7 @@ async def test_showcase_grows_with_the_fighter(client, dispatcher_env):
 
 async def test_level_locked_goods_are_not_sold_in_chat(client, dispatcher_env):
     _, _, session = dispatcher_env
-    await client.press(BuyCB(code="bat").pack())
+    await client.press(BuyCB(code="bat", confirm=1).pack())
 
     assert "открывается на 6 уровне" in session.alerts[-1]
     assert (await client.player()).gear == []
@@ -87,12 +87,40 @@ async def test_level_locked_goods_are_not_sold_in_chat(client, dispatcher_env):
 async def test_buying_takes_credits_and_fills_the_backpack(client, dispatcher_env):
     db, _, session = dispatcher_env
     await client.send("/buy")
-    await client.press(BuyCB(code="sneakers").pack())
+    await client.press(BuyCB(code="sneakers", confirm=1).pack())
 
     player = await client.player()
     assert player.credits == 300 - CATALOGUE["sneakers"].price
     assert [item.code for item in player.backpack] == ["sneakers"]
     assert "Куплено" in session.texts[-1]
+
+
+async def test_the_chat_asks_before_it_takes_the_credits(client, dispatcher_env):
+    """Первое нажатие спрашивает, второе платит, отмена возвращает витрину."""
+    _, _, session = dispatcher_env
+    price = CATALOGUE["sneakers"].price
+    await client.send("/buy")
+    shelf = session.calls[-1].reply_markup.inline_keyboard
+
+    await client.press(BuyCB(code="sneakers").pack())
+
+    assert f"Вы приобретаете предмет Кеды за {price} кредитов" in session.alerts[-1]
+    assert (await client.player()).credits == 300  # ничего не списано
+    asked = session.method_calls("EditMessageReplyMarkup")[-1]
+    labels = [b.text for row in asked.reply_markup.inline_keyboard for b in row]
+    assert labels == [f"✅ Подтвердить · {price} 💰", "✖️ Отмена"]
+
+    # отмена возвращает на место прежний список товара
+    await client.press(BuyCB(code="sneakers", confirm=2).pack())
+    assert session.alerts[-1] == "Отменено."
+    back = session.method_calls("EditMessageReplyMarkup")[-1]
+    assert [b.text for row in back.reply_markup.inline_keyboard for b in row] == [
+        b.text for row in shelf for b in row
+    ]
+    assert (await client.player()).credits == 300
+
+    await client.press(BuyCB(code="sneakers", confirm=1).pack())
+    assert (await client.player()).credits == 300 - price
 
 
 async def test_empty_wallet_stops_the_purchase(client, dispatcher_env):
@@ -101,7 +129,7 @@ async def test_empty_wallet_stops_the_purchase(client, dispatcher_env):
     player.credits = 5
     await db.save_player(player)
 
-    await client.press(BuyCB(code="sneakers").pack())
+    await client.press(BuyCB(code="sneakers", confirm=1).pack())
 
     assert "Не хватает кредитов" in session.alerts[-1]
     assert (await client.player()).gear == []
@@ -255,7 +283,7 @@ async def test_a_potion_is_bought_and_then_drunk_from_the_chat(
     player.set_hp(player.max_hp - 100)
     await db.save_player(player)
 
-    await client.press(BuyCB(code="heal_small").pack())
+    await client.press(BuyCB(code="heal_small", confirm=1).pack())
     assert (await client.player()).credits == 300 - HEAL.price
     assert await db.list_potions(client.user.id) == {"heal_small": 1}
 
@@ -273,7 +301,7 @@ async def test_the_temporary_effect_shows_up_in_the_profile(client, dispatcher_e
     player.level = 5
     await db.save_player(player)
 
-    await client.press(BuyCB(code="boost_strength").pack())
+    await client.press(BuyCB(code="boost_strength", confirm=1).pack())
     await client.press(DrinkCB(code="boost_strength").pack())
     assert "Эффект пошёл" in session.texts[-1]
 
@@ -293,8 +321,8 @@ async def test_the_chat_warns_before_swapping_a_running_elixir(client, dispatche
     player.credits = 1000  # на два временных эликсира по 200
     await db.save_player(player)
 
-    await client.press(BuyCB(code="boost_strength").pack())
-    await client.press(BuyCB(code="boost_agility").pack())
+    await client.press(BuyCB(code="boost_strength", confirm=1).pack())
+    await client.press(BuyCB(code="boost_agility", confirm=1).pack())
     await client.press(DrinkCB(code="boost_strength").pack())
     assert "Эффект пошёл" in session.texts[-1]
 
@@ -323,9 +351,9 @@ async def test_the_chat_pours_healing_without_any_questions(client, dispatcher_e
     player.set_hp(player.max_hp - 100)
     await db.save_player(player)
 
-    await client.press(BuyCB(code="boost_strength").pack())
+    await client.press(BuyCB(code="boost_strength", confirm=1).pack())
     await client.press(DrinkCB(code="boost_strength").pack())
-    await client.press(BuyCB(code="heal_small").pack())
+    await client.press(BuyCB(code="heal_small", confirm=1).pack())
     await client.press(DrinkCB(code="heal_small").pack())
 
     text = session.texts[-1]

@@ -280,6 +280,121 @@ async def test_repair_needs_credits_and_something_to_repair(db):
     assert player.credits == 0
 
 
+# ---------- сдать вещь обратно в лавку ----------
+
+
+async def test_a_worn_item_is_taken_back_at_the_same_price(db):
+    """Лавка платит долю от прилавка, и износ на неё не влияет."""
+    from bot.game.market import buyback
+    from bot.inventory_service import hand_in
+
+    player = make_player(credits=500, level=8)
+    await db.save_player(player)
+    whole = await buy(db, player, "bat")
+    broken = await buy(db, player, "bat")
+    broken.wear = broken.max_wear - 1  # 19 из 20 — почти труха
+    await db.save_gear(broken)
+    purse = player.credits
+    paid_for = buyback(CATALOGUE["bat"])
+
+    title, paid = await hand_in(db, player, broken.id)
+
+    assert (title, paid) == ("Бита", paid_for)
+    assert player.credits == purse + paid_for
+    assert (await db.get_player(player.user_id)).credits == purse + paid_for
+    # сдали именно разбитую, целая осталась
+    assert [row.id for row in player.gear] == [whole.id]
+
+    # и за целую дают ровно столько же
+    _, again = await hand_in(db, player, whole.id)
+    assert again == paid_for
+    assert not player.gear
+
+
+async def test_what_is_worn_is_not_taken_back(db):
+    """Иначе вещь исчезала бы прямо со слота, утаскивая соседнюю."""
+    from bot.inventory_service import hand_in
+
+    player = make_player(
+        credits=500, level=8, stats=Stats(strength=20, agility=8, intuition=8, endurance=8)
+    )
+    await db.save_player(player)
+    owned = await buy(db, player, "bat")
+    await equip(db, player, owned.id)
+
+    with pytest.raises(InventoryError, match="надета"):
+        await hand_in(db, player, owned.id)
+    assert player.find_gear(owned.id) is not None
+
+
+async def test_the_shop_takes_back_only_what_it_sells(db):
+    """Награду и товар мага лавка не принимает: сравнить не с чем."""
+    from bot.game.market import buyback
+    from bot.inventory_service import hand_in
+
+    player = make_player(credits=500)
+    await db.save_player(player)
+    relic = next(
+        (item for item in CATALOGUE.values() if buyback(item) == 0), None
+    )
+    assert relic is not None, "в каталоге не осталось вещей вне прилавка"
+    owned = await db.add_gear(player.user_id, relic.code)
+    player.gear.append(owned)
+
+    with pytest.raises(InventoryError, match="не принимает"):
+        await hand_in(db, player, owned.id)
+
+
+async def test_the_shelf_price_and_the_buyback_agree(db):
+    """Пятнадцать процентов от прилавка, но не меньше кредита."""
+    from bot.game.market import BUYBACK_SHARE, buyback
+
+    for code in ("bat", "riot_shield", "moto_helmet"):
+        item = CATALOGUE[code]
+        assert buyback(item) == round(item.price * BUYBACK_SHARE)
+        assert 0 < buyback(item) < item.price
+
+
+async def test_handing_in_goes_through_the_app(client, db):
+    from bot.game.market import buyback
+
+    player = make_player(credits=500, level=8)
+    await db.save_player(player)
+    owned = await buy(db, player, "bat")
+    purse = player.credits
+
+    response = await client.post(
+        "/api/handin", json={"item_id": owned.id}, headers=headers(player.user_id)
+    )
+
+    assert response.status == 200
+    body = await response.json()
+    assert body["handin"] == {
+        "title": "Бита",
+        "paid": buyback(CATALOGUE["bat"]),
+        "credits": purse + buyback(CATALOGUE["bat"]),
+    }
+    assert not (await db.get_player(player.user_id)).backpack
+    assert body["card"]["record"]["credits"] == purse + buyback(CATALOGUE["bat"])
+
+
+async def test_the_bag_says_what_the_shop_would_pay(db):
+    """У каждой вещи в рюкзаке своя цена сдачи — её и показывает кнопка."""
+    from bot.game.market import buyback
+
+    player = make_player(credits=500, level=8)
+    await db.save_player(player)
+    owned = await buy(db, player, "bat")
+    owned.wear = 19
+    await db.save_gear(owned)
+
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    row = card["inventory"][0]
+
+    assert row["buyback"] == buyback(CATALOGUE["bat"]) == 27
+    assert row["wear"] == 19  # износ на цену сдачи не влияет
+
+
 async def test_a_finished_item_disappears_from_the_bag_for_good(db):
     player = make_player()
     await db.save_player(player)

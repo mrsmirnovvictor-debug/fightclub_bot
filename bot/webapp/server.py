@@ -21,6 +21,7 @@ from bot.inventory_service import (
     InventoryError,
     buy,
     equip,
+    hand_in,
     repair_item,
     unequip,
 )
@@ -261,6 +262,27 @@ async def api_repair(request: web.Request) -> web.Response:
                 "degraded": result.degraded,
                 "destroyed": result.destroyed,
             },
+        }
+    )
+
+
+async def api_handin(request: web.Request) -> web.Response:
+    """Сдать вещь обратно в лавку клуба за долю её цены."""
+    data = await _payload(request)
+    try:
+        player = await _own_player(request)
+        title, paid = await hand_in(
+            request.app[DB_KEY], player, _int_field(data, "item_id")
+        )
+    except InventoryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "shop": build_shop(player),
+            "handin": {"title": title, "paid": paid, "credits": player.credits},
         }
     )
 
@@ -846,6 +868,7 @@ def create_app(
             web.post("/api/equip", api_equip),
             web.post("/api/unequip", api_unequip),
             web.post("/api/repair", api_repair),
+            web.post("/api/handin", api_handin),
             web.get("/api/shop", api_shop),
             web.post("/api/buy", api_buy),
             web.post("/api/use", api_use),

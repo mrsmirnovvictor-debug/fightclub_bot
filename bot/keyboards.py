@@ -41,7 +41,10 @@ class StatCB(CallbackData, prefix="stat"):
 
 
 class BuyCB(CallbackData, prefix="buy"):
+    """Покупка в чате. confirm=0 — спросить, 1 — платить."""
+
     code: str
+    confirm: int = 0
 
 
 class GenderCB(CallbackData, prefix="gender"):
@@ -188,6 +191,23 @@ def showcase_keyboard(level: int, credits: int) -> InlineKeyboardMarkup:
             + ("" if credits >= item.price else " 🔒"),
             callback_data=BuyCB(code=item.code),
         )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def confirm_buy_keyboard(code: str, price: int) -> InlineKeyboardMarkup:
+    """Два ответа на «Купить»: заплатить или передумать.
+
+    Всплывающего окна с двумя кнопками в чате нет, поэтому вопрос задаём
+    самой клавиатурой — на месте прежнего списка товара. Код товара несут
+    обе кнопки: по нему отмена знает, какой список вернуть на место.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=f"✅ Подтвердить · {price} 💰",
+        callback_data=BuyCB(code=code, confirm=1),
+    )
+    builder.button(text="✖️ Отмена", callback_data=BuyCB(code=code, confirm=2))
     builder.adjust(1)
     return builder.as_markup()
 

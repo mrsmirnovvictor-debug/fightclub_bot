@@ -27,7 +27,7 @@ from bot.game.equipment import (
     items_unlocked_at,
     shop_sections,
 )
-from bot.game.narrator import esc
+from bot.game.narrator import esc, plain
 from bot.game.potions import POTIONS, get_potion, spell_duration
 from bot.inventory_service import InventoryError, buy, settle_gear
 from bot.potions_service import (
@@ -43,6 +43,7 @@ from bot.keyboards import (
     DrinkCB,
     avatars_keyboard,
     classes_keyboard,
+    confirm_buy_keyboard,
     potions_keyboard,
     showcase_keyboard,
 )
@@ -183,11 +184,49 @@ async def cmd_buy(message: Message, db: Database, config: Config) -> None:
     )
 
 
+def _price_of(code: str) -> tuple[str, int] | None:
+    """Название и цена товара — хоть вещи, хоть склянки. None — нет такого."""
+    potion = get_potion(code)
+    if potion is not None:
+        return potion.title, potion.price
+    item = get_item(code)
+    return (item.title, item.price) if item is not None else None
+
+
+def _shelf_keyboard(player: Player, code: str) -> InlineKeyboardMarkup:
+    """Список, из которого этот товар брали: склянки или витрина."""
+    if get_potion(code) is not None:
+        return potions_keyboard(player.level, player.credits, player.potions)
+    return showcase_keyboard(player.level, player.credits)
+
+
 @router.callback_query(BuyCB.filter())
 async def on_buy(callback: CallbackQuery, callback_data: BuyCB, db: Database) -> None:
     player = await db.get_player(callback.from_user.id)
     if player is None:
         await callback.answer("Сначала создай бойца: /start", show_alert=True)
+        return
+
+    # Первое нажатие только спрашивает: деньги уходят со второго
+    if callback_data.confirm == 0:
+        goods = _price_of(callback_data.code)
+        if goods is None:
+            await callback.answer("Такого товара в лавке нет.", show_alert=True)
+            return
+        title, price = goods
+        await callback.message.edit_reply_markup(
+            reply_markup=confirm_buy_keyboard(callback_data.code, price)
+        )
+        await callback.answer(
+            f"Вы приобретаете предмет {plain(title)} за {price} кредитов"
+        )
+        return
+
+    if callback_data.confirm == 2:  # передумал — возвращаем список товара
+        await callback.message.edit_reply_markup(
+            reply_markup=_shelf_keyboard(player, callback_data.code)
+        )
+        await callback.answer("Отменено.")
         return
 
     potion = get_potion(callback_data.code)

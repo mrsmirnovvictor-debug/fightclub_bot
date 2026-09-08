@@ -34,7 +34,7 @@ from bot.game.equipment import (
     get_item,
     shop_sections,
 )
-from bot.game.market import FEE as MARKET_FEE
+from bot.game.market import FEE as MARKET_FEE, buyback
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
@@ -188,6 +188,8 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "max_wear": owned.max_wear,
         "wear_text": owned.describe_wear(),
         "repair_price": owned.repair_price,
+        # Сколько даст лавка, если сдать вещь. Ноль — такое она не берёт
+        "buyback": buyback(item),
         "requirements": requirements_payload(player, item),
         "can_equip": player.can_equip(item),
         "bonus": item.describe_bonus(),

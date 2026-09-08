@@ -72,6 +72,29 @@ function confirmAction(question) {
   });
 }
 
+function askConfirm(title, message, yes) {
+  // То же согласие, но с нашими подписями на кнопках: «Подтвердить» и
+  // «Отмена». Telegram умеет их называть, браузер — нет, поэтому вне
+  // Telegram спрашиваем обычным окном тем же текстом.
+  return new Promise((resolve) => {
+    if (tg && tg.showPopup) {
+      tg.showPopup(
+        {
+          title: title,
+          message: message,
+          buttons: [
+            { id: "yes", type: "default", text: yes || "Подтвердить" },
+            { id: "no", type: "cancel", text: "Отмена" },
+          ],
+        },
+        (id) => resolve(id === "yes")
+      );
+    } else {
+      resolve(window.confirm(title + "\n\n" + message));
+    }
+  });
+}
+
 function picture(src, alt, fallback, onFail) {
   // Картинка со значком на случай, если файл не доехал
   const img = document.createElement("img");
@@ -376,6 +399,17 @@ function thingCard(item, credits, shop) {
         secondary: true,
         disabled: affordable <= 0,
         onClick: () => repair(item, full ? null : affordable),
+      })
+    );
+  }
+
+  // Сдать можно любую вещь с прилавка, хоть разбитую: износ на выплату
+  // не влияет
+  if (item.buyback > 0) {
+    buttons.appendChild(
+      button("Сдать · " + item.buyback + " 💰", {
+        secondary: true,
+        onClick: () => handIn(item),
       })
     );
   }
@@ -781,6 +815,16 @@ async function loadMarket() {
   }
 }
 
+async function buyLot(lot) {
+  // Чужая вещь стоит столько, сколько попросили, — спрашиваем так же, как
+  // и на прилавке клуба
+  const ok = await askConfirm(
+    "🛍 Покупка",
+    "Вы приобретаете предмет " + lot.title + " за " + lot.price + " кредитов"
+  );
+  if (ok) marketAction({ action: "buy", lot_id: lot.id });
+}
+
 async function marketAction(payload) {
   if (marketBusy) return;
   marketBusy = true;
@@ -989,7 +1033,7 @@ function lotCard(lot) {
           lot.affordable ? "Купить · " + lot.price + " 💰" : "Не хватает кредитов",
           {
             disabled: !lot.affordable,
-            onClick: () => marketAction({ action: "buy", lot_id: lot.id }),
+            onClick: () => buyLot(lot),
           }
         )
   );
@@ -3109,6 +3153,12 @@ async function loadShop() {
 
 async function purchase(item) {
   if (busy) return;
+  const ok = await askConfirm(
+    "🛍 Покупка",
+    "Вы приобретаете предмет " + item.title + " за " + item.price + " кредитов"
+  );
+  if (!ok) return;
+  if (busy) return;
   busy = true;
   try {
     const data = await post("api/buy", { code: item.code });
@@ -3116,6 +3166,32 @@ async function purchase(item) {
     renderShop(data.shop);
     if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
     popup("🛍 " + data.bought.title, boughtNote(data.bought));
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
+async function handIn(item) {
+  if (busy) return;
+  const ok = await askConfirm(
+    "🏪 Сдать в лавку",
+    "Вы сдаете " + item.title + " в Лавку клуба и получите за это " +
+      item.buyback + " кредитов"
+  );
+  if (!ok) return;
+  busy = true;
+  try {
+    const data = await post("api/handin", { item_id: item.id });
+    render(data.card, true);
+    renderShop(data.shop);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    popup(
+      "🏪 " + data.handin.title,
+      "Сдано в лавку за " + data.handin.paid + " 💰. На счету " +
+        data.handin.credits + " 💰."
+    );
   } catch (error) {
     popup("Не вышло", error.message);
   } finally {

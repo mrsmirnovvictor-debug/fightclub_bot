@@ -9,6 +9,7 @@ from __future__ import annotations
 import random
 
 from bot.database import Database
+from bot.game.market import buyback
 from bot.game.equipment import (
     REPAIR_PRICE_PER_POINT,
     Item,
@@ -139,6 +140,31 @@ async def repair_item(
     else:
         await db.save_gear(owned)
     return result
+
+
+async def hand_in(db: Database, player: Player, item_id: int) -> tuple[str, int]:
+    """Сдать вещь обратно в лавку. Вернуть её название и что за неё дали.
+
+    Износ на выплату не влияет: лавка берёт вещь как есть, хоть целую, хоть
+    в труху. Надетую не принимаем — сними, а потом сдавай: иначе вещь
+    исчезала бы прямо со слота, утаскивая за собой соседнюю.
+    """
+    owned = player.find_gear(item_id)
+    if owned is None:
+        raise InventoryError("Такой вещи в инвентаре нет.")
+    if owned.is_equipped:
+        raise InventoryError(
+            f"«{owned.title}» на тебе надета. Сними её — тогда и сдавай."
+        )
+    paid = buyback(owned.item)
+    if paid <= 0:
+        raise InventoryError(f"«{owned.title}» лавка не принимает.")
+
+    await db.delete_gear(owned.id)
+    player.gear = [row for row in player.gear if row.id != owned.id]
+    player.credits += paid
+    await db.save_player(player)
+    return owned.title, paid
 
 
 async def wear_after_fight(

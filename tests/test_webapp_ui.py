@@ -308,6 +308,87 @@ async def test_type_filter_leaves_one_shelf(shop_page):
     )
 
 
+async def test_buying_asks_before_it_spends(shop_page):
+    """«Купить» показывает окно с названием и ценой — и слушается отказа."""
+    asked, sent = [], []
+
+    def on_dialog(dialog):
+        asked.append(dialog.message)
+        asyncio.ensure_future(dialog.dismiss())
+
+    async def catch(route):
+        sent.append(route.request.post_data_json)
+        await route.fulfill(
+            status=200, content_type="application/json", body=json.dumps({})
+        )
+
+    shop_page.on("dialog", on_dialog)
+    await shop_page.route("**/api/buy", catch)
+    buy = shop_page.get_by_role("button", name="Купить").first
+    label = await buy.inner_text()
+    price = label.split("·")[1].split()[0]
+
+    await buy.click()
+    await shop_page.wait_for_timeout(200)
+
+    assert sent == []  # отказались — кредиты на месте
+    assert len(asked) == 1
+    assert "Вы приобретаете предмет" in asked[0]
+    assert f"за {price} кредитов" in asked[0]
+
+
+async def test_a_thing_can_be_handed_back_to_the_shop(server):
+    """Сдача в лавку: своё окно, свой текст, свой адрес."""
+    from bot.game.market import buyback
+
+    player = make_player()
+    # вещь в рюкзаке, разбитая почти в труху: цена сдачи от этого не зависит
+    player.gear = [OwnedItem(item=CATALOGUE["knuckles"], id=7, wear=19)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    paid = buyback(CATALOGUE["knuckles"])
+    asked, sent = [], []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        def on_dialog(dialog):
+            asked.append(dialog.message)
+            asyncio.ensure_future(dialog.accept())
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "card": card,
+                        "shop": build_shop(player),
+                        "handin": {
+                            "title": "Кастет", "paid": paid, "credits": 223,
+                        },
+                    }
+                ),
+            )
+
+        page.on("dialog", on_dialog)
+        await page.route("**/api/handin", catch)
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+
+        hand = page.get_by_role("button", name="Сдать").first
+        assert await hand.inner_text() == f"Сдать · {paid} 💰"
+
+        await hand.click()
+        await page.wait_for_timeout(300)
+
+        assert "Вы сдаете Кастет в Лавку клуба" in asked[0]
+        assert f"получите за это {paid} кредитов" in asked[0]
+        assert sent == [{"item_id": 7}]
+        await browser.close()
+
+
 MARKET = {
     "credits": 300,
     "fee": 5,
@@ -411,7 +492,8 @@ async def test_the_market_shows_lots_on_shelves_by_type(server):
 
 
 async def test_a_lot_is_bought_by_its_number(server):
-    sent = []
+    """Покупка в комиссионке тоже спрашивает согласия — деньги-то те же."""
+    sent, asked = [], []
 
     async with async_playwright() as pw:
         browser, page = await open_market(pw, server)
@@ -425,7 +507,21 @@ async def test_a_lot_is_bought_by_its_number(server):
                 body=json.dumps({**MARKET, "sections": []}),
             )
 
+        def on_dialog(dialog):
+            asked.append(dialog.message)
+            asyncio.ensure_future(dialog.dismiss())
+
         await page.route("**/api/market", catch)
+        page.on("dialog", on_dialog)
+
+        # отказ — денег не тратим
+        await page.get_by_role("button", name="Купить · 200 💰").click()
+        await page.wait_for_timeout(200)
+        assert sent == []
+        assert "Вы приобретаете предмет Нож за 200 кредитов" in asked[0]
+
+        page.remove_listener("dialog", on_dialog)
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
         await page.get_by_role("button", name="Купить · 200 💰").click()
         await page.wait_for_timeout(200)
 
