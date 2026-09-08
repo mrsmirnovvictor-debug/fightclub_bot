@@ -1943,6 +1943,25 @@ async def test_the_chosen_party_size_survives_a_refresh(server):
         await browser.close()
 
 
+async def test_the_poll_does_not_tear_the_form_out_from_under_the_finger(server):
+    """Пока ничего не поменялось, экран не перерисовывается.
+
+    Раньше опрос каждые две секунды пересобирал раздел целиком, и открытый
+    выпадающий список схлопывался, не дав выбрать число.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server)
+
+        # помечаем живой список: перерисовка форму пересоздаёт, и метка уйдёт
+        await page.evaluate(
+            "document.getElementById('raid-size').dataset.alive = 'yes'"
+        )
+        await page.wait_for_timeout(3000)  # полтора опроса
+
+        assert await page.locator("#raid-size").get_attribute("data-alive") == "yes"
+        await browser.close()
+
+
 async def test_a_gathering_party_can_be_joined(server):
     lobby = {
         **EMPTY_RAID,

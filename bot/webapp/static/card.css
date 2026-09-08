@@ -915,6 +915,12 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .field-input:disabled { opacity: 0.5; }
 
+/* Список и «Начать» в одну строку: кнопка по содержимому, список — всё
+   остальное. min-width держит его от распирания на узком экране. */
+.raid-open-row { display: flex; gap: 8px; align-items: stretch; }
+.raid-open-row .field-input { flex: 1 1 auto; min-width: 0; }
+.raid-open-row .btn { flex: 0 0 auto; }
+
 /* Стойка и итог — те же карточки, что и панель хода: рамка держит их
    отдельно от ленты слов судьи под ними. */
 .fight-standoff,

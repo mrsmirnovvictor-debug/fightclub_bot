@@ -1816,6 +1816,8 @@ let raidWasOver = false;
 let bossOpen = false;
 let raidBusy = false;
 let raidClock = null;
+// Что нарисовано на экране: по этой метке видно, изменилось ли хоть что-то
+let raidPainted = null;
 let raidDraft = { attacks: {}, block: null };
 let raidWave = null;
 
@@ -1904,6 +1906,25 @@ async function raidAction(payload) {
   }
 }
 
+function raidShape(data) {
+  // Из чего собран экран прямо сейчас. Времени здесь нет намеренно: остаток
+  // до выхода меняется каждую секунду, а перерисовывать раздел ради него не
+  // нужно — часы досчитывают на месте.
+  const raid = data.raid;
+  const lobby = data.lobby;
+  return JSON.stringify([
+    bossOpen,
+    data.can_fight,
+    raid && [
+      raid.id, raid.wave, raid.resting, raid.finished, raid.acted, raid.alive,
+      raid.boss.hp, raid.log.length,
+      raid.party.map((one) => [one.user_id, one.hp, one.alive, one.acted]),
+    ],
+    lobby && [lobby.id, lobby.total, lobby.size, lobby.can_start],
+    data.lobbies.map((one) => [one.id, one.total, one.size]),
+  ]);
+}
+
 function renderRaid(data) {
   // Новая волна — намётки прошлой сбрасываем: то, что ушло судье, обратно
   // подсвечивать нечего
@@ -1915,7 +1936,14 @@ function renderRaid(data) {
   if (data.raid && data.raid.finished && !raidWasOver) catchUp();
   raidWasOver = Boolean(data.raid && data.raid.finished);
   raidData = data;
+
+  // Ничего не поменялось — не трогаем экран. Опрос идёт каждые две секунды,
+  // и перерисовка схлопывала бы под пальцем открытый список, гасила фокус и
+  // сбрасывала прокрутку. Часы в объявлениях тикают отдельно, сами.
+  const shape = raidShape(data);
   const body = el("raid-body");
+  if (shape === raidPainted && body.firstChild) return;
+  raidPainted = shape;
   body.textContent = "";
   if (data.boss) {
     body.appendChild(raidHead(data.boss));
@@ -2039,16 +2067,16 @@ function raidOpenForm(data) {
   line.textContent = "Рейд собирают раз в сутки.";
   box.appendChild(line);
 
-  const row = document.createElement("div");
-  row.className = "raid-sizes";
-
-  const label = document.createElement("label");
-  label.className = "field";
-  label.htmlFor = "raid-size";
-  const caption = document.createElement("span");
+  const caption = document.createElement("label");
   caption.className = "field-head";
+  caption.htmlFor = "raid-size";
   caption.textContent = "Выберите количество участников:";
-  label.appendChild(caption);
+  box.appendChild(caption);
+
+  // Список и «Начать» стоят в строку: так форма занимает две строки вместо
+  // четырёх, и кнопка рядом с выбранным числом
+  const row = document.createElement("div");
+  row.className = "raid-open-row";
 
   const select = document.createElement("select");
   select.id = "raid-size";
@@ -2065,13 +2093,12 @@ function raidOpenForm(data) {
   select.addEventListener("change", () => {
     raidSize = Number(select.value);
   });
-  label.appendChild(select);
-  row.appendChild(label);
+  row.appendChild(select);
 
   const btn = document.createElement("button");
   btn.type = "button";
   btn.id = "raid-open";
-  btn.className = "btn wide";
+  btn.className = "btn";
   btn.textContent = "🩸 Начать";
   btn.disabled = !data.can_fight;
   btn.addEventListener("click", () =>
