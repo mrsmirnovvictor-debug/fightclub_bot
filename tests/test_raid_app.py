@@ -9,6 +9,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
+from bot.game.potions import RAID_PASS, get_potion
 from bot.game.raid import BOSS_ID, MAX_PARTY
 from bot.webapp.server import create_app
 from tests.test_duel_flow import FakeBot as DuelBot
@@ -19,11 +20,14 @@ from tests.test_webapp import FakeBot, TOKEN
 
 @pytest.fixture
 async def cellar(db):
-    """Мини-апп и сервис рейдов на одной базе."""
+    """Мини-апп и сервис рейдов на одной базе. У всех по пропуску в рюкзаке."""
     raids = make_service(DuelBot(), db)
     config = Config(bot_token=TOKEN, webapp_url="https://club.example")
     for user_id, nickname in ((42, "Тайлер"), (43, "Марла"), (44, "Зевака")):
-        await db.save_player(make_player(user_id, nickname))
+        player = make_player(user_id, nickname)
+        player.credits = 500
+        await db.save_player(player)
+        await db.add_potion(user_id, RAID_PASS)
     app = create_app(FakeBot(), db, config, raids=raids)
     async with TestClient(TestServer(app)) as client:
         yield client, raids, db
@@ -42,10 +46,11 @@ async def act(client, user_id: int, **payload) -> tuple[int, dict]:
 
 
 async def start(client, raids, size: int = 2) -> dict:
-    """Собрать рейд в аппе и добить его до полного отряда."""
-    await act(client, 42, action="open", size=size)
+    """Собрать рейд в аппе и вывести отряд, не дожидаясь гонга."""
+    await act(client, 42, action="open")
     lobby = raids.lobby_of_user(42)
-    _, body = await act(client, 43, action="join", lobby_id=lobby.id)
+    await act(client, 43, action="join", lobby_id=lobby.id)
+    _, body = await act(client, 42, action="go")
     return body
 
 
@@ -53,14 +58,18 @@ async def start(client, raids, size: int = 2) -> dict:
 
 
 async def test_a_raid_is_gathered_without_leaving_the_app(cellar):
-    client, raids, _ = cellar
+    client, raids, db = cellar
 
-    status, mine = await act(client, 42, action="open", size=2)
+    status, mine = await act(client, 42, action="open")
 
     assert status == 200
     assert mine["lobby"]["mine"] and mine["lobby"]["total"] == 1
+    assert mine["lobby"]["size"] == MAX_PARTY  # мест всегда десять
     assert mine["lobby"]["boss"]["title"] == "Босс Подвала"
     assert mine["raid"] is None
+    # пропуск ушёл на входе
+    assert (await db.get_player(42)).potion_count(RAID_PASS) == 0
+    assert mine["gate"]["spent"] is True
 
     # чужой сбор виден остальным
     theirs = await state(client, 43)
@@ -71,14 +80,15 @@ async def test_a_raid_is_gathered_without_leaving_the_app(cellar):
     )
 
     assert status == 200
-    assert joined["raid"] is not None  # отряд полон — спустились в подвал
-    assert joined["raid"]["wave"] == 1
-    assert {row["name"] for row in joined["raid"]["party"]} == {"Тайлер", "Марла"}
+    assert joined["lobby"]["total"] == 2
+    _, went = await act(client, 42, action="go")
+    assert went["raid"]["wave"] == 1
+    assert {row["name"] for row in went["raid"]["party"]} == {"Тайлер", "Марла"}
 
 
 async def test_the_party_can_be_left(cellar):
     client, raids, _ = cellar
-    await act(client, 42, action="open", size=3)
+    await act(client, 42, action="open")
 
     status, after = await act(client, 42, action="leave")
 
@@ -87,26 +97,37 @@ async def test_the_party_can_be_left(cellar):
     assert raids.lobby_of_user(42) is None
 
 
-async def test_the_party_size_is_checked_by_the_server(cellar):
-    client, _, _ = cellar
+async def test_the_gate_tells_what_it_will_cost(cellar):
+    """Экран знает, есть ли пропуск, открыт ли подвал и не побеждён ли босс."""
+    client, raids, db = cellar
 
-    status, error = await act(client, 42, action="open", size=MAX_PARTY + 5)
+    gate = (await state(client, 42))["gate"]
+    assert gate["passes"] == 1 and gate["spent"] is False
+    assert gate["open"] is True and gate["won"] is False
+    assert gate["pass_price"] == get_potion(RAID_PASS).price
+    assert "8–10" in gate["schedule"]
 
-    assert status == 409
-    assert "от 2 до 10" in error["error"]
+    # без пропуска и без согласия на покупку внутрь не пускают
+    await db.take_potion(42, RAID_PASS)
+    status, error = await act(client, 42, action="open")
+    assert status == 409 and "Рейд-пасс" in error["error"]
+
+    status, body = await act(client, 42, action="open", buy=True)
+    assert status == 200 and body["lobby"] is not None
+    assert (await db.get_player(42)).credits == 500 - get_potion(RAID_PASS).price
 
 
 async def test_the_lobby_carries_the_countdown(cellar):
     """Сколько осталось ждать — приезжает с сервера, а не считается на глаз."""
     client, raids, _ = cellar
 
-    _, mine = await act(client, 42, action="open", size=3)
+    _, mine = await act(client, 42, action="open")
 
     lobby = mine["lobby"]
     # Срок берётся из настроек сервера — тех же, по которым тикает таймер
     assert lobby["timeout"] > 0
     assert 0 < lobby["seconds_left"] <= lobby["timeout"]
-    assert lobby["can_start"] is False  # один в подвал не ходит
+    assert lobby["can_start"] is True  # выйти можно и одному
 
     raids.lobby_of_user(42).opened_at -= lobby["timeout"] - 5
     later = await state(client, 42)
@@ -115,11 +136,10 @@ async def test_the_lobby_carries_the_countdown(cellar):
 
 async def test_the_opener_goes_without_waiting(cellar):
     client, raids, _ = cellar
-    await act(client, 42, action="open", size=3)
+    await act(client, 42, action="open")
     lobby = raids.lobby_of_user(42)
     _, joined = await act(client, 43, action="join", lobby_id=lobby.id)
-    assert joined["raid"] is None  # отряд ещё неполон
-    assert joined["lobby"]["can_start"] is True
+    assert joined["raid"] is None  # гонга ещё не было
 
     status, body = await act(client, 42, action="go")
 
@@ -129,7 +149,7 @@ async def test_the_opener_goes_without_waiting(cellar):
 
 async def test_only_the_opener_goes_without_waiting(cellar):
     client, raids, _ = cellar
-    await act(client, 42, action="open", size=3)
+    await act(client, 42, action="open")
     lobby = raids.lobby_of_user(42)
     await act(client, 43, action="join", lobby_id=lobby.id)
 

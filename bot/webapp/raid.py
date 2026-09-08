@@ -27,9 +27,12 @@ from bot.game.raid import (
     MAX_PARTY,
     MIN_PARTY,
     Boss,
+    next_window,
+    schedule_text,
     CELLAR_BOSS,
     boss_fighter,
 )
+from bot.game.potions import RAID_PASS, get_potion
 from bot.models import Player
 from bot.raid_service import RaidLobby, RaidService, RaidSession
 from bot.webapp.card import slot_payload
@@ -212,6 +215,46 @@ def raid_payload(session: RaidSession, viewer_id: int) -> dict[str, Any]:
     }
 
 
+async def gate_payload(
+    player: Player, service: RaidService | None
+) -> dict[str, Any]:
+    """Пускают ли бойца в подвал прямо сейчас и на что.
+
+    Отсюда страница знает, что показать в окне согласия: тратить пропуск
+    из рюкзака, покупать его или вовсе не звать — босс уже повержен.
+    """
+    ticket = get_potion(RAID_PASS)
+    body: dict[str, Any] = {
+        "pass_code": RAID_PASS,
+        "pass_title": ticket.title,
+        "pass_price": ticket.price,
+        "pass_emoji": ticket.emoji,
+        "passes": player.potion_count(RAID_PASS),
+        "schedule": schedule_text(),
+        "open": False,
+        "window": "",
+        "next_window": next_window().title,
+        "won": False,
+        # Пропуск за это окно уже отдан: заходить можно сколько угодно
+        "spent": False,
+        "can_afford": player.can_afford(ticket.price),
+    }
+    if service is None:  # pragma: no cover - бот без рейдов не живёт
+        return body
+
+    window = service.window_now()
+    if window is None:
+        return body
+    seen = await service.db.raid_window(player.user_id, window.start)
+    body.update(
+        open=True,
+        window=window.title,
+        won=bool(seen and seen["won"]),
+        spent=bool(seen),
+    )
+    return body
+
+
 def build_raid(
     player: Player, service: RaidService | None, timeout: int = 0
 ) -> dict[str, Any]:
@@ -292,4 +335,10 @@ def raid_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-__all__ = ["build_raid", "lobby_payload", "raid_payload", "raid_row"]
+__all__ = [
+    "build_raid",
+    "gate_payload",
+    "lobby_payload",
+    "raid_payload",
+    "raid_row",
+]

@@ -101,6 +101,10 @@ async def use_potion(
     """Выпить склянку из рюкзака."""
     potion = _find(code)
     moment = now_ts() if now is None else now
+    if potion.is_pass:
+        raise PotionError(
+            f"«{potion.title}» не пьют — его предъявляют на входе в подвал."
+        )
     if player.potion_count(potion.code) <= 0:
         raise PotionError(f"«{potion.title}» в рюкзаке нет.")
 

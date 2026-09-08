@@ -328,7 +328,9 @@ def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
         "icon": potion.emoji,
         "image": potion.picture,
         "kind": potion.kind.value,
-        "consumable": True,
+        # Пропуск лежит в той же стопке, но его не пьют: кнопки «Использовать»
+        # у него нет — его тратит подвал на входе
+        "consumable": not potion.is_pass,
         # Временный вытесняет другой временный, восстановление — никого
         "boost": potion.is_boost,
         "slot": SECTION_CODE,

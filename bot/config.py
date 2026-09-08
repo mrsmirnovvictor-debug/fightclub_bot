@@ -36,19 +36,18 @@ class Config:
     # освободиться. Ноль — драться без перерывов (так гоняют тесты).
     round_break: int = 30
     # ---------- рейды ----------
-    # Сколько стоит собрать рейд. Ноль — пока бесплатно.
-    raid_price: int = 0
-    # Один рейд в сутки на созывающего; в чужие рейды это не мешает ходить
-    raid_cooldown: int = 0 if RAID_NO_WAITS else 24 * 60 * 60
-    # Сколько ждём отряд после /raid
-    raid_lobby_timeout: int = 60 if RAID_NO_WAITS else 10 * 60
+    # Подвал открыт по расписанию — окна лежат в bot/game/raid.py. Здесь
+    # только выключатель: True пускает бить босса когда угодно.
+    raid_any_time: bool = RAID_NO_WAITS
+    # Сколько ждём отряд после сбора: две минуты и гонг
+    raid_lobby_timeout: int = 60 if RAID_NO_WAITS else 2 * 60
     # Сколько у бойца есть на свой удар в волне; не успел — пропустил
     raid_turn_timeout: int = 30
     # Передышка после того, как отряд отработал столько ударов
     raid_strikes_per_break: int = 6
     raid_break: int = 0 if RAID_NO_WAITS else 30
-    # Кредиты каждому за победу
-    raid_reward: int = 50
+    # Кошель за победу: делится поровну между всеми, кто дошёл до конца
+    raid_purse: int = 100
     # Насколько босс прибавляет в здоровье с каждым лишним бойцом отряда
     raid_boss_hp_share: float = 0.4
     webapp_url: str = ""
@@ -111,8 +110,7 @@ def load_config() -> Config:
             os.getenv("TOURNAMENT_REGISTRATION", str(24 * 60 * 60))
         ),
         round_break=int(os.getenv("ROUND_BREAK", str(Config.round_break))),
-        raid_price=int(os.getenv("RAID_PRICE", str(Config.raid_price))),
-        raid_cooldown=int(os.getenv("RAID_COOLDOWN", str(Config.raid_cooldown))),
+
         raid_lobby_timeout=int(
             os.getenv("RAID_LOBBY_TIMEOUT", str(Config.raid_lobby_timeout))
         ),
@@ -123,7 +121,7 @@ def load_config() -> Config:
             os.getenv("RAID_STRIKES_PER_BREAK", str(Config.raid_strikes_per_break))
         ),
         raid_break=int(os.getenv("RAID_BREAK", str(Config.raid_break))),
-        raid_reward=int(os.getenv("RAID_REWARD", str(Config.raid_reward))),
+        raid_purse=int(os.getenv("RAID_PURSE", str(Config.raid_purse))),
         raid_boss_hp_share=float(
             os.getenv("RAID_BOSS_HP_SHARE", str(Config.raid_boss_hp_share))
         ),

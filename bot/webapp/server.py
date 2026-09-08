@@ -34,7 +34,7 @@ from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
-from bot.webapp.raid import build_raid, raid_row
+from bot.webapp.raid import build_raid, gate_payload, raid_row
 from bot.webapp.card import (
     build_market,
     build_card,
@@ -550,16 +550,18 @@ async def api_market_action(request: web.Request) -> web.Response:
 # ---------- рейды ----------
 
 
+async def _raid_state(request: web.Request, player) -> dict:
+    """Состояние подвала плюс то, на каких условиях туда пустят."""
+    raids = request.app.get(RAIDS_KEY)
+    body = build_raid(player, raids, request.app[CONFIG_KEY].raid_lobby_timeout)
+    body["gate"] = await gate_payload(player, raids)
+    return body
+
+
 async def api_raid(request: web.Request) -> web.Response:
     """Состояние раздела «Рейд» целиком: сбор, идущая волна или итог."""
     player = await _fighter(request)
-    return web.json_response(
-        build_raid(
-            player,
-            request.app.get(RAIDS_KEY),
-            request.app[CONFIG_KEY].raid_lobby_timeout,
-        )
-    )
+    return web.json_response(await _raid_state(request, player))
 
 
 async def api_raid_action(request: web.Request) -> web.Response:
@@ -572,10 +574,13 @@ async def api_raid_action(request: web.Request) -> web.Response:
     data = await _payload(request)
     action = str(data.get("action", ""))
     try:
+        # Пропуск списывается на входе. buy=1 — в рюкзаке пусто, и его
+        # покупают тут же, в один шаг с согласием
+        buy = bool(data.get("buy"))
         if action == "open":
-            await raids.open_raid(None, None, player, _int_field(data, "size"))
+            await raids.open_raid(None, None, player, buy=buy)
         elif action == "join":
-            await raids.join(_int_field(data, "lobby_id"), player)
+            await raids.join(_int_field(data, "lobby_id"), player, buy=buy)
         elif action == "leave":
             lobby = raids.lobby_of_user(player.user_id)
             if lobby is None:
@@ -611,9 +616,7 @@ async def api_raid_action(request: web.Request) -> web.Response:
         return web.json_response({"error": str(error)}, status=409)
 
     fresh = await request.app[DB_KEY].get_player(player.user_id)
-    return web.json_response(
-        build_raid(fresh or player, raids, request.app[CONFIG_KEY].raid_lobby_timeout)
-    )
+    return web.json_response(await _raid_state(request, fresh or player))
 
 
 # ---------- групповые бои ----------

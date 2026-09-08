@@ -184,6 +184,16 @@ CREATE TABLE IF NOT EXISTS raid_members (
 CREATE INDEX IF NOT EXISTS idx_raid_members_user
     ON raid_members(user_id, raid_id DESC);
 
+-- Попытки бойца в одном окне рейда: пропуск тратится один раз на окно, а
+-- побеждают в окне тоже один раз. Ключ — боец и начало окна, поэтому
+-- повторный заход в то же окно ничего не списывает.
+CREATE TABLE IF NOT EXISTS raid_window (
+    user_id   INTEGER NOT NULL,
+    opened_at INTEGER NOT NULL,  -- начало окна, секунды эпохи
+    won       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, opened_at)
+);
+
 CREATE TABLE IF NOT EXISTS battles (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id    INTEGER NOT NULL,
@@ -1049,23 +1059,45 @@ class Database:
         )
         await self.conn.commit()
 
-    async def raid_cooldown(self, user_id: int, seconds: int) -> int:
-        """Сколько ещё ждать этому бойцу до своего следующего рейда.
-
-        Ноль — можно собирать. Считаем от последнего сбора: ходить в чужие
-        рейды это не мешает, запрет только на свой.
-        """
-        if seconds <= 0:
-            return 0
+    async def raid_window(self, user_id: int, opened_at: int) -> dict[str, Any] | None:
+        """Что у бойца в этом окне: тратил ли пропуск и победил ли уже."""
         async with self.conn.execute(
-            "SELECT strftime('%s','now') - strftime('%s', created_at) AS ago "
-            "FROM raids WHERE opener_id = ? ORDER BY id DESC LIMIT 1",
-            (user_id,),
+            "SELECT * FROM raid_window WHERE user_id = ? AND opened_at = ?",
+            (user_id, opened_at),
         ) as cursor:
             row = await cursor.fetchone()
-        if row is None or row["ago"] is None:
-            return 0
-        return max(0, seconds - int(row["ago"]))
+        return dict(row) if row else None
+
+    async def start_raid_window(self, user_id: int, opened_at: int) -> bool:
+        """Открыть бойцу это окно. True — открыли впервые, пропуск нужен.
+
+        Вставка атомарна: если строка уже была, ничего не меняется и мы
+        отвечаем False. Так повторный заход в то же окно не спишет второй
+        пропуск, даже если два нажатия придут разом.
+        """
+        cursor = await self.conn.execute(
+            "INSERT OR IGNORE INTO raid_window (user_id, opened_at) VALUES (?, ?)",
+            (user_id, opened_at),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def drop_raid_window(self, user_id: int, opened_at: int) -> None:
+        """Отпустить окно: вход не состоялся, пропуск не списан."""
+        await self.conn.execute(
+            "DELETE FROM raid_window WHERE user_id = ? AND opened_at = ? AND won = 0",
+            (user_id, opened_at),
+        )
+        await self.conn.commit()
+
+    async def close_raid_window(self, user_id: int, opened_at: int) -> None:
+        """Отметить победу: в этом окне боец в подвал больше не пойдёт."""
+        await self.conn.execute(
+            "INSERT INTO raid_window (user_id, opened_at, won) VALUES (?, ?, 1) "
+            "ON CONFLICT(user_id, opened_at) DO UPDATE SET won = 1",
+            (user_id, opened_at),
+        )
+        await self.conn.commit()
 
     async def raids_of(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
         """Рейды этого бойца, свежие сверху — вместе с теми, с кем ходил."""

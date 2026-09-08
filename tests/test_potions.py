@@ -9,6 +9,7 @@ from bot.game.health import now_ts
 from bot.game.potions import (
     EFFECT_SECONDS,
     POTIONS,
+    RAID_PASS,
     ActiveEffect,
     PotionKind,
     get_potion,
@@ -57,9 +58,12 @@ def test_every_potion_has_a_price_and_does_something():
         assert potion.describe(), potion.code
         if potion.kind is PotionKind.HEAL:
             assert potion.heal > 0 and not potion.seconds
-        else:
+        elif potion.kind is PotionKind.BOOST:
             assert potion.seconds == EFFECT_SECONDS
             assert potion.bonus.total() or potion.hp
+        else:
+            # пропуск не пьют: у него ни срока, ни прибавок
+            assert potion.is_pass and not potion.seconds and not potion.heal
 
 
 def test_the_shelf_holds_exactly_what_was_asked_for():
@@ -257,8 +261,11 @@ def test_the_counter_has_a_shelf_for_everything_you_drink():
     assert misc["slot"] == "misc"
     assert misc["title"] == "Прочее"
     assert [row["code"] for row in misc["items"]] == [p.code for p in POTIONS]
-    assert all(row["consumable"] for row in misc["items"])
     assert all(row["suits"] == [] for row in misc["items"])
+    # пьётся всё, кроме пропуска: его тратит подвал, а не игрок
+    rows = {row["code"]: row for row in misc["items"]}
+    assert all(rows[p.code]["consumable"] is not p.is_pass for p in POTIONS)
+    assert rows[RAID_PASS]["consumable"] is False
 
 
 def test_a_locked_potion_is_shown_but_marked():
@@ -268,7 +275,8 @@ def test_a_locked_potion_is_shown_but_marked():
 
     assert rows["heal_small"]["unlocked"]
     assert not rows["boost_strength"]["unlocked"]
-    assert misc["open"] == 1
+    # с первого уровня открыты малый эликсир и рейд-пасс
+    assert misc["open"] == 2
 
 
 def test_the_card_carries_the_bag_of_bottles_and_what_is_running():

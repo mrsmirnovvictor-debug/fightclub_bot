@@ -22,6 +22,9 @@ from bot.game.health import now_ts
 # Сколько держится временный эффект
 EFFECT_SECONDS = 2 * 60 * 60
 
+# Код обычного рейд-пасса. Премиальный — отдельная задача.
+RAID_PASS = "raid_pass"
+
 # Ярлык раздела на витрине: эликсиры лежат отдельно от того, что надевают
 SECTION_CODE = "misc"
 SECTION_TITLE = "Прочее"
@@ -31,6 +34,10 @@ SECTION_EMOJI = "🧪"
 class PotionKind(str, Enum):
     HEAL = "heal"  # доливает здоровье сразу
     BOOST = "boost"  # держит прибавку два часа
+    # Рейд-пасс: его не пьют, его предъявляют на входе в подвал. Лежит в той
+    # же стопке, что и склянки, — не занимает слот, не снашивается, копится
+    # без счёта. Тратит его рейд, а не игрок.
+    PASS = "pass"
 
 
 @dataclass(frozen=True)
@@ -72,8 +79,15 @@ class Potion:
     def is_boost(self) -> bool:
         return self.kind is PotionKind.BOOST
 
+    @property
+    def is_pass(self) -> bool:
+        """Пропуск, а не склянка: его нельзя выпить."""
+        return self.kind is PotionKind.PASS
+
     def describe(self) -> str:
         """Короткая строка для списка: «💪 +10 на 2 ч»."""
+        if self.is_pass:
+            return "Пропуск в подвал"
         parts = []
         if self.heal:
             parts.append(f"❤️ +{self.heal} сразу")
@@ -173,6 +187,19 @@ POTIONS: tuple[Potion, ...] = (
         level_required=5,
         price=150,
     ),
+    # ---------- пропуска: их не пьют ----------
+    Potion(
+        RAID_PASS,
+        "Рейд-пасс",
+        "🎟",
+        PotionKind.PASS,
+        note=(
+            "Мятый талон с печатью клуба. Один такой пускает в подвал на "
+            "весь промежуток: проиграл — заходи снова, победил — талон "
+            "отработал своё."
+        ),
+        price=10,
+    ),
 )
 
 BY_CODE: dict[str, Potion] = {potion.code: potion for potion in POTIONS}
@@ -228,6 +255,7 @@ __all__ = [
     "BY_CODE",
     "EFFECT_SECONDS",
     "POTIONS",
+    "RAID_PASS",
     "SECTION_CODE",
     "SECTION_EMOJI",
     "SECTION_TITLE",

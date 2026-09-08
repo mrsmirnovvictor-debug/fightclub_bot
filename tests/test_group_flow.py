@@ -513,21 +513,31 @@ async def test_the_board_does_not_repeat_itself(arena):
 # ---------- рейд ----------
 
 
+async def save_raider(db, user) -> None:
+    """Боец с пропуском в рюкзаке: без него в подвал не пускают."""
+    from bot.game.potions import RAID_PASS
+
+    player = make_player(user.id, user.first_name, "warrior")
+    player.level = 5
+    await db.save_player(player)
+    await db.add_potion(user.id, RAID_PASS)
+
+
 async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raids):
     """/raid собирает отряд кнопкой, а бьют по боссу уже в карточке."""
     from bot.keyboards import RaidLobbyCB
 
+    from bot.game.raid import MAX_PARTY
+
     db, _, session = arena
     people = [as_user(900 + i, f"Рейдер{i}") for i in range(2)]
     for user in people:
-        player = make_player(user.id, user.first_name, "warrior")
-        player.level = 5
-        await db.save_player(player)
+        await save_raider(db, user)
 
-    await send(people[0], "/raid 2", thread_id=601)
+    await send(people[0], "/raid", thread_id=601)
 
     lobby = raids.lobby_of_user(people[0].id)
-    assert lobby is not None and lobby.size == 2
+    assert lobby is not None and lobby.size == MAX_PARTY
     assert "Босс Подвала" in session.texts[-1]
 
     await feed_callback(
@@ -538,6 +548,13 @@ async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raid
         is_topic_message=True,
     )
 
+    await feed_callback(
+        people[0],
+        GROUP,
+        RaidLobbyCB(action="go", lobby_id=lobby.id).pack(),
+        message_thread_id=601,
+        is_topic_message=True,
+    )
     raid = raids.raid_of_user(people[0].id)
     assert raid is not None and len(raid.fighters) == 2
     assert any("Волна 1" in text for text in session.texts)
@@ -565,11 +582,9 @@ async def test_the_opener_leads_the_party_out_from_the_chat(arena, raids):
     db, _, session = arena
     people = [as_user(960 + i, f"Рейдер{i}") for i in range(2)]
     for user in people:
-        player = make_player(user.id, user.first_name, "warrior")
-        player.level = 5
-        await db.save_player(player)
+        await save_raider(db, user)
 
-    await send(people[0], "/raid 3", thread_id=603)
+    await send(people[0], "/raid", thread_id=603)
     lobby = raids.lobby_of_user(people[0].id)
     await feed_callback(
         people[1],

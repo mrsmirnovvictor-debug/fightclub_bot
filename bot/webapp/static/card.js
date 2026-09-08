@@ -374,6 +374,12 @@ function thingCard(item, credits, shop) {
     return box;
   }
 
+  // Пропуск не надевают и не пьют — он ждёт входа в подвал
+  if (item.kind === "pass") {
+    box.appendChild(body);
+    return box;
+  }
+
   item.slots.forEach((slot, index) => {
     const text = index === 0 ? "Надеть" : "Во вторую руку";
     buttons.appendChild(
@@ -1956,9 +1962,11 @@ function raidShape(data) {
   // нужно — часы досчитывают на месте.
   const raid = data.raid;
   const lobby = data.lobby;
+  const gate = data.gate || {};
   return JSON.stringify([
     bossOpen,
     data.can_fight,
+    [gate.open, gate.won, gate.spent, gate.passes, gate.window],
     raid && [
       raid.id, raid.wave, raid.resting, raid.finished, raid.acted, raid.alive,
       raid.boss.hp, raid.log.length,
@@ -2098,59 +2106,76 @@ function bossStats(boss) {
   return box;
 }
 
-// Сколько человек в отряде — выбор человека, а не наш. Держим его между
-// перерисовками: экран опрашивает сервер раз в две секунды, и без этого
-// список каждый раз возвращался бы к началу.
-let raidSize = null;
+async function raidTicket(gate, what) {
+  // Окно согласия на вход в подвал. Пропуск есть — тратим его; пропуска
+  // нет — покупаем тут же, одним «Подтвердить»; окно уже оплачено — не
+  // спрашиваем вовсе.
+  if (gate.spent) return { go: true, buy: false };
+  if (gate.passes > 0) {
+    const ok = await askConfirm(
+      gate.pass_emoji + " " + what,
+      "Вы используете " + gate.pass_title + " из инвентаря. Останется: " +
+        (gate.passes - 1)
+    );
+    return { go: ok, buy: false };
+  }
+  if (!gate.can_afford) {
+    popup(
+      "Нужен " + gate.pass_title,
+      "В инвентаре пусто, и на счету меньше " + gate.pass_price +
+        " 💰. Купить его можно в лавке клуба, раздел «Прочее»."
+    );
+    return { go: false, buy: false };
+  }
+  const ok = await askConfirm(
+    gate.pass_emoji + " " + what,
+    "В инвентаре нет пропусков. Купить " + gate.pass_title + " за " +
+      gate.pass_price + " кредитов и войти?",
+    "Купить и войти"
+  );
+  return { go: ok, buy: true };
+}
+
+async function raidEnter(gate, what, payload) {
+  const answer = await raidTicket(gate, what);
+  if (!answer.go) return;
+  raidAction({ ...payload, buy: answer.buy });
+}
 
 function raidOpenForm(data) {
+  const gate = data.gate || {};
   const box = document.createElement("div");
   box.className = "fight-open";
+
   const line = document.createElement("p");
   line.className = "fight-line";
-  line.textContent = "Рейд собирают раз в сутки.";
+  line.textContent = gate.open
+    ? "Подвал открыт " + gate.window + "."
+    : "Подвал закрыт. Босса бьют " + gate.schedule + ".";
   box.appendChild(line);
 
-  const caption = document.createElement("label");
-  caption.className = "field-head";
-  caption.htmlFor = "raid-size";
-  caption.textContent = "Выберите количество участников:";
-  box.appendChild(caption);
-
-  // Список и «Начать» стоят в строку: так форма занимает две строки вместо
-  // четырёх, и кнопка рядом с выбранным числом
-  const row = document.createElement("div");
-  row.className = "raid-open-row";
-
-  const select = document.createElement("select");
-  select.id = "raid-size";
-  select.className = "field-input";
-  select.disabled = !data.can_fight;
-  for (let size = data.min_party; size <= data.max_party; size += 1) {
-    const option = document.createElement("option");
-    option.value = String(size);
-    option.textContent = String(size);
-    select.appendChild(option);
-  }
-  if (raidSize === null) raidSize = data.max_party;
-  select.value = String(raidSize);
-  select.addEventListener("change", () => {
-    raidSize = Number(select.value);
-  });
-  row.appendChild(select);
+  const note = document.createElement("p");
+  note.className = "fight-row-note";
+  note.textContent = gate.won
+    ? "Босс повержен: в это окно ты своё взял. Следующее — " +
+      gate.next_window + "."
+    : gate.spent
+      ? "Пропуск за это окно отдан — заходи хоть до самого конца."
+      : gate.open
+        ? "Вход по пропуску. В инвентаре: " + (gate.passes || 0) + " шт."
+        : "Ближайшее окно " + gate.next_window + ".";
+  box.appendChild(note);
 
   const btn = document.createElement("button");
   btn.type = "button";
   btn.id = "raid-open";
-  btn.className = "btn";
-  btn.textContent = "🩸 Начать";
-  btn.disabled = !data.can_fight;
+  btn.className = "btn wide";
+  btn.textContent = "🩸 Собрать отряд";
+  btn.disabled = !data.can_fight || !gate.open || gate.won;
   btn.addEventListener("click", () =>
-    raidAction({ action: "open", size: Number(select.value) })
+    raidEnter(gate, "Собрать отряд", { action: "open" })
   );
-  row.appendChild(btn);
-
-  box.appendChild(row);
+  box.appendChild(btn);
   return box;
 }
 
@@ -2188,9 +2213,16 @@ function raidLobby(lobby, mine) {
   btn.type = "button";
   btn.className = mine ? "btn secondary wide" : "btn wide";
   btn.textContent = mine ? "Выйти из отряда" : "🩸 В отряд";
-  btn.addEventListener("click", () =>
-    raidAction(mine ? { action: "leave" } : { action: "join", lobby_id: lobby.id })
-  );
+  btn.addEventListener("click", () => {
+    if (mine) {
+      raidAction({ action: "leave" });
+      return;
+    }
+    raidEnter((raidData && raidData.gate) || {}, "В отряд", {
+      action: "join",
+      lobby_id: lobby.id,
+    });
+  });
   box.appendChild(btn);
   return box;
 }

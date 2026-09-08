@@ -140,8 +140,15 @@ EMPTY_RAID = {
         {"zone": "head", "title": "Голова + Корпус"},
         {"zone": "chest", "title": "Корпус + Живот"},
     ],
-    "min_party": 2, "max_party": 10, "can_fight": True,
+    "min_party": 1, "max_party": 10, "can_fight": True,
     "raid": None, "lobby": None, "lobbies": [], "boss": BOSS_CARD,
+    "gate": {
+        "pass_code": "raid_pass", "pass_title": "Рейд-пасс", "pass_price": 10,
+        "pass_emoji": "🎟", "passes": 2, "schedule": "0–2, 8–10, 12–14, 16–18, 20–22 мск",
+        "open": True, "window": "с 20:00 до 22:00 мск",
+        "next_window": "с 00:00 до 02:00 мск", "won": False, "spent": False,
+        "can_afford": True,
+    },
 }
 
 
@@ -1997,20 +2004,55 @@ async def test_the_boss_card_of_a_live_raid_says_so(server):
         await browser.close()
 
 
-async def test_an_empty_cellar_offers_to_gather_a_party(server):
-    """Размер отряда выбирают списком, а не кнопкой на каждое число."""
-    sent = []
+async def test_an_empty_cellar_asks_for_a_pass(server):
+    """Размер отряда не спрашивают — спрашивают пропуск."""
+    sent, asked = [], []
 
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server)
 
         body = await page.locator("#raid-body").inner_text()
-        assert "Выберите количество участников:" in body
-        assert "Собери отряд" in await page.locator("#raid-note").inner_text()
+        assert "Подвал открыт с 20:00 до 22:00 мск" in body
+        assert "В инвентаре: 2 шт." in body
+        assert await page.locator("#raid-size").count() == 0
 
-        sizes = await page.locator("#raid-size option").all_inner_texts()
-        assert sizes == [str(size) for size in range(2, 11)]
-        assert await page.locator("#raid-size").input_value() == "10"
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(raid_with_wave()),
+            )
+
+        def on_dialog(dialog):
+            asked.append(dialog.message)
+            asyncio.ensure_future(dialog.dismiss())
+
+        await page.route("**/api/raid", catch)
+        page.on("dialog", on_dialog)
+
+        # отказ — пропуск на месте
+        await page.locator("#raid-open").click()
+        await page.wait_for_timeout(200)
+        assert sent == []
+        assert "Вы используете Рейд-пасс из инвентаря" in asked[0]
+        assert "Останется: 1" in asked[0]
+
+        page.remove_listener("dialog", on_dialog)
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+        await page.locator("#raid-open").click()
+        await page.wait_for_selector("#raid-go")
+
+        assert sent == [{"action": "open", "buy": False}]
+        await browser.close()
+
+
+async def test_an_empty_pocket_offers_to_buy_a_pass(server):
+    """Пропусков нет — предлагаем купить в том же окне, одним согласием."""
+    empty = {**EMPTY_RAID, "gate": {**EMPTY_RAID["gate"], "passes": 0}}
+    sent, asked = [], []
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, empty)
 
         async def catch(route):
             sent.append(route.request.post_data_json)
@@ -2020,45 +2062,45 @@ async def test_an_empty_cellar_offers_to_gather_a_party(server):
             )
 
         await page.route("**/api/raid", catch)
-        await page.select_option("#raid-size", "6")
-        assert sent == []  # выбор сам по себе рейда не собирает
-
+        page.on("dialog", lambda dialog: (
+            asked.append(dialog.message), asyncio.ensure_future(dialog.accept())
+        ))
         await page.locator("#raid-open").click()
         await page.wait_for_selector("#raid-go")
 
-        assert sent == [{"action": "open", "size": 6}]
+        assert "Купить Рейд-пасс за 10 кредитов и войти?" in asked[0]
+        assert sent == [{"action": "open", "buy": True}]
         await browser.close()
 
 
-async def test_the_chosen_party_size_survives_a_refresh(server):
-    """Экран опрашивает подвал раз в две секунды — выбор не должен сбрасываться."""
+async def test_a_beaten_boss_closes_the_window(server):
+    """Победил в это окно — кнопки нет, и сказано почему."""
+    done = {
+        **EMPTY_RAID,
+        "gate": {**EMPTY_RAID["gate"], "won": True, "spent": True},
+    }
     async with async_playwright() as pw:
-        browser, page = await open_raid(pw, server)
+        browser, page = await open_raid(pw, server, done)
 
-        await page.select_option("#raid-size", "3")
-        # ждём следующего опроса и перерисовки формы
-        await page.wait_for_timeout(2500)
-
-        assert await page.locator("#raid-size").input_value() == "3"
+        body = await page.locator("#raid-body").inner_text()
+        assert "Босс повержен: в это окно ты своё взял" in body
+        assert "с 00:00 до 02:00 мск" in body
+        assert await page.locator("#raid-open").is_disabled()
         await browser.close()
 
 
-async def test_the_poll_does_not_tear_the_form_out_from_under_the_finger(server):
-    """Пока ничего не поменялось, экран не перерисовывается.
-
-    Раньше опрос каждые две секунды пересобирал раздел целиком, и открытый
-    выпадающий список схлопывался, не дав выбрать число.
-    """
+async def test_a_shut_cellar_says_when_it_opens(server):
+    shut = {
+        **EMPTY_RAID,
+        "gate": {**EMPTY_RAID["gate"], "open": False, "window": ""},
+    }
     async with async_playwright() as pw:
-        browser, page = await open_raid(pw, server)
+        browser, page = await open_raid(pw, server, shut)
 
-        # помечаем живой список: перерисовка форму пересоздаёт, и метка уйдёт
-        await page.evaluate(
-            "document.getElementById('raid-size').dataset.alive = 'yes'"
-        )
-        await page.wait_for_timeout(3000)  # полтора опроса
-
-        assert await page.locator("#raid-size").get_attribute("data-alive") == "yes"
+        body = await page.locator("#raid-body").inner_text()
+        assert "Подвал закрыт. Босса бьют 0–2, 8–10, 12–14, 16–18, 20–22 мск." in body
+        assert "Ближайшее окно с 00:00 до 02:00 мск." in body
+        assert await page.locator("#raid-open").is_disabled()
         await browser.close()
 
 
@@ -2101,10 +2143,12 @@ async def test_a_gathering_party_can_be_joined(server):
             )
 
         await page.route("**/api/raid", catch)
+        # чужой сбор — тот же пропуск и то же согласие, что и на свой
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
         await page.get_by_role("button", name="🩸 В отряд").click()
         await page.wait_for_selector("#raid-go")
 
-        assert sent == [{"action": "join", "lobby_id": 5}]
+        assert sent == [{"action": "join", "lobby_id": 5, "buy": False}]
         await browser.close()
 
 

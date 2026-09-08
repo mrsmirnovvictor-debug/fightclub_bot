@@ -10,7 +10,7 @@ import pytest
 
 from bot.config import Config
 from bot.game.combat import Fighter
-from bot.game.equipment import get_item
+from bot.game.potions import RAID_PASS
 from bot.game.raid import (
     BOSS_ID,
     LEVELS_ABOVE,
@@ -21,7 +21,14 @@ from bot.game.raid import (
     boss_fighter,
     boss_level,
     judge_raid,
-    prize_for,
+    elixir_for,
+    ELIXIR_CHANCE,
+    ELIXIR_PRIZES,
+    MOSCOW,
+    RAID_PURSE,
+    next_window,
+    shares_of,
+    window_of,
 )
 from bot.raid_service import RaidError, RaidService
 from tests.test_duel_flow import FakeBot
@@ -39,7 +46,8 @@ def make_service(bot, db, **over) -> RaidService:
         raid_lobby_timeout=600,
         raid_turn_timeout=600,
         raid_break=0,
-        raid_price=0,
+        # Расписание в тестах по умолчанию снято: проверяет его свой тест
+        raid_any_time=True,
     )
     settings.update(over)
     return RaidService(
@@ -52,24 +60,30 @@ def bot():
     return FakeBot()
 
 
-async def fill(db, count: int, first_id: int = 1, level: int = 5) -> list:
+async def fill(
+    db, count: int, first_id: int = 1, level: int = 5, passes: int = 1
+) -> list:
+    """Бойцы с пропусками в рюкзаке: без них в подвал не пускают."""
     players = []
     for index in range(count):
         player = make_player(first_id + index, f"Боец{first_id + index}")
         player.level = level
+        player.credits = 500
         await db.save_player(player)
+        for _ in range(passes):
+            player.potions[RAID_PASS] = await db.add_potion(player.user_id, RAID_PASS)
         players.append(player)
     return players
 
 
 async def gather(service, db, count: int = 2, size: int | None = None):
-    """Собрать отряд и выйти на босса."""
+    """Собрать отряд и выйти на босса. size остался для читаемости вызовов."""
     players = await fill(db, count)
-    lobby = await service.open_raid(
-        CHAT_ID, THREAD_ID, players[0], size or count, chat_title="Клуб"
-    )
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], chat_title="Клуб")
     for player in players[1:]:
         await service.join(lobby.id, player)
+    if service.raid_of_user(players[0].user_id) is None:
+        await service.start_now(lobby.id, players[0].user_id)
     return players, service.raid_of_user(players[0].user_id)
 
 
@@ -180,64 +194,162 @@ def test_while_both_stand_the_raid_goes_on():
     assert judge_raid(make_fighter(BOSS_ID, 40), {1: make_fighter(1, 10)}) is None
 
 
-def test_the_prize_is_something_you_can_wear_today():
-    """Вещь с прилавка своего уровня: приз на вырост — мёртвый груз."""
+def test_the_prize_is_an_elixir_and_not_every_time():
+    """Лучшему по урону — склянка, и то не всегда."""
+    from bot.game.potions import get_potion
+
     rng = random.Random(3)
-    for _ in range(20):
-        code = prize_for(2, rng)
-        assert get_item(code).level_required <= 2
+    got = [elixir_for(rng) for _ in range(2000)]
+    won = [code for code in got if code]
+    assert set(won) == set(ELIXIR_PRIZES)
+    assert all(get_potion(code).is_boost for code in won)
+    # доля выпавших близка к заявленной
+    assert abs(len(won) / len(got) - ELIXIR_CHANCE) < 0.05
+
+
+def test_the_purse_is_split_evenly_and_nothing_is_lost():
+    """Сто кредитов делятся поровну, остаток уходит первым по урону."""
+    for party in range(1, MAX_PARTY + 1):
+        shares = shares_of(RAID_PURSE, party)
+        assert len(shares) == party
+        assert sum(shares) == RAID_PURSE  # округление ничего не съедает
+        assert max(shares) - min(shares) <= 1
+    assert shares_of(RAID_PURSE, 1) == [100]
+    assert shares_of(RAID_PURSE, 10) == [10] * 10
+
+
+# ---------- расписание подвала ----------
+
+
+def moscow(hour: int, minute: int = 0, day: int = 8) -> int:
+    from datetime import datetime
+
+    return int(datetime(2026, 9, day, hour, minute, tzinfo=MOSCOW).timestamp())
+
+
+def test_the_cellar_opens_five_times_a_day():
+    """Пять окон по два часа, всё остальное время подвал закрыт."""
+    open_hours = {0, 1, 8, 9, 12, 13, 16, 17, 20, 21}
+    for hour in range(24):
+        window = window_of(moscow(hour))
+        assert bool(window) is (hour in open_hours), hour
+    assert window_of(moscow(20, 59)).title == "с 20:00 до 22:00 мск"
+    assert window_of(moscow(8)).start == moscow(8)
+
+
+def test_the_next_window_is_the_one_you_wait_for():
+    assert next_window(moscow(3)).start == moscow(8)
+    assert next_window(moscow(9)).start == moscow(12)
+    # после последнего окна суток ждут первого завтрашнего
+    assert next_window(moscow(23)).start == moscow(0, day=9)
 
 
 # ---------- сбор отряда ----------
 
 
 async def test_a_raid_gathers_a_party(bot, db):
+    """Мест всегда десять: отряд — это те, кто успел зайти до гонга."""
     service = make_service(bot, db)
     players = await fill(db, 3)
 
-    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], 3)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0])
     await service.join(lobby.id, players[1])
 
-    assert lobby.total == 2 and not lobby.is_full
+    assert (lobby.total, lobby.size) == (2, MAX_PARTY)
+    assert not lobby.is_full  # десятерых почти никогда и не набирается
     assert service.lobby_of_user(players[1].user_id) is lobby
-    # третий добирает состав — и рейд начинается сам
+
     await service.join(lobby.id, players[2])
-    assert service.raid_of_user(players[0].user_id) is not None
+    session = await service.start_now(lobby.id, players[0].user_id)
+    assert session is not None and len(session.fighters) == 3
 
 
-async def test_the_party_size_has_edges(bot, db):
+async def test_a_lone_fighter_may_go_down_alone(bot, db):
+    """Отряд из одного — можно: босс подстроится под кого угодно."""
     service = make_service(bot, db)
     player = (await fill(db, 1))[0]
 
-    with pytest.raises(RaidError, match="от 2 до 10"):
-        await service.open_raid(CHAT_ID, THREAD_ID, player, 1)
-    with pytest.raises(RaidError, match="от 2 до 10"):
-        await service.open_raid(CHAT_ID, THREAD_ID, player, MAX_PARTY + 1)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, player)
+    session = await service.start_now(lobby.id, player.user_id)
+
+    assert session is not None and len(session.fighters) == 1
+    assert lobby.size == MAX_PARTY  # мест всегда десять, набирается кто успел
 
 
-async def test_one_raid_a_day_from_one_fighter(bot, db):
-    """Свой рейд — раз в сутки. В чужой можно идти хоть сразу.
+# ---------- пропуска ----------
 
-    Запрет задаём тесту явно: в настройках клуба он сейчас снят на время
-    ручных проверок, а правило от этого никуда не делось.
-    """
-    service = make_service(bot, db, raid_cooldown=24 * 60 * 60)
-    players = await fill(db, 3)
-    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], 2)
-    await service.leave(lobby.id, players[0].user_id)  # сбор закрылся сам собой
 
-    # запись о попытке снимается вместе с несостоявшимся сбором
-    await service.open_raid(CHAT_ID, THREAD_ID, players[0], 2)
-    await service.join(service.lobby_of_user(players[0].user_id).id, players[1])
+async def test_the_pass_is_taken_once_per_window(bot, db):
+    """Один пропуск на окно: проиграл — заходи снова, платить не нужно."""
+    service = make_service(bot, db)
+    player = (await fill(db, 1))[0]
+    assert player.potion_count(RAID_PASS) == 1
 
-    session = service.raid_of_user(players[0].user_id)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, player)
+    assert (await db.get_player(player.user_id)).potion_count(RAID_PASS) == 0
+
+    # вышел из лобби и собрал заново — второй пропуск не нужен
+    await service.leave(lobby.id, player.user_id)
+    fresh = await db.get_player(player.user_id)
+    await service.open_raid(CHAT_ID, THREAD_ID, fresh)
+    assert (await db.get_player(player.user_id)).potion_count(RAID_PASS) == 0
+
+
+async def test_without_a_pass_the_cellar_does_not_open(bot, db):
+    service = make_service(bot, db)
+    player = (await fill(db, 1, passes=0))[0]
+
+    with pytest.raises(RaidError, match="Рейд-пасс"):
+        await service.open_raid(CHAT_ID, THREAD_ID, player)
+    assert service.lobby_of_user(player.user_id) is None
+
+
+async def test_a_pass_can_be_bought_on_the_way_in(bot, db):
+    """Пропуска нет, но есть кредиты — покупаем одним движением."""
+    from bot.game.potions import get_potion
+
+    service = make_service(bot, db)
+    player = (await fill(db, 1, passes=0))[0]
+    purse = player.credits
+
+    await service.open_raid(CHAT_ID, THREAD_ID, player, buy=True)
+
+    saved = await db.get_player(player.user_id)
+    assert saved.credits == purse - get_potion(RAID_PASS).price
+    assert saved.potion_count(RAID_PASS) == 0  # купили и тут же отдали
+
+
+async def test_the_cellar_is_shut_outside_its_hours(bot, db, monkeypatch):
+    """Расписание сильнее пропуска: не в окно — не пустят."""
+    import bot.game.raid as rules
+
+    service = make_service(bot, db, raid_any_time=False)
+    player = (await fill(db, 1))[0]
+    monkeypatch.setattr(rules, "now_ts", lambda: moscow(3))  # глухая ночь
+
+    with pytest.raises(RaidError, match="Подвал закрыт"):
+        await service.open_raid(CHAT_ID, THREAD_ID, player)
+    # пропуск остался в рюкзаке: за закрытую дверь не платят
+    assert (await db.get_player(player.user_id)).potion_count(RAID_PASS) == 1
+
+    monkeypatch.setattr(rules, "now_ts", lambda: moscow(9))  # окно открылось
+    await service.open_raid(CHAT_ID, THREAD_ID, player)
+    assert service.lobby_of_user(player.user_id) is not None
+
+
+async def test_one_win_per_window(bot, db):
+    """Победил — в это окно больше не пустят, даже с новым пропуском."""
+    service = make_service(bot, db)
+    players, session = await gather(service, db, 2)
     weaken(session)
     await storm(service, session, players)
+    assert service.raid_of_user(players[0].user_id) is None
 
-    with pytest.raises(RaidError, match="раз в сутки"):
-        await service.open_raid(CHAT_ID, THREAD_ID, players[0], 2)
-    # второму собирать никто не мешал
-    await service.open_raid(CHAT_ID, THREAD_ID, players[1], 2)
+    fresh = await db.get_player(players[0].user_id)
+    fresh.potions[RAID_PASS] = await db.add_potion(fresh.user_id, RAID_PASS)
+    with pytest.raises(RaidError, match="Босс уже повержен"):
+        await service.open_raid(CHAT_ID, THREAD_ID, fresh)
+    assert (await db.get_player(fresh.user_id)).potion_count(RAID_PASS) == 1
 
 
 async def test_the_gathering_counts_down_from_the_moment_it_opened(bot, db):
@@ -245,7 +357,7 @@ async def test_the_gathering_counts_down_from_the_moment_it_opened(bot, db):
     service = make_service(bot, db, raid_lobby_timeout=600)
     player = (await fill(db, 1))[0]
 
-    lobby = await service.open_raid(CHAT_ID, THREAD_ID, player, 3)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, player)
 
     assert lobby.seconds_left(600) == 600
     lobby.opened_at -= 570  # прошло девять с половиной минут
@@ -259,7 +371,7 @@ async def test_the_opener_can_leave_without_waiting(bot, db):
     """Кнопка «Выходим сейчас»: отряд неполон, но созвавший решил идти."""
     service = make_service(bot, db)
     players = await fill(db, 3)
-    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], 3)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0])
     await service.join(lobby.id, players[1])
 
     session = await service.start_now(lobby.id, players[0].user_id)
@@ -272,22 +384,12 @@ async def test_the_opener_can_leave_without_waiting(bot, db):
 async def test_only_the_opener_leads_the_party_out(bot, db):
     service = make_service(bot, db)
     players = await fill(db, 3)
-    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], 3)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0])
     await service.join(lobby.id, players[1])
 
     with pytest.raises(RaidError, match="кто его собрал"):
         await service.start_now(lobby.id, players[1].user_id)
     assert service.raid_of_user(players[0].user_id) is None
-
-
-async def test_one_fighter_is_not_a_party(bot, db):
-    service = make_service(bot, db)
-    player = (await fill(db, 1))[0]
-    lobby = await service.open_raid(CHAT_ID, THREAD_ID, player, 3)
-
-    with pytest.raises(RaidError, match="хотя бы"):
-        await service.start_now(lobby.id, player.user_id)
-    assert service.lobby_of_user(player.user_id) is lobby
 
 
 async def test_the_early_start_button_shows_up_with_the_second_fighter(bot, db):
@@ -296,7 +398,7 @@ async def test_the_early_start_button_shows_up_with_the_second_fighter(bot, db):
 
     service = make_service(bot, db)
     players = await fill(db, 3)
-    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], 3)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0])
 
     def buttons():
         return [
@@ -305,33 +407,36 @@ async def test_the_early_start_button_shows_up_with_the_second_fighter(bot, db):
             for button in row
         ]
 
-    assert not any("Выходим сейчас" in text for text in buttons())
+    # выйти можно хоть одному, поэтому кнопка есть с самого начала
+    assert any("Выходим сейчас" in text for text in buttons())
     await service.join(lobby.id, players[1])
     assert any("Выходим сейчас" in text for text in buttons())
 
 
-async def test_a_failed_gathering_gives_the_money_back(bot, db):
-    """Сбор не состоялся — и попытка, и кредиты возвращаются."""
-    service = make_service(bot, db, raid_price=25)
+async def test_a_failed_gathering_keeps_the_window_open(bot, db):
+    """Сбор не состоялся — пропуск не вернётся, но окно уже открыто."""
+    service = make_service(bot, db)
     player = (await fill(db, 1))[0]
-    player.credits = 100
-    await db.save_player(player)
 
-    lobby = await service.open_raid(CHAT_ID, THREAD_ID, player, 3)
-    assert (await db.get_player(player.user_id)).credits == 75
-
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, player)
     await service._cancel_lobby(lobby, "время вышло")
 
-    assert (await db.get_player(player.user_id)).credits == 100
-    assert await db.raid_cooldown(player.user_id, 24 * 3600) == 0
+    saved = await db.get_player(player.user_id)
+    assert saved.potion_count(RAID_PASS) == 0
+    # и следующий заход в это же окно ничего не стоит
+    await service.open_raid(CHAT_ID, THREAD_ID, saved)
+    assert service.lobby_of_user(player.user_id) is not None
 
 
-async def test_a_raid_cannot_be_afforded_without_credits(bot, db):
-    service = make_service(bot, db, raid_price=500)
-    player = (await fill(db, 1))[0]
+async def test_a_pass_cannot_be_bought_without_credits(bot, db):
+    service = make_service(bot, db)
+    player = (await fill(db, 1, passes=0))[0]
+    player.credits = 2
+    await db.save_player(player)
 
-    with pytest.raises(RaidError, match="стоит 500"):
-        await service.open_raid(CHAT_ID, THREAD_ID, player, 2)
+    with pytest.raises(RaidError, match="Не хватает кредитов"):
+        await service.open_raid(CHAT_ID, THREAD_ID, player, buy=True)
+    assert service.lobby_of_user(player.user_id) is None
 
 
 # ---------- волны ----------
@@ -413,32 +518,45 @@ async def test_nobody_swings_twice_in_one_wave(bot, db):
 # ---------- итог и награда ----------
 
 
-async def test_a_dead_boss_pays_everyone_and_the_top_three(bot, db):
-    service = make_service(bot, db, raid_reward=50)
+async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
+    """Кошель делится поровну, вещей за рейд не дают вовсе."""
+    service = make_service(bot, db, raid_purse=100)
     players, session = await gather(service, db, 4, size=4)
+    purse = [(await db.get_player(p.user_id)).credits for p in players]
 
-    # несколько волн — чтобы у каждого был свой счёт по урону: босс со щитом
-    # держит удар, и с первой волны кто-нибудь да остаётся с нулём
     for _ in range(4):
         await storm(service, session, players)
     weaken(session, hp=1)
     await storm(service, session, players)
 
+    paid = [
+        (await db.get_player(p.user_id)).credits - was
+        for p, was in zip(players, purse)
+    ]
+    assert sum(paid) == 100  # весь кошель дошёл до отряда
+    assert max(paid) - min(paid) <= 1  # и разошёлся поровну
     for player in players:
-        fresh = await db.get_player(player.user_id)
-        assert fresh.credits >= 50, "кредиты за победу получают все"
-        assert fresh.wins == 1
-    # вещи достались троим, и только тем, кто успел набить урон
-    gear = [len(await db.list_gear(player.user_id)) for player in players]
-    assert sum(1 for count in gear if count) == 3
+        assert (await db.get_player(player.user_id)).wins == 1
+        assert await db.list_gear(player.user_id) == [], "вещей за рейд не дают"
 
     raids = await db.raids_of(players[0].user_id)
     assert raids and raids[0]["outcome"] == "win"
     assert raids[0]["boss_level"] == session.enemy.level
 
 
+async def test_a_lone_raider_takes_the_whole_purse(bot, db):
+    service = make_service(bot, db, raid_purse=100)
+    players, session = await gather(service, db, 1)
+    was = (await db.get_player(players[0].user_id)).credits
+
+    weaken(session)
+    await storm(service, session, players)
+
+    assert (await db.get_player(players[0].user_id)).credits == was + 100
+
+
 async def test_a_lost_raid_pays_nothing(bot, db):
-    service = make_service(bot, db, raid_reward=50)
+    service = make_service(bot, db, raid_purse=100)
     players, session = await gather(service, db, 2)
     for user_id, fighter in session.fighters.items():
         fighter.hp = 1 if user_id == players[0].user_id else 0
@@ -449,7 +567,7 @@ async def test_a_lost_raid_pays_nothing(bot, db):
 
     for player in players:
         fresh = await db.get_player(player.user_id)
-        assert fresh.credits == 0 and fresh.losses == 1
+        assert fresh.credits == 500 and fresh.losses == 1  # кошелёк не тронут
         assert await db.list_gear(player.user_id) == []
     assert (await db.raids_of(players[0].user_id))[0]["outcome"] == "loss"
 

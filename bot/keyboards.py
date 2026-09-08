@@ -219,7 +219,8 @@ def potions_keyboard(
     builder = InlineKeyboardBuilder()
     for potion in POTIONS:
         count = bag.get(potion.code, 0)
-        if count:
+        # Пропуск в этой же стопке, но пить его нельзя — кнопки ему не даём
+        if count and not potion.is_pass:
             builder.button(
                 text=f"🥤 Выпить {potion.title} ({count})",
                 callback_data=DrinkCB(code=potion.code),

@@ -42,8 +42,17 @@ from bot.game.narrator import (
     raid_result,
     strike_lines,
 )
+from bot.game.potions import RAID_PASS, get_potion
+from bot.potions_service import PotionError, buy_potion
 from bot.game.raid import (
     BOSS_ID,
+    Window,
+    any_window,
+    elixir_for,
+    next_window,
+    schedule_text,
+    shares_of,
+    window_of,
     MAX_PARTY,
     MAX_WAVES,
     MIN_PARTY,
@@ -55,7 +64,6 @@ from bot.game.raid import (
     boss_fighter,
     damage_board,
     judge_raid,
-    prize_for,
 )
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import raid_lobby_keyboard
@@ -110,7 +118,6 @@ class RaidLobby:
     chat_title: str = ""
     # Номер записи в базе: по нему считается «один рейд в сутки»
     record_id: int = 0
-    price: int = 0
     members: dict[int, str] = field(default_factory=dict)  # боец → прозвище
     levels: dict[int, int] = field(default_factory=dict)
     message_id: int | None = None
@@ -168,6 +175,8 @@ class RaidSession:
     resting: bool = False
     finished: bool = False
     summary: list[str] = field(default_factory=list)
+    # Кому сколько досталось из кошелька: считается один раз на итоге
+    shares: dict[int, int] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
@@ -214,59 +223,86 @@ class RaidService:
 
     # ---------- сбор отряда ----------
 
+    def window_now(self, moment: int | None = None) -> Window | None:
+        """Открыт ли подвал. Выключатель в настройках снимает расписание."""
+        if self.config.raid_any_time:
+            return any_window(moment)
+        return window_of(moment)
+
+    async def _admit(self, player: Player, buy: bool = False) -> None:
+        """Пустить бойца в подвал: расписание, победа в окне и пропуск.
+
+        Пропуск списывается один раз на окно. Проиграл или вышел из лобби —
+        заходи снова бесплатно, окно уже открыто. Победил — окно закрылось,
+        и следующая попытка будет только в следующем.
+        """
+        window = self.window_now()
+        if window is None:
+            raise RaidError(
+                "Подвал закрыт. Босса пускают бить "
+                f"{schedule_text()} — ближайшее окно {next_window().title}."
+            )
+        seen = await self.db.raid_window(player.user_id, window.start)
+        if seen and seen["won"]:
+            raise RaidError(
+                "Босс уже повержен: в это окно ты своё взял. Следующее — "
+                f"{next_window().title}."
+            )
+        if not player.can_fight():
+            raise RaidError(health_warning(player))
+        if seen:  # пропуск за это окно уже отдан, ходи сколько хочешь
+            return
+
+        ticket = get_potion(RAID_PASS)
+        if player.potion_count(RAID_PASS) <= 0 and not buy:
+            raise RaidError(
+                f"Нужен {ticket.title}: он лежит в лавке клуба, "
+                f"раздел «Прочее», за {ticket.price} 💰."
+            )
+        # Окно занимаем до оплаты и атомарно: два нажатия подряд не спишут
+        # два пропуска, а не срослось — отпустим обратно
+        if not await self.db.start_raid_window(player.user_id, window.start):
+            return
+        try:
+            if player.potion_count(RAID_PASS) <= 0:
+                await buy_potion(self.db, player, RAID_PASS)
+            await self.db.take_potion(player.user_id, RAID_PASS)
+        except PotionError as error:
+            await self.db.drop_raid_window(player.user_id, window.start)
+            raise RaidError(str(error)) from error
+        player.potions[RAID_PASS] = max(0, player.potion_count(RAID_PASS) - 1)
+
     async def open_raid(
         self,
         chat_id: int | None,
         thread_id: int | None,
         opener: Player,
-        size: int,
         boss: Boss = CELLAR_BOSS,
         chat_title: str = "",
+        buy: bool = False,
     ) -> RaidLobby:
-        if not MIN_PARTY <= size <= MAX_PARTY:
-            raise RaidError(
-                f"В рейд идут от {MIN_PARTY} до {MAX_PARTY} человек. "
-                f"Например: /raid {MAX_PARTY}"
-            )
         if chat_id is not None and (chat_id, thread_id) in self._by_chat:
             raise RaidError("В этой ветке уже собирают рейд или дерутся.")
         if self._busy.get(opener.user_id):
             raise RaidError("Ты уже записан в рейд.")
-        if not opener.can_fight():
-            raise RaidError(health_warning(opener))
-
-        left = await self.db.raid_cooldown(opener.user_id, self.config.raid_cooldown)
-        if left > 0:
-            raise RaidError(
-                "Рейд можно собирать раз в сутки. Следующий — через "
-                f"{_hours(left)}. Чужой рейд это не трогает: в него иди хоть сейчас."
-            )
-        price = self.config.raid_price
-        if price and not opener.can_afford(price):
-            raise RaidError(
-                f"Сбор рейда стоит {price} 💰, а на счету {opener.credits} 💰."
-            )
-        if price:
-            opener.pay(price)
-            await self.db.save_player(opener)
+        await self._admit(opener, buy)
 
         record_id = await self.db.open_raid_record(
             chat_id=chat_id,
             thread_id=thread_id,
             opener_id=opener.user_id,
             boss=boss.code,
-            size=size,
+            size=MAX_PARTY,
         )
         lobby = RaidLobby(
             id=next(self._ids),
             chat_id=chat_id,
             thread_id=thread_id,
             boss=boss,
-            size=size,
+            size=MAX_PARTY,
             opener_id=opener.user_id,
             chat_title=chat_title,
             record_id=record_id,
-            price=price,
         )
         lobby.members[opener.user_id] = opener.nickname
         lobby.levels[opener.user_id] = opener.level
@@ -286,7 +322,9 @@ class RaidService:
         lobby.task = asyncio.create_task(self._lobby_timer(lobby))
         return lobby
 
-    async def join(self, lobby_id: int, player: Player) -> RaidLobby:
+    async def join(
+        self, lobby_id: int, player: Player, buy: bool = False
+    ) -> RaidLobby:
         lobby = self._lobbies.get(lobby_id)
         if lobby is None:
             raise RaidError("Этот сбор уже закрыт.")
@@ -294,10 +332,9 @@ class RaidService:
             raise RaidError("Ты уже записан.")
         if self._busy.get(player.user_id):
             raise RaidError("Ты уже записан в другой бой.")
-        if not player.can_fight():
-            raise RaidError(health_warning(player))
         if lobby.is_full:
             raise RaidError("Мест в отряде больше нет.")
+        await self._admit(player, buy)
 
         lobby.members[player.user_id] = player.nickname
         lobby.levels[player.user_id] = player.level
@@ -361,19 +398,13 @@ class RaidService:
         if lobby.can_start:
             await self._start_from_lobby(lobby)
         else:
-            await self._cancel_lobby(
-                lobby, f"Отряд не собрался: нужно хотя бы {MIN_PARTY} бойца."
-            )
+            await self._cancel_lobby(lobby, "Все разошлись — рейд отменён.")
 
     async def _cancel_lobby(self, lobby: RaidLobby, why: str) -> None:
-        """Сбор не состоялся: попытка и деньги возвращаются созвавшему."""
+        """Сбор не состоялся. Пропуск не возвращаем: окно уже открыто, и
+        зайти в подвал снова можно бесплатно до самого его конца."""
         self._forget_lobby(lobby)
         await self.db.drop_raid_record(lobby.record_id)
-        if lobby.price:
-            opener = await self.db.get_player(lobby.opener_id)
-            if opener is not None:
-                opener.credits += lobby.price
-                await self.db.save_player(opener)
         await self.voice.edit(lobby.chat_id, lobby.message_id, f"🚫 {why}")
 
     def _forget_lobby(self, lobby: RaidLobby) -> None:
@@ -641,7 +672,7 @@ class RaidService:
         self._forget_raid(session)
 
         prizes = await self._apply_results(session, outcome)
-        text = raid_result(session, outcome, prizes, self.config.raid_reward)
+        text = raid_result(session, outcome, prizes, session.shares)
         await self.voice.send(session.chat_id, session.thread_id, text)
         session.finished = True
         session.summary = [plain(line) for line in text.split("\n")]
@@ -666,20 +697,26 @@ class RaidService:
     async def _apply_results(
         self, session: RaidSession, outcome: RaidOutcome
     ) -> dict[int, str]:
-        """Кредиты всем и вещи троим лучшим. Проигравшим — ничего.
+        """Кошель поровну на отряд и склянка лучшему по урону — иногда.
 
         Здоровье и износ вещей записываются в любом случае: подвал не
         разбирает, победил ты или нет.
         """
         prizes: dict[int, str] = {}
+        party = list(session.fighters)
+        # Делим на всех, кто вышел в подвал, а не только на выживших:
+        # упавший тоже дрался, и его урон валил босса
+        shares = shares_of(self.config.raid_purse, len(party)) if outcome.won else []
+        session.shares = dict(zip(party, shares))
         top = set(outcome.top) if outcome.won else set()
+        window = self.window_now()
         for user_id, fighter in session.fighters.items():
             player = await self.db.get_player(user_id)
             if player is None:  # pragma: no cover - персонажа удалили по ходу
                 continue
             if outcome.won:
                 player.wins += 1
-                player.credits += self.config.raid_reward
+                player.credits += session.shares.get(user_id, 0)
             elif outcome.draw:
                 player.draws += 1
             else:
@@ -692,10 +729,13 @@ class RaidService:
             player.set_hp(fighter.hp)
             await self.db.save_player(player)
             if user_id in top:
-                code = prize_for(player.level, self.rng)
+                code = elixir_for(self.rng)
                 if code:
-                    await self.db.add_gear(user_id, code)
+                    player.potions[code] = await self.db.add_potion(user_id, code)
                     prizes[user_id] = code
+            # Победа закрывает окно: второй раз в этот промежуток не пустят
+            if outcome.won and window is not None:
+                await self.db.close_raid_window(user_id, window.start)
         return prizes
 
     def _cancel_timer(self, session: RaidSession) -> None:
@@ -755,16 +795,6 @@ class RaidService:
         self._by_chat.clear()
         self._busy.clear()
         self._results.clear()
-
-
-def _hours(seconds: int) -> str:
-    hours, rest = divmod(max(0, seconds), 3600)
-    minutes = rest // 60
-    if hours and minutes:
-        return f"{hours} ч {minutes} мин"
-    if hours:
-        return f"{hours} ч"
-    return f"{minutes} мин"
 
 
 __all__ = ["RaidError", "RaidLobby", "RaidService", "RaidSession"]

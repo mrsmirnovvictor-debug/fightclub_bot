@@ -17,7 +17,6 @@ from bot.game.battle import (
     BattleKind,
 )
 from bot.game.modes import FIST_RINGS, FightMode
-from bot.game.raid import MAX_PARTY
 from bot.game.narrator import esc, plain, player_link
 from bot.news_service import catch_up, pending
 from bot.handlers.common import thread_id_of
@@ -372,22 +371,20 @@ async def on_lobby(
 
 @router.message(Command("raid"), F.chat.type.in_(GROUP_TYPES))
 async def cmd_raid(
-    message: Message, command: CommandObject, db: Database, raids: RaidService
+    message: Message, db: Database, raids: RaidService
 ) -> None:
-    """Собрать рейд на босса: /raid 10 — отряд до десяти человек."""
+    """Собрать рейд на босса. Отряд — все, кто успеет с пропуском."""
     player = await db.get_player(message.from_user.id)
     if player is None:
         await message.reply(NO_CHARACTER)
         return
 
-    parts = (command.args or "").split()
-    size = int(parts[0]) if parts and parts[0].isdigit() else MAX_PARTY
     try:
+        # Размер отряда больше не задают: берут всех, кто успел с пропуском
         await raids.open_raid(
             message.chat.id,
             thread_id_of(message),
             player,
-            size,
             chat_title=message.chat.title or "",
         )
     except RaidError as error:

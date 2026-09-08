@@ -19,17 +19,20 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 
 from bot.game import art
 from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES, BLOCK_WIDTH, block_combo
 from bot.game.combat import Action, Fighter
-from bot.game.equipment import Equipment, OwnedItem, SHOWCASE, get_item
+from bot.game.equipment import Equipment, OwnedItem, get_item
+from bot.game.health import now_ts
 from bot.game.reference import best_kit, developed_stats
 
-# Сколько человек идут в рейд: одному босса не свалить, а больше десяти
-# не помещается ни в панель, ни в лимит сообщений.
-MIN_PARTY = 2
+# Сколько человек идут в рейд. Одному можно — пусть и тяжело: босс всё
+# равно подстроится под отряд. Больше десяти не помещается ни в панель,
+# ни в лимит сообщений.
+MIN_PARTY = 1
 MAX_PARTY = 10
 
 # На сколько уровней босс выше отряда
@@ -49,9 +52,99 @@ STRIKES_PER_BREAK = 6
 # судья закрывает его поражением отряда — босс остался на ногах.
 MAX_WAVES = 30
 
-# Награда за победу: кредиты всем и по вещи трём лучшим по урону
-REWARD_CREDITS = 50
-TOP_PRIZES = 3
+# Награда за победу: общий кошель на отряд, делится поровну. Вдесятером
+# достаётся по десятке, в одиночку — все сто: чем больше народу, тем легче
+# бой и тем меньше доля.
+RAID_PURSE = 100
+# Набившему больше всех с такой вероятностью достаётся эликсир
+ELIXIR_CHANCE = 0.35
+ELIXIR_PRIZES: tuple[str, ...] = (
+    "boost_strength",
+    "boost_agility",
+    "boost_intuition",
+)
+
+# ---------- когда подвал открыт ----------
+#
+# Босса пускают бить не когда угодно, а по расписанию: пять окон по два
+# часа. Время московское и без перевода часов, поэтому смещение постоянное.
+MOSCOW = timezone(timedelta(hours=3))
+RAID_WINDOWS: tuple[int, ...] = (0, 8, 12, 16, 20)
+WINDOW_HOURS = 2
+
+
+@dataclass(frozen=True)
+class Window:
+    """Одно окно рейда: с какого момента по какой (в секундах эпохи)."""
+
+    start: int
+    end: int
+
+    @property
+    def title(self) -> str:
+        """«с 20:00 до 22:00» — по московскому времени."""
+        first = datetime.fromtimestamp(self.start, MOSCOW)
+        last = datetime.fromtimestamp(self.end, MOSCOW)
+        return f"с {first:%H:%M} до {last:%H:%M} мск"
+
+    def seconds_left(self, moment: int) -> int:
+        return max(0, self.end - moment)
+
+
+def _window_at(moment: int) -> Window:
+    """Окно, которое началось в этот час. Часы берём московские."""
+    here = datetime.fromtimestamp(moment, MOSCOW)
+    start = here.replace(minute=0, second=0, microsecond=0)
+    return Window(
+        start=int(start.timestamp()),
+        end=int(start.timestamp()) + WINDOW_HOURS * 3600,
+    )
+
+
+def window_of(moment: int | None = None) -> Window | None:
+    """Открыт ли подвал прямо сейчас. None — закрыт, ждите следующего окна."""
+    moment = now_ts() if moment is None else moment
+    hour = datetime.fromtimestamp(moment, MOSCOW).hour
+    for opens in RAID_WINDOWS:
+        if opens <= hour < opens + WINDOW_HOURS:
+            return _window_at(moment - (hour - opens) * 3600)
+    return None
+
+
+def any_window(moment: int | None = None) -> Window:
+    """Окно на каждый двухчасовой отрезок суток — для снятого расписания.
+
+    Правило «одна победа на окно» должно работать и когда подвал открыт
+    круглосуточно, иначе выключатель заодно снимает и его.
+    """
+    moment = now_ts() if moment is None else moment
+    hour = datetime.fromtimestamp(moment, MOSCOW).hour
+    return _window_at(moment - (hour % WINDOW_HOURS) * 3600)
+
+
+def next_window(moment: int | None = None) -> Window:
+    """Ближайшее окно после этого момента — то, которого ждут."""
+    moment = now_ts() if moment is None else moment
+    here = datetime.fromtimestamp(moment, MOSCOW)
+    for opens in RAID_WINDOWS:
+        start = here.replace(hour=opens, minute=0, second=0, microsecond=0)
+        if start.timestamp() > moment:
+            return Window(int(start.timestamp()), int(start.timestamp()) + WINDOW_HOURS * 3600)
+    # Все окна дня позади — первое завтрашнее
+    tomorrow = (here + timedelta(days=1)).replace(
+        hour=RAID_WINDOWS[0], minute=0, second=0, microsecond=0
+    )
+    return Window(
+        int(tomorrow.timestamp()), int(tomorrow.timestamp()) + WINDOW_HOURS * 3600
+    )
+
+
+def schedule_text() -> str:
+    """Расписание одной строкой: «8–10, 12–14, 16–18, 20–22, 0–2 мск»."""
+    hours = sorted(RAID_WINDOWS)
+    return (
+        ", ".join(f"{opens}–{opens + WINDOW_HOURS}" for opens in hours) + " мск"
+    )
 
 
 class RaidEnd(str, Enum):
@@ -216,8 +309,9 @@ class RaidOutcome:
 
     @property
     def top(self) -> list[int]:
-        """Кому положены вещи: трое лучших по набитому урону."""
-        return [user_id for user_id, damage in self.damage[:TOP_PRIZES] if damage > 0]
+        """Кто набил больше всех. Пусто — не набил никто."""
+        best = [user_id for user_id, damage in self.damage[:1] if damage > 0]
+        return best
 
 
 def judge_raid(boss: Fighter, fighters: dict[int, Fighter]) -> RaidOutcome | None:
@@ -243,15 +337,28 @@ def damage_board(fighters: dict[int, Fighter]) -> list[tuple[int, int]]:
     )
 
 
-def prize_for(level: int, rng: random.Random | None = None) -> str | None:
-    """Случайная вещь с прилавка, открытая на этом уровне.
+def elixir_for(rng: random.Random | None = None) -> str | None:
+    """Приз лучшему по урону: с некоторой вероятностью — один из эликсиров.
 
-    Награда должна быть той, которую боец может надеть сегодня, а не через
-    три уровня: иначе приз лежит в инвентаре мёртвым грузом.
+    Вещей за рейд больше не дают: кошелёк делится на всех, а сверх него у
+    подвала есть только эта склянка, и та не каждый раз.
     """
     rng = rng or random
-    options = [item for item in SHOWCASE if item.level_required <= level]
-    return rng.choice(options).code if options else None
+    if rng.random() >= ELIXIR_CHANCE:
+        return None
+    return rng.choice(ELIXIR_PRIZES)
+
+
+def shares_of(purse: int, party: int) -> list[int]:
+    """Как кошель делится на отряд. Остаток от деления уходит первым.
+
+    Иначе вдевятером сто кредитов превращались бы в девяносто: округление
+    вниз молча съедало бы разницу.
+    """
+    if party <= 0:
+        return []
+    base, extra = divmod(max(0, purse), party)
+    return [base + (1 if index < extra else 0) for index in range(party)]
 
 
 __all__ = [
@@ -262,10 +369,14 @@ __all__ = [
     "LEVELS_ABOVE",
     "MAX_PARTY",
     "MAX_WAVES",
+    "ELIXIR_CHANCE",
     "MIN_PARTY",
-    "REWARD_CREDITS",
+    "MOSCOW",
+    "RAID_PURSE",
+    "RAID_WINDOWS",
+    "WINDOW_HOURS",
+    "Window",
     "STRIKES_PER_BREAK",
-    "TOP_PRIZES",
     "Boss",
     "RaidEnd",
     "RaidOutcome",
@@ -276,5 +387,10 @@ __all__ = [
     "damage_board",
     "get_boss",
     "judge_raid",
-    "prize_for",
+    "any_window",
+    "elixir_for",
+    "next_window",
+    "schedule_text",
+    "shares_of",
+    "window_of",
 ]

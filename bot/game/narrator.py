@@ -817,10 +817,11 @@ def raid_break(session, seconds: int) -> str:
 
 
 def raid_result(
-    session, outcome, prizes: dict[int, str] | None = None, reward: int = 0
+    session, outcome, prizes: dict[int, str] | None = None,
+    shares: dict[int, int] | None = None,
 ) -> str:
     """Итог рейда: чем кончилось, кто сколько набил и кому что досталось."""
-    from bot.game.equipment import get_item
+    from bot.game.potions import get_potion
 
     enemy = session.enemy
     lines = [f"{outcome.end.emoji} <b>{outcome.end.title}</b>", ""]
@@ -842,21 +843,26 @@ def raid_result(
 
     lines += ["", "<b>📊 Кто сколько набил</b>"]
     prizes = prizes or {}
+    shares = shares or {}
     for place, (user_id, damage) in enumerate(outcome.damage, start=1):
         fighter = session.fighters[user_id]
         mark = "💀" if not fighter.alive else fighter.fclass.emoji
         row = f"{place}. {mark} <b>{esc(fighter.name)}</b> — урона {damage}"
+        share = shares.get(user_id)
+        if share:
+            row += f", +{share} 💰"
         code = prizes.get(user_id)
         if code:
-            item = get_item(code)
-            row += f", приз: {item.emoji} {esc(item.title)}" if item else ""
+            potion = get_potion(code)
+            row += f", приз: {potion.emoji} {esc(potion.title)}" if potion else ""
         lines.append(row)
 
     if outcome.won:
-        if reward:
-            lines += ["", f"💰 Каждому по {reward} 💰."]
+        purse = sum(shares.values())
+        if purse:
+            lines += ["", f"💰 Кошель {purse} 💰 разделили поровну на отряд."]
         if prizes:
-            lines.append("🎁 Троим лучшим по урону — по вещи с прилавка.")
+            lines.append("🎁 Набившему больше всех досталась склянка.")
     else:
         lines += ["", "Награды за такое не дают. В другой раз."]
     return "\n".join(lines)
