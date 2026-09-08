@@ -7,6 +7,7 @@ from aiogram.types import Chat, ForumTopicCreated, Message, User
 from tests.harness import feed_callback, feed_message, ids
 
 from bot.game.classes import get_class
+from bot.game.modes import FightMode
 from bot.keyboards import ChallengeCB, FightCB, StandoffCB, fight_keyboard
 from bot.models import Player
 
@@ -270,8 +271,9 @@ async def test_three_fist_rings_hold_three_fights_at_once(arena):
     assert "уже идёт бой" in session.texts[-1]
 
 
-async def test_each_ring_wants_its_own_command(arena):
-    db, _, session = arena
+async def test_in_the_chat_they_fight_with_fists_in_any_ring(arena):
+    """В ветке остались кулаки: /fight отправляет в карточку, /duel зовёт."""
+    db, duels, session = arena
     user = as_user(720, "Боб")
     await db.save_player(make_player(user.id, "Боб", "tank"))
 
@@ -279,12 +281,14 @@ async def test_each_ring_wants_its_own_command(arena):
     await send(user, "/arena_gear", thread_id=202)
 
     await send(user, "/fight", thread_id=201)
-    assert "кулачный бой" in session.texts[-1].lower()
+    assert "карточк" in session.texts[-1].lower()
     assert "/duel" in session.texts[-1]
 
+    # На оружейном ринге вызов тоже кулачный: снаряжение живёт в карточке
     await send(user, "/duel", thread_id=202)
-    assert "оружием" in session.texts[-1]
-    assert "/fight" in session.texts[-1]
+    assert "любого желающего" in session.texts[-1]
+    challenge = duels._challenges[max(duels._challenges)]
+    assert challenge.mode is FightMode.FIST
 
 
 async def test_rings_command_shows_what_is_busy(arena):
@@ -509,9 +513,9 @@ async def test_the_board_does_not_repeat_itself(arena):
 # ---------- рейд ----------
 
 
-async def test_a_raid_is_gathered_and_fought_from_the_chat(arena, raids):
-    """/raid собирает отряд кнопкой и ведёт волну против босса."""
-    from bot.keyboards import RaidCB, RaidLobbyCB
+async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raids):
+    """/raid собирает отряд кнопкой, а бьют по боссу уже в карточке."""
+    from bot.keyboards import RaidLobbyCB
 
     db, _, session = arena
     people = [as_user(900 + i, f"Рейдер{i}") for i in range(2)]
@@ -537,16 +541,18 @@ async def test_a_raid_is_gathered_and_fought_from_the_chat(arena, raids):
     raid = raids.raid_of_user(people[0].id)
     assert raid is not None and len(raid.fighters) == 2
     assert any("Волна 1" in text for text in session.texts)
+    # Панель волны в ветке — без кнопок: ходят в карточке
+    wave = [text for text in session.texts if "Волна 1" in text][-1]
+    assert "в карточке" in wave
+    assert all(
+        message.reply_markup is None
+        for message in session.method_calls("SendMessage")
+        if "Волна 1" in (message.text or "")
+    )
 
-    # удар и блок одного бойца — размен считается сразу
-    for action, zone in (("attack", "head"), ("block", "belt")):
-        await feed_callback(
-            people[0],
-            GROUP,
-            RaidCB(action=action, raid_id=raid.id, zone=zone).pack(),
-            message_thread_id=601,
-            is_topic_message=True,
-        )
+    # удар и блок одного бойца из карточки — размен считается сразу
+    await raids.handle_choice(raid.id, people[0].id, "attack", "head")
+    await raids.handle_choice(raid.id, people[0].id, "block", "belt")
 
     assert people[0].id in raid.acted
     assert raid.enemy.hp < raid.enemy.max_hp or raid.rounds

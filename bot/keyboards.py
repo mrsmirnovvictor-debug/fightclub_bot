@@ -69,13 +69,6 @@ class LobbyCB(CallbackData, prefix="lob"):
     team: int = 0
 
 
-class BattleCB(CallbackData, prefix="btl"):
-    action: str  # attack | block
-    battle_id: int
-    zone: str
-    slot: int = 0
-
-
 class TourCB(CallbackData, prefix="tour"):
     action: str  # join | leave
     tournament_id: int
@@ -106,12 +99,6 @@ class FightCB(CallbackData, prefix="fight"):
 class RaidLobbyCB(CallbackData, prefix="rlob"):
     action: str  # join | leave
     lobby_id: int
-
-
-class RaidCB(CallbackData, prefix="raid"):
-    action: str  # attack | block
-    raid_id: int
-    zone: str = ""
 
 
 class StandoffCB(CallbackData, prefix="stand"):
@@ -295,33 +282,13 @@ def raid_lobby_keyboard(lobby) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def raid_keyboard(raid_id: int, icon: str = "👊") -> InlineKeyboardMarkup:
-    """Та же панель хода, что в дуэли, но нажатия уходят в рейд."""
-    return _fight_panel(
-        icon,
-        lambda zone: RaidCB(action="attack", raid_id=raid_id, zone=zone.value).pack(),
-        lambda zone: RaidCB(action="block", raid_id=raid_id, zone=zone.value).pack(),
-    )
-
-
-def battle_keyboard(battle_id: int, icon: str = "👊") -> InlineKeyboardMarkup:
-    """Та же панель, что в дуэли, но нажатия уходят в групповой бой."""
-    return _fight_panel(
-        icon,
-        lambda zone: BattleCB(
-            action="attack", battle_id=battle_id, zone=zone.value
-        ).pack(),
-        lambda zone: BattleCB(
-            action="block", battle_id=battle_id, zone=zone.value
-        ).pack(),
-    )
-
-
 def _fight_panel(icon: str, attack_data, block_data) -> InlineKeyboardMarkup:
     """Панель хода: слева удар по зоне, справа блок на две смежные.
 
-    Столбца ровно два, и зоны помещаются названиями целиком: рука одна,
-    удар один, блок один — второго оружия и щитов в клубе нет.
+    Столбца ровно два, и зоны помещаются названиями целиком. Такой панель
+    и останется: в ветке дерутся только на кулаках, а там ни второго оружия,
+    ни щита — значит, ни второго удара, ни трёх закрытых зон. Снаряжение
+    живёт в карточке, и панель хода со всеми его вариантами — тоже там.
     """
     rows: list[list[InlineKeyboardButton]] = []
     for zone, combo in zip(ALL_ZONES, block_combos(BLOCK_WIDTH)):

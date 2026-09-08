@@ -33,7 +33,7 @@ from bot.game.bracket import (
     round_title,
 )
 from bot.game.modes import FightMode
-from bot.game.narrator import bracket_text, tournament_card, tournament_winner
+from bot.game.narrator import bracket_text, esc, tournament_card, tournament_winner
 from bot.keyboards import TourCB, tournament_keyboard
 from bot.messaging import Announcer
 from bot.models import Player
@@ -384,12 +384,15 @@ class TournamentService:
             tournament.thread_id,
             f"🥊 <b>{round_title(len(await self.db.tournament_matches(tournament.id, tournament.round)))}"
             f"{replay}</b>: {first.nickname} — {second.nickname}. "
-            "Оба вылечены до полного здоровья.",
+            "Оба вылечены до полного здоровья.\n"
+            "Бой идёт в карточке: вкладка «Клуб», раздел «Бои».",
         )
         try:
+            # Турнирный бой играется в карточке: в ветке остаётся объявление
+            # пары и итог, а кнопки хода у каждого свои — по снаряжению
             await self.duels.start_duel(
-                tournament.chat_id,
-                tournament.thread_id,
+                None,
+                None,
                 first,
                 second,
                 chat_title=tournament.chat_title,
@@ -425,6 +428,14 @@ class TournamentService:
                 else row["first_id"]
             )
             await self.db.knock_out(tournament_id, loser, tournament.round)
+            # Бой шёл в карточке — в ветку приносим итог сами
+            champion = await self.db.get_player(result.winner_id)
+            if champion is not None:
+                await self.voice.send(
+                    tournament.chat_id,
+                    tournament.thread_id,
+                    f"🏆 <b>{esc(champion.nickname)}</b> проходит дальше.",
+                )
         else:
             await self._handle_draw(tournament, row)
 

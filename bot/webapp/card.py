@@ -24,6 +24,7 @@ from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
 from bot.game.equipment import (
     ALL_SLOTS,
     LEFT_SLOTS,
+    UNDER_SLOTS,
     MAGIC_ITEMS,
     RIGHT_SLOTS,
     Equipment,
@@ -74,14 +75,46 @@ def format_birthday(created_at: str | None) -> str:
     return created_at  # pragma: no cover - формат из будущей версии
 
 
+# Как клетка называется на кукле. Верхняя одежда и футболка делят одну
+# клетку — она и называется по месту, а не по вещи.
+CELL_TITLES: dict[Slot, str] = {Slot.JACKET: "тело"}
+
+
+def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
+    """Надетая вещь так, как её показывает клетка куклы."""
+    in_hands = weapon_in_hands(owned.item, fclass)
+    return {
+        "id": owned.id,
+        "slot": owned.item.slot.value,
+        "code": owned.code,
+        "title": owned.title,
+        "icon": owned.emoji,
+        "image": owned.image,
+        "bonus": owned.describe_bonus(),
+        # Класс меняет урон оружия — говорим об этом там же, где число
+        "in_hands": f"У {fclass.title.lower()}а в руках: {in_hands}"
+        if in_hands
+        else "",
+        "wear": owned.wear,
+        "max_wear": owned.max_wear,
+    }
+
+
 def slot_payload(
     equipment: Equipment, slot: Slot, fclass: FighterClass | None = None
 ) -> dict:
     owned = equipment.get(slot)
+    # Что надето под этой вещью: футболка под верхней одеждой
+    under_slot = UNDER_SLOTS.get(slot)
+    under = equipment.get(under_slot) if under_slot else None
     in_hands = weapon_in_hands(owned.item, fclass) if owned else ""
     return {
         "slot": slot.value,
         "title": slot.title,
+        # Название клетки: у тела оно своё, потому что вещей в ней две
+        "cell_title": CELL_TITLES.get(slot, slot.title),
+        "under_title": under_slot.title if under_slot else "",
+        "under": worn_payload(under, fclass) if under else None,
         "placeholder": slot.emoji,
         "placeholder_image": slot.placeholder,
         "item": None

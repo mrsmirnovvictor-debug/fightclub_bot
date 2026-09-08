@@ -41,7 +41,6 @@ from bot.game.economy import (
     rating_delta,
     win_exp,
 )
-from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.modes import FightMode
 from bot.game.narrator import (
     battle_intro,
@@ -52,10 +51,13 @@ from bot.game.narrator import (
     fight_board,
     health_warning,
     lobby_card,
+    plain,
     ready_mark,
+    strike_lines,
 )
+from bot.game.fightlog import turn_payload
 from bot.inventory_service import wear_after_fight
-from bot.keyboards import BattleCB, LobbyCB, battle_keyboard, lobby_keyboard
+from bot.keyboards import LobbyCB, lobby_keyboard
 from bot.messaging import Announcer
 from bot.models import Player, ProgressReport
 
@@ -102,7 +104,8 @@ class Lobby:
     """Сбор состава: кто записался и за какую сторону."""
 
     id: int
-    chat_id: int
+    # Сбор может жить и без ветки: лобби, открытое из карточки, у чата нет
+    chat_id: int | None
     thread_id: int | None
     kind: BattleKind
     mode: FightMode
@@ -115,6 +118,10 @@ class Lobby:
     names: dict[int, str] = field(default_factory=dict)
     message_id: int | None = None
     task: asyncio.Task | None = None
+
+    @property
+    def key(self) -> ChatKey | None:
+        return None if self.chat_id is None else (self.chat_id, self.thread_id)
 
     @property
     def total(self) -> int:
@@ -149,7 +156,7 @@ class BattleSession:
     """Идущий бой: бойцы, стороны, пары этого раунда."""
 
     id: int
-    chat_id: int
+    chat_id: int | None
     thread_id: int | None
     kind: BattleKind
     mode: FightMode
@@ -166,6 +173,15 @@ class BattleSession:
     # О ком судья уже сказал: чтобы не повторять одно и то же каждый раунд
     announced_out: set[int] = field(default_factory=set)
     announced_idle: tuple[int, ...] = ()
+    # Бой доигран: панель в карточке держит итог, пока его не закроют
+    finished: bool = False
+    summary: list[str] = field(default_factory=list)
+    # Разбор по ходам для карточки: по размену на каждую пару
+    rounds: list[dict] = field(default_factory=list)
+
+    @property
+    def key(self) -> ChatKey | None:
+        return None if self.chat_id is None else (self.chat_id, self.thread_id)
 
     @property
     def order(self) -> list[int]:
@@ -197,17 +213,6 @@ class BattleSession:
             if self.fighters[user_id].alive
         )
 
-    @property
-    def panel(self) -> str:
-        """Значок удара на кнопках — один на всех.
-
-        Оружие у бойцов разное, а панель одна: не сошлись значки — рисуем
-        кулак, а бьёт каждый тем, что у него в руке.
-        """
-        sides = [self.fighters[user_id] for user_id in self.fighters]
-        icon = sides[0].weapon_icon
-        return icon if all(side.weapon_icon == icon for side in sides) else BARE_HANDS_ICON
-
 
 class BattleService:
     """Лобби и бои на много бойцов."""
@@ -229,12 +234,15 @@ class BattleService:
         self._battles: dict[int, BattleSession] = {}
         self._by_chat: dict[ChatKey, int] = {}  # ветка → лобби или бой
         self._busy: dict[int, str] = {}  # боец → «lobby» или «battle»
+        # Итог последнего боя каждого: карточке есть что показать, пока
+        # человек не закроет панель
+        self._results: dict[int, BattleSession] = {}
 
     # ---------- лобби ----------
 
     async def open_lobby(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         opener: Player,
         kind: BattleKind,
@@ -243,7 +251,7 @@ class BattleService:
         levels: tuple[int, int] | None = None,
         chat_title: str = "",
     ) -> Lobby:
-        if (chat_id, thread_id) in self._by_chat:
+        if chat_id is not None and (chat_id, thread_id) in self._by_chat:
             raise BattleError("В этой ветке уже собирают бой или дерутся.")
         if self._busy.get(opener.user_id):
             raise BattleError("Ты уже записан в бой.")
@@ -278,7 +286,8 @@ class BattleService:
         lobby.members[opener.user_id] = RED
         lobby.names[opener.user_id] = opener.nickname
         self._lobbies[lobby.id] = lobby
-        self._by_chat[(chat_id, thread_id)] = lobby.id
+        if lobby.key is not None:
+            self._by_chat[lobby.key] = lobby.id
         self._busy[opener.user_id] = "lobby"
 
         message = await self.voice.send(
@@ -376,8 +385,8 @@ class BattleService:
 
     def _forget_lobby(self, lobby: Lobby) -> None:
         self._lobbies.pop(lobby.id, None)
-        if self._by_chat.get((lobby.chat_id, lobby.thread_id)) == lobby.id:
-            self._by_chat.pop((lobby.chat_id, lobby.thread_id), None)
+        if lobby.key is not None and self._by_chat.get(lobby.key) == lobby.id:
+            self._by_chat.pop(lobby.key, None)
         for user_id in lobby.members:
             if self._busy.get(user_id) == "lobby":
                 self._busy.pop(user_id, None)
@@ -418,7 +427,8 @@ class BattleService:
             chat_title=lobby.chat_title,
         )
         self._battles[session.id] = session
-        self._by_chat[(session.chat_id, session.thread_id)] = session.id
+        if session.key is not None:
+            self._by_chat[session.key] = session.id
         for user_id in session.fighters:
             self._busy[user_id] = "battle"
 
@@ -454,7 +464,6 @@ class BattleService:
             session.chat_id,
             session.thread_id,
             text,
-            reply_markup=battle_keyboard(session.id, session.panel),
         )
         session.prompt_message_id = message.message_id if message else None
         session.timer = asyncio.create_task(
@@ -479,7 +488,11 @@ class BattleService:
             lines.append(
                 f"😐 Без пары в этом ходу: {names} — ход пропускается без потерь."
             )
-        lines += ["", f"⏱️ {self.config.turn_timeout} сек. Выберите удар и блок."]
+        lines += [
+            "",
+            f"⏱️ {self.config.turn_timeout} сек. Удар и блок — в карточке, "
+            "вкладка «Клуб».",
+        ]
         return "\n".join(lines)
 
     async def _round_timer(self, session: BattleSession, round_number: int) -> None:
@@ -516,7 +529,6 @@ class BattleService:
             session.chat_id,
             session.prompt_message_id,
             self._prompt_text(session),
-            reply_markup=battle_keyboard(session.id, session.panel),
             cosmetic=True,
         )
         if session.everyone_ready:
@@ -550,18 +562,22 @@ class BattleService:
             user_id for user_id, fighter in session.fighters.items() if fighter.alive
         }
         results = []
+        # Слова судьи собираются один раз: и в ветку, и в лог для карточки
+        said: list[list[str]] = []
         for first_id, second_id in session.pairs:
             first, second = session.fighters[first_id], session.fighters[second_id]
-            results.append(
-                resolve_round(
-                    first,
-                    self._action_of(session, first_id),
-                    second,
-                    self._action_of(session, second_id),
-                    session.round_number,
-                    self.rng,
-                )
+            result = resolve_round(
+                first,
+                self._action_of(session, first_id),
+                second,
+                self._action_of(session, second_id),
+                session.round_number,
+                self.rng,
             )
+            results.append(result)
+            spoken = strike_lines(result, session.fighters, self.rng)
+            said.append(spoken)
+            session.rounds.append(turn_payload(result, spoken))
 
         fallen = [
             user_id
@@ -571,7 +587,7 @@ class BattleService:
         ]
         session.announced_out.update(fallen)
         await self._close_panel(
-            session, battle_round_report(session, results, fallen, self.rng)
+            session, battle_round_report(session, results, fallen, said)
         )
 
         outcome = judge(
@@ -613,6 +629,10 @@ class BattleService:
         if rewards:
             text += "\n\n" + rewards
         await self.voice.send(session.chat_id, session.thread_id, text)
+        session.finished = True
+        session.summary = [plain(line) for line in text.split("\n")]
+        for user_id in session.fighters:
+            self._results[user_id] = session
         await self.db.add_battle(session, outcome)
 
     async def _apply_results(
@@ -680,8 +700,8 @@ class BattleService:
 
     def _forget_battle(self, session: BattleSession) -> None:
         self._battles.pop(session.id, None)
-        if self._by_chat.get((session.chat_id, session.thread_id)) == session.id:
-            self._by_chat.pop((session.chat_id, session.thread_id), None)
+        if session.key is not None and self._by_chat.get(session.key) == session.id:
+            self._by_chat.pop(session.key, None)
         for user_id in session.fighters:
             if self._busy.get(user_id) == "battle":
                 self._busy.pop(user_id, None)
@@ -695,6 +715,31 @@ class BattleService:
     def battle_in_chat(self, chat_id: int, thread_id: int | None) -> BattleSession | None:
         room_id = self._by_chat.get((chat_id, thread_id))
         return self._battles.get(room_id) if room_id else None
+
+    def lobby_of_user(self, user_id: int) -> Lobby | None:
+        for lobby in self._lobbies.values():
+            if user_id in lobby.members:
+                return lobby
+        return None
+
+    def open_lobbies(self) -> list[Lobby]:
+        """Сборы, куда ещё можно записаться — для списка в карточке."""
+        return list(self._lobbies.values())
+
+    def get_lobby(self, lobby_id: int) -> Lobby | None:
+        return self._lobbies.get(lobby_id)
+
+    def battle_of_user(self, user_id: int) -> BattleSession | None:
+        for session in self._battles.values():
+            if user_id in session.fighters:
+                return session
+        return None
+
+    def result_of_user(self, user_id: int) -> BattleSession | None:
+        return self._results.get(user_id)
+
+    def forget_result(self, user_id: int) -> None:
+        self._results.pop(user_id, None)
 
     def is_busy(self, user_id: int) -> bool:
         return user_id in self._busy
@@ -718,5 +763,4 @@ __all__ = [
     "BattleSession",
     "Lobby",
     "LobbyCB",
-    "BattleCB",
 ]

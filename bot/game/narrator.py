@@ -788,7 +788,7 @@ def raid_panel(session, timeout: int) -> str:
     lines.append("<pre>" + "\n".join(raid_board(session)) + "</pre>")
     lines.append("")
     lines.append(
-        f"⏱️ {timeout} сек. Выберите удар и блок — ждём ещё "
+        f"⏱️ {timeout} сек. Удар и блок — в карточке, вкладка «Клуб»: ждём ещё "
         f"{waiting} {plural(waiting, 'бойца', 'бойцов', 'бойцов')}."
     )
     return "\n".join(lines)
@@ -915,22 +915,18 @@ def battle_intro(session) -> str:
 
 
 def battle_round_report(
-    session, results, fallen: list[int], rng: random.Random | None = None
+    session, results, fallen: list[int], said: list[list[str]] | None = None
 ) -> str:
-    """Разбор всех пар за один ход. Про выбывших говорим один раз — когда упали."""
-    rng = rng or random
+    """Разбор всех пар за один ход. Про выбывших говорим один раз — когда упали.
+
+    `said` — слова судьи по каждой паре, собранные один раз. Их передают
+    сюда, а не сочиняют заново: те же строки уходят и в лог боя, который
+    читает карточка.
+    """
     lines = [f"<b>⚔️ Раунд {session.round_number}</b>"]
-    for result in results:
+    for spoken in said or []:
         lines.append("")
-        for strike in result.strikes:
-            lines.append(
-                describe_strike(
-                    strike,
-                    session.fighters[strike.attacker_id],
-                    session.fighters[strike.defender_id],
-                    rng,
-                )
-            )
+        lines.extend(spoken)
     if fallen:
         names = ", ".join(
             f"<b>{esc(session.fighters[user_id].name)}</b>" for user_id in fallen

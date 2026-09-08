@@ -164,10 +164,12 @@ async def test_the_app_shows_what_you_have_already_pressed(arena):
     await act(client, 42, action="attack", zone="belt")
     mine = await state(client, 42)
 
-    assert mine["duel"]["chosen"] == {"attack": "belt", "block": None}
+    chosen = mine["duel"]["chosen"]
+    assert (chosen["attack"], chosen["block"]) == ("belt", None)
+    assert chosen["attacks"] == {"0": "belt"}  # рука одна — один удар
     # соперник своего выбора не видит — только то, что боец готов
-    theirs = await state(client, 43)
-    assert theirs["duel"]["chosen"] == {"attack": None, "block": None}
+    theirs = (await state(client, 43))["duel"]["chosen"]
+    assert (theirs["attack"], theirs["block"], theirs["attacks"]) == (None, None, {})
 
 
 async def test_the_log_says_who_hit_where(arena):
@@ -490,7 +492,8 @@ async def test_a_turn_is_sent_as_one_move(arena):
     status, body = await act(client, 42, action="turn", attack="head", block="belt")
 
     assert status == 200
-    assert body["duel"]["chosen"] == {"attack": "head", "block": "belt"}
+    chosen = body["duel"]["chosen"]
+    assert (chosen["attack"], chosen["block"]) == ("head", "belt")
     assert [row["ready"] for row in body["duel"]["fighters"]] == [True, False]
 
 

@@ -306,7 +306,10 @@ async def test_before_every_match_both_fighters_are_healed(bot, db):
         fresh = await db.get_player(player.user_id)
         assert fresh.current_hp() == fresh.max_hp
     assert any("вылечены до полного здоровья" in text for text in bot.texts)
-    assert duels.duel_in_chat(CHAT_ID, THREAD_ID) is not None
+    # Турнирный бой играется в карточке: в ветке его нет, а у бойцов — есть
+    assert duels.duel_in_chat(CHAT_ID, THREAD_ID) is None
+    assert duels.duel_of_user(players[0].user_id) is not None
+    assert any("Бой идёт в карточке" in text for text in bot.texts)
     await service.shutdown()
 
 
@@ -319,7 +322,16 @@ async def test_four_fighters_play_the_whole_bracket_to_one_winner(bot, db):
 
     await service.start(tournament.id)
     for _ in range(200):
-        session = duels.duel_in_chat(CHAT_ID, THREAD_ID)
+        session = next(
+            (
+                duel
+                for duel in (
+                    duels.duel_of_user(player.user_id) for player in players
+                )
+                if duel is not None
+            ),
+            None,
+        )
         if session is None:
             break
         await play_round(duels, session)

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bot.game.classes import ALL_ZONES
+from bot.game.classes import ALL_ZONES, BLOCK_WIDTH
 from bot.game.combat import (
     Fighter,
     total_accuracy,
@@ -33,7 +33,7 @@ from bot.game.raid import (
 from bot.models import Player
 from bot.raid_service import RaidLobby, RaidService, RaidSession
 from bot.webapp.card import slot_payload
-from bot.webapp.fight import ATTACK_BUTTONS, BLOCK_BUTTONS
+from bot.webapp.fight import ATTACK_BUTTONS, BLOCK_BUTTONS, block_buttons, hands_payload
 
 
 def boss_payload(session: RaidSession) -> dict[str, Any]:
@@ -174,6 +174,10 @@ def raid_payload(session: RaidSession, viewer_id: int) -> dict[str, Any]:
     mine = session.choices.get(viewer_id)
     fighter = session.fighters.get(viewer_id)
     return {
+        # Набор кнопок у каждого свой: второе оружие даёт второй столбец
+        # ударов, щит — блок в три зоны
+        "hands": hands_payload(fighter),
+        "blocks": block_buttons(fighter.block_width if fighter else BLOCK_WIDTH),
         "id": session.id,
         "wave": session.wave,
         "in_app": session.chat_id is None,
@@ -189,6 +193,10 @@ def raid_payload(session: RaidSession, viewer_id: int) -> dict[str, Any]:
         # Отработал в этой волне — кнопки прячем до следующей
         "acted": viewer_id in session.acted,
         "chosen": {
+            "attacks": {
+                str(hand): zone.value
+                for hand, zone in (mine.attacks.items() if mine else ())
+            },
             "attack": mine.attack.value if mine and mine.attack else None,
             "block": mine.block[0].value if mine and mine.block else None,
         },

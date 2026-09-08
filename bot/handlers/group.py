@@ -22,11 +22,9 @@ from bot.game.narrator import esc, plain, player_link
 from bot.news_service import catch_up, pending
 from bot.handlers.common import thread_id_of
 from bot.keyboards import (
-    BattleCB,
     ChallengeCB,
     FightCB,
     LobbyCB,
-    RaidCB,
     RaidLobbyCB,
     StandoffCB,
     TourCB,
@@ -39,6 +37,17 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="group")
 GROUP_TYPES = {"group", "supergroup"}
+
+# Что отвечать на команды боёв, которые переехали в мини-апп. Кнопок в
+# ветке у них было бы столько же, сколько вариантов снаряжения, а бой в
+# ветке должен выглядеть одинаково у всех: одни и те же пять зон.
+APP_ONLY = (
+    "⚔️ Бои с оружием, групповые бои и рейды теперь идут в карточке: "
+    "там у каждого свой набор кнопок — второе оружие даёт второй удар, "
+    "щит расширяет блок.\n"
+    "Открой карточку (/card в личке) и загляни во вкладку «Клуб».\n\n"
+    "В ветке остаются кулачные бои: /duel"
+)
 
 NO_CHARACTER = (
     "У тебя нет бойца. Напиши мне в личку /start — соберём персонажа за минуту."
@@ -55,11 +64,12 @@ def _rings_list(rings: list[Ring]) -> str:
 
 
 async def _ring_for(message: Message, db: Database, mode: FightMode) -> Ring | None:
-    """Ринг этой ветки, если здесь дерутся именно в этом режиме.
+    """Ринг этой ветки. В ветке дерутся только на кулаках, в любом ринге.
 
     Пока в группе не размечен ни один ринг, драться можно где угодно — так
-    клуб заводится в один шаг. Как только ринги появились, бои идут только
-    в них и только в своём режиме.
+    клуб заводится в один шаг. Как только ринги появились, бои идут в них.
+    Режим ринга на вызов больше не влияет: снаряжение живёт в карточке, а в
+    ветке у всех одни и те же кнопки.
     """
     thread_id = thread_id_of(message)
     rings = await db.list_rings(message.chat.id)
@@ -72,13 +82,8 @@ async def _ring_for(message: Message, db: Database, mode: FightMode) -> Ring | N
             "Здесь не дерутся. Ринги клуба:\n" + _rings_list(rings)
         )
         return None
-    if ring.mode is not mode:
-        await message.reply(
-            f"Это {ring.label}. Вызов здесь бросают командой "
-            f"{ring.mode.command}."
-        )
-        return None
-    return ring
+    return Ring(chat_id=ring.chat_id, thread_id=ring.thread_id, mode=mode,
+                title=ring.title)
 
 
 @router.my_chat_member(F.chat.type.in_(GROUP_TYPES))
@@ -91,8 +96,9 @@ async def added_to_group(event: ChatMemberUpdated) -> None:
         "Создайте ветки для боёв и отметьте их: /arena1, /arena2, /arena3 — "
         "кулачные ринги, /arena_gear — ринг с оружием. В каждом ринге идёт "
         "свой бой, так что драк может быть несколько разом.\n"
-        "Бойцы регистрируются у меня в личке командой /start, дерутся "
-        "здесь: /duel на кулаках, /fight с оружием.\n\n"
+        "Бойцы регистрируются у меня в личке командой /start и дерутся "
+        "здесь на кулаках: /duel. Бои с оружием, групповые, рейды и турниры "
+        "идут в карточке — там у каждого свой набор кнопок.\n\n"
         "Подробности — /help",
     )
 
@@ -203,7 +209,10 @@ async def cmd_rings(message: Message, db: Database, duels: DuelService) -> None:
     await message.reply("\n".join(lines))
 
 
-async def _open_duel(message: Message, db: Database, duels: DuelService, mode: FightMode) -> None:
+async def _open_duel(
+    message: Message, db: Database, duels: DuelService, mode: FightMode
+) -> None:
+    """Вызов в ветке. Режим всегда кулачный: снаряжение живёт в карточке."""
     ring = await _ring_for(message, db, mode)
     if ring is None:
         return
@@ -244,9 +253,9 @@ async def cmd_duel(message: Message, db: Database, duels: DuelService) -> None:
 
 
 @router.message(Command("fight", "armed"), F.chat.type.in_(GROUP_TYPES))
-async def cmd_fight(message: Message, db: Database, duels: DuelService) -> None:
-    """Вызов с оружием: дерутся в том, что надето."""
-    await _open_duel(message, db, duels, FightMode.ARMED)
+async def cmd_fight(message: Message, db: Database) -> None:
+    """Бой с оружием переехал в карточку: в ветке дерутся на кулаках."""
+    await message.reply(APP_ONLY)
 
 
 # ---------- бои на много бойцов ----------
@@ -317,7 +326,11 @@ async def _ring_for_battle(message: Message, db: Database) -> Ring | None:
 async def cmd_battle(
     message: Message, command: CommandObject, db: Database, battles: BattleService
 ) -> None:
-    """Командный бой: /battle 3 5-8 — трое на трое, уровни с 5 по 8."""
+    """Командный бой: /battle 3 5-8 — трое на трое, уровни с 5 по 8.
+
+    Состав собирается в ветке — кнопка «записаться» у всех одна и та же.
+    А дерутся в карточке: набор кнопок там зависит от того, что надето.
+    """
     await _open_lobby(message, command, db, battles, BattleKind.TEAM)
 
 
@@ -352,27 +365,6 @@ async def on_lobby(
         await callback.answer(plain(str(error)), show_alert=True)
     else:
         await callback.answer("Записан!")
-
-
-@router.callback_query(BattleCB.filter())
-async def on_battle_choice(
-    callback: CallbackQuery, callback_data: BattleCB, battles: BattleService
-) -> None:
-    try:
-        hint = await battles.handle_choice(
-            callback_data.battle_id,
-            callback.from_user.id,
-            callback_data.action,
-            callback_data.zone,
-            callback_data.slot,
-        )
-    except BattleError as error:
-        await callback.answer(plain(str(error)), show_alert=True)
-    except Exception:  # pragma: no cover - чтобы бой не завис из-за случайной ошибки
-        logger.exception("Ошибка при обработке хода группового боя")
-        await callback.answer("Судья запутался. Попробуй ещё раз.", show_alert=True)
-    else:
-        await callback.answer(hint)
 
 
 # ---------- рейды ----------
@@ -425,26 +417,6 @@ async def on_raid_lobby(
         await callback.answer(plain(str(error)), show_alert=True)
     else:
         await callback.answer("Идёшь в подвал!")
-
-
-@router.callback_query(RaidCB.filter())
-async def on_raid_choice(
-    callback: CallbackQuery, callback_data: RaidCB, raids: RaidService
-) -> None:
-    try:
-        hint = await raids.handle_choice(
-            callback_data.raid_id,
-            callback.from_user.id,
-            callback_data.action,
-            callback_data.zone,
-        )
-    except RaidError as error:
-        await callback.answer(plain(str(error)), show_alert=True)
-    except Exception:  # pragma: no cover - чтобы рейд не завис из-за ошибки
-        logger.exception("Ошибка при обработке хода рейда")
-        await callback.answer("Судья запутался. Попробуй ещё раз.", show_alert=True)
-    else:
-        await callback.answer(hint)
 
 
 # ---------- турнир ----------

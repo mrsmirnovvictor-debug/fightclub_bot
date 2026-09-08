@@ -15,6 +15,7 @@ from typing import Any
 
 from bot.duel_service import Challenge, DuelService, DuelSession
 from bot.game.classes import ALL_ZONES, BLOCK_WIDTH, block_button, block_combos
+from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.combat import (
     MATCH_ROUNDS,
     TURNS_PER_ROUND,
@@ -25,8 +26,9 @@ from bot.game.combat import (
 from bot.game.modes import FightMode, mode_of
 from bot.models import Player
 
-# Кнопки хода: они одни на весь клуб и от боя не зависят, поэтому
-# считаются один раз при импорте.
+# Кнопки удара одни и те же на весь клуб: зон пять, и от снаряжения их
+# число не зависит. А вот сколько будет столбцов ударов и какой ширины
+# блок — зависит, поэтому это считается по бойцу.
 ATTACK_BUTTONS: tuple[dict[str, str], ...] = tuple(
     {"zone": zone.value, "title": zone.title.capitalize()} for zone in ALL_ZONES
 )
@@ -34,6 +36,34 @@ BLOCK_BUTTONS: tuple[dict[str, str], ...] = tuple(
     {"zone": combo[0].value, "title": block_button(combo)[2:]}
     for combo in block_combos(BLOCK_WIDTH)
 )
+
+
+def block_buttons(width: int = BLOCK_WIDTH) -> list[dict[str, str]]:
+    """Кнопки блока нужной ширины: со щитом их три зоны вместо двух."""
+    return [
+        {"zone": combo[0].value, "title": block_button(combo)[2:]}
+        for combo in block_combos(width)
+    ]
+
+
+def hands_payload(fighter: Fighter | None) -> list[dict[str, Any]]:
+    """Столбцы ударов: по одному на руку с оружием.
+
+    Пусто — бойца в этом бою нет; тогда страница рисует один столбец, как
+    было до второй руки.
+    """
+    if fighter is None:
+        return [{"hand": 0, "icon": BARE_HANDS_ICON, "title": "Атака"}]
+    icons = fighter.weapon_icons
+    titles = fighter.equipment.weapon_titles or ("Кулаки",)
+    return [
+        {
+            "hand": hand,
+            "icon": icons[hand] if hand < len(icons) else BARE_HANDS_ICON,
+            "title": titles[hand] if hand < len(titles) else "Кулаки",
+        }
+        for hand in range(fighter.attacks_per_round)
+    ]
 
 
 def mode_payload(mode: FightMode) -> dict[str, Any]:
@@ -105,8 +135,20 @@ def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
             )
             for user_id in session.order
         ],
+        # Чем боец бьёт: столбец ударов на каждую руку. Со вторым оружием их
+        # два, со щитом блок шире — набор кнопок у каждого свой.
+        "hands": hands_payload(session.fighters.get(viewer_id)),
+        "blocks": block_buttons(
+            session.fighters[viewer_id].block_width
+            if viewer_id in session.fighters
+            else BLOCK_WIDTH
+        ),
         # Что этот боец уже выбрал: страница подсвечивает нажатое
         "chosen": {
+            "attacks": {
+                str(hand): zone.value
+                for hand, zone in (mine.attacks.items() if mine else ())
+            },
             "attack": mine.attack.value if mine and mine.attack else None,
             "block": mine.block[0].value if mine and mine.block else None,
         },

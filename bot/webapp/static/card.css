@@ -802,6 +802,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border-radius: 8px;
   padding: 10px;
 }
+/* Со вторым оружием столбцов три: два удара и защита */
+.zone-columns.three { grid-template-columns: 1fr 1fr 1fr; }
+.zone-columns.three .zone { font-size: 12px; }
+
 .zone-column { display: grid; gap: 2px; align-content: start; }
 .zone-head {
   margin: 0 0 6px;

@@ -145,6 +145,25 @@ EMPTY_RAID = {
 }
 
 
+EMPTY_BATTLE = {
+    "attacks": [
+        {"zone": "head", "title": "Голова"},
+        {"zone": "chest", "title": "Корпус"},
+    ],
+    "blocks": [
+        {"zone": "head", "title": "Голова + Корпус"},
+        {"zone": "chest", "title": "Корпус + Живот"},
+    ],
+    "kinds": [
+        {"code": "team", "title": "Командный бой", "emoji": "🤝", "min": 2, "max": 5},
+        {"code": "royale", "title": "Королевская битва", "emoji": "🌪",
+         "min": 3, "max": 8},
+    ],
+    "can_fight": True,
+    "battle": None, "lobby": None, "lobbies": [],
+}
+
+
 class FakeBot:  # pragma: no cover - аватар в этом тесте не трогаем
     async def get_file(self, file_id):
         raise AssertionError
@@ -156,6 +175,7 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
+    battle=None,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -177,6 +197,7 @@ async def open_page(
     await page.route("**/api/history*", canned(history or EMPTY_HISTORY))
     await page.route("**/api/raid*", canned(raid or EMPTY_RAID))
     await page.route("**/api/market*", canned(market or EMPTY_MARKET))
+    await page.route("**/api/battle*", canned(battle or EMPTY_BATTLE))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
@@ -769,6 +790,61 @@ async def test_taking_a_worn_item_off_asks_first(server):
         assert asked and "снять предмет" in asked[0]
         assert "Обрезок трубы" in asked[0] or "бита" in asked[0].lower()
         assert not calls, "вещь сняли, хотя ответили «нет»"
+        await browser.close()
+
+
+async def test_the_body_cell_holds_the_jacket_and_the_shirt_under_it(server):
+    """Одна клетка «тело»: картинкой верхняя одежда, в подсказке обе вещи."""
+    player = make_player()
+    player.gear = [
+        OwnedItem(item=CATALOGUE["leather_jacket"], id=1, slot=Slot.JACKET),
+        OwnedItem(item=CATALOGUE["club_tee"], id=2, slot=Slot.SHIRT),
+    ]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        cells = page.locator("#hero-slots-right .slot")
+        body = cells.nth(1)  # перчатки, тело, штаны, обувь
+        hint = await body.get_attribute("title")
+
+        assert "Косуха — верхняя одежда" in hint
+        assert "Клубная футболка — футболка" in hint  # обе вещи, хоть видно одну
+        assert "empty" not in (await body.get_attribute("class"))
+
+        # клетка без вещей называет место, а не вещь
+        empty = await cells.nth(0).get_attribute("title")
+        assert empty == "Пусто: перчатки"
+        await browser.close()
+
+
+async def test_only_the_shirt_still_fills_the_body_cell(server):
+    """Футболка без куртки — клетка занята ею, и снимается тоже она."""
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["club_tee"], id=2, slot=Slot.SHIRT)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    asked = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        def on_dialog(dialog):
+            asked.append(dialog.message)
+            asyncio.ensure_future(dialog.dismiss())
+
+        page.on("dialog", on_dialog)
+        body = page.locator("#hero-slots-right .slot").nth(1)
+
+        assert "empty" not in (await body.get_attribute("class"))
+        assert "Клубная футболка — футболка" in await body.get_attribute("title")
+
+        await body.click()
+        await page.wait_for_timeout(200)
+
+        assert asked and "Клубная футболка" in asked[0]
         await browser.close()
 
 
@@ -1423,7 +1499,7 @@ async def test_the_club_tab_opens_on_the_ring_and_switches_to_players(server):
         browser, page = await open_ring(pw, server, None)
 
         sections = await page.locator("#club-sections .chip").all_inner_texts()
-        assert sections == ["Бои", "Рейд", "Игроки", "Статистика"]
+        assert sections == ["Бои", "Отряд", "Рейд", "Игроки", "Статистика"]
         assert await page.locator("#club-fights").is_visible()
         assert await page.locator("#club-players").is_hidden()
 
@@ -1456,7 +1532,8 @@ async def test_the_fight_panel_shows_the_board_and_two_columns_of_choices(server
             assert line in board
 
         heads = await page.locator(".zone-head").all_inner_texts()
-        assert heads == ["Атака", "Защита"]
+        # столбец удара подписан рукой, которой бьют
+        assert heads == ["👊 Атака", "🛡 Защита"]
         columns = page.locator(".zone-column")
         assert await columns.nth(0).locator(".zone").all_inner_texts() == [
             "Голова", "Корпус"
@@ -1498,9 +1575,63 @@ async def test_the_turn_goes_to_the_judge_in_one_press(server):
         await page.locator("#turn-go").click()
         await page.wait_for_selector("#turn-go", state="detached")
 
-        assert sent == [{"action": "turn", "attack": "head", "block": "chest"}]
+        assert sent == [{"action": "turn", "attacks": {"0": "head"}, "block": "chest"}]
         # выбор принят: вместо кнопок ожидание соперника
         assert "Ждём соперника" in await page.locator("#fights-body").inner_text()
+        await browser.close()
+
+
+async def test_two_weapons_give_two_columns_and_a_shield_widens_the_block(server):
+    """Набор кнопок идёт от снаряжения: две руки — два удара, щит — блок шире."""
+    armed = ring_with_duel()
+    armed["duel"]["hands"] = [
+        {"hand": 0, "icon": "🔪", "title": "Нож"},
+        {"hand": 1, "icon": "🔩", "title": "Кастет"},
+    ]
+    armed["duel"]["blocks"] = [
+        {"zone": "head", "title": "Голова + Корпус (+живот 🛡)"},
+        {"zone": "chest", "title": "Корпус + Живот (+пояс 🛡)"},
+    ]
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_ring(pw, server, armed)
+
+        heads = await page.locator(".zone-head").all_inner_texts()
+        assert heads == ["🔪 Нож", "🔩 Кастет", "🛡 Защита"]
+        assert await page.locator(".zone-columns.three").count() == 1
+        assert "(+живот 🛡)" in await page.locator(".zone-column").nth(2).inner_text()
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(ring_with_duel({"chosen": {
+                    "attacks": {"0": "head", "1": "chest"}, "attack": "head",
+                    "block": "head",
+                }})),
+            )
+
+        await page.route("**/api/fight", catch)
+
+        # пока выбрана только одна рука, отправлять нельзя
+        await page.locator(".zone-column").nth(0).get_by_text("Голова").click()
+        await page.locator(".zone-column").nth(2).get_by_text(
+            "Голова + Корпус (+живот 🛡)"
+        ).click()
+        assert await page.locator("#turn-go").is_disabled()
+
+        await page.locator(".zone-column").nth(1).get_by_text("Корпус").click()
+        assert await page.locator("#turn-go").is_enabled()
+
+        await page.locator("#turn-go").click()
+        await page.wait_for_timeout(200)
+
+        assert sent == [{
+            "action": "turn",
+            "attacks": {"0": "head", "1": "chest"},
+            "block": "head",
+        }]
         await browser.close()
 
 
@@ -1858,7 +1989,7 @@ async def test_the_raid_turn_goes_in_one_press(server):
         await page.locator("#raid-go").click()
         await page.wait_for_selector("#raid-go", state="detached")
 
-        assert sent == [{"action": "turn", "attack": "head", "block": "chest"}]
+        assert sent == [{"action": "turn", "attacks": {"0": "head"}, "block": "chest"}]
         assert "Ждём остальных" in await page.locator("#raid-body").inner_text()
         await browser.close()
 
@@ -2073,6 +2204,174 @@ async def test_a_fight_opens_into_the_words_of_the_judge(server):
         await page.get_by_role("button", name="← К списку боёв").click()
         await page.wait_for_selector(".fight-row")
         assert await page.locator(".fight-row").count() == 4
+        await browser.close()
+
+
+# ---------- групповой бой в карточке ----------
+
+
+def battle_with_round(over=None) -> dict:
+    """Ответ клуба: идёт раунд, один боец уже отработал."""
+    battle = {
+        "id": 1, "kind": "team", "kind_title": "Командный бой", "emoji": "🤝",
+        "mode": {"code": "armed", "title": "бой с оружием", "emoji": "⚔️"},
+        "round": 2, "in_app": True, "finished": False, "summary": [],
+        "hands": [{"hand": 0, "icon": "👊", "title": "Кулаки"}],
+        "blocks": [
+            {"zone": "head", "title": "Голова + Корпус"},
+            {"zone": "chest", "title": "Корпус + Живот"},
+        ],
+        "party": [
+            {
+                "user_id": 42, "name": "Растафарайчик", "level": 5, "emoji": "⚔️",
+                "hp": 70, "max_hp": 100, "percent": 70, "damage_dealt": 45,
+                "alive": True, "team": 0, "team_title": "Красные",
+                "rival_id": 43, "rival": "Марла", "ready": False, "you": True,
+            },
+            {
+                "user_id": 43, "name": "Марла", "level": 4, "emoji": "🗡️",
+                "hp": 20, "max_hp": 95, "percent": 21, "damage_dealt": 60,
+                "alive": True, "team": 1, "team_title": "Синие",
+                "rival_id": 42, "rival": "Растафарайчик", "ready": True,
+                "you": False,
+            },
+        ],
+        "yours": True, "alive": True, "fighting": True, "acted": False,
+        "chosen": {"attacks": {}, "block": None},
+        "log": [
+            {
+                "number": 1, "round": 1, "turn": 1, "finished": False,
+                "winner_id": None, "hp_after": {"42": 70, "43": 20},
+                "lines": [
+                    "👊 Растафарайчик вламывает кулаком в живот, "
+                    "Марла оседает, −45 [20/95]",
+                ],
+                "strikes": [
+                    {
+                        "attacker_id": 42, "defender_id": 43, "zone": "belly",
+                        "zone_title": "Живот", "zone_where": "в живот",
+                        "outcome": "hit", "emoji": "👊", "title": "попал",
+                        "weapon": "кулаком", "damage": 45, "counter": 0,
+                        "armor": 0, "hp_after": 20, "missed_turn": False,
+                    }
+                ],
+            }
+        ],
+    }
+    battle.update(over or {})
+    return {**EMPTY_BATTLE, "battle": battle}
+
+
+async def open_squad(pw, server, battle=None):
+    """Открыть вкладку клуба на разделе отряда."""
+    browser, page = await open_page(
+        pw, server, build_card(make_player(), TOKEN, viewer_id=42), battle=battle
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.locator("#tab-club").click()
+    await page.get_by_role("button", name="Отряд", exact=True).click()
+    await page.wait_for_selector("#club-battle:not(.hidden)")
+    return browser, page
+
+
+async def test_the_squad_section_offers_both_kinds_of_group_fight(server):
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server)
+
+        body = await page.locator("#battle-body").inner_text()
+        assert "Командный бой на 2" in body
+        assert "Королевская битва на 8" in body
+        assert "Собери состав" in await page.locator("#battle-note").inner_text()
+        await browser.close()
+
+
+async def test_the_group_round_shows_the_board_and_the_pair(server):
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, battle_with_round())
+
+        head = await page.locator(".fight-round").inner_text()
+        assert "Командный бой — раунд 2" in head
+        board = await page.locator(".raid-party").inner_text()
+        assert "Растафарайчик" in board and "против Марла" in board
+        assert "Красные" in board and "Синие" in board
+        # столбцов два: одна рука и блок
+        assert await page.locator("#club-battle .zone-column").count() == 2
+        await browser.close()
+
+
+async def test_the_group_turn_goes_in_one_press(server):
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, battle_with_round())
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(battle_with_round({"acted": True})),
+            )
+
+        await page.route("**/api/battle", catch)
+        assert await page.locator("#battle-go").is_disabled()
+
+        await page.locator("#club-battle .zone-column").nth(0).get_by_text(
+            "Голова"
+        ).click()
+        await page.locator("#club-battle .zone-column").nth(1).get_by_text(
+            "Корпус + Живот"
+        ).click()
+        assert sent == []  # до «Вперёд!» судья ничего не знает
+
+        await page.locator("#battle-go").click()
+        await page.wait_for_selector("#battle-go", state="detached")
+
+        assert sent == [{"action": "turn", "attacks": {"0": "head"}, "block": "chest"}]
+        assert "Ждём остальных" in await page.locator("#battle-body").inner_text()
+        await browser.close()
+
+
+async def test_without_a_pair_there_are_no_buttons_this_round(server):
+    idle = battle_with_round({"fighting": False})
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, idle)
+
+        assert await page.locator("#club-battle .zone").count() == 0
+        assert "пары не досталось" in await page.locator("#battle-body").inner_text()
+        await browser.close()
+
+
+async def test_the_end_of_the_group_fight_shows_the_result(server):
+    over = battle_with_round({
+        "finished": True,
+        "summary": [
+            "🏆 Красные берут бой",
+            "",
+            "📊 Итоги",
+            "⚔️ Растафарайчик: нанесено урона 45, +114 опыта",
+        ],
+    })
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, over)
+
+        assert "Бой окончен" in await page.locator(".fight-round").inner_text()
+        card = await page.locator(".fight-finish").inner_text()
+        assert "Красные берут бой" in card
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(EMPTY_BATTLE),
+            )
+
+        await page.route("**/api/battle", catch)
+        await page.get_by_role("button", name="Завершить бой").click()
+        await page.wait_for_selector(".fight-finish", state="detached")
+
+        assert sent == [{"action": "done"}]
         await browser.close()
 
 

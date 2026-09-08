@@ -10,6 +10,7 @@ from aiohttp import web
 
 from bot.config import Config
 from bot.database import Database
+from bot.battle_service import BattleError
 from bot.duel_service import DuelError
 from bot.raid_service import RaidError
 from bot.game.classes import ALL_STATS
@@ -30,6 +31,7 @@ from bot.store_service import StoreError, StoreService
 from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
+from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, raid_row
 from bot.webapp.card import (
@@ -59,6 +61,8 @@ DUELS_KEY: web.AppKey = web.AppKey("duels")
 STORE_KEY: web.AppKey = web.AppKey("store")
 # Рейды: тот же сервис, что и в ветке группы — апп ему второй пульт
 RAIDS_KEY: web.AppKey = web.AppKey("raids")
+# Групповые бои: состав собирают где угодно, а дерутся в карточке
+BATTLES_KEY: web.AppKey = web.AppKey("battles")
 # Кто может смотреть чужие карточки — все: клуб маленький, прятать нечего
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
 
@@ -164,6 +168,28 @@ def _card_response(request: web.Request, player) -> web.Response:
     body = build_card(player, config.bot_token, player.user_id)
     body["undressed"] = [owned.title for owned in player.dropped_gear]
     return web.json_response(body)
+
+
+def _hands(data: dict) -> dict[int, str]:
+    """Куда бьёт каждая рука: {0: "head", 1: "belly"}.
+
+    Одну руку страница шлёт и по-старому, полем `attack`: так проще и так
+    же читается на сервере.
+    """
+    hands: dict[int, str] = {}
+    raw = data.get("attacks")
+    if isinstance(raw, dict):
+        for key, zone in raw.items():
+            if str(zone):
+                hands[int(key)] = str(zone)
+    elif isinstance(raw, list):
+        for index, zone in enumerate(raw):
+            if str(zone):
+                hands[index] = str(zone)
+    single = str(data.get("attack", ""))
+    if single and 0 not in hands:
+        hands[0] = single
+    return hands
 
 
 def _int_field(data: dict, name: str) -> int:
@@ -429,17 +455,22 @@ async def api_fight(request: web.Request) -> web.Response:
             # Итог прочитан — убираем его с экрана
             duels.forget_result(player.user_id)
         elif action == "turn":
-            # Ход целиком: удар и блок уходят одной кнопкой «Вперёд!».
-            # Порядок важен — блок последним, чтобы выбор считался готовым
-            # только когда выбрано и то, и другое.
+            # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
+            # «Вперёд!». Порядок важен — блок последним, чтобы выбор считался
+            # готовым только когда выбрано всё.
             duel = duels.duel_of_user(player.user_id)
             if duel is None:
                 raise DuelError("Ты сейчас не на ринге.")
-            attack = str(data.get("attack", ""))
+            hands = _hands(data)
             block = str(data.get("block", ""))
-            if not attack or not block:
+            fighter = duel.fighters.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
                 raise DuelError("Выбери и удар, и блок.")
-            await duels.handle_choice(duel.id, player.user_id, "attack", attack)
+            for hand, zone in sorted(hands.items()):
+                await duels.handle_choice(
+                    duel.id, player.user_id, "attack", zone, hand
+                )
             await duels.handle_choice(duel.id, player.user_id, "block", block)
         elif action in {"attack", "block"}:
             duel = duels.duel_of_user(player.user_id)
@@ -523,15 +554,20 @@ async def api_raid_action(request: web.Request) -> web.Response:
                 raise RaidError("Ты никуда не записан.")
             await raids.leave(lobby.id, player.user_id)
         elif action == "turn":
-            # Ход целиком: удар и блок уходят одной кнопкой «Вперёд!»
+            # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
             session = raids.raid_of_user(player.user_id)
             if session is None:
                 raise RaidError("Ты сейчас не в рейде.")
-            attack = str(data.get("attack", ""))
+            hands = _hands(data)
             block = str(data.get("block", ""))
-            if not attack or not block:
+            fighter = session.fighters.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
                 raise RaidError("Выбери и удар, и блок.")
-            await raids.handle_choice(session.id, player.user_id, "attack", attack)
+            for hand, zone in sorted(hands.items()):
+                await raids.handle_choice(
+                    session.id, player.user_id, "attack", zone, hand
+                )
             await raids.handle_choice(session.id, player.user_id, "block", block)
         elif action == "done":
             raids.forget_result(player.user_id)
@@ -542,6 +578,69 @@ async def api_raid_action(request: web.Request) -> web.Response:
 
     fresh = await request.app[DB_KEY].get_player(player.user_id)
     return web.json_response(build_raid(fresh or player, raids))
+
+
+# ---------- групповые бои ----------
+
+
+async def api_battle(request: web.Request) -> web.Response:
+    """Состояние раздела «Отряд»: сбор, идущий раунд или итог."""
+    player = await _fighter(request)
+    return web.json_response(build_battle(player, request.app.get(BATTLES_KEY)))
+
+
+async def api_battle_action(request: web.Request) -> web.Response:
+    """Действие в групповом бою: собрать, записаться, выйти, ударить."""
+    from bot.game.battle import BattleKind
+
+    player = await _fighter(request)
+    battles = request.app.get(BATTLES_KEY)
+    if battles is None:  # pragma: no cover - бот без групповых боёв не поднимается
+        return web.json_response({"error": "Групповые бои недоступны."}, status=503)
+
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    try:
+        if action == "open":
+            kind = BattleKind(str(data.get("kind") or BattleKind.TEAM.value))
+            await battles.open_lobby(
+                None, None, player, kind, _int_field(data, "size")
+            )
+        elif action == "join":
+            # Сторона важна только в командном бою: в мясорубке её нет
+            await battles.join(
+                _int_field(data, "lobby_id"), player, int(data.get("team") or 0)
+            )
+        elif action == "leave":
+            lobby = battles.lobby_of_user(player.user_id)
+            if lobby is None:
+                raise BattleError("Ты никуда не записан.")
+            await battles.leave(lobby.id, player.user_id)
+        elif action == "turn":
+            # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
+            session = battles.battle_of_user(player.user_id)
+            if session is None:
+                raise BattleError("Ты сейчас не в групповом бою.")
+            hands = _hands(data)
+            block = str(data.get("block", ""))
+            fighter = session.fighters.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
+                raise BattleError("Выбери и удар, и блок.")
+            for hand, zone in sorted(hands.items()):
+                await battles.handle_choice(
+                    session.id, player.user_id, "attack", zone, hand
+                )
+            await battles.handle_choice(session.id, player.user_id, "block", block)
+        elif action == "done":
+            battles.forget_result(player.user_id)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except (BattleError, ValueError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await request.app[DB_KEY].get_player(player.user_id)
+    return web.json_response(build_battle(fresh or player, battles))
 
 
 async def api_raids_history(request: web.Request) -> web.Response:
@@ -705,7 +804,13 @@ async def healthz(request: web.Request) -> web.Response:
 
 
 def create_app(
-    bot, db: Database, config: Config, duels=None, store=None, raids=None
+    bot,
+    db: Database,
+    config: Config,
+    duels=None,
+    store=None,
+    raids=None,
+    battles=None,
 ) -> web.Application:
     app = web.Application()
     app[BOT_KEY] = bot
@@ -718,6 +823,8 @@ def create_app(
         app[STORE_KEY] = store
     if raids is not None:
         app[RAIDS_KEY] = raids
+    if battles is not None:
+        app[BATTLES_KEY] = battles
     app.add_routes(
         [
             web.get("/", index),
@@ -738,6 +845,8 @@ def create_app(
             web.get("/api/raid", api_raid),
             web.post("/api/raid", api_raid_action),
             web.get("/api/raids", api_raids_history),
+            web.get("/api/battle", api_battle),
+            web.post("/api/battle", api_battle_action),
             web.get("/api/fight/{fight_id}", api_fight_log),
             web.get("/api/magic", api_magic),
             web.post("/api/pro", api_pro),
@@ -754,10 +863,18 @@ def create_app(
 
 
 async def run_webapp(
-    bot, db: Database, config: Config, duels=None, store=None, raids=None
+    bot,
+    db: Database,
+    config: Config,
+    duels=None,
+    store=None,
+    raids=None,
+    battles=None,
 ) -> web.AppRunner:
     """Поднять сервер мини-аппа рядом с ботом. Вернуть runner для остановки."""
-    runner = web.AppRunner(create_app(bot, db, config, duels, store, raids))
+    runner = web.AppRunner(
+        create_app(bot, db, config, duels, store, raids, battles)
+    )
     await runner.setup()
     site = web.TCPSite(runner, config.webapp_host, config.webapp_port)
     await site.start()

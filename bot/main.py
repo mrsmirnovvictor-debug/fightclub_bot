@@ -53,10 +53,9 @@ PRIVATE_COMMANDS = [
 
 GROUP_COMMANDS = [
     BotCommand(command="duel", description="Вызов на кулаках"),
-    BotCommand(command="fight", description="Вызов с оружием"),
-    BotCommand(command="battle", description="Командный бой: /battle 3"),
-    BotCommand(command="royale", description="Королевская битва: /royale 6"),
-    BotCommand(command="raid", description="Рейд на босса: /raid 10"),
+    BotCommand(command="battle", description="Собрать командный бой: /battle 3"),
+    BotCommand(command="royale", description="Собрать мясорубку: /royale 6"),
+    BotCommand(command="raid", description="Собрать рейд на босса: /raid 10"),
     BotCommand(command="tournament", description="Объявить турнир (админы)"),
     BotCommand(command="bracket", description="Сетка турнира"),
     BotCommand(command="card", description="Карточка бойца"),
@@ -116,7 +115,7 @@ async def run(config: Config | None = None) -> None:
     logger.info("Имя бойца в чате ведёт на %s", links.href(me.id))
 
     runner = (
-        await run_webapp(bot, db, config, duels, store, raids)
+        await run_webapp(bot, db, config, duels, store, raids, battles)
         if config.webapp_enabled
         else None
     )

@@ -540,5 +540,5 @@ async def test_the_group_board_stacks_the_pairs_one_under_another(bot, db):
     assert len(pairs) == len(session.pairs) == 2
     assert board.count("") >= 2  # пары разделены пустой строкой
     assert "<pre>" in "\n".join(board)  # табло идёт моноширинным блоком
-    assert board[-1].endswith("Выберите удар и блок.")
+    assert board[-1].endswith("Удар и блок — в карточке, вкладка «Клуб».")
     await service.shutdown()

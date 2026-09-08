@@ -106,29 +106,51 @@ function emptySlotPicture(slot, box) {
   );
 }
 
-function slotHint(slot) {
-  // Подсказка при наведении: что надето и что это даёт. Пустой слот
-  // рассказывает, что сюда вообще надевается.
-  if (!slot.item) return "Пусто: " + slot.title;
-  const parts = [slot.item.title + " — " + slot.title];
-  if (slot.item.bonus) parts.push(slot.item.bonus);
-  if (slot.item.in_hands) parts.push(slot.item.in_hands);
+function wornLine(item, slotTitle) {
+  const parts = [item.title + " — " + slotTitle];
+  if (item.bonus) parts.push(item.bonus);
+  if (item.in_hands) parts.push(item.in_hands);
   return parts.join("\n");
+}
+
+function slotHint(slot) {
+  // Подсказка при наведении: что надето и что это даёт. В клетке тела вещей
+  // может быть две — верхняя одежда и футболка под ней, — и рассказываем про
+  // обе: картинкой видно только верхнюю.
+  const lines = [];
+  if (slot.item) lines.push(wornLine(slot.item, slot.title));
+  if (slot.under) lines.push(wornLine(slot.under, slot.under_title));
+  if (!lines.length) return "Пусто: " + slot.cell_title;
+  return lines.join("\n\n");
 }
 
 function renderSlots(container, slots, own) {
   container.textContent = "";
   slots.forEach((slot) => {
+    // Картинкой показываем верхнюю вещь; если её нет, а нижняя есть — нижнюю.
+    // Пустой клетка считается, только когда в ней нет ни одной.
+    const shown = slot.item || slot.under;
     const box = document.createElement("div");
-    box.className = "slot" + (slot.item ? "" : " empty");
+    box.className = "slot" + (shown ? "" : " empty");
     box.title = slotHint(slot);
     box.appendChild(
-      slot.item
-        ? slotPicture(slot.item, slot.placeholder)
-        : emptySlotPicture(slot, box)
+      shown ? slotPicture(shown, slot.placeholder) : emptySlotPicture(slot, box)
     );
     box.addEventListener("click", () => {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+      if (!slot.item && slot.under) {
+        // В клетке только нижняя вещь — снимаем её
+        if (own) {
+          confirmAction(
+            "Вы уверены, что хотите снять предмет?\n" + slot.under.title
+          ).then((ok) => {
+            if (ok) act("api/unequip", { slot: slot.under.slot });
+          });
+        } else {
+          popup(slot.under.title, slotHint(slot));
+        }
+        return;
+      }
       if (slot.item && own) {
         // Клик по надетой вещи возвращает её в инвентарь, но не молча:
         // промахнуться по слоту легко, а вещь при этом слетает.
@@ -138,11 +160,9 @@ function renderSlots(container, slots, own) {
           if (ok) act("api/unequip", { slot: slot.slot });
         });
       } else if (slot.item) {
-        const bonus = slot.item.bonus ? "\n" + slot.item.bonus : "";
-        const hands = slot.item.in_hands ? "\n" + slot.item.in_hands : "";
-        popup(slot.item.title, slot.title + bonus + hands);
+        popup(slot.item.title, slotHint(slot));
       } else {
-        popup("Слот пуст", "Сюда надевается: " + slot.title + ".");
+        popup("Слот пуст", "Сюда надевается: " + slot.cell_title + ".");
       }
     });
     container.appendChild(box);
@@ -1340,7 +1360,7 @@ function stopWatchingFights() {
 
 function pickClubSection(name) {
   clubSection = name;
-  ["fights", "raid", "players", "stats"].forEach((section) => {
+  ["fights", "battle", "raid", "players", "stats"].forEach((section) => {
     el("club-" + section).classList.toggle("hidden", section !== name);
   });
   renderClubSections();
@@ -1349,6 +1369,9 @@ function pickClubSection(name) {
   // Рейд живёт волнами: пока раздел открыт, спрашиваем состояние
   if (name === "raid") startWatchingRaid();
   else stopWatchingRaid();
+  // Групповой бой тоже идёт раундами и без тебя — следим так же
+  if (name === "battle") startWatchingBattle();
+  else stopWatchingBattle();
 }
 
 function renderClubSections() {
@@ -1356,6 +1379,7 @@ function renderClubSections() {
   box.textContent = "";
   [
     ["fights", "Бои"],
+    ["battle", "Отряд"],
     ["raid", "Рейд"],
     ["players", "Игроки"],
     ["stats", "Статистика"],
@@ -1414,7 +1438,7 @@ function renderFights(data) {
   const turn = data.duel ? data.duel.id + ":" + data.duel.round + ":" + data.duel.turn : null;
   if (turn !== lastTurn) {
     lastTurn = turn;
-    turnDraft = { attack: null, block: null };
+    turnDraft = { attacks: {}, block: null };
   }
   // Бой доигран — уровень и награда уже записаны: перечитываем карточку
   if (data.duel && data.duel.finished && !fightWasOver) catchUp();
@@ -1533,9 +1557,18 @@ function fighterSide(fighter) {
 
 // Что боец наметил, но ещё не отправил. Выбор живёт на странице до
 // нажатия «Вперёд!»: передумать можно сколько угодно, судья узнает один раз.
-let turnDraft = { attack: null, block: null };
+// Ударов столько, сколько рук с оружием: со вторым оружием их два.
+let turnDraft = { attacks: {}, block: null };
 
-function zoneColumn(title, rows, field) {
+function draftReady(hands) {
+  return Boolean(turnDraft.block) && hands.every((row) => turnDraft.attacks[row.hand]);
+}
+
+function turnPayload() {
+  return { action: "turn", attacks: turnDraft.attacks, block: turnDraft.block };
+}
+
+function zoneColumn(title, rows, pick, chosen, name) {
   const box = document.createElement("div");
   box.className = "zone-column";
   const head = document.createElement("p");
@@ -1544,14 +1577,14 @@ function zoneColumn(title, rows, field) {
   box.appendChild(head);
   rows.forEach((row) => {
     const label = document.createElement("label");
-    label.className = "zone" + (turnDraft[field] === row.zone ? " on" : "");
+    label.className = "zone" + (chosen() === row.zone ? " on" : "");
     const dot = document.createElement("input");
     dot.type = "radio";
-    dot.name = "turn-" + field;
+    dot.name = name;
     dot.value = row.zone;
-    dot.checked = turnDraft[field] === row.zone;
+    dot.checked = chosen() === row.zone;
     dot.addEventListener("change", () => {
-      turnDraft[field] = row.zone;
+      pick(row.zone);
       paintDraft();
     });
     const text = document.createElement("span");
@@ -1564,24 +1597,52 @@ function zoneColumn(title, rows, field) {
 }
 
 function paintDraft() {
-  // Подсветка выбранного и кнопка отправки: пока не выбрано и то, и другое,
-  // отправлять нечего
-  document.querySelectorAll(".zone").forEach((label) => {
+  // Подсветка выбранного и кнопка отправки: пока не выбраны все удары и
+  // блок, отправлять нечего
+  document.querySelectorAll("#club-fights .zone").forEach((label) => {
     const dot = label.querySelector("input");
     label.classList.toggle("on", Boolean(dot && dot.checked));
   });
   const go = el("turn-go");
-  if (go) go.disabled = !(turnDraft.attack && turnDraft.block);
+  const hands = (fightsData && fightsData.duel && fightsData.duel.hands) || [];
+  if (go) go.disabled = !draftReady(hands);
 }
 
 function turnForm(data) {
   const box = document.createElement("div");
   box.className = "turn-form";
 
+  // Столбцов ударов столько, сколько рук с оружием, а блок бывает шире:
+  // со щитом он держит три зоны вместо двух
+  const hands = data.duel.hands || [{ hand: 0, icon: "👊", title: "Кулаки" }];
+  const blocks = data.duel.blocks || data.blocks;
+
   const columns = document.createElement("div");
-  columns.className = "zone-columns";
-  columns.appendChild(zoneColumn("Атака", data.attacks, "attack"));
-  columns.appendChild(zoneColumn("Защита", data.blocks, "block"));
+  columns.className = "zone-columns" + (hands.length > 1 ? " three" : "");
+  hands.forEach((row) => {
+    columns.appendChild(
+      zoneColumn(
+        row.icon + " " + (hands.length > 1 ? row.title : "Атака"),
+        data.attacks,
+        (zone) => {
+          turnDraft.attacks[row.hand] = zone;
+        },
+        () => turnDraft.attacks[row.hand],
+        "turn-attack-" + row.hand
+      )
+    );
+  });
+  columns.appendChild(
+    zoneColumn(
+      "🛡 Защита",
+      blocks,
+      (zone) => {
+        turnDraft.block = zone;
+      },
+      () => turnDraft.block,
+      "turn-block"
+    )
+  );
   box.appendChild(columns);
 
   const go = document.createElement("button");
@@ -1589,10 +1650,10 @@ function turnForm(data) {
   go.id = "turn-go";
   go.className = "btn wide";
   go.textContent = "Вперёд!";
-  go.disabled = !(turnDraft.attack && turnDraft.block);
+  go.disabled = !draftReady(hands);
   go.addEventListener("click", () => {
-    const move = { action: "turn", attack: turnDraft.attack, block: turnDraft.block };
-    turnDraft = { attack: null, block: null };
+    const move = turnPayload();
+    turnDraft = { attacks: {}, block: null };
     fightAction(move);
   });
   box.appendChild(go);
@@ -1754,7 +1815,7 @@ let raidWasOver = false;
 // Развёрнута ли карточка босса под заголовком
 let bossOpen = false;
 let raidBusy = false;
-let raidDraft = { attack: null, block: null };
+let raidDraft = { attacks: {}, block: null };
 let raidWave = null;
 
 function startWatchingRaid() {
@@ -1817,7 +1878,7 @@ function renderRaid(data) {
   const wave = data.raid ? data.raid.id + ":" + data.raid.wave : null;
   if (wave !== raidWave) {
     raidWave = wave;
-    raidDraft = { attack: null, block: null };
+    raidDraft = { attacks: {}, block: null };
   }
   if (data.raid && data.raid.finished && !raidWasOver) catchUp();
   raidWasOver = Boolean(data.raid && data.raid.finished);
@@ -2079,13 +2140,46 @@ function partyBoard(party) {
   return box;
 }
 
+function raidHands(data) {
+  return (data.raid && data.raid.hands) || [{ hand: 0, icon: "👊", title: "Кулаки" }];
+}
+
+function raidReady(hands) {
+  return Boolean(raidDraft.block) && hands.every((row) => raidDraft.attacks[row.hand]);
+}
+
 function raidTurnForm(data) {
   const box = document.createElement("div");
   box.className = "turn-form";
+  const hands = raidHands(data);
+  const blocks = (data.raid && data.raid.blocks) || data.blocks;
+
   const columns = document.createElement("div");
-  columns.className = "zone-columns";
-  columns.appendChild(raidColumn("Атака", data.attacks, "attack"));
-  columns.appendChild(raidColumn("Защита", data.blocks, "block"));
+  columns.className = "zone-columns" + (hands.length > 1 ? " three" : "");
+  hands.forEach((row) => {
+    columns.appendChild(
+      raidColumn(
+        row.icon + " " + (hands.length > 1 ? row.title : "Атака"),
+        data.attacks,
+        (zone) => {
+          raidDraft.attacks[row.hand] = zone;
+        },
+        () => raidDraft.attacks[row.hand],
+        "raid-attack-" + row.hand
+      )
+    );
+  });
+  columns.appendChild(
+    raidColumn(
+      "🛡 Защита",
+      blocks,
+      (zone) => {
+        raidDraft.block = zone;
+      },
+      () => raidDraft.block,
+      "raid-block"
+    )
+  );
   box.appendChild(columns);
 
   const go = document.createElement("button");
@@ -2093,17 +2187,17 @@ function raidTurnForm(data) {
   go.id = "raid-go";
   go.className = "btn wide";
   go.textContent = "Вперёд!";
-  go.disabled = !(raidDraft.attack && raidDraft.block);
+  go.disabled = !raidReady(hands);
   go.addEventListener("click", () => {
-    const move = { action: "turn", attack: raidDraft.attack, block: raidDraft.block };
-    raidDraft = { attack: null, block: null };
+    const move = { action: "turn", attacks: raidDraft.attacks, block: raidDraft.block };
+    raidDraft = { attacks: {}, block: null };
     raidAction(move);
   });
   box.appendChild(go);
   return box;
 }
 
-function raidColumn(title, rows, field) {
+function raidColumn(title, rows, pick, chosen, name) {
   const box = document.createElement("div");
   box.className = "zone-column";
   const head = document.createElement("p");
@@ -2112,14 +2206,14 @@ function raidColumn(title, rows, field) {
   box.appendChild(head);
   rows.forEach((row) => {
     const label = document.createElement("label");
-    label.className = "zone" + (raidDraft[field] === row.zone ? " on" : "");
+    label.className = "zone" + (chosen() === row.zone ? " on" : "");
     const dot = document.createElement("input");
     dot.type = "radio";
-    dot.name = "raid-" + field;
+    dot.name = name;
     dot.value = row.zone;
-    dot.checked = raidDraft[field] === row.zone;
+    dot.checked = chosen() === row.zone;
     dot.addEventListener("change", () => {
-      raidDraft[field] = row.zone;
+      pick(row.zone);
       paintRaidDraft();
     });
     const text = document.createElement("span");
@@ -2137,7 +2231,7 @@ function paintRaidDraft() {
     label.classList.toggle("on", Boolean(dot && dot.checked));
   });
   const go = el("raid-go");
-  if (go) go.disabled = !(raidDraft.attack && raidDraft.block);
+  if (go) go.disabled = !raidReady(raidHands(raidData || {}));
 }
 
 function raidFinish(raid) {
@@ -2167,6 +2261,367 @@ function raidLog(raid) {
   head.textContent = "Ход рейда";
   box.appendChild(head);
   raid.log.slice().reverse().forEach((turn) => judgeLines(turn, box));
+  return box;
+}
+
+// ---------- групповой бой ----------
+//
+// Команда на команду или мясорубка. Состав собирают здесь же или в ветке
+// группы, а дерутся только тут: набор кнопок у каждого свой — по оружию и
+// щиту. Раунд считается, когда нажали все, кому в этом ходу досталась пара.
+
+let battleData = null;
+let battleTimer = null;
+let battleWasOver = false;
+let battleBusy = false;
+let battleDraft = { attacks: {}, block: null };
+let battleRound = null;
+
+function startWatchingBattle() {
+  if (battleTimer) return;
+  loadBattle();
+  battleTimer = setInterval(loadBattle, 2000);
+}
+
+function stopWatchingBattle() {
+  if (!battleTimer) return;
+  clearInterval(battleTimer);
+  battleTimer = null;
+}
+
+async function loadBattle() {
+  try {
+    const response = await fetch("api/battle", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (response.status === 404) {
+      el("battle-note").textContent = "Сначала заведи бойца в личке бота.";
+      return;
+    }
+    if (!response.ok) throw new Error("Клуб не отвечает.");
+    renderBattle(await response.json());
+  } catch (error) {
+    el("battle-note").textContent = error.message;
+  }
+}
+
+async function battleAction(payload) {
+  if (battleBusy) return;
+  battleBusy = true;
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  try {
+    const response = await fetch("api/battle", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      popup("Отряд", body.error || "Не вышло.");
+      return;
+    }
+    renderBattle(body);
+  } catch (error) {
+    popup("Отряд", error.message);
+  } finally {
+    battleBusy = false;
+  }
+}
+
+function renderBattle(data) {
+  // Новый раунд — намётки прошлого сбрасываем
+  const round = data.battle ? data.battle.id + ":" + data.battle.round : null;
+  if (round !== battleRound) {
+    battleRound = round;
+    battleDraft = { attacks: {}, block: null };
+  }
+  if (data.battle && data.battle.finished && !battleWasOver) catchUp();
+  battleWasOver = Boolean(data.battle && data.battle.finished);
+  battleData = data;
+  const body = el("battle-body");
+  body.textContent = "";
+  if (data.battle) {
+    el("battle-note").textContent = "";
+    body.appendChild(battlePanel(data));
+  } else if (data.lobby) {
+    el("battle-note").textContent = "Состав собирается. Ждём остальных.";
+    body.appendChild(battleLobby(data.lobby, true));
+  } else {
+    el("battle-note").textContent = data.can_fight
+      ? "Собери состав или влезь в чужой."
+      : "Здоровье не то — сначала отдышись.";
+    body.appendChild(battleOpenForm(data));
+    data.lobbies.forEach((lobby) => body.appendChild(battleLobby(lobby, false)));
+  }
+}
+
+function battleOpenForm(data) {
+  const box = document.createElement("div");
+  box.className = "fight-open";
+  const line = document.createElement("p");
+  line.className = "fight-line";
+  line.textContent =
+    "Командный бой — сторона на сторону, королевская битва — каждый сам за " +
+    "себя. Уровни подбираются по твоему.";
+  box.appendChild(line);
+
+  data.kinds.forEach((kind) => {
+    const row = document.createElement("div");
+    row.className = "raid-sizes";
+    [kind.min, kind.max].forEach((size) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn wide";
+      btn.textContent =
+        kind.emoji + " " + kind.title + " на " + size;
+      btn.disabled = !data.can_fight;
+      btn.addEventListener("click", () =>
+        battleAction({ action: "open", kind: kind.code, size: size })
+      );
+      row.appendChild(btn);
+    });
+    box.appendChild(row);
+  });
+  return box;
+}
+
+function battleLobby(lobby, mine) {
+  const box = document.createElement("div");
+  box.className = "fight-card";
+  const head = document.createElement("p");
+  head.className = "fight-line";
+  head.textContent =
+    lobby.emoji + " " + lobby.kind_title + " — " +
+    lobby.total + "/" + lobby.capacity +
+    " · уровни " + lobby.min_level + "–" + lobby.max_level;
+  box.appendChild(head);
+
+  lobby.teams.forEach((team) => {
+    const row = document.createElement("p");
+    row.className = "fight-row-note";
+    const names = team.members.map((one) => one.name).join(", ");
+    row.textContent =
+      (lobby.kind === "team" ? team.title + ": " : "") + (names || "пусто");
+    box.appendChild(row);
+    if (mine || lobby.joined) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn wide";
+    btn.textContent = lobby.kind === "team" ? "В " + team.title : "⚔️ В бой";
+    btn.disabled = team.free <= 0;
+    btn.addEventListener("click", () =>
+      battleAction({ action: "join", lobby_id: lobby.id, team: team.team })
+    );
+    box.appendChild(btn);
+  });
+
+  if (mine || lobby.joined) {
+    const out = document.createElement("button");
+    out.type = "button";
+    out.className = "btn secondary wide";
+    out.textContent = "Выйти из состава";
+    out.addEventListener("click", () => battleAction({ action: "leave" }));
+    box.appendChild(out);
+  }
+  return box;
+}
+
+function battlePanel(data) {
+  const battle = data.battle;
+  const box = document.createElement("div");
+  box.className = "fight-panel";
+
+  const head = document.createElement("p");
+  head.className = "fight-round";
+  head.textContent = battle.finished
+    ? "🔔 Бой окончен"
+    : battle.emoji + " " + battle.kind_title + " — раунд " + battle.round;
+  box.appendChild(head);
+  box.appendChild(battleBoard(battle));
+
+  if (battle.finished) {
+    box.appendChild(battleFinish(battle));
+  } else if (!battle.alive) {
+    const out = document.createElement("p");
+    out.className = "fight-line";
+    out.textContent = "Тебя вынесли. Остальные дерутся дальше.";
+    box.appendChild(out);
+  } else if (!battle.fighting) {
+    const idle = document.createElement("p");
+    idle.className = "fight-line";
+    idle.textContent = "В этом ходу пары не досталось — ждём следующий раунд.";
+    box.appendChild(idle);
+  } else if (battle.acted) {
+    const wait = document.createElement("p");
+    wait.className = "fight-line";
+    wait.textContent = "Ход засчитан. Ждём остальных.";
+    box.appendChild(wait);
+  } else {
+    box.appendChild(battleTurnForm(data));
+  }
+
+  if (battle.log.length) box.appendChild(battleLog(battle));
+  return box;
+}
+
+function battleBoard(battle) {
+  const box = document.createElement("div");
+  box.className = "raid-party";
+  battle.party.forEach((member) => {
+    const row = document.createElement("div");
+    row.className = "raid-member" + (member.alive ? "" : " down");
+    const name = document.createElement("p");
+    name.className = "fight-name";
+    name.textContent =
+      (member.alive ? (member.ready ? "✅ " : "⏳ ") : "💀 ") +
+      member.emoji + " " + member.name + " [" + member.level + "]" +
+      (battle.kind === "team" ? " · " + member.team_title : "") +
+      (member.you ? " — ты" : "");
+    const hp = document.createElement("p");
+    hp.className = "fight-hp";
+    hp.textContent =
+      member.hp + "/" + member.max_hp + " · урона " + member.damage_dealt +
+      (member.rival ? " · против " + member.rival : " · без пары");
+    row.appendChild(name);
+    row.appendChild(hp);
+    row.appendChild(fightBar(member));
+    box.appendChild(row);
+  });
+  return box;
+}
+
+function battleHands(data) {
+  return (
+    (data.battle && data.battle.hands) || [{ hand: 0, icon: "👊", title: "Кулаки" }]
+  );
+}
+
+function battleReady(hands) {
+  return (
+    Boolean(battleDraft.block) && hands.every((row) => battleDraft.attacks[row.hand])
+  );
+}
+
+function battleTurnForm(data) {
+  const box = document.createElement("div");
+  box.className = "turn-form";
+  const hands = battleHands(data);
+  const blocks = (data.battle && data.battle.blocks) || data.blocks;
+
+  const columns = document.createElement("div");
+  columns.className = "zone-columns" + (hands.length > 1 ? " three" : "");
+  hands.forEach((row) => {
+    columns.appendChild(
+      battleColumn(
+        row.icon + " " + (hands.length > 1 ? row.title : "Атака"),
+        data.attacks,
+        (zone) => {
+          battleDraft.attacks[row.hand] = zone;
+        },
+        () => battleDraft.attacks[row.hand],
+        "battle-attack-" + row.hand
+      )
+    );
+  });
+  columns.appendChild(
+    battleColumn(
+      "🛡 Защита",
+      blocks,
+      (zone) => {
+        battleDraft.block = zone;
+      },
+      () => battleDraft.block,
+      "battle-block"
+    )
+  );
+  box.appendChild(columns);
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.id = "battle-go";
+  go.className = "btn wide";
+  go.textContent = "Вперёд!";
+  go.disabled = !battleReady(hands);
+  go.addEventListener("click", () => {
+    const move = {
+      action: "turn",
+      attacks: battleDraft.attacks,
+      block: battleDraft.block,
+    };
+    battleDraft = { attacks: {}, block: null };
+    battleAction(move);
+  });
+  box.appendChild(go);
+  return box;
+}
+
+function battleColumn(title, rows, pick, chosen, name) {
+  const box = document.createElement("div");
+  box.className = "zone-column";
+  const head = document.createElement("p");
+  head.className = "zone-head";
+  head.textContent = title;
+  box.appendChild(head);
+  rows.forEach((row) => {
+    const label = document.createElement("label");
+    label.className = "zone" + (chosen() === row.zone ? " on" : "");
+    const dot = document.createElement("input");
+    dot.type = "radio";
+    dot.name = name;
+    dot.value = row.zone;
+    dot.checked = chosen() === row.zone;
+    dot.addEventListener("change", () => {
+      pick(row.zone);
+      paintBattleDraft();
+    });
+    const text = document.createElement("span");
+    text.textContent = row.title;
+    label.appendChild(dot);
+    label.appendChild(text);
+    box.appendChild(label);
+  });
+  return box;
+}
+
+function paintBattleDraft() {
+  document.querySelectorAll("#club-battle .zone").forEach((label) => {
+    const dot = label.querySelector("input");
+    label.classList.toggle("on", Boolean(dot && dot.checked));
+  });
+  const go = el("battle-go");
+  if (go) go.disabled = !battleReady(battleHands(battleData || {}));
+}
+
+function battleFinish(battle) {
+  const box = document.createElement("div");
+  box.className = "fight-finish";
+  (battle.summary || []).forEach((said) => {
+    if (!said) return;
+    const line = document.createElement("p");
+    line.className = "log-line";
+    line.textContent = said;
+    box.appendChild(line);
+  });
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "btn wide";
+  close.textContent = "Завершить бой";
+  close.addEventListener("click", () => battleAction({ action: "done" }));
+  box.appendChild(close);
+  return box;
+}
+
+function battleLog(battle) {
+  const box = document.createElement("div");
+  box.className = "fight-log";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Ход боя";
+  box.appendChild(head);
+  battle.log.slice().reverse().forEach((turn) => judgeLines(turn, box));
   return box;
 }
 

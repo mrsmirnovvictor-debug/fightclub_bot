@@ -29,7 +29,6 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.combat import Action, Fighter, resolve_round
-from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.fightlog import turn_payload
 from bot.game.narrator import (
     esc,
@@ -58,7 +57,7 @@ from bot.game.raid import (
     prize_for,
 )
 from bot.inventory_service import wear_after_fight
-from bot.keyboards import raid_keyboard, raid_lobby_keyboard
+from bot.keyboards import raid_lobby_keyboard
 from bot.messaging import Announcer
 from bot.models import Player
 
@@ -181,16 +180,6 @@ class RaidSession:
 
     def waiting_for(self) -> list[int]:
         return [uid for uid in self.alive_ids if uid not in self.acted]
-
-    @property
-    def panel_icon(self) -> str:
-        """Значок удара на кнопках — один на весь отряд.
-
-        Оружие у бойцов разное, а панель одна: не сошлись значки — рисуем
-        кулак, а бьёт каждый тем, что у него в руке.
-        """
-        icons = {fighter.weapon_icon for fighter in self.fighters.values()}
-        return icons.pop() if len(icons) == 1 else BARE_HANDS_ICON
 
 
 class RaidService:
@@ -434,7 +423,6 @@ class RaidService:
             session.chat_id,
             session.thread_id,
             raid_panel(session, self.config.raid_turn_timeout),
-            reply_markup=raid_keyboard(session.id, session.panel_icon),
         )
         session.prompt_message_id = message.message_id if message else None
         session.timer = asyncio.create_task(self._wave_timer(session, session.wave))
@@ -553,7 +541,6 @@ class RaidService:
             session.chat_id,
             session.prompt_message_id,
             raid_panel(session, self.config.raid_turn_timeout),
-            reply_markup=raid_keyboard(session.id, session.panel_icon),
             cosmetic=True,
         )
 
