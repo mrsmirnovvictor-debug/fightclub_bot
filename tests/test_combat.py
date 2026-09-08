@@ -21,7 +21,10 @@ from bot.game.classes import (
     block_title,
 )
 from bot.game.combat import (
+    LONG_ROUNDS,
+    LONG_TURNS,
     MATCH_ROUNDS,
+    MAX_ARMOR_SHARE,
     MAX_MISSED_TURNS,
     MAX_ROUNDS,
     MAX_TURNS,
@@ -455,6 +458,57 @@ def test_fatigue_only_after_threshold():
     assert fatigue_multiplier(10) > fatigue_multiplier(7) > 1.0
 
 
+def test_the_fight_is_as_long_as_its_mode_allows():
+    """Кулачный бой короткий, бой с оружием длиннее в полтора раза."""
+    from bot.game.modes import FightMode
+
+    assert (FightMode.FIST.rounds, FightMode.FIST.turns) == (MATCH_ROUNDS, MAX_TURNS)
+    assert (FightMode.ARMED.rounds, FightMode.ARMED.turns) == (LONG_ROUNDS, LONG_TURNS)
+    assert LONG_TURNS > MAX_TURNS
+
+
+def test_fatigue_is_stretched_over_the_whole_fight():
+    """Разгон усталости растянут на длину боя, а не привязан к номеру хода.
+
+    Иначе длинный бой приходил бы к последнему ходу втрое тяжелее короткого —
+    ровно та беда, которую мы уже ловили в рейде.
+    """
+    assert fatigue_multiplier(MAX_TURNS, MAX_TURNS) == pytest.approx(
+        fatigue_multiplier(LONG_TURNS, LONG_TURNS)
+    )
+    # ровно ту же кривую боец видел до появления длинного боя
+    assert fatigue_multiplier(MAX_TURNS, MAX_TURNS) == pytest.approx(2.44)
+    # на середине длинного боя бьют ещё спокойно
+    assert fatigue_multiplier(9, LONG_TURNS) == 1.0
+    assert fatigue_multiplier(9, MAX_TURNS) > 1.0
+
+
+def test_a_long_fight_is_not_judged_at_the_short_limit():
+    """Восемнадцатый ход длинного боя — обычный ход, а не финальный гонг."""
+    attacker, defender = make(user_id=1), make(user_id=2)
+    result = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.LEGS)),
+        defender,
+        strike_at(Zone.BELLY, guard(Zone.HEAD)),
+        round_number=MAX_TURNS,
+        rng=random.Random(3),
+        limit=LONG_TURNS,
+    )
+    assert not result.finished
+
+    last = resolve_round(
+        attacker,
+        strike_at(Zone.HEAD, guard(Zone.LEGS)),
+        defender,
+        strike_at(Zone.BELLY, guard(Zone.HEAD)),
+        round_number=LONG_TURNS,
+        rng=random.Random(3),
+        limit=LONG_TURNS,
+    )
+    assert last.finished and last.end_reason is DuelEnd.JUDGE
+
+
 # ---------- неполный выбор и пропуски ----------
 
 
@@ -774,7 +828,7 @@ def test_a_shirt_and_a_jacket_stack_on_the_same_zones():
     assert Slot.JACKET.section == "верхняя одежда"
 
 
-def test_armor_never_eats_more_than_half_of_a_hit():
+def test_armor_never_eats_more_than_its_share_of_a_hit():
     """Иначе комплект брони делает лёгкие классы безвредными."""
     attacker = make(user_id=1)
     defender = dressed("moto_helmet", user_id=2)
@@ -790,8 +844,9 @@ def test_armor_never_eats_more_than_half_of_a_hit():
         round_number=1,
         rng=rng,
     ).strikes[0]
-    assert strike.damage == 3
-    assert strike.armor == 3
+    # Урон 6, брони на 7 — но броня снимает не больше своей доли
+    assert strike.armor == round(6 * MAX_ARMOR_SHARE)
+    assert strike.damage == 6 - strike.armor
 
 
 # ---------- камень-ножницы-бумага ----------

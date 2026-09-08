@@ -1069,6 +1069,36 @@ async def test_a_fight_that_goes_the_distance_is_decided_by_damage(bot, db):
     await service.shutdown()
 
 
+async def test_a_fight_with_weapons_gets_more_rounds(bot, db):
+    """С оружием бой длиннее: на восемнадцатом ходу он ещё идёт."""
+    from bot.game.combat import LONG_TURNS, MAX_TURNS
+    from bot.game.modes import FightMode
+
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "tank"))
+    await db.save_player(make_player(2, "Марла", "tank"))
+    session = await service.start_duel(
+        CHAT_ID,
+        THREAD_ID,
+        await db.get_player(1),
+        await db.get_player(2),
+        mode=FightMode.ARMED,
+    )
+    session.fighters[1].hp = session.fighters[2].hp = 50000
+    for _ in range(LONG_TURNS):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await service.handle_choice(session.id, 1, "attack", "belly")
+        await service.handle_choice(session.id, 1, "block", "legs")
+        await service.handle_choice(session.id, 2, "block", "head")
+        await service._resolve(session)
+
+    # кулачный бой на этом ходу уже закончился бы решением судьи
+    assert session.round_number == LONG_TURNS > MAX_TURNS
+    assert "9 раундов позади" in next(t for t in bot.log if "Финальный гонг" in t)
+    await service.shutdown()
+
+
 async def test_two_boxing_rounds_fit_one_minute_of_chat_budget(bot, db):
     """Ради этого перерыв и придуман: за минуту в лимит влезают два раунда.
 

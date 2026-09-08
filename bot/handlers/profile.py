@@ -10,9 +10,7 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES
 from bot.game.combat import (
-    MATCH_ROUNDS,
     MAX_MISSED_TURNS,
-    MAX_TURNS,
     TURNS_PER_ROUND,
 )
 from bot.game.potions import EFFECT_SECONDS, spell_duration
@@ -23,6 +21,7 @@ from bot.game.equipment import (
     WEAR_CHANCE_LOSS,
     WEAR_CHANCE_WIN,
 )
+from bot.game.modes import FightMode
 from bot.game.health import FULL_REGEN_SECONDS, HURT_THRESHOLD, READY_THRESHOLD
 from bot.game.economy import (
     LEVEL_CREDITS,
@@ -155,14 +154,16 @@ def help_text(turn_timeout: int = 30, round_break: int = 30) -> str:
         "ассасина — больше крита, выносливость у танка — больше сопротивления.\n"
         f"Зоны: {', '.join(z.label for z in ALL_ZONES)}.\n\n"
         "<b>Раунды и перерывы</b>\n"
-        f"Бой боксёрский: раунд — это {TURNS_PER_ROUND} удара, "
-        f"всего раундов {MATCH_ROUNDS} (то есть {MAX_TURNS} ударов).\n"
+        f"Бой боксёрский: раунд — это {TURNS_PER_ROUND} удара. На кулаках "
+        f"раундов {FightMode.FIST.rounds} ({FightMode.FIST.turns} ударов), "
+        f"с оружием — {FightMode.ARMED.rounds} ({FightMode.ARMED.turns}): "
+        "снаряжению нужно время, чтобы себя показать.\n"
         "После каждого раунда гонг: судья разводит бойцов по углам и даёт "
         f"{rest_phrase(round_break)} отдыха, а в перерыве показывает, "
         "кто сколько нанёс. Дальше следующий раунд начинается сам — кнопки "
         "придут туда же, где идёт бой.\n"
         "С 6-го удара бойцы устают и бьют всё сильнее.\n"
-        f"Никто не упал за {MATCH_ROUNDS} раундов — победу присуждает судья "
+        "Никто не упал за отпущенные раунды — победу присуждает судья "
         "по нанесённому урону, а не по остатку здоровья: выигрывает тот, кто "
         "дрался, а не тот, у кого запас больше.\n"
         "Ничья одна: когда бойцы роняют друг друга одним разменом.\n\n"

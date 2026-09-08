@@ -536,6 +536,8 @@ class RaidService:
             boss_action(session.enemy, self.rng),
             session.wave,
             self.rng,
+            # Усталость растянута на все волны рейда, а не на длину дуэли
+            limit=MAX_WAVES,
         )
         # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
         said = strike_lines(result, {user_id: fighter, BOSS_ID: session.enemy}, self.rng)

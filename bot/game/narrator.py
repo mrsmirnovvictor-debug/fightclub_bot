@@ -17,7 +17,6 @@ from bot.game.modes import FightMode
 from bot.game.pro import PRO_BADGE
 from bot.game.stats import derive
 from bot.game.combat import (
-    MATCH_ROUNDS,
     MAX_MISSED_TURNS,
     DuelEnd,
     Fighter,
@@ -450,7 +449,7 @@ def finish_report(
             lines.append("🤝 Оба бойца перестали отвечать. Судья закрывает бой ничьёй.")
     elif result.end_reason is DuelEnd.JUDGE:
         lines.append(
-            f"🔔 Финальный гонг! Все {MATCH_ROUNDS} раундов позади, "
+            f"🔔 Финальный гонг! Все {boxing_round(result.number)} раундов позади, "
             "никто не упал — решение за судьёй."
         )
         if winner:

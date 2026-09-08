@@ -17,7 +17,6 @@ from bot.duel_service import Challenge, DuelService, DuelSession
 from bot.game.classes import ALL_ZONES, BLOCK_WIDTH, block_button, block_combos
 from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.combat import (
-    MATCH_ROUNDS,
     TURNS_PER_ROUND,
     Fighter,
     boxing_round,
@@ -123,7 +122,8 @@ def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
         "round": boxing_round(session.round_number) if session.round_number else 0,
         "turn": turn_in_round(session.round_number) if session.round_number else 0,
         "turns_per_round": TURNS_PER_ROUND,
-        "rounds": MATCH_ROUNDS,
+        # Раундов у боя с оружием больше: снаряжению нужно время показать себя
+        "rounds": session.mode.rounds,
         # Пауза между раундами: в мини-аппе её нет, а бой из ветки может
         # застать бойцов в углах — тогда панель ждёт вместе с ними
         "resting": session.resting,

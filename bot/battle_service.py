@@ -573,6 +573,9 @@ class BattleService:
                 self._action_of(session, second_id),
                 session.round_number,
                 self.rng,
+                # Групповой бой длиннее дуэли, и усталость растянута на него:
+                # иначе к двадцатому раунду обычный удар выбивал бы втрое
+                limit=MAX_BATTLE_ROUNDS,
             )
             results.append(result)
             spoken = strike_lines(result, session.fighters, self.rng)

@@ -45,19 +45,30 @@ from bot.game.stats import (
     derive,
 )
 
-# После этого хода бойцы начинают уставать и бьют всё больнее —
-# чтобы дуэль не превращалась в бесконечное перетягивание блоков.
-FATIGUE_FROM_ROUND = 6
-FATIGUE_STEP = 0.12
+# С трети боя бойцы начинают уставать и бьют всё больнее — чтобы дуэль не
+# превращалась в бесконечное перетягивание блоков. Кривая не абсолютная, а
+# растянутая на длину боя: к финальному гонгу удар тяжелее ровно вот на
+# столько, а где именно начнётся разгон, считается от лимита ходов. Иначе
+# длинный бой к последнему ходу выбивал бы втрое — ту же беду мы уже ловили
+# в рейде, когда усталость считали по ударам отряда, а не по волнам.
+FATIGUE_TOP = 1.44
+# Доля боя, которую бойцы держатся ровно
+FATIGUE_CALM_SHARE = 3
 
 # Бой идёт по-боксёрски: ходы собраны в раунды, между раундами перерыв.
 # Три хода на раунд — это и есть те самые три минуты, за которые в боксе
 # успевают размяться и устать, а заодно ровно столько сообщений, сколько
 # Telegram разрешает сказать в группу без пауз посреди боя.
 TURNS_PER_ROUND = 3
+# Кулачный бой короткий: он идёт в ветке группы, где Telegram считает каждое
+# сообщение, и панель у всех одинаковая — растягивать там нечего.
 MATCH_ROUNDS = 6
-# Жёсткий лимит: восемнадцать ходов, дальше решение судьи.
+# Бой с оружием, групповой и рейд идут в карточке: сообщений там нет, зато
+# есть снаряжение и способности, которым нужно время, чтобы себя показать.
+LONG_ROUNDS = 9
+# Жёсткий лимит кулачного боя: восемнадцать ходов, дальше решение судьи.
 MAX_TURNS = TURNS_PER_ROUND * MATCH_ROUNDS
+LONG_TURNS = TURNS_PER_ROUND * LONG_ROUNDS
 # Прежнее имя того же числа — на него смотрит справка и групповой бой
 MAX_ROUNDS = MAX_TURNS
 # Столько пропусков подряд, и судья засчитывает техническое поражение.
@@ -67,10 +78,10 @@ MAX_MISSED_TURNS = 3
 MIN_DODGE_CHANCE = 0.02
 # И потолок сверху, чтобы бой не превращался в танцы вокруг трикстера.
 # Снимается он тем же выключателем, что и остальные, — NO_LIMITS.
-MAX_DODGE_CHANCE = 1.0 if NO_LIMITS else 0.6
-# Броня не может съесть больше половины удара: иначе комплект брони делает
+MAX_DODGE_CHANCE = 1.0 if NO_LIMITS else 0.7
+# Броня не может съесть больше этой доли удара: иначе комплект брони делает
 # лёгкие классы безвредными, а бой — бесконечным.
-MAX_ARMOR_SHARE = 0.5
+MAX_ARMOR_SHARE = 0.6
 
 
 class Outcome(str, Enum):
@@ -368,10 +379,20 @@ def round_is_over(turn: int) -> bool:
     return turn % TURNS_PER_ROUND == 0
 
 
-def fatigue_multiplier(round_number: int) -> float:
-    """Множитель урона за раунд: с какого-то момента бойцы «раскрываются»."""
-    extra = max(0, round_number - FATIGUE_FROM_ROUND)
-    return 1.0 + extra * FATIGUE_STEP
+def fatigue_calm(limit: int = MAX_TURNS) -> int:
+    """До какого хода бойцы держатся ровно — треть отпущенного боя."""
+    return max(1, limit // FATIGUE_CALM_SHARE)
+
+
+def fatigue_multiplier(turn: int, limit: int = MAX_TURNS) -> float:
+    """Множитель урона на этом ходу: под конец боя бойцы «раскрываются».
+
+    Разгон растянут на длину боя, поэтому и короткая дуэль, и длинный бой с
+    оружием приходят к финальному гонгу с одинаково тяжёлым ударом.
+    """
+    calm = fatigue_calm(limit)
+    step = FATIGUE_TOP / max(1, limit - calm)
+    return 1.0 + max(0, turn - calm) * step
 
 
 def random_action(fighter: Fighter, rng: random.Random | None = None) -> Action:
@@ -398,6 +419,7 @@ def strikes_of(
     defender_action: Action,
     round_number: int,
     rng: random.Random,
+    limit: int = MAX_TURNS,
 ) -> list[Strike]:
     """Все удары одного бойца за ход — по одному на руку с оружием."""
     weapons = attacker.weapons
@@ -413,6 +435,7 @@ def strikes_of(
             round_number,
             rng,
             missed_turn=action.is_empty and index == 0,
+            limit=limit,
         )
         for index, weapon in enumerate(weapons)
     ]
@@ -430,6 +453,7 @@ def strike_of(
     round_number: int,
     rng: random.Random,
     missed_turn: bool = False,
+    limit: int = MAX_TURNS,
 ) -> Strike:
     """Один удар одной рукой."""
     strike = Strike(
@@ -456,7 +480,8 @@ def strike_of(
             # тем, что блок вообще был. Иначе «половина максимального урона»
             # доходила бы до тела слабее обычного попадания.
             broken = (
-                _max_damage(attacker, round_number, hand) * BLOCK_BREAK_DAMAGE_SHARE
+                _max_damage(attacker, round_number, hand, limit)
+                * BLOCK_BREAK_DAMAGE_SHARE
             )
             strike.damage = max(1, int(round(broken)))
         return strike
@@ -465,7 +490,8 @@ def strike_of(
         strike.outcome = Outcome.DODGE
         if rng.random() < defender.counter:
             counter = (
-                _roll_damage(defender, round_number, rng, hand=0) * COUNTER_DAMAGE_MULT
+                _roll_damage(defender, round_number, rng, hand=0, limit=limit)
+                * COUNTER_DAMAGE_MULT
             )
             # Контрудар прилетает не в выбранную зону, поэтому броню не трогает —
             # только сопротивление от выносливости.
@@ -474,7 +500,7 @@ def strike_of(
             strike.outcome = Outcome.COUNTER
         return strike
 
-    damage = _roll_damage(attacker, round_number, rng, hand)
+    damage = _roll_damage(attacker, round_number, rng, hand, limit)
     if rng.random() < attacker.crit_against(defender):
         strike.outcome = Outcome.CRIT
         damage *= attacker.derived.crit_power
@@ -508,7 +534,11 @@ def _land_damage(
 
 
 def _roll_damage(
-    fighter: Fighter, round_number: int, rng: random.Random, hand: int = 0
+    fighter: Fighter,
+    round_number: int,
+    rng: random.Random,
+    hand: int = 0,
+    limit: int = MAX_TURNS,
 ) -> float:
     """Урон от силы плюс урон оружия, всё вместе растёт от усталости.
 
@@ -519,10 +549,12 @@ def _roll_damage(
     raw = rng.randint(fighter.derived.damage_min, fighter.derived.damage_max)
     weapon = fighter.equipment.roll_weapon_damage(hand, rng)
     raw += weapon * fighter.fclass.damage_mult
-    return raw * fatigue_multiplier(round_number)
+    return raw * fatigue_multiplier(round_number, limit)
 
 
-def _max_damage(fighter: Fighter, round_number: int, hand: int = 0) -> float:
+def _max_damage(
+    fighter: Fighter, round_number: int, hand: int = 0, limit: int = MAX_TURNS
+) -> float:
     """Самое большое, что этот боец может выбить этим оружием в этом раунде.
 
     От него берётся половина, когда крит проламывает блок: пробитие не
@@ -531,7 +563,7 @@ def _max_damage(fighter: Fighter, round_number: int, hand: int = 0) -> float:
     """
     weapon = fighter.equipment.weapon_damage_max(hand)
     raw = fighter.derived.damage_max + weapon * fighter.fclass.damage_mult
-    return raw * fatigue_multiplier(round_number)
+    return raw * fatigue_multiplier(round_number, limit)
 
 
 def resolve_round(
@@ -541,8 +573,14 @@ def resolve_round(
     second_action: Action,
     round_number: int,
     rng: random.Random | None = None,
+    limit: int = MAX_TURNS,
 ) -> RoundResult:
-    """Посчитать раунд и применить урон. Меняет hp и счётчики пропусков."""
+    """Посчитать раунд и применить урон. Меняет hp и счётчики пропусков.
+
+    `limit` — сколько ходов отпущено этому бою: после него судья считает
+    очки. Кулачный короче боя с оружием, и от длины зависит ещё и разгон
+    усталости, поэтому число идёт сюда, а не берётся из модуля.
+    """
     rng = rng or random
 
     for fighter, action in ((first, first_action), (second, second_action)):
@@ -552,8 +590,10 @@ def resolve_round(
             fighter.missed_turns = 0
 
     strikes = strikes_of(
-        first, second, first_action, second_action, round_number, rng
-    ) + strikes_of(second, first, second_action, first_action, round_number, rng)
+        first, second, first_action, second_action, round_number, rng, limit
+    ) + strikes_of(
+        second, first, second_action, first_action, round_number, rng, limit
+    )
 
     # Урон всех ударов считается от состояния на начало раунда
     damage_taken = {first.user_id: 0, second.user_id: 0}
@@ -575,7 +615,7 @@ def resolve_round(
         strikes=strikes,
         hp_after={first.user_id: first.hp, second.user_id: second.hp},
     )
-    _apply_ending(result, first, second)
+    _apply_ending(result, first, second, limit)
     return result
 
 
@@ -602,7 +642,9 @@ def _fill_running_hp(strikes: list[Strike], fighters: dict[int, Fighter]) -> Non
         strike.attacker_hp_after = running[strike.attacker_id]
 
 
-def _apply_ending(result: RoundResult, first: Fighter, second: Fighter) -> None:
+def _apply_ending(
+    result: RoundResult, first: Fighter, second: Fighter, limit: int = MAX_TURNS
+) -> None:
     """Проставить исход боя, если раунд оказался последним."""
     if not first.alive and not second.alive:
         result.finished = True
@@ -622,7 +664,7 @@ def _apply_ending(result: RoundResult, first: Fighter, second: Fighter) -> None:
             result.winner_id = second.user_id
         elif second.gave_up and not first.gave_up:
             result.winner_id = first.user_id
-    elif result.number >= MAX_TURNS:
+    elif result.number >= limit:
         result.finished = True
         result.end_reason = DuelEnd.JUDGE
         result.winner_id = judge_decision(first, second)
@@ -652,6 +694,8 @@ def judge_decision(first: Fighter, second: Fighter) -> int | None:
 
 
 __all__ = [
+    "LONG_ROUNDS",
+    "LONG_TURNS",
     "MATCH_ROUNDS",
     "MAX_MISSED_TURNS",
     "MAX_ROUNDS",

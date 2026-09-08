@@ -19,7 +19,6 @@ from bot.game.classes import Zone, block_combo, block_title
 from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.modes import FightMode
 from bot.game.combat import (
-    MATCH_ROUNDS,
     MAX_MISSED_TURNS,
     TURNS_PER_ROUND,
     Action,
@@ -684,6 +683,7 @@ class DuelService:
             actions[second_id],
             session.round_number,
             self.rng,
+            limit=session.mode.turns,
         )
 
         # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
@@ -720,7 +720,7 @@ class DuelService:
             corner_break(
                 *(session.fighters[uid] for uid in session.order),
                 round_number=finished,
-                total=MATCH_ROUNDS,
+                total=session.mode.rounds,
                 seconds=rest,
             ),
         )

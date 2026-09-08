@@ -852,10 +852,12 @@ async def test_only_the_shirt_still_fills_the_body_cell(server):
 
 async def test_a_percentage_says_when_the_ceiling_cut_it(server):
     """Вещи дают +100% уворота, в строке 60% — карточка объясняет почему."""
-    from bot.game.stats import NO_LIMITS
+    from bot.game.combat import MAX_DODGE_CHANCE
+    from bot.game.stats import MAX_CRIT_CHANCE, NO_LIMITS
 
     if NO_LIMITS:
         pytest.skip("потолки сняты в bot/game/stats.py")
+    ceiling = round(MAX_DODGE_CHANCE * 100)
     player = make_player()
     player.gear = [
         OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON),
@@ -873,16 +875,18 @@ async def test_a_percentage_says_when_the_ceiling_cut_it(server):
         await page.locator("#tab-hero").click()
 
         dodge = page.locator("#combat li").filter(has_text="Уворот").first
-        assert "60% · потолок" in await dodge.inner_text()
+        assert f"{ceiling}% · потолок" in await dodge.inner_text()
         assert "вещи 100%" in await dodge.get_attribute("title")
-        assert "но выше 60% не растёт" in (
+        assert f"но выше {ceiling}% не растёт" in (
             await dodge.get_attribute("title")
         )
 
         # непотолочная строка объясняет то же самое, но без «потолка» в числе
         crit = page.locator("#combat li").filter(has_text="Крит").first
         assert "потолок" not in await crit.inner_text()
-        assert "потолок 55%" in await crit.get_attribute("title")
+        assert f"потолок {round(MAX_CRIT_CHANCE * 100)}%" in (
+            await crit.get_attribute("title")
+        )
         await browser.close()
 
 

@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.game import art
 from bot.game.classes import Stats
-from bot.game.combat import Fighter
+from bot.game.combat import MAX_DODGE_CHANCE, Fighter
 from bot.game.equipment import (
     MAGIC_ITEMS,
     SHOWCASE,
@@ -365,7 +365,7 @@ def test_the_profile_text_counts_gear_the_same_way():
 
 
 def test_the_card_never_promises_more_than_the_ring_allows():
-    """Потолок боя виден и на карточке: 60% уворота — предел."""
+    """Потолок боя виден и на карточке: выше него карточка не обещает."""
     from bot.game.stats import NO_LIMITS
 
     if NO_LIMITS:
@@ -377,7 +377,9 @@ def test_the_card_never_promises_more_than_the_ring_allows():
     card = build_card(player, TOKEN, viewer_id=player.user_id)["combat"]
     fighter = Fighter.from_player(player, armed=True)
 
-    assert card["dodge_chance"] == round(fighter.dodge * 100) == 60
+    assert card["dodge_chance"] == round(fighter.dodge * 100) == round(
+        MAX_DODGE_CHANCE * 100
+    )
 
 
 # ---------- оружие в руках класса ----------
