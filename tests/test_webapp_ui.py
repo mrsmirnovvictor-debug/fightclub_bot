@@ -1898,12 +1898,48 @@ async def test_the_boss_card_of_a_live_raid_says_so(server):
 
 
 async def test_an_empty_cellar_offers_to_gather_a_party(server):
+    """Размер отряда выбирают списком, а не кнопкой на каждое число."""
+    sent = []
+
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server)
 
         body = await page.locator("#raid-body").inner_text()
-        assert "Собрать на 2" in body and "Собрать на 10" in body
+        assert "Выберите количество участников:" in body
         assert "Собери отряд" in await page.locator("#raid-note").inner_text()
+
+        sizes = await page.locator("#raid-size option").all_inner_texts()
+        assert sizes == [str(size) for size in range(2, 11)]
+        assert await page.locator("#raid-size").input_value() == "10"
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(raid_with_wave()),
+            )
+
+        await page.route("**/api/raid", catch)
+        await page.select_option("#raid-size", "6")
+        assert sent == []  # выбор сам по себе рейда не собирает
+
+        await page.locator("#raid-open").click()
+        await page.wait_for_selector("#raid-go")
+
+        assert sent == [{"action": "open", "size": 6}]
+        await browser.close()
+
+
+async def test_the_chosen_party_size_survives_a_refresh(server):
+    """Экран опрашивает подвал раз в две секунды — выбор не должен сбрасываться."""
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server)
+
+        await page.select_option("#raid-size", "3")
+        # ждём следующего опроса и перерисовки формы
+        await page.wait_for_timeout(2500)
+
+        assert await page.locator("#raid-size").input_value() == "3"
         await browser.close()
 
 

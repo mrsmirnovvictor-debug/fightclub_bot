@@ -899,6 +899,22 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .raid-member.down { opacity: 0.55; }
 .raid-sizes { display: grid; gap: 8px; }
 
+/* Поле с подписью: подпись сверху, само поле под ней во всю ширину.
+   Список рисуем сами — системный на тёмной теме уезжает в белое. */
+.field { display: grid; gap: 6px; }
+.field-head { color: var(--muted); font-size: 13px; }
+.field-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+}
+.field-input:disabled { opacity: 0.5; }
+
 /* Стойка и итог — те же карточки, что и панель хода: рамка держит их
    отдельно от ленты слов судьи под ними. */
 .fight-standoff,

@@ -2026,27 +2026,59 @@ function bossStats(boss) {
   return box;
 }
 
+// Сколько человек в отряде — выбор человека, а не наш. Держим его между
+// перерисовками: экран опрашивает сервер раз в две секунды, и без этого
+// список каждый раз возвращался бы к началу.
+let raidSize = null;
+
 function raidOpenForm(data) {
   const box = document.createElement("div");
   box.className = "fight-open";
   const line = document.createElement("p");
   line.className = "fight-line";
-  line.textContent =
-    "Рейд собирают раз в сутки. Сколько человек берём — " +
-    data.min_party + "–" + data.max_party + ".";
+  line.textContent = "Рейд собирают раз в сутки.";
   box.appendChild(line);
 
   const row = document.createElement("div");
   row.className = "raid-sizes";
-  [data.min_party, 4, 6, data.max_party].forEach((size) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn wide";
-    btn.textContent = "🩸 Собрать на " + size;
-    btn.disabled = !data.can_fight;
-    btn.addEventListener("click", () => raidAction({ action: "open", size: size }));
-    row.appendChild(btn);
+
+  const label = document.createElement("label");
+  label.className = "field";
+  label.htmlFor = "raid-size";
+  const caption = document.createElement("span");
+  caption.className = "field-head";
+  caption.textContent = "Выберите количество участников:";
+  label.appendChild(caption);
+
+  const select = document.createElement("select");
+  select.id = "raid-size";
+  select.className = "field-input";
+  select.disabled = !data.can_fight;
+  for (let size = data.min_party; size <= data.max_party; size += 1) {
+    const option = document.createElement("option");
+    option.value = String(size);
+    option.textContent = String(size);
+    select.appendChild(option);
+  }
+  if (raidSize === null) raidSize = data.max_party;
+  select.value = String(raidSize);
+  select.addEventListener("change", () => {
+    raidSize = Number(select.value);
   });
+  label.appendChild(select);
+  row.appendChild(label);
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "raid-open";
+  btn.className = "btn wide";
+  btn.textContent = "🩸 Начать";
+  btn.disabled = !data.can_fight;
+  btn.addEventListener("click", () =>
+    raidAction({ action: "open", size: Number(select.value) })
+  );
+  row.appendChild(btn);
+
   box.appendChild(row);
   return box;
 }
