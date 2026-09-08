@@ -1673,8 +1673,8 @@ async def test_the_fight_panel_shows_the_board_and_two_columns_of_choices(server
             assert line in board
 
         heads = await page.locator(".zone-head").all_inner_texts()
-        # столбец удара подписан рукой, которой бьют
-        assert heads == ["👊 Атака", "🛡 Защита"]
+        # заголовок короткий, а чем бьёт эта рука — в подсказке
+        assert heads == ["👊 Удар", "🛡 Блок"]
         columns = page.locator(".zone-list")
         assert await columns.nth(0).locator(".zone").all_inner_texts() == [
             "Голова", "Корпус"
@@ -1714,6 +1714,72 @@ async def test_the_buttons_line_up_under_headers_of_the_same_height(server):
         )
         assert len(set(tops)) == 1, "кнопки в столбцах разъехались по высоте"
         await browser.close()
+
+
+async def test_the_turn_panel_fits_the_screen_without_wrapping(server):
+    """Каждая надпись — одна строка, целиком, и панель не шире экрана.
+
+    Наборов ровно два, и третьего быть не может: щит занимает вторую руку,
+    поэтому «три столбца» и «блок в три зоны» вместе не встречаются.
+
+    * два оружия — три столбца, блок в две зоны;
+    * щит — два столбца, зато блок в три зоны и надписи длиннее.
+    """
+    two_weapons = ring_with_duel()
+    two_weapons["duel"]["hands"] = [
+        {"hand": 0, "icon": "🔪", "title": "Стилет ассасина", "label": "Удар 1"},
+        {"hand": 1, "icon": "🔩", "title": "Кастет", "label": "Удар 2"},
+    ]
+    two_weapons["duel"]["blocks"] = [
+        {"zone": "head", "title": "Голова+Корпус"},
+        {"zone": "chest", "title": "Корпус+Живот"},
+    ]
+
+    with_shield = ring_with_duel()
+    with_shield["duel"]["hands"] = [
+        {"hand": 0, "icon": "🔨", "title": "Кувалда", "label": "Удар"},
+    ]
+    with_shield["duel"]["blocks"] = [
+        {"zone": "head", "title": "Голова+Корпус+Живот"},
+        {"zone": "chest", "title": "Корпус+Живот+Пояс"},
+    ]
+
+    async with async_playwright() as pw:
+        for name, ring in (("два оружия", two_weapons), ("щит", with_shield)):
+            for width in (320, 360, 420):
+                browser, page = await open_ring(pw, server, ring)
+                await page.set_viewport_size({"width": width, "height": 900})
+                await page.wait_for_timeout(120)
+                where = f"{name}, {width}px"
+
+                # Перенос — это две строки текста, то есть два разных верхних
+                # края у его прямоугольников. Считать сами прямоугольники
+                # нельзя: шрифт разбивает строку на куски и на одной строке
+                tall = await page.locator(".zone-head, .zone span").evaluate_all(
+                    "nodes => nodes.filter(one => {"
+                    "  const range = document.createRange();"
+                    "  range.selectNodeContents(one);"
+                    "  const tops = Array.from(range.getClientRects())"
+                    "    .map(box => Math.round(box.top));"
+                    "  return new Set(tops).size > 1;"
+                    "}).map(one => one.textContent)"
+                )
+                assert tall == [], f"{where}: перенеслись {tall}"
+
+                # панель уместилась в экран, а не вылезла вбок
+                spill = await page.locator(".zone-columns").evaluate(
+                    "node => node.scrollWidth - node.clientWidth"
+                )
+                assert spill <= 1, f"{where}: панель шире экрана на {spill}px"
+
+                # и надписи видно целиком, а не обрезанными многоточием
+                cut = await page.locator(".zone-head, .zone span").evaluate_all(
+                    "nodes => nodes.filter("
+                    "one => one.scrollWidth > one.clientWidth + 1"
+                    ").map(one => one.textContent)"
+                )
+                assert cut == [], f"{where}: обрезались {cut}"
+                await browser.close()
 
 
 async def test_the_turn_goes_to_the_judge_in_one_press(server):
@@ -1767,8 +1833,11 @@ async def test_two_weapons_give_two_columns_and_a_shield_widens_the_block(server
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, armed)
 
-        heads = await page.locator(".zone-head").all_inner_texts()
-        assert heads == ["🔪 Нож", "🔩 Кастет", "🛡 Защита"]
+        heads = page.locator(".zone-head")
+        assert await heads.all_inner_texts() == ["🔪 Удар 1", "🔩 Удар 2", "🛡 Блок"]
+        # название оружия ушло в подсказку: в заголовок оно не помещается
+        assert await heads.nth(0).get_attribute("title") == "Нож"
+        assert await heads.nth(1).get_attribute("title") == "Кастет"
         assert await page.locator(".zone-columns.three").count() == 1
         assert "(+живот 🛡)" in await page.locator(".zone-list").nth(2).inner_text()
 

@@ -198,13 +198,16 @@ async def test_the_buttons_are_the_same_five_zones_as_in_the_chat(arena):
     assert [row["title"] for row in body["attacks"]] == [
         "Голова", "Корпус", "Живот", "Пояс", "Ноги"
     ]
+    # В карточке надпись короче, чем в ветке: столбцов до трёх, и «Голова +
+    # Корпус» на телефоне переносится. Полная — в подсказке
     assert [row["title"] for row in body["blocks"]] == [
-        "Голова + Корпус",
-        "Корпус + Живот",
-        "Живот + Пояс",
-        "Пояс + Ноги",
-        "Ноги + Голова",
+        "Голова+Корпус",
+        "Корпус+Живот",
+        "Живот+Пояс",
+        "Пояс+Ноги",
+        "Ноги+Голова",
     ]
+    assert body["blocks"][0]["hint"] == "Голова + Корпус"
     assert [row["code"] for row in body["modes"]] == [m.value for m in FightMode]
 
 

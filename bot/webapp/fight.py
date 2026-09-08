@@ -31,16 +31,20 @@ from bot.models import Player
 ATTACK_BUTTONS: tuple[dict[str, str], ...] = tuple(
     {"zone": zone.value, "title": zone.title.capitalize()} for zone in ALL_ZONES
 )
-BLOCK_BUTTONS: tuple[dict[str, str], ...] = tuple(
-    {"zone": combo[0].value, "title": block_button(combo)[2:]}
-    for combo in block_combos(BLOCK_WIDTH)
-)
-
-
 def block_buttons(width: int = BLOCK_WIDTH) -> list[dict[str, str]]:
-    """Кнопки блока нужной ширины: со щитом их три зоны вместо двух."""
+    """Кнопки блока нужной ширины: со щитом их три зоны вместо двух.
+
+    Надпись здесь короче, чем в ветке: «Голова+Корпус» вместо
+    «🛡 Голова + Корпус». В карточке этих столбцов до трёх, и на телефоне
+    длинная надпись переносится на вторую строку — а строка выбора должна
+    быть одна. Полное название с пояснением про щит уходит в подсказку.
+    """
     return [
-        {"zone": combo[0].value, "title": block_button(combo)[2:]}
+        {
+            "zone": combo[0].value,
+            "title": "+".join(zone.title.capitalize() for zone in combo),
+            "hint": block_button(combo)[2:],
+        }
         for combo in block_combos(width)
     ]
 
@@ -48,21 +52,35 @@ def block_buttons(width: int = BLOCK_WIDTH) -> list[dict[str, str]]:
 def hands_payload(fighter: Fighter | None) -> list[dict[str, Any]]:
     """Столбцы ударов: по одному на руку с оружием.
 
+    `title` — название оружия, оно уходит в подсказку. Подписан столбец
+    коротким `label`: «Удар» или «Удар 1» и «Удар 2», когда рук две. Длинное
+    название в заголовке переносилось на вторую строку и разъезжалось с
+    соседними столбцами, а места на телефоне под три столбца немного.
+
     Пусто — бойца в этом бою нет; тогда страница рисует один столбец, как
     было до второй руки.
     """
     if fighter is None:
-        return [{"hand": 0, "icon": BARE_HANDS_ICON, "title": "Атака"}]
+        return [
+            {"hand": 0, "icon": BARE_HANDS_ICON, "title": "Кулаки", "label": "Удар"}
+        ]
     icons = fighter.weapon_icons
     titles = fighter.equipment.weapon_titles or ("Кулаки",)
+    hands = fighter.attacks_per_round
     return [
         {
             "hand": hand,
             "icon": icons[hand] if hand < len(icons) else BARE_HANDS_ICON,
             "title": titles[hand] if hand < len(titles) else "Кулаки",
+            "label": f"Удар {hand + 1}" if hands > 1 else "Удар",
         }
-        for hand in range(fighter.attacks_per_round)
+        for hand in range(hands)
     ]
+
+
+# Блок по умолчанию — без щита. Им пользуется страница, пока бойца в бою
+# ещё нет: список вызовов рисуется до всякого снаряжения.
+BLOCK_BUTTONS: tuple[dict[str, str], ...] = tuple(block_buttons())
 
 
 def mode_payload(mode: FightMode) -> dict[str, Any]:

@@ -1626,6 +1626,7 @@ function zoneList(column, repaint) {
   column.rows.forEach((row) => {
     const label = document.createElement("label");
     label.className = "zone" + (column.chosen() === row.zone ? " on" : "");
+    if (row.hint) label.title = row.hint;
     const dot = document.createElement("input");
     dot.type = "radio";
     dot.name = column.name;
@@ -1648,8 +1649,13 @@ function zoneColumns(hands, attacks, blocks, draft, prefix, repaint) {
   // Столбцы выбора хода: по столбцу на руку с оружием и один на защиту.
   const box = document.createElement("div");
   box.className = "zone-columns" + (hands.length > 1 ? " three" : "");
-  const columns = hands.map((hand) => ({
-    title: hand.icon + " " + (hands.length > 1 ? hand.title : "Атака"),
+  // Заголовок короткий — «Удар 1», — а чем именно бьёт эта рука, говорит
+  // подсказка: столбцов бывает три, и название оружия в них не помещается
+  const columns = hands.map((hand, index) => ({
+    title:
+      hand.icon + " " +
+      (hand.label || (hands.length > 1 ? "Удар " + (index + 1) : "Удар")),
+    hint: hand.title,
     rows: attacks,
     name: prefix + "-attack-" + hand.hand,
     pick: (zone) => {
@@ -1658,7 +1664,8 @@ function zoneColumns(hands, attacks, blocks, draft, prefix, repaint) {
     chosen: () => draft().attacks[hand.hand],
   }));
   columns.push({
-    title: "🛡 Защита",
+    title: "🛡 Блок",
+    hint: "Что закрываем",
     rows: blocks,
     name: prefix + "-block",
     pick: (zone) => {
@@ -1673,6 +1680,7 @@ function zoneColumns(hands, attacks, blocks, draft, prefix, repaint) {
     const head = document.createElement("p");
     head.className = "zone-head";
     head.textContent = column.title;
+    if (column.hint) head.title = column.hint;
     box.appendChild(head);
   });
   columns.forEach((column) => box.appendChild(zoneList(column, repaint)));
