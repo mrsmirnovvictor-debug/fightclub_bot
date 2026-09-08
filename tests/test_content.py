@@ -335,17 +335,24 @@ def test_new_items_take_their_picture_from_their_code():
     """Адрес картинки не пишут руками: его даёт код вещи.
 
     Исключение — старые файлы: их имена сложились раньше правила, и
-    список закрыт. Появилась вещь вне списка с явным `image=` — значит,
-    файл назвали не по коду, и его проще переименовать.
+    список закрыт — он собирается из того, что уже лежит в каталоге.
+    Появилась вещь вне списка с явным `image=` — значит, файл назвали не
+    по коду, и его проще переименовать, чем заводить второе правило.
+
+    Правило одно на все слоты: и футболки, и оружие новых паков лежат в
+    `items/` под своим кодом. Отдельные папки (`shirts/`, `weapons/`,
+    `add/`) остались только у старых файлов.
     """
     from bot.game import art
 
     for item in ITEMS:
         if item.code in LEGACY_PICTURES:
             continue
-        assert item.picture == art.item(item.code) or item.image.startswith(
-            (art.SHIRTS, art.MAGIC, art.WEAPONS, art.ADDED)
-        ), f"{item.code}: картинка не по коду — {item.picture}"
+        assert not item.image, (
+            f"{item.code}: адрес картинки задан руками — назовите файл "
+            f"{item.code}.jpeg и положите в items/, строка image= не нужна"
+        )
+        assert item.picture == art.item(item.code)
 
 
 def test_every_item_has_a_picture_of_its_own():
