@@ -1815,6 +1815,7 @@ let raidWasOver = false;
 // Развёрнута ли карточка босса под заголовком
 let bossOpen = false;
 let raidBusy = false;
+let raidClock = null;
 let raidDraft = { attacks: {}, block: null };
 let raidWave = null;
 
@@ -1822,12 +1823,43 @@ function startWatchingRaid() {
   if (raidTimer) return;
   loadRaid();
   raidTimer = setInterval(loadRaid, 2000);
+  // Часы тикают чаще, чем ходит опрос: секунда на экране должна быть секундой
+  if (!raidClock) raidClock = setInterval(paintClocks, 1000);
 }
 
 function stopWatchingRaid() {
   if (!raidTimer) return;
   clearInterval(raidTimer);
   raidTimer = null;
+  if (raidClock) clearInterval(raidClock);
+  raidClock = null;
+}
+
+function clockText(seconds) {
+  if (seconds <= 0) return "время вышло";
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return minutes
+    ? minutes + ":" + String(rest).padStart(2, "0")
+    : rest + " сек";
+}
+
+function paintClocks() {
+  // Срок сбора приезжает с сервера один раз на опрос, а рисуем мы его каждую
+  // секунду: до чего осталось, считаем по часам телефона от того ответа.
+  document.querySelectorAll(".raid-clock").forEach((node) => {
+    const until = Number(node.dataset.until || 0);
+    const left = Math.max(0, Math.round((until - Date.now()) / 1000));
+    node.textContent = "⏳ Выходим через " + clockText(left);
+  });
+}
+
+function lobbyClock(lobby) {
+  const line = document.createElement("p");
+  line.className = "fight-row-note raid-clock";
+  line.dataset.until = String(Date.now() + (lobby.seconds_left || 0) * 1000);
+  line.textContent = "⏳ Выходим через " + clockText(lobby.seconds_left || 0);
+  return line;
 }
 
 async function loadRaid() {
@@ -2035,6 +2067,19 @@ function raidLobby(lobby, mine) {
     .map((row) => row.name + " [" + row.level + "]")
     .join(", ");
   box.appendChild(names);
+  box.appendChild(lobbyClock(lobby));
+
+  // Не ждать отсчёта может только созвавший — и только когда отряд собран
+  // хотя бы наполовину боеспособно
+  if (lobby.mine && lobby.can_start) {
+    const go = document.createElement("button");
+    go.type = "button";
+    go.id = "raid-start-now";
+    go.className = "btn wide";
+    go.textContent = "⚔️ Выходим сейчас";
+    go.addEventListener("click", () => raidAction({ action: "go" }));
+    box.appendChild(go);
+  }
 
   const btn = document.createElement("button");
   btn.type = "button";

@@ -531,7 +531,13 @@ async def api_market_action(request: web.Request) -> web.Response:
 async def api_raid(request: web.Request) -> web.Response:
     """Состояние раздела «Рейд» целиком: сбор, идущая волна или итог."""
     player = await _fighter(request)
-    return web.json_response(build_raid(player, request.app.get(RAIDS_KEY)))
+    return web.json_response(
+        build_raid(
+            player,
+            request.app.get(RAIDS_KEY),
+            request.app[CONFIG_KEY].raid_lobby_timeout,
+        )
+    )
 
 
 async def api_raid_action(request: web.Request) -> web.Response:
@@ -553,6 +559,12 @@ async def api_raid_action(request: web.Request) -> web.Response:
             if lobby is None:
                 raise RaidError("Ты никуда не записан.")
             await raids.leave(lobby.id, player.user_id)
+        elif action == "go":
+            # Не ждём ни отсчёта, ни полного отряда: слово созвавшего
+            lobby = raids.lobby_of_user(player.user_id)
+            if lobby is None:
+                raise RaidError("Ты никуда не записан.")
+            await raids.start_now(lobby.id, player.user_id)
         elif action == "turn":
             # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
             session = raids.raid_of_user(player.user_id)
@@ -577,7 +589,9 @@ async def api_raid_action(request: web.Request) -> web.Response:
         return web.json_response({"error": str(error)}, status=409)
 
     fresh = await request.app[DB_KEY].get_player(player.user_id)
-    return web.json_response(build_raid(fresh or player, raids))
+    return web.json_response(
+        build_raid(fresh or player, raids, request.app[CONFIG_KEY].raid_lobby_timeout)
+    )
 
 
 # ---------- групповые бои ----------

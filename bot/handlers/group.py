@@ -407,6 +407,15 @@ async def on_raid_lobby(
             await callback.answer("Вышел из отряда.")
         return
 
+    if callback_data.action == "go":
+        try:
+            await raids.start_now(callback_data.lobby_id, callback.from_user.id)
+        except RaidError as error:
+            await callback.answer(plain(str(error)), show_alert=True)
+        else:
+            await callback.answer("Спускаемся!")
+        return
+
     player = await db.get_player(callback.from_user.id)
     if player is None:
         await callback.answer(NO_CHARACTER, show_alert=True)

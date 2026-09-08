@@ -1910,7 +1910,8 @@ async def test_a_gathering_party_can_be_joined(server):
         "lobbies": [
             {
                 "id": 5, "size": 4, "total": 2, "mine": False, "joined": False,
-                "in_app": True,
+                "in_app": True, "seconds_left": 125, "timeout": 600,
+                "can_start": True,
                 "boss": {
                     "code": "cellar_boss", "title": "Босс Подвала",
                     "emoji": "🩸", "image": "", "tagline": "",
@@ -1930,6 +1931,9 @@ async def test_a_gathering_party_can_be_joined(server):
         card = await page.locator(".fight-card").inner_text()
         assert "Босс Подвала — отряд 2/4" in card
         assert "Марла [4]" in card
+        assert "Выходим через 2:0" in card  # часы тикают, секунды не ловим
+        # вывести отряд может только тот, кто его собрал
+        assert await page.locator("#raid-start-now").count() == 0
 
         async def catch(route):
             sent.append(route.request.post_data_json)
@@ -1943,6 +1947,77 @@ async def test_a_gathering_party_can_be_joined(server):
         await page.wait_for_selector("#raid-go")
 
         assert sent == [{"action": "join", "lobby_id": 5}]
+        await browser.close()
+
+
+async def test_the_opener_sees_the_clock_and_the_early_start(server):
+    """Свой сбор: обратный отсчёт тикает, а рядом кнопка «Выходим сейчас»."""
+    mine = {
+        **EMPTY_RAID,
+        "lobby": {
+            "id": 7, "size": 4, "total": 2, "mine": True, "joined": True,
+            "in_app": True, "seconds_left": 65, "timeout": 600,
+            "can_start": True,
+            "boss": {
+                "code": "cellar_boss", "title": "Босс Подвала",
+                "emoji": "🩸", "image": "", "tagline": "",
+            },
+            "members": [
+                {"user_id": 42, "name": "Растафарайчик", "level": 5},
+                {"user_id": 43, "name": "Марла", "level": 4},
+            ],
+        },
+    }
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, mine)
+
+        clock = await page.locator(".raid-clock").inner_text()
+        assert clock.startswith("⏳ Выходим через 1:0")
+
+        # секунда прошла — на экране это видно, без нового ответа сервера
+        await page.wait_for_function(
+            "() => document.querySelector('.raid-clock')"
+            ".textContent !== " + json.dumps(clock)
+        )
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(raid_with_wave()),
+            )
+
+        await page.route("**/api/raid", catch)
+        await page.locator("#raid-start-now").click()
+        await page.wait_for_selector("#raid-go")
+
+        assert sent == [{"action": "go"}]
+        await browser.close()
+
+
+async def test_a_lonely_gathering_has_nothing_to_start(server):
+    """Один в подвал не ходит: кнопки ранней отправки нет."""
+    alone = {
+        **EMPTY_RAID,
+        "lobby": {
+            "id": 8, "size": 4, "total": 1, "mine": True, "joined": True,
+            "in_app": True, "seconds_left": 590, "timeout": 600,
+            "can_start": False,
+            "boss": {
+                "code": "cellar_boss", "title": "Босс Подвала",
+                "emoji": "🩸", "image": "", "tagline": "",
+            },
+            "members": [{"user_id": 42, "name": "Растафарайчик", "level": 5}],
+        },
+    }
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, alone)
+
+        assert await page.locator("#raid-start-now").count() == 0
+        assert "Выходим через 9:5" in await page.locator(".raid-clock").inner_text()
         await browser.close()
 
 

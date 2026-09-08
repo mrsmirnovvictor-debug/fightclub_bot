@@ -705,20 +705,27 @@ def rewards_report(
 
 
 def raid_lobby_card(lobby, timeout: int) -> str:
-    """Объявление о сборе в рейд: кто уже идёт и сколько ещё ждать."""
+    """Объявление о сборе в рейд: кто уже идёт и сколько ещё ждать.
+
+    Часы стоят на месте до следующего нажатия — Telegram не даёт править
+    сообщение каждую секунду, да и лимит чата этого не переживёт. Живой
+    отсчёт идёт в карточке, а здесь честная отметка на момент правки.
+    """
     names = ", ".join(esc(name) for name in lobby.members.values()) or "—"
+    left = lobby.seconds_left(timeout)
+    clock = f"выходим через {format_duration(left)}" if left else "время вышло"
     return "\n".join(
         [
             f"{lobby.boss.emoji} <b>Рейд: {esc(lobby.boss.title)}</b>",
             "",
             esc(lobby.boss.tagline) if lobby.boss.tagline else "",
-            f"Отряд: <b>{lobby.total}/{lobby.size}</b> · "
-            f"на сбор {format_duration(timeout)}",
+            f"Отряд: <b>{lobby.total}/{lobby.size}</b> · {clock}",
             f"Идут: {names}",
             "",
             "Уровень не важен — берут любого. Босс подстроится под отряд и "
             "будет выше него на четыре уровня.",
-            "Наберётся полный отряд — выходим сразу, ждать не будем.",
+            "Наберётся полный отряд — выходим сразу, ждать не будем. "
+            "Не хочется ждать — созвавший жмёт «Выходим сейчас».",
         ]
     )
 

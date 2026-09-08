@@ -97,7 +97,7 @@ class FightCB(CallbackData, prefix="fight"):
 
 
 class RaidLobbyCB(CallbackData, prefix="rlob"):
-    action: str  # join | leave
+    action: str  # join | leave | go
     lobby_id: int
 
 
@@ -275,6 +275,13 @@ def raid_lobby_keyboard(lobby) -> InlineKeyboardMarkup:
         text=f"🩸 В отряд ({lobby.total}/{lobby.size})",
         callback_data=RaidLobbyCB(action="join", lobby_id=lobby.id),
     )
+    # Кнопка ранней отправки висит у всех: клавиатура в ветке одна на чат.
+    # Нажмёт не созвавший — сервис ответит отказом всплывающим окном.
+    if lobby.can_start and not lobby.is_full:
+        builder.button(
+            text="⚔️ Выходим сейчас",
+            callback_data=RaidLobbyCB(action="go", lobby_id=lobby.id),
+        )
     builder.button(
         text="🚪 Выйти", callback_data=RaidLobbyCB(action="leave", lobby_id=lobby.id)
     )

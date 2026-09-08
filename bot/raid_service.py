@@ -20,6 +20,7 @@ import contextlib
 import itertools
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 
 from aiogram import Bot
@@ -114,6 +115,9 @@ class RaidLobby:
     levels: dict[int, int] = field(default_factory=dict)
     message_id: int | None = None
     task: asyncio.Task | None = None
+    # Когда объявили сбор: по этой метке считается обратный отсчёт. Часы
+    # монотонные — перевод системного времени сбор не сломает.
+    opened_at: float = field(default_factory=time.monotonic)
 
     @property
     def total(self) -> int:
@@ -126,6 +130,10 @@ class RaidLobby:
     @property
     def can_start(self) -> bool:
         return self.total >= MIN_PARTY
+
+    def seconds_left(self, timeout: int) -> int:
+        """Сколько ещё ждут отставших. Время вышло — ноль, не отрицательное."""
+        return max(0, round(timeout - (time.monotonic() - self.opened_at)))
 
     @property
     def key(self) -> ChatKey | None:
@@ -316,6 +324,23 @@ class RaidService:
         else:
             await self._refresh_lobby(lobby)
         return lobby
+
+    async def start_now(self, lobby_id: int, user_id: int) -> RaidSession | None:
+        """Выйти, не дожидаясь ни полного отряда, ни конца отсчёта.
+
+        Право на это одно у созвавшего: он платил за сбор и он решает, идти
+        ли вчетвером. Остальным остаётся ждать или выйти из отряда.
+        """
+        lobby = self._lobbies.get(lobby_id)
+        if lobby is None:
+            raise RaidError("Этот сбор уже закрыт.")
+        if lobby.opener_id != user_id:
+            raise RaidError("Выводит отряд тот, кто его собрал.")
+        if not lobby.can_start:
+            raise RaidError(
+                f"Одному в подвал нельзя: нужно хотя бы {MIN_PARTY} бойца."
+            )
+        return await self._start_from_lobby(lobby)
 
     async def _refresh_lobby(self, lobby: RaidLobby) -> None:
         await self.voice.edit(

@@ -96,6 +96,50 @@ async def test_the_party_size_is_checked_by_the_server(cellar):
     assert "от 2 до 10" in error["error"]
 
 
+async def test_the_lobby_carries_the_countdown(cellar):
+    """Сколько осталось ждать — приезжает с сервера, а не считается на глаз."""
+    client, raids, _ = cellar
+
+    _, mine = await act(client, 42, action="open", size=3)
+
+    lobby = mine["lobby"]
+    # Срок берётся из настроек сервера — тех же, по которым тикает таймер
+    assert lobby["timeout"] > 0
+    assert 0 < lobby["seconds_left"] <= lobby["timeout"]
+    assert lobby["can_start"] is False  # один в подвал не ходит
+
+    raids.lobby_of_user(42).opened_at -= lobby["timeout"] - 5
+    later = await state(client, 42)
+    assert later["lobby"]["seconds_left"] <= 5
+
+
+async def test_the_opener_goes_without_waiting(cellar):
+    client, raids, _ = cellar
+    await act(client, 42, action="open", size=3)
+    lobby = raids.lobby_of_user(42)
+    _, joined = await act(client, 43, action="join", lobby_id=lobby.id)
+    assert joined["raid"] is None  # отряд ещё неполон
+    assert joined["lobby"]["can_start"] is True
+
+    status, body = await act(client, 42, action="go")
+
+    assert status == 200
+    assert body["raid"] is not None and len(body["raid"]["party"]) == 2
+
+
+async def test_only_the_opener_goes_without_waiting(cellar):
+    client, raids, _ = cellar
+    await act(client, 42, action="open", size=3)
+    lobby = raids.lobby_of_user(42)
+    await act(client, 43, action="join", lobby_id=lobby.id)
+
+    status, error = await act(client, 43, action="go")
+
+    assert status == 409
+    assert "кто его собрал" in error["error"]
+    assert raids.raid_of_user(42) is None
+
+
 # ---------- сам рейд ----------
 
 

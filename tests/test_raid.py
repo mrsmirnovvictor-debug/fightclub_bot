@@ -240,6 +240,76 @@ async def test_one_raid_a_day_from_one_fighter(bot, db):
     await service.open_raid(CHAT_ID, THREAD_ID, players[1], 2)
 
 
+async def test_the_gathering_counts_down_from_the_moment_it_opened(bot, db):
+    """Отсчёт идёт от объявления сбора, а не от нажатия."""
+    service = make_service(bot, db, raid_lobby_timeout=600)
+    player = (await fill(db, 1))[0]
+
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, player, 3)
+
+    assert lobby.seconds_left(600) == 600
+    lobby.opened_at -= 570  # прошло девять с половиной минут
+    assert lobby.seconds_left(600) == 30
+    lobby.opened_at -= 100  # время вышло — но не ушло в минус
+    assert lobby.seconds_left(600) == 0
+    assert "выходим через 10 мин" in bot.texts[-1]
+
+
+async def test_the_opener_can_leave_without_waiting(bot, db):
+    """Кнопка «Выходим сейчас»: отряд неполон, но созвавший решил идти."""
+    service = make_service(bot, db)
+    players = await fill(db, 3)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], 3)
+    await service.join(lobby.id, players[1])
+
+    session = await service.start_now(lobby.id, players[0].user_id)
+
+    assert session is not None and len(session.fighters) == 2
+    assert service.raid_of_user(players[0].user_id) is session
+    assert service.lobby_of_user(players[0].user_id) is None
+
+
+async def test_only_the_opener_leads_the_party_out(bot, db):
+    service = make_service(bot, db)
+    players = await fill(db, 3)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], 3)
+    await service.join(lobby.id, players[1])
+
+    with pytest.raises(RaidError, match="кто его собрал"):
+        await service.start_now(lobby.id, players[1].user_id)
+    assert service.raid_of_user(players[0].user_id) is None
+
+
+async def test_one_fighter_is_not_a_party(bot, db):
+    service = make_service(bot, db)
+    player = (await fill(db, 1))[0]
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, player, 3)
+
+    with pytest.raises(RaidError, match="хотя бы"):
+        await service.start_now(lobby.id, player.user_id)
+    assert service.lobby_of_user(player.user_id) is lobby
+
+
+async def test_the_early_start_button_shows_up_with_the_second_fighter(bot, db):
+    """Кнопка появляется, когда выходить уже есть с кем."""
+    from bot.keyboards import raid_lobby_keyboard
+
+    service = make_service(bot, db)
+    players = await fill(db, 3)
+    lobby = await service.open_raid(CHAT_ID, THREAD_ID, players[0], 3)
+
+    def buttons():
+        return [
+            button.text
+            for row in raid_lobby_keyboard(lobby).inline_keyboard
+            for button in row
+        ]
+
+    assert not any("Выходим сейчас" in text for text in buttons())
+    await service.join(lobby.id, players[1])
+    assert any("Выходим сейчас" in text for text in buttons())
+
+
 async def test_a_failed_gathering_gives_the_money_back(bot, db):
     """Сбор не состоялся — и попытка, и кредиты возвращаются."""
     service = make_service(bot, db, raid_price=25)

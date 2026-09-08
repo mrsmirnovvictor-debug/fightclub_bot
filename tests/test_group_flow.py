@@ -558,6 +558,45 @@ async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raid
     assert raid.enemy.hp < raid.enemy.max_hp or raid.rounds
 
 
+async def test_the_opener_leads_the_party_out_from_the_chat(arena, raids):
+    """Кнопка «Выходим сейчас» — только у того, кто собрал рейд."""
+    from bot.keyboards import RaidLobbyCB
+
+    db, _, session = arena
+    people = [as_user(960 + i, f"Рейдер{i}") for i in range(2)]
+    for user in people:
+        player = make_player(user.id, user.first_name, "warrior")
+        player.level = 5
+        await db.save_player(player)
+
+    await send(people[0], "/raid 3", thread_id=603)
+    lobby = raids.lobby_of_user(people[0].id)
+    await feed_callback(
+        people[1],
+        GROUP,
+        RaidLobbyCB(action="join", lobby_id=lobby.id).pack(),
+        message_thread_id=603,
+        is_topic_message=True,
+    )
+
+    async def press_go(user):
+        await feed_callback(
+            user,
+            GROUP,
+            RaidLobbyCB(action="go", lobby_id=lobby.id).pack(),
+            message_thread_id=603,
+            is_topic_message=True,
+        )
+
+    await press_go(people[1])
+    assert "кто его собрал" in session.alerts[-1]
+    assert raids.raid_of_user(people[0].id) is None
+
+    await press_go(people[0])
+    raid = raids.raid_of_user(people[0].id)
+    assert raid is not None and len(raid.fighters) == 2
+
+
 async def test_a_raid_needs_a_character(arena, raids):
     db, _, session = arena
     stranger = as_user(950, "Прохожий")

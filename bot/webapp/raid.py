@@ -147,7 +147,9 @@ def boss_card(enemy: Fighter, boss: Boss, live: bool) -> dict[str, Any]:
     }
 
 
-def lobby_payload(lobby: RaidLobby, viewer_id: int) -> dict[str, Any]:
+def lobby_payload(
+    lobby: RaidLobby, viewer_id: int, timeout: int = 0
+) -> dict[str, Any]:
     return {
         "id": lobby.id,
         "size": lobby.size,
@@ -155,6 +157,12 @@ def lobby_payload(lobby: RaidLobby, viewer_id: int) -> dict[str, Any]:
         "mine": lobby.opener_id == viewer_id,
         "joined": viewer_id in lobby.members,
         "in_app": lobby.chat_id is None,
+        # Сколько ещё ждут отставших. Страница тикает сама, а сервер
+        # поправляет её на каждом опросе — часы у всех одни.
+        "seconds_left": lobby.seconds_left(timeout),
+        "timeout": timeout,
+        # Отряд уже боеспособен: созвавший может не ждать отсчёта
+        "can_start": lobby.can_start,
         "boss": {
             "code": lobby.boss.code,
             "title": lobby.boss.title,
@@ -204,7 +212,9 @@ def raid_payload(session: RaidSession, viewer_id: int) -> dict[str, Any]:
     }
 
 
-def build_raid(player: Player, service: RaidService | None) -> dict[str, Any]:
+def build_raid(
+    player: Player, service: RaidService | None, timeout: int = 0
+) -> dict[str, Any]:
     """Всё, что нужно разделу «Рейд», одним ответом."""
     body: dict[str, Any] = {
         "attacks": [dict(row) for row in ATTACK_BUTTONS],
@@ -236,9 +246,9 @@ def build_raid(player: Player, service: RaidService | None) -> dict[str, Any]:
 
     own = service.lobby_of_user(player.user_id)
     if own is not None:
-        body["lobby"] = lobby_payload(own, player.user_id)
+        body["lobby"] = lobby_payload(own, player.user_id, timeout)
     body["lobbies"] = [
-        lobby_payload(lobby, player.user_id)
+        lobby_payload(lobby, player.user_id, timeout)
         for lobby in service.open_lobbies()
         if player.user_id not in lobby.members
     ]
