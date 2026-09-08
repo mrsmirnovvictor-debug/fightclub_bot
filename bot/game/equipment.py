@@ -44,12 +44,20 @@ class Slot(str, Enum):
     @property
     def placeholder(self) -> str:
         """Подложка пустого слота: тень того, что сюда надевается."""
-        return art.slot(self.value)
+        return art.slot(SLOT_ART.get(self, f"{self.value}.png"))
 
     @property
     def emoji(self) -> str:
         return SLOT_EMOJI[self]
 
+
+# Имя файла подложки, если оно не совпадает с кодом слота. Во второй руке
+# чаще держат щит, им клетка и подписана; клетка «тело» — это футболка с
+# верхней одеждой, и силуэт у неё футболочный.
+SLOT_ART: dict[Slot, str] = {
+    Slot.OFFHAND: "shield.jpeg",
+    Slot.JACKET: "shirt.png",
+}
 
 SLOT_TITLES: dict[Slot, str] = {
     Slot.HEAD: "головной убор",
@@ -110,8 +118,8 @@ SLOT_ZONES: dict[Slot, tuple[Zone, ...]] = {
 # Слева направо на карточке: две колонки по четыре клетки. Футболки своей
 # клетки не занимают — они надеваются под верхнюю одежду, и обе вещи живут
 # в клетке «тело»: картинкой видно верхнюю, подсказкой — обе.
-LEFT_SLOTS: tuple[Slot, ...] = (Slot.HEAD, Slot.WEAPON, Slot.OFFHAND, Slot.BELT)
-RIGHT_SLOTS: tuple[Slot, ...] = (Slot.GLOVES, Slot.JACKET, Slot.PANTS, Slot.BOOTS)
+LEFT_SLOTS: tuple[Slot, ...] = (Slot.HEAD, Slot.WEAPON, Slot.JACKET, Slot.BELT)
+RIGHT_SLOTS: tuple[Slot, ...] = (Slot.GLOVES, Slot.OFFHAND, Slot.PANTS, Slot.BOOTS)
 # Что лежит в клетке под верхней одеждой
 UNDER_SLOTS: dict[Slot, Slot] = {Slot.JACKET: Slot.SHIRT}
 # Все слоты модели: футболка отдельная, просто без своей клетки на кукле

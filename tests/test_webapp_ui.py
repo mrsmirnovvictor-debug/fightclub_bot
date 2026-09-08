@@ -806,8 +806,8 @@ async def test_the_body_cell_holds_the_jacket_and_the_shirt_under_it(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        cells = page.locator("#hero-slots-right .slot")
-        body = cells.nth(1)  # перчатки, тело, штаны, обувь
+        cells = page.locator("#hero-slots-left .slot")
+        body = cells.nth(2)  # голова, оружие, тело, пояс
         hint = await body.get_attribute("title")
 
         assert "Косуха — верхняя одежда" in hint
@@ -815,8 +815,10 @@ async def test_the_body_cell_holds_the_jacket_and_the_shirt_under_it(server):
         assert "empty" not in (await body.get_attribute("class"))
 
         # клетка без вещей называет место, а не вещь
-        empty = await cells.nth(0).get_attribute("title")
-        assert empty == "Пусто: перчатки"
+        empty = await page.locator("#hero-slots-right .slot").nth(1).get_attribute(
+            "title"
+        )
+        assert empty == "Пусто: вторая рука"
         await browser.close()
 
 
@@ -836,7 +838,7 @@ async def test_only_the_shirt_still_fills_the_body_cell(server):
             asyncio.ensure_future(dialog.dismiss())
 
         page.on("dialog", on_dialog)
-        body = page.locator("#hero-slots-right .slot").nth(1)
+        body = page.locator("#hero-slots-left .slot").nth(2)
 
         assert "empty" not in (await body.get_attribute("class"))
         assert "Клубная футболка — футболка" in await body.get_attribute("title")
@@ -916,19 +918,19 @@ async def test_the_card_catches_up_with_a_level_taken_in_a_fight(server):
     grown = make_player()
     grown.level = player.level + 1
     grown.free_points = 3
-    cards = [
-        build_card(player, TOKEN, viewer_id=player.user_id),
-        build_card(grown, TOKEN, viewer_id=grown.user_id),
-    ]
+    before = build_card(player, TOKEN, viewer_id=player.user_id)
+    after = build_card(grown, TOKEN, viewer_id=grown.user_id)
+    # Что отдаёт сервер прямо сейчас. Очередью это делать нельзя: карточка
+    # перечитывает себя ещё и по таймеру, и лишний запрос съедал бы ответ.
+    served = [before]
 
     async def card_route(route):
-        body = cards.pop(0) if len(cards) > 1 else cards[0]
         await route.fulfill(
-            status=200, content_type="application/json", body=json.dumps(body)
+            status=200, content_type="application/json", body=json.dumps(served[0])
         )
 
     async with async_playwright() as pw:
-        browser, page = await open_page(pw, server, cards[0], build_shop(player))
+        browser, page = await open_page(pw, server, before, build_shop(player))
         await page.route("**/api/card*", card_route)
         await page.wait_for_selector("#hero:not(.hidden)")
 
@@ -936,6 +938,7 @@ async def test_the_card_catches_up_with_a_level_taken_in_a_fight(server):
         assert await page.locator("#upgrade").is_hidden()
 
         # ушли в чат, подрались, вернулись
+        served[0] = after
         await page.locator("#tab-shop").click()
         await page.locator("#tab-hero").click()
         await page.wait_for_selector("#upgrade:not(.hidden)")

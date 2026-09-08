@@ -1003,11 +1003,28 @@ def test_empty_slots_carry_their_own_placeholder():
     # одежду и живёт в той же клетке «тело»
     assert len(rows) == len(LEFT_SLOTS) + len(RIGHT_SLOTS) == len(ALL_SLOTS) - 1
     for row in rows:
-        # png, а не jpeg: подложке нужна прозрачность, чтобы садиться на
-        # фон слота, а не нести с собой собственный чёрный квадрат
-        assert row["placeholder_image"] == f"{SLOTS}/{row['slot']}.png"
+        assert row["placeholder_image"] == Slot(row["slot"]).placeholder
+        assert row["placeholder_image"].startswith(f"{SLOTS}/")
         assert row["placeholder"], "значок остаётся запасным вариантом"
     assert len({row["placeholder_image"] for row in rows}) == len(rows)
+
+
+def test_two_cells_borrow_a_placeholder_from_a_neighbour():
+    """Вторая рука рисуется щитом, клетка «тело» — футболкой.
+
+    Остальным клеткам подложка достаётся по коду слота, и она в png: этому
+    силуэту нужна прозрачность, чтобы садиться на фон слота, а не нести с
+    собой собственный чёрный квадрат.
+    """
+    from bot.game.art import SLOTS
+    from bot.game.equipment import ALL_SLOTS
+
+    assert Slot.OFFHAND.placeholder == f"{SLOTS}/shield.jpeg"
+    assert Slot.JACKET.placeholder == f"{SLOTS}/shirt.png"
+    for slot in ALL_SLOTS:
+        if slot in (Slot.OFFHAND, Slot.JACKET):
+            continue
+        assert slot.placeholder == f"{SLOTS}/{slot.value}.png"
 
 
 def test_the_two_pairs_of_canvas_trousers_do_not_share_a_picture():

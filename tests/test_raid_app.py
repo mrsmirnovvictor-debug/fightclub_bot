@@ -280,9 +280,9 @@ async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
     assert boss["avatar"]["url"].endswith("bosses/cellar_boss.png")
     left = boss["slots"]["left"]
     right = boss["slots"]["right"]
-    assert [row["slot"] for row in left] == ["head", "weapon", "offhand", "belt"]
-    assert [row["slot"] for row in right] == ["gloves", "jacket", "pants", "boots"]
-    # у босса заняты все восемь, но форма слота та же, что у пустого
+    assert [row["slot"] for row in left] == ["head", "weapon", "jacket", "belt"]
+    assert [row["slot"] for row in right] == ["gloves", "offhand", "pants", "boots"]
+    # у босса заняты все клетки, но форма слота та же, что у пустого
     assert all(row["item"] for row in left + right)
     assert all(row["placeholder_image"] for row in left + right)
     assert next(row for row in left if row["slot"] == "weapon")["item"]["title"] == (
