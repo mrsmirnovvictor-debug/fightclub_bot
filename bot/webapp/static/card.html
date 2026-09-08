@@ -15,11 +15,94 @@
     <div class="error-text"></div>
   </div>
 
-  <main id="card" class="card hidden">
+  <!-- ---------- 1. Бойцовский клуб ---------- -->
+  <main id="club" class="screen club hidden">
+    <header class="screen-head">
+      <h1 class="screen-title">🥊 Бойцовский клуб</h1>
+      <span class="screen-count" id="club-count"></span>
+    </header>
+
+    <!-- Разделы одной вкладки: бои, рейд, игроки и статистика -->
+    <div class="bubbles" id="club-sections"></div>
+
+    <!-- Бои: вызовы, свой вызов или панель идущего боя -->
+    <section id="club-fights" class="hidden">
+      <p class="screen-note" id="fights-note"></p>
+      <div id="fights-body"></div>
+    </section>
+
+    <!-- Игроки -->
+    <section id="club-players">
+      <p class="screen-note" id="club-note"></p>
+      <div id="club-list"></div>
+    </section>
+
+    <!-- Рейд: сбор отряда, волна против босса или итог -->
+    <section id="club-raid" class="hidden">
+      <p class="screen-note" id="raid-note"></p>
+      <div id="raid-body"></div>
+    </section>
+
+    <!-- Отряд: сбор состава, раунд группового боя или итог -->
+    <section id="club-battle" class="hidden">
+      <p class="screen-note" id="battle-note"></p>
+      <div id="battle-body"></div>
+    </section>
+
+    <!-- Статистика: бои по дням, с провалом в разбор одного боя -->
+    <section id="club-stats" class="hidden">
+      <p class="screen-note" id="stats-note"></p>
+      <div id="stats-body"></div>
+    </section>
+  </main>
+
+  <!-- ---------- 2. Магазины: лавка клуба и комиссионка ---------- -->
+  <main id="shop" class="screen shop hidden">
+    <header class="screen-head">
+      <h1 class="screen-title" id="shop-title">🏪 Лавка клуба</h1>
+      <span class="shop-purse" id="shop-purse"></span>
+    </header>
+
+    <div class="bubbles" id="shop-sections"></div>
+
+    <!-- Лавка клуба: товар по типам вещей -->
+    <section id="shop-club">
+      <p class="screen-note" id="shop-note"></p>
+      <div class="bubbles" id="filter-type"></div>
+      <p class="shop-empty hidden" id="shop-empty">
+        Под этот фильтр на прилавке ничего нет.
+      </p>
+      <div id="shop-list"></div>
+    </section>
+
+    <!-- Комиссионка: вещи игроков -->
+    <section id="shop-market" class="hidden">
+      <p class="screen-note" id="market-note"></p>
+      <div id="market-body"></div>
+    </section>
+  </main>
+
+  <!-- ---------- 3. Лавка мага ---------- -->
+  <main id="magic" class="screen magic hidden">
+    <header class="screen-head">
+      <h1 class="screen-title">🔮 Лавка мага</h1>
+    </header>
+    <p class="screen-note" id="magic-note"></p>
+    <div id="pro-card"></div>
+    <div id="magic-list"></div>
+    <div class="soon hidden" id="magic-empty">
+      <div class="soon-emoji">🔮</div>
+      <h2 class="soon-title">Прилавок пуст</h2>
+      <p class="soon-text muted">Маг ещё раскладывает товар. Загляни позже.</p>
+    </div>
+  </main>
+
+  <!-- ---------- 4. Инвентарь ---------- -->
+  <main id="bag" class="screen hidden">
     <header class="head">
-      <span class="head-class" id="class-emoji"></span>
-      <h1 class="head-name" id="name"></h1>
-      <span class="head-level" id="level"></span>
+      <span class="head-class" id="bag-class"></span>
+      <h1 class="head-name" id="bag-name"></h1>
+      <span class="head-level" id="bag-level"></span>
     </header>
 
     <div class="hp" id="hp">
@@ -27,6 +110,7 @@
       <div class="hp-text" id="hp-text"></div>
     </div>
     <div class="hp-note" id="hp-note"></div>
+    <div class="effects" id="effects"></div>
 
     <section class="doll">
       <div class="slots" id="slots-left"></div>
@@ -36,16 +120,101 @@
 
     <div class="city" id="city"></div>
 
+    <section class="bag" id="bag-box">
+      <h2 class="bag-head">🎒 Инвентарь <span class="bag-count" id="bag-count"></span></h2>
+      <div class="bag-list" id="bag-list"></div>
+      <p class="bag-empty hidden" id="bag-empty">
+        Рюкзак пуст. Вещи покупаются в лавке клуба — вкладка «Магазины».
+      </p>
+
+      <div id="potion-box" class="hidden">
+        <h2 class="bag-head">🧪 Эликсиры <span class="bag-count" id="potion-count"></span></h2>
+        <div class="bag-list" id="potion-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ---------- 5. Персонаж ---------- -->
+  <main id="hero" class="screen hidden">
+    <header class="head">
+      <span class="head-class" id="hero-class"></span>
+      <h1 class="head-name" id="hero-name"></h1>
+      <span class="head-level" id="hero-level"></span>
+    </header>
+
+    <div class="hp" id="hero-hp">
+      <div class="hp-fill" id="hero-hp-fill"></div>
+      <div class="hp-text" id="hero-hp-text"></div>
+    </div>
+    <div class="hp-note" id="hero-hp-note"></div>
+    <div class="effects" id="hero-effects"></div>
+
+    <section class="doll">
+      <div class="slots" id="hero-slots-left"></div>
+      <div class="avatar" id="hero-avatar"></div>
+      <div class="slots" id="hero-slots-right"></div>
+    </section>
+
+    <div class="city" id="hero-city"></div>
+
     <section class="panel">
       <ul class="rows" id="stats"></ul>
+      <div id="upgrade" class="upgrade hidden"></div>
       <hr class="rule">
       <ul class="rows" id="progress"></ul>
+      <hr class="rule">
+      <ul class="rows" id="combat"></ul>
       <hr class="rule">
       <ul class="rows" id="record"></ul>
     </section>
 
     <footer class="foot" id="foot"></footer>
   </main>
+
+  <!-- Касса: не вкладка, открывается кнопкой «+» рядом со счётом -->
+  <main id="topup" class="screen topup hidden">
+    <header class="screen-head">
+      <button type="button" class="back" id="topup-back">← Назад</button>
+      <span class="shop-purse" id="topup-purse"></span>
+    </header>
+    <h1 class="screen-title">💳 Касса клуба</h1>
+    <p class="screen-note" id="topup-note"></p>
+    <div id="topup-list"></div>
+    <p class="topup-foot">
+      Оплата — звёздами Telegram. Кредиты тратятся на вещи, починку и смену
+      класса. Уровень и характеристики за деньги не продаются.
+    </p>
+  </main>
+
+  <nav class="bar hidden" id="bar">
+    <button type="button" class="bar-tab" id="tab-club">
+      <span class="bar-icon">🥊</span><span class="bar-label">Клуб</span>
+    </button>
+    <button type="button" class="bar-tab" id="tab-shop">
+      <span class="bar-icon">🏪</span><span class="bar-label">Магазины</span>
+    </button>
+    <button type="button" class="bar-tab" id="tab-magic">
+      <span class="bar-icon">🔮</span><span class="bar-label">Лавка мага</span>
+    </button>
+    <button type="button" class="bar-tab" id="tab-bag">
+      <span class="bar-icon">🎒</span><span class="bar-label">Инвентарь</span>
+    </button>
+    <button type="button" class="bar-tab active" id="tab-hero">
+      <span class="bar-icon">🪪</span><span class="bar-label">Персонаж</span>
+    </button>
+  </nav>
+
+  <div id="sheet" class="sheet hidden">
+    <div class="sheet-back" id="sheet-back"></div>
+    <div class="sheet-body">
+      <header class="sheet-head">
+        <h2 class="sheet-title" id="sheet-title">Образ бойца</h2>
+        <button type="button" class="sheet-close" id="sheet-close">✕</button>
+      </header>
+      <p class="sheet-note" id="sheet-note"></p>
+      <div id="sheet-list"></div>
+    </div>
+  </div>
 
   <script src="static/card.js"></script>
 </body>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -9,17 +10,60 @@ from aiohttp import web
 
 from bot.config import Config
 from bot.database import Database
+from bot.battle_service import BattleError
+from bot.duel_service import DuelError
+from bot.raid_service import RaidError
+from bot.game.classes import ALL_STATS
+from bot.game.equipment import Slot
+from bot.game.modes import mode_of
+from bot.game.potions import get_potion
+from bot.inventory_service import (
+    InventoryError,
+    buy,
+    equip,
+    hand_in,
+    repair_item,
+    unequip,
+)
+from bot.looks_service import LookError, choose_look, wardrobe
+from bot.potions_service import PotionError, buy_potion, use_potion
+from bot.pro_service import ProError, claim_free_pro, promo_taken
+from bot.store_service import StoreError, StoreService
+from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
-from bot.webapp.card import build_card
+from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
+from bot.webapp.battle import build_battle
+from bot.webapp.fight import build_fight_log, build_fights, build_history
+from bot.webapp.raid import build_raid, gate_payload, raid_row
+from bot.webapp.card import (
+    build_market,
+    build_card,
+    build_club,
+    build_magic,
+    build_shop,
+    build_topup,
+)
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+# Файлы, из которых собирается метка версии страницы
+ASSETS = ("card.css", "card.js")
 
 # Типизированные ключи приложения — так рекомендует aiohttp
 BOT_KEY: web.AppKey = web.AppKey("bot")
 DB_KEY: web.AppKey[Database] = web.AppKey("db", Database)
 CONFIG_KEY: web.AppKey[Config] = web.AppKey("config", Config)
+# Метка версии статики: без неё Telegram показывает страницу из кеша
+STAMP_KEY: web.AppKey[str] = web.AppKey("stamp", str)
+# Сервис дуэлей нужен, чтобы не давать переодеваться посреди боя
+DUELS_KEY: web.AppKey = web.AppKey("duels")
+# Касса: выставляет счета в звёздах для кнопки «+» рядом с кредитами
+STORE_KEY: web.AppKey = web.AppKey("store")
+# Рейды: тот же сервис, что и в ветке группы — апп ему второй пульт
+RAIDS_KEY: web.AppKey = web.AppKey("raids")
+# Групповые бои: состав собирают где угодно, а дерутся в карточке
+BATTLES_KEY: web.AppKey = web.AppKey("battles")
 # Кто может смотреть чужие карточки — все: клуб маленький, прятать нечего
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
 
@@ -44,8 +88,36 @@ async def _viewer(request: web.Request):
         ) from error
 
 
-async def index(request: web.Request) -> web.FileResponse:
-    return web.FileResponse(STATIC_DIR / "card.html")
+def asset_stamp() -> str:
+    """Короткая метка версии: меняется, как только меняется стиль или скрипт."""
+    digest = hashlib.sha1()
+    for name in ASSETS:
+        digest.update((STATIC_DIR / name).read_bytes())
+    return digest.hexdigest()[:8]
+
+
+def stamped_page(stamp: str) -> str:
+    """Страница со ссылками вида static/card.css?v=метка.
+
+    Telegram держит мини-апп в вебвью и кеширует стили со скриптами намертво:
+    после выката человек открывает карточку и видит вчерашнюю вёрстку, а в
+    логах сервера — только запрос к API. Метка в адресе делает файл новым, и
+    вебвью идёт за ним заново.
+    """
+    html = (STATIC_DIR / "card.html").read_text(encoding="utf-8")
+    for name in ASSETS:
+        html = html.replace(f"static/{name}", f"static/{name}?v={stamp}")
+    return html
+
+
+async def index(request: web.Request) -> web.Response:
+    return web.Response(
+        text=stamped_page(request.app[STAMP_KEY]),
+        content_type="text/html",
+        charset="utf-8",
+        # Саму страницу не кешируем: иначе новые метки до вебвью не доедут
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 async def api_card(request: web.Request) -> web.Response:
@@ -69,6 +141,672 @@ async def api_card(request: web.Request) -> web.Response:
             status=404,
         )
     return web.json_response(build_card(player, config.bot_token, viewer.user_id))
+
+
+async def _own_player(request: web.Request):
+    """Действия с вещами доступны только хозяину карточки и только вне боя."""
+    viewer = await _viewer(request)
+    player = await request.app[DB_KEY].get_player(viewer.user_id)
+    if player is None:
+        raise web.HTTPNotFound(text="У тебя ещё нет персонажа")
+    duels = request.app.get(DUELS_KEY)
+    if duels is not None and duels.duel_of_user(player.user_id) is not None:
+        raise InventoryError("Ты на ринге — переодеваться поздно.")
+    return player
+
+
+async def _payload(request: web.Request) -> dict:
+    try:
+        data = await request.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _card_response(request: web.Request, player) -> web.Response:
+    """Карточка плюс список того, что слетело: вещи держатся друг за друга."""
+    config = request.app[CONFIG_KEY]
+    body = build_card(player, config.bot_token, player.user_id)
+    body["undressed"] = [owned.title for owned in player.dropped_gear]
+    return web.json_response(body)
+
+
+def _hands(data: dict) -> dict[int, str]:
+    """Куда бьёт каждая рука: {0: "head", 1: "belly"}.
+
+    Одну руку страница шлёт и по-старому, полем `attack`: так проще и так
+    же читается на сервере.
+    """
+    hands: dict[int, str] = {}
+    raw = data.get("attacks")
+    if isinstance(raw, dict):
+        for key, zone in raw.items():
+            if str(zone):
+                hands[int(key)] = str(zone)
+    elif isinstance(raw, list):
+        for index, zone in enumerate(raw):
+            if str(zone):
+                hands[index] = str(zone)
+    single = str(data.get("attack", ""))
+    if single and 0 not in hands:
+        hands[0] = single
+    return hands
+
+
+def _int_field(data: dict, name: str) -> int:
+    try:
+        return int(data.get(name))
+    except (TypeError, ValueError) as error:
+        raise web.HTTPBadRequest(text=f"нет поля {name}") from error
+
+
+def _slot_field(data: dict, name: str) -> Slot | None:
+    raw = data.get(name)
+    if not raw:
+        return None
+    try:
+        return Slot(str(raw))
+    except ValueError as error:
+        raise web.HTTPBadRequest(text="неизвестный слот") from error
+
+
+async def api_equip(request: web.Request) -> web.Response:
+    """Надеть вещь из инвентаря."""
+    data = await _payload(request)
+    try:
+        player = await _own_player(request)
+        await equip(
+            request.app[DB_KEY],
+            player,
+            _int_field(data, "item_id"),
+            _slot_field(data, "slot"),
+        )
+    except InventoryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    return _card_response(request, player)
+
+
+async def api_unequip(request: web.Request) -> web.Response:
+    """Снять вещь со слота — она вернётся в инвентарь."""
+    data = await _payload(request)
+    slot = _slot_field(data, "slot")
+    if slot is None:
+        raise web.HTTPBadRequest(text="нет поля slot")
+    try:
+        player = await _own_player(request)
+        await unequip(request.app[DB_KEY], player, slot)
+    except InventoryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    return _card_response(request, player)
+
+
+async def api_repair(request: web.Request) -> web.Response:
+    """Починить вещь за кредиты."""
+    data = await _payload(request)
+    points = None if data.get("points") is None else _int_field(data, "points")
+    try:
+        player = await _own_player(request)
+        result = await repair_item(
+            request.app[DB_KEY], player, _int_field(data, "item_id"), points
+        )
+    except InventoryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "repair": {
+                "points": result.points,
+                "price": result.price,
+                "degraded": result.degraded,
+                "destroyed": result.destroyed,
+            },
+        }
+    )
+
+
+async def api_handin(request: web.Request) -> web.Response:
+    """Сдать вещь обратно в лавку клуба за долю её цены."""
+    data = await _payload(request)
+    try:
+        player = await _own_player(request)
+        title, paid = await hand_in(
+            request.app[DB_KEY], player, _int_field(data, "item_id")
+        )
+    except InventoryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "shop": build_shop(player),
+            "handin": {"title": title, "paid": paid, "credits": player.credits},
+        }
+    )
+
+
+async def api_shop(request: web.Request) -> web.Response:
+    """Витрина: что продаётся, что уже открыто и что по карману."""
+    try:
+        player = await _own_player(request)
+    except InventoryError as error:  # pragma: no cover - витрина боем не занята
+        return web.json_response({"error": str(error)}, status=409)
+    return web.json_response(build_shop(player))
+
+
+async def api_buy(request: web.Request) -> web.Response:
+    """Купить вещь: она уходит в инвентарь, надевать — в карточке."""
+    data = await _payload(request)
+    code = str(data.get("code") or "")
+    potion = get_potion(code)
+    try:
+        player = await _own_player(request)
+        if potion is not None:
+            await buy_potion(request.app[DB_KEY], player, code)
+            # Склянку не надевают — её пьют, поэтому и подсказка другая
+            bought = {
+                "code": potion.code,
+                "title": potion.title,
+                "price": potion.price,
+                "can_equip": False,
+                "consumable": True,
+            }
+        else:
+            item = await buy(request.app[DB_KEY], player, code)
+            bought = {
+                "code": item.code,
+                "title": item.title,
+                "price": item.item.price,
+                "can_equip": player.can_equip(item.item),
+                "consumable": False,
+            }
+    except (InventoryError, PotionError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "shop": build_shop(player),
+            "card": build_card(player, config.bot_token, player.user_id),
+            "bought": bought,
+        }
+    )
+
+
+async def api_use(request: web.Request) -> web.Response:
+    """Выпить эликсир из рюкзака."""
+    data = await _payload(request)
+    code = str(data.get("code") or "")
+    try:
+        player = await _own_player(request)
+        result = await use_potion(request.app[DB_KEY], player, code)
+    except (InventoryError, PotionError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "used": {
+                "code": result.potion.code,
+                "title": result.potion.title,
+                "healed": result.healed,
+                "extended": result.extended,
+                "seconds_left": result.seconds_left(),
+                "left": result.left,
+                "replaced": [potion.title for potion in result.replaced],
+            },
+        }
+    )
+
+
+async def api_upgrade(request: web.Request) -> web.Response:
+    """Разложить свободные очки по характеристикам."""
+    data = await _payload(request)
+    try:
+        player = await _own_player(request)
+        gain = await spend_points(request.app[DB_KEY], player, data)
+    except (InventoryError, UpgradeError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "spent": {stat.value: gain.get(stat) for stat in ALL_STATS},
+            "left": player.free_points,
+        }
+    )
+
+
+async def api_magic(request: web.Request) -> web.Response:
+    """Лавка мага: товар только за звёзды."""
+    try:
+        player = await _own_player(request)
+    except InventoryError as error:  # pragma: no cover - лавка боем не занята
+        return web.json_response({"error": str(error)}, status=409)
+    claimed = await promo_taken(request.app[DB_KEY], player.user_id)
+    return web.json_response(build_magic(player, promo_claimed=claimed))
+
+
+async def api_pro(request: web.Request) -> web.Response:
+    """Забрать подписку по акции. Идёт ли акция — решает сервер, не страница."""
+    try:
+        player = await _own_player(request)
+        grant = await claim_free_pro(request.app[DB_KEY], player)
+    except (InventoryError, ProError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "magic": build_magic(player, promo_claimed=True),
+            "pro": {
+                "days": grant.offer.days,
+                "renewed": grant.renewed,
+                "blade": grant.blade,
+                "look": grant.look,
+                "seconds_left": grant.seconds_left(),
+            },
+        }
+    )
+
+
+async def api_club(request: web.Request) -> web.Response:
+    """Список клуба: все записанные бойцы с короткими карточками."""
+    viewer = await _viewer(request)
+    players = await request.app[DB_KEY].all_players()
+    return web.json_response(build_club(players, viewer.user_id))
+
+
+# ---------- бои ----------
+
+
+async def _fighter(request: web.Request):
+    """Боец, который смотрит на вкладку боёв. Без персонажа драться нечем."""
+    viewer = await _viewer(request)
+    player = await request.app[DB_KEY].get_player(viewer.user_id)
+    if player is None:
+        raise web.HTTPNotFound(text="У тебя ещё нет персонажа")
+    return player
+
+
+async def api_fights(request: web.Request) -> web.Response:
+    """Состояние вкладки «Бои» целиком: вызовы, свой вызов или идущий бой.
+
+    Страница опрашивает эту ручку раз в пару секунд, поэтому ответ всегда
+    полный: по нему видно, что рисовать, и не нужно помнить, что было.
+    """
+    player = await _fighter(request)
+    return web.json_response(build_fights(player, request.app.get(DUELS_KEY)))
+
+
+async def api_fight(request: web.Request) -> web.Response:
+    """Действие на ринге: бросить вызов, принять, выйти, ударить, закрыть итог."""
+    player = await _fighter(request)
+    duels = request.app.get(DUELS_KEY)
+    if duels is None:  # pragma: no cover - бот без сервиса боёв не поднимается
+        return web.json_response({"error": "Бои сейчас недоступны."}, status=503)
+
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    try:
+        if action == "open":
+            await duels.open_challenge(
+                None, None, player, mode=mode_of(str(data.get("mode", "")))
+            )
+        elif action == "cancel":
+            await duels.withdraw_challenge(player.user_id)
+        elif action == "join":
+            await duels.accept_challenge(_int_field(data, "challenge_id"), player)
+        elif action == "go":
+            # Гонг даёт тот, кто звал: соперник вышел, и его надо разглядеть
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Этого боя уже нет.")
+            await duels.confirm_duel(duel.id, player.user_id)
+        elif action == "back":
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Этого боя уже нет.")
+            await duels.decline_duel(duel.id, player.user_id)
+        elif action == "done":
+            # Итог прочитан — убираем его с экрана
+            duels.forget_result(player.user_id)
+        elif action == "turn":
+            # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
+            # «Вперёд!». Порядок важен — блок последним, чтобы выбор считался
+            # готовым только когда выбрано всё.
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Ты сейчас не на ринге.")
+            hands = _hands(data)
+            block = str(data.get("block", ""))
+            fighter = duel.fighters.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
+                raise DuelError("Выбери и удар, и блок.")
+            for hand, zone in sorted(hands.items()):
+                await duels.handle_choice(
+                    duel.id, player.user_id, "attack", zone, hand
+                )
+            await duels.handle_choice(duel.id, player.user_id, "block", block)
+        elif action in {"attack", "block"}:
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Ты сейчас не на ринге.")
+            await duels.handle_choice(
+                duel.id, player.user_id, action, str(data.get("zone", ""))
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except DuelError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await request.app[DB_KEY].get_player(player.user_id)
+    return web.json_response(build_fights(fresh or player, duels))
+
+
+# ---------- комиссионка ----------
+
+
+async def _market(request: web.Request, player) -> web.Response:
+    lots = await request.app[DB_KEY].market_lots()
+    return web.json_response(build_market(player, lots))
+
+
+async def api_market(request: web.Request) -> web.Response:
+    """Что лежит на комиссии, что там твоего и что можно выставить."""
+    player = await _own_player(request)
+    return await _market(request, player)
+
+
+async def api_market_action(request: web.Request) -> web.Response:
+    """Выставить свою вещь, снять её с продажи или купить чужую."""
+    db = request.app[DB_KEY]
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    try:
+        player = await _own_player(request)
+        if action == "sell":
+            await sell_lot(
+                db, player, _int_field(data, "item_id"), _int_field(data, "price")
+            )
+        elif action == "withdraw":
+            await withdraw_lot(db, player, _int_field(data, "lot_id"))
+        elif action == "buy":
+            await buy_lot(db, player, _int_field(data, "lot_id"))
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except (InventoryError, MarketError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    return await _market(request, player)
+
+
+# ---------- рейды ----------
+
+
+async def _raid_state(request: web.Request, player) -> dict:
+    """Состояние подвала плюс то, на каких условиях туда пустят."""
+    raids = request.app.get(RAIDS_KEY)
+    body = build_raid(player, raids, request.app[CONFIG_KEY].raid_lobby_timeout)
+    body["gate"] = await gate_payload(player, raids)
+    return body
+
+
+async def api_raid(request: web.Request) -> web.Response:
+    """Состояние раздела «Рейд» целиком: сбор, идущая волна или итог."""
+    player = await _fighter(request)
+    return web.json_response(await _raid_state(request, player))
+
+
+async def api_raid_action(request: web.Request) -> web.Response:
+    """Действие в рейде: собрать, записаться, выйти, ударить, закрыть итог."""
+    player = await _fighter(request)
+    raids = request.app.get(RAIDS_KEY)
+    if raids is None:  # pragma: no cover - бот без рейдов не поднимается
+        return web.json_response({"error": "Рейды сейчас недоступны."}, status=503)
+
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    try:
+        # Пропуск списывается на входе. buy=1 — в рюкзаке пусто, и его
+        # покупают тут же, в один шаг с согласием
+        buy = bool(data.get("buy"))
+        if action == "open":
+            await raids.open_raid(None, None, player, buy=buy)
+        elif action == "join":
+            await raids.join(_int_field(data, "lobby_id"), player, buy=buy)
+        elif action == "leave":
+            lobby = raids.lobby_of_user(player.user_id)
+            if lobby is None:
+                raise RaidError("Ты никуда не записан.")
+            await raids.leave(lobby.id, player.user_id)
+        elif action == "go":
+            # Не ждём ни отсчёта, ни полного отряда: слово созвавшего
+            lobby = raids.lobby_of_user(player.user_id)
+            if lobby is None:
+                raise RaidError("Ты никуда не записан.")
+            await raids.start_now(lobby.id, player.user_id)
+        elif action == "turn":
+            # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
+            session = raids.raid_of_user(player.user_id)
+            if session is None:
+                raise RaidError("Ты сейчас не в рейде.")
+            hands = _hands(data)
+            block = str(data.get("block", ""))
+            fighter = session.fighters.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
+                raise RaidError("Выбери и удар, и блок.")
+            for hand, zone in sorted(hands.items()):
+                await raids.handle_choice(
+                    session.id, player.user_id, "attack", zone, hand
+                )
+            await raids.handle_choice(session.id, player.user_id, "block", block)
+        elif action == "done":
+            raids.forget_result(player.user_id)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except RaidError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await request.app[DB_KEY].get_player(player.user_id)
+    return web.json_response(await _raid_state(request, fresh or player))
+
+
+# ---------- групповые бои ----------
+
+
+async def api_battle(request: web.Request) -> web.Response:
+    """Состояние раздела «Отряд»: сбор, идущий раунд или итог."""
+    player = await _fighter(request)
+    return web.json_response(build_battle(player, request.app.get(BATTLES_KEY)))
+
+
+async def api_battle_action(request: web.Request) -> web.Response:
+    """Действие в групповом бою: собрать, записаться, выйти, ударить."""
+    from bot.game.battle import BattleKind
+
+    player = await _fighter(request)
+    battles = request.app.get(BATTLES_KEY)
+    if battles is None:  # pragma: no cover - бот без групповых боёв не поднимается
+        return web.json_response({"error": "Групповые бои недоступны."}, status=503)
+
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    try:
+        if action == "open":
+            kind = BattleKind(str(data.get("kind") or BattleKind.TEAM.value))
+            await battles.open_lobby(
+                None, None, player, kind, _int_field(data, "size")
+            )
+        elif action == "join":
+            # Сторона важна только в командном бою: в мясорубке её нет
+            await battles.join(
+                _int_field(data, "lobby_id"), player, int(data.get("team") or 0)
+            )
+        elif action == "leave":
+            lobby = battles.lobby_of_user(player.user_id)
+            if lobby is None:
+                raise BattleError("Ты никуда не записан.")
+            await battles.leave(lobby.id, player.user_id)
+        elif action == "turn":
+            # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
+            session = battles.battle_of_user(player.user_id)
+            if session is None:
+                raise BattleError("Ты сейчас не в групповом бою.")
+            hands = _hands(data)
+            block = str(data.get("block", ""))
+            fighter = session.fighters.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
+                raise BattleError("Выбери и удар, и блок.")
+            for hand, zone in sorted(hands.items()):
+                await battles.handle_choice(
+                    session.id, player.user_id, "attack", zone, hand
+                )
+            await battles.handle_choice(session.id, player.user_id, "block", block)
+        elif action == "done":
+            battles.forget_result(player.user_id)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except (BattleError, ValueError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await request.app[DB_KEY].get_player(player.user_id)
+    return web.json_response(build_battle(fresh or player, battles))
+
+
+async def api_raids_history(request: web.Request) -> web.Response:
+    """Рейды бойца: с кем дрался, чем кончилось и что унёс."""
+    viewer = await _viewer(request)
+    db = request.app[DB_KEY]
+    requested = request.query.get("user_id")
+    target_id = (
+        int(requested) if requested and requested.lstrip("-").isdigit()
+        else viewer.user_id
+    )
+    rows = await db.raids_of(target_id)
+    return web.json_response({"raids": [raid_row(row) for row in rows]})
+
+
+async def api_history(request: web.Request) -> web.Response:
+    """Бои бойца, разложенные по дням. Чужую историю смотреть можно."""
+    viewer = await _viewer(request)
+    db = request.app[DB_KEY]
+
+    target_id = viewer.user_id
+    requested = request.query.get("user_id")
+    if requested and requested.lstrip("-").isdigit():
+        target_id = int(requested)
+
+    player = await db.get_player(target_id)
+    if player is None:
+        return web.json_response({"error": "Такого бойца нет."}, status=404)
+
+    before = request.query.get("before")
+    deeper = int(before) if before and before.isdigit() else None
+    rows = await db.fights_of(target_id, before=deeper)
+    # Рейды лежат в своей таблице и своей нумерации, поэтому вглубь списка
+    # они не листаются: на первой странице их видно все, что были.
+    raids = await db.raids_of(target_id) if deeper is None else []
+    return web.json_response(
+        build_history(rows, target_id, player.nickname, raids)
+    )
+
+
+async def api_fight_log(request: web.Request) -> web.Response:
+    """Один бой по ходам: куда бил каждый и чем это кончилось."""
+    viewer = await _viewer(request)
+    db = request.app[DB_KEY]
+
+    fight_id = request.match_info["fight_id"]
+    row = await db.duel_by_id(int(fight_id)) if fight_id.isdigit() else None
+    if row is None:
+        return web.json_response({"error": "Такого боя не было."}, status=404)
+    log = await db.duel_log(row["id"])
+    return web.json_response(build_fight_log(row, log, viewer.user_id))
+
+
+async def api_looks(request: web.Request) -> web.Response:
+    """Гардероб: все образы, какой надет и что уже куплено."""
+    try:
+        player = await _own_player(request)
+    except InventoryError as error:  # pragma: no cover - гардероб боем не занят
+        return web.json_response({"error": str(error)}, status=409)
+    return web.json_response(
+        {"looks": await wardrobe(request.app[DB_KEY], player), "credits": player.credits}
+    )
+
+
+async def api_look(request: web.Request) -> web.Response:
+    """Сменить образ. Платный купится, если кредитов хватает."""
+    data = await _payload(request)
+    try:
+        player = await _own_player(request)
+        choice = await choose_look(
+            request.app[DB_KEY], player, str(data.get("code") or "")
+        )
+    except (InventoryError, LookError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "looks": await wardrobe(request.app[DB_KEY], player),
+            "chosen": {
+                "code": choice.look.code,
+                "title": choice.look.title,
+                "bought": choice.bought,
+                "price": choice.look.price,
+                "credits": choice.credits,
+            },
+        }
+    )
+
+
+async def api_topup(request: web.Request) -> web.Response:
+    """Касса: сколько на счету и какие пачки кредитов есть."""
+    viewer = await _viewer(request)
+    player = await request.app[DB_KEY].get_player(viewer.user_id)
+    if player is None:
+        raise web.HTTPNotFound(text="У тебя ещё нет персонажа")
+    return web.json_response(build_topup(player, request.app.get(STORE_KEY) is not None))
+
+
+async def api_invoice(request: web.Request) -> web.Response:
+    """Счёт на пачку кредитов: мини-апп открывает ссылку через openInvoice."""
+    viewer = await _viewer(request)
+    store: StoreService | None = request.app.get(STORE_KEY)
+    if store is None:
+        return web.json_response({"error": "Касса закрыта."}, status=503)
+
+    data = await _payload(request)
+    # Касса и лавка мага ходят в одну ручку, различаясь только видом товара
+    kind = str(data.get("kind") or "pack")
+    try:
+        goods = store.check(f"{kind}:{data.get('code') or 'month'}")
+        link = await store.invoice_link(goods, viewer.user_id)
+    except StoreError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except Exception:  # pragma: no cover - Telegram не ответил
+        logger.exception("Не удалось выставить счёт")
+        return web.json_response(
+            {"error": "Касса не отвечает. Попробуй ещё раз."}, status=502
+        )
+    return web.json_response(
+        {
+            "link": link,
+            "code": getattr(goods, "code", kind),
+            "stars": goods.stars,
+        }
+    )
 
 
 async def avatar(request: web.Request) -> web.StreamResponse:
@@ -104,15 +842,58 @@ async def healthz(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
-def create_app(bot, db: Database, config: Config) -> web.Application:
+def create_app(
+    bot,
+    db: Database,
+    config: Config,
+    duels=None,
+    store=None,
+    raids=None,
+    battles=None,
+) -> web.Application:
     app = web.Application()
     app[BOT_KEY] = bot
     app[DB_KEY] = db
     app[CONFIG_KEY] = config
+    app[STAMP_KEY] = asset_stamp()
+    if duels is not None:
+        app[DUELS_KEY] = duels
+    if store is not None:
+        app[STORE_KEY] = store
+    if raids is not None:
+        app[RAIDS_KEY] = raids
+    if battles is not None:
+        app[BATTLES_KEY] = battles
     app.add_routes(
         [
             web.get("/", index),
             web.get("/api/card", api_card),
+            web.post("/api/equip", api_equip),
+            web.post("/api/unequip", api_unequip),
+            web.post("/api/repair", api_repair),
+            web.post("/api/handin", api_handin),
+            web.get("/api/shop", api_shop),
+            web.post("/api/buy", api_buy),
+            web.post("/api/use", api_use),
+            web.post("/api/upgrade", api_upgrade),
+            web.get("/api/club", api_club),
+            web.get("/api/fights", api_fights),
+            web.post("/api/fight", api_fight),
+            web.get("/api/history", api_history),
+            web.get("/api/market", api_market),
+            web.post("/api/market", api_market_action),
+            web.get("/api/raid", api_raid),
+            web.post("/api/raid", api_raid_action),
+            web.get("/api/raids", api_raids_history),
+            web.get("/api/battle", api_battle),
+            web.post("/api/battle", api_battle_action),
+            web.get("/api/fight/{fight_id}", api_fight_log),
+            web.get("/api/magic", api_magic),
+            web.post("/api/pro", api_pro),
+            web.get("/api/looks", api_looks),
+            web.post("/api/look", api_look),
+            web.get("/api/topup", api_topup),
+            web.post("/api/invoice", api_invoice),
             web.get("/avatar/{user_id}", avatar),
             web.get("/healthz", healthz),
             web.static("/static", STATIC_DIR),
@@ -121,9 +902,19 @@ def create_app(bot, db: Database, config: Config) -> web.Application:
     return app
 
 
-async def run_webapp(bot, db: Database, config: Config) -> web.AppRunner:
+async def run_webapp(
+    bot,
+    db: Database,
+    config: Config,
+    duels=None,
+    store=None,
+    raids=None,
+    battles=None,
+) -> web.AppRunner:
     """Поднять сервер мини-аппа рядом с ботом. Вернуть runner для остановки."""
-    runner = web.AppRunner(create_app(bot, db, config))
+    runner = web.AppRunner(
+        create_app(bot, db, config, duels, store, raids, battles)
+    )
     await runner.setup()
     site = web.TCPSite(runner, config.webapp_host, config.webapp_port)
     await site.start()

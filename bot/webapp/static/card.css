@@ -12,6 +12,9 @@
   --hp-green: #3ea842;
   --hp-yellow: #d8a417;
   --hp-red: #cc3b30;
+  --dmg: #1a63c4;
+  --dmg-crit: #cc2f22;
+  --gold: #b8860b;
 }
 
 /* Telegram обычно сам подставляет цвета темы; тут — тёмные запасные,
@@ -28,13 +31,17 @@ body.dark {
   --hp-green: #4cbf52;
   --hp-yellow: #e0b02a;
   --hp-red: #e04b3f;
+  --dmg: #6cb6ff;
+  --dmg-crit: #ff6a5c;
+  --gold: #e8c04a;
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  padding: 14px 14px 28px;
+  /* снизу оставляем место под панель вкладок */
+  padding: 14px 14px calc(78px + env(safe-area-inset-bottom));
   background: var(--bg);
   color: var(--ink);
   font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -51,7 +58,7 @@ body {
 .error-emoji { font-size: 40px; margin-bottom: 12px; }
 .error-text { color: var(--ink); }
 
-.card { max-width: 760px; margin: 0 auto; }
+.screen { max-width: 760px; margin: 0 auto; }
 
 .head {
   display: flex;
@@ -105,13 +112,33 @@ body {
   min-height: 16px;
 }
 
+/* ---------- действующие эффекты ---------- */
+
+.effects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+.effects.hidden { display: none; }
+.effect {
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--slot-line);
+  background: var(--slot);
+  color: var(--hp-green);
+  white-space: nowrap;
+}
+
 .doll {
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) 56px;
-  gap: 10px;
-  align-items: start;
+  grid-template-columns: 68px minmax(0, 1fr) 68px;
+  gap: 9px;
+  align-items: stretch;
 }
-.slots { display: grid; gap: 10px; }
+.slots { display: grid; gap: 9px; align-content: start; }
 .slot {
   aspect-ratio: 1;
   border: 1px solid var(--slot-line);
@@ -120,19 +147,27 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
+  font-size: 28px;
   cursor: pointer;
   user-select: none;
 }
-.slot.empty {
+.slot img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
+/* У пустого слота своя подложка — тень того, что сюда надевается.
+   Гасим слот только когда она не загрузилась и остался значок. */
+.slot.empty { font-size: 22px; }
+.slot.empty.no-art {
   opacity: 0.3;
-  font-size: 18px;
   filter: grayscale(1);
 }
+/* Подложки нарисованы под тёмную тему; на светлой приглушаем их */
+body:not(.dark) .slot.empty img { opacity: 0.6; }
 .slot:active { transform: scale(0.95); }
 
 .avatar {
-  min-height: 250px;
+  /* Рамка тянется по колонке слотов, поэтому она заметно выше, чем широкая:
+     боец в полный рост смотрится лучше квадрата. Высота — запасной пол на
+     случай, если слотов почему-то не будет. */
+  min-height: 280px;
   border: 1px solid var(--slot-line);
   border-radius: 6px;
   background: var(--slot);
@@ -142,7 +177,22 @@ body {
   overflow: hidden;
 }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
-.avatar .emoji { font-size: 92px; line-height: 1; }
+.avatar .emoji { font-size: 104px; line-height: 1; }
+.avatar.clickable { cursor: pointer; position: relative; }
+.avatar.clickable::after {
+  content: "сменить образ";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 5px 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-align: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+}
+.avatar.clickable:active { transform: scale(0.99); }
 
 .city {
   margin: 12px 0 16px;
@@ -168,7 +218,329 @@ body {
 .rows .value { font-weight: 700; text-align: right; }
 .rows .value .bonus { color: var(--muted); font-weight: 500; }
 .rows .value.good { color: var(--hp-green); }
+/* Процент, упёршийся в потолок клуба. Золотом, а не подписью: подпись
+   ломала строку, а объяснение и так живёт в подсказке. */
+.rows .value.capped { color: var(--gold); }
+/* Строка «во что класс проворачивает оружие» — пояснение, а не показатель */
+.rows .value.weapon { color: var(--muted); font-weight: 600; }
 .rule { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+
+/* ---------- раздача свободных очков ---------- */
+
+.upgrade { margin-top: 10px; }
+.upgrade.hidden { display: none; }
+.up-head {
+  font-weight: 700;
+  color: var(--hp-green);
+  margin-bottom: 6px;
+}
+.up-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.up-row .label { flex: 1; min-width: 0; }
+.up-value {
+  min-width: 62px;
+  text-align: right;
+  font-weight: 700;
+}
+.up-value.added { color: var(--hp-green); }
+.step {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+.step:disabled { opacity: 0.35; cursor: default; }
+.step:not(:disabled):active { transform: scale(0.92); }
+.up-note {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+/* ---------- вкладки и магазин ---------- */
+
+/* ---------- нижняя панель вкладок ---------- */
+
+.bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  display: flex;
+  gap: 2px;
+  padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.bar.hidden { display: none; }
+.bar-tab {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.bar-icon { font-size: 19px; line-height: 1; }
+.bar-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.bar-tab.active { color: var(--accent); }
+.bar-tab.active .bar-icon { transform: translateY(-1px); }
+.bar-tab:active { background: var(--slot); }
+
+.shop { max-width: 760px; margin: 0 auto; }
+.shop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.shop-title { margin: 0; font-size: 18px; font-weight: 700; }
+.shop-purse { font-weight: 700; }
+
+/* Кошелёк с кнопкой «+»: пополнить счёт, не выходя из карточки */
+.purse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+}
+.plus {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+.plus:active { transform: scale(0.92); }
+
+.back {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Касса */
+.topup { padding: 14px 14px 28px; }
+.pack {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.pack-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pack-title { font-weight: 700; }
+.pack-profit {
+  font-size: 11.5px;
+  color: var(--hp-green);
+  white-space: nowrap;
+}
+.pack-amount { font-size: 20px; font-weight: 700; margin-top: 4px; }
+.pack-bonus { font-size: 12.5px; font-weight: 400; color: var(--muted); }
+.pack-note { font-size: 12.5px; color: var(--muted); margin: 4px 0 10px; }
+.pack .btn { width: 100%; }
+.topup-foot {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 14px 0 0;
+  line-height: 1.45;
+}
+.shop-note { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
+
+/* Фильтры теперь пузырями в .bubbles — горизонтальной ленты больше нет */
+.chip {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid var(--slot-line);
+  border-radius: 999px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip.locked { opacity: 0.6; }
+.chip:active { transform: scale(0.97); }
+
+.shop-empty { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+
+.shelf { margin-bottom: 18px; }
+.shelf-head {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.shelf-count { color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.shelf-empty { color: var(--muted); font-size: 13px; margin: 4px 2px 0; }
+.shelf-list { display: grid; gap: 10px; }
+.shelf-toggle { margin-top: 10px; width: 100%; flex: none; }
+
+.thing.locked { opacity: 0.55; }
+.thing-price { font-weight: 700; margin-top: 4px; }
+/* Цена мага — в звёздах, и видно это должно быть с первого взгляда */
+.thing-price.stars { color: var(--hp-yellow); }
+.thing-price.free { color: var(--hp-green); }
+/* Подписка стоит первой и выделена рамкой: это главный товар прилавка */
+.thing.pro { border-color: var(--hp-yellow); margin-bottom: 14px; }
+.thing.pro.on { border-color: var(--hp-green); }
+.thing-promo {
+  margin-top: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--hp-yellow);
+}
+.thing-suits { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+.thing-owned { color: var(--hp-green); font-size: 12.5px; font-weight: 600; margin-top: 4px; }
+.thing-locked {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+/* ---------- инвентарь ---------- */
+
+.bag { margin-top: 16px; }
+.bag-head {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.bag-count { color: var(--muted); font-weight: 600; }
+.bag-empty { color: var(--muted); font-size: 13px; margin: 0; }
+.bag-list { display: grid; gap: 10px; }
+
+.thing {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.thing-pic {
+  width: 104px;
+  height: 104px;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 46px;
+  overflow: hidden;
+}
+.thing-pic img { width: 100%; height: 100%; object-fit: cover; }
+.thing-body { min-width: 0; }
+.thing-title { font-weight: 700; }
+.thing-kind { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+.thing-wear { font-size: 12.5px; margin-top: 4px; }
+.thing-wear.worn { color: var(--hp-yellow); }
+.thing-wear.dying { color: var(--hp-red); font-weight: 700; }
+.thing-have { color: var(--hp-green); font-size: 12.5px; font-weight: 600; margin-top: 4px; }
+.thing-note { color: var(--muted); font-size: 12.5px; margin-top: 4px; line-height: 1.35; }
+/* Этот эликсир погасит нынешний — предупреждаем прямо на склянке */
+.thing-warn { color: var(--hp-yellow); font-size: 12.5px; font-weight: 600; margin-top: 4px; }
+
+.thing-req, .thing-gain {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.thing-req li { color: var(--muted); }
+.thing-req li.bad { color: var(--hp-red); font-weight: 700; }
+.thing-gain li { color: var(--hp-green); font-weight: 600; }
+.thing-gain .gain-hint { color: var(--muted); font-weight: 500; }
+.thing-label { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+
+.thing-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.btn {
+  flex: 1 1 auto;
+  min-width: 120px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 700;
+  font-size: 13.5px;
+  color: #fff;
+  background: var(--accent);
+  cursor: pointer;
+}
+.btn.secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.btn:active { transform: scale(0.98); }
+.btn[disabled] {
+  background: var(--hp-track);
+  color: var(--muted);
+  border-color: transparent;
+  cursor: not-allowed;
+  transform: none;
+}
 
 .foot {
   margin-top: 12px;
@@ -185,8 +557,10 @@ body {
       "head  panel"
       "hp    panel"
       "note  panel"
+      "eff   panel"
       "doll  panel"
       "city  panel"
+      "bag   bag"
       "foot  foot";
     gap: 0 20px;
     align-items: start;
@@ -194,8 +568,452 @@ body {
   .head { grid-area: head; }
   .hp { grid-area: hp; }
   .hp-note { grid-area: note; }
+  .effects { grid-area: eff; }
   .doll { grid-area: doll; }
   .city { grid-area: city; }
   .panel { grid-area: panel; }
+  .bag { grid-area: bag; }
+  .bag-list, .shelf-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .foot { grid-area: foot; }
 }
+
+
+/* ---------- выдвижной лист: выбор образа ---------- */
+
+.sheet { position: fixed; inset: 0; z-index: 20; }
+.sheet.hidden { display: none; }
+.sheet-back {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+.sheet-body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 82vh;
+  overflow-y: auto;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  border-radius: 14px 14px 0 0;
+  padding: 14px 14px 24px;
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sheet-title { margin: 0; font-size: 17px; font-weight: 700; }
+.sheet-close {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.sheet-note { margin: 6px 0 12px; font-size: 12.5px; color: var(--muted); }
+
+.look-group {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+  margin: 10px 0 8px;
+}
+.look-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.look {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 8px 6px 10px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+.look:active { transform: scale(0.97); }
+.look.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.look.locked .look-pic { filter: grayscale(0.7); opacity: 0.75; }
+.look-pic {
+  aspect-ratio: 3 / 4;
+  border-radius: 7px;
+  background: var(--slot);
+  border: 1px solid var(--slot-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.look-pic img { width: 100%; height: 100%; object-fit: cover; }
+.look-title { font-size: 12.5px; font-weight: 700; line-height: 1.2; }
+.look-tag { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.look-tag.on { color: var(--accent); font-weight: 700; }
+.look-tag.poor { color: var(--hp-red); }
+
+
+/* ---------- общая шапка экрана ---------- */
+
+.screen-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.screen-title { margin: 0; font-size: 18px; font-weight: 700; }
+.screen-count { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.screen-note { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
+
+/* ---------- бойцовский клуб ---------- */
+
+.fighter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.fighter.me { border-color: var(--accent); }
+.fighter-class { font-size: 17px; }
+.fighter-name {
+  font-weight: 700;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fighter-level { color: var(--muted); font-weight: 700; }
+.fighter-info,
+.fighter-stats,
+.info-btn {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  cursor: pointer;
+}
+.fighter-info:active,
+.info-btn:active { background: var(--accent); color: #fff; }
+
+/* ---------- пузыри фильтров ---------- */
+
+.bubbles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+/* ---------- лавка мага ---------- */
+
+.soon {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 28px 18px;
+  text-align: center;
+}
+.soon-emoji { font-size: 44px; line-height: 1; margin-bottom: 10px; }
+.soon-title { margin: 0 0 8px; font-size: 16px; font-weight: 700; }
+.soon-text { margin: 0 0 8px; font-size: 13px; line-height: 1.45; }
+.soon-text.muted { color: var(--muted); margin-bottom: 0; }
+
+/* ---------- кукла внутри листа с чужой карточкой ---------- */
+
+/* Лист уже экрана, поэтому слоты здесь мельче, а рамке аватара нельзя
+   задавать пропорции: в гриде она тянется по высоте колонки слотов, и от
+   пропорций ей считается ширина — та вылезала за свою колонку и наезжала
+   на правый ряд. Ширину задаёт колонка, высоту — слоты. */
+.sheet-doll {
+  margin-bottom: 12px;
+  grid-template-columns: 56px minmax(0, 1fr) 56px;
+}
+.sheet-doll .slot { min-height: 0; }
+.sheet-doll .avatar { min-height: 0; }
+
+/* ---------- ринг в мини-аппе ---------- */
+/* Экран боя повторяет панель из ветки: табло сверху, кнопки хода снизу.
+   Кнопки — не радио, а обычные: выбор уходит на сервер сразу, и подсветка
+   показывает то, что сервер уже принял, а не то, что мы нажали. */
+.btn.wide { width: 100%; padding: 11px 10px; }
+.fight-open { display: grid; gap: 8px; margin-bottom: 12px; }
+.fight-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--slot);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.fight-line { margin: 0 0 8px; font-size: 14px; }
+.fight-panel { display: grid; gap: 10px; }
+.fight-round { margin: 0; font-weight: 600; font-size: 14px; }
+.fight-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.fight-vs { color: var(--muted); font-size: 12px; font-weight: 700; }
+.fight-side { min-width: 0; }
+.fight-side.you .fight-name { font-weight: 700; }
+.fight-name, .fight-hp, .fight-mark { margin: 0; font-size: 13px; }
+.fight-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fight-hp { color: var(--muted); font-size: 12px; }
+.fight-mark { font-size: 12px; margin-top: 2px; }
+.fight-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--slot-line);
+  overflow: hidden;
+  margin: 4px 0 2px;
+}
+.fight-bar span { display: block; height: 100%; }
+.fight-bar .full { background: #4caf50; }
+.fight-bar .hurt { background: #e5a53b; }
+.fight-bar .low { background: #e05656; }
+
+/* Выбор хода: два столбца радиокнопок и одна кнопка отправки — как в
+   классическом бойцовском клубе. Пока не нажали «Вперёд!», выбор живёт
+   только на странице, и передумать можно сколько угодно. */
+.turn-form { display: grid; gap: 10px; }
+/* Заголовки лежат первым рядом сетки, списки — вторым. Поэтому все
+   заголовки одной высоты: длинное название оружия переносится на вторую
+   строку сразу во всех столбцах, а кнопки под ними остаются на одном
+   уровне. Отдельными подсетками этого не выходит: каждая мерила бы себя. */
+.zone-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+/* Со вторым оружием столбцов три: два удара и защита */
+.zone-columns.three { grid-template-columns: 1fr 1fr 1fr; }
+
+/* Строка выбора — всегда одна строка. Переносить надписи нельзя: кнопки
+   в столбцах разъезжаются по высоте, а «Голова+Корпус» пополам не
+   читается. Поэтому размер шрифта привязан к ширине экрана и ужимается
+   на узком телефоне — до предела, за которым уже не разобрать. */
+.zone-columns { --zone-font: clamp(9.5px, 3.1vw, 13px); }
+.zone-columns.three { --zone-font: clamp(8.5px, 2.55vw, 12px); }
+/* Сетке и всему, что в ней лежит, разрешено быть уже своего содержимого:
+   без этого столбец растягивается по самой длинной надписи и панель
+   уезжает за экран. Свойство не наследуется, поэтому его приходится
+   ставить на каждом уровне — сетка, столбец, строка, текст. */
+.zone-columns > *,
+.zone-list > *,
+.zone > * { min-width: 0; }
+
+.zone-list { display: grid; gap: 2px; align-content: start; }
+.zone-head {
+  margin: 0 0 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--zone-font);
+  font-weight: 700;
+  align-self: end;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.zone {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--zone-font);
+  padding: 6px 2px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* min-width: 0 обязателен: без него флекс-элемент не даёт себя ужать
+   ниже собственного текста, и панель распирает экран вместо переноса */
+.zone span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.zone input {
+  accent-color: var(--accent);
+  margin: 0;
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+.zone.on { background: var(--slot); font-weight: 600; }
+.zone:active { transform: scale(0.99); }
+
+/* ---------- комиссионка ---------- */
+/* Лот отличается от товара лавки только строкой продавца и полем цены у
+   своих вещей — карточка та же. */
+.thing-seller { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.thing.mine { border-color: var(--accent); }
+.sell-line { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.sell-price {
+  width: 92px;
+  padding: 7px 8px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+}
+.sell-line .btn { flex: 1; }
+
+/* ---------- рейд ---------- */
+/* Заголовок раздела и кнопка «i» рядом: под ней разворачивается всё, что
+   известно о боссе. */
+.raid-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.raid-head .shelf-head { margin: 0; flex: 1; min-width: 0; }
+.boss-stats {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--slot);
+  padding: 10px;
+  margin-bottom: 10px;
+}
+/* Кукла босса живёт по правилам чужой карточки, только с отступом снизу */
+.boss-stats .sheet-doll { margin-bottom: 8px; }
+.boss-rows { display: grid; gap: 2px; margin: 8px 0; }
+.boss-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  font-size: 13px;
+}
+/* Босс сверху крупно, под ним отряд списком: в рейде важно видеть, у кого
+   осталось здоровье и кто уже отработал волну. */
+.boss-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--slot);
+  padding: 10px;
+}
+.boss-face {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--slot-line);
+}
+.boss-side { flex: 1; min-width: 0; }
+.raid-party { display: grid; gap: 6px; }
+.raid-member {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.raid-member.down { opacity: 0.55; }
+.raid-sizes { display: grid; gap: 8px; }
+/* Кнопка, которой нужен воздух: иначе она липнет к соседней снизу */
+.btn.spaced { margin-bottom: 10px; }
+/* «VS» между карточкой босса и отрядом: кто против кого */
+.versus {
+  margin: 10px 0 6px;
+  text-align: center;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--muted);
+}
+
+/* Поле с подписью: подпись сверху, само поле под ней во всю ширину.
+   Список рисуем сами — системный на тёмной теме уезжает в белое. */
+.field { display: grid; gap: 6px; }
+.field-head { color: var(--muted); font-size: 13px; }
+.field-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+}
+.field-input:disabled { opacity: 0.5; }
+
+/* Список и «Начать» в одну строку: кнопка по содержимому, список — всё
+   остальное. min-width держит его от распирания на узком экране. */
+.raid-open-row { display: flex; gap: 8px; align-items: stretch; }
+.raid-open-row .field-input { flex: 1 1 auto; min-width: 0; }
+.raid-open-row .btn { flex: 0 0 auto; }
+
+/* Стойка и итог — те же карточки, что и панель хода: рамка держит их
+   отдельно от ленты слов судьи под ними. */
+.fight-standoff,
+.fight-finish {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+.fight-finish .log-line { margin: 0; }
+
+.fight-log { margin-top: 4px; }
+.log-turn {
+  border-top: 1px solid var(--line);
+  padding: 8px 2px;
+}
+.log-head { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.log-line { margin: 0 0 2px; font-size: 13px; }
+/* Урон в словах судьи: обычный синим, критический и пробитый блок — красным.
+   По ленте боя так видно, где размен был обычный, а где решающий. */
+.dmg { font-weight: 700; color: var(--dmg); }
+.dmg.crit { color: var(--dmg-crit); }
+
+/* ---------- статистика боёв ---------- */
+/* Строка боя — кнопка: тап проваливает в разбор по ходам. Цветная кромка
+   слева говорит исход быстрее, чем значок. */
+.fight-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.fight-row.win { border-left-color: #4caf50; }
+.fight-row.loss { border-left-color: #e05656; }
+.fight-row.draw { border-left-color: var(--muted); }
+.fight-row:active { transform: scale(0.99); }
+.fight-row-line { font-size: 13.5px; }
+.fight-row-note { font-size: 12px; color: var(--muted); }
+/* Значок статистики — эмодзи: курсив и жирность ему не нужны */
+.fighter-stats { font-style: normal; font-weight: 400; }

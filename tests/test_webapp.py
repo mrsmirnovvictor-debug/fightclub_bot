@@ -10,7 +10,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
-from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS, Equipment
+from bot.game.equipment import CATALOGUE, LEFT_SLOTS, RIGHT_SLOTS, OwnedItem, Slot
 from bot.game.health import now_ts
 from bot.models import Player
 from bot.webapp.auth import (
@@ -153,19 +153,22 @@ def test_card_slots_follow_the_layout():
 def test_equipment_shows_up_in_slots_stats_and_hp():
     bare = make_player()
     dressed = make_player()
-    dressed.equipment = Equipment.from_codes(
-        {"weapon": "knuckles", "jacket": "leather_jacket"}
-    )
+    dressed.gear = [
+        OwnedItem(item=CATALOGUE["knuckles"], id=1, slot=Slot.WEAPON),
+        OwnedItem(item=CATALOGUE["leather_jacket"], id=2, slot=Slot.JACKET),
+    ]
 
     before = build_card(bare, TOKEN)
     after = build_card(dressed, TOKEN)
 
     weapon = next(s for s in after["slots"]["left"] if s["slot"] == "weapon")
     assert weapon["item"]["title"] == "Кастет"
-    assert "💪+2" in weapon["item"]["bonus"]
+    assert f"💪+{CATALOGUE['knuckles'].strength}" in weapon["item"]["bonus"]
+    assert "👊" in weapon["item"]["bonus"]  # кастет добавляет свой урон
 
     strength = next(s for s in after["stats"] if s["code"] == "strength")
-    assert (strength["base"], strength["bonus"], strength["total"]) == (9, 2, 11)
+    bonus = CATALOGUE["knuckles"].strength
+    assert (strength["base"], strength["bonus"], strength["total"]) == (9, bonus, 9 + bonus)
     # косуха даёт выносливость и плоские очки здоровья
     assert after["hp"]["max"] > before["hp"]["max"]
 
@@ -181,9 +184,25 @@ def test_card_reports_a_beaten_fighter_as_red():
 
 
 def test_avatar_url_appears_only_for_uploaded_photos():
-    assert build_card(make_player(), TOKEN)["avatar"]["url"] is None
-    with_photo = build_card(make_player(avatar_file_id="file-123"), TOKEN)
-    assert with_photo["avatar"]["url"].startswith("avatar/42?expires=")
+    """Без фото в рамке стоит образ: своей картинки у него пока нет."""
+    plain = build_card(make_player(), TOKEN)["avatar"]
+    assert not plain["url"] and not plain["photo"]
+    assert plain["look"] == "rookie" and plain["emoji"] == "🥊"
+
+    with_photo = build_card(make_player(avatar_file_id="file-123"), TOKEN)["avatar"]
+    assert with_photo["url"].startswith("avatar/42?expires=")
+    assert with_photo["photo"]
+
+
+def test_the_chosen_look_shows_up_in_the_frame():
+    picked = build_card(make_player(look="queen"), TOKEN)["avatar"]
+    assert (picked["look"], picked["emoji"]) == ("queen", "👑")
+    assert picked["look_title"] == "Королева ринга"
+
+    # загруженное фото важнее образа — боец поставил своё лицо осознанно
+    both = build_card(make_player(look="queen", avatar_file_id="file-1"), TOKEN)
+    assert both["avatar"]["url"].startswith("avatar/42?expires=")
+    assert both["avatar"]["photo"]
 
 
 def test_birthday_formats_and_survives_junk():
@@ -294,6 +313,34 @@ async def test_page_and_health_are_served(client):
     assert (await (await client.get("/healthz")).json()) == {"status": "ok"}
 
 
+async def test_the_page_carries_a_version_and_is_never_cached(client):
+    """Иначе Telegram показывает вчерашнюю вёрстку из кеша вебвью."""
+    from bot.webapp.server import asset_stamp
+
+    page = await client.get("/")
+    body = await page.text()
+    stamp = asset_stamp()
+
+    assert f"static/card.css?v={stamp}" in body
+    assert f"static/card.js?v={stamp}" in body
+    assert "no-store" in page.headers["Cache-Control"]
+    # файл со штампом в адресе отдаётся как обычно
+    assert (await client.get(f"/static/card.css?v={stamp}")).status == 200
+
+
+def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
+    """Метка считается по содержимому: правка стиля обязана её сдвинуть."""
+    import bot.webapp.server as server
+
+    for name in ("card.html", "card.css", "card.js"):
+        (tmp_path / name).write_text("было", encoding="utf-8")
+    monkeypatch.setattr(server, "STATIC_DIR", tmp_path)
+
+    before = server.asset_stamp()
+    (tmp_path / "card.css").write_text("стало", encoding="utf-8")
+    assert server.asset_stamp() != before
+
+
 # ---------- ссылки на карточку в чате ----------
 
 
@@ -321,3 +368,120 @@ def test_card_link_needs_both_username_and_app_name():
     assert CardLinks(bot_username="bot", miniapp_name="card").card_url(1) == (
         "https://t.me/bot/card?startapp=1"
     )
+
+
+def test_the_short_name_survives_a_pasted_link():
+    """В MINIAPP_NAME часто кладут не имя, а всю ссылку из BotFather.
+
+    Ссылка с такой начинкой выглядит рабочей, а Telegram по ней молча
+    открывает чат с ботом вместо карточки — ровно тот случай, когда «имя в
+    чате не открывает карточку».
+    """
+    from bot.game.links import CardLinks, short_name
+
+    assert short_name("https://t.me/vegasfightclub_bot/card") == "card"
+    assert short_name("t.me/bot/card?startapp=1") == "card"
+    assert short_name("@card") == "card"
+    assert short_name("/card/") == "card"
+    assert short_name("   ") == ""
+
+    links = CardLinks()
+    links.configure("@bot", "https://t.me/bot/card")
+    assert links.card_url(7) == "https://t.me/bot/card?startapp=7"
+
+
+def test_the_main_mini_app_opens_without_a_short_name():
+    """Мини-апп можно включить главным — тогда короткое имя не нужно."""
+    from bot.game.links import CardLinks
+
+    main = CardLinks(bot_username="bot", main_app=True)
+    assert main.card_url(7) == "https://t.me/bot?startapp=7"
+    assert main.enabled
+
+    # именованное приложение важнее: оно точнее адресует
+    both = CardLinks(bot_username="bot", miniapp_name="card", main_app=True)
+    assert both.card_url(7) == "https://t.me/bot/card?startapp=7"
+
+
+def test_without_a_mini_app_the_name_leads_to_the_bot_not_into_nowhere():
+    """Запасной путь: диплинк в личку, где бот сам пришлёт карточку."""
+    from bot.game.links import CardLinks, card_target
+
+    plain = CardLinks(bot_username="bot")
+    assert plain.card_url(9) is None
+    assert not plain.enabled
+    assert plain.href(9) == "https://t.me/bot?start=card_9"
+
+    # бот понимает, чью карточку у него просят
+    assert card_target("card_9") == 9
+    assert card_target("card_") is None
+    assert card_target("shop") is None
+
+    # без имени бота остаётся только профиль в Telegram
+    assert CardLinks().href(9) == "tg://user?id=9"
+
+
+def test_a_short_name_written_with_a_slash_still_works():
+    """MINIAPP_NAME иногда вписывают как «/card» — ссылка не должна ломаться."""
+    from bot.game.links import CardLinks
+
+    sloppy = CardLinks()
+    sloppy.configure("@fightclub_bot", " /card ")
+    assert sloppy.card_url(1) == "https://t.me/fightclub_bot/card?startapp=1"
+
+
+def test_stranger_card_hides_the_wallet_and_the_backpack():
+    """Карточку соседа открывают из чата боя — кошелёк и рюкзак не показываем."""
+    from bot.game.equipment import CATALOGUE, OwnedItem
+
+    player = make_player(credits=777)
+    player.gear = [OwnedItem(item=CATALOGUE["knuckles"], id=1)]
+
+    stranger = build_card(player, TOKEN, viewer_id=999)
+    assert stranger["is_self"] is False
+    assert stranger["record"]["credits"] == 0
+    assert stranger["inventory"] == []
+    # характеристики и боевые показатели при этом на месте
+    assert stranger["stats"] and stranger["combat"]["damage_max"] > 0
+
+    mine = build_card(player, TOKEN, viewer_id=player.user_id)
+    assert mine["record"]["credits"] == 777
+    assert len(mine["inventory"]) == 1
+
+
+# ---------- бойцовский клуб ----------
+
+
+async def test_club_lists_every_fighter(client, db):
+    """Список клуба: сильные сверху, в строке только то, что в ней видно."""
+    from bot.models import Player
+
+    for user_id, nickname, rating, level in (
+        (42, "Тайлер", 1000, 4),
+        (43, "Марла", 1400, 7),
+        (44, "Ангел", 900, 2),
+    ):
+        player = Player(
+            user_id=user_id, nickname=nickname, class_code="warrior", level=level
+        )
+        player.rating = rating
+        await db.save_player(player)
+
+    response = await client.get(
+        "/api/club", headers={"X-Telegram-Init-Data": make_init_data(42)}
+    )
+    body = await response.json()
+
+    assert response.status == 200
+    assert body["total"] == 3
+    assert [row["nickname"] for row in body["fighters"]] == ["Марла", "Тайлер", "Ангел"]
+
+    me = next(row for row in body["fighters"] if row["user_id"] == 42)
+    assert me["is_self"] and me["level"] == 4
+    assert me["fclass"]["title"] == "Воин"
+    # всё остальное — аватар, слоты, счёт — приезжает из /api/card по кнопке «i»
+    assert set(me) == {"user_id", "nickname", "level", "pro", "is_self", "fclass"}
+
+
+async def test_the_club_list_needs_a_signature(client):
+    assert (await client.get("/api/club")).status == 401

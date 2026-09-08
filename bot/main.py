@@ -18,9 +18,15 @@ from aiogram.types import (
 
 from bot.config import Config, load_config
 from bot.database import Database
+from bot.battle_service import BattleService
 from bot.duel_service import DuelService
+from bot.raid_service import RaidService
+from bot.store_service import StoreService
+from bot.tournament_service import TournamentService
 from bot.game.links import links
 from bot.handlers import build_router
+from bot.news_service import publish_pending
+from bot.seed import fix_promo_overrun, grant_test_gear, grant_test_relic
 from bot.webapp import run_webapp
 
 logger = logging.getLogger(__name__)
@@ -31,6 +37,10 @@ PRIVATE_COMMANDS = [
     BotCommand(command="profile", description="Профиль текстом"),
     BotCommand(command="upgrade", description="Раскидать свободные очки"),
     BotCommand(command="shop", description="Кредиты и траты"),
+    BotCommand(command="buy", description="Лавка клуба: оружие и броня"),
+    BotCommand(command="potions", description="Эликсиры: выпить и докупить"),
+    BotCommand(command="pro", description="Подписка PRO"),
+    BotCommand(command="topup", description="Пополнить счёт звёздами"),
     BotCommand(command="respec", description="Пересобрать характеристики"),
     BotCommand(command="class", description="Сменить класс"),
     BotCommand(command="rename", description="Сменить прозвище"),
@@ -42,9 +52,17 @@ PRIVATE_COMMANDS = [
 ]
 
 GROUP_COMMANDS = [
-    BotCommand(command="duel", description="Бросить вызов на кулаках"),
+    BotCommand(command="duel", description="Вызов на кулаках"),
+    BotCommand(command="battle", description="Собрать командный бой: /battle 3"),
+    BotCommand(command="royale", description="Собрать мясорубку: /royale 6"),
+    BotCommand(command="raid", description="Собрать рейд на босса: /raid 10"),
+    BotCommand(command="tournament", description="Объявить турнир (админы)"),
+    BotCommand(command="bracket", description="Сетка турнира"),
     BotCommand(command="card", description="Карточка бойца"),
-    BotCommand(command="arena", description="Отметить ветку как ринг (админы)"),
+    BotCommand(command="rings", description="Ринги клуба и что свободно"),
+    BotCommand(command="arena1", description="Отметить кулачный ринг (админы)"),
+    BotCommand(command="arena_gear", description="Отметить ринг с оружием (админы)"),
+    BotCommand(command="updates", description="Отметить ветку новостей (админы)"),
     BotCommand(command="top", description="Чемпионы клуба"),
     BotCommand(command="history", description="Последние бои"),
     BotCommand(command="help", description="Как всё устроено"),
@@ -65,16 +83,24 @@ async def run(config: Config | None = None) -> None:
     db = Database(config.db_path)
     await db.connect()
     duels = DuelService(bot=bot, db=db, config=config)
+    battles = BattleService(bot=bot, db=db, config=config)
+    tournaments = TournamentService(bot=bot, db=db, config=config, duels=duels)
+    raids = RaidService(bot=bot, db=db, config=config)
+    store = StoreService(bot=bot, db=db, config=config)
 
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher["db"] = db
     dispatcher["duels"] = duels
+    dispatcher["battles"] = battles
+    dispatcher["raids"] = raids
+    dispatcher["tournaments"] = tournaments
+    dispatcher["store"] = store
     dispatcher["config"] = config
     dispatcher.include_router(build_router())
 
     await setup_commands(bot)
     me = await bot.get_me()
-    links.configure(me.username or "", config.miniapp_name)
+    links.configure(me.username or "", config.miniapp_name, config.miniapp_main)
     if config.miniapp_name and not config.webapp_enabled:
         logger.warning(
             "MINIAPP_NAME задан, а WEBAPP_URL — нет: ссылки на карточку никуда не ведут"
@@ -84,14 +110,35 @@ async def run(config: Config | None = None) -> None:
         me.username,
         "включена" if config.webapp_enabled else "выключена",
     )
+    # Ссылку печатаем целиком: чаще всего имя в чате не открывает карточку
+    # именно из-за неё, а по логу видно, какая из трёх схем сейчас в деле
+    logger.info("Имя бойца в чате ведёт на %s", links.href(me.id))
 
-    runner = await run_webapp(bot, db, config) if config.webapp_enabled else None
+    runner = (
+        await run_webapp(bot, db, config, duels, store, raids, battles)
+        if config.webapp_enabled
+        else None
+    )
+    # Турниры живут дольше одного запуска: поднимаем недоигранные сетки
+    await tournaments.resume()
+    # Разовые выдачи и правки на время тестов — см. bot/seed.py
+    await grant_test_relic(db)
+    await grant_test_gear(db)
+    await fix_promo_overrun(db)
+    # Что нового в клубе — в ветку новостей, если её отметили командой /updates
+    try:
+        await publish_pending(bot, db)
+    except Exception:  # pragma: no cover - объявления не стоят запуска бота
+        logger.exception("Не получилось разослать объявления")
     try:
         await dispatcher.start_polling(
             bot, allowed_updates=dispatcher.resolve_used_update_types()
         )
     finally:
         await duels.shutdown()
+        await battles.shutdown()
+        await raids.shutdown()
+        await tournaments.shutdown()
         if runner is not None:
             await runner.cleanup()
         await db.close()

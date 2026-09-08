@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    Message,
+)
 
+from bot.config import Config
 from bot.database import Database
 from bot.game.classes import (
     ALL_STATS,
@@ -20,17 +30,29 @@ from bot.game.classes import (
     Stats,
     get_class,
 )
+from bot.game.links import card_target
+from bot.game.looks import FEMALE, MALE, free_looks, get_look
 from bot.game.narrator import esc
-from bot.handlers.common import combat_block, send_profile, stats_block
+from bot.handlers.common import (
+    card_keyboard,
+    combat_block,
+    profile_text,
+    send_profile,
+    stats_block,
+)
 from bot.keyboards import (
-    AvatarCB,
     ClassCB,
+    GenderCB,
+    LookCB,
     StatCB,
-    avatars_keyboard,
     classes_keyboard,
+    genders_keyboard,
+    looks_keyboard,
     stats_keyboard,
 )
 from bot.models import Player
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="creation")
 router.message.filter(F.chat.type == "private")
@@ -50,8 +72,8 @@ class ResetCB(CallbackData, prefix="reset"):
 class Creation(StatesGroup):
     choosing_class = State()
     entering_nickname = State()
+    choosing_gender = State()
     choosing_avatar = State()
-    waiting_photo = State()
     distributing = State()
 
 
@@ -110,6 +132,36 @@ def distribution_text(
 # ---------- старт ----------
 
 
+@router.message(CommandStart(deep_link=True))
+async def cmd_start_card(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+    db: Database,
+    config: Config,
+) -> None:
+    """Диплинк на карточку: t.me/бот?start=card_12345.
+
+    Так имя бойца из чата открывается даже там, где именованного мини-аппа
+    нет: человек попадает в личку, но не в пустоту — бот сразу показывает
+    того самого бойца и кнопку, открывающую его карточку.
+    """
+    target = card_target(command.args or "")
+    if target is None:
+        await cmd_start(message, state, db)
+        return
+
+    player = await db.get_player(target)
+    if player is None:
+        await message.answer("Этого бойца в картотеке нет.")
+        await cmd_start(message, state, db)
+        return
+
+    own = target == message.from_user.id
+    keyboard = card_keyboard(config, target, private=True)
+    await message.answer(profile_text(player, own=own), reply_markup=keyboard)
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, db: Database) -> None:
     await state.clear()
@@ -157,10 +209,10 @@ async def pick_class(
 async def keep_nickname(callback: CallbackQuery, state: FSMContext) -> None:
     nickname = (callback.from_user.first_name or "Боец").strip()[:NICK_MAX]
     await state.update_data(nickname=nickname)
-    await state.set_state(Creation.choosing_avatar)
+    await state.set_state(Creation.choosing_gender)
     await callback.message.edit_text(
-        f"Принято, <b>{esc(nickname)}</b>.\n\nТеперь выбери аватар:",
-        reply_markup=avatars_keyboard(),
+        f"Принято, <b>{esc(nickname)}</b>.\n\n{GENDER_QUESTION}",
+        reply_markup=genders_keyboard(),
     )
     await callback.answer()
 
@@ -174,43 +226,71 @@ async def set_nickname(message: Message, state: FSMContext) -> None:
         )
         return
     await state.update_data(nickname=nickname)
-    await state.set_state(Creation.choosing_avatar)
+    await state.set_state(Creation.choosing_gender)
     await message.answer(
-        f"Принято, <b>{esc(nickname)}</b>.\n\nТеперь выбери аватар:",
-        reply_markup=avatars_keyboard(),
+        f"Принято, <b>{esc(nickname)}</b>.\n\n{GENDER_QUESTION}",
+        reply_markup=genders_keyboard(),
     )
 
 
-@router.callback_query(Creation.choosing_avatar, AvatarCB.filter())
-async def pick_avatar(
-    callback: CallbackQuery, callback_data: AvatarCB, state: FSMContext
-) -> None:
-    if callback_data.value == "custom":
-        await state.set_state(Creation.waiting_photo)
-        await callback.message.edit_text(
-            "Пришли фото одним сообщением — оно станет аватаром бойца.\n"
-            "Передумал? /skip — вернёмся к эмодзи."
-        )
-        await callback.answer()
-        return
+GENDER_QUESTION = "За кого дерёмся?"
+# Ответ на этот же вопрос — им бот подтверждает выбор
+GENDER_ANSWERS = {MALE: "За мужчину.", FEMALE: "За женщину."}
 
-    await state.update_data(avatar=callback_data.value, avatar_file_id=None)
-    await _ask_stats(callback.message, state, edit=True)
+
+async def _show_looks(message: Message, gender: str, bot) -> None:
+    """Показать открытые образы своего пола — картинками и кнопками.
+
+    Картинки лежат в R2 и уходят в Telegram ссылками. Не дошли — не беда:
+    выбор всё равно остаётся, просто кнопками без превью.
+    """
+    looks = [look for look in free_looks() if look.gender == gender]
+    try:
+        await bot.send_media_group(
+            chat_id=message.chat.id,
+            media=[
+                InputMediaPhoto(
+                    media=look.picture,
+                    caption=f"{look.emoji} <b>{esc(look.title)}</b> — {esc(look.note)}",
+                )
+                for look in looks
+            ],
+        )
+    except TelegramAPIError:
+        logger.warning("Картинки образов не ушли в Telegram — оставляем кнопки")
+
+    await message.answer(
+        "Выбери образ. Потом его можно поменять в карточке — "
+        "там же лежат платные, за кредиты.",
+        reply_markup=looks_keyboard(gender),
+    )
+
+
+@router.callback_query(Creation.choosing_gender, GenderCB.filter())
+async def pick_gender(
+    callback: CallbackQuery, callback_data: GenderCB, state: FSMContext, bot
+) -> None:
+    gender = callback_data.code if callback_data.code in (MALE, FEMALE) else MALE
+    await state.update_data(gender=gender)
+    await state.set_state(Creation.choosing_avatar)
+    await callback.message.edit_text(f"{GENDER_QUESTION} {GENDER_ANSWERS[gender]}")
+    await _show_looks(callback.message, gender, bot)
     await callback.answer()
 
 
-@router.message(Creation.waiting_photo, F.photo)
-async def set_photo(message: Message, state: FSMContext) -> None:
-    file_id = message.photo[-1].file_id
-    await state.update_data(avatar="📷", avatar_file_id=file_id)
-    await message.answer("Фото на месте. 📷")
-    await _ask_stats(message, state, edit=False)
-
-
-@router.message(Creation.waiting_photo, Command("skip"))
-async def skip_photo(message: Message, state: FSMContext) -> None:
-    await state.set_state(Creation.choosing_avatar)
-    await message.answer("Ладно, выбирай из готовых:", reply_markup=avatars_keyboard())
+@router.callback_query(Creation.choosing_avatar, LookCB.filter())
+async def pick_look(
+    callback: CallbackQuery, callback_data: LookCB, state: FSMContext
+) -> None:
+    """Выбранный образ — это и картинка карточки, и значок бойца."""
+    look = get_look(callback_data.code)
+    if look is None or look.paid or look.pro:
+        await callback.answer("Этот образ на старте не выдаётся.", show_alert=True)
+        return
+    await state.update_data(look=look.code, avatar=look.emoji)
+    await callback.message.edit_text(f"Образ выбран: {look.emoji} {look.title}")
+    await _ask_stats(callback.message, state, edit=False)
+    await callback.answer()
 
 
 async def _ask_stats(message: Message, state: FSMContext, edit: bool) -> None:
@@ -233,7 +313,11 @@ async def _ask_stats(message: Message, state: FSMContext, edit: bool) -> None:
 
 @router.callback_query(Creation.distributing, StatCB.filter())
 async def distribute(
-    callback: CallbackQuery, callback_data: StatCB, state: FSMContext, db: Database
+    callback: CallbackQuery,
+    callback_data: StatCB,
+    state: FSMContext,
+    db: Database,
+    config: Config,
 ) -> None:
     data = await state.get_data()
     fclass = get_class(data["class_code"])
@@ -260,7 +344,7 @@ async def distribute(
         if left > 0:
             await callback.answer("Сначала раздай все очки.", show_alert=True)
             return
-        await _create_player(callback, state, db, spent)
+        await _create_player(callback, state, db, spent, config)
         return
 
     await state.update_data(spent=spent, left=left)
@@ -274,7 +358,11 @@ async def distribute(
 
 
 async def _create_player(
-    callback: CallbackQuery, state: FSMContext, db: Database, spent: dict[str, int]
+    callback: CallbackQuery,
+    state: FSMContext,
+    db: Database,
+    spent: dict[str, int],
+    config: Config,
 ) -> None:
     data = await state.get_data()
     fclass = get_class(data["class_code"])
@@ -284,7 +372,8 @@ async def _create_player(
         nickname=data.get("nickname") or (callback.from_user.first_name or "Боец"),
         class_code=fclass.code,
         avatar=data.get("avatar", "🥊"),
-        avatar_file_id=data.get("avatar_file_id"),
+        look=data.get("look", ""),
+        gender=data.get("gender", ""),
         strength=total.strength,
         agility=total.agility,
         intuition=total.intuition,
@@ -294,8 +383,8 @@ async def _create_player(
     await state.clear()
     await callback.message.edit_text(
         f"✅ Боец готов.\n\n{stats_block(total)}\n\n"
-        "Теперь добавь меня в группу, создай там ветку для боёв "
-        "и отметь её командой /arena. Дальше — /duel и погнали.\n\n"
+        f"Теперь ты готов переходить в группу "
+        f"<b>{esc(config.club_title)}</b>: {config.club_url}\n\n"
         "Полный список команд: /help"
     )
     await send_profile(callback.message, player)
@@ -320,7 +409,11 @@ async def cmd_upgrade(message: Message, state: FSMContext, db: Database) -> None
     await state.update_data(spent={}, left=player.free_points)
     await message.answer(
         distribution_text(
-            player.fclass, player.stats, {}, player.free_points, level=player.level
+            player.fclass,
+            player.base_stats,
+            {},
+            player.free_points,
+            level=player.level,
         ),
         reply_markup=stats_keyboard(player.free_points),
     )
@@ -349,12 +442,10 @@ async def upgrade_distribute(
     elif callback_data.action == "reset":
         spent, left = {}, player.free_points
     elif callback_data.action == "done":
-        gain = spent_stats(spent)
-        total = player.stats.merge(gain)
-        player.strength = total.strength
-        player.agility = total.agility
-        player.intuition = total.intuition
-        player.endurance = total.endurance
+        # Очки ложатся в свои характеристики: прибавка с вещей и от выпитого
+        # в базу попасть не должна — вещь снимут, эликсир кончится, а
+        # вписанное в базу останется.
+        player.apply_stats(player.base_stats.merge(spent_stats(spent)))
         player.free_points = left
         await db.save_player(player)
         await state.clear()
@@ -365,7 +456,9 @@ async def upgrade_distribute(
 
     await state.update_data(spent=spent, left=left)
     await callback.message.edit_text(
-        distribution_text(player.fclass, player.stats, spent, left, level=player.level),
+        distribution_text(
+            player.fclass, player.base_stats, spent, left, level=player.level
+        ),
         reply_markup=stats_keyboard(left),
     )
     await callback.answer()
@@ -424,9 +517,3 @@ async def on_reset(
 async def nickname_fallback(message: Message) -> None:
     await message.answer("Пришли прозвище текстом.")
 
-
-@router.message(StateFilter(Creation.waiting_photo))
-async def photo_fallback(message: Message) -> None:
-    await message.answer(
-        "Нужно именно фото (не файлом). Или /skip — вернёмся к эмодзи."
-    )

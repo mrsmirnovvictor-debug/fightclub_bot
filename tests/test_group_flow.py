@@ -2,11 +2,12 @@
 
 from datetime import datetime, timezone
 
-from aiogram.types import Chat, Message, User
+from aiogram.types import Chat, ForumTopicCreated, Message, User
 
 from tests.harness import feed_callback, feed_message, ids
 
 from bot.game.classes import get_class
+from bot.game.modes import FightMode
 from bot.keyboards import ChallengeCB, FightCB, StandoffCB, fight_keyboard
 from bot.models import Player
 
@@ -63,8 +64,8 @@ async def test_duel_from_arena_setup_to_result(arena):
     await db.save_player(make_player(second.id, "Марла", "assassin"))
 
     await send(first, "/arena Ринг")
-    assert "ринг клуба" in session.texts[-1]
-    assert (await db.get_arena(GROUP.id)).thread_id == THREAD_ID
+    assert "Ринги клуба" in session.texts[-1]
+    assert (await db.get_ring(GROUP.id, THREAD_ID)).number == 1
 
     await send(first, "/duel")
     assert "вызывает любого желающего" in session.texts[-1]
@@ -76,7 +77,7 @@ async def test_duel_from_arena_setup_to_result(arena):
     assert duel is not None
     duel_id = duel.id
     assert not duel.started
-    assert "Оцените друг друга" in session.texts[-1]
+    assert "Вызов принят" in session.texts[-1]
 
     # соперник не может начать бой за вызвавшего
     await press(second, StandoffCB(action="start", duel_id=duel_id).pack())
@@ -88,17 +89,14 @@ async def test_duel_from_arena_setup_to_result(arena):
         if duels.duel_in_chat(GROUP.id, THREAD_ID) is None:
             break
         for index, user in enumerate((first, second)):
-            fighter = duel.fighters[user.id]
-            for slot in range(fighter.attacks_per_round):
-                await press(
-                    user,
-                    FightCB(
-                        action="attack",
-                        duel_id=duel_id,
-                        zone=ZONES[(index + slot) % len(ZONES)],
-                        slot=slot,
-                    ).pack(),
-                )
+            await press(
+                user,
+                FightCB(
+                    action="attack",
+                    duel_id=duel_id,
+                    zone=ZONES[index % len(ZONES)],
+                ).pack(),
+            )
             await press(
                 user,
                 FightCB(
@@ -120,10 +118,10 @@ async def test_duel_outside_arena_thread_is_refused(arena):
     db, _, session = arena
     user = as_user(611, "Боб")
     await db.save_player(make_player(user.id, "Боб", "tank"))
-    await db.set_arena(GROUP.id, THREAD_ID, "Ринг")
+    await db.set_ring(GROUP.id, THREAD_ID, title="Ринг")
 
     await send(user, "/duel", thread_id=None)
-    assert "Бои проходят" in session.texts[-1]
+    assert "Здесь не дерутся" in session.texts[-1]
 
 
 async def test_duel_without_character_sends_to_private(arena):
@@ -142,7 +140,7 @@ async def test_reply_duel_targets_that_fighter(arena):
 
     reply_target = group_message(second, "я тут")
     await feed_message(group_message(first, "/duel", reply_to_message=reply_target))
-    assert "вызывает <b>Марла</b>" in session.texts[-1]
+    assert "вызывает" in session.texts[-1] and "Марла" in session.texts[-1]
 
     challenge_id = next(iter(duels._challenges))
     await press(third, ChallengeCB(action="accept", challenge_id=challenge_id).pack())
@@ -169,7 +167,7 @@ async def test_no_surrender_button_and_no_giveup_command(arena):
 
     buttons = [
         button.callback_data
-        for row in fight_keyboard(duel.id, duel.fighters[first.id]).inline_keyboard
+        for row in fight_keyboard(duel.id, *duel.panel).inline_keyboard
         for button in row
     ]
     assert all("giveup" not in (data or "") for data in buttons)
@@ -193,3 +191,432 @@ async def test_hurt_fighter_is_turned_away_from_the_ring(arena):
     assert "мин" in text  # обратный отсчёт на месте
     assert duels.duel_in_chat(GROUP.id, THREAD_ID) is None
     assert not duels.is_busy(user.id)
+
+
+async def test_duel_in_a_topic_is_not_a_fight_with_yourself(arena):
+    """В ветке форума Telegram подставляет служебное сообщение о создании темы.
+
+    Его автор — тот, кто тему создал. Без проверки бот принимал его за
+    соперника, и человек получал «с самим собой драться нельзя».
+    """
+    db, duels, session = arena
+    user = as_user(651, "Тайлер")
+    await db.save_player(make_player(user.id, "Тайлер", "warrior"))
+
+    topic_root = Message(
+        message_id=THREAD_ID,
+        date=datetime.now(timezone.utc),
+        chat=GROUP,
+        from_user=user,  # тему создал сам игрок
+        message_thread_id=THREAD_ID,
+        is_topic_message=True,
+        forum_topic_created=ForumTopicCreated(name="Ринг", icon_color=0x6FB9F0),
+    )
+    await feed_message(group_message(user, "/duel", reply_to_message=topic_root))
+
+    assert "любого желающего" in session.texts[-1]
+    assert "самим собой" not in session.texts[-1]
+    assert duels.is_busy(user.id)
+
+
+async def test_replying_to_your_own_message_opens_a_free_challenge(arena):
+    db, duels, session = arena
+    user = as_user(652, "Марла")
+    await db.save_player(make_player(user.id, "Марла", "rogue"))
+
+    own = group_message(user, "я тут")
+    await feed_message(group_message(user, "/duel", reply_to_message=own))
+
+    assert "любого желающего" in session.texts[-1]
+    assert duels.is_busy(user.id)
+
+
+# ---------- три ринга и два режима ----------
+
+
+async def test_three_fist_rings_hold_three_fights_at_once(arena):
+    """Один ринг — один бой, три ринга — три боя одновременно."""
+    db, duels, session = arena
+    fighters = []
+    for index in range(6):
+        user = as_user(700 + index, f"Боец{index}")
+        await db.save_player(make_player(user.id, f"Боец{index}", "warrior"))
+        fighters.append(user)
+
+    admin = fighters[0]
+    for number, thread in enumerate((101, 102, 103), start=1):
+        await send(admin, f"/arena{number}", thread_id=thread)
+        ring = await db.get_ring(GROUP.id, thread)
+        assert (ring.number, ring.mode.value) == (number, "fist")
+
+    # в каждой ветке своя пара
+    for thread, (one, two) in zip((101, 102, 103), ((0, 1), (2, 3), (4, 5))):
+        await send(fighters[one], "/duel", thread_id=thread)
+        challenge_id = max(duels._challenges)
+        await feed_callback(
+            fighters[two],
+            GROUP,
+            ChallengeCB(action="accept", challenge_id=challenge_id).pack(),
+            message_thread_id=thread,
+            is_topic_message=True,
+        )
+
+    assert all(
+        duels.duel_in_chat(GROUP.id, thread) is not None for thread in (101, 102, 103)
+    )
+    # в занятую ветку седьмой боец не влезет: ринг занят
+    seventh = as_user(710, "Седьмой")
+    await db.save_player(make_player(seventh.id, "Седьмой", "rogue"))
+    await send(seventh, "/duel", thread_id=101)
+    assert "уже идёт бой" in session.texts[-1]
+
+
+async def test_in_the_chat_they_fight_with_fists_in_any_ring(arena):
+    """В ветке остались кулаки: /fight отправляет в карточку, /duel зовёт."""
+    db, duels, session = arena
+    user = as_user(720, "Боб")
+    await db.save_player(make_player(user.id, "Боб", "tank"))
+
+    await send(user, "/arena1", thread_id=201)
+    await send(user, "/arena_gear", thread_id=202)
+
+    await send(user, "/fight", thread_id=201)
+    assert "карточк" in session.texts[-1].lower()
+    assert "/duel" in session.texts[-1]
+
+    # На оружейном ринге вызов тоже кулачный: снаряжение живёт в карточке
+    await send(user, "/duel", thread_id=202)
+    assert "любого желающего" in session.texts[-1]
+    challenge = duels._challenges[max(duels._challenges)]
+    assert challenge.mode is FightMode.FIST
+
+
+async def test_rings_command_shows_what_is_busy(arena):
+    db, duels, session = arena
+    first, second = as_user(730, "Тайлер"), as_user(731, "Марла")
+    for user, code in ((first, "warrior"), (second, "rogue")):
+        await db.save_player(make_player(user.id, user.first_name, code))
+
+    await send(first, "/arena1 Подвал", thread_id=301)
+    await send(first, "/arena_gear Оружейная", thread_id=302)
+
+    await send(first, "/rings", thread_id=301)
+    text = session.texts[-1]
+    assert "Подвал" in text and "Оружейная" in text
+    assert text.count("🟢 свободен") == 2
+
+    await send(first, "/duel", thread_id=301)
+    await feed_callback(
+        second,
+        GROUP,
+        ChallengeCB(action="accept", challenge_id=max(duels._challenges)).pack(),
+        message_thread_id=301,
+        is_topic_message=True,
+    )
+    await send(first, "/rings", thread_id=301)
+    assert "🔴 идёт бой" in session.texts[-1]
+
+
+async def test_fists_leave_the_gear_in_the_locker_room(arena):
+    """На кулачном ринге вещи не работают, на оружейном — работают."""
+    from bot.game.equipment import CATALOGUE, Slot
+    from bot.game.modes import FightMode
+
+    db, duels, _ = arena
+    first, second = as_user(740, "Тайлер"), as_user(741, "Марла")
+    for user, code in ((first, "warrior"), (second, "tank")):
+        player = make_player(user.id, user.first_name, code)
+        player.level = 8
+        await db.save_player(player)
+        weapon = await db.add_gear(user.id, "bat")
+        weapon.slot = Slot.WEAPON
+        await db.save_gear(weapon)
+
+    fist = await duels.start_duel(
+        GROUP.id, 401, await db.get_player(first.id), await db.get_player(second.id)
+    )
+    armed = await duels.start_duel(
+        GROUP.id,
+        402,
+        await db.get_player(first.id),
+        await db.get_player(second.id),
+        mode=FightMode.ARMED,
+    )
+
+    bare = fist.fighters[first.id]
+    kitted = armed.fighters[first.id]
+    assert bare.weapon == "кулаком"
+    assert kitted.weapon == CATALOGUE["bat"].instrumental
+    assert kitted.derived.damage_max > bare.derived.damage_max  # бита даёт силу
+    assert kitted.max_hp >= bare.max_hp
+
+
+# ---------- групповые бои ----------
+
+
+async def test_team_battle_gathers_and_starts_from_the_chat(arena, battles):
+    """/battle собирает состав кнопками и даёт гонг, как только он полон."""
+    from bot.keyboards import LobbyCB
+
+    db, _, session = arena
+    people = [as_user(800 + i, f"Боец{i}") for i in range(4)]
+    for user in people:
+        player = make_player(user.id, user.first_name, "warrior")
+        player.level = 5
+        await db.save_player(player)
+
+    await send(people[0], "/arena_gear", thread_id=501)
+    await send(people[0], "/battle 2 4-6", thread_id=501)
+
+    lobby = battles.lobby_in_chat(GROUP.id, 501)
+    assert lobby is not None
+    assert (lobby.min_level, lobby.max_level, lobby.size) == (4, 6, 2)
+    assert "Командный бой" in session.texts[-1]
+
+    async def join(user, team):
+        await feed_callback(
+            user,
+            GROUP,
+            LobbyCB(action="join", lobby_id=lobby.id, team=team).pack(),
+            message_thread_id=501,
+            is_topic_message=True,
+        )
+
+    await join(people[1], 0)
+    await join(people[2], 1)
+    assert battles.battle_in_chat(GROUP.id, 501) is None
+    await join(people[3], 1)
+
+    battle = battles.battle_in_chat(GROUP.id, 501)
+    assert battle is not None and len(battle.fighters) == 4
+    assert battle.mode.armed  # ринг с оружием
+    assert any("Пары этого хода" in text for text in session.texts)
+
+
+async def test_royale_is_open_to_everyone_who_fits(arena, battles):
+    from bot.keyboards import LobbyCB
+
+    db, _, session = arena
+    host = as_user(820, "Хозяин")
+    guest = as_user(821, "Гость")
+    rookie = as_user(822, "Салага")
+    for user, level in ((host, 5), (guest, 6), (rookie, 1)):
+        player = make_player(user.id, user.first_name, "rogue")
+        player.level = level
+        await db.save_player(player)
+
+    await send(host, "/arena1", thread_id=502)
+    await send(host, "/royale 3", thread_id=502)
+    lobby = battles.lobby_in_chat(GROUP.id, 502)
+    assert lobby is not None and lobby.kind.value == "royale"
+    assert not lobby.mode.armed  # кулачный ринг — кулачная мясорубка
+
+    async def join(user):
+        await feed_callback(
+            user,
+            GROUP,
+            LobbyCB(action="join", lobby_id=lobby.id).pack(),
+            message_thread_id=502,
+            is_topic_message=True,
+        )
+
+    await join(rookie)  # не проходит по уровню
+    assert "Уровень не тот" in session.alerts[-1]
+    await join(guest)
+    assert lobby.total == 2
+
+
+async def test_tournament_is_announced_and_signed_up_from_the_chat(arena, tournaments):
+    """/tournament объявляет набор, кнопка записывает, /bracket ждёт гонга."""
+    from bot.keyboards import TourCB
+
+    db, _, session = arena
+    host = as_user(840, "Хозяин")
+    guest = as_user(841, "Гость")
+    for user in (host, guest):
+        player = make_player(user.id, user.first_name, "warrior")
+        player.level = 5
+        await db.save_player(player)
+
+    await send(host, "/arena_gear", thread_id=503)
+    await send(host, "/tournament 8 4-6 Кубок подвала", thread_id=503)
+
+    live = await db.live_tournaments(GROUP.id)
+    assert len(live) == 1
+    assert (live[0]["size"], live[0]["min_level"], live[0]["max_level"]) == (8, 4, 6)
+    assert live[0]["title"] == "Кубок подвала"
+    assert live[0]["mode"] == "armed"
+    assert "Кубок подвала" in session.texts[-1]
+
+    await send(host, "/bracket", thread_id=503)
+    assert "Запись ещё идёт" in session.texts[-1]
+
+    await feed_callback(
+        guest,
+        GROUP,
+        TourCB(action="join", tournament_id=live[0]["id"]).pack(),
+        message_thread_id=503,
+        is_topic_message=True,
+    )
+    assert session.alerts[-1] == "В списке!"
+    assert len(await db.tournament_players(live[0]["id"])) == 2
+
+    await feed_callback(
+        guest,
+        GROUP,
+        TourCB(action="leave", tournament_id=live[0]["id"]).pack(),
+        message_thread_id=503,
+        is_topic_message=True,
+    )
+    assert len(await db.tournament_players(live[0]["id"])) == 1
+
+    await send(host, "/tourstop", thread_id=503)
+    assert not await db.live_tournaments(GROUP.id)
+    assert "остановлен" in session.texts[-1]
+    assert not tournaments._timers
+
+
+# ---------- доска объявлений ----------
+
+
+async def test_updates_marks_the_thread_and_posts_the_latest_change(arena):
+    """/updates: ветка запомнена, свежее изменение объявлено, ответы закрыты."""
+    from bot.game.changelog import RELEASES
+
+    db, _, session = arena
+    admin = as_user(701, "Админ")
+
+    await send(admin, "/updates", thread_id=THREAD_ID)
+
+    assert await db.get_noticeboard(GROUP.id) == (THREAD_ID, "")
+    assert "доска объявлений" in session.texts[-2]
+    # последнее изменение ушло в ту же ветку и ветка закрыта на ответы
+    assert RELEASES[-1].title in session.texts[-1]
+    closed = session.method_calls("CloseForumTopic")
+    assert closed and closed[-1].message_thread_id == THREAD_ID
+
+
+async def test_the_board_does_not_repeat_itself(arena):
+    """Повторная команда не пересказывает то, что уже объявили."""
+    db, _, session = arena
+    admin = as_user(702, "Админ")
+    await send(admin, "/updates", thread_id=THREAD_ID)
+    before = len(session.texts)
+
+    await send(admin, "/updates", thread_id=THREAD_ID)
+
+    # ответ про доску есть, а объявления нет: всё уже прочитано
+    assert len(session.texts) == before + 1
+    assert "доска объявлений" in session.texts[-1]
+
+
+# ---------- рейд ----------
+
+
+async def save_raider(db, user) -> None:
+    """Боец с пропуском в рюкзаке: без него в подвал не пускают."""
+    from bot.game.potions import RAID_PASS
+
+    player = make_player(user.id, user.first_name, "warrior")
+    player.level = 5
+    await db.save_player(player)
+    await db.add_potion(user.id, RAID_PASS)
+
+
+async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raids):
+    """/raid собирает отряд кнопкой, а бьют по боссу уже в карточке."""
+    from bot.keyboards import RaidLobbyCB
+
+    from bot.game.raid import CELLAR_BOSS, MAX_PARTY
+
+    db, _, session = arena
+    people = [as_user(900 + i, f"Рейдер{i}") for i in range(2)]
+    for user in people:
+        await save_raider(db, user)
+
+    await send(people[0], "/raid", thread_id=601)
+
+    lobby = raids.lobby_of_user(people[0].id)
+    assert lobby is not None and lobby.size == MAX_PARTY
+    assert CELLAR_BOSS.title in session.texts[-1]
+
+    await feed_callback(
+        people[1],
+        GROUP,
+        RaidLobbyCB(action="join", lobby_id=lobby.id).pack(),
+        message_thread_id=601,
+        is_topic_message=True,
+    )
+
+    await feed_callback(
+        people[0],
+        GROUP,
+        RaidLobbyCB(action="go", lobby_id=lobby.id).pack(),
+        message_thread_id=601,
+        is_topic_message=True,
+    )
+    raid = raids.raid_of_user(people[0].id)
+    assert raid is not None and len(raid.fighters) == 2
+    assert any("Волна 1" in text for text in session.texts)
+    # Панель волны в ветке — без кнопок: ходят в карточке
+    wave = [text for text in session.texts if "Волна 1" in text][-1]
+    assert "в карточке" in wave
+    assert all(
+        message.reply_markup is None
+        for message in session.method_calls("SendMessage")
+        if "Волна 1" in (message.text or "")
+    )
+
+    # удар и блок одного бойца из карточки — размен считается сразу
+    await raids.handle_choice(raid.id, people[0].id, "attack", "head")
+    await raids.handle_choice(raid.id, people[0].id, "block", "belt")
+
+    assert people[0].id in raid.acted
+    assert raid.enemy.hp < raid.enemy.max_hp or raid.rounds
+
+
+async def test_the_opener_leads_the_party_out_from_the_chat(arena, raids):
+    """Кнопка «Выходим сейчас» — только у того, кто собрал рейд."""
+    from bot.keyboards import RaidLobbyCB
+
+    db, _, session = arena
+    people = [as_user(960 + i, f"Рейдер{i}") for i in range(2)]
+    for user in people:
+        await save_raider(db, user)
+
+    await send(people[0], "/raid", thread_id=603)
+    lobby = raids.lobby_of_user(people[0].id)
+    await feed_callback(
+        people[1],
+        GROUP,
+        RaidLobbyCB(action="join", lobby_id=lobby.id).pack(),
+        message_thread_id=603,
+        is_topic_message=True,
+    )
+
+    async def press_go(user):
+        await feed_callback(
+            user,
+            GROUP,
+            RaidLobbyCB(action="go", lobby_id=lobby.id).pack(),
+            message_thread_id=603,
+            is_topic_message=True,
+        )
+
+    await press_go(people[1])
+    assert "кто его собрал" in session.alerts[-1]
+    assert raids.raid_of_user(people[0].id) is None
+
+    await press_go(people[0])
+    raid = raids.raid_of_user(people[0].id)
+    assert raid is not None and len(raid.fighters) == 2
+
+
+async def test_a_raid_needs_a_character(arena, raids):
+    db, _, session = arena
+    stranger = as_user(950, "Прохожий")
+
+    await send(stranger, "/raid 3", thread_id=602)
+
+    assert raids.lobby_of_user(stranger.id) is None
+    assert "нет бойца" in session.texts[-1]

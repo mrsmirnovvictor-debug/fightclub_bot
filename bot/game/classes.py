@@ -27,10 +27,15 @@ class Zone(str, Enum):
     def label(self) -> str:
         return f"{self.emoji} {self.title}"
 
+    @property
+    def short(self) -> str:
+        """Одна буква для кнопки: в три столбца названия целиком не влезают."""
+        return ZONE_SHORT[self]
+
 
 ZONE_TITLES: dict[Zone, str] = {
     Zone.HEAD: "голова",
-    Zone.CHEST: "грудь",
+    Zone.CHEST: "корпус",
     Zone.BELLY: "живот",
     Zone.BELT: "пояс",
     Zone.LEGS: "ноги",
@@ -44,9 +49,19 @@ ZONE_EMOJI: dict[Zone, str] = {
     Zone.LEGS: "🦵",
 }
 
+# Буква на кнопке. Голова и грудь обе на «г», поэтому грудь идёт корпусом:
+# на панели важнее, чтобы буквы не путались между собой.
+ZONE_SHORT: dict[Zone, str] = {
+    Zone.HEAD: "Г",
+    Zone.CHEST: "К",
+    Zone.BELLY: "Ж",
+    Zone.BELT: "П",
+    Zone.LEGS: "Н",
+}
+
 ZONE_PREPOSITIONAL: dict[Zone, str] = {
     Zone.HEAD: "в голову",
-    Zone.CHEST: "в грудь",
+    Zone.CHEST: "в корпус",
     Zone.BELLY: "в живот",
     Zone.BELT: "по поясу",
     Zone.LEGS: "по ногам",
@@ -56,8 +71,10 @@ ZONE_PREPOSITIONAL: dict[Zone, str] = {
 # Блок закрывает только смежные зоны, поэтому порядок здесь — часть правил.
 ALL_ZONES: tuple[Zone, ...] = tuple(Zone)
 
-# Сколько зон закрывает обычный блок и блок со щитом
+# Сколько зон закрывает блок. Больше не бывает: щитов в клубе нет,
+# и три зоны разом не закрывает никто.
 BLOCK_WIDTH = 2
+# Со щитом в руке блок закрывает три смежные зоны вместо двух
 SHIELD_BLOCK_WIDTH = 3
 
 
@@ -73,6 +90,21 @@ def block_combo(start: Zone, width: int = BLOCK_WIDTH) -> tuple[Zone, ...]:
 def block_combos(width: int = BLOCK_WIDTH) -> tuple[tuple[Zone, ...], ...]:
     """Все допустимые блоки заданной ширины — по одному на каждую зону."""
     return tuple(block_combo(zone, width) for zone in ALL_ZONES)
+
+
+def block_button(combo: tuple[Zone, ...]) -> str:
+    """Надпись на кнопке блока: «🛡 Голова + Корпус».
+
+    Третью зону, которую держит щит, выносим в скобки со значком: её
+    закрывает не боец, а вещь, и, сняв щит, он её потеряет.
+    """
+    if not combo:
+        return "🛡 —"
+    own = " + ".join(zone.title.capitalize() for zone in combo[:BLOCK_WIDTH])
+    extra = combo[BLOCK_WIDTH:]
+    if not extra:
+        return "🛡 " + own
+    return f"🛡 {own} (+{' '.join(zone.title for zone in extra)} 🛡)"
 
 
 def block_title(combo: tuple[Zone, ...]) -> str:
@@ -99,6 +131,11 @@ class Stat(str, Enum):
         return STAT_EMOJI[self]
 
     @property
+    def dative(self) -> str:
+        """«к силе», «к ловкости» — для фраз вида «+1 к силе»."""
+        return STAT_DATIVE[self]
+
+    @property
     def label(self) -> str:
         return f"{self.emoji} {self.title}"
 
@@ -108,6 +145,14 @@ STAT_TITLES: dict[Stat, str] = {
     Stat.AGILITY: "ловкость",
     Stat.INTUITION: "интуиция",
     Stat.ENDURANCE: "выносливость",
+}
+
+# Дательный падеж: прибавку называют «+1 к силе», а не «+1 сила»
+STAT_DATIVE: dict[Stat, str] = {
+    Stat.STRENGTH: "силе",
+    Stat.AGILITY: "ловкости",
+    Stat.INTUITION: "интуиции",
+    Stat.ENDURANCE: "выносливости",
 }
 
 STAT_EMOJI: dict[Stat, str] = {
@@ -165,7 +210,6 @@ class FighterClass:
     tagline: str
     description: str
     base_stats: Stats
-    block_zones: int = 2
     hp_base: int = 45
     hp_per_endurance: int = 6
     damage_mult: float = 1.0
@@ -173,6 +217,24 @@ class FighterClass:
     crit_power_bonus: float = 0.0
     dodge_bonus: float = 0.0
     counter_bonus: float = 0.0
+    # Профильная характеристика приносит своему классу больше, чем чужому:
+    # одно и то же очко силы у воина превращается в больший урон, очко
+    # ловкости у трикстера — в больший уворот, и так далее.
+    damage_gain: float = 1.0
+    dodge_gain: float = 1.0
+    crit_gain: float = 1.0
+    resist_gain: float = 1.0
+    # Своё оружие против своей добычи: ассасину точность против уворота,
+    # трикстеру пробивание против сопротивления, танку антикрит против крита.
+    # Плоская прибавка держит круг и на первых уровнях, где статы ещё малы.
+    accuracy_bonus: float = 0.0
+    penetration_bonus: float = 0.0
+    anticrit_bonus: float = 0.0
+    # Насколько крепко класс держит блок под критическим ударом. Крит,
+    # упёршийся в блок, всё равно может его проломить — вот эта доля и
+    # вычитается из шанса пробития. Танк держит лучше всех, ассасин хуже
+    # всех: он этот удар и наносит.
+    block_hold: float = 0.0
 
     @property
     def label(self) -> str:
@@ -183,34 +245,41 @@ WARRIOR = FighterClass(
     code="warrior",
     title="Воин",
     emoji="⚔️",
-    tagline="бьёт тяжело и держит удар",
+    tagline="из его силы выходит больше урона",
     description=(
-        "Крепкий кулачный боец. Самый ровный класс: хороший урон, "
-        "неплохое здоровье, никаких слабых мест."
+        "Крепкий кулачный боец. Сила у него весит больше, чем у остальных, "
+        "а в круге камень-ножницы-бумага он не участвует: можно качаться "
+        "ровно, можно уходить в любую крайность. Блок держит крепко — "
+        "хуже танка, но лучше прочих."
     ),
     base_stats=Stats(strength=4, agility=3, intuition=3, endurance=4),
-    block_zones=2,
     hp_per_endurance=7,
-    damage_mult=1.10,
+    damage_mult=0.9,
+    damage_gain=1.33,
     crit_bonus=0.02,
     counter_bonus=0.02,
+    block_hold=0.22,
 )
 
 ROGUE = FighterClass(
     code="rogue",
-    title="Ловкач",
+    title="Трикстер",
     emoji="🤸",
-    tagline="уходит от ударов и наказывает за промах",
+    tagline="уходит от ударов и находит щели в обороне",
     description=(
-        "Скользкий тип. Уходит с линии удара чаще всех и почти всегда "
-        "отвечает контрударом. Ставка на ловкость и интуицию."
+        "Скользкий тип. Ловкость у него весит больше, чем у остальных: "
+        "уходит с линии удара чаще всех, отвечает контрударом и пробивает "
+        "чужое сопротивление. Бьёт танка, но сам вязнет против ассасина: "
+        "блок у него слабый, и крит его проламывает."
     ),
     base_stats=Stats(strength=3, agility=5, intuition=3, endurance=3),
-    block_zones=2,
-    hp_per_endurance=7,
-    damage_mult=1.0,
-    dodge_bonus=0.26,
-    counter_bonus=0.25,
+    hp_per_endurance=4,
+    damage_mult=0.91,
+    dodge_gain=2.05,
+    dodge_bonus=0.25,
+    counter_bonus=0.19,
+    penetration_bonus=0.08,
+    block_hold=0.12,
 )
 
 ASSASSIN = FighterClass(
@@ -219,32 +288,48 @@ ASSASSIN = FighterClass(
     emoji="🗡️",
     tagline="ловит момент и бьёт насмерть",
     description=(
-        "Мастер точного удара. Огромный шанс крита и страшная критическая "
-        "мощь — может снести половину здоровья одним попаданием."
+        "Мастер точного удара. Интуиция у него весит больше, чем у остальных: "
+        "огромный шанс крита, страшная критическая мощь и точность, от которой "
+        "не увернуться. Его крит и чужой блок проламывает чаще всех — а свой "
+        "он держит хуже всех. Бьёт трикстера, но ломается о танка."
     ),
     base_stats=Stats(strength=4, agility=4, intuition=4, endurance=2),
-    block_zones=2,
-    hp_per_endurance=7,
-    damage_mult=1.05,
-    crit_bonus=0.20,
-    crit_power_bonus=0.5,
+    # Выносливости у ассасина меньше всех, и запас ему добираем плоской
+    # прибавкой, а не за очко: иначе к десятому уровню он перестаёт быть
+    # хрупким вовсе. Задача скромнее — чтобы он доживал до своего крита
+    hp_base=50,
+    hp_per_endurance=5,
+    damage_mult=1.15,
+    crit_gain=1.93,
+    crit_bonus=0.12,
+    crit_power_bonus=0.57,
+    accuracy_bonus=0.08,
     dodge_bonus=0.02,
+    block_hold=0.05,
 )
 
 TANK = FighterClass(
     code="tank",
     title="Танк",
     emoji="🛡️",
-    tagline="закрывает три зоны из пяти",
+    tagline="держит удар дольше всех",
     description=(
-        "Живая стена. Единственный класс, который держит блок сразу на трёх "
-        "зонах из пяти: пробить его тяжелее всех. Бьёт при этом слабее всех."
+        "Живая стена. Выносливость у него весит больше, чем у остальных: "
+        "запас здоровья, сопротивление урону и антикрит. Блок держит крепче "
+        "всех: крит его почти не проламывает. Бьёт ассасина, но не успевает "
+        "за трикстером."
     ),
     base_stats=Stats(strength=4, agility=2, intuition=2, endurance=6),
-    block_zones=3,
-    hp_base=30,
-    hp_per_endurance=6,
-    damage_mult=0.80,
+    hp_base=43,
+    hp_per_endurance=5,
+    damage_mult=0.98,
+    resist_gain=1.52,
+    anticrit_bonus=0.12,
+    # Танк бьёт редко и несильно, и против трикстера это оборачивалось тем,
+    # что он вовсе не мог попасть. Немного точности — единственная прибавка,
+    # которая помогает ему ровно против уворота и почти не трогает круг
+    accuracy_bonus=0.10,
+    block_hold=0.35,
 )
 
 FIGHTER_CLASSES: dict[str, FighterClass] = {

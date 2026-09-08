@@ -6,26 +6,76 @@ from dataclasses import dataclass
 
 from bot.game.classes import FighterClass, Stats
 
-# Базовый урон голыми кулаками
-BASE_DAMAGE = 4.0
-DAMAGE_PER_STRENGTH = 1.4
+# ---------- выключатель потолков ----------
+#
+# Поставь True — и все потолки шансов встанут на 100%: арифметика прежняя,
+# просто min() перестаёт срабатывать. Так удобно смотреть бой без
+# ограничений, не выискивая числа по файлу. Рабочее положение — False.
+#
+# Потолки урона это в любом случае не трогает: сопротивление и броня режут
+# не шанс, а сам удар, и на 100% бой встал бы — каждое попадание доходило
+# бы единицей.
+NO_LIMITS = False
+
+# Базовый урон голыми кулаками. Сила прибавляет к нему понемногу: иначе
+# один-единственный стат решает бой, а уворот с критом остаются украшением.
+BASE_DAMAGE = 10.5
+DAMAGE_PER_STRENGTH = 0.62
 DAMAGE_SPREAD = 0.25  # разброс урона ±25%
 
 BASE_CRIT_CHANCE = 0.03
-CRIT_PER_INTUITION = 0.008
-MAX_CRIT_CHANCE = 0.5
+CRIT_PER_INTUITION = 0.0108
+MAX_CRIT_CHANCE = 1.0 if NO_LIMITS else 0.55
 BASE_CRIT_POWER = 1.5
+# Интуиция растит не только шанс крита, но и его силу. Шанс упирается в
+# потолок, сила — нет, поэтому вкладываться в интуицию имеет смысл всегда.
+CRIT_POWER_PER_INTUITION = 0.04
 
 BASE_DODGE_CHANCE = 0.02
-DODGE_PER_AGILITY = 0.007
-MAX_DODGE_CHANCE = 0.45
-# Интуиция атакующего «сбивает» уворот защищающегося
-ACCURACY_PER_INTUITION = 0.004
+DODGE_PER_AGILITY = 0.01
+MAX_DODGE_CHANCE = 1.0 if NO_LIMITS else 0.62
 
+# Три пары идут по кругу: ловкость бьёт выносливость, выносливость —
+# интуицию, интуиция — ловкость. Отсюда камень-ножницы-бумага между
+# трикстером, танком и ассасином, а сила остаётся вне круга — воин волен
+# качаться ровно или уходить в крайности.
+#
+#   🤸 уворот      ← сбивает 🔮 точность
+#   🔮 крит        ← сбивает 🫀 антикрит
+#   🫀 сопротивление ← пробивает 🤸 ловкость
+
+# Точность (антиуворот): интуиция угадывает, куда уйдёт соперник
+ACCURACY_PER_INTUITION = 0.005
+MAX_ACCURACY = 1.0 if NO_LIMITS else 0.6
+
+# Антикрит: выносливость терпит там, где другой сложился бы
+ANTICRIT_PER_ENDURANCE = 0.011
+MAX_ANTICRIT = 1.0 if NO_LIMITS else 0.5
+
+# Сопротивление урону: выносливость снимает долю с каждого пропущенного удара.
+# Потолок здесь единственный, который не снимается выключателем: это не шанс,
+# а прямой множитель урона, и на сотне процентов бой встал бы совсем.
+RESIST_PER_ENDURANCE = 0.008
+MAX_RESIST = 0.38
+
+# Пробивание: ловкость находит щель в чужой обороне и срезает сопротивление
+PENETRATION_PER_AGILITY = 0.008
+MAX_PENETRATION = 0.5
+
+# Контрудар — продолжение уворота, поэтому и растёт он от ловкости
 BASE_COUNTER_CHANCE = 0.02
-COUNTER_PER_INTUITION = 0.004
-MAX_COUNTER_CHANCE = 0.5
-COUNTER_DAMAGE_MULT = 0.5  # контрудар бьёт вполсилы
+COUNTER_PER_AGILITY = 0.007
+MAX_COUNTER_CHANCE = 1.0 if NO_LIMITS else 0.5
+COUNTER_DAMAGE_MULT = 0.85  # контрудар бьёт почти в полную силу
+
+# Пробитие блока: крит, упёршийся в блок, всё равно может его проломить.
+# Столько шансов у него без всякой защиты; устойчивость блока вычитается.
+BLOCK_BREAK_CHANCE = 0.5
+# Ниже этого шанс не опускается: наглухо от пробития не закрывается никто
+MIN_BLOCK_BREAK = 0.05
+# Пробитый блок гасит удар вполовину: проходит половина максимального урона
+BLOCK_BREAK_DAMAGE_SHARE = 0.5
+MAX_BLOCK_HOLD = 1.0 if NO_LIMITS else 0.6
 
 HP_PER_LEVEL = 5  # прибавка к здоровью за каждый уровень
 
@@ -39,10 +89,14 @@ class DerivedStats:
     damage_max: int
     crit_chance: float
     crit_power: float
+    anticrit: float
     dodge_chance: float
     counter_chance: float
     accuracy: float
-    block_zones: int
+    resist: float
+    penetration: float
+    # Устойчивость блока под критом: доля, на которую падает шанс пробития
+    block_hold: float = 0.0
 
 
 def derive(
@@ -59,23 +113,27 @@ def derive(
         + max(0, extra_hp)
     )
 
-    avg_damage = (BASE_DAMAGE + stats.strength * DAMAGE_PER_STRENGTH) * fclass.damage_mult
+    avg_damage = (
+        BASE_DAMAGE + stats.strength * DAMAGE_PER_STRENGTH * fclass.damage_gain
+    ) * fclass.damage_mult
     damage_min = max(1, round(avg_damage * (1 - DAMAGE_SPREAD)))
     damage_max = max(damage_min + 1, round(avg_damage * (1 + DAMAGE_SPREAD)))
 
     crit_chance = min(
         MAX_CRIT_CHANCE,
-        BASE_CRIT_CHANCE + stats.intuition * CRIT_PER_INTUITION + fclass.crit_bonus,
+        BASE_CRIT_CHANCE
+        + stats.intuition * CRIT_PER_INTUITION * fclass.crit_gain
+        + fclass.crit_bonus,
     )
     dodge_chance = min(
         MAX_DODGE_CHANCE,
-        BASE_DODGE_CHANCE + stats.agility * DODGE_PER_AGILITY + fclass.dodge_bonus,
+        BASE_DODGE_CHANCE
+        + stats.agility * DODGE_PER_AGILITY * fclass.dodge_gain
+        + fclass.dodge_bonus,
     )
     counter_chance = min(
         MAX_COUNTER_CHANCE,
-        BASE_COUNTER_CHANCE
-        + stats.intuition * COUNTER_PER_INTUITION
-        + fclass.counter_bonus,
+        BASE_COUNTER_CHANCE + stats.agility * COUNTER_PER_AGILITY + fclass.counter_bonus,
     )
 
     return DerivedStats(
@@ -83,9 +141,41 @@ def derive(
         damage_min=damage_min,
         damage_max=damage_max,
         crit_chance=round(crit_chance, 4),
-        crit_power=round(BASE_CRIT_POWER + fclass.crit_power_bonus, 3),
+        crit_power=round(
+            BASE_CRIT_POWER
+            + fclass.crit_power_bonus
+            + stats.intuition * CRIT_POWER_PER_INTUITION,
+            3,
+        ),
+        anticrit=round(
+            min(
+                MAX_ANTICRIT,
+                stats.endurance * ANTICRIT_PER_ENDURANCE + fclass.anticrit_bonus,
+            ),
+            4,
+        ),
         dodge_chance=round(dodge_chance, 4),
         counter_chance=round(counter_chance, 4),
-        accuracy=round(stats.intuition * ACCURACY_PER_INTUITION, 4),
-        block_zones=fclass.block_zones,
+        accuracy=round(
+            min(
+                MAX_ACCURACY,
+                stats.intuition * ACCURACY_PER_INTUITION + fclass.accuracy_bonus,
+            ),
+            4,
+        ),
+        resist=round(
+            min(
+                MAX_RESIST,
+                stats.endurance * RESIST_PER_ENDURANCE * fclass.resist_gain,
+            ),
+            4,
+        ),
+        block_hold=round(min(MAX_BLOCK_HOLD, fclass.block_hold), 4),
+        penetration=round(
+            min(
+                MAX_PENETRATION,
+                stats.agility * PENETRATION_PER_AGILITY + fclass.penetration_bonus,
+            ),
+            4,
+        ),
     )

@@ -190,13 +190,33 @@ async def test_economy_fields_survive_a_roundtrip(db):
     assert (loaded.total_exp, loaded.micro_ups, loaded.exp) == (900, 2, 40)
 
 
-async def test_arena_binding(db):
-    await db.set_arena(-100, 12, "Ринг")
-    arena = await db.get_arena(-100)
-    assert arena.thread_id == 12
-    await db.set_arena(-100, 15, "Новый ринг")
-    arena = await db.get_arena(-100)
-    assert (arena.thread_id, arena.title) == (15, "Новый ринг")
+async def test_rings_live_one_per_thread(db):
+    """Три кулачных ринга и ринг с оружием — каждый в своей ветке."""
+    from bot.game.modes import FightMode
+
+    await db.set_ring(-100, 12, number=1, title="Первый")
+    await db.set_ring(-100, 13, number=2)
+    await db.set_ring(-100, 14, mode=FightMode.ARMED, title="Оружейная")
+
+    first = await db.get_ring(-100, 12)
+    assert (first.number, first.mode, first.title) == (1, FightMode.FIST, "Первый")
+    assert (await db.get_ring(-100, 14)).mode is FightMode.ARMED
+    assert await db.get_ring(-100, 99) is None
+    assert len(await db.list_rings(-100)) == 3
+
+    # ринг переезжает в другую ветку — старая освобождается
+    await db.set_ring(-100, 22, number=1, title="Переехали")
+    assert await db.get_ring(-100, 12) is None
+    assert (await db.get_ring(-100, 22)).title == "Переехали"
+
+    # в одной ветке два ринга не уживаются: новый вытесняет старый
+    await db.set_ring(-100, 13, mode=FightMode.ARMED, title="Сменили режим")
+    ring = await db.get_ring(-100, 13)
+    assert ring.mode is FightMode.ARMED
+    assert [r.thread_id for r in await db.list_rings(-100)] == [22, 13]
+
+    await db.drop_ring(-100, 22)
+    assert await db.get_ring(-100, 22) is None
 
 
 async def test_delete_player(db):

@@ -11,46 +11,58 @@ import random
 from dataclasses import dataclass, field
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import InlineKeyboardMarkup
 
 from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
+from bot.game.equipment import BARE_HANDS_ICON
+from bot.game.modes import FightMode
 from bot.game.combat import (
     MAX_MISSED_TURNS,
+    TURNS_PER_ROUND,
     Action,
     Fighter,
     RoundResult,
+    boxing_round,
     resolve_round,
+    round_is_over,
+    turn_in_round,
 )
+from bot.game.fightlog import turn_payload
 from bot.game.economy import (
-    DRAW_CREDITS,
     DRAW_EXP_SHARE,
-    LOSS_CREDITS,
     LOSS_EXP_SHARE,
     REPEAT_WINDOW_HOURS,
     apply_share,
     consolation_exp,
+    pro_exp,
     rating_delta,
     repeat_share,
-    win_credits,
     win_exp,
 )
 from bot.game.narrator import (
+    corner_break,
     duel_intro,
+    fight_board,
+    mention,
+    player_link,
     standoff_card,
     esc,
     finish_report,
     health_warning,
-    hp_bar,
+    ready_mark,
     rewards_report,
+    plain,
     round_report,
+    strike_lines,
 )
+from bot.inventory_service import wear_after_fight
 from bot.keyboards import challenge_keyboard, fight_keyboard, standoff_keyboard
+from bot.messaging import Announcer
 from bot.models import Player, ProgressReport
 
 logger = logging.getLogger(__name__)
-
 
 class DuelError(Exception):
     """Ошибка, которую можно показать игроку как есть."""
@@ -62,67 +74,105 @@ ChatKey = tuple[int, int | None]
 @dataclass
 class Challenge:
     id: int
-    chat_id: int
+    # Чата может не быть: вызов, брошенный в мини-аппе, не привязан к ветке.
+    # Тогда судья молчит, а всё остальное идёт своим чередом.
+    chat_id: int | None
     thread_id: int | None
     challenger: Player
     target_id: int | None = None
     message_id: int | None = None
     task: asyncio.Task | None = None
     chat_title: str = ""
+    mode: FightMode = FightMode.FIST
+
+    @property
+    def key(self) -> ChatKey | None:
+        return None if self.chat_id is None else (self.chat_id, self.thread_id)
 
 
 @dataclass
 class Choice:
-    """Незавершённый выбор бойца на раунд."""
+    """Незавершённый выбор бойца на ход: удар каждой рукой и один блок."""
 
+    # Рука → зона. Рук одна или две: вторая появляется со вторым оружием.
     attacks: dict[int, Zone] = field(default_factory=dict)
     block: tuple[Zone, ...] = ()
 
-    def is_ready(self, weapons: int) -> bool:
-        chosen = [slot for slot in range(weapons) if slot in self.attacks]
-        return len(chosen) == weapons and bool(self.block)
+    def ready_for(self, weapons: int = 1) -> bool:
+        """Выбрано всё: удар каждой рукой и блок."""
+        chosen = [self.attacks.get(hand) for hand in range(weapons)]
+        return all(zone is not None for zone in chosen) and bool(self.block)
 
-    def to_action(self, weapons: int) -> Action:
-        """Что боец успел нажать, то и уходит в раунд."""
+    def to_action(self, weapons: int = 1) -> Action:
+        """Что боец успел нажать, то и уходит в ход."""
         return Action(
-            attacks=tuple(self.attacks.get(slot) for slot in range(weapons)),
+            attacks=tuple(self.attacks.get(hand) for hand in range(weapons)),
             block=self.block,
         )
+
+    @property
+    def attack(self) -> Zone | None:
+        """Удар основной руки — им подписывают подсказку."""
+        return self.attacks.get(0)
 
     @property
     def is_empty(self) -> bool:
         return not self.attacks and not self.block
 
     def describe(self, fighter: Fighter) -> str:
-        parts = []
-        for slot, icon in enumerate(fighter.weapon_icons):
-            zone = self.attacks.get(slot)
-            parts.append(f"{icon} {zone.title if zone else '—'}")
-        block = block_title(self.block) if self.block else "—"
-        return "   ".join(parts) + f"\n🛡 {block}"
+        icons = fighter.weapon_icons
+        lines = [
+            f"{icons[hand] if hand < len(icons) else '👊'} "
+            f"{self.attacks[hand].title if hand in self.attacks else '—'}"
+            for hand in range(fighter.attacks_per_round)
+        ]
+        lines.append(f"🛡 {block_title(self.block) if self.block else '—'}")
+        return "\n".join(lines)
 
 
 @dataclass
 class DuelSession:
     id: int
-    chat_id: int
+    chat_id: int | None
     thread_id: int | None
     fighters: dict[int, Fighter]
     order: tuple[int, int]
     chat_title: str = ""  # название группы — станет местом рождения новичка
+    mode: FightMode = FightMode.FIST
     round_number: int = 0
     choices: dict[int, Choice] = field(default_factory=dict)
     players: dict[int, Player] = field(default_factory=dict)
-    prompt_ids: dict[int, int] = field(default_factory=dict)
+    prompt_message_id: int | None = None
+    # Кого позвать, когда бой кончится: турнир так узнаёт победителя пары
+    on_finish: object | None = None
     standoff_message_id: int | None = None
     started: bool = False  # гонг прозвучал
     timer: asyncio.Task | None = None
     resolving: bool = False
+    # Бойцы разведены по углам и ждут гонга: панели в этот момент нет
+    resting: bool = False
+    # Сколько бойцы отдыхают между раундами. У боя в мини-аппе — нисколько:
+    # там некого ждать, обе стороны уже смотрят на экран.
+    round_break: int = 0
+    # Ходы боя как их посчитал движок. В ветке они уходят словами судьи, а
+    # мини-апп рисует по ним разбор сам — и тем же списком потом ляжет лог
+    # в историю боёв.
+    rounds: list[dict] = field(default_factory=list)
+    # Слова судьи в конце боя — уже без разметки. В ветке они остаются
+    # сообщением, а в мини-аппе показывать нечего: бой из списка исчезает
+    # ровно в тот момент, когда игроку и надо прочитать итог.
+    summary: list[str] = field(default_factory=list)
+    finished: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
-    def key(self) -> ChatKey:
-        return (self.chat_id, self.thread_id)
+    def key(self) -> ChatKey | None:
+        """Ветка, которую занял бой. None — бой идёт в мини-аппе."""
+        return None if self.chat_id is None else (self.chat_id, self.thread_id)
+
+    @property
+    def in_app(self) -> bool:
+        return self.chat_id is None
 
     def opponent_of(self, user_id: int) -> Fighter:
         other_id = next(uid for uid in self.order if uid != user_id)
@@ -138,7 +188,18 @@ class DuelSession:
 
     def is_ready(self, user_id: int) -> bool:
         fighter = self.fighters[user_id]
-        return self.choice_of(user_id).is_ready(fighter.attacks_per_round)
+        return self.choice_of(user_id).ready_for(fighter.attacks_per_round)
+
+    @property
+    def panel(self) -> str:
+        """Значок удара на кнопках — один на двоих.
+
+        Оружие у бойцов может быть разное, а панель одна: если значки не
+        сошлись, показываем кулак, а бьёт каждый тем, что у него в руке.
+        """
+        sides = [self.fighters[user_id] for user_id in self.order]
+        icon = sides[0].weapon_icon
+        return icon if all(side.weapon_icon == icon for side in sides) else BARE_HANDS_ICON
 
 
 class DuelService:
@@ -154,22 +215,27 @@ class DuelService:
         self.bot = bot
         self.db = db
         self.config = config
+        self.voice = Announcer(bot)
         self.rng = rng or random.Random()
         self._ids = itertools.count(1)
         self._challenges: dict[int, Challenge] = {}
         self._duels: dict[int, DuelSession] = {}
         self._duel_by_chat: dict[ChatKey, int] = {}
         self._busy: dict[int, str] = {}  # user_id -> "challenge" | "duel"
+        # Последний законченный бой каждого бойца: мини-апп показывает по нему
+        # итог, пока боец не закроет его сам или не выйдет драться снова.
+        self._results: dict[int, DuelSession] = {}
 
     # ---------- вызовы ----------
 
     async def open_challenge(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         challenger: Player,
         target: Player | None = None,
         chat_title: str = "",
+        mode: FightMode = FightMode.FIST,
     ) -> Challenge:
         if self._busy.get(challenger.user_id):
             raise DuelError("Ты уже в бою или у тебя висит незакрытый вызов.")
@@ -182,7 +248,7 @@ class DuelService:
                 raise DuelError(f"{target.nickname} сейчас на ринге. Дождись конца боя.")
             if not target.can_fight():
                 raise DuelError(health_warning(target, is_self=False))
-        if (chat_id, thread_id) in self._duel_by_chat:
+        if chat_id is not None and (chat_id, thread_id) in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой. Один ринг — одна пара.")
 
         challenge = Challenge(
@@ -192,29 +258,34 @@ class DuelService:
             challenger=challenger,
             target_id=target.user_id if target else None,
             chat_title=chat_title,
+            mode=mode,
         )
+        # Каким боем вызвали, таким и объявляем: /fight — это бой с оружием,
+        # и написать про кулачный значит соврать ещё до первого удара.
         if target is None:
             text = (
-                f"🥊 <b>{esc(challenger.nickname)}</b> "
+                f"{mode.emoji} <b>{player_link(challenger)}</b> "
                 f"({challenger.fclass.label}, {challenger.level} ур.) "
-                "вызывает любого желающего на кулачный бой.\n\n"
+                f"вызывает любого желающего на {mode.title}.\n\n"
                 "Кто примет вызов?"
             )
         else:
             text = (
-                f"🥊 <b>{esc(challenger.nickname)}</b> "
+                f"{mode.emoji} <b>{player_link(challenger)}</b> "
                 f"({challenger.fclass.label}, {challenger.level} ур.) "
-                f"вызывает <b>{esc(target.nickname)}</b> "
-                f"({target.fclass.label}, {target.level} ур.) на кулачный бой.\n\n"
+                f"вызывает <b>{player_link(target)}</b> "
+                f"({target.fclass.label}, {target.level} ур.) на {mode.title}.\n\n"
                 "Слово за вызванным."
             )
         message = await self._send(
             chat_id, thread_id, text, reply_markup=challenge_keyboard(challenge.id)
         )
-        challenge.message_id = message.message_id
+        challenge.message_id = message.message_id if message else None
         challenge.task = asyncio.create_task(self._expire_challenge(challenge))
         self._challenges[challenge.id] = challenge
         self._busy[challenger.user_id] = "challenge"
+        # Зовёт драться дальше — итог прошлого боя ему уже не нужен
+        self._results.pop(challenger.user_id, None)
         return challenge
 
     async def _expire_challenge(self, challenge: Challenge) -> None:
@@ -279,7 +350,7 @@ class DuelService:
         if self._busy.get(opponent.user_id) == "challenge":
             # у принимающего висел свой вызов — снимаем его, драка важнее
             await self._withdraw_challenges_of(opponent.user_id)
-        if (challenge.chat_id, challenge.thread_id) in self._duel_by_chat:
+        if challenge.key is not None and challenge.key in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой.")
 
         self._drop_challenge(challenge)
@@ -303,27 +374,33 @@ class DuelService:
             challenger,
             opponent,
             challenge.chat_title,
+            challenge.mode,
         )
 
     # ---------- бой ----------
 
     async def open_standoff(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         first: Player,
         second: Player,
         chat_title: str = "",
+        mode: FightMode = FightMode.FIST,
     ) -> DuelSession:
-        """Свести бойцов лицом к лицу и дать вызвавшему посмотреть на соперника."""
-        session = self._make_session(chat_id, thread_id, first, second, chat_title)
+        """Свести бойцов лицом к лицу и дать вызвавшему посмотреть на соперника.
+
+        В мини-аппе судья молчит, а стойка остаётся: гонг всё равно даёт тот,
+        кто бросил вызов, и увидеть соперника до первого удара он должен и там.
+        """
+        session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
         message = await self._send(
             chat_id,
             thread_id,
-            standoff_card(first, second),
+            standoff_card(first, second, mode=mode),
             reply_markup=standoff_keyboard(session.id),
         )
-        session.standoff_message_id = message.message_id
+        session.standoff_message_id = message.message_id if message else None
         session.timer = asyncio.create_task(self._standoff_timer(session))
         return session
 
@@ -334,15 +411,13 @@ class DuelService:
             raise DuelError("Решает тот, кто бросил вызов. Жди.")
         self._cancel_timer(session)
         session.started = True
-        await self._edit(
-            session.chat_id,
-            session.standoff_message_id,
-            standoff_card(*self._standoff_players(session), decision="✅ Бойцы сошлись."),
-        )
+        await self._repaint_standoff(session, "✅ Бойцы сошлись.")
         await self._send(
             session.chat_id,
             session.thread_id,
-            duel_intro(*(session.fighters[uid] for uid in session.order)),
+            duel_intro(
+                *(session.fighters[uid] for uid in session.order), mode=session.mode
+            ),
         )
         await self._start_round(session)
         return session
@@ -355,13 +430,8 @@ class DuelService:
         self._cancel_timer(session)
         who = session.fighters[user_id].name
         self._forget(session)
-        await self._edit(
-            session.chat_id,
-            session.standoff_message_id,
-            standoff_card(
-                *self._standoff_players(session),
-                decision=f"🚪 <b>{esc(who)}</b> отказывается от боя. Ринг свободен.",
-            ),
+        await self._repaint_standoff(
+            session, f"🚪 <b>{esc(who)}</b> отказывается от боя. Ринг свободен."
         )
 
     def _pending(self, duel_id: int) -> DuelSession:
@@ -375,6 +445,23 @@ class DuelService:
     def _standoff_players(self, session: DuelSession) -> tuple[Player, Player]:
         return tuple(session.players[uid] for uid in session.order)
 
+    async def _repaint_standoff(self, session: DuelSession, decision: str) -> None:
+        """Перерисовать карточку стойки — всегда в режиме этого боя.
+
+        Карточка обновляется из трёх мест, и режим у неё в умолчании кулачный:
+        забыть его хоть раз значит показать вооружённых бойцов голыми — с
+        уроном без оружия и подписью «кулачный бой».
+        """
+        await self._edit(
+            session.chat_id,
+            session.standoff_message_id,
+            standoff_card(
+                *self._standoff_players(session),
+                decision=decision,
+                mode=session.mode,
+            ),
+        )
+
     async def _standoff_timer(self, session: DuelSession) -> None:
         try:
             await asyncio.sleep(self.config.challenge_timeout)
@@ -383,31 +470,27 @@ class DuelService:
         if session.started or session.id not in self._duels:
             return
         self._forget(session)
-        await self._edit(
-            session.chat_id,
-            session.standoff_message_id,
-            standoff_card(
-                *self._standoff_players(session),
-                decision="🥱 Никто не вышел на ринг. Бой не состоялся.",
-            ),
+        await self._repaint_standoff(
+            session, "🥱 Никто не вышел на ринг. Бой не состоялся."
         )
 
     def _make_session(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         first: Player,
         second: Player,
         chat_title: str = "",
+        mode: FightMode = FightMode.FIST,
     ) -> DuelSession:
-        if (chat_id, thread_id) in self._duel_by_chat:
+        if chat_id is not None and (chat_id, thread_id) in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой.")
         for player in (first, second):
             if not player.can_fight():
                 raise DuelError(health_warning(player, is_self=False))
 
-        fighter_a = Fighter.from_player(first)
-        fighter_b = Fighter.from_player(second)
+        fighter_a = Fighter.from_player(first, armed=mode.armed)
+        fighter_b = Fighter.from_player(second, armed=mode.armed)
         session = DuelSession(
             id=next(self._ids),
             chat_id=chat_id,
@@ -415,35 +498,46 @@ class DuelService:
             fighters={fighter_a.user_id: fighter_a, fighter_b.user_id: fighter_b},
             order=(fighter_a.user_id, fighter_b.user_id),
             chat_title=chat_title,
+            mode=mode,
             players={first.user_id: first, second.user_id: second},
+            # В ветке бойцы расходятся по углам, в мини-аппе — нет
+            round_break=0 if chat_id is None else self.config.round_break,
         )
         self._duels[session.id] = session
-        self._duel_by_chat[session.key] = session.id
+        if session.key is not None:
+            self._duel_by_chat[session.key] = session.id
         self._busy[fighter_a.user_id] = "duel"
         self._busy[fighter_b.user_id] = "duel"
+        for user_id in session.order:
+            # Вышел драться снова — итог прошлого боя прочитан
+            self._results.pop(user_id, None)
         return session
 
     def _forget(self, session: DuelSession) -> None:
         self._duels.pop(session.id, None)
-        self._duel_by_chat.pop(session.key, None)
+        if session.key is not None:
+            self._duel_by_chat.pop(session.key, None)
         for user_id in session.order:
             self._busy.pop(user_id, None)
 
     async def start_duel(
         self,
-        chat_id: int,
+        chat_id: int | None,
         thread_id: int | None,
         first: Player,
         second: Player,
         chat_title: str = "",
+        mode: FightMode = FightMode.FIST,
+        on_finish=None,
     ) -> DuelSession:
         """Свести бойцов и сразу дать гонг — без стойки."""
-        session = self._make_session(chat_id, thread_id, first, second, chat_title)
+        session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
         session.started = True
+        session.on_finish = on_finish
         await self._send(
             chat_id,
             thread_id,
-            duel_intro(*(session.fighters[uid] for uid in session.order)),
+            duel_intro(*(session.fighters[uid] for uid in session.order), mode=mode),
         )
         await self._start_round(session)
         return session
@@ -452,53 +546,42 @@ class DuelService:
         session.round_number += 1
         session.choices = {}
         session.resolving = False
-        session.prompt_ids = {}
-        # У каждого бойца своя панель: удары зависят от оружия, блок — от щита
-        for user_id in session.order:
-            message = await self._send(
-                session.chat_id,
-                session.thread_id,
-                self._prompt_text(session, user_id),
-                reply_markup=fight_keyboard(session.id, session.fighters[user_id]),
-            )
-            session.prompt_ids[user_id] = message.message_id
+        session.resting = False
+        message = await self._send(
+            session.chat_id,
+            session.thread_id,
+            self._prompt_text(session),
+            reply_markup=fight_keyboard(session.id, session.panel),
+        )
+        session.prompt_message_id = message.message_id if message else None
         session.timer = asyncio.create_task(
             self._round_timer(session, session.round_number)
         )
 
-    def _prompt_text(self, session: DuelSession, user_id: int) -> str:
-        fighter = session.fighters[user_id]
-        opponent = session.opponent_of(user_id)
+    def _prompt_text(self, session: DuelSession) -> str:
+        first, second = (session.fighters[uid] for uid in session.order)
         lines = [
-            f"<b>🔔 Раунд {session.round_number} — панель "
-            f"{fighter.fclass.emoji} {esc(fighter.name)}</b>",
+            f"<b>🔔 Раунд {boxing_round(session.round_number)}"
+            f", удар {turn_in_round(session.round_number)}"
+            f" из {TURNS_PER_ROUND}. Бойцы, выбирайте.</b>",
             "",
         ]
-        for side in (fighter, opponent):
-            mark = "✅ готов" if session.is_ready(side.user_id) else "⏳ думает"
-            warning = ""
-            if side.missed_turns:
+        board = fight_board(
+            [(first, second)], lambda side: ready_mark(session.is_ready(side.user_id))
+        )
+        lines.append("<pre>" + "\n".join(board) + "</pre>")
+        skipping = [side for side in (first, second) if side.missed_turns]
+        if skipping:
+            lines.append("")
+            for side in skipping:
                 left = MAX_MISSED_TURNS - side.missed_turns
-                warning = (
-                    f" — ⚠️ пропусков подряд: {side.missed_turns}, осталось {left}"
+                lines.append(
+                    f"⚠️ {mention(side)}: пропусков подряд {side.missed_turns}, "
+                    f"осталось {left}"
                 )
-            lines.append(
-                f"{side.fclass.emoji} {esc(side.name)} "
-                f"{hp_bar(side.hp, side.max_hp)} {side.hp}/{side.max_hp} "
-                f"— {mark}{warning}"
-            )
-
-        blocks = "две" if fighter.block_width == 2 else "три"
         lines += [
             "",
-            f"Правила простые: удар слева, бьёшь в одну зону. "
-            f"Блок справа — закрываешь {blocks}.",
-            f"⏱ {self.config.turn_timeout} сек. Успеете оба раньше — "
-            "раунд посчитается сразу.",
-            "Что успел нажать, то и работает: без зоны удара боец не бьёт, "
-            "незакрытая зона остаётся открытой.",
-            f"Не заставлять судью ждать: {MAX_MISSED_TURNS} пропущенных удара "
-            "подряд, и бой засчитают техническим поражением.",
+            f"⏱️ {self.config.turn_timeout} сек. Выберите удар и блок.",
         ]
         return "\n".join(lines)
 
@@ -516,9 +599,13 @@ class DuelService:
         await self._resolve(session)
 
     async def handle_choice(
-        self, duel_id: int, user_id: int, action: str, zone_value: str, slot: int = 0
+        self, duel_id: int, user_id: int, action: str, zone_value: str, hand: int = 0
     ) -> str:
-        """Обработать нажатие бойца. Возвращает текст для приватного ответа."""
+        """Обработать нажатие бойца. Возвращает текст для приватного ответа.
+
+        `hand` — какой рукой бьём: 0 основная, 1 вторая. В ветке рука всегда
+        одна: там дерутся на кулаках.
+        """
         session = self._duels.get(duel_id)
         if session is None:
             raise DuelError("Этот бой уже закончился.")
@@ -532,7 +619,7 @@ class DuelService:
                 raise DuelError("Раунд уже считается, поздно.")
             fighter = session.fighters[user_id]
             choice = session.choice_of(user_id)
-            was_ready = choice.is_ready(fighter.attacks_per_round)
+            was_ready = session.is_ready(user_id)
             if action not in {"attack", "block"}:
                 raise DuelError("Непонятное действие.")
             try:
@@ -541,13 +628,11 @@ class DuelService:
                 raise DuelError("Эта кнопка уже не работает.") from error
 
             if action == "attack":
-                if not 0 <= slot < fighter.attacks_per_round:
-                    raise DuelError("Такого оружия у тебя нет.")
-                choice.attacks[slot] = zone
+                choice.attacks[hand] = zone
             else:
                 choice.block = block_combo(zone, fighter.block_width)
 
-            now_ready = choice.is_ready(fighter.attacks_per_round)
+            now_ready = session.is_ready(user_id)
             both_ready = all(session.is_ready(uid) for uid in session.order)
             if both_ready:
                 session.resolving = True
@@ -555,31 +640,30 @@ class DuelService:
         if both_ready:
             await self._resolve(session)
         elif was_ready != now_ready:
-            await self._repaint_prompts(session)
+            await self._repaint_prompt(session)
 
         return f"{choice.describe(fighter)}{self._hint(choice, fighter)}"
 
     def _hint(self, choice: Choice, fighter: Fighter) -> str:
-        missing = [
-            fighter.weapon_icons[slot]
-            for slot in range(fighter.attacks_per_round)
-            if slot not in choice.attacks
-        ]
-        if missing:
-            return "\nОсталось выбрать удар: " + " ".join(missing)
+        if len(choice.attacks) < fighter.attacks_per_round:
+            return "\nОсталось выбрать удар."
         if not choice.block:
             return "\nОсталось выбрать блок."
         return "\nГотов. Ждём соперника."
 
-    async def _repaint_prompts(self, session: DuelSession) -> None:
-        """Обновить обе панели: изменилась готовность бойцов."""
-        for user_id, message_id in session.prompt_ids.items():
-            await self._edit(
-                session.chat_id,
-                message_id,
-                self._prompt_text(session, user_id),
-                reply_markup=fight_keyboard(session.id, session.fighters[user_id]),
-            )
+    async def _repaint_prompt(self, session: DuelSession) -> None:
+        """Обновить панель: изменилась готовность бойцов.
+
+        Правка косметическая: если Telegram упрётся в лимит, её просто
+        не будет, а бой поедет дальше.
+        """
+        await self._edit(
+            session.chat_id,
+            session.prompt_message_id,
+            self._prompt_text(session),
+            reply_markup=fight_keyboard(session.id, session.panel),
+            cosmetic=True,
+        )
 
     async def _resolve(self, session: DuelSession) -> None:
         self._cancel_timer(session)
@@ -599,34 +683,70 @@ class DuelService:
             actions[second_id],
             session.round_number,
             self.rng,
+            limit=session.mode.turns,
         )
 
-        for user_id, message_id in session.prompt_ids.items():
-            await self._edit(
-                session.chat_id,
-                message_id,
-                f"🔒 Раунд {session.round_number}: "
-                f"{esc(session.fighters[user_id].name)} сделал(а) выбор.",
-            )
-        await self._send(
-            session.chat_id,
-            session.thread_id,
-            round_report(result, session.fighters, self.rng),
+        # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
+        # уходит ровно то, что он сказал. Позвать разбор дважды — значит
+        # получить про один и тот же удар два разных описания.
+        said = strike_lines(result, session.fighters, self.rng)
+        session.rounds.append(turn_payload(result, said))
+        # Итог раунда встаёт на место его же панели: так за раунд уходит
+        # два обращения к чату вместо четырёх, и бой не упирается в лимит
+        await self._close_panel(
+            session, round_report(result, session.fighters, lines=said)
         )
 
         if result.finished:
             await self._finish(session, result)
+        elif round_is_over(session.round_number):
+            await self._call_a_break(session)
         else:
             await self._start_round(session)
 
+    async def _call_a_break(self, session: DuelSession) -> None:
+        """Раунд отбоксирован — судья разводит бойцов по углам.
+
+        Минута отдыха здесь не только для красоты: за неё успевает
+        освободиться минутный запас обращений к чату, и следующий раунд
+        начинается без пауз посреди боя.
+        """
+        finished = boxing_round(session.round_number)
+        rest = session.round_break
+        session.resting = rest > 0
+        await self._send(
+            session.chat_id,
+            session.thread_id,
+            corner_break(
+                *(session.fighters[uid] for uid in session.order),
+                round_number=finished,
+                total=session.mode.rounds,
+                seconds=rest,
+            ),
+        )
+        if rest <= 0:
+            await self._start_round(session)
+            return
+        session.timer = asyncio.create_task(self._break_timer(session, rest))
+
+    async def _break_timer(self, session: DuelSession, seconds: int) -> None:
+        """Отсчитать перерыв и вывести бойцов на новый раунд."""
+        turn = session.round_number
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return
+        # За минуту бой мог закончиться иначе — проверяем, что он всё ещё наш
+        if self._duels.get(session.id) is not session or session.round_number != turn:
+            return
+        await self._start_round(session)
+
     async def _finish(self, session: DuelSession, result: RoundResult) -> None:
         self._cancel_timer(session)
-        for message_id in session.prompt_ids.values():
-            await self._edit(
-                session.chat_id,
-                message_id,
-                f"🔒 Раунд {session.round_number}: бой окончен.",
-            )
+        # Обычно панель уже погашена итогом раунда. Осталась висеть — гасим
+        # здесь, чтобы под законченным боем не остались живые кнопки.
+        if session.prompt_message_id is not None:
+            await self._close_panel(session, "🔒 Бой окончен.")
         self._forget(session)
 
         rewards = await self._apply_results(session, result)
@@ -634,6 +754,9 @@ class DuelService:
         if rewards:
             text += "\n\n" + rewards
         await self._send(session.chat_id, session.thread_id, text)
+        self._remember_result(session, text)
+        if session.on_finish is not None:
+            await session.on_finish(session, result)
         await self.db.add_duel(
             chat_id=session.chat_id,
             thread_id=session.thread_id,
@@ -642,6 +765,10 @@ class DuelService:
             winner_id=result.winner_id,
             rounds=session.round_number,
             end_reason=result.end_reason.value if result.end_reason else None,
+            mode=session.mode,
+            # Разбор по ходам ложится в базу целиком: по нему потом видно,
+            # куда бил каждый и что судья об этом сказал
+            log=session.rounds,
         )
 
     async def _apply_results(self, session: DuelSession, result: RoundResult) -> str:
@@ -668,6 +795,7 @@ class DuelService:
         }
 
         rows: list[tuple[Player, ProgressReport]] = []
+        broken: list[tuple[Player, list]] = []
         for user_id, player in players.items():
             fighter = session.fighters[user_id]
             opponent = session.opponent_of(user_id)
@@ -678,35 +806,53 @@ class DuelService:
             full_exp = win_exp(fighter.damage_dealt, my_level, opponent_level)
             if won:
                 player.wins += 1
-                exp, credits = full_exp, win_credits(self.rng)
+                exp = full_exp
             elif result.winner_id is None:
                 player.draws += 1
                 exp = consolation_exp(full_exp, DRAW_EXP_SHARE)
-                credits = DRAW_CREDITS
             else:
                 player.losses += 1
                 exp = consolation_exp(full_exp, LOSS_EXP_SHARE)
-                credits = LOSS_CREDITS
 
-            delta = rating_delta(won, my_level, opponent_level)
+            # Ничья рейтинг не двигает: won=None вместо False
+            drawn = result.winner_id is None
+            delta = rating_delta(None if drawn else won, my_level, opponent_level)
             if share < 1.0:
                 exp = apply_share(exp, share)
-                credits = apply_share(credits, share)
                 delta = int(math.copysign(apply_share(abs(delta), share), delta))
 
             if player.birthplace is None and session.chat_title:
                 # Место рождения — группа, где боец впервые вышел на ринг
                 player.birthplace = session.chat_title
+            # Вещи снашиваются до того, как фиксируем здоровье: развалившаяся
+            # экипировка уменьшает запас, и HP надо обрезать по новому потолку.
+            # На кулаках вещи остались в раздевалке — снашивать нечего.
+            ruined = (
+                await wear_after_fight(self.db, player, won, self.rng)
+                if session.mode.armed
+                else []
+            )
+            if ruined:
+                broken.append((player, ruined))
             player.set_hp(fighter.hp)
-            report = player.grant_exp(exp)
-            report.credits += credits
+            # Подписка множит уже урезанное: полтора от того, что боец
+            # действительно заработал в этом бою
+            report = player.grant_exp(pro_exp(exp, player.is_pro()))
             report.rating_delta = delta
-            player.grant_credits(credits)
             player.apply_rating(delta)
             await self.db.save_player(player)
             rows.append((player, report))
 
-        return rewards_report(rows, share, previous_fights)
+        return rewards_report(
+            rows,
+            share,
+            previous_fights,
+            broken,
+            damage={
+                user_id: session.fighters[user_id].damage_dealt
+                for user_id in session.order
+            },
+        )
 
     def _cancel_timer(self, session: DuelSession) -> None:
         """Снять таймер раунда.
@@ -726,11 +872,65 @@ class DuelService:
         duel_id = self._duel_by_chat.get((chat_id, thread_id))
         return self._duels.get(duel_id) if duel_id else None
 
+    # ---------- то, что нужно мини-аппу ----------
+
+    def open_challenges(self) -> list[Challenge]:
+        """Вызовы, ждущие соперника, — свежие сверху.
+
+        Мини-апп показывает их списком: адресный вызов виден только тому,
+        кому он брошен, и самому вызвавшему, чтобы было что отозвать.
+        """
+        return sorted(self._challenges.values(), key=lambda c: c.id, reverse=True)
+
+    def challenge_for(self, user_id: int, challenge: Challenge) -> bool:
+        """Видит ли этот боец этот вызов."""
+        if challenge.challenger.user_id == user_id:
+            return True
+        return challenge.target_id in (None, user_id)
+
+    def challenge_of_user(self, user_id: int) -> Challenge | None:
+        """Свой вызов, который висит в ожидании ответа."""
+        for challenge in self._challenges.values():
+            if challenge.challenger.user_id == user_id:
+                return challenge
+        return None
+
+    def get_challenge(self, challenge_id: int) -> Challenge | None:
+        return self._challenges.get(challenge_id)
+
+    async def withdraw_challenge(self, user_id: int) -> bool:
+        """Отозвать свой вызов. False — отзывать было нечего."""
+        challenge = self.challenge_of_user(user_id)
+        if challenge is None:
+            return False
+        await self._withdraw_challenges_of(user_id)
+        return True
+
     def duel_of_user(self, user_id: int) -> DuelSession | None:
         for session in self._duels.values():
             if user_id in session.fighters:
                 return session
         return None
+
+    def _remember_result(self, session: DuelSession, text: str) -> None:
+        """Отложить итог боя для мини-аппа.
+
+        В ветке итог остаётся сообщением, а на экране бой исчезает из списка
+        сразу после последнего удара — и прочитать, чем он кончился, негде.
+        Держим последний бой за каждым бойцом до тех пор, пока он не закроет
+        итог сам или не выйдет драться снова.
+        """
+        session.finished = True
+        session.summary = [plain(line) for line in text.split("\n")]
+        for user_id in session.order:
+            self._results[user_id] = session
+
+    def result_of_user(self, user_id: int) -> DuelSession | None:
+        """Законченный бой, итог которого боец ещё не закрыл."""
+        return self._results.get(user_id)
+
+    def forget_result(self, user_id: int) -> None:
+        self._results.pop(user_id, None)
 
     def is_busy(self, user_id: int) -> bool:
         return user_id in self._busy
@@ -752,22 +952,26 @@ class DuelService:
         self._duel_by_chat.clear()
         self._challenges.clear()
         self._busy.clear()
+        self._results.clear()
 
     # ---------- отправка ----------
 
-    async def _send(self, chat_id: int, thread_id: int | None, text: str, **kwargs):
-        return await self.bot.send_message(
-            chat_id, text, message_thread_id=thread_id, **kwargs
+    async def _close_panel(self, session: DuelSession, text: str) -> None:
+        """Погасить панель раунда, оставив на её месте итог.
+
+        Кнопки убираем пустой разметкой: без неё Telegram оставит старые, и
+        по ним можно будет ходить в уже сыгранном раунде.
+        """
+        await self._edit(
+            session.chat_id,
+            session.prompt_message_id,
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
         )
+        session.prompt_message_id = None
+
+    async def _send(self, chat_id: int, thread_id: int | None, text: str, **kwargs):
+        return await self.voice.send(chat_id, thread_id, text, **kwargs)
 
     async def _edit(self, chat_id: int, message_id: int | None, text: str, **kwargs):
-        if message_id is None:
-            return None
-        try:
-            return await self.bot.edit_message_text(
-                text, chat_id=chat_id, message_id=message_id, **kwargs
-            )
-        except TelegramBadRequest as error:
-            if "message is not modified" not in str(error):
-                logger.warning("Не удалось отредактировать сообщение: %s", error)
-            return None
+        return await self.voice.edit(chat_id, message_id, text, **kwargs)

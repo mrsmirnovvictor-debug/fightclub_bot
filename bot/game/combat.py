@@ -1,7 +1,7 @@
 """Боевой движок: раунд = одновременный размен ударами.
 
 Каждый боец выбирает зону удара для каждого своего оружия и один блок.
-Блок закрывает только смежные зоны: две обычно, три со щитом или у танка.
+Блок закрывает только смежные зоны: две обычно, три со щитом.
 
 Выбор может быть неполным — что боец успел нажать, то и работает: не выбрал
 зону удара, значит не бьёт; не выбрал блок, значит стоит открытым. Кто не
@@ -30,21 +30,64 @@ from bot.game.classes import (
     get_class,
 )
 from bot.game.equipment import BARE_HANDS, BARE_HANDS_ICON, Equipment
-from bot.game.stats import COUNTER_DAMAGE_MULT, DerivedStats, derive
+from bot.game.stats import (
+    NO_LIMITS,
+    BLOCK_BREAK_CHANCE,
+    BLOCK_BREAK_DAMAGE_SHARE,
+    COUNTER_DAMAGE_MULT,
+    MAX_ACCURACY,
+    MAX_ANTICRIT,
+    MAX_BLOCK_HOLD,
+    MAX_COUNTER_CHANCE,
+    MAX_CRIT_CHANCE,
+    MIN_BLOCK_BREAK,
+    DerivedStats,
+    derive,
+)
 
-# После этого раунда бойцы начинают уставать и бьют всё больнее —
-# чтобы дуэль не превращалась в бесконечное перетягивание блоков.
-FATIGUE_FROM_ROUND = 6
-FATIGUE_STEP = 0.12
-# Жёсткий лимит: дальше судья останавливает бой и считает по здоровью.
-MAX_ROUNDS = 20
+# С трети боя бойцы начинают уставать и бьют всё больнее — чтобы дуэль не
+# превращалась в бесконечное перетягивание блоков. Кривая не абсолютная, а
+# растянутая на длину боя: к финальному гонгу удар тяжелее ровно вот на
+# столько, а где именно начнётся разгон, считается от лимита ходов. Иначе
+# длинный бой к последнему ходу выбивал бы втрое — ту же беду мы уже ловили
+# в рейде, когда усталость считали по ударам отряда, а не по волнам.
+FATIGUE_TOP = 1.44
+# Доля боя, которую бойцы держатся ровно
+FATIGUE_CALM_SHARE = 3
+
+# Бой идёт по-боксёрски: ходы собраны в раунды, между раундами перерыв.
+# Три хода на раунд — это и есть те самые три минуты, за которые в боксе
+# успевают размяться и устать, а заодно ровно столько сообщений, сколько
+# Telegram разрешает сказать в группу без пауз посреди боя.
+TURNS_PER_ROUND = 3
+# Кулачный бой короткий: он идёт в ветке группы, где Telegram считает каждое
+# сообщение, и панель у всех одинаковая — растягивать там нечего.
+MATCH_ROUNDS = 6
+# Бой с оружием, групповой и рейд идут в карточке: сообщений там нет, зато
+# есть снаряжение и способности, которым нужно время, чтобы себя показать.
+LONG_ROUNDS = 9
+# Жёсткий лимит кулачного боя: восемнадцать ходов, дальше решение судьи.
+MAX_TURNS = TURNS_PER_ROUND * MATCH_ROUNDS
+LONG_TURNS = TURNS_PER_ROUND * LONG_ROUNDS
+# Прежнее имя того же числа — на него смотрит справка и групповой бой
+MAX_ROUNDS = MAX_TURNS
 # Столько пропусков подряд, и судья засчитывает техническое поражение.
 MAX_MISSED_TURNS = 3
+# Уворот нельзя сбить точностью в ноль: сколько бы ни было точности,
+# у защищающегося остаётся эта надежда уйти с линии удара.
+MIN_DODGE_CHANCE = 0.02
+# И потолок сверху, чтобы бой не превращался в танцы вокруг трикстера.
+# Снимается он тем же выключателем, что и остальные, — NO_LIMITS.
+MAX_DODGE_CHANCE = 1.0 if NO_LIMITS else 0.7
+# Броня не может съесть больше этой доли удара: иначе комплект брони делает
+# лёгкие классы безвредными, а бой — бесконечным.
+MAX_ARMOR_SHARE = 0.6
 
 
 class Outcome(str, Enum):
     SKIP = "skip"  # боец не выбрал зону удара
     BLOCK = "block"  # защитник закрыл зону
+    BREAK = "break"  # крит проломил блок
     DODGE = "dodge"  # ушёл с линии удара
     COUNTER = "counter"  # ушёл и ответил
     HIT = "hit"
@@ -60,10 +103,25 @@ class DuelEnd(str, Enum):
 
 @dataclass(frozen=True)
 class Action:
-    """Выбор бойца на раунд: куда бьёт каждым оружием и чем закрылся."""
+    """Выбор бойца на ход: куда бьёт каждой рукой и чем закрылся.
 
-    attacks: tuple[Zone | None, ...] = (None,)
+    Ударов столько, сколько рук с оружием: одна — один, второе оружие во
+    второй руке — два. Блок один на все руки, шириной в две зоны, а со
+    щитом — в три.
+    """
+
+    attacks: tuple[Zone | None, ...] = ()
     block: tuple[Zone, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Одиночный удар пишут и кортежем, и голой зоной: приводим к кортежу
+        if isinstance(self.attacks, Zone) or self.attacks is None:
+            object.__setattr__(self, "attacks", (self.attacks,))
+
+    @property
+    def attack(self) -> Zone | None:
+        """Удар основной руки — тот, что был единственным до второй руки."""
+        return self.attacks[0] if self.attacks else None
 
     @property
     def is_empty(self) -> bool:
@@ -73,6 +131,38 @@ class Action:
     def is_complete(self, weapons: int = 1) -> bool:
         chosen = [zone for zone in self.attacks[:weapons] if zone is not None]
         return len(chosen) == weapons and bool(self.block)
+
+
+# ---------- итоговые доли: своё плюс вещи ----------
+#
+# Потолки здесь свои, не те, что внутри derive(): там прижимается то, что
+# боец набрал характеристиками, а тут — вместе с надетым. Считать это должны
+# и карточка, и профиль, и сам ринг, поэтому арифметика лежит в одном месте:
+# стоит её продублировать, и карточка начинает обещать одно, а бой — другое.
+
+
+def total_accuracy(base: float, gear: float) -> float:
+    return min(MAX_ACCURACY, base + gear)
+
+
+def total_anticrit(base: float, gear: float) -> float:
+    return min(MAX_ANTICRIT, base + gear)
+
+
+def total_dodge(base: float, gear: float) -> float:
+    return min(MAX_DODGE_CHANCE, base + gear)
+
+
+def total_crit(base: float, gear: float) -> float:
+    return min(MAX_CRIT_CHANCE, base + gear)
+
+
+def total_counter(base: float, gear: float) -> float:
+    return min(MAX_COUNTER_CHANCE, base + gear)
+
+
+def total_block_hold(base: float, gear: float = 0.0) -> float:
+    return min(MAX_BLOCK_HOLD, base + gear)
 
 
 @dataclass
@@ -88,11 +178,15 @@ class Fighter:
     missed_turns: int = 0  # пропусков подряд
     damage_dealt: int = 0  # всего нанесено за бой — от этого считается опыт
     equipment: Equipment = field(default_factory=Equipment)
+    # Запас здоровья сверх своего: от вещей и от выпитых эликсиров
+    extra_hp: int = 0
+    # Подписчик: значок у имени судья ставит по этому полю
+    pro: bool = False
     derived: DerivedStats = field(init=False)
 
     def __post_init__(self) -> None:
         self.derived = derive(
-            self.fclass, self.stats, self.level, self.equipment.hp_bonus
+            self.fclass, self.stats, self.level, self.equipment.hp_bonus + self.extra_hp
         )
         if self.hp <= 0:
             self.hp = self.derived.max_hp
@@ -115,17 +209,74 @@ class Fighter:
         return self.missed_turns >= MAX_MISSED_TURNS
 
     @property
+    def accuracy(self) -> float:
+        """Точность: ловкость плюс проценты с вещей. Сбивает чужой уворот."""
+        return total_accuracy(self.derived.accuracy, self.equipment.accuracy)
+
+    @property
+    def anticrit(self) -> float:
+        """Антикрит: интуиция плюс проценты с вещей. Сбивает чужой крит."""
+        return total_anticrit(self.derived.anticrit, self.equipment.anticrit)
+
+    @property
+    def resist(self) -> float:
+        """Сопротивление урону от выносливости: доля, которую снимает с удара."""
+        return self.derived.resist
+
+    @property
+    def penetration(self) -> float:
+        """Пробивание от ловкости: срезает чужое сопротивление."""
+        return self.derived.penetration
+
+    def resist_against(self, attacker: "Fighter") -> float:
+        """Сколько удастся снять с удара этого соперника: резист минус пробой."""
+        return max(0.0, self.resist - attacker.penetration)
+
+    @property
+    def dodge(self) -> float:
+        """Уворот: ловкость плюс проценты с вещей."""
+        return total_dodge(self.derived.dodge_chance, self.equipment.dodge)
+
+    @property
+    def crit(self) -> float:
+        """Шанс крита: интуиция плюс проценты с вещей."""
+        return total_crit(self.derived.crit_chance, self.equipment.crit)
+
+    @property
+    def counter(self) -> float:
+        """Шанс контрудара: ловкость плюс проценты с вещей."""
+        return total_counter(self.derived.counter_chance, self.equipment.counter)
+
+    @property
+    def block_hold(self) -> float:
+        """Насколько крепко держится блок под критом. Это свойство класса."""
+        return total_block_hold(self.derived.block_hold)
+
+    def block_break_against(self, attacker: "Fighter") -> float:
+        """Шанс, что крит этого соперника проломит мой блок."""
+        return max(MIN_BLOCK_BREAK, BLOCK_BREAK_CHANCE - self.block_hold)
+
+    def dodge_against(self, attacker: "Fighter") -> float:
+        """Шанс увернуться от этого соперника: свой уворот минус его точность."""
+        return min(
+            MAX_DODGE_CHANCE, max(MIN_DODGE_CHANCE, self.dodge - attacker.accuracy)
+        )
+
+    def crit_against(self, defender: "Fighter") -> float:
+        """Шанс крита по этому сопернику: свой крит минус его антикрит."""
+        return max(0.0, self.crit - defender.anticrit)
+
+    def armor_range(self, zone: Zone) -> tuple[int, int]:
+        return self.equipment.armor_range(zone)
+
+    @property
     def has_shield(self) -> bool:
         return self.equipment.has_shield
 
     @property
     def weapons(self) -> tuple[str, ...]:
-        """Чем бьёт: одно название на каждое оружие, без оружия — кулаком."""
+        """Чем бьёт: по названию на каждую руку с оружием."""
         return self.equipment.weapon_names or (BARE_HANDS,)
-
-    @property
-    def weapon_icons(self) -> tuple[str, ...]:
-        return self.equipment.weapon_icons or (BARE_HANDS_ICON,)
 
     @property
     def attacks_per_round(self) -> int:
@@ -133,25 +284,56 @@ class Fighter:
 
     @property
     def block_width(self) -> int:
-        """Сколько смежных зон закрывает блок: щит и танк дают три."""
-        wide = SHIELD_BLOCK_WIDTH if self.has_shield else BLOCK_WIDTH
-        return max(self.fclass.block_zones, wide)
+        """Сколько смежных зон закрывает блок.
+
+        Своими руками — две, и класс на это не влияет: разница между
+        классами живёт в характеристиках. Третью зону даёт только щит.
+        """
+        return SHIELD_BLOCK_WIDTH if self.has_shield else BLOCK_WIDTH
 
     def block_options(self) -> tuple[tuple[Zone, ...], ...]:
         return block_combos(self.block_width)
 
+    @property
+    def weapon(self) -> str:
+        """Чем бьёт основной рукой. Без оружия — кулаком."""
+        return self.equipment.weapon_name or BARE_HANDS
+
+    @property
+    def weapon_icon(self) -> str:
+        return self.equipment.weapon_icon or BARE_HANDS_ICON
+
+    @property
+    def weapon_icons(self) -> tuple[str, ...]:
+        """Значки рук — по столбцу ударов на каждую."""
+        return self.equipment.weapon_icons or (BARE_HANDS_ICON,)
+
     @classmethod
-    def from_player(cls, player) -> "Fighter":
-        """Собрать бойца из записи игрока: здоровье — то, что успело затянуться."""
-        return cls(
+    def from_player(cls, player, armed: bool = True) -> "Fighter":
+        """Собрать бойца из записи игрока: здоровье — то, что успело затянуться.
+
+        В кулачном бою вещи остаются в раздевалке: ни оружия, ни брони, ни
+        прибавок — спорят голые характеристики. Здоровье при этом урезается
+        по новому потолку, иначе боец вышел бы на ринг с чужим запасом.
+
+        Выпитое — другое дело: эликсир в раздевалке не оставишь, поэтому его
+        прибавка идёт с бойцом на ринг в любом режиме.
+        """
+        equipment = player.equipment if armed else Equipment()
+        effect_stats = getattr(player, "effect_stats", None) or Stats()
+        stats = player.stats if armed else player.base_stats.merge(effect_stats)
+        fighter = cls(
             user_id=player.user_id,
             name=player.nickname,
             fclass=get_class(player.class_code),
-            stats=player.stats,
+            stats=stats,
             level=player.level,
-            hp=player.current_hp(),
-            equipment=player.equipment,
+            equipment=equipment,
+            extra_hp=getattr(player, "effect_hp", 0),
+            pro=bool(getattr(player, "is_pro", bool)()),
         )
+        fighter.hp = max(1, min(player.current_hp(), fighter.max_hp))
+        return fighter
 
 
 @dataclass
@@ -165,7 +347,8 @@ class Strike:
     weapon: str = BARE_HANDS
     damage: int = 0
     counter_damage: int = 0
-    by_shield: bool = False  # блок принят щитом
+    armor: int = 0  # сколько сняла броня зоны
+    absorbed: int = 0  # сколько всего съели выносливость и броня
     missed_turn: bool = False  # боец не нажал вообще ничего
     defender_hp_after: int = 0
     attacker_hp_after: int = 0
@@ -181,44 +364,98 @@ class RoundResult:
     end_reason: DuelEnd | None = None
 
 
-def fatigue_multiplier(round_number: int) -> float:
-    """Множитель урона за раунд: с какого-то момента бойцы «раскрываются»."""
-    extra = max(0, round_number - FATIGUE_FROM_ROUND)
-    return 1.0 + extra * FATIGUE_STEP
+def boxing_round(turn: int) -> int:
+    """В каком раунде идёт этот ход. Ходы считаются с единицы."""
+    return (turn - 1) // TURNS_PER_ROUND + 1
+
+
+def turn_in_round(turn: int) -> int:
+    """Который это удар внутри своего раунда: первый, второй или третий."""
+    return (turn - 1) % TURNS_PER_ROUND + 1
+
+
+def round_is_over(turn: int) -> bool:
+    """Последний ход раунда — после него бойцов разводят по углам."""
+    return turn % TURNS_PER_ROUND == 0
+
+
+def fatigue_calm(limit: int = MAX_TURNS) -> int:
+    """До какого хода бойцы держатся ровно — треть отпущенного боя."""
+    return max(1, limit // FATIGUE_CALM_SHARE)
+
+
+def fatigue_multiplier(turn: int, limit: int = MAX_TURNS) -> float:
+    """Множитель урона на этом ходу: под конец боя бойцы «раскрываются».
+
+    Разгон растянут на длину боя, поэтому и короткая дуэль, и длинный бой с
+    оружием приходят к финальному гонгу с одинаково тяжёлым ударом.
+    """
+    calm = fatigue_calm(limit)
+    step = FATIGUE_TOP / max(1, limit - calm)
+    return 1.0 + max(0, turn - calm) * step
 
 
 def random_action(fighter: Fighter, rng: random.Random | None = None) -> Action:
     """Полный случайный выбор — для симуляций и тестов."""
     rng = rng or random
-    attacks = tuple(
-        rng.choice(ALL_ZONES) for _ in range(fighter.attacks_per_round)
+    return Action(
+        attacks=tuple(rng.choice(ALL_ZONES) for _ in fighter.weapons),
+        block=rng.choice(fighter.block_options()),
     )
-    return Action(attacks=attacks, block=rng.choice(fighter.block_options()))
 
 
 def validate_action(action: Action, fighter: Fighter) -> None:
-    """Неполный выбор допустим, лишние удары и чужие блоки — нет."""
-    if len(action.attacks) > fighter.attacks_per_round:
-        raise ValueError(
-            f"У бойца {fighter.attacks_per_round} удара за раунд, "
-            f"а выбрано {len(action.attacks)}"
-        )
+    """Неполный выбор допустим, чужие блоки — нет."""
     if action.block and action.block not in fighter.block_options():
         raise ValueError(
             f"Блок должен закрывать {fighter.block_width} смежные зоны"
         )
 
 
-def _resolve_strike(
+def strikes_of(
+    attacker: Fighter,
+    defender: Fighter,
+    action: Action,
+    defender_action: Action,
+    round_number: int,
+    rng: random.Random,
+    limit: int = MAX_TURNS,
+) -> list[Strike]:
+    """Все удары одного бойца за ход — по одному на руку с оружием."""
+    weapons = attacker.weapons
+    zones = list(action.attacks) + [None] * (len(weapons) - len(action.attacks))
+    strikes = [
+        strike_of(
+            attacker,
+            defender,
+            zones[index],
+            weapon,
+            index,
+            defender_action,
+            round_number,
+            rng,
+            missed_turn=action.is_empty and index == 0,
+            limit=limit,
+        )
+        for index, weapon in enumerate(weapons)
+    ]
+    # Пропуск хода судья отмечает одной строкой, а не по разу на каждую руку
+    return strikes[:1] if action.is_empty else strikes
+
+
+def strike_of(
     attacker: Fighter,
     defender: Fighter,
     zone: Zone | None,
     weapon: str,
+    hand: int,
     defender_action: Action,
     round_number: int,
     rng: random.Random,
     missed_turn: bool = False,
+    limit: int = MAX_TURNS,
 ) -> Strike:
+    """Один удар одной рукой."""
     strike = Strike(
         attacker_id=attacker.user_id,
         defender_id=defender.user_id,
@@ -232,64 +469,101 @@ def _resolve_strike(
 
     if zone in defender_action.block:
         strike.outcome = Outcome.BLOCK
-        strike.by_shield = defender.has_shield
+        # Классический порядок: сначала блок, потом крит, потом пробитие.
+        # Удар, который должен был стать критическим, упирается в блок не
+        # насмерть — с какой-то вероятностью он этот блок проламывает.
+        crit = rng.random() < attacker.crit_against(defender)
+        if crit and rng.random() < defender.block_break_against(attacker):
+            strike.outcome = Outcome.BREAK
+            # Проходит ровно половина потолка — и всё. Ни выносливость, ни
+            # броня зоны её больше не режут: свою долю защита уже отработала
+            # тем, что блок вообще был. Иначе «половина максимального урона»
+            # доходила бы до тела слабее обычного попадания.
+            broken = (
+                _max_damage(attacker, round_number, hand, limit)
+                * BLOCK_BREAK_DAMAGE_SHARE
+            )
+            strike.damage = max(1, int(round(broken)))
         return strike
 
-    dodge_chance = min(
-        0.6, max(0.01, defender.derived.dodge_chance - attacker.derived.accuracy)
-    )
-    if rng.random() < dodge_chance:
+    if rng.random() < defender.dodge_against(attacker):
         strike.outcome = Outcome.DODGE
-        if rng.random() < defender.derived.counter_chance:
-            counter = _roll_damage(defender, round_number, rng) * COUNTER_DAMAGE_MULT
+        if rng.random() < defender.counter:
+            counter = (
+                _roll_damage(defender, round_number, rng, hand=0, limit=limit)
+                * COUNTER_DAMAGE_MULT
+            )
+            # Контрудар прилетает не в выбранную зону, поэтому броню не трогает —
+            # только сопротивление от выносливости.
+            counter *= 1.0 - attacker.resist_against(defender)
             strike.counter_damage = max(1, int(round(counter)))
             strike.outcome = Outcome.COUNTER
         return strike
 
-    damage = _roll_damage(attacker, round_number, rng)
-    if rng.random() < attacker.derived.crit_chance:
+    damage = _roll_damage(attacker, round_number, rng, hand, limit)
+    if rng.random() < attacker.crit_against(defender):
         strike.outcome = Outcome.CRIT
         damage *= attacker.derived.crit_power
     else:
         strike.outcome = Outcome.HIT
-    strike.damage = max(1, int(round(damage)))
+
+    _land_damage(strike, damage, attacker, defender, zone, rng)
     return strike
 
 
-def _roll_damage(fighter: Fighter, round_number: int, rng: random.Random) -> float:
-    raw = rng.randint(fighter.derived.damage_min, fighter.derived.damage_max)
-    return raw * fatigue_multiplier(round_number)
-
-
-def _strikes_of(
+def _land_damage(
+    strike: Strike,
+    damage: float,
     attacker: Fighter,
     defender: Fighter,
-    action: Action,
-    defender_action: Action,
+    zone: Zone,
+    rng: random.Random,
+) -> None:
+    """Довести удар до тела: выносливость и броня той зоны, куда пришёлся.
+
+    Пробитый блок идёт этой же дорогой: он проломил защиту рук, но не
+    доспех на зоне и не выносливость соперника.
+    """
+    before = damage
+    damage *= 1.0 - defender.resist_against(attacker)
+    armor = min(defender.equipment.roll_armor(zone, rng), damage * MAX_ARMOR_SHARE)
+    strike.armor = int(round(armor))
+    damage -= armor
+    strike.damage = max(1, int(round(damage)))
+    strike.absorbed = max(0, int(round(before)) - strike.damage)
+
+
+def _roll_damage(
+    fighter: Fighter,
     round_number: int,
     rng: random.Random,
-) -> list[Strike]:
-    """Все удары одного бойца за раунд — по одному на оружие."""
-    strikes: list[Strike] = []
-    weapons = attacker.weapons
-    zones = list(action.attacks) + [None] * (len(weapons) - len(action.attacks))
-    for index, weapon in enumerate(weapons):
-        strikes.append(
-            _resolve_strike(
-                attacker,
-                defender,
-                zones[index],
-                weapon,
-                defender_action,
-                round_number,
-                rng,
-                missed_turn=action.is_empty and index == 0,
-            )
-        )
-    # Пропуск хода показываем одной строкой, а не по разу на каждое оружие
-    if action.is_empty:
-        return strikes[:1]
-    return strikes
+    hand: int = 0,
+    limit: int = MAX_TURNS,
+) -> float:
+    """Урон от силы плюс урон оружия, всё вместе растёт от усталости.
+
+    Класс влияет и на оружие: одну и ту же биту воин проворачивает лучше,
+    чем танк. Иначе плоский урон оружия стирал бы разницу между классами —
+    у того, кто бьёт слабо, прибавка весит вдвое больше.
+    """
+    raw = rng.randint(fighter.derived.damage_min, fighter.derived.damage_max)
+    weapon = fighter.equipment.roll_weapon_damage(hand, rng)
+    raw += weapon * fighter.fclass.damage_mult
+    return raw * fatigue_multiplier(round_number, limit)
+
+
+def _max_damage(
+    fighter: Fighter, round_number: int, hand: int = 0, limit: int = MAX_TURNS
+) -> float:
+    """Самое большое, что этот боец может выбить этим оружием в этом раунде.
+
+    От него берётся половина, когда крит проламывает блок: пробитие не
+    бросок, а фиксированная доля потолка — иначе редкое событие ещё и
+    рулеткой решало бы, стоило ли оно того.
+    """
+    weapon = fighter.equipment.weapon_damage_max(hand)
+    raw = fighter.derived.damage_max + weapon * fighter.fclass.damage_mult
+    return raw * fatigue_multiplier(round_number, limit)
 
 
 def resolve_round(
@@ -299,8 +573,14 @@ def resolve_round(
     second_action: Action,
     round_number: int,
     rng: random.Random | None = None,
+    limit: int = MAX_TURNS,
 ) -> RoundResult:
-    """Посчитать раунд и применить урон. Меняет hp и счётчики пропусков."""
+    """Посчитать раунд и применить урон. Меняет hp и счётчики пропусков.
+
+    `limit` — сколько ходов отпущено этому бою: после него судья считает
+    очки. Кулачный короче боя с оружием, и от длины зависит ещё и разгон
+    усталости, поэтому число идёт сюда, а не берётся из модуля.
+    """
     rng = rng or random
 
     for fighter, action in ((first, first_action), (second, second_action)):
@@ -309,8 +589,11 @@ def resolve_round(
         else:
             fighter.missed_turns = 0
 
-    strikes = _strikes_of(first, second, first_action, second_action, round_number, rng)
-    strikes += _strikes_of(second, first, second_action, first_action, round_number, rng)
+    strikes = strikes_of(
+        first, second, first_action, second_action, round_number, rng, limit
+    ) + strikes_of(
+        second, first, second_action, first_action, round_number, rng, limit
+    )
 
     # Урон всех ударов считается от состояния на начало раунда
     damage_taken = {first.user_id: 0, second.user_id: 0}
@@ -332,7 +615,7 @@ def resolve_round(
         strikes=strikes,
         hp_after={first.user_id: first.hp, second.user_id: second.hp},
     )
-    _apply_ending(result, first, second)
+    _apply_ending(result, first, second, limit)
     return result
 
 
@@ -359,7 +642,9 @@ def _fill_running_hp(strikes: list[Strike], fighters: dict[int, Fighter]) -> Non
         strike.attacker_hp_after = running[strike.attacker_id]
 
 
-def _apply_ending(result: RoundResult, first: Fighter, second: Fighter) -> None:
+def _apply_ending(
+    result: RoundResult, first: Fighter, second: Fighter, limit: int = MAX_TURNS
+) -> None:
     """Проставить исход боя, если раунд оказался последним."""
     if not first.alive and not second.alive:
         result.finished = True
@@ -379,24 +664,43 @@ def _apply_ending(result: RoundResult, first: Fighter, second: Fighter) -> None:
             result.winner_id = second.user_id
         elif second.gave_up and not first.gave_up:
             result.winner_id = first.user_id
-    elif result.number >= MAX_ROUNDS:
+    elif result.number >= limit:
         result.finished = True
         result.end_reason = DuelEnd.JUDGE
         result.winner_id = judge_decision(first, second)
 
 
 def judge_decision(first: Fighter, second: Fighter) -> int | None:
-    """Решение судьи по остатку здоровья, если раунды кончились."""
-    if first.hp_percent > second.hp_percent:
-        return first.user_id
-    if second.hp_percent > first.hp_percent:
-        return second.user_id
+    """Решение судьи, когда шесть раундов отбоксировали без нокаута.
+
+    Считаем по нанесённому урону, а не по остатку здоровья: победа должна
+    достаться тому, кто дрался, а не тому, у кого запас больше. У танка
+    здоровья изначально вдвое против ассасина — по остатку он выигрывал бы
+    судейские решения, ни разу толком не попав.
+
+    Урон вровень — смотрим, кто меньше пропустил. Вровень и это — ничья, но
+    случается такое примерно никогда: ничья в клубе бывает, когда бойцы
+    роняют друг друга одним разменом.
+    """
+    if first.damage_dealt != second.damage_dealt:
+        return (
+            first.user_id
+            if first.damage_dealt > second.damage_dealt
+            else second.user_id
+        )
+    if first.hp_percent != second.hp_percent:
+        return first.user_id if first.hp_percent > second.hp_percent else second.user_id
     return None
 
 
 __all__ = [
+    "LONG_ROUNDS",
+    "LONG_TURNS",
+    "MATCH_ROUNDS",
     "MAX_MISSED_TURNS",
     "MAX_ROUNDS",
+    "MAX_TURNS",
+    "TURNS_PER_ROUND",
     "Action",
     "DuelEnd",
     "Fighter",
@@ -404,9 +708,12 @@ __all__ = [
     "RoundResult",
     "Strike",
     "block_combo",
+    "boxing_round",
     "fatigue_multiplier",
     "judge_decision",
     "random_action",
+    "round_is_over",
     "resolve_round",
+    "turn_in_round",
     "validate_action",
 ]

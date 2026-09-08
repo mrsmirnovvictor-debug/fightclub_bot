@@ -7,7 +7,11 @@ import pytest  # noqa: E402
 
 from bot.config import Config  # noqa: E402
 from bot.database import Database  # noqa: E402
+from bot.battle_service import BattleService  # noqa: E402
 from bot.duel_service import DuelService  # noqa: E402
+from bot.raid_service import RaidService
+from bot.store_service import StoreService  # noqa: E402
+from bot.tournament_service import TournamentService  # noqa: E402
 from tests.harness import BOT, DISPATCHER, SESSION  # noqa: E402
 
 
@@ -23,17 +27,57 @@ async def db(tmp_path):
 @pytest.fixture
 async def dispatcher_env(db):
     """Общий диспетчер, но со свежей базой и пустой историей вызовов."""
-    config = Config(bot_token="42:TESTTOKEN", db_path=":memory:", turn_timeout=600)
+    config = Config(
+        bot_token="42:TESTTOKEN",
+        db_path=":memory:",
+        turn_timeout=600,
+        round_break=0,  # ходы идут подряд: отдых по часам проверяют отдельно
+    )
     duels = DuelService(bot=BOT, db=db, config=config)
+    battles = BattleService(bot=BOT, db=db, config=config)
+    tournaments = TournamentService(bot=BOT, db=db, config=config, duels=duels)
+    store = StoreService(bot=BOT, db=db, config=config)
+    raids = RaidService(bot=BOT, db=db, config=config)
     DISPATCHER["db"] = db
     DISPATCHER["duels"] = duels
+    DISPATCHER["battles"] = battles
+    DISPATCHER["tournaments"] = tournaments
+    DISPATCHER["store"] = store
+    DISPATCHER["raids"] = raids
     DISPATCHER["config"] = config
     SESSION.calls.clear()
     yield db, duels, SESSION
     await duels.shutdown()
+    await battles.shutdown()
+    await tournaments.shutdown()
+    await raids.shutdown()
 
 
 @pytest.fixture
 async def arena(dispatcher_env):
     """Псевдоним для групповых тестов: база, сервис дуэлей и лог вызовов."""
     return dispatcher_env
+
+
+@pytest.fixture
+def battles():
+    """Сервис групповых боёв того же диспетчера."""
+    return DISPATCHER["battles"]
+
+
+@pytest.fixture
+def raids():
+    """Сервис рейдов того же диспетчера."""
+    return DISPATCHER["raids"]
+
+
+@pytest.fixture
+def store():
+    """Касса того же диспетчера."""
+    return DISPATCHER["store"]
+
+
+@pytest.fixture
+def tournaments():
+    """Турнирный сервис того же диспетчера."""
+    return DISPATCHER["tournaments"]

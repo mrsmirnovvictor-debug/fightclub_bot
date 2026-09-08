@@ -2,12 +2,30 @@
 
 from __future__ import annotations
 
-from aiogram.types import Message
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 
-from bot.game.classes import ALL_STATS, FighterClass, Stats
+from bot.config import Config
+from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats
+from bot.game.combat import (
+    total_accuracy,
+    total_anticrit,
+    total_block_hold,
+    total_counter,
+    total_crit,
+    total_dodge,
+)
+from bot.game.equipment import Equipment
 from bot.game.economy import MICRO_UPS_PER_LEVEL
 from bot.game.stats import derive
+from bot.game.links import links
 from bot.game.narrator import esc, health_line
+from bot.game.potions import spell_duration
+from bot.game.pro import PRO_BADGE
 from bot.models import Player
 
 PRIVATE_HINT = (
@@ -31,16 +49,46 @@ def stats_block(stats: Stats, indent: str = "") -> str:
     )
 
 
-def combat_block(fclass: FighterClass, stats: Stats, level: int = 1) -> str:
-    d = derive(fclass, stats, level)
-    return (
-        f"❤️ Запас здоровья: <b>{d.max_hp}</b>\n"
-        f"👊 Урон: <b>{d.damage_min}–{d.damage_max}</b>\n"
-        f"💥 Крит: <b>{d.crit_chance:.0%}</b> (×{d.crit_power})\n"
-        f"🌀 Уворот: <b>{d.dodge_chance:.0%}</b>\n"
-        f"🔄 Контрудар: <b>{d.counter_chance:.0%}</b>\n"
-        f"🛡 Блок: <b>{d.block_zones}</b> зоны из 5"
-    )
+def combat_block(
+    fclass: FighterClass,
+    stats: Stats,
+    level: int = 1,
+    equipment: Equipment | None = None,
+    extra_hp: int = 0,
+) -> str:
+    """extra_hp — запас сверх вещей: то, что дал выпитый эликсир."""
+    equipment = equipment or Equipment()
+    d = derive(fclass, stats, level, equipment.hp_bonus + extra_hp)
+    weapon = equipment.weapon_damage
+    hit = f"{d.damage_min}–{d.damage_max}"
+    if weapon[1]:
+        # оружие тоже проходит через множитель класса
+        low, high = (round(value * fclass.damage_mult) for value in weapon)
+        hit += f" + оружие {low}–{high}"
+    lines = [
+        f"❤️ Запас здоровья: <b>{d.max_hp}</b>",
+        f"👊 Урон: <b>{hit}</b>",
+        f"💥 Крит: <b>{total_crit(d.crit_chance, equipment.crit):.0%}</b> "
+        f"(×{d.crit_power})",
+        f"🚫 Антикрит: <b>{total_anticrit(d.anticrit, equipment.anticrit):.0%}</b>",
+        f"🌀 Уворот: <b>{total_dodge(d.dodge_chance, equipment.dodge):.0%}</b>",
+        f"🎯 Точность: <b>{total_accuracy(d.accuracy, equipment.accuracy):.0%}</b>",
+        f"🔄 Контрудар: "
+        f"<b>{total_counter(d.counter_chance, equipment.counter):.0%}</b>",
+        f"🛡🩸 Держит блок: <b>{total_block_hold(d.block_hold):.0%}</b>",
+        f"🪨 Сопротивление: <b>{d.resist:.0%}</b>",
+        f"🪚 Пробивание: <b>{d.penetration:.0%}</b>",
+    ]
+    armor = [
+        f"{zone.emoji}{low}–{high}"
+        for zone, (low, high) in (
+            (zone, equipment.armor_range(zone)) for zone in ALL_ZONES
+        )
+        if high
+    ]
+    if armor:
+        lines.append("🛡 Броня: <b>" + " ".join(armor) + "</b>")
+    return "\n".join(lines)
 
 
 def progress_line(player: Player) -> str:
@@ -58,29 +106,88 @@ def progress_line(player: Player) -> str:
     )
 
 
-def profile_text(player: Player) -> str:
+def effects_line(player: Player) -> str:
+    """Что сейчас действует и сколько ему осталось. Пусто — ничего не пил."""
+    working = player.active_effects()
+    if not working:
+        return ""
+    parts = [
+        f"{effect.potion.emoji} {effect.potion.title} "
+        f"({spell_duration(effect.seconds_left())})"
+        for effect in working
+        if effect.potion is not None
+    ]
+    return "🧪 Действует: " + ", ".join(parts) if parts else ""
+
+
+def profile_text(player: Player, own: bool = True) -> str:
+    """Профиль текстом. Чужому кошелёк и подсказки про очки не показываем."""
     fclass = player.fclass
+    badge = f" {player.badge}" if player.badge else ""
     lines = [
-        f"{player.avatar} <b>{esc(player.nickname)}</b>",
+        f"{player.avatar} <b>{esc(player.nickname)}</b>{badge}",
         f"{fclass.label} · {player.level} уровень · рейтинг <b>{player.rating}</b>",
         health_line(player),
         progress_line(player),
-        f"💰 Кредиты: <b>{player.credits}</b>",
+    ]
+    if own:
+        lines.append(f"💰 Кредиты: <b>{player.credits}</b>")
+    if own and player.is_pro():
+        lines.append(
+            f"{PRO_BADGE} Подписка PRO: осталось "
+            f"<b>{spell_duration(player.pro_left())}</b> · опыт ×1.5"
+        )
+    effects = effects_line(player)
+    if effects:
+        lines.append(effects)
+    lines += [
         "",
         stats_block(player.stats),
         "",
-        combat_block(fclass, player.stats, player.level),
+        combat_block(
+            fclass, player.stats, player.level, player.equipment, player.effect_hp
+        ),
         "",
         f"🥊 Боёв: <b>{player.fights}</b> · "
         f"побед: <b>{player.wins}</b> · "
         f"поражений: <b>{player.losses}</b> · "
         f"ничьих: <b>{player.draws}</b>",
     ]
-    if player.free_points:
+    if own and player.free_points:
         lines.append(
             f"\n✨ Свободных очков: <b>{player.free_points}</b> — раскидай их: /upgrade"
         )
     return "\n".join(lines)
+
+
+def card_keyboard(
+    config: Config, user_id: int, private: bool
+) -> InlineKeyboardMarkup | None:
+    """Кнопка, открывающая карточку.
+
+    В личке Telegram разрешает web_app-кнопки, и это самый надёжный путь:
+    он не зависит от того, заведено ли приложение в BotFather. В группах
+    web_app-кнопок нет, поэтому там ведём на прямую ссылку мини-аппа.
+    """
+    if private and config.webapp_enabled:
+        url = f"{config.webapp_url}/?user_id={user_id}"
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🪪 Карточка бойца", web_app=WebAppInfo(url=url)
+                    )
+                ]
+            ]
+        )
+    card_url = links.card_url(user_id)
+    if card_url:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🪪 Карточка бойца", url=card_url)]
+            ]
+        )
+    return None
 
 
 async def send_profile(message: Message, player: Player, keyboard=None) -> None:

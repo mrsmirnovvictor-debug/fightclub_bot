@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-import random
+from bot.game.pro import PRO_EXP_SHARE
 
 # ---------- уровни и опыт ----------
 
@@ -33,10 +33,9 @@ DRAW_EXP_SHARE = 0.0
 
 # ---------- кредиты ----------
 
-WIN_CREDITS_MIN = 1
-WIN_CREDITS_MAX = 5
-LOSS_CREDITS = 0
-DRAW_CREDITS = 0
+# Кредиты капают только с роста бойца: за апы и за уровни. Сам бой денег не
+# приносит — иначе доход считался бы не по времени в клубе, а по числу драк,
+# и цены в лавке поплыли бы вслед за самым усидчивым.
 UP_CREDITS = 10  # за каждый ап, включая тот, что совпал с уровнем
 LEVEL_CREDITS = 50  # сверху за сам уровень
 
@@ -75,6 +74,15 @@ def ups_earned(exp: int, level: int) -> int:
     return min(MICRO_UPS_PER_LEVEL - 1, exp // exp_per_up(level))
 
 
+def credits_per_level() -> int:
+    """Сколько кредитов приносит уровень — весь доход бойца, других нет.
+
+    На это число смотрят цены в лавке: набор одной ступени стоит примерно
+    втрое дороже — поэтому на всё сразу не хватает и приходится выбирать.
+    """
+    return MICRO_UPS_PER_LEVEL * UP_CREDITS + LEVEL_CREDITS
+
+
 def level_diff_multiplier(my_level: int, opponent_level: int) -> float:
     raw = 1.0 + EXP_LEVEL_DIFF_STEP * (opponent_level - my_level)
     return max(EXP_LEVEL_DIFF_MIN, min(EXP_LEVEL_DIFF_MAX, raw))
@@ -93,16 +101,16 @@ def consolation_exp(winner_exp: int, share: float) -> int:
     return max(1, round(winner_exp * share))
 
 
-def win_credits(rng: random.Random | None = None) -> int:
-    rng = rng or random
-    return rng.randint(WIN_CREDITS_MIN, WIN_CREDITS_MAX)
-
-
-def rating_delta(won: bool, my_level: int, opponent_level: int) -> int:
+def rating_delta(won: bool | None, my_level: int, opponent_level: int) -> int:
     """Изменение рейтинга: побить старшего дорого стоит, младшего — почти нет.
 
-    Ничья считается поражением для обоих, поэтому отдельного случая нет.
+    `won=None` — ничья: рейтинг не двигается ни у кого. Раньше ничья шла
+    поражением обоим, и двое равных бойцов, честно отбоксировавших шесть
+    раундов, уходили с ринга беднее, чем пришли. За то, что никто не уступил,
+    наказывать не за что.
     """
+    if won is None:
+        return 0
     difference = opponent_level - my_level if won else my_level - opponent_level
     raw = RATING_BASE * (1.0 + RATING_LEVEL_STEP * difference)
     delta = max(RATING_MIN_DELTA, min(RATING_MAX_DELTA, round(raw)))
@@ -123,3 +131,12 @@ def apply_share(value: int, share: float) -> int:
     if value <= 0 or share >= 1.0:
         return value
     return max(1, round(value * share))
+
+
+def pro_exp(exp: int, is_pro: bool) -> int:
+    """Опыт с учётом подписки: PRO приносит полтора.
+
+    Считаем в самом конце, после всех урезаний за повторные бои, — иначе
+    подписка вытаскивала бы награду за фарм одного и того же соперника.
+    """
+    return round(exp * PRO_EXP_SHARE) if is_pro else exp
