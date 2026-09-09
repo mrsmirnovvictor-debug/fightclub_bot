@@ -50,6 +50,9 @@ class FakeBot:
     # Всё сказанное подряд: итог раунда приходит правкой панели, а не новым
     # сообщением, и по одному списку sent его уже не видно
     said: list[SentMessage] = field(default_factory=list)
+    # Закрепы объявлений: (чат, сообщение)
+    pinned: list[tuple[int, int]] = field(default_factory=list)
+    unpinned: list[tuple[int, int]] = field(default_factory=list)
     _next_id: int = 100
 
     async def send_message(self, chat_id, text, message_thread_id=None, **kwargs):
@@ -64,6 +67,12 @@ class FakeBot:
         self.sent.append(message)
         self.said.append(message)
         return message
+
+    async def pin_chat_message(self, chat_id, message_id, **kwargs):
+        self.pinned.append((chat_id, message_id))
+
+    async def unpin_chat_message(self, chat_id, message_id=None, **kwargs):
+        self.unpinned.append((chat_id, message_id))
 
     async def edit_message_text(self, text, chat_id=None, message_id=None, **kwargs):
         message = SentMessage(

@@ -285,6 +285,17 @@ CREATE INDEX IF NOT EXISTS idx_purchases_user
 
 -- Ветка новостей: куда бот сам приносит объявления об изменениях.
 -- Одна на группу, поэтому chat_id и есть ключ.
+-- Ветки, куда бот приносит объявления о начатых боях и рейдах. На каждый
+-- вид событий своя ветка, размечает их админ группы. Ветки нет — объявлять
+-- некуда, и бот молчит: это не ошибка, а не настроенный клуб.
+CREATE TABLE IF NOT EXISTS announce_threads (
+    chat_id   INTEGER NOT NULL,
+    kind      TEXT    NOT NULL,  -- fist, armed, raid
+    thread_id INTEGER,
+    title     TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (chat_id, kind)
+);
+
 CREATE TABLE IF NOT EXISTS noticeboards (
     chat_id   INTEGER PRIMARY KEY,
     thread_id INTEGER,
@@ -851,6 +862,50 @@ class Database:
             (chat_id, thread_id, title),
         )
         await self.conn.commit()
+
+    async def set_announce_thread(
+        self, chat_id: int, kind: str, thread_id: int | None, title: str = ""
+    ) -> None:
+        """Отметить ветку, куда бот приносит объявления этого вида."""
+        await self.conn.execute(
+            """
+            INSERT INTO announce_threads (chat_id, kind, thread_id, title)
+            VALUES (?,?,?,?)
+            ON CONFLICT(chat_id, kind) DO UPDATE SET
+                thread_id = excluded.thread_id,
+                title     = excluded.title
+            """,
+            (chat_id, kind, thread_id, title),
+        )
+        await self.conn.commit()
+
+    async def drop_announce_thread(self, chat_id: int, kind: str) -> None:
+        await self.conn.execute(
+            "DELETE FROM announce_threads WHERE chat_id = ? AND kind = ?",
+            (chat_id, kind),
+        )
+        await self.conn.commit()
+
+    async def announce_threads(self, kind: str) -> list[tuple[int, int | None]]:
+        """Все ветки этого вида: чат и ветка в нём.
+
+        Клубов может быть несколько, и вызов из мини-аппа принимает кто
+        угодно, — поэтому объявление идёт во все размеченные ветки, а не в
+        одну «родную» группу.
+        """
+        async with self.conn.execute(
+            "SELECT chat_id, thread_id FROM announce_threads WHERE kind = ?",
+            (kind,),
+        ) as cursor:
+            return [(row["chat_id"], row["thread_id"]) for row in await cursor.fetchall()]
+
+    async def announce_threads_of(self, chat_id: int) -> dict[str, int | None]:
+        """Что размечено в этом чате: вид события — ветка."""
+        async with self.conn.execute(
+            "SELECT kind, thread_id FROM announce_threads WHERE chat_id = ?",
+            (chat_id,),
+        ) as cursor:
+            return {row["kind"]: row["thread_id"] for row in await cursor.fetchall()}
 
     async def get_noticeboard(self, chat_id: int) -> tuple[int | None, str] | None:
         async with self.conn.execute(

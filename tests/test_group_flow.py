@@ -620,3 +620,47 @@ async def test_a_raid_needs_a_character(arena, raids):
 
     assert raids.lobby_of_user(stranger.id) is None
     assert "нет бойца" in session.texts[-1]
+
+
+# ---------- ветки объявлений ----------
+
+
+async def test_the_admin_marks_a_thread_for_announcements(arena):
+    """Админ помечает ветку, и бой из мини-аппа объявляется именно в ней."""
+    db, duels, session = arena
+    host = as_user(760, "Хозяин")
+    fighter = as_user(761, "Тайлер")
+    await db.save_player(make_player(host.id, "Хозяин", "tank"))
+    challenger = make_player(fighter.id, "Тайлер", "rogue")
+    await db.save_player(challenger)
+
+    await send(host, "/announce кулачные", thread_id=901)
+    assert "кулачные бои" in session.texts[-1]
+
+    # вызов из мини-аппа: своей ветки у него нет
+    await duels.open_challenge(None, None, challenger)
+
+    posted = [
+        call for call in session.calls
+        if type(call).__name__ == "SendMessage"
+        and getattr(call, "message_thread_id", None) == 901
+    ]
+    assert len(posted) == 2, "объявление не пришло в размеченную ветку"
+    assert "Тайлер" in posted[-1].text
+    # и его закрепили, чтобы не смыло разговором
+    assert any(type(call).__name__ == "PinChatMessage" for call in session.calls)
+
+
+async def test_the_announcement_list_tells_what_is_left_to_mark(arena):
+    """Без аргумента команда показывает, что размечено, а что ещё нет."""
+    db, _, session = arena
+    host = as_user(762, "Хозяин")
+    await db.save_player(make_player(host.id, "Хозяин", "tank"))
+
+    await send(host, "/announce рейды", thread_id=903)
+    await send(host, "/announce", thread_id=903)
+
+    text = session.texts[-1]
+    assert "рейды — эта ветка" in text
+    assert "кулачные бои — не размечена" in text
+    assert "бои с оружием — не размечена" in text

@@ -700,6 +700,68 @@ def rewards_report(
 # ---------- бои на много бойцов ----------
 
 
+# ---------- доска объявлений ----------
+#
+# Объявление — не судейский текст, а зазывала: его читают те, кто в бою не
+# участвует, и решают, идти ли. Поэтому в нём только кто зовёт, куда и одна
+# ссылка, открывающая нужный экран приложения.
+
+
+def _board_link(screen: str, label: str) -> str:
+    url = links.screen_url(screen)
+    return f'\n\n👉 <a href="{url}">{label}</a>' if url else ""
+
+
+def board_call(challenge, target=None) -> str:
+    """Объявление о вызове на бой."""
+    mode = challenge.mode
+    who = challenge.challenger
+    head = (
+        f"{mode.emoji} <b>{player_link(who)}</b> "
+        f"({who.fclass.label}, {who.level} ур.) "
+    )
+    if target is None:
+        head += f"вызывает любого желающего на {mode.title}."
+    else:
+        head += (
+            f"вызывает <b>{player_link(target)}</b> "
+            f"({target.fclass.label}, {target.level} ур.) на {mode.title}."
+        )
+    return head + _board_link("ring", "Выйти на ринг")
+
+
+CALL_OVER: dict[str, str] = {
+    "accepted": "✅ Вызов принят — бой начался.",
+    "withdrawn": "🚪 Вызов снят.",
+    "expired": "🥱 Вызов остался без ответа.",
+}
+
+
+def board_call_over(challenge, reason: str) -> str:
+    """Чем кончился вызов: объявление переписывается на итог и снимается."""
+    who = esc(challenge.challenger.nickname)
+    tail = CALL_OVER.get(reason, "Вызов закрыт.")
+    return f"{challenge.mode.emoji} <b>{who}</b> звал на {challenge.mode.title}. {tail}"
+
+
+def board_raid(lobby, seconds: int) -> str:
+    """Объявление о сборе отряда в подвал."""
+    opener = lobby.members.get(lobby.opener_id, "Кто-то")
+    return (
+        f"🩸 <b>{esc(opener)}</b> собирает отряд: {esc(lobby.boss.raid_name)}.\n"
+        f"В отряде {lobby.total} "
+        f"{plural(lobby.total, 'боец', 'бойца', 'бойцов')}, "
+        f"сбор идёт ещё {format_duration(seconds)}."
+        + _board_link("raid", "Пойти с ними")
+    )
+
+
+def board_raid_over(lobby, started: bool) -> str:
+    """Отряд ушёл вниз или разошёлся — объявление больше не зовёт."""
+    tail = "Отряд ушёл в подвал." if started else "Отряд не собрался."
+    return f"🩸 {esc(lobby.boss.raid_name)}. {tail}"
+
+
 # ---------- рейды ----------
 
 

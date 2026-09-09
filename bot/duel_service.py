@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
 
+from bot.board_service import ARMED, FIST, Board, Pin
 from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
@@ -42,6 +43,8 @@ from bot.game.economy import (
     win_exp,
 )
 from bot.game.narrator import (
+    board_call,
+    board_call_over,
     corner_break,
     duel_intro,
     fight_board,
@@ -84,6 +87,9 @@ class Challenge:
     task: asyncio.Task | None = None
     chat_title: str = ""
     mode: FightMode = FightMode.FIST
+    # Объявления о вызове, развешанные по веткам клуба: их снимают, когда
+    # звать больше некуда
+    pins: list[Pin] = field(default_factory=list)
 
     @property
     def key(self) -> ChatKey | None:
@@ -216,6 +222,7 @@ class DuelService:
         self.db = db
         self.config = config
         self.voice = Announcer(bot)
+        self.board = Board(db, self.voice)
         self.rng = rng or random.Random()
         self._ids = itertools.count(1)
         self._challenges: dict[int, Challenge] = {}
@@ -281,6 +288,15 @@ class DuelService:
             chat_id, thread_id, text, reply_markup=challenge_keyboard(challenge.id)
         )
         challenge.message_id = message.message_id if message else None
+        # Тот же вызов — объявлением в клубной ветке своего вида. Вызов из
+        # мини-аппа иначе не видит никто: он живёт без ветки, и звать
+        # соперника ему нечем
+        challenge.pins = await self.board.announce(
+            ARMED if mode.armed else FIST,
+            board_call(challenge, target),
+            skip=(chat_id, thread_id),
+            disable_web_page_preview=True,
+        )
         challenge.task = asyncio.create_task(self._expire_challenge(challenge))
         self._challenges[challenge.id] = challenge
         self._busy[challenger.user_id] = "challenge"
@@ -295,7 +311,7 @@ class DuelService:
             return
         if self._challenges.get(challenge.id) is not challenge:
             return
-        self._drop_challenge(challenge)
+        self._drop_challenge(challenge, "expired")
         await self._edit(
             challenge.chat_id,
             challenge.message_id,
@@ -303,18 +319,27 @@ class DuelService:
             "остался без ответа. Ринг свободен.",
         )
 
-    def _drop_challenge(self, challenge: Challenge) -> None:
+    def _drop_challenge(self, challenge: Challenge, reason: str = "closed") -> None:
         self._challenges.pop(challenge.id, None)
         if self._busy.get(challenge.challenger.user_id) == "challenge":
             self._busy.pop(challenge.challenger.user_id, None)
         if challenge.task and not challenge.task.done():
             challenge.task.cancel()
+        # Звать больше некуда — объявление снимаем с закрепа. Отдельной
+        # задачей: снимать закрепы посреди синхронного разбора нечем, а
+        # ждать этого никому не нужно
+        if challenge.pins:
+            asyncio.create_task(self._close_call(challenge, reason))
+
+    async def _close_call(self, challenge: Challenge, reason: str) -> None:
+        """Снять объявление о вызове и дописать, чем он кончился."""
+        await self.board.close(challenge.pins, board_call_over(challenge, reason))
 
     async def _withdraw_challenges_of(self, user_id: int) -> None:
         for challenge in list(self._challenges.values()):
             if challenge.challenger.user_id != user_id:
                 continue
-            self._drop_challenge(challenge)
+            self._drop_challenge(challenge, "withdrawn")
             await self._edit(
                 challenge.chat_id,
                 challenge.message_id,
@@ -328,7 +353,7 @@ class DuelService:
             raise DuelError("Этот вызов уже неактуален.")
         if challenge.challenger.user_id != user_id:
             raise DuelError("Отозвать вызов может только тот, кто его бросил.")
-        self._drop_challenge(challenge)
+        self._drop_challenge(challenge, "withdrawn")
         await self._edit(
             challenge.chat_id,
             challenge.message_id,
@@ -353,7 +378,7 @@ class DuelService:
         if challenge.key is not None and challenge.key in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой.")
 
-        self._drop_challenge(challenge)
+        self._drop_challenge(challenge, "accepted")
         challenger = await self.db.get_player(challenge.challenger.user_id)
         if challenger is None:  # pragma: no cover - персонажа удалили посреди вызова
             raise DuelError("Соперник куда-то пропал вместе со своим персонажем.")

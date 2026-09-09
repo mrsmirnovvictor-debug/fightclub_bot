@@ -111,6 +111,40 @@ class Announcer:
         logger.error("Сообщение так и не ушло после %s попыток", SEND_ATTEMPTS)
         return None
 
+    async def pin(self, chat_id: int | None, message_id: int | None) -> bool:
+        """Закрепить объявление. False — не вышло, и это не беда.
+
+        Закреп требует прав, которых у бота может не быть: в клубе его
+        могли добавить обычным участником. Объявление от этого не
+        пропадает — просто не висит сверху, поэтому падать тут не на чем.
+        """
+        if chat_id is None or message_id is None:
+            return False
+        self.budget.spend(chat_id)
+        try:
+            await self.bot.pin_chat_message(chat_id, message_id)
+            return True
+        except TelegramRetryAfter as error:
+            logger.info("Закреп пропущен: Telegram просит подождать %s сек",
+                        error.retry_after)
+            return False
+        except TelegramBadRequest as error:
+            logger.warning("Не удалось закрепить сообщение: %s", error)
+            return False
+
+    async def unpin(self, chat_id: int | None, message_id: int | None) -> None:
+        """Снять закреп: вызов принят или рейд ушёл, висеть ему больше незачем."""
+        if chat_id is None or message_id is None:
+            return
+        self.budget.spend(chat_id)
+        try:
+            await self.bot.unpin_chat_message(chat_id, message_id)
+        except TelegramRetryAfter as error:
+            logger.info("Снятие закрепа пропущено: подождать %s сек",
+                        error.retry_after)
+        except TelegramBadRequest as error:
+            logger.warning("Не удалось снять закреп: %s", error)
+
     async def edit(
         self,
         chat_id: int | None,

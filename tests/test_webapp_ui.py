@@ -2976,3 +2976,34 @@ async def test_raids_are_counted_apart_from_fights_with_people(server):
         assert await rows.filter(has_text="Побед").first.inner_text() == "Побед\n4"
         assert await rows.filter(has_text="Рейды").first.inner_text() == "Рейды\n4 / 10"
         await browser.close()
+
+
+@pytest.mark.parametrize(
+    "screen,section",
+    [("ring", "fights"), ("raid", "raid"), ("shop", None)],
+)
+async def test_a_link_from_the_chat_opens_the_screen_it_promised(
+    server, screen, section
+):
+    """Объявление в чате ведёт не «в приложение», а на нужный экран.
+
+    Иначе зовущая ссылка высаживает человека на карточке персонажа, и
+    искать бой, на который его позвали, он идёт сам.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), query=f"?view={screen}"
+        )
+        # Ждём не «Персонажа»: по такой ссылке карточка как раз уступает
+        # место тому экрану, ради которого человек и пришёл
+        await page.wait_for_selector("#bar:not(.hidden)")
+
+        if section is None:
+            assert await page.locator("#shop:not(.hidden)").count() == 1
+        else:
+            assert await page.locator("#club:not(.hidden)").count() == 1
+            assert await page.locator(f"#club-{section}:not(.hidden)").count() == 1
+        await browser.close()

@@ -26,12 +26,15 @@ from dataclasses import dataclass, field
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
 
+from bot.board_service import RAID, Board, Pin
 from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.combat import Action, Fighter, resolve_round
 from bot.game.fightlog import turn_payload
 from bot.game.narrator import (
+    board_raid,
+    board_raid_over,
     esc,
     health_warning,
     plain,
@@ -122,6 +125,8 @@ class RaidLobby:
     levels: dict[int, int] = field(default_factory=dict)
     message_id: int | None = None
     task: asyncio.Task | None = None
+    # Объявления о сборе, развешанные по веткам клуба
+    pins: list[Pin] = field(default_factory=list)
     # Когда объявили сбор: по этой метке считается обратный отсчёт. Часы
     # монотонные — перевод системного времени сбор не сломает.
     opened_at: float = field(default_factory=time.monotonic)
@@ -213,6 +218,7 @@ class RaidService:
         self.db = db
         self.config = config
         self.voice = Announcer(bot)
+        self.board = Board(db, self.voice)
         self.rng = rng or random.Random()
         self._ids = itertools.count(1)
         self._lobbies: dict[int, RaidLobby] = {}
@@ -319,6 +325,14 @@ class RaidService:
             reply_markup=raid_lobby_keyboard(lobby),
         )
         lobby.message_id = message.message_id if message else None
+        # Отряд собирают в мини-аппе, и в чате об этом иначе не узнать:
+        # объявление зовёт тех, кто сейчас не в приложении
+        lobby.pins = await self.board.announce(
+            RAID,
+            board_raid(lobby, self.config.raid_lobby_timeout),
+            skip=(chat_id, thread_id),
+            disable_web_page_preview=True,
+        )
         lobby.task = asyncio.create_task(self._lobby_timer(lobby))
         return lobby
 
@@ -407,7 +421,7 @@ class RaidService:
         await self.db.drop_raid_record(lobby.record_id)
         await self.voice.edit(lobby.chat_id, lobby.message_id, f"🚫 {why}")
 
-    def _forget_lobby(self, lobby: RaidLobby) -> None:
+    def _forget_lobby(self, lobby: RaidLobby, started: bool = False) -> None:
         self._lobbies.pop(lobby.id, None)
         if lobby.key is not None and self._by_chat.get(lobby.key) == lobby.id:
             self._by_chat.pop(lobby.key, None)
@@ -417,12 +431,17 @@ class RaidService:
         if lobby.task and not lobby.task.done():
             if lobby.task is not asyncio.current_task():
                 lobby.task.cancel()
+        # Сбор кончился — объявление снимаем с закрепа: звать больше некуда
+        if lobby.pins:
+            asyncio.create_task(
+                self.board.close(lobby.pins, board_raid_over(lobby, started))
+            )
 
     # ---------- бой ----------
 
     async def _start_from_lobby(self, lobby: RaidLobby) -> RaidSession | None:
         members = dict(lobby.members)
-        self._forget_lobby(lobby)
+        self._forget_lobby(lobby, started=True)
 
         players: dict[int, Player] = {}
         for user_id in members:

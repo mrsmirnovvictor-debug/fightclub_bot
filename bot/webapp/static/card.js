@@ -3692,13 +3692,29 @@ function fail(message) {
   box.classList.remove("hidden");
 }
 
-function wantsShop() {
+// Куда просили открыть приложение. Объявление в чате ведёт сюда же:
+// «ring» — бои, «raid» — подвал, «shop» — лавка. Номер бойца в этом же
+// месте означает чужую карточку, поэтому экраны названы словами.
+const SCREEN_PARAMS = {
+  shop: () => showTab("shop"),
+  ring: () => {
+    showTab("club");
+    pickClubSection("fights");
+  },
+  raid: () => {
+    showTab("club");
+    pickClubSection("raid");
+  },
+};
+
+function wantedScreen() {
   const params = new URLSearchParams(window.location.search);
-  return (
-    params.get("view") === "shop" ||
-    params.get("tgWebAppStartParam") === "shop" ||
-    (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param === "shop")
-  );
+  const asked =
+    params.get("view") ||
+    params.get("tgWebAppStartParam") ||
+    (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) ||
+    "";
+  return Object.prototype.hasOwnProperty.call(SCREEN_PARAMS, asked) ? asked : "";
 }
 
 async function load() {
@@ -3721,7 +3737,8 @@ async function load() {
     }
     const card = await response.json();
     render(card);
-    if (card.is_self && wantsShop()) showTab("shop");
+    const screen = wantedScreen();
+    if (card.is_self && screen) SCREEN_PARAMS[screen]();
   } catch (error) {
     console.error("card load failed", error);
     reportOops(error, "загрузка карточки");
