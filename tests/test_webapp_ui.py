@@ -1141,7 +1141,7 @@ def club_of(*fighters) -> dict:
 
 
 async def test_the_club_lists_everyone_and_opens_a_card(server):
-    """Список клуба: ник, уровень и кнопка «i» с карточкой соседа."""
+    """Список клуба: ник, уровень и значок ℹ️ с карточкой соседа."""
     me = make_player()
     rival = make_player()
     rival.user_id = 43
@@ -1201,6 +1201,86 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         assert "День рождения персонажа" in card_text
         # чужой кошелёк в карточке не показываем
         assert "Кредиты" not in card_text
+        await browser.close()
+
+
+async def test_a_fighter_row_has_one_way_in_and_it_is_the_card(server):
+    """В строке списка одна кнопка — значок ℹ️. Статистика живёт в карточке.
+
+    Раньше кнопок было две, и они делили строку: значок вёл в карточку,
+    таблица — сразу в статистику. Выбирать между ними приходилось, ни
+    разу не увидев бойца, а список от этого был вдвое длиннее.
+    """
+    me = make_player()
+    rival = make_player()
+    rival.user_id = 43
+    rival.nickname = "Марла"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(me, TOKEN, viewer_id=me.user_id),
+            build_shop(me), club=club_of(me, rival),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role("button", name="Игроки", exact=True).click()
+        await page.wait_for_selector(".fighter")
+
+        row = page.locator(".fighter").first
+        assert await row.locator("button").count() == 1
+        assert await row.locator(".fighter-info").inner_text() == "ℹ️"
+        assert await page.locator(".fighter-stats").count() == 0
+
+        # и строки стоят плотно: список читают, а не листают
+        first = await page.locator(".fighter").nth(0).bounding_box()
+        second = await page.locator(".fighter").nth(1).bounding_box()
+        assert first["height"] <= 40, f"строка выросла до {first['height']}"
+        assert second["y"] - (first["y"] + first["height"]) <= 6
+        await browser.close()
+
+
+async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
+    """В карточке бойца видно здоровье, а кнопка ведёт в его статистику."""
+    me = make_player()
+    rival = make_player()
+    rival.user_id = 43
+    rival.nickname = "Марла"
+    rival.set_hp(rival.max_hp // 3)  # отлёживается после боя
+    rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
+    assert rival_card["hp"]["percent"] < 100, "боец должен быть побит"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(me, TOKEN, viewer_id=me.user_id),
+            build_shop(me), club=club_of(me, rival),
+        )
+        await page.route(
+            "**/api/card?user_id=43",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(rival_card),
+            ),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role("button", name="Игроки", exact=True).click()
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+
+        bar = page.locator("#sheet-list .hp")
+        assert await bar.count() == 1
+        assert await bar.locator(".hp-text").inner_text() == "{} / {}".format(
+            rival_card["hp"]["current"], rival_card["hp"]["max"]
+        )
+        # полоска налита ровно на столько, сколько здоровья осталось
+        width = await bar.locator(".hp-fill").evaluate("node => node.style.width")
+        assert width == f"{rival_card['hp']['percent']}%"
+
+        # кнопка уводит в статистику именно этого бойца
+        await page.get_by_role("button", name="📊 Статистика боёв").click()
+        assert await page.locator("#sheet.hidden").count() == 1
+        await page.wait_for_selector("#club-stats:not(.hidden)")
         await browser.close()
 
 

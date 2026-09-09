@@ -1312,28 +1312,18 @@ function fighterRow(fighter) {
   level.className = "fighter-level";
   level.textContent = "[" + fighter.level + "]";
 
+  // Один вход на строку: значок ведёт в карточку, а статистика живёт
+  // уже там. Две кнопки на строку делали список выше и заставляли
+  // выбирать между ними, ни разу не показав, что за боец внутри
   const info = document.createElement("button");
   info.type = "button";
   info.className = "fighter-info";
-  info.textContent = "i";
+  info.textContent = "ℹ️";
   info.title = "Карточка бойца";
   info.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
   info.addEventListener("click", () => showFighter(fighter));
 
-  const stats = document.createElement("button");
-  stats.type = "button";
-  // Своим классом, а не «fighter-info»: две одинаковые кнопки в строке —
-  // это неоднозначность и для теста, и для читалки экрана
-  stats.className = "fighter-stats";
-  stats.textContent = "📊";
-  stats.title = "Статистика боёв";
-  stats.setAttribute("aria-label", "Статистика боёв " + fighter.nickname);
-  stats.addEventListener("click", () => {
-    pickClubSection("stats");
-    loadHistory(fighter.is_self ? null : fighter.user_id);
-  });
-
-  box.append(face, name, level, stats, info);
+  box.append(face, name, level, info);
   return box;
 }
 
@@ -1364,9 +1354,37 @@ function sheetDoll(card) {
   return doll;
 }
 
+function sheetHealth(hp) {
+  const box = document.createElement("div");
+  box.className = "hp sheet-hp " + (hp.color || "green");
+
+  const fill = document.createElement("div");
+  fill.className = "hp-fill";
+  fill.style.width = Math.max(0, Math.min(100, hp.percent)) + "%";
+
+  const text = document.createElement("div");
+  text.className = "hp-text";
+  text.textContent = num(Math.floor(hp.current)) + " / " + num(hp.max);
+
+  box.append(fill, text);
+  return box;
+}
+
 function fighterCard(card) {
   const box = document.createDocumentFragment();
   box.appendChild(sheetDoll(card));
+
+  // Здоровье — первое, что хотят знать о чужом бойце: цел он или отлёживается
+  if (card.hp) {
+    box.appendChild(sheetHealth(card.hp));
+    const note = document.createElement("p");
+    note.className = "hp-note sheet-hp-note";
+    note.textContent = card.hp.state_title
+      ? card.hp.state_title.charAt(0).toUpperCase() + card.hp.state_title.slice(1)
+      : "";
+    if (card.hp.ready_in_text) note.textContent += " · в строю через " + card.hp.ready_in_text;
+    box.appendChild(note);
+  }
 
   const panel = document.createElement("section");
   panel.className = "panel";
@@ -1397,6 +1415,21 @@ function fighterCard(card) {
     ])
   );
   box.appendChild(panel);
+
+  // Статистика боёв переехала со строки списка сюда: смотреть её идут,
+  // уже увидев, кто перед тобой
+  const actions = document.createElement("div");
+  actions.className = "thing-buttons sheet-actions";
+  actions.appendChild(
+    button("📊 Статистика боёв", {
+      onClick: () => {
+        closeSheet();
+        pickClubSection("stats");
+        loadHistory(card.is_self ? null : card.user_id);
+      },
+    })
+  );
+  box.appendChild(actions);
   return box;
 }
 
@@ -2952,7 +2985,7 @@ function renderClub(data) {
     ? data.total + " " + plural(data.total, "боец", "бойца", "бойцов")
     : "";
   el("club-note").textContent = data.total
-    ? "Все, кто завёл бойца. Кнопка «i» открывает карточку."
+    ? "Все, кто завёл бойца. Значок ℹ️ открывает его карточку."
     : "В клубе пока никого.";
 
   const list = el("club-list");

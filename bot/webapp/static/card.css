@@ -675,18 +675,21 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 
 /* ---------- бойцовский клуб ---------- */
 
+/* Список бойцов держим плотным: в клубе их сотни, и каждая лишняя
+   пара пикселей на строке — это ещё один экран прокрутки. Строка
+   ужата до одной кнопки, поэтому высоту задаёт уже не она, а текст. */
 .fighter {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
+  border-radius: 7px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
 }
 .fighter.me { border-color: var(--accent); }
-.fighter-class { font-size: 17px; }
+.fighter-class { font-size: 15px; }
 .fighter-name {
   font-weight: 700;
   flex: 1;
@@ -695,9 +698,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.fighter-level { color: var(--muted); font-weight: 700; }
+.fighter-level { color: var(--muted); font-weight: 700; font-size: 13px; }
 .fighter-info,
-.fighter-stats,
 .info-btn {
   width: 26px;
   height: 26px;
@@ -712,7 +714,18 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   line-height: 1;
   cursor: pointer;
 }
-.fighter-info:active,
+/* Значок ℹ️ рисует сам шрифт эмодзи: наклон и жирность ему только мешают,
+   а кружок вокруг цветной картинки выглядит обводкой по обводке */
+.fighter-info {
+  width: 24px;
+  height: 24px;
+  border: none;
+  font-style: normal;
+  font-weight: 400;
+  font-size: 15px;
+  padding: 0;
+}
+.fighter-info:active { transform: scale(0.92); }
 .info-btn:active { background: var(--accent); color: #fff; }
 
 /* ---------- пузыри фильтров ---------- */
@@ -1015,5 +1028,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .fight-row:active { transform: scale(0.99); }
 .fight-row-line { font-size: 13.5px; }
 .fight-row-note { font-size: 12px; color: var(--muted); }
-/* Значок статистики — эмодзи: курсив и жирность ему не нужны */
-.fighter-stats { font-style: normal; font-weight: 400; }
+/* Полоска здоровья в карточке бойца: та же, что на своей, только со
+   своими полями — в выдвижном листе сверху уже стоит кукла */
+.sheet-hp { margin-top: 12px; }
+.sheet-hp-note { margin: 5px 2px 12px; }
+/* Кнопка под карточкой одна, и она про всю карточку целиком —
+   поэтому во всю ширину, а не по ширине надписи */
+.sheet-actions { margin-bottom: 4px; }
