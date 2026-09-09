@@ -88,9 +88,15 @@ class Player:
     rating: int = RATING_START
     hp: int | None = None  # здоровье на момент hp_at; None — полное
     hp_at: int = 0  # когда это здоровье зафиксировали (unix-время)
+    # Счёт боёв с живыми людьми: ринг, вызов в карточке, отряд, турнир
     wins: int = 0
     losses: int = 0
     draws: int = 0
+    # Подвал считается отдельно: там соперник не человек, а босс, и валят
+    # его толпой. Смешивать это с личным счётом нечестно в обе стороны —
+    # рейды раздували победы, а неудачный заход портил репутацию бойца
+    raid_wins: int = 0
+    raid_fights: int = 0
     city: str = DEFAULT_CITY
     # До какого момента жива подписка PRO (unix-время); 0 — подписки нет
     pro_until: int = 0
@@ -267,6 +273,7 @@ class Player:
 
     @property
     def fights(self) -> int:
+        """Бои с людьми. Рейды сюда не входят: у подвала свой счёт."""
         return self.wins + self.losses + self.draws
 
     @property

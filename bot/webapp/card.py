@@ -753,6 +753,10 @@ def build_card(
             "wins": player.wins,
             "losses": player.losses,
             "draws": player.draws,
+            # Подвал стоит своей строкой: победы над боссом — не победы
+            # над людьми, и складывать их в один счёт нечестно
+            "raid_wins": player.raid_wins,
+            "raid_fights": player.raid_fights,
             "rating": player.rating,
             # Чужой кошелёк не наше дело: карточку соседа открывают из чата боя
             "credits": player.credits if is_self else 0,

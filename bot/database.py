@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS players (
     wins           INTEGER NOT NULL DEFAULT 0,
     losses         INTEGER NOT NULL DEFAULT 0,
     draws          INTEGER NOT NULL DEFAULT 0,
+    -- Подвал считается отдельно от боёв с людьми
+    raid_wins      INTEGER NOT NULL DEFAULT 0,
+    raid_fights    INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -302,7 +305,7 @@ PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, look, strength, "
     "agility, intuition, endurance, free_points, level, exp, total_exp, "
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
-    "city, birthplace, pro_until, gender, created_at"
+    "raid_wins, raid_fights, city, birthplace, pro_until, gender, created_at"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -318,6 +321,8 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("look", "TEXT NOT NULL DEFAULT ''"),
     ("pro_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — подписки нет
     ("gender", "TEXT NOT NULL DEFAULT ''"),  # пусто — бойца заводили до выбора
+    ("raid_wins", "INTEGER NOT NULL DEFAULT 0"),
+    ("raid_fights", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -345,8 +350,49 @@ class Database:
                     f"ALTER TABLE players ADD COLUMN {column} {definition}"
                 )
                 logger.info("База обновлена: добавлена колонка players.%s", column)
+        if "raid_fights" not in existing:
+            await self._split_raids_from_record()
         await self._migrate_duels()
         await self._migrate_arenas()
+
+    async def _split_raids_from_record(self) -> None:
+        """Вынуть рейды из личного счёта бойца — один раз, при обновлении.
+
+        Раньше подвал писался туда же, куда бои с людьми: победа над
+        боссом шла победой, неудачный заход — поражением. Счёт врал в обе
+        стороны, и по нему нельзя было понять, кого боец бил на самом деле.
+
+        Пересчитываем по журналу рейдов: там есть и состав отряда, и исход
+        каждого захода, поэтому историю терять не нужно — достаточно
+        переложить её в свою колонку. Считаем только законченные рейды: у
+        брошенного `outcome` пуст, и в счёт он не попадал.
+        """
+
+        def counted(outcome: str | None) -> str:
+            """Сколько рейдов с таким исходом за плечами у этой строки."""
+            filter_by = "r.outcome IS NOT NULL" if outcome is None else (
+                f"r.outcome = '{outcome}'"
+            )
+            return (
+                "SELECT COUNT(*) FROM raid_members m "
+                "JOIN raids r ON r.id = m.raid_id "
+                f"WHERE m.user_id = players.user_id AND {filter_by}"
+            )
+
+        # Все выражения UPDATE читают старые значения строки, поэтому
+        # вычитание из побед и запись в raid_wins не мешают друг другу
+        await self.conn.execute(
+            f"""
+            UPDATE players SET
+                raid_fights = ({counted(None)}),
+                raid_wins   = ({counted("win")}),
+                wins   = MAX(0, wins   - ({counted("win")})),
+                draws  = MAX(0, draws  - ({counted("draw")})),
+                losses = MAX(0, losses - ({counted("loss")}))
+            """
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: рейды вынесены из личного счёта бойцов")
 
     async def _migrate_duels(self) -> None:
         """Записи боёв прошлой версии — кулачные: другого режима тогда не было."""
@@ -483,9 +529,9 @@ class Database:
                 user_id, nickname, class_code, avatar, avatar_file_id, look,
                 strength, agility, intuition, endurance, free_points, level,
                 exp, total_exp, micro_ups, credits, rating, hp, hp_at,
-                wins, losses, draws, city, birthplace, pro_until, gender,
-                created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                wins, losses, draws, raid_wins, raid_fights,
+                city, birthplace, pro_until, gender, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -510,6 +556,8 @@ class Database:
                 wins           = excluded.wins,
                 losses         = excluded.losses,
                 draws          = excluded.draws,
+                raid_wins      = excluded.raid_wins,
+                raid_fights    = excluded.raid_fights,
                 pro_until      = excluded.pro_until,
                 gender         = excluded.gender
             """,
@@ -536,6 +584,8 @@ class Database:
                 player.wins,
                 player.losses,
                 player.draws,
+                player.raid_wins,
+                player.raid_fights,
                 player.city,
                 player.birthplace,
                 player.pro_until,

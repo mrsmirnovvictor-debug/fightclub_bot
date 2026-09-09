@@ -536,7 +536,10 @@ async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
     assert sum(paid) == 100  # весь кошель дошёл до отряда
     assert max(paid) - min(paid) <= 1  # и разошёлся поровну
     for player in players:
-        assert (await db.get_player(player.user_id)).wins == 1
+        fresh = await db.get_player(player.user_id)
+        # Победа над боссом идёт в счёт рейдов, а не в личные победы
+        assert (fresh.raid_wins, fresh.raid_fights) == (1, 1)
+        assert (fresh.wins, fresh.losses, fresh.draws) == (0, 0, 0)
         assert await db.list_gear(player.user_id) == [], "вещей за рейд не дают"
 
     raids = await db.raids_of(players[0].user_id)
@@ -567,7 +570,11 @@ async def test_a_lost_raid_pays_nothing(bot, db):
 
     for player in players:
         fresh = await db.get_player(player.user_id)
-        assert fresh.credits == 500 and fresh.losses == 1  # кошелёк не тронут
+        assert fresh.credits == 500  # кошелёк не тронут
+        # Неудачный заход в подвал не портит личный счёт: там дрались с
+        # боссом, а не с человеком
+        assert (fresh.raid_wins, fresh.raid_fights) == (0, 1)
+        assert (fresh.wins, fresh.losses, fresh.draws) == (0, 0, 0)
         assert await db.list_gear(player.user_id) == []
     assert (await db.raids_of(players[0].user_id))[0]["outcome"] == "loss"
 
@@ -632,3 +639,64 @@ async def test_the_fatigue_counts_waves_not_swings(bot, db):
     assert session.wave <= 3
     # каждому ходу движок отдавал номер волны, а не номер размена
     assert max(turn["number"] for turn in session.rounds) <= session.wave
+
+
+# ---------- рейды отделены от боёв с людьми ----------
+
+
+async def test_old_raids_move_out_of_the_personal_record(bot, db):
+    """Прошлые походы уезжают из побед и поражений при обновлении базы.
+
+    До этой версии подвал писался в общий счёт: победа над боссом шла
+    победой, неудачный заход — поражением. Терять историю не нужно —
+    журнал рейдов помнит и состав отряда, и исход каждого захода,
+    поэтому старые числа просто перекладываются в свою колонку.
+    """
+    player = make_player(1, "Ветеран")
+    player.wins, player.losses, player.draws = 7, 4, 2
+    await db.save_player(player)
+    other = make_player(2, "Сосед")
+    other.wins = 3
+    await db.save_player(other)
+
+    # три похода ветерана: победа, поражение и ничья — и один брошенный
+    for outcome in ("win", "loss", "draw"):
+        raid_id = await db.open_raid_record(
+            chat_id=None, thread_id=None, opener_id=1, boss="cellar_boss", size=1
+        )
+        await db.close_raid_record(raid_id, outcome, waves=1, boss_level=5,
+                                   members=[(1, 100, True, None)])
+    abandoned = await db.open_raid_record(
+        chat_id=None, thread_id=None, opener_id=1, boss="cellar_boss", size=1
+    )
+    assert abandoned  # без outcome он в счёт не идёт
+
+    # база прошлой версии: колонок рейда в ней ещё нет
+    await db.conn.execute("UPDATE players SET raid_wins = 0, raid_fights = 0")
+    await db.conn.commit()
+    await db._split_raids_from_record()
+
+    veteran = await db.get_player(1)
+    assert (veteran.raid_wins, veteran.raid_fights) == (1, 3)
+    # из личного счёта ушли ровно те три похода
+    assert (veteran.wins, veteran.losses, veteran.draws) == (6, 3, 1)
+    # тот, кто в подвал не ходил, остался как был
+    neighbour = await db.get_player(2)
+    assert (neighbour.wins, neighbour.raid_fights) == (3, 0)
+
+
+async def test_the_split_never_drives_a_record_below_zero(bot, db):
+    """Счёт мог разъехаться с журналом — вычитание не уводит его в минус."""
+    player = make_player(1, "Счетовод")
+    player.wins = 0
+    await db.save_player(player)
+    raid_id = await db.open_raid_record(
+        chat_id=None, thread_id=None, opener_id=1, boss="cellar_boss", size=1
+    )
+    await db.close_raid_record(raid_id, "win", waves=1, boss_level=5,
+                               members=[(1, 10, True, None)])
+
+    await db._split_raids_from_record()
+
+    fresh = await db.get_player(1)
+    assert fresh.wins == 0 and (fresh.raid_wins, fresh.raid_fights) == (1, 1)

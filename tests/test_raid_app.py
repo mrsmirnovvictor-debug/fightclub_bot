@@ -268,7 +268,10 @@ async def test_a_raid_lands_in_the_list_of_fights(cellar):
     assert row["kind"] == "raid"
     assert row["caption"] == f"Победа (с Марла) — рейд против {CELLAR_BOSS.whom}"
     assert row["waves"] == 1 and row["damage"] > 0
-    assert body["total"] == 1 and body["counts"]["win"] == 1
+    # В списке рейд стоит вместе с дуэлями, а в счёте — отдельно от них
+    assert body["total"] == 1
+    assert body["raids"] == {"wins": 1, "total": 1}
+    assert body["counts"] == {"win": 0, "loss": 0, "draw": 0}
 
 
 async def test_the_boss_card_comes_with_the_section(cellar):

@@ -714,13 +714,13 @@ class RaidService:
             player = await self.db.get_player(user_id)
             if player is None:  # pragma: no cover - персонажа удалили по ходу
                 continue
+            # Подвал идёт по своему счёту: босс — не человек, и валят его
+            # толпой. В победах и поражениях бойца остаются только те, кого
+            # он бил сам
+            player.raid_fights += 1
             if outcome.won:
-                player.wins += 1
+                player.raid_wins += 1
                 player.credits += session.shares.get(user_id, 0)
-            elif outcome.draw:
-                player.draws += 1
-            else:
-                player.losses += 1
             ruined = await wear_after_fight(self.db, player, outcome.won, self.rng)
             if ruined:  # pragma: no cover - износ считается своим тестом
                 logger.info("Рейд износил вещи бойца %s: %s", user_id, len(ruined))

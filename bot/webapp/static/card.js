@@ -1327,6 +1327,13 @@ function fighterRow(fighter) {
   return box;
 }
 
+function raidScore(record) {
+  // «4 / 10» — побед из походов. Одним числом здесь не обойтись: рейд
+  // проигрывают отрядом, и десять заходов с четырьмя победами говорят о
+  // бойце совсем не то же, что четыре захода с четырьмя
+  return num(record.raid_wins) + " / " + num(record.raid_fights);
+}
+
 function sheetRows(pairs) {
   const list = document.createElement("ul");
   list.className = "rows";
@@ -1404,6 +1411,7 @@ function fighterCard(card) {
       ["Побед", num(card.record.wins)],
       ["Поражений", num(card.record.losses)],
       ["Ничьих", num(card.record.draws)],
+      ["Рейды", raidScore(card.record)],
       ["Рейтинг", num(card.record.rating)],
     ])
   );
@@ -2826,11 +2834,19 @@ async function loadHistory(userId) {
 function renderHistory(data) {
   statsData = data;
   const counts = data.counts;
+  const people = counts.win + counts.loss + counts.draw;
+  const raids = data.raids || { wins: 0, total: 0 };
+  // Рейды считаем отдельной припиской: в списке они идут вперемешку с
+  // дуэлями, но складывать победу над боссом с победой над человеком
+  // нельзя — счёт от этого врёт в обе стороны
+  const tail = raids.total
+    ? " · рейды " + raids.wins + " / " + raids.total
+    : "";
   el("stats-note").textContent = data.total
-    ? data.name + ": " + data.total + " " +
-      plural(data.total, "бой", "боя", "боёв") + " — " +
+    ? data.name + ": " + people + " " +
+      plural(people, "бой", "боя", "боёв") + " — " +
       counts.win + " побед, " + counts.loss + " поражений, " +
-      counts.draw + " ничьих"
+      counts.draw + " ничьих" + tail
     : data.name + " ещё не дрался.";
 
   const body = el("stats-body");
@@ -3651,6 +3667,7 @@ function render(card, keepTab) {
   record.appendChild(row("Побед", num(card.record.wins)));
   record.appendChild(row("Поражений", num(card.record.losses)));
   record.appendChild(row("Ничьих", num(card.record.draws)));
+  record.appendChild(row("Рейды", raidScore(card.record)));
   record.appendChild(row("Рейтинг", num(card.record.rating)));
   if (card.is_self) {
     record.appendChild(row("Кредиты", purse(card.record.credits)));

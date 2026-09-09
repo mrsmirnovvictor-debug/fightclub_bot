@@ -1195,7 +1195,8 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         card_text = await page.locator("#sheet-list").inner_text()
         for line in ("Сила", "Ловкость", "Интуиция", "Выносливость"):
             assert line in card_text
-        for line in ("Уровень", "Опыт", "Побед", "Поражений", "Ничьих", "Рейтинг"):
+        for line in ("Уровень", "Опыт", "Побед", "Поражений", "Ничьих",
+                     "Рейды", "Рейтинг"):
             assert line in card_text
         assert "Клуб на Вязов" in card_text
         assert "День рождения персонажа" in card_text
@@ -2951,4 +2952,27 @@ async def test_an_empty_history_says_so(server):
 
         assert "ещё не дрался" in await page.locator("#stats-note").inner_text()
         assert await page.locator(".fight-row").count() == 0
+        await browser.close()
+
+
+async def test_raids_are_counted_apart_from_fights_with_people(server):
+    """Подвал стоит своей строкой: «4 / 10» походов, а победы — только людские.
+
+    Босса валят отрядом, и он не человек. Пока рейды писались в общий
+    счёт, десять заходов раздували победы, а неудачный поход портил
+    репутацию бойца — по такому счёту нельзя было понять, кого он бил.
+    """
+    player = make_player()
+    player.wins, player.losses, player.draws = 4, 2, 1
+    player.raid_wins, player.raid_fights = 4, 10
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-hero").click()
+
+        rows = page.locator("#record li")
+        assert await rows.filter(has_text="Побед").first.inner_text() == "Побед\n4"
+        assert await rows.filter(has_text="Рейды").first.inner_text() == "Рейды\n4 / 10"
         await browser.close()

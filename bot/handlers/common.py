@@ -153,6 +153,12 @@ def profile_text(player: Player, own: bool = True) -> str:
         f"поражений: <b>{player.losses}</b> · "
         f"ничьих: <b>{player.draws}</b>",
     ]
+    # Подвал — отдельной строкой и только тем, кто туда ходил: у тех, кто
+    # не ходил, «0/0» ничего не говорит и только удлиняет карточку
+    if player.raid_fights:
+        lines.append(
+            f"🩸 Рейды: <b>{player.raid_wins}/{player.raid_fights}</b>"
+        )
     if own and player.free_points:
         lines.append(
             f"\n✨ Свободных очков: <b>{player.free_points}</b> — раскидай их: /upgrade"

@@ -278,15 +278,24 @@ def build_history(
         if not days or days[-1]["date"] != fight["date"]:
             days.append({"date": fight["date"], "fights": []})
         days[-1]["fights"].append(fight)
+    # Считаем врозь: подвал — не бой с человеком, и в карточке он тоже
+    # стоит своей строкой. В самом списке рейды идут вперемешку с
+    # дуэлями, по времени: как журнал он честнее так
     counts = {"win": 0, "loss": 0, "draw": 0}
+    raid_counts = {"win": 0, "loss": 0, "draw": 0}
     for fight in fights:
-        counts[fight["result"]] += 1
+        where = raid_counts if fight["kind"] == "raid" else counts
+        where[fight["result"]] += 1
     return {
         "user_id": user_id,
         "name": name,
         "days": days,
         "total": len(fights),
         "counts": counts,
+        "raids": {
+            "wins": raid_counts["win"],
+            "total": sum(raid_counts.values()),
+        },
         # Куда листать дальше: последний бой этой страницы
         "before": fights[-1]["id"] if fights else None,
     }

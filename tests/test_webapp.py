@@ -126,6 +126,9 @@ def test_card_has_everything_the_screen_needs():
         "wins": 136,
         "losses": 54,
         "draws": 11,
+        # Подвал живёт своим счётом и в победы над людьми не мешается
+        "raid_wins": player.raid_wins,
+        "raid_fights": player.raid_fights,
         "rating": player.rating,
         "credits": 0,
     }
