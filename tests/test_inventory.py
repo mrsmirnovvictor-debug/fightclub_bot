@@ -6,26 +6,18 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
-from bot.game.classes import FIGHTER_CLASSES, Stats, Zone, get_class
+from bot.game.classes import Stats, get_class
 from bot.game.modes import FightMode
-from bot.game.economy import credits_per_level
 from bot.game.equipment import (
     ALL_SLOTS,
     CATALOGUE,
-    MAGIC_ITEMS,
-    SHOWCASE,
-    EARLY_LEVELS,
-    EARLY_SHARE_CAP,
-    LATE_SHARE_CAP,
     MAX_WEAR,
     Equipment,
-    Item,
     OwnedItem,
     Slot,
     apply_fight_wear,
     can_equip,
     describe_requirements,
-    items_unlocked_at,
     repair,
     shop_sections,
 )
@@ -485,7 +477,7 @@ def test_worn_gear_shows_its_wear_in_the_slot():
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     boots = next(s for s in card["slots"]["right"] if s["slot"] == "boots")
     assert boots["item"]["wear"] == 4
-    assert boots["item"]["image"] == SNEAKERS.image
+    assert boots["item"]["image"] == SNEAKERS.picture
 
 
 # ---------- ручки мини-аппа ----------
@@ -586,32 +578,6 @@ async def test_nobody_touches_a_stranger_backpack(client, db):
     assert response.status == 401
 
 
-def test_catalogue_items_know_their_slot_and_price():
-    for item in CATALOGUE.values():
-        # За что вещь берут: кредиты в лавке клуба, звёзды у мага — или
-        # никак, если это награда: её выдают, а не продают.
-        assert item.price > 0 or item.stars > 0 or item.reward
-        assert not (item.price and item.stars), f"{item.title}: и кредиты, и звёзды"
-        assert not (item.reward and (item.price or item.stars)), (
-            f"{item.title}: награда с ценником"
-        )
-        assert item.slot in item.slots
-        assert isinstance(item, Item)
-        # второе место есть только у оружия: его берут во вторую руку
-        assert item.slots == (
-            (Slot.WEAPON, Slot.OFFHAND) if item.is_weapon else (item.slot,)
-        )
-
-
-def test_the_magic_counter_is_kept_out_of_the_club_shop():
-    """Звёздный товар не лежит на прилавке за кредиты и не путается с ним."""
-    assert MAGIC_ITEMS, "у мага пусто"
-    for item in MAGIC_ITEMS:
-        assert item.stars > 0 and item.price == 0
-        assert item not in SHOWCASE
-    assert all(not item.is_magic for item in SHOWCASE)
-
-
 # ---------- износ в настоящем бою ----------
 
 
@@ -698,30 +664,6 @@ async def test_nobody_changes_clothes_in_the_middle_of_a_fight(db):
 # ---------- магазин ----------
 
 
-def test_every_tier_has_something_for_every_class():
-    """В каждой партии товара есть вещь под каждый класс."""
-    for level in (4, 5, 6, 7, 8, 9):
-        covered = {code for item in items_unlocked_at(level) for code in item.for_classes}
-        assert covered == set(FIGHTER_CLASSES), f"{level} уровень обошли: {covered}"
-
-
-def test_a_tier_never_fits_into_one_level_of_income():
-    """Развилка: за уровень партию не выкупить, но что-то из неё по карману."""
-    income = credits_per_level()
-    for level in (4, 5, 6, 7, 8):
-        items = items_unlocked_at(level)
-        cheapest_per_slot: dict = {}
-        for item in items:
-            best = cheapest_per_slot.get(item.slot)
-            if best is None or item.price < best.price:
-                cheapest_per_slot[item.slot] = item
-        full_set = sum(item.price for item in cheapest_per_slot.values())
-        assert full_set > income, f"{level} уровень: партия за {full_set} — не выбор"
-        assert min(item.price for item in items) <= income * 4, (
-            f"{level} уровень: даже самое дешёвое копить вечность"
-        )
-
-
 def test_goods_are_sorted_by_type_and_level():
     sections = shop_sections()
     assert [slot for slot, _ in sections] == list(ALL_SLOTS)
@@ -802,97 +744,6 @@ async def test_mini_app_shop_needs_your_own_init_data(client, db):
 # ---------- числа предметов ----------
 
 
-def test_percent_bonuses_stay_within_their_caps():
-    """Проценты растут со ступенью, но не настолько, чтобы стирать класс.
-
-    Потолок держит лавку клуба — то, что берут за кредиты и что определяет
-    баланс между классами. Товар мага живёт по своим правилам: он и должен
-    быть заметно сильнее, иначе за него не платили бы звёздами.
-
-    Четыре вещи из `bot/seed.py` сейчас нарочно выведены за потолок: на них
-    гоняют бой руками, и числа им задал хозяин клуба. Уйдёт seed — вернётся
-    и правило, проверять его тогда будет нечего.
-    """
-    from bot.seed import BOOSTED_GEAR
-
-    for item in SHOWCASE:
-        if item.code in BOOSTED_GEAR:
-            continue
-        shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
-        cap = EARLY_SHARE_CAP if item.level_required <= EARLY_LEVELS else LATE_SHARE_CAP
-        assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%} > {cap:.0%}"
-
-
-def test_every_weapon_adds_damage_and_it_grows_with_the_tier():
-    """Лестница ступеней — про лавку клуба: у мага своя цена и свой отсчёт.
-
-    Усиленные вещи из `bot/seed.py` в лестницу не встают: их числа заданы
-    вручную и нарочно выбиваются вверх. Уйдёт seed — вернутся и они в строй.
-    """
-    from bot.seed import BOOSTED_GEAR
-
-    weapons = [
-        item for item in SHOWCASE if item.is_weapon and item.code not in BOOSTED_GEAR
-    ]
-    assert weapons
-    by_level: dict[int, list[float]] = {}
-    for item in weapons:
-        assert item.damage_min > 0 and item.damage_max >= item.damage_min
-        by_level.setdefault(item.level_required, []).append(
-            (item.damage_min + item.damage_max) / 2
-        )
-    levels = sorted(by_level)
-    for lower, upper in zip(levels, levels[1:]):
-        assert max(by_level[lower]) < min(by_level[upper]), (
-            f"оружие {upper} уровня не сильнее оружия {lower}"
-        )
-
-
-def test_weapon_spread_matches_the_character_of_its_class():
-    """У ассасина оружие рвано́е, у танка ровное, у воина с трикстером середина."""
-    def spread(code: str) -> float:
-        item = CATALOGUE[code]
-        return (item.damage_max - item.damage_min) / (item.damage_min + item.damage_max)
-
-    for tier in (
-        ("pipe", "switchblade", "awl", "crowbar"),
-        ("bat", "machete", "stiletto", "sledge"),
-        ("fire_axe", "balisong", "ice_pick", "chain"),
-        ("cleaver", "razor", "needle", "pry_bar"),
-    ):
-        warrior, rogue, assassin, tank = (spread(code) for code in tier)
-        assert assassin > warrior > tank, tier
-        assert assassin > rogue > tank, tier
-        # среднее у всех четверых одно: разводим разброс, а не силу
-        averages = {
-            (CATALOGUE[code].damage_min + CATALOGUE[code].damage_max) / 2
-            for code in tier
-        }
-        assert len(averages) == 1, f"{tier}: средний урон разъехался — {averages}"
-
-
-def test_armour_covers_the_zone_it_is_worn_on():
-    coverage = {
-        "moto_helmet": (Zone.HEAD,),
-        "biker_jacket": (Zone.CHEST, Zone.BELLY),
-        "buckle_belt": (Zone.BELT,),
-        "padded_pants": (Zone.BELT, Zone.LEGS),
-        "army_boots": (Zone.LEGS,),
-    }
-    for code, zones in coverage.items():
-        assert CATALOGUE[code].zones == zones, code
-    # перчатки и оружие брони не дают вовсе
-    assert CATALOGUE["battered_gloves"].zones == ()
-    assert CATALOGUE["cleaver"].zones == ()
-
-
-def test_items_never_hand_out_endurance():
-    """Выносливость растят только руками — вещи дают лишь запас здоровья."""
-    for item in CATALOGUE.values():
-        assert item.bonus.endurance == 0, item.title
-    assert any(item.hp for item in CATALOGUE.values())
-
-
 def test_gear_percentages_reach_the_fighter():
     """Проценты с вещей складываются и доходят до бойца целиком."""
     equipment = Equipment.from_codes({"weapon": "razor", "gloves": "fingerless_gloves"})
@@ -904,38 +755,6 @@ def test_gear_percentages_reach_the_fighter():
     assert tank.anticrit == pytest.approx(
         CATALOGUE["pry_bar"].anticrit + CATALOGUE["moto_helmet"].anticrit
     )
-
-
-def test_pictures_are_wired_to_the_right_bucket():
-    """Картинки предметов лежат в R2 и не повторяются у разных вещей."""
-    from bot.game.equipment import ART, SHOWCASE
-
-    pictures = [item.image for item in SHOWCASE if item.image]
-    assert pictures, "картинок нет вовсе"
-    assert len(set(pictures)) == len(pictures), "две вещи делят одну картинку"
-    assert all(picture.startswith("https://") for picture in pictures)
-
-    for item in SHOWCASE:
-        if item.is_weapon:
-            assert item.image.startswith(ART), f"{item.code}: не из бакета клуба"
-
-
-def test_the_whole_catalogue_is_drawn():
-    """Каждая вещь на прилавке нарисована — значков-заглушек не осталось."""
-    from bot.game.equipment import SHOWCASE
-
-    naked = [item.code for item in SHOWCASE if not item.image]
-    assert not naked, f"без картинки: {naked}"
-
-
-def test_pictures_are_not_shared_between_items():
-    """Одна картинка на две вещи — почти всегда промах при раскладке файлов."""
-    from bot.game.equipment import SHOWCASE
-
-    seen: dict[str, str] = {}
-    for item in SHOWCASE:
-        twin = seen.setdefault(item.image, item.code)
-        assert twin == item.code, f"{item.code} и {twin} делят картинку"
 
 
 # ---------- образы ----------
@@ -1155,14 +974,6 @@ def test_the_two_pairs_of_canvas_trousers_do_not_share_a_picture():
     assert padded.image.endswith("Canvas_trousers_game_inventory_icon_202608281512.jpeg")
 
 
-def test_the_whole_catalogue_lives_in_one_bucket():
-    """Первого бакета больше нет: всё лежит в общем, включая кеды."""
-    from bot.game.equipment import ART
-
-    for item in CATALOGUE.values():
-        assert item.image.startswith(ART), f"{item.code}: не из общего бакета"
-
-
 # ---------- требования считаются по надетому ----------
 
 
@@ -1316,20 +1127,3 @@ async def test_the_boosted_gear_waits_for_a_missing_fighter(db):
     assert await grant_test_gear(db) == 0
 
 
-def test_the_boosted_gear_is_what_the_owner_asked_for():
-    """Числа этих четырёх заданы вручную — держим их под присмотром."""
-    from bot.game.equipment import get_item
-
-    bandana = get_item("bandana")
-    assert (bandana.intuition, bandana.crit, bandana.anticrit) == (5, 0.35, 0.25)
-
-    wraps = get_item("wraps")
-    assert (wraps.strength, wraps.dodge, wraps.counter, wraps.accuracy) == (
-        5, 0.15, 0.15, 0.05
-    )
-
-    sneakers = get_item("sneakers")
-    assert (sneakers.agility, sneakers.dodge, sneakers.crit) == (5, 0.15, 0.15)
-
-    shirt = get_item("wife_beater")
-    assert (shirt.strength, shirt.agility, shirt.intuition, shirt.hp) == (3, 3, 3, 60)

@@ -48,6 +48,17 @@ def shirt(code: str) -> str:
     return f"{SHIRTS}/{code}.jpeg"
 
 
+def item(code: str) -> str:
+    """Вещь лежит под своим кодом: items/riot_shield.jpeg.
+
+    Так адрес картинки не приходится писать руками: новая вещь получает
+    его от собственного кода. Старые файлы с именами вроде
+    `bandana.jpeg_202608281514.jpeg` под правило не подходят — у таких
+    вещей адрес до сих пор задан явно, и `Item.image` его перебивает.
+    """
+    return f"{ITEMS}/{code}.jpeg"
+
+
 def boss(code: str) -> str:
     """Портрет рейд-босса: bosses/cellar_boss.png."""
     return f"{BOSSES}/{code}.png"
@@ -71,6 +82,7 @@ __all__ = [
     "WEAPONS",
     "avatar",
     "boss",
+    "item",
     "potion",
     "shirt",
     "slot",

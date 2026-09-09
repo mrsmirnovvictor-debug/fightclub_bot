@@ -3,7 +3,7 @@
     python scripts/simulate.py             # один показательный бой
     python scripts/simulate.py --balance   # винрейты всех пар классов
     python scripts/simulate.py --gear 8    # то же, но в полной экипировке
-    python scripts/simulate.py --triangle  # держится ли круг классов
+    python scripts/simulate.py --triangle  # ворота контента: круг классов
     python scripts/simulate.py --progress  # сколько боёв уходит до потолка
 """
 
@@ -221,25 +221,39 @@ CIRCLE = (
 )
 
 
-def triangle(runs: int, seed: int) -> None:
-    """Держится ли круг на каждом уровне: трикстер → танк → ассасин → трикстер."""
-    rng = random.Random(seed)
-    levels = (1, 4, 6, 8, 10)
+# Зёрна круга. Их четыре и они постоянные: перевес в середине лестницы —
+# полтора очка, и на одном случайном зерне он тонет в разбросе. Ворота,
+# которые через раз показывают разный ответ, — не ворота.
+CIRCLE_SEEDS = (2024, 4048, 6072, 8096)
+
+# Ниже этой доли круг разорван, до этой — держится, но впритык: между
+# третьим и пятым уровнями у танка против ассасина всего полтора очка.
+CIRCLE_EDGE = 0.53
+
+
+def triangle(runs: int, seed: int | None) -> None:
+    """Держится ли круг на каждом уровне: трикстер → танк → ассасин → трикстер.
+
+    Ворота контентного пака. Новая вещь попадает в эталонный комплект
+    сразу, а комплект и решает круг, — поэтому после каждого пака матрицу
+    гоняют целиком, и красная клетка означает, что править надо числа
+    вещи, а не тест.
+    """
+    levels = tuple(range(1, 11))
+    seeds = (seed,) if seed is not None else CIRCLE_SEEDS
 
     def fighter(code: str, level: int, user_id: int) -> Fighter:
         fclass = FIGHTER_CLASSES[code]
-        equipment = reference_equipment(fclass, level) if level > 1 else Equipment()
+        equipment = reference_equipment(fclass, level)
         stats = developed_stats(fclass, level).merge(equipment.bonus)
         return Fighter(user_id, fclass.title, fclass, stats, level, equipment=equipment)
 
-    print("круг: кто кого бьёт (в комплектах своего уровня)\n")
-    print(f"{'пара':26}" + "".join(f"{'ур.' + str(level):>8}" for level in levels))
-    holds = True
-    for winner, loser, why in CIRCLE:
-        shares = []
-        for level in levels:
-            wins = {1: 0, 2: 0, None: 0}
-            for _ in range(runs):
+    def share(winner: str, loser: str, level: int, count: int) -> float:
+        total = 0.0
+        for one in seeds:
+            rng = random.Random(one + level)
+            wins = 0.0
+            for _ in range(count):
                 a, b = fighter(winner, level, 1), fighter(loser, level, 2)
                 number = 1
                 while True:
@@ -249,13 +263,42 @@ def triangle(runs: int, seed: int) -> None:
                     if result.finished:
                         break
                     number += 1
-                wins[result.winner_id] += 1
-            share = (wins[1] + wins[None] / 2) / runs
-            shares.append(share)
-            holds = holds and share > 0.5
+                wins += 1 if result.winner_id == 1 else 0.5 if result.winner_id is None else 0
+            total += wins / count
+        return total / len(seeds)
+
+    print(f"круг: кто кого бьёт (в комплектах своего уровня, "
+          f"{runs * len(seeds)} боёв на клетку, спорные — вчетверо больше)\n")
+    print(f"{'пара':26}" + "".join(f"{'ур.' + str(level):>7}" for level in levels))
+    broken: list[str] = []
+    tight: list[str] = []
+    for winner, loser, why in CIRCLE:
+        shares = []
+        for level in levels:
+            value = share(winner, loser, level, runs)
+            where = f"{FIGHTER_CLASSES[winner].title} → {FIGHTER_CLASSES[loser].title}"
+            if value < CIRCLE_EDGE:
+                # Клетка на грани: на такой доле разброс решает больше
+                # правки, поэтому спорное место пересчитываем вчетверо
+                # длиннее — иначе ворота отвечают по-разному через раз
+                value = share(winner, loser, level, runs * 4)
+                if value <= 0.5:
+                    broken.append(f"{where} на {level} уровне: {value:.1%}")
+                else:
+                    tight.append(f"{where} на {level} уровне: {value:.1%}")
+            shares.append(value)
         pair = f"{FIGHTER_CLASSES[winner].title} → {FIGHTER_CLASSES[loser].title}"
-        print(f"{pair:26}" + "".join(f"{s:>8.0%}" for s in shares) + f"   {why}")
-    print("\nкруг держится" if holds else "\nкруг где-то разорван")
+        print(f"{pair:26}" + "".join(f"{s:>7.0%}" for s in shares) + f"   {why}")
+    if tight:
+        print("\nвпритык (в пределах разброса, но перевес на своей стороне):")
+        for line in tight:
+            print(f"  {line}")
+    if broken:
+        print("\nкруг разорван:")
+        for line in broken:
+            print(f"  {line}")
+    else:
+        print("\nкруг держится")
 
 
 def _developed(fclass: FighterClass, level: int, rng: random.Random):
@@ -295,7 +338,8 @@ def main() -> None:
 
     seed = args.seed if args.seed is not None else random.randrange(10**6)
     if args.triangle:
-        triangle(max(50, args.runs // 2), seed)
+        # У круга свои зёрна: без --seed он считается по всем четырём
+        triangle(max(50, args.runs // 2), args.seed)
     elif args.gear:
         geared(args.gear, args.runs, seed)
     elif args.progress:

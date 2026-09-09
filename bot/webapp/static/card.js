@@ -3,6 +3,43 @@
 const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 
 const el = (id) => document.getElementById(id);
+
+// Падения мини-аппа не видно ниоткуда: консоль вебвью Telegram не
+// показывает, а на телефоне её не открыть — со стороны карточка просто
+// «не работает», и в логах сервера при этом чисто. Поэтому свою ошибку
+// клиент относит на сервер сам. Больше трёх за сеанс не носим: если
+// сломался цикл отрисовки, отчёты пойдут потоком и зальют журнал.
+let oopsLeft = 3;
+
+function reportOops(error, screen) {
+  if (oopsLeft <= 0) return;
+  oopsLeft -= 1;
+  try {
+    fetch("api/oops", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify({
+        message: (error && error.message) || String(error),
+        stack: (error && error.stack) || "",
+        screen: screen || (typeof lastTab === "string" ? lastTab : "?"),
+        agent: navigator.userAgent,
+      }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (ignored) {
+    // Отчёт об ошибке не имеет права уронить страницу второй раз
+  }
+}
+
+window.addEventListener("error", (event) => {
+  reportOops(event.error || new Error(event.message), null);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  reportOops(event.reason, null);
+});
 const numberFormat = new Intl.NumberFormat("ru-RU");
 const num = (value) => numberFormat.format(value);
 
@@ -3637,6 +3674,7 @@ async function load() {
     if (card.is_self && wantsShop()) showTab("shop");
   } catch (error) {
     console.error("card load failed", error);
+    reportOops(error, "загрузка карточки");
     fail("Не получилось загрузить карточку. Попробуй ещё раз.");
   }
 }
