@@ -485,3 +485,66 @@ async def test_club_lists_every_fighter(client, db):
 
 async def test_the_club_list_needs_a_signature(client):
     assert (await client.get("/api/club")).status == 401
+
+
+# ---------- падение клиента доезжает до журнала ----------
+
+
+async def test_a_broken_mini_app_reports_itself_to_the_log(client, caplog):
+    """Мини-апп упал — сервер об этом узнаёт, а не гадает по молчанию.
+
+    Со стороны сервера сломанная карточка выглядит идеально: все запросы
+    двухсотые, ошибок нет. Исключение живёт в консоли вебвью, которую на
+    телефоне не открыть, поэтому клиент приносит своё падение сам.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="bot.webapp.server"):
+        response = await client.post(
+            "/api/oops",
+            json={
+                "message": "TypeError: cannot read properties of undefined",
+                "stack": "at render (card.js:3529)",
+                "screen": "hero",
+                "agent": "Telegram Desktop",
+            },
+            headers={"X-Telegram-Init-Data": make_init_data(42)},
+        )
+
+    assert response.status == 200
+    written = caplog.text
+    assert "42" in written, "не видно, у кого упало"
+    assert "hero" in written, "не видно, на каком экране"
+    assert "TypeError" in written and "card.js:3529" in written
+
+
+async def test_a_crash_report_is_taken_even_without_a_signature(client, caplog):
+    """Карточка могла развалиться до входа — тогда подписи в отчёте нет."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="bot.webapp.server"):
+        response = await client.post("/api/oops", json={"message": "boom"})
+
+    assert response.status == 200
+    assert "неизвестный" in caplog.text and "boom" in caplog.text
+
+
+async def test_a_crash_report_cannot_flood_the_log(client, caplog):
+    """Длинный стек обрезается: журнал не свалка."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="bot.webapp.server"):
+        await client.post(
+            "/api/oops",
+            json={"message": "я" * 5000, "stack": "ю" * 5000},
+            headers={"X-Telegram-Init-Data": make_init_data(42)},
+        )
+
+    assert "я" * 5000 not in caplog.text
+    assert len(caplog.text) < 2000
+
+
+async def test_a_crash_report_survives_junk_instead_of_json(client):
+    """Отчёт присылают из упавшего скрипта — там может прийти что угодно."""
+    assert (await client.post("/api/oops", data=b"not json")).status == 200
+    assert (await client.post("/api/oops", json=["не", "объект"])).status == 200

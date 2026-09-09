@@ -32,6 +32,11 @@ async def dispatcher_env(db):
         db_path=":memory:",
         turn_timeout=600,
         round_break=0,  # ходы идут подряд: отдых по часам проверяют отдельно
+        # Расписание подвала — про московские часы, а не про сбор отряда.
+        # Без этого тесты рейда падали каждую ночь между двумя и восемью
+        # утра по Москве: окна закрыты, лобби не открывается. Само
+        # расписание проверяет tests/test_raid.py, там часы задают руками.
+        raid_any_time=True,
     )
     duels = DuelService(bot=BOT, db=db, config=config)
     battles = BattleService(bot=BOT, db=db, config=config)

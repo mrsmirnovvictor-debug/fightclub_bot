@@ -120,6 +120,52 @@ async def index(request: web.Request) -> web.Response:
     )
 
 
+# Сколько знаков сообщения и стека кладём в журнал: больше — это уже не
+# отчёт, а свалка, и один сломанный вебвью зальёт логи целиком
+OOPS_LIMIT = 400
+
+
+async def api_oops(request: web.Request) -> web.Response:
+    """Клиент упал — записать это в журнал сервера.
+
+    Исключение в мини-аппе не видно ниоткуда: вебвью Telegram консоль
+    не показывает, а на телефоне её и не открыть. Со стороны это
+    выглядит так, будто карточка «просто не работает», и в логах при
+    этом чисто — все запросы двухсотые. Поэтому клиент сам приносит
+    свою ошибку сюда.
+
+    Отчёт принимается и без подписи: если карточка развалилась ещё до
+    входа, initData могло и не дойти. Данные из него никуда не идут,
+    кроме журнала, и обрезаются по длине.
+    """
+    who = "неизвестный"
+    try:
+        viewer = parse_init_data(_init_data(request), request.app[CONFIG_KEY].bot_token)
+        who = str(viewer.user_id)
+    except AuthError:
+        pass
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    def short(key: str) -> str:
+        value = body.get(key)
+        return str(value)[:OOPS_LIMIT] if value else ""
+
+    logger.warning(
+        "Мини-апп упал у %s на экране %r: %s | %s | %s",
+        who,
+        short("screen") or "?",
+        short("message") or "без текста",
+        short("stack") or "без стека",
+        short("agent") or "?",
+    )
+    return web.json_response({"ok": True})
+
+
 async def api_card(request: web.Request) -> web.Response:
     viewer = await _viewer(request)
     db = request.app[DB_KEY]
@@ -868,6 +914,7 @@ def create_app(
         [
             web.get("/", index),
             web.get("/api/card", api_card),
+            web.post("/api/oops", api_oops),
             web.post("/api/equip", api_equip),
             web.post("/api/unequip", api_unequip),
             web.post("/api/repair", api_repair),
