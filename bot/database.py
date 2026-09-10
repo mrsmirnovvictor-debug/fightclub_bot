@@ -11,6 +11,7 @@ from typing import Any, Iterable
 import aiosqlite
 
 from bot.game.economy import RATING_START
+from bot.game.locations import FIGHT_CLUB
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
 from bot.game.health import now_ts
 from bot.game.modes import FightMode, mode_of
@@ -51,6 +52,10 @@ CREATE TABLE IF NOT EXISTS players (
     -- Подвал считается отдельно от боёв с людьми
     raid_wins      INTEGER NOT NULL DEFAULT 0,
     raid_fights    INTEGER NOT NULL DEFAULT 0,
+    -- Где боец на карте города и куда идёт
+    location       TEXT    NOT NULL DEFAULT 'fight_club',
+    travel_to      TEXT,
+    arrives_at     INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -316,7 +321,8 @@ PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, look, strength, "
     "agility, intuition, endurance, free_points, level, exp, total_exp, "
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
-    "raid_wins, raid_fights, city, birthplace, pro_until, gender, created_at"
+    "raid_wins, raid_fights, location, travel_to, arrives_at, "
+    "city, birthplace, pro_until, gender, created_at"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -334,6 +340,10 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("gender", "TEXT NOT NULL DEFAULT ''"),  # пусто — бойца заводили до выбора
     ("raid_wins", "INTEGER NOT NULL DEFAULT 0"),
     ("raid_fights", "INTEGER NOT NULL DEFAULT 0"),
+    # Все, кто завёл бойца до карты, стоят там же, где начинают новые
+    ("location", f"TEXT NOT NULL DEFAULT '{FIGHT_CLUB}'"),
+    ("travel_to", "TEXT"),
+    ("arrives_at", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -541,8 +551,9 @@ class Database:
                 strength, agility, intuition, endurance, free_points, level,
                 exp, total_exp, micro_ups, credits, rating, hp, hp_at,
                 wins, losses, draws, raid_wins, raid_fights,
+                location, travel_to, arrives_at,
                 city, birthplace, pro_until, gender, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -569,6 +580,9 @@ class Database:
                 draws          = excluded.draws,
                 raid_wins      = excluded.raid_wins,
                 raid_fights    = excluded.raid_fights,
+                location       = excluded.location,
+                travel_to      = excluded.travel_to,
+                arrives_at     = excluded.arrives_at,
                 pro_until      = excluded.pro_until,
                 gender         = excluded.gender
             """,
@@ -597,6 +611,9 @@ class Database:
                 player.draws,
                 player.raid_wins,
                 player.raid_fights,
+                player.location,
+                player.travel_to,
+                player.arrives_at,
                 player.city,
                 player.birthplace,
                 player.pro_until,

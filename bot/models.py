@@ -41,6 +41,7 @@ from bot.game.potions import (
     effects_hp,
     get_potion,
 )
+from bot.game.locations import FIGHT_CLUB
 from bot.game.pro import PRO_BADGE
 from bot.game.stats import derive
 from bot.game.world import DEFAULT_BIRTHPLACE, DEFAULT_CITY
@@ -98,6 +99,12 @@ class Player:
     raid_wins: int = 0
     raid_fights: int = 0
     city: str = DEFAULT_CITY
+    # Где боец стоит и куда идёт. Прибытие не по таймеру, а по часам:
+    # пришёл тот, у кого срок вышел, — так дорога переживает перезапуск
+    # бота и не тратит по задаче на каждого путника.
+    location: str = FIGHT_CLUB
+    travel_to: str | None = None
+    arrives_at: int = 0  # unix-время прибытия; 0 — никуда не идёт
     # До какого момента жива подписка PRO (unix-время); 0 — подписки нет
     pro_until: int = 0
     birthplace: str | None = None  # группа, где боец начал драться
@@ -275,6 +282,47 @@ class Player:
     def fights(self) -> int:
         """Бои с людьми. Рейды сюда не входят: у подвала свой счёт."""
         return self.wins + self.losses + self.draws
+
+    # ---------- где боец ----------
+
+    def in_transit(self, now: int | None = None) -> bool:
+        """Идёт по городу: ни там, ни там."""
+        if not self.travel_to or not self.arrives_at:
+            return False
+        return (now_ts() if now is None else now) < self.arrives_at
+
+    def where(self, now: int | None = None) -> str:
+        """Локация бойца. Дошёл — значит, уже на новом месте."""
+        if self.travel_to and not self.in_transit(now):
+            return self.travel_to
+        return self.location
+
+    def road_left(self, now: int | None = None) -> int:
+        """Сколько секунд ещё идти. Ноль — пришёл."""
+        if not self.in_transit(now):
+            return 0
+        return max(0, self.arrives_at - (now_ts() if now is None else now))
+
+    def arrive(self, now: int | None = None) -> bool:
+        """Записать прибытие, если срок вышел. True — что-то поменялось."""
+        if not self.travel_to or self.in_transit(now):
+            return False
+        self.location = self.travel_to
+        self.travel_to = None
+        self.arrives_at = 0
+        return True
+
+    def set_out(self, target: str, seconds: int, now: int | None = None) -> None:
+        """Выйти в дорогу. Ноль секунд — шаг на месте, приходим сразу."""
+        moment = now_ts() if now is None else now
+        self.arrive(moment)
+        if seconds <= 0 or target == self.location:
+            self.location = target
+            self.travel_to = None
+            self.arrives_at = 0
+            return
+        self.travel_to = target
+        self.arrives_at = moment + seconds
 
     @property
     def effect_stats(self) -> Stats:

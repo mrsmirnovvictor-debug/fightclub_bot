@@ -21,6 +21,8 @@ BOSSES = f"{BUCKET}/bosses"
 # Товар лавки мага
 MAGIC = f"{BUCKET}/magic"
 POTIONS = f"{BUCKET}/potions"
+# Карты районов города: по карте на район
+LOCATIONS = f"{BUCKET}/locations"
 
 
 def avatar(code: str) -> str:
@@ -59,6 +61,11 @@ def item(code: str) -> str:
     return f"{ITEMS}/{code}.jpeg"
 
 
+def location(code: str) -> str:
+    """Карта района: locations/main_hub.jpeg."""
+    return f"{LOCATIONS}/{code}.jpeg"
+
+
 def boss(code: str) -> str:
     """Портрет рейд-босса: bosses/cellar_boss.png."""
     return f"{BOSSES}/{code}.png"
@@ -75,6 +82,7 @@ __all__ = [
     "BOSSES",
     "BUCKET",
     "ITEMS",
+    "LOCATIONS",
     "MAGIC",
     "POTIONS",
     "SHIRTS",
@@ -83,6 +91,7 @@ __all__ = [
     "avatar",
     "boss",
     "item",
+    "location",
     "potion",
     "shirt",
     "slot",
