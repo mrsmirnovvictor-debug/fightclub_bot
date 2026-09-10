@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import time
 import hashlib
 import logging
 from pathlib import Path
@@ -35,7 +37,7 @@ from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, gate_payload, raid_row
-from bot.game.health import format_duration
+from bot.game.health import format_duration, now_ts
 from bot.game.locations import (
     SHOP_SERVICES,
     Service,
@@ -76,6 +78,8 @@ RAIDS_KEY: web.AppKey = web.AppKey("raids")
 BATTLES_KEY: web.AppKey = web.AppKey("battles")
 # Кто водит бойцов по городу
 TRAVEL_KEY: web.AppKey[Travel] = web.AppKey("travel", Travel)
+# Кому недавно уже ставили отметку «был в клубе»: боец → время по часам
+SEEN_KEY: web.AppKey[dict] = web.AppKey("seen", dict)
 # Кто может смотреть чужие карточки — все: клуб маленький, прятать нечего
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
 
@@ -90,14 +94,39 @@ def _init_data(request: web.Request) -> str:
     return request.query.get("initData", "")
 
 
+# Как часто отметка «был в клубе» доходит до базы. Карточка опрашивается
+# раз в двадцать секунд, а экраны боя и рейда — раз в две: писать на
+# каждый такой запрос значит тридцать записей в минуту на игрока при
+# точности, которая нужна до минуты.
+SEEN_EVERY = 30.0
+
+
+async def _mark_seen(request: web.Request, user_id: int) -> None:
+    """Отметить, что мини-апп отозвался от имени этого бойца."""
+    # Придержка живёт при самом приложении, а не в модуле: иначе два
+    # запущенных рядом бота делили бы одну память на двоих
+    written = request.app[SEEN_KEY]
+    last = written.get(user_id, 0.0)
+    now = time.monotonic()
+    if now - last < SEEN_EVERY:
+        return
+    written[user_id] = now
+    with contextlib.suppress(Exception):  # отметка не стоит упавшего запроса
+        await request.app[DB_KEY].mark_seen(user_id, now_ts())
+
+
 async def _viewer(request: web.Request):
     config = request.app[CONFIG_KEY]
     try:
-        return parse_init_data(_init_data(request), config.bot_token)
+        viewer = parse_init_data(_init_data(request), config.bot_token)
     except AuthError as error:
         raise web.HTTPUnauthorized(
             text=str(error), content_type="text/plain"
         ) from error
+    # Через эту дверь проходит каждый запрос мини-аппа — здесь и считаем,
+    # что боец в клубе. Бои в ветке группы идут мимо и в счёт не идут
+    await _mark_seen(request, viewer.user_id)
+    return viewer
 
 
 def asset_stamp() -> str:
@@ -992,6 +1021,7 @@ def create_app(
     app = web.Application(middlewares=[travel_guard])
     app[BOT_KEY] = bot
     app[TRAVEL_KEY] = Travel(db)
+    app[SEEN_KEY] = {}
     app[DB_KEY] = db
     app[CONFIG_KEY] = config
     app[STAMP_KEY] = asset_stamp()

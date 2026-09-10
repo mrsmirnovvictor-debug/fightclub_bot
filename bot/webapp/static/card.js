@@ -1673,15 +1673,19 @@ function fighterCard(card) {
   const box = document.createDocumentFragment();
   box.appendChild(sheetDoll(card));
 
-  // Здоровье — первое, что хотят знать о чужом бойце: цел он или отлёживается
+  // Здоровье — первое, что хотят знать о чужом бойце: цел он или
+  // отлёживается. Под шкалой не «готов к бою» — это и так видно по самой
+  // шкале, — а в клубе ли он сейчас: вызывать ушедшего некому
   if (card.hp) {
     box.appendChild(sheetHealth(card.hp));
     const note = document.createElement("p");
     note.className = "hp-note sheet-hp-note";
-    note.textContent = card.hp.state_title
-      ? card.hp.state_title.charAt(0).toUpperCase() + card.hp.state_title.slice(1)
-      : "";
-    if (card.hp.ready_in_text) note.textContent += " · в строю через " + card.hp.ready_in_text;
+    if (card.seen && card.seen.online) note.classList.add("online");
+    note.textContent = (card.seen && card.seen.text) || "";
+    // Сколько ему до строя — единственное, чего по шкале не понять
+    if (card.hp.ready_in_text) {
+      note.textContent += " · в строю через " + card.hp.ready_in_text;
+    }
     box.appendChild(note);
   }
 

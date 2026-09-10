@@ -1317,6 +1317,7 @@ async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
     rival.user_id = 43
     rival.nickname = "Марла"
     rival.set_hp(rival.max_hp // 3)  # отлёживается после боя
+    rival.seen_at = now_ts() - 20 * 60  # и заходил давно
     rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
     assert rival_card["hp"]["percent"] < 100, "боец должен быть побит"
 
@@ -1347,6 +1348,13 @@ async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
         # полоска налита ровно на столько, сколько здоровья осталось
         width = await bar.locator(".hp-fill").evaluate("node => node.style.width")
         assert width == f"{rival_card['hp']['percent']}%"
+
+        # под шкалой — не «готов к бою», а в клубе ли он сейчас
+        note = await page.locator("#sheet-list .sheet-hp-note").inner_text()
+        assert "Не был в клубе 20 минут" in note
+        assert "готов к бою" not in note.lower()
+        # и сколько ему до строя: этого по шкале не понять
+        assert "в строю через" in note
 
         # и видно, где он сейчас: вызывать есть смысл только того, кто в клубе
         assert "📍 Бойцовский клуб VEGAS" in await page.locator(

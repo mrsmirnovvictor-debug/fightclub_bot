@@ -39,6 +39,7 @@ from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
 from bot.game.locations import Service, get_location
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
+from bot.game.presence import is_online, presence_text
 from bot.game.pro import PRO_BADGE, current_offer
 from bot.game.potions import (
     POTIONS,
@@ -798,6 +799,12 @@ def build_card(
             "free_points": player.free_points,
         },
         "place": place_payload(player, moment),
+        # Кто сейчас в клубе, а кого давно не видели. Видно всем, кто
+        # открыл карточку: по этому и решают, есть ли смысл вызывать
+        "seen": {
+            "online": is_online(player.seen_at, moment),
+            "text": presence_text(player.seen_at, moment),
+        },
         "record": {
             "wins": player.wins,
             "losses": player.losses,

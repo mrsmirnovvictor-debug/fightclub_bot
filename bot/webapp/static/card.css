@@ -1125,6 +1125,9 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .sheet-hp { margin-top: 12px; }
 .sheet-hp-note { margin: 5px 2px 12px; }
+/* Кто в клубе прямо сейчас — зелёным: это главное, что решает, есть ли
+   смысл его вызывать */
+.sheet-hp-note.online { color: var(--hp-green); font-weight: 700; }
 /* Кнопка под карточкой одна, и она про всю карточку целиком —
    поэтому во всю ширину, а не по ширине надписи */
 .sheet-actions { margin-bottom: 4px; }

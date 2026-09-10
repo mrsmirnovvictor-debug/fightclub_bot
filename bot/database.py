@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS players (
     raid_wins      INTEGER NOT NULL DEFAULT 0,
     raid_fights    INTEGER NOT NULL DEFAULT 0,
     -- Где боец на карте города и куда идёт
+    -- Когда мини-апп последний раз отзывался от имени этого бойца
+    seen_at        INTEGER NOT NULL DEFAULT 0,
     location       TEXT    NOT NULL DEFAULT 'fight_club',
     travel_to      TEXT,
     arrives_at     INTEGER NOT NULL DEFAULT 0,
@@ -321,7 +323,7 @@ PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, look, strength, "
     "agility, intuition, endurance, free_points, level, exp, total_exp, "
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
-    "raid_wins, raid_fights, location, travel_to, arrives_at, "
+    "raid_wins, raid_fights, seen_at, location, travel_to, arrives_at, "
     "city, birthplace, pro_until, gender, created_at"
 )
 
@@ -344,6 +346,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("location", f"TEXT NOT NULL DEFAULT '{FIGHT_CLUB}'"),
     ("travel_to", "TEXT"),
     ("arrives_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("seen_at", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -550,10 +553,10 @@ class Database:
                 user_id, nickname, class_code, avatar, avatar_file_id, look,
                 strength, agility, intuition, endurance, free_points, level,
                 exp, total_exp, micro_ups, credits, rating, hp, hp_at,
-                wins, losses, draws, raid_wins, raid_fights,
+                wins, losses, draws, raid_wins, raid_fights, seen_at,
                 location, travel_to, arrives_at,
                 city, birthplace, pro_until, gender, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -580,6 +583,7 @@ class Database:
                 draws          = excluded.draws,
                 raid_wins      = excluded.raid_wins,
                 raid_fights    = excluded.raid_fights,
+                seen_at        = excluded.seen_at,
                 location       = excluded.location,
                 travel_to      = excluded.travel_to,
                 arrives_at     = excluded.arrives_at,
@@ -611,6 +615,7 @@ class Database:
                 player.draws,
                 player.raid_wins,
                 player.raid_fights,
+                player.seen_at,
                 player.location,
                 player.travel_to,
                 player.arrives_at,
@@ -1178,6 +1183,17 @@ class Database:
                 (raid_id, user_id, damage, 1 if alive else 0, prize)
                 for user_id, damage, alive, prize in members
             ],
+        )
+        await self.conn.commit()
+
+    async def mark_seen(self, user_id: int, moment: int) -> None:
+        """Отметить, что боец только что был в клубе.
+
+        Отдельным запросом, а не через save_player: тот пишет бойца
+        целиком и затёр бы то, что успело поменяться рядом.
+        """
+        await self.conn.execute(
+            "UPDATE players SET seen_at = ? WHERE user_id = ?", (moment, user_id)
         )
         await self.conn.commit()
 
