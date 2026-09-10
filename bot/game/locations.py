@@ -303,7 +303,7 @@ LOCATIONS: tuple[Location, ...] = (
     # ---------- Старый город: казино и комиссионка ----------
     Location(
         "casino",
-        "Подпольное казино",
+        "Казино",
         district="pawnshop_casino",
         # двойные двери под вывеской «КАЗИНО»
         entrance=(

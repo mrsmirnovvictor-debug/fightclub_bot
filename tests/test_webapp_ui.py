@@ -44,7 +44,7 @@ IMAGES = "**/*.{jpeg,jpg,png}"
 pytestmark = pytest.mark.skipif(CHROMIUM is None, reason="Chromium не найден")
 
 
-def make_player() -> Player:
+def make_player(location: str = "fight_club") -> Player:
     stats = Stats(strength=14, agility=8, intuition=8, endurance=13)
     player = Player(
         user_id=42,
@@ -52,6 +52,7 @@ def make_player() -> Player:
         class_code="warrior",
         level=5,
         credits=214,
+        location=location,
         **stats.as_dict(),
     )
     player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, wear=3, slot=Slot.WEAPON)]
@@ -82,8 +83,8 @@ EMPTY_MARKET = {
 }
 
 BOSS_CARD = {
-    "code": "cellar_boss", "title": "Босс подпольного казино", "emoji": "🩸",
-    "image": "", "raid_name": "Ограбление Босса подпольного казино",
+    "code": "cellar_boss", "title": "Босс Казино", "emoji": "🩸",
+    "image": "", "raid_name": "Ограбление Босса Казино",
     "tagline": "Он тут всё построил и всех похоронил.", "live": False,
     "levels_above": 4, "level": 9, "fclass": "Танк", "fclass_emoji": "🛡️",
     "max_hp": 304, "weapon": "Кувалда", "weapon_icon": "🔨", "damage": [15, 25],
@@ -2243,11 +2244,14 @@ async def open_raid(pw, server, raid=None):
     казино на карте. Сам раздел жив, и тесты рейда — про него, а не про
     дорогу до казино; её проверяет test_locations_app.
     """
+    # Рейд открывается только в казино: экран клуба показывает тот дом,
+    # в котором боец стоит, — потому и ставим его туда
     browser, page = await open_page(
-        pw, server, build_card(make_player(), TOKEN, viewer_id=42), raid=raid
+        pw, server, build_card(make_player("casino"), TOKEN, viewer_id=42),
+        raid=raid,
     )
     await page.wait_for_selector("#hero:not(.hidden)")
-    await page.evaluate("showTab('club'); pickClubSection('raid')")
+    await page.locator("#tab-club").click()
     await page.wait_for_selector("#club-raid:not(.hidden)")
     return browser, page
 
@@ -2258,7 +2262,7 @@ async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
         browser, page = await open_raid(pw, server)
 
         head = await page.locator(".raid-head").inner_text()
-        assert "Ограбление Босса подпольного казино" in head
+        assert "Ограбление Босса Казино" in head
         assert await page.locator(".boss-stats").count() == 0
 
         await page.locator("#boss-info").click()
@@ -2390,7 +2394,7 @@ async def test_the_opener_starts_the_raid_by_that_name(server):
             "in_app": True, "seconds_left": 65, "timeout": 120,
             "can_start": True,
             "boss": {
-                "code": "cellar_boss", "title": "Босс подпольного казино",
+                "code": "cellar_boss", "title": "Босс Казино",
                 "emoji": "🩸", "image": "", "tagline": "",
             },
             "members": [
@@ -3060,18 +3064,20 @@ async def test_raids_are_counted_apart_from_fights_with_people(server):
 
 
 @pytest.mark.parametrize(
-    "screen,section",
-    [("ring", "fights"), ("raid", "raid"), ("shop", None)],
+    "screen,section,where",
+    [("ring", "fights", "fight_club"), ("raid", "raid", "casino"),
+     ("shop", None, "clothes_shop")],
 )
 async def test_a_link_from_the_chat_opens_the_screen_it_promised(
-    server, screen, section
+    server, screen, section, where
 ):
     """Объявление в чате ведёт не «в приложение», а на нужный экран.
 
     Иначе зовущая ссылка высаживает человека на карточке персонажа, и
-    искать бой, на который его позвали, он идёт сам.
+    искать бой, на который его позвали, он идёт сам. Экран при этом
+    открывается тот, что доступен на месте: подвал — из казино.
     """
-    player = make_player()
+    player = make_player(where)
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     async with async_playwright() as pw:
@@ -3334,4 +3340,69 @@ async def test_the_info_card_says_where_the_fighter_is_walking(server):
 
         line = await page.locator("#sheet-list .sheet-place").inner_text()
         assert "В пути до дома «Аптека»" in line
+        await browser.close()
+
+
+async def test_a_link_to_the_raid_sends_you_walking_if_you_are_not_there(server):
+    """Позвали в подвал, а боец не в казино — ссылка ведёт на карту."""
+    player = make_player("pharmacy")
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player, Service.POTIONS), query="?view=raid",
+        )
+        await page.wait_for_selector("#bar:not(.hidden)")
+
+        assert await page.locator("#map:not(.hidden)").count() == 1
+        assert await page.locator("#club").is_hidden()
+        await browser.close()
+
+
+# ---------- клуб и казино делят экран ----------
+
+
+async def test_the_casino_is_not_the_fight_club(server):
+    """В казино нет ни рингов, ни разделов клуба — только рейд."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("casino"),
+                                       card=build_card(make_player("casino"),
+                                                       TOKEN, viewer_id=42))
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club:not(.hidden)")
+
+        assert await page.locator("#club-title").inner_text() == "🎲 Казино"
+        assert await page.locator("#club-sections .chip").count() == 0
+        # и кнопка внизу зовётся так же: стоя в казино, читать «Клуб» странно
+        assert await page.locator("#tab-club .bar-label").inner_text() == "Казино"
+        assert await page.locator("#club-raid").is_visible()
+        assert await page.locator("#club-fights").is_hidden()
+        await browser.close()
+
+
+async def test_leaving_the_casino_leaves_the_raid_behind(server):
+    """Ушёл в клуб — раздел рейда не едет следом.
+
+    Он оставался открытым и после перехода: рейд из него всё равно не
+    начать, а выглядело так, будто подвал доступен откуда угодно.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("casino"),
+                                       card=build_card(make_player("casino"),
+                                                       TOKEN, viewer_id=42))
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+
+        # боец дошёл до клуба — карточка перерисовалась
+        await page.evaluate(
+            "card => render(card, true)",
+            build_card(make_player("fight_club"), TOKEN, viewer_id=42),
+        )
+        await page.locator("#tab-club").click()
+
+        # ждём именно раздел, а не его наполнение: список боёв приезжает
+        # отдельным запросом и до него секция пуста
+        await page.wait_for_selector("#club-fights:not(.hidden)")
+        assert await page.locator("#club-raid").is_hidden(), "рейд уехал следом"
+        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
+        assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
         await browser.close()

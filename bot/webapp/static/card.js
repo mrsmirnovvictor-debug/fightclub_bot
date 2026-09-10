@@ -1121,8 +1121,10 @@ function showTab(name) {
   if (name === "map") loadMap();
   if (name === "club" && !clubData) loadClub();
   if (name === "magic" && !magicData) loadMagic();
+  // Заходим на экран клуба — раздел пересобирается под здешний дом
+  if (name === "club") pickClubSection(clubSection);
   // Ринг опрашиваем, только пока на него смотрят: ушли со вкладки — молчим
-  if (name === "club") startWatchingFights();
+  if (name === "club" && clubHouse() === "club") startWatchingFights();
   else stopWatchingFights();
 }
 
@@ -1326,14 +1328,8 @@ function exitShape() {
 
 /** Что открывает дом, если боец уже в нём. */
 const HOUSE_SCREENS = {
-  fight: () => {
-    showTab("club");
-    pickClubSection("fights");
-  },
-  raid: () => {
-    showTab("club");
-    pickClubSection("raid");
-  },
+  fight: () => showTab("club"),
+  raid: () => showTab("club"),
   weapons: () => openShop(),
   clothes: () => openShop(),
   potions: () => openShop(),
@@ -1797,6 +1793,11 @@ function stopWatchingFights() {
 }
 
 function pickClubSection(name) {
+  const house = CLUB_HOUSES[clubHouse()];
+  const allowed = clubSections().map(([code]) => code);
+  // Рейд открывается только в казино, бои — только в клубе. Пришли не с
+  // тем разделом (например, вернулись из казино) — показываем здешний
+  if (name !== house.start && !allowed.includes(name)) name = house.start;
   clubSection = name;
   ["fights", "battle", "raid", "players", "stats"].forEach((section) => {
     el("club-" + section).classList.toggle("hidden", section !== name);
@@ -1812,17 +1813,39 @@ function pickClubSection(name) {
   else stopWatchingBattle();
 }
 
-function renderClubSections() {
-  const box = el("club-sections");
-  box.textContent = "";
-  // Рейда среди пузырей нет: в подвал спускаются из казино на карте.
-  // Раздел жив и открывается оттуда — но зайти в него мимо казино нельзя
-  [
+// Один экран обслуживает два дома: клуб и казино. Чем он будет, решает
+// не то, как в него вошли, а то, где боец стоит, — иначе, уйдя из казино
+// в клуб, он видел бы раздел рейда, в который его всё равно не пустят.
+const CLUB_HOUSES = {
+  club: { title: "🥊 Бойцовский клуб", start: "fights", icon: "🥊", tab: "Клуб" },
+  casino: { title: "🎲 Казино", start: "raid", icon: "🎲", tab: "Казино" },
+};
+
+function clubHouse() {
+  const services = (myPlace && myPlace.services) || [];
+  return services.includes("raid") ? "casino" : "club";
+}
+
+function clubSections() {
+  // В казино разделов нет вовсе: там одно дело — рейд
+  if (clubHouse() === "casino") return [];
+  return [
     ["fights", "Бои"],
     ["battle", "Отряд"],
     ["players", "Игроки"],
     ["stats", "Статистика"],
-  ].forEach(([code, label]) => {
+  ];
+}
+
+function renderClubSections() {
+  const box = el("club-sections");
+  box.textContent = "";
+  const house = CLUB_HOUSES[clubHouse()];
+  el("club-title").textContent = house.title;
+  // Кнопка внизу называется так же: стоя в казино, читать «Клуб» странно
+  el("tab-club").querySelector(".bar-icon").textContent = house.icon;
+  el("tab-club").querySelector(".bar-label").textContent = house.tab;
+  clubSections().forEach(([code, label]) => {
     box.appendChild(chip(label, clubSection === code, () => pickClubSection(code)));
   });
 }
@@ -2423,7 +2446,7 @@ function renderRaid(data) {
 }
 
 function raidHead(boss) {
-  // «Ограбление Босса подпольного казино (i)» — заголовок и всё о нём
+  // «Ограбление Босса Казино (i)» — заголовок и всё о нём
   const box = document.createElement("div");
   box.className = "raid-head";
   const title = document.createElement("h2");
@@ -3993,7 +4016,12 @@ function render(card, keepTab) {
   if (!keepTab) showTab("hero");
 }
 
+// Где боец стоит, по последней карточке: по этому и решается, чем
+// показывать экран клуба и что на нём можно
+let myPlace = null;
+
 function paintCity(card) {
+  if (card.is_self) myPlace = card.place || null;
   // Строка под куклой: город и дом, в котором боец стоит. В пути дом
   // сменяется дорогой — иначе выходит, что он одновременно и там, и там
   const place = card.place || {};
@@ -4023,8 +4051,10 @@ const SCREEN_PARAMS = {
     pickClubSection("fights");
   },
   raid: () => {
-    showTab("club");
-    pickClubSection("raid");
+    // Из чата зовут в подвал — но спуститься можно только из казино.
+    // Кто не там, попадает на карту: пусть сначала дойдёт
+    if (clubHouse() === "casino") showTab("club");
+    else showTab("map");
   },
 };
 
