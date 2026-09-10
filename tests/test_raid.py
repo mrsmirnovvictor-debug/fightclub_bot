@@ -700,3 +700,52 @@ async def test_the_split_never_drives_a_record_below_zero(bot, db):
 
     fresh = await db.get_player(1)
     assert fresh.wins == 0 and (fresh.raid_wins, fresh.raid_fights) == (1, 1)
+
+
+# ---------- рейд идёт, пока кто-нибудь не упадёт ----------
+
+
+async def test_a_raid_runs_past_thirty_waves_if_everyone_is_still_standing(bot, db):
+    """Счётчика волн у рейда нет: бой идёт столько, сколько нужно.
+
+    Раньше на тридцатой волне судья закрывал рейд поражением отряда.
+    Выглядело это дико: босс на ногах, но и в отряде никто даже не ранен,
+    а рейд уже проигран. Особенно часто это ловил большой отряд — там
+    урон на каждого меньше, и до тридцатой волны никто не успевал упасть.
+    """
+    from bot.game.raid import FATIGUE_WAVES
+
+    service = make_service(bot, db)
+    players, session = await gather(service, db, 2)
+
+    # Держим обоих и босса живыми: пусть волн пройдёт заведомо больше потолка
+    for _ in range(FATIGUE_WAVES + 5):
+        if service.raid_of_user(players[0].user_id) is None:
+            break
+        session.enemy.hp = session.enemy.max_hp
+        for player in players:
+            session.fighters[player.user_id].hp = (
+                session.fighters[player.user_id].max_hp
+            )
+        await storm(service, session, players)
+
+    assert session.wave > FATIGUE_WAVES, "волн прошло меньше потолка"
+    assert service.raid_of_user(players[0].user_id) is not None, (
+        "рейд закрыли, хотя все живы"
+    )
+
+
+async def test_the_fatigue_keeps_growing_past_its_own_scale(bot, db):
+    """Именно усталость и доводит рейд до конца, поэтому она не упирается.
+
+    Раз счётчик волн убран, что-то должно гарантировать конец боя. Это
+    усталость: она растёт и после своей шкалы, а с ней растёт урон — рано
+    или поздно кто-то падает.
+    """
+    from bot.game.combat import fatigue_multiplier
+    from bot.game.raid import FATIGUE_WAVES
+
+    on_scale = fatigue_multiplier(FATIGUE_WAVES, limit=FATIGUE_WAVES)
+    beyond = fatigue_multiplier(FATIGUE_WAVES * 2, limit=FATIGUE_WAVES)
+
+    assert beyond > on_scale > 1.0

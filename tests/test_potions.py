@@ -528,3 +528,32 @@ def test_the_card_marks_which_potions_are_temporary():
     assert rows["boost_strength"]["boost"] is True
     assert rows["heal_small"]["boost"] is False
     assert card["effects"][0]["boost"] is True
+
+
+async def test_an_elixir_shows_up_in_the_stat_it_boosts(client, db):
+    """Выпил эликсир ловкости — «Ловкость» на карточке выросла.
+
+    Боевые числа эликсир учитывали и раньше: движок берёт характеристики
+    вместе с выпитым, и уворот от склянки поднимался. А строка
+    «Ловкость» складывала только своё и надетое — выходило, что склянка
+    подействовала на бой, но не на бойца.
+    """
+    player = make_player(user_id=42, level=5, credits=1000)
+    await db.save_player(player)
+    await db.add_potion(42, "boost_agility")
+    player.potions["boost_agility"] = 1
+
+    before = build_card(player, TOKEN, viewer_id=42)
+    was = next(row for row in before["stats"] if row["code"] == "agility")
+
+    response = await client.post(
+        "/api/use", json={"code": "boost_agility"}, headers=headers(42)
+    )
+    body = await response.json()
+
+    assert response.status == 200
+    now = next(row for row in body["card"]["stats"] if row["code"] == "agility")
+    gain = get_potion("boost_agility").agility
+    assert now["total"] == was["total"] + gain
+    assert now["bonus"] == was["bonus"] + gain
+    assert now["base"] == was["base"], "своё не трогаем — прибавка временная"

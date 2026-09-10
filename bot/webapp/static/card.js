@@ -1689,6 +1689,18 @@ function fighterCard(card) {
     box.appendChild(note);
   }
 
+  // Где боец сейчас. Вызывать его есть смысл, только если он в клубе, —
+  // а по карточке это иначе не понять
+  if (card.place) {
+    const where = document.createElement("p");
+    where.className = "sheet-place";
+    where.textContent = card.place.seconds_left
+      ? "🚶 В пути до дома «" + card.place.going_to + "» — "
+        + card.place.seconds_left + " сек"
+      : "📍 " + card.place.title;
+    box.appendChild(where);
+  }
+
   const panel = document.createElement("section");
   panel.className = "panel";
   panel.appendChild(

@@ -1118,6 +1118,11 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .fight-row-note { font-size: 12px; color: var(--muted); }
 /* Полоска здоровья в карточке бойца: та же, что на своей, только со
    своими полями — в выдвижном листе сверху уже стоит кукла */
+.sheet-place {
+  margin: 0 2px 12px;
+  font-size: 13px;
+  font-weight: 700;
+}
 .sheet-hp { margin-top: 12px; }
 .sheet-hp-note { margin: 5px 2px 12px; }
 /* Кнопка под карточкой одна, и она про всю карточку целиком —

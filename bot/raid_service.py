@@ -57,15 +57,13 @@ from bot.game.raid import (
     shares_of,
     window_of,
     MAX_PARTY,
-    MAX_WAVES,
+    FATIGUE_WAVES,
     MIN_PARTY,
     Boss,
     CELLAR_BOSS,
-    RaidEnd,
     RaidOutcome,
     boss_action,
     boss_fighter,
-    damage_board,
     judge_raid,
 )
 from bot.inventory_service import wear_after_fight
@@ -586,8 +584,8 @@ class RaidService:
             boss_action(session.enemy, self.rng),
             session.wave,
             self.rng,
-            # Усталость растянута на все волны рейда, а не на длину дуэли
-            limit=MAX_WAVES,
+            # Усталость растянута на длину рейда, а не дуэли
+            limit=FATIGUE_WAVES,
         )
         # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
         said = strike_lines(result, {user_id: fighter, BOSS_ID: session.enemy}, self.rng)
@@ -626,14 +624,12 @@ class RaidService:
         self._cancel_timer(session)
         await self._close_panel(session, self._wave_report(session))
 
+        # Рейд идёт, пока кто-нибудь не упадёт: босс или отряд. Счётчика
+        # волн у него нет — раньше на тридцатой судья закрывал бой
+        # поражением, и отряд, у которого никто даже не был ранен, уходил
+        # ни с чем. Доводит бой до конца усталость: она растёт с каждой
+        # волной и дальше тридцатой, а с ней растёт и урон
         outcome = self._judge(session)
-        if outcome is None and session.wave >= MAX_WAVES:
-            # Рейд не может длиться вечно: босс на ногах — отряд ушёл ни с чем
-            outcome = RaidOutcome(
-                end=RaidEnd.LOSS,
-                survivors=session.alive_ids,
-                damage=damage_board(session.fighters),
-            )
         if outcome is not None:
             await self._finish(session, outcome)
         elif session.strikes >= self.config.raid_strikes_per_break:

@@ -1347,6 +1347,11 @@ async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
         width = await bar.locator(".hp-fill").evaluate("node => node.style.width")
         assert width == f"{rival_card['hp']['percent']}%"
 
+        # и видно, где он сейчас: вызывать есть смысл только того, кто в клубе
+        assert "📍 Бойцовский клуб VEGAS" in await page.locator(
+            "#sheet-list .sheet-place"
+        ).inner_text()
+
         # кнопка уводит в статистику именно этого бойца
         await page.get_by_role("button", name="📊 Статистика боёв").click()
         assert await page.locator("#sheet.hidden").count() == 1
@@ -3296,5 +3301,37 @@ async def test_the_card_says_where_the_fighter_stands(server):
         await page.evaluate("card => render(card)", moving)
 
         line = await page.locator("#hero-city").inner_text()
+        assert "В пути до дома «Аптека»" in line
+        await browser.close()
+
+
+async def test_the_info_card_says_where_the_fighter_is_walking(server):
+    """Соперник в пути — в его карточке дорога, а не дом."""
+    me = make_player()
+    rival = make_player()
+    rival.user_id = 43
+    rival.nickname = "Марла"
+    rival.set_out("pharmacy", 20)
+    rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(me, TOKEN, viewer_id=me.user_id),
+            build_shop(me, Service.CLOTHES), club=club_of(me, rival),
+        )
+        await page.route(
+            "**/api/card?user_id=43",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(rival_card),
+            ),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role("button", name="Игроки", exact=True).click()
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+
+        line = await page.locator("#sheet-list .sheet-place").inner_text()
         assert "В пути до дома «Аптека»" in line
         await browser.close()

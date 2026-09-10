@@ -42,6 +42,7 @@ from bot.game import pro
 from bot.game.pro import PRO_BADGE, current_offer
 from bot.game.potions import (
     POTIONS,
+    effects_bonus,
     SECTION_CODE,
     SECTION_EMOJI,
     SECTION_TITLE,
@@ -755,7 +756,15 @@ def build_card(
             "regen_seconds": FULL_REGEN_SECONDS,
             "full_in_text": format_duration(full_in) if full_in else "",
         },
-        "stats": stats_payload(player.base_stats, equipment.bonus),
+        # Выпитое идёт в ту же прибавку, что и надетое. Боевые числа его
+        # и так считали (движок берёт player.stats), а строка
+        # характеристики — нет: эликсир ловкости поднимал уворот, но
+        # «Ловкость» на карточке оставалась прежней, и выходило, что
+        # склянка не подействовала
+        "stats": stats_payload(
+            player.base_stats,
+            equipment.bonus.merge(effects_bonus(player.effects, moment)),
+        ),
         "slots": {
             "left": [slot_payload(equipment, slot, fclass) for slot in LEFT_SLOTS],
             "right": [slot_payload(equipment, slot, fclass) for slot in RIGHT_SLOTS],
