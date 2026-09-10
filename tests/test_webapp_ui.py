@@ -3117,12 +3117,13 @@ async def test_the_map_opens_on_the_district_you_stand_in(server):
         await browser.close()
 
 
-async def test_houses_are_drawn_by_their_silhouette(server):
-    """Дом обведён по силуэту, а не рамкой вокруг него.
+async def test_the_highlight_sits_on_the_door(server):
+    """Подсвечена дверь, а касание ловит рамка с запасом вокруг неё.
 
-    Рамка режет соседей и захватывает небо над крышей: нажатие в её угол
-    открывало бы дом, до которого палец не дотянулся. Обводка и область
-    касания идут по тем же точкам, что и рисунок.
+    Дом занимает полкарты, войти в него можно в одном месте — туда и
+    целятся. Но дверь на телефоне с ноготь, поэтому область касания шире
+    двери; подсветка при этом остаётся ровно на ней, иначе на рисунке
+    загорится кусок стены.
     """
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server)
@@ -3131,19 +3132,20 @@ async def test_houses_are_drawn_by_their_silhouette(server):
         points = await club.locator(".zone-line").get_attribute("points")
         corners = [pair.split(",") for pair in points.split(" ")]
 
-        assert len(corners) == 10, "у клуба десять углов"
-        # холст в координатах самой карты: 941×1672
-        assert all(0 <= float(x) <= 941 and 0 <= float(y) <= 1672
-                   for x, y in corners)
-        # первый угол клуба: 0.25 ширины и 0.10 высоты самой карты
+        assert len(corners) == 4, "вход — четырёхугольник"
+        # первый угол двери клуба: 0.445 ширины и 0.258 высоты карты
         first_x, first_y = (float(one) for one in corners[0])
-        assert abs(first_x - 0.25 * 941) < 0.01
-        assert abs(first_y - 0.10 * 1672) < 0.01
+        assert abs(first_x - 0.445 * 941) < 0.01
+        assert abs(first_y - 0.258 * 1672) < 0.01
 
-        # область касания шире видимого контура ровно на полтора процента
-        slack = await club.locator(".zone-touch").get_attribute("stroke-width")
-        assert abs(float(slack) / 2 - 0.015 * 941) < 0.01
-        assert await club.locator(".zone-touch").get_attribute("points") == points
+        door = await club.locator(".zone-line").bounding_box()
+        touch = await club.locator(".zone-touch").bounding_box()
+
+        assert touch["width"] > door["width"], "под палец не расширили"
+        assert touch["height"] > door["height"]
+        # и расширили именно вокруг двери, а не куда попало
+        assert touch["x"] < door["x"] and touch["y"] < door["y"]
+        assert touch["x"] + touch["width"] > door["x"] + door["width"]
         await browser.close()
 
 

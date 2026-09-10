@@ -21,7 +21,7 @@ from bot.models import Player
 
 
 def place_row(place: Location, here: str) -> dict:
-    """Дом на карте: зона нажатия, чем занят и сколько до него идти.
+    """Дом на карте: вход, чем занят и сколько до него идти.
 
     Секунды считает сервер, хотя правило простое. Стоит повторить его на
     клиенте — и однажды они разойдутся: человек согласится на десять
@@ -30,11 +30,11 @@ def place_row(place: Location, here: str) -> dict:
     return {
         "code": place.code,
         "title": place.title,
-        # Силуэт — то, по чему ловится нажатие и рисуется обводка.
-        # Рамка идёт следом: по ней ставят подпись и на неё падают, если
-        # рисовать многоугольник негде
-        "polygon": [[x, y] for x, y in place.polygon],
-        "zone": place.zone.as_dict(),
+        # Вход — то, по чему рисуется подсветка: ровно дверь, и ничего
+        # вокруг. Касание ловится по рамке с запасом: дверь пальцу мала
+        "entrance": [[x, y] for x, y in place.entrance],
+        "touch": place.touch.as_dict(),
+        "zone": place.bounds.as_dict(),
         "services": [service.value for service in place.services],
         # Дом, за которым ещё нет услуги, открывается запиской «скоро»
         "soon": place.soon,

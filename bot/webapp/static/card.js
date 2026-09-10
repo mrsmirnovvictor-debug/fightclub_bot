@@ -1209,9 +1209,9 @@ function paintDistrict() {
 // экране. Нажатие ловит сам многоугольник, а не рамка вокруг него.
 const MAP_W = 941;
 const MAP_H = 1672;
-// На телефоне палец толще карандаша: невидимо расширяем силуэт обводкой.
-// Видимый контур при этом остаётся исходным — расширение только для касания
-const TOUCH_SLACK = 0.015 * MAP_W;
+// Целятся в дверь, а она на карте с ноготь. Поэтому касание ловит не
+// сама дверь, а рамка вокруг неё с запасом, — её присылает сервер.
+// Подсветка при этом остаётся ровно на двери: расширение невидимо
 
 function svgNode(name, attrs) {
   const node = document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -1250,19 +1250,26 @@ function houseShape(place) {
   });
   group.dataset.code = place.code;
 
-  const points = pointsOf(place.polygon);
-  // Невидимый силуэт пошире — под палец. Он же и ловит нажатие
-  group.appendChild(svgNode("polygon", {
-    points,
+  // Невидимая рамка под палец. Она и ловит нажатие
+  group.appendChild(svgNode("rect", {
+    x: place.touch.x * MAP_W,
+    y: place.touch.y * MAP_H,
+    width: place.touch.w * MAP_W,
+    height: place.touch.h * MAP_H,
+    rx: 12,
     class: "zone-touch",
-    "stroke-width": TOUCH_SLACK * 2,
   }));
-  // Видимый контур — ровно по силуэту, как нарисован дом
-  group.appendChild(svgNode("polygon", { points, class: "zone-line" }));
+  // Видимая подсветка — ровно по двери, как она нарисована
+  group.appendChild(svgNode("polygon", {
+    points: pointsOf(place.entrance),
+    class: "zone-line",
+  }));
 
+  // Подпись над дверью: под ней на рисунке крыльцо и тротуар, и текст
+  // там ложится на соседний дом
   const sign = svgNode("text", {
     x: (place.zone.x + place.zone.w / 2) * MAP_W,
-    y: (place.zone.y + place.zone.h) * MAP_H - 12,
+    y: place.zone.y * MAP_H - 14,
     class: "zone-sign",
     "text-anchor": "middle",
   });

@@ -189,60 +189,85 @@ def grid_points():
             yield column / GRID, row / GRID
 
 
-def test_every_silhouette_stays_inside_its_map():
-    """Точка за краем картинки недостижима: до неё не дотянуться пальцем."""
+def test_every_entrance_is_four_points_inside_its_map():
+    """Вход — четырёхугольник по двери, и он на карте, а не за краем."""
     from bot.game.locations import EXIT_ZONE, LOCATIONS
 
     for place in LOCATIONS:
-        assert len(place.polygon) >= 3, place.code
-        for x, y in place.polygon:
+        assert len(place.entrance) == 4, f"{place.code}: не четыре точки"
+        for x, y in place.entrance:
             assert 0 <= x <= 1 and 0 <= y <= 1, f"{place.code}: точка {x},{y}"
-        # рамка вокруг силуэта — запасная, но и она должна быть на карте
-        assert 0 <= place.zone.x and place.zone.x + place.zone.w <= 1.0 + 1e-9
-        assert 0 <= place.zone.y and place.zone.y + place.zone.h <= 1.0 + 1e-9
+        box = place.bounds
+        assert box.w > 0 and box.h > 0, place.code
     assert EXIT_ZONE.x + EXIT_ZONE.w <= 1.0 and EXIT_ZONE.y + EXIT_ZONE.h <= 1.0
 
 
-def test_houses_on_one_map_do_not_share_a_point():
-    """Два дома под одним пальцем — это нажатие наугад.
+def test_an_entrance_is_a_door_and_not_a_whole_building():
+    """Дверь занимает угол карты, а не полкарты.
 
-    Считаем по силуэтам, а не по рамкам вокруг них: рамки соседних домов
-    краями пересекаются и в жизни (банк с рынком), а нажатие ловит силуэт.
+    Раньше зоной был весь дом, и нажатие «в здание» попадало в небо над
+    крышей. Теперь целятся во вход — значит, он и должен быть размером с
+    вход: если дверь вдруг вырастет в полкарты, это уже не дверь.
+    """
+    from bot.game.locations import LOCATIONS
+
+    for place in LOCATIONS:
+        box = place.bounds
+        assert box.w <= 0.35, f"{place.code}: дверь шириной в треть карты"
+        assert box.h <= 0.20, f"{place.code}: дверь высотой в пятую часть карты"
+
+
+def test_doors_on_one_map_never_share_a_point():
+    """Две двери под одним пальцем — это нажатие наугад.
+
+    Считаем и по самим дверям, и по области касания с запасом: разъехаться
+    должны обе, иначе запас под палец сам и создаст неоднозначность.
     """
     from bot.game.locations import DISTRICTS
 
     for district in DISTRICTS:
         places = district.places
         for x, y in grid_points():
-            hit = [place.code for place in places if place.holds(x, y)]
-            assert len(hit) <= 1, f"{district.code}: {hit} в точке {x:.3f},{y:.3f}"
+            doors = [one.code for one in places if one.holds(x, y)]
+            assert len(doors) <= 1, f"{district.code}: двери {doors}"
+            near = [one.code for one in places if one.touch.holds(x, y)]
+            assert len(near) <= 1, f"{district.code}: запас под палец {near}"
 
 
-def test_the_way_out_is_not_covered_by_a_house():
-    """Нижний проход общий для всех карт — его не должен закрывать дом."""
+def test_the_touch_area_is_wider_than_the_door_but_only_around_it():
+    """Дверь пальцу мала — её расширяют, но подсветка остаётся на двери."""
+    from bot.game.locations import TOUCH_PAD_X, TOUCH_PAD_Y, get_location
+
+    club = get_location("fight_club")
+    door, near = club.bounds, club.touch
+
+    assert near.w > door.w and near.h > door.h
+    assert abs((door.x - near.x) - TOUCH_PAD_X) < 1e-9
+    assert abs((door.y - near.y) - TOUCH_PAD_Y) < 1e-9
+    # запас по ширине больше: соседние дома стоят бок о бок
+    assert TOUCH_PAD_X > TOUCH_PAD_Y
+
+
+def test_the_way_out_is_not_covered_by_a_door():
+    """Нижний проход общий для всех карт — его не должна закрывать дверь."""
     from bot.game.locations import EXIT_ZONE, LOCATIONS
 
     for x, y in grid_points():
         if not EXIT_ZONE.holds(x, y):
             continue
-        covered = [place.code for place in LOCATIONS if place.holds(x, y)]
+        covered = [one.code for one in LOCATIONS if one.touch.holds(x, y)]
         assert not covered, f"{covered} закрыли выход в точке {x:.3f},{y:.3f}"
 
 
-def test_a_touch_finds_the_house_under_it():
-    """Касание в дом попадает в него, а рядом с домом — уже никуда.
-
-    Силуэт для того и обведён: у клуба срезаны углы крыши, и нажатие в
-    угол его рамки должно проходить мимо — там нарисовано небо.
-    """
+def test_a_touch_finds_the_door_under_it():
+    """Касание в дверь попадает в дом, а в стену рядом — уже никуда."""
     from bot.game.locations import get_location
 
     club = get_location("fight_club")
 
-    assert club.holds(0.5, 0.2), "середина дома"
-    assert club.zone.holds(0.17, 0.07), "угол рамки"
-    assert not club.holds(0.17, 0.07), "а в самом доме этого угла нет"
-    assert not club.holds(0.5, 0.9), "мимо дома"
+    assert club.holds(0.55, 0.30), "середина двери"
+    assert not club.holds(0.20, 0.30), "стена слева от двери"
+    assert not club.holds(0.55, 0.10), "вывеска над дверью"
 
 
 def test_houses_without_a_trade_are_still_on_the_map():
