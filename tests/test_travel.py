@@ -234,6 +234,31 @@ def test_doors_on_one_map_never_share_a_point():
             assert len(near) <= 1, f"{district.code}: запас под палец {near}"
 
 
+# Палец накрывает примерно сорок четыре точки экрана — это общая мерка
+# для кнопок на телефоне. Карта на экране в 390 точек рисуется шириной в
+# 362, то есть в масштабе 362/941 от исходника
+PHONE_SCALE = 362 / 941
+FINGER = 44
+
+
+def test_every_door_is_big_enough_for_a_finger():
+    """В дверь должно попадать пальцем, а не прицеливаясь.
+
+    Двери размечены по рисунку и бывают мелкими: у почты вход шириной в
+    восемьдесят точек исходника. С запасом под палец такая дверь ещё
+    берётся, без запаса — уже нет. Если разметку однажды уточнят до
+    совсем узкой щели, это должно всплыть здесь, а не на телефоне.
+    """
+    from bot.game.locations import LOCATIONS
+
+    for place in LOCATIONS:
+        near = place.touch
+        wide = near.w * 941 * PHONE_SCALE
+        tall = near.h * 1672 * PHONE_SCALE
+        assert wide >= FINGER, f"{place.code}: {wide:.0f} точек в ширину"
+        assert tall >= FINGER, f"{place.code}: {tall:.0f} точек в высоту"
+
+
 def test_the_touch_area_is_wider_than_the_door_but_only_around_it():
     """Дверь пальцу мала — её расширяют, но подсветка остаётся на двери."""
     from bot.game.locations import TOUCH_PAD_X, TOUCH_PAD_Y, get_location
