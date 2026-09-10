@@ -3133,10 +3133,16 @@ async def test_the_highlight_sits_on_the_door(server):
         corners = [pair.split(",") for pair in points.split(" ")]
 
         assert len(corners) == 4, "вход — четырёхугольник"
-        # первый угол двери клуба: 0.445 ширины и 0.258 высоты карты
-        first_x, first_y = (float(one) for one in corners[0])
-        assert abs(first_x - 0.445 * 941) < 0.01
-        assert abs(first_y - 0.258 * 1672) < 0.01
+        # Числом угол не проверяем: разметку дверей правят руками по
+        # картам, и такой тест ломался бы на каждой правке, ничего при
+        # этом не сторожа. Сторожим другое — что клиент рисует ровно то,
+        # что прислал сервер, и в единицах самой карты
+        from bot.game.locations import get_location
+
+        door = get_location("fight_club").entrance
+        for (x, y), (drawn_x, drawn_y) in zip(door, corners):
+            assert abs(float(drawn_x) - x * 941) < 0.01
+            assert abs(float(drawn_y) - y * 1672) < 0.01
 
         door = await club.locator(".zone-line").bounding_box()
         touch = await club.locator(".zone-touch").bounding_box()
