@@ -1202,78 +1202,111 @@ function paintDistrict() {
   placeZones();
 }
 
-/** Куда картинка легла внутри рамки: без полей по краям и с ними. */
-function drawnBox(pic) {
-  const width = pic.clientWidth;
-  const height = pic.clientHeight;
-  const natural = pic.naturalWidth && pic.naturalHeight
-    ? pic.naturalWidth / pic.naturalHeight
-    : MAP_RATIO;
-  if (!width || !height) return null;
-  // Картинка вписывается целиком: по ширине, если рамка выше, и по
-  // высоте, если рамка шире. Остаток по краям — те самые поля
-  const drawnWidth = Math.min(width, height * natural);
-  const drawnHeight = drawnWidth / natural;
-  return {
-    left: (width - drawnWidth) / 2,
-    top: (height - drawnHeight) / 2,
-    width: drawnWidth,
-    height: drawnHeight,
-  };
+// Дома рисуются поверх карты одним SVG. Так вышло проще и точнее, чем
+// считать поля руками: `preserveAspectRatio="xMidYMid meet"` вписывает
+// холст ровно так же, как `object-fit: contain` вписывает картинку, —
+// значит, координаты силуэтов совпадают с домами на рисунке при любом
+// экране. Нажатие ловит сам многоугольник, а не рамка вокруг него.
+const MAP_W = 941;
+const MAP_H = 1672;
+// На телефоне палец толще карандаша: невидимо расширяем силуэт обводкой.
+// Видимый контур при этом остаётся исходным — расширение только для касания
+const TOUCH_SLACK = 0.015 * MAP_W;
+
+function svgNode(name, attrs) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+  Object.entries(attrs || {}).forEach(([key, value]) => {
+    node.setAttribute(key, value);
+  });
+  return node;
 }
 
-// Соотношение сторон нарисованных карт: 941×1672. Нужно, только пока
-// картинка не загрузилась и своего размера ещё не назвала
-const MAP_RATIO = 941 / 1672;
+function pointsOf(polygon) {
+  return polygon.map(([x, y]) => x * MAP_W + "," + y * MAP_H).join(" ");
+}
 
 function placeZones() {
   const district = shownDistrict();
   const box = el("map-zones");
   box.textContent = "";
   if (!district) return;
-  const drawn = drawnBox(el("map-pic"));
-  if (!drawn) return;
 
-  const put = (zone, node) => {
-    node.style.left = drawn.left + zone.x * drawn.width + "px";
-    node.style.top = drawn.top + zone.y * drawn.height + "px";
-    node.style.width = zone.w * drawn.width + "px";
-    node.style.height = zone.h * drawn.height + "px";
-    box.appendChild(node);
-  };
-
-  district.places.forEach((place) => put(place.zone, houseButton(place)));
-  put(mapData.exit_zone, exitButton());
-}
-
-function houseButton(place) {
-  const node = document.createElement("button");
-  node.type = "button";
-  node.className =
-    "zone-house" + (place.here ? " here" : "") + (place.works ? "" : " soon");
-  node.dataset.code = place.code;
-  node.setAttribute("aria-label", place.title);
-
-  const sign = document.createElement("span");
-  sign.className = "zone-sign";
-  sign.textContent = place.here ? "📍 " + place.title : place.title;
-  node.appendChild(sign);
-
-  node.addEventListener("click", () => enterHouse(place));
-  return node;
-}
-
-function exitButton() {
-  const node = document.createElement("button");
-  node.type = "button";
-  node.className = "zone-exit";
-  node.id = "map-exit";
-  node.setAttribute("aria-label", "Выбрать район");
-  node.textContent = "⬆ Районы";
-  node.addEventListener("click", () => {
-    el("map-districts").scrollIntoView({ block: "center" });
+  const canvas = svgNode("svg", {
+    viewBox: "0 0 " + MAP_W + " " + MAP_H,
+    preserveAspectRatio: "xMidYMid meet",
+    class: "map-svg",
   });
-  return node;
+  district.places.forEach((place) => canvas.appendChild(houseShape(place)));
+  canvas.appendChild(exitShape());
+  box.appendChild(canvas);
+}
+
+function houseShape(place) {
+  const group = svgNode("g", {
+    class: "zone-house" + (place.here ? " here" : "") + (place.works ? "" : " soon"),
+    role: "button",
+    tabindex: "0",
+    "aria-label": place.title,
+  });
+  group.dataset.code = place.code;
+
+  const points = pointsOf(place.polygon);
+  // Невидимый силуэт пошире — под палец. Он же и ловит нажатие
+  group.appendChild(svgNode("polygon", {
+    points,
+    class: "zone-touch",
+    "stroke-width": TOUCH_SLACK * 2,
+  }));
+  // Видимый контур — ровно по силуэту, как нарисован дом
+  group.appendChild(svgNode("polygon", { points, class: "zone-line" }));
+
+  const sign = svgNode("text", {
+    x: (place.zone.x + place.zone.w / 2) * MAP_W,
+    y: (place.zone.y + place.zone.h) * MAP_H - 12,
+    class: "zone-sign",
+    "text-anchor": "middle",
+  });
+  sign.textContent = place.here ? "📍 " + place.title : place.title;
+  group.appendChild(sign);
+
+  const enter = () => enterHouse(place);
+  group.addEventListener("click", enter);
+  group.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") enter();
+  });
+  return group;
+}
+
+function exitShape() {
+  const zone = mapData.exit_zone;
+  const group = svgNode("g", {
+    class: "zone-exit",
+    role: "button",
+    tabindex: "0",
+    "aria-label": "Выбрать район",
+  });
+  group.appendChild(svgNode("rect", {
+    x: zone.x * MAP_W,
+    y: zone.y * MAP_H,
+    width: zone.w * MAP_W,
+    height: zone.h * MAP_H,
+    rx: 14,
+  }));
+  const sign = svgNode("text", {
+    x: (zone.x + zone.w / 2) * MAP_W,
+    y: (zone.y + zone.h / 2) * MAP_H,
+    class: "zone-sign",
+    "text-anchor": "middle",
+    "dominant-baseline": "middle",
+  });
+  sign.textContent = "⬆ Районы";
+  group.appendChild(sign);
+  const up = () => el("map-districts").scrollIntoView({ block: "center" });
+  group.addEventListener("click", up);
+  group.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") up();
+  });
+  return group;
 }
 
 /** Что открывает дом, если боец уже в нём. */
@@ -1367,11 +1400,8 @@ function paintRoad() {
   roadTimer = setInterval(tick, 1000);
 }
 
-// Окно меняет размер — картинка ложится иначе, и дома едут вместе с ней
-window.addEventListener("resize", () => {
-  if (mapData && !el("map").classList.contains("hidden")) placeZones();
-});
-el("map-pic").addEventListener("load", placeZones);
+// Пересчитывать зоны при смене размера не нужно: холст SVG вписывается
+// в рамку тем же правилом, что и картинка, и едет вместе с ней сам
 
 // ---------- лавка мага ----------
 

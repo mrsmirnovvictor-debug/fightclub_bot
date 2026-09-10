@@ -178,56 +178,71 @@ def test_the_club_is_where_the_ring_is():
 # ---------- зоны нажатия ----------
 
 
-def overlap(first, second) -> float:
-    """Площадь пересечения двух зон в долях карты."""
-    wide = min(first.x + first.w, second.x + second.w) - max(first.x, second.x)
-    tall = min(first.y + first.h, second.y + second.h) - max(first.y, second.y)
-    return max(0.0, wide) * max(0.0, tall)
+# Сетка, по которой проверяются силуэты: полтысячи точек на сторону.
+# Мельче считать нечего — палец на телефоне крупнее пяти сотых процента
+GRID = 500
 
 
-def test_every_zone_stays_inside_its_map():
-    """Зона за краем картинки недостижима: до неё не дотянуться пальцем."""
+def grid_points():
+    for row in range(GRID):
+        for column in range(GRID):
+            yield column / GRID, row / GRID
+
+
+def test_every_silhouette_stays_inside_its_map():
+    """Точка за краем картинки недостижима: до неё не дотянуться пальцем."""
     from bot.game.locations import EXIT_ZONE, LOCATIONS
 
-    for place in list(LOCATIONS) + [None]:
-        zone = EXIT_ZONE if place is None else place.zone
-        where = "выход" if place is None else place.code
-        assert 0 <= zone.x and zone.x + zone.w <= 1.0 + 1e-9, where
-        assert 0 <= zone.y and zone.y + zone.h <= 1.0 + 1e-9, where
-        assert zone.w > 0 and zone.h > 0, where
+    for place in LOCATIONS:
+        assert len(place.polygon) >= 3, place.code
+        for x, y in place.polygon:
+            assert 0 <= x <= 1 and 0 <= y <= 1, f"{place.code}: точка {x},{y}"
+        # рамка вокруг силуэта — запасная, но и она должна быть на карте
+        assert 0 <= place.zone.x and place.zone.x + place.zone.w <= 1.0 + 1e-9
+        assert 0 <= place.zone.y and place.zone.y + place.zone.h <= 1.0 + 1e-9
+    assert EXIT_ZONE.x + EXIT_ZONE.w <= 1.0 and EXIT_ZONE.y + EXIT_ZONE.h <= 1.0
 
 
-def test_houses_on_one_map_do_not_share_a_zone():
-    """Два дома под одним пальцем — это нажатие наугад."""
+def test_houses_on_one_map_do_not_share_a_point():
+    """Два дома под одним пальцем — это нажатие наугад.
+
+    Считаем по силуэтам, а не по рамкам вокруг них: рамки соседних домов
+    краями пересекаются и в жизни (банк с рынком), а нажатие ловит силуэт.
+    """
     from bot.game.locations import DISTRICTS
 
     for district in DISTRICTS:
         places = district.places
-        for index, one in enumerate(places):
-            for other in places[index + 1:]:
-                assert overlap(one.zone, other.zone) == 0, (
-                    f"{one.code} и {other.code} налезают друг на друга"
-                )
+        for x, y in grid_points():
+            hit = [place.code for place in places if place.holds(x, y)]
+            assert len(hit) <= 1, f"{district.code}: {hit} в точке {x:.3f},{y:.3f}"
 
 
 def test_the_way_out_is_not_covered_by_a_house():
     """Нижний проход общий для всех карт — его не должен закрывать дом."""
     from bot.game.locations import EXIT_ZONE, LOCATIONS
 
-    for place in LOCATIONS:
-        assert overlap(place.zone, EXIT_ZONE) == 0, f"{place.code} закрыл выход"
+    for x, y in grid_points():
+        if not EXIT_ZONE.holds(x, y):
+            continue
+        covered = [place.code for place in LOCATIONS if place.holds(x, y)]
+        assert not covered, f"{covered} закрыли выход в точке {x:.3f},{y:.3f}"
 
 
 def test_a_touch_finds_the_house_under_it():
-    """Касание в середину дома попадает в него, а мимо — никуда."""
+    """Касание в дом попадает в него, а рядом с домом — уже никуда.
+
+    Силуэт для того и обведён: у клуба срезаны углы крыши, и нажатие в
+    угол его рамки должно проходить мимо — там нарисовано небо.
+    """
     from bot.game.locations import get_location
 
     club = get_location("fight_club")
-    middle_x = club.zone.x + club.zone.w / 2
-    middle_y = club.zone.y + club.zone.h / 2
 
-    assert club.zone.holds(middle_x, middle_y)
-    assert not club.zone.holds(middle_x, 0.99)
+    assert club.holds(0.5, 0.2), "середина дома"
+    assert club.zone.holds(0.17, 0.07), "угол рамки"
+    assert not club.holds(0.17, 0.07), "а в самом доме этого угла нет"
+    assert not club.holds(0.5, 0.9), "мимо дома"
 
 
 def test_houses_without_a_trade_are_still_on_the_map():

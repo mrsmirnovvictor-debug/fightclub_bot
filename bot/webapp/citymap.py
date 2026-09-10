@@ -30,6 +30,10 @@ def place_row(place: Location, here: str) -> dict:
     return {
         "code": place.code,
         "title": place.title,
+        # Силуэт — то, по чему ловится нажатие и рисуется обводка.
+        # Рамка идёт следом: по ней ставят подпись и на неё падают, если
+        # рисовать многоугольник негде
+        "polygon": [[x, y] for x, y in place.polygon],
         "zone": place.zone.as_dict(),
         "services": [service.value for service in place.services],
         # Дом, за которым ещё нет услуги, открывается запиской «скоро»

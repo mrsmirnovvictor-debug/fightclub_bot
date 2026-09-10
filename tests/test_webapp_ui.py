@@ -3112,44 +3112,72 @@ async def test_the_map_opens_on_the_district_you_stand_in(server):
         chips = await page.locator("#map-districts .chip").all_inner_texts()
         assert len(chips) == 6
         assert await page.locator("#map-pic").get_attribute("src") is not None
-        houses = await page.locator(".zone-house").all_inner_texts()
+        houses = await page.locator(".zone-house .zone-sign").all_text_contents()
         assert "📍 Аптека" in houses and "Магазин одежды" in houses
         await browser.close()
 
 
-async def test_houses_lie_where_the_picture_lies(server):
-    """Дома кладутся по нарисованной картинке, а не по размеру окна.
+async def test_houses_are_drawn_by_their_silhouette(server):
+    """Дом обведён по силуэту, а не рамкой вокруг него.
 
-    Карта показывается целиком, и на экране другого сложения сверху и
-    снизу появляются поля. Считать зоны от окна значит сдвинуть все дома
-    на высоту этих полей — и человек будет попадать мимо.
+    Рамка режет соседей и захватывает небо над крышей: нажатие в её угол
+    открывало бы дом, до которого палец не дотянулся. Обводка и область
+    касания идут по тем же точкам, что и рисунок.
     """
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server)
 
-        drawn = await page.evaluate(
+        club = page.locator(".zone-house").first
+        points = await club.locator(".zone-line").get_attribute("points")
+        corners = [pair.split(",") for pair in points.split(" ")]
+
+        assert len(corners) == 10, "у клуба десять углов"
+        # холст в координатах самой карты: 941×1672
+        assert all(0 <= float(x) <= 941 and 0 <= float(y) <= 1672
+                   for x, y in corners)
+        # первый угол клуба: 0.25 ширины и 0.10 высоты самой карты
+        first_x, first_y = (float(one) for one in corners[0])
+        assert abs(first_x - 0.25 * 941) < 0.01
+        assert abs(first_y - 0.10 * 1672) < 0.01
+
+        # область касания шире видимого контура ровно на полтора процента
+        slack = await club.locator(".zone-touch").get_attribute("stroke-width")
+        assert abs(float(slack) / 2 - 0.015 * 941) < 0.01
+        assert await club.locator(".zone-touch").get_attribute("points") == points
+        await browser.close()
+
+
+async def test_the_map_canvas_follows_the_picture(server):
+    """Холст с домами вписывается тем же правилом, что и картинка.
+
+    Карта показывается целиком, и на экране другого сложения по краям
+    появляются поля. Считать зоны от окна значит сдвинуть все дома на
+    высоту этих полей — и человек будет попадать мимо.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server)
+
+        same = await page.evaluate(
             """() => {
                 const pic = document.getElementById('map-pic');
-                const box = pic.getBoundingClientRect();
-                // Картинки в тестах не грузятся, и своего размера они не
-                // называют — как и в приложении, берём размер карт
-                const ratio = pic.naturalWidth && pic.naturalHeight
-                    ? pic.naturalWidth / pic.naturalHeight
-                    : 941 / 1672;
-                const width = Math.min(box.width, box.height * ratio);
+                const svg = document.querySelector('.map-svg');
+                const one = pic.getBoundingClientRect();
+                const two = svg.getBoundingClientRect();
                 return {
-                    left: box.left + (box.width - width) / 2,
-                    top: box.top + (box.height - width / ratio) / 2,
-                    width, height: width / ratio,
+                    fit: svg.getAttribute('preserveAspectRatio'),
+                    view: svg.getAttribute('viewBox'),
+                    same: Math.abs(one.width - two.width) < 0.5
+                        && Math.abs(one.height - two.height) < 0.5
+                        && Math.abs(one.left - two.left) < 0.5
+                        && Math.abs(one.top - two.top) < 0.5,
                 };
             }"""
         )
-        club = await page.locator(".zone-house").first.bounding_box()
 
-        # клуб стоит на 24.4% ширины и 6% высоты самой картинки
-        assert abs(club["x"] - (drawn["left"] + 0.244 * drawn["width"])) < 1.5
-        assert abs(club["y"] - (drawn["top"] + 0.060 * drawn["height"])) < 1.5
-        assert abs(club["width"] - 0.542 * drawn["width"]) < 1.5
+        assert same["view"] == "0 0 941 1672"
+        # то же правило, что и object-fit: contain у картинки
+        assert same["fit"] == "xMidYMid meet"
+        assert same["same"], "холст лёг не так, как картинка"
         await browser.close()
 
 
