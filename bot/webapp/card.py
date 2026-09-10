@@ -36,6 +36,7 @@ from bot.game.equipment import (
 )
 from bot.game.market import FEE as MARKET_FEE, buyback
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
+from bot.game.locations import Service, get_location
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
 from bot.game.pro import PRO_BADGE, current_offer
@@ -454,14 +455,31 @@ def build_magic(
     }
 
 
-def build_shop(player: Player) -> dict:
-    """Магазин: товары, разложенные по типам вещей."""
+# Чем торгует каждый магазин города. Оружейник держит то, что берут в
+# руки, — оружие и щиты; в лавке одежды всё остальное носимое; склянки
+# стоят в аптеке. Один прилавок на всё был, пока магазин был вкладкой.
+WEAPON_SLOTS = (Slot.WEAPON, Slot.OFFHAND)
+
+
+def sells(service: Service, slot: Slot) -> bool:
+    """Торгует ли этот магазин вещами такого слота."""
+    if service is Service.WEAPONS:
+        return slot in WEAPON_SLOTS
+    if service is Service.CLOTHES:
+        return slot not in WEAPON_SLOTS
+    return False
+
+
+def build_shop(player: Player, service: Service = Service.CLOTHES) -> dict:
+    """Прилавок магазина: только то, чем торгуют именно здесь."""
     mine: dict[str, int] = {}
     for owned in player.gear:
         mine[owned.code] = mine.get(owned.code, 0) + 1
 
     sections = []
     for slot, items in shop_sections():
+        if not sells(service, slot):
+            continue
         rows = [goods_payload(player, item, mine.get(item.code, 0)) for item in items]
         sections.append(
             {
@@ -472,13 +490,34 @@ def build_shop(player: Player) -> dict:
                 "items": rows,
             }
         )
-    # Эликсиры идут последними: их не надевают, и слота у них нет
-    sections.append(potions_section(player))
+    # Склянки не надевают, слота у них нет — и стоят они в аптеке
+    if service is Service.POTIONS:
+        sections.append(potions_section(player))
     return {
         "credits": player.credits,
         "level": player.level,
+        "service": service.value,
         "fclass": {"code": player.fclass.code, "title": player.fclass.title},
         "sections": sections,
+    }
+
+
+# ---------- где боец ----------
+
+
+def place_payload(player: Player, now: int | None = None) -> dict:
+    """Где боец стоит — и сколько ему ещё идти, если он в пути."""
+    place = get_location(player.where(now))
+    road = player.road_left(now)
+    return {
+        "code": place.code if place else "",
+        "title": place.title if place else "—",
+        "district": place.district if place else "",
+        # Пока идёт, показываем, куда именно: иначе на карточке пусто
+        "going_to": (get_location(player.travel_to).title
+                     if road and player.travel_to else ""),
+        "seconds_left": road,
+        "services": [service.value for service in place.services] if place else [],
     }
 
 
@@ -749,6 +788,7 @@ def build_card(
             "max_level": MAX_LEVEL,
             "free_points": player.free_points,
         },
+        "place": place_payload(player, moment),
         "record": {
             "wins": player.wins,
             "losses": player.losses,

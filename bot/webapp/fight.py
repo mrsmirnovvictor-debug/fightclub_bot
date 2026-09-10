@@ -22,6 +22,7 @@ from bot.game.combat import (
     boxing_round,
     turn_in_round,
 )
+from bot.game.locations import FIGHT_CLUB, Service, get_location
 from bot.game.modes import FightMode, mode_of
 from bot.models import Player
 
@@ -176,6 +177,15 @@ def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
     }
 
 
+FIGHT_CLUB_TITLE = get_location(FIGHT_CLUB).title
+
+
+def at_club(player: Player) -> bool:
+    """Стоит ли боец там, где дерутся."""
+    place = get_location(player.where())
+    return place is not None and place.allows(Service.FIGHT)
+
+
 def build_fights(player: Player, service: DuelService | None) -> dict[str, Any]:
     """Всё, что нужно вкладке «Бои», одним ответом."""
     body: dict[str, Any] = {
@@ -186,6 +196,10 @@ def build_fights(player: Player, service: DuelService | None) -> dict[str, Any]:
         "challenge": None,
         "challenges": [],
         "can_fight": player.can_fight(),
+        # Драться можно только в клубе. Список боёв при этом отдаём:
+        # ушедшему за покупками полезно видеть, что его ждут
+        "at_club": at_club(player),
+        "club_title": FIGHT_CLUB_TITLE,
     }
     if service is None:  # pragma: no cover - бот без сервиса боёв не живёт
         return body

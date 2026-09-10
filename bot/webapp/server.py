@@ -35,6 +35,16 @@ from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, gate_payload, raid_row
+from bot.game.health import format_duration
+from bot.game.locations import (
+    SHOP_SERVICES,
+    Service,
+    get_location,
+    service_for,
+    where_to,
+)
+from bot.travel_service import Travel, TravelError, require
+from bot.webapp.citymap import build_map
 from bot.webapp.card import (
     build_market,
     build_card,
@@ -64,6 +74,8 @@ STORE_KEY: web.AppKey = web.AppKey("store")
 RAIDS_KEY: web.AppKey = web.AppKey("raids")
 # Групповые бои: состав собирают где угодно, а дерутся в карточке
 BATTLES_KEY: web.AppKey = web.AppKey("battles")
+# Кто водит бойцов по городу
+TRAVEL_KEY: web.AppKey[Travel] = web.AppKey("travel", Travel)
 # Кто может смотреть чужие карточки — все: клуб маленький, прятать нечего
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
 
@@ -166,6 +178,28 @@ async def api_oops(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def api_map(request: web.Request) -> web.Response:
+    """Город целиком: районы, дома и где сейчас боец."""
+    player = await _fighter(request)
+    if player.arrive():
+        await request.app[DB_KEY].save_player(player)
+    return web.json_response(build_map(player))
+
+
+async def api_travel(request: web.Request) -> web.Response:
+    """Пойти в другое место. Дорога занимает время, и это её начало."""
+    data = await _payload(request)
+    player = await _fighter(request)
+    await request.app[TRAVEL_KEY].go(player, str(data.get("to") or ""))
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "map": build_map(player),
+            "card": build_card(player, config.bot_token, player.user_id),
+        }
+    )
+
+
 async def api_card(request: web.Request) -> web.Response:
     viewer = await _viewer(request)
     db = request.app[DB_KEY]
@@ -198,6 +232,26 @@ async def _own_player(request: web.Request):
     duels = request.app.get(DUELS_KEY)
     if duels is not None and duels.duel_of_user(player.user_id) is not None:
         raise InventoryError("Ты на ринге — переодеваться поздно.")
+    return player
+
+
+def _service_here(player, now: int | None = None) -> Service | None:
+    """Чем торгует место, где боец стоит. Нужен, чтобы собрать прилавок."""
+    place = get_location(player.where(now))
+    return place.services[0] if place and place.services else None
+
+
+async def _at(request: web.Request, service: Service, own: bool = True):
+    """Боец на месте, где это разрешено. Иначе — куда за этим идти.
+
+    Проверяем на сервере, а не прятанием кнопки: спрятанная обходится
+    запросом мимо интерфейса, и тогда карта города — украшение.
+    """
+    player = await (_own_player(request) if own else _fighter(request))
+    # Дошёл, пока его не спрашивали, — записываем прибытие
+    if player.arrive():
+        await request.app[DB_KEY].save_player(player)
+    require(player, service)
     return player
 
 
@@ -291,7 +345,7 @@ async def api_repair(request: web.Request) -> web.Response:
     data = await _payload(request)
     points = None if data.get("points") is None else _int_field(data, "points")
     try:
-        player = await _own_player(request)
+        player = await _at(request, Service.REPAIR)
         result = await repair_item(
             request.app[DB_KEY], player, _int_field(data, "item_id"), points
         )
@@ -315,11 +369,16 @@ async def api_repair(request: web.Request) -> web.Response:
 async def api_handin(request: web.Request) -> web.Response:
     """Сдать вещь обратно в лавку клуба за долю её цены."""
     data = await _payload(request)
+    item_id = _int_field(data, "item_id")
     try:
+        # Сдают там же, где купили: оружие оружейнику, одежду одёжнику.
+        # Место спрашиваем по самой вещи, а не по тому, где боец стоит
         player = await _own_player(request)
-        title, paid = await hand_in(
-            request.app[DB_KEY], player, _int_field(data, "item_id")
-        )
+        owned = player.find_gear(item_id)
+        if owned is None:
+            raise InventoryError("Такой вещи в инвентаре нет.")
+        player = await _at(request, service_for(owned.code))
+        title, paid = await hand_in(request.app[DB_KEY], player, item_id)
     except InventoryError as error:
         return web.json_response({"error": str(error)}, status=409)
 
@@ -327,19 +386,30 @@ async def api_handin(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "card": build_card(player, config.bot_token, player.user_id),
-            "shop": build_shop(player),
+            "shop": build_shop(player, _service_here(player) or Service.CLOTHES),
             "handin": {"title": title, "paid": paid, "credits": player.credits},
         }
     )
 
 
 async def api_shop(request: web.Request) -> web.Response:
-    """Витрина: что продаётся, что уже открыто и что по карману."""
+    """Прилавок того магазина, в котором боец стоит."""
     try:
         player = await _own_player(request)
     except InventoryError as error:  # pragma: no cover - витрина боем не занята
         return web.json_response({"error": str(error)}, status=409)
-    return web.json_response(build_shop(player))
+    if player.arrive():
+        await request.app[DB_KEY].save_player(player)
+    service = _service_here(player)
+    # Витрина — единственное место, где услуга не задана заранее: какой
+    # магазин открылся, тем и торгуют. Поэтому и проверка своя
+    if player.in_transit():
+        raise TravelError(
+            f"Ты в дороге — идти ещё {format_duration(player.road_left())}."
+        )
+    if service not in SHOP_SERVICES:
+        return web.json_response({"error": "Здесь ничем не торгуют."}, status=409)
+    return web.json_response(build_shop(player, service))
 
 
 async def api_buy(request: web.Request) -> web.Response:
@@ -348,7 +418,9 @@ async def api_buy(request: web.Request) -> web.Response:
     code = str(data.get("code") or "")
     potion = get_potion(code)
     try:
-        player = await _own_player(request)
+        # Оружие берут у оружейника, склянки в аптеке, остальное у
+        # одёжника: спрашиваем ровно то место, где эта вещь и лежит
+        player = await _at(request, service_for(code))
         if potion is not None:
             await buy_potion(request.app[DB_KEY], player, code)
             # Склянку не надевают — её пьют, поэтому и подсказка другая
@@ -374,7 +446,7 @@ async def api_buy(request: web.Request) -> web.Response:
     config = request.app[CONFIG_KEY]
     return web.json_response(
         {
-            "shop": build_shop(player),
+            "shop": build_shop(player, _service_here(player) or Service.CLOTHES),
             "card": build_card(player, config.bot_token, player.user_id),
             "bought": bought,
         }
@@ -428,9 +500,9 @@ async def api_upgrade(request: web.Request) -> web.Response:
 
 
 async def api_magic(request: web.Request) -> web.Response:
-    """Лавка мага: товар только за звёзды."""
+    """Элитный магазин: товар только за звёзды."""
     try:
-        player = await _own_player(request)
+        player = await _at(request, Service.PREMIUM)
     except InventoryError as error:  # pragma: no cover - лавка боем не занята
         return web.json_response({"error": str(error)}, status=409)
     claimed = await promo_taken(request.app[DB_KEY], player.user_id)
@@ -492,7 +564,7 @@ async def api_fights(request: web.Request) -> web.Response:
 
 async def api_fight(request: web.Request) -> web.Response:
     """Действие на ринге: бросить вызов, принять, выйти, ударить, закрыть итог."""
-    player = await _fighter(request)
+    player = await _at(request, Service.FIGHT, own=False)
     duels = request.app.get(DUELS_KEY)
     if duels is None:  # pragma: no cover - бот без сервиса боёв не поднимается
         return web.json_response({"error": "Бои сейчас недоступны."}, status=503)
@@ -566,7 +638,7 @@ async def _market(request: web.Request, player) -> web.Response:
 
 async def api_market(request: web.Request) -> web.Response:
     """Что лежит на комиссии, что там твоего и что можно выставить."""
-    player = await _own_player(request)
+    player = await _at(request, Service.MARKET)
     return await _market(request, player)
 
 
@@ -601,6 +673,11 @@ async def _raid_state(request: web.Request, player) -> dict:
     raids = request.app.get(RAIDS_KEY)
     body = build_raid(player, raids, request.app[CONFIG_KEY].raid_lobby_timeout)
     body["gate"] = await gate_payload(player, raids)
+    # Подвал открывается из казино. Состояние отдаём и издалека: по нему
+    # видно, идёт ли рейд, за которым боец записан
+    here = get_location(player.where())
+    body["here"] = here is not None and here.allows(Service.RAID)
+    body["where"] = (where_to(Service.RAID) or here).title
     return body
 
 
@@ -612,7 +689,7 @@ async def api_raid(request: web.Request) -> web.Response:
 
 async def api_raid_action(request: web.Request) -> web.Response:
     """Действие в рейде: собрать, записаться, выйти, ударить, закрыть итог."""
-    player = await _fighter(request)
+    player = await _at(request, Service.RAID, own=False)
     raids = request.app.get(RAIDS_KEY)
     if raids is None:  # pragma: no cover - бот без рейдов не поднимается
         return web.json_response({"error": "Рейды сейчас недоступны."}, status=503)
@@ -678,7 +755,8 @@ async def api_battle_action(request: web.Request) -> web.Response:
     """Действие в групповом бою: собрать, записаться, выйти, ударить."""
     from bot.game.battle import BattleKind
 
-    player = await _fighter(request)
+    # Отряд собирают там же, где дерутся один на один
+    player = await _at(request, Service.FIGHT, own=False)
     battles = request.app.get(BATTLES_KEY)
     if battles is None:  # pragma: no cover - бот без групповых боёв не поднимается
         return web.json_response({"error": "Групповые бои недоступны."}, status=503)
@@ -888,6 +966,20 @@ async def healthz(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
+@web.middleware
+async def travel_guard(request: web.Request, handler):
+    """Отказ по месту — такой же отказ, как «не хватает кредитов».
+
+    Проверку места ставит `_at`, а мест этих десяток. Ловить её в каждой
+    ручке значит написать один и тот же except двенадцать раз и однажды
+    забыть — тогда «сходи в мастерскую» превратится в пятисотку.
+    """
+    try:
+        return await handler(request)
+    except TravelError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+
 def create_app(
     bot,
     db: Database,
@@ -897,8 +989,9 @@ def create_app(
     raids=None,
     battles=None,
 ) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[travel_guard])
     app[BOT_KEY] = bot
+    app[TRAVEL_KEY] = Travel(db)
     app[DB_KEY] = db
     app[CONFIG_KEY] = config
     app[STAMP_KEY] = asset_stamp()
@@ -910,10 +1003,14 @@ def create_app(
         app[RAIDS_KEY] = raids
     if battles is not None:
         app[BATTLES_KEY] = battles
+    # Кого дорога спрашивает, можно ли уходить: из недодранного боя нельзя
+    app[TRAVEL_KEY].watch(duels, raids, battles)
     app.add_routes(
         [
             web.get("/", index),
             web.get("/api/card", api_card),
+            web.get("/api/map", api_map),
+            web.post("/api/travel", api_travel),
             web.post("/api/oops", api_oops),
             web.post("/api/equip", api_equip),
             web.post("/api/unequip", api_unequip),

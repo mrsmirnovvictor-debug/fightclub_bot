@@ -26,6 +26,8 @@ async def cellar(db):
     for user_id, nickname in ((42, "Тайлер"), (43, "Марла"), (44, "Зевака")):
         player = make_player(user_id, nickname)
         player.credits = 500
+        # В подвал спускаются из казино: рейд теперь дом на карте
+        player.location = "casino"
         await db.save_player(player)
         await db.add_potion(user_id, RAID_PASS)
     app = create_app(FakeBot(), db, config, raids=raids)

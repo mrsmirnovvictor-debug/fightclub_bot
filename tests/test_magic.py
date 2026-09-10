@@ -36,6 +36,8 @@ def make_player(user_id: int = 42, level: int = 5, **kwargs) -> Player:
         nickname=kwargs.pop("nickname", "Тайлер"),
         class_code="warrior",
         level=level,
+        # Звёздный товар лежит в элитном магазине
+        location=kwargs.pop("location", "premium_shop"),
         **stats.as_dict(),
         **kwargs,
     )

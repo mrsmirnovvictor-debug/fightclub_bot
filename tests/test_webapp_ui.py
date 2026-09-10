@@ -19,6 +19,7 @@ from bot.game.health import now_ts
 from bot.game.potions import ActiveEffect
 from bot.game.store import PACKS
 from bot.models import Player
+from bot.game.locations import Service
 from bot.webapp.card import build_card, build_magic, build_shop, build_topup
 from bot.webapp.server import create_app
 from tests.test_webapp import TOKEN
@@ -218,12 +219,36 @@ async def open_page(
 
 @pytest.fixture
 async def shop_page(db):
-    """Страница мини-аппа с подменёнными ответами API."""
+    """Прилавок магазина одежды: на нём всё носимое, кроме оружия."""
+    async for page in shop_screen(db, Service.CLOTHES):
+        yield page
+
+
+@pytest.fixture
+async def weapon_page(db):
+    """Прилавок оружейника: только то, что берут в руки."""
+    async for page in shop_screen(db, Service.WEAPONS):
+        yield page
+
+
+@pytest.fixture
+async def pharmacy_page(db):
+    """Прилавок аптеки: склянки."""
+    async for page in shop_screen(db, Service.POTIONS):
+        yield page
+
+
+async def shop_screen(db, service: Service):
+    """Страница мини-аппа с подменёнными ответами API.
+
+    Магазин теперь не один: у оружейника, одёжника и аптеки свои
+    прилавки, и открывается тот, в чьей локации боец стоит.
+    """
     from bot.config import Config
 
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    shop = build_shop(player)
+    shop = build_shop(player, service)
 
     server = TestServer(create_app(FakeBot(), db, Config(bot_token=TOKEN)))
     await server.start_server()
@@ -266,18 +291,29 @@ async def visible_titles(page) -> list[str]:
     return await page.locator(".shelf-list:not(.hidden) .thing-title").all_inner_texts()
 
 
-async def test_shop_opens_with_all_types_on_the_counter(shop_page):
-    # девять полок с экипировкой плюс «Прочее» — эликсиры
+async def test_the_clothes_shop_holds_everything_but_weapons(shop_page):
+    """У одёжника семь полок: всё носимое, кроме того, что берут в руки."""
     heads = await shelves(shop_page)
-    assert len(heads) == 10
+    assert len(heads) == 7
+    assert not [head for head in heads if "Оружие" in head or "Щиты" in head]
+
     titles = await visible_titles(shop_page)
-    assert "Кастет" in titles  # открыто по уровню
-    assert "Бита" not in titles  # закрыто, лежит под кнопкой
+    assert "Кастет" not in titles, "оружие торгуют у оружейника"
 
     # футболки на прилавке: пять штук, часть открыта по уровню
     shirts = next(head for head in heads if "Футболки" in head)
     assert "из 5" in shirts
     assert "Майка-алкоголичка" in titles
+
+
+async def test_the_weapon_shop_holds_only_what_you_hold(weapon_page):
+    """У оружейника две полки: оружие и щиты."""
+    heads = await shelves(weapon_page)
+    assert [head.split("\n")[0] for head in heads] == ["Оружие", "Щиты"]
+
+    titles = await visible_titles(weapon_page)
+    assert "Кастет" in titles  # открыто по уровню
+    assert "Бита" not in titles  # закрыто, лежит под кнопкой
 
 
 async def test_an_empty_shelf_says_the_goods_are_coming(server):
@@ -304,16 +340,16 @@ async def test_an_empty_shelf_says_the_goods_are_coming(server):
         await browser.close()
 
 
-async def test_type_filter_leaves_one_shelf(shop_page):
-    await shop_page.get_by_role("button", name="Оружие", exact=True).click()
+async def test_type_filter_leaves_one_shelf(weapon_page):
+    await weapon_page.get_by_role("button", name="Оружие", exact=True).click()
 
     # значков в заголовках полок нет: тип и так назван словом
-    assert [head.split("\n")[0] for head in await shelves(shop_page)] == ["Оружие"]
+    assert [head.split("\n")[0] for head in await shelves(weapon_page)] == ["Оружие"]
     assert all(
         title
         in ("Кастет", "Деревянная бита", "Выкидуха", "Строительный нож",
-            "Монтировка", "Нож", "Стилет ассасина")
-        for title in await visible_titles(shop_page)
+            "Монтировка", "Нож")
+        for title in await visible_titles(weapon_page)
     )
 
 
@@ -654,7 +690,7 @@ async def test_the_counter_has_no_level_filter_any_more(shop_page):
     labels = await shop_page.locator("#filter-type .chip").all_inner_texts()
 
     assert labels[0] == "Все"
-    assert "Оружие" in labels
+    assert "Футболки" in labels
     assert not [label for label in labels if any(ch > "\u2000" for ch in label)], (
         "в фильтрах остались значки"
     )
@@ -662,13 +698,13 @@ async def test_the_counter_has_no_level_filter_any_more(shop_page):
     assert await shop_page.locator(".filters").count() == 0
 
 
-async def test_locked_goods_stay_folded_at_the_end_of_the_shelf(shop_page):
+async def test_locked_goods_stay_folded_at_the_end_of_the_shelf(weapon_page):
     """Закрытое по уровню видно только под кнопкой — это не фильтр, а раскладка."""
-    titles = await visible_titles(shop_page)
+    titles = await visible_titles(weapon_page)
     assert "Кастет" in titles  # открыто по уровню
     assert "Бита" not in titles  # закрыто
 
-    text = await shop_page.locator("#shop-list").inner_text()
+    text = await weapon_page.locator("#shop-list").inner_text()
     assert "Показать закрытые" in text
 
 
@@ -1311,7 +1347,9 @@ async def test_the_bag_pours_a_potion_and_the_counter_sells_them(server):
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     async with async_playwright() as pw:
-        browser, page = await open_page(pw, server, card, build_shop(player))
+        browser, page = await open_page(
+            pw, server, card, build_shop(player, Service.POTIONS)
+        )
         drunk = []
 
         async def pour(route):
@@ -1356,7 +1394,7 @@ async def test_the_bag_pours_a_potion_and_the_counter_sells_them(server):
         # ответ дошёл: карточка перерисовалась, полка склянок на месте
         assert await page.locator("#potion-box").is_visible()
 
-        # на прилавке склянки лежат под своим фильтром
+        # на прилавке аптеки склянки лежат под своим фильтром
         await page.locator("#tab-shop").click()
         await page.wait_for_selector(".shelf")
         await page.get_by_role("button", name="Прочее", exact=True).click()

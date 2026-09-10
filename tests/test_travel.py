@@ -45,7 +45,7 @@ def test_a_fresh_fighter_stands_in_the_club():
 
 def test_the_road_takes_longer_between_districts():
     """Соседнее здание ближе, чем другой конец города."""
-    assert travel_seconds(FIGHT_CLUB, "weapons") == STEP_INSIDE
+    assert travel_seconds(FIGHT_CLUB, "weapon_shop") == STEP_INSIDE
     assert travel_seconds(FIGHT_CLUB, "pharmacy") == STEP_BETWEEN
     assert travel_seconds(FIGHT_CLUB, FIGHT_CLUB) == 0
 
@@ -72,15 +72,15 @@ async def test_arrival_is_written_down_when_somebody_looks(db):
     await db.save_player(player)
     travel = Travel(db)
 
-    await travel.go(player, "weapons", now=1000)
-    assert (await db.get_player(1)).travel_to == "weapons"
+    await travel.go(player, "weapon_shop", now=1000)
+    assert (await db.get_player(1)).travel_to == "weapon_shop"
 
     # бот «перезапустили»: задачи нет, а срок вышел сам собой
     fresh = await db.get_player(1)
-    assert fresh.where(1010) == "weapons"
+    assert fresh.where(1010) == "weapon_shop"
     assert fresh.arrive(1010) is True
     await db.save_player(fresh)
-    assert (await db.get_player(1)).location == "weapons"
+    assert (await db.get_player(1)).location == "weapon_shop"
 
 
 # ---------- что где можно ----------
@@ -90,12 +90,12 @@ async def test_arrival_is_written_down_when_somebody_looks(db):
     "place,service",
     [
         (FIGHT_CLUB, Service.FIGHT),
-        ("weapons", Service.WEAPONS),
-        ("clothes", Service.CLOTHES),
+        ("weapon_shop", Service.WEAPONS),
+        ("clothes_shop", Service.CLOTHES),
         ("pharmacy", Service.POTIONS),
         ("workshop", Service.REPAIR),
         ("casino", Service.RAID),
-        ("premium", Service.PREMIUM),
+        ("premium_shop", Service.PREMIUM),
         ("pawnshop", Service.MARKET),
     ],
 )
@@ -105,7 +105,7 @@ def test_every_service_has_its_address(place, service):
     player.location = place
     require(player, service)
 
-    player.location = FIGHT_CLUB if place != FIGHT_CLUB else "weapons"
+    player.location = FIGHT_CLUB if place != FIGHT_CLUB else "weapon_shop"
     with pytest.raises(TravelError, match="Здесь этого не делают"):
         require(player, service)
 
@@ -128,7 +128,7 @@ async def test_a_fighter_in_a_duel_stays_where_he_is(db):
     travel.watch(Keeper(busy=True))
 
     with pytest.raises(LockedError, match="Сначала закончи бой"):
-        await travel.go(player, "weapons")
+        await travel.go(player, "weapon_shop")
 
     assert (await db.get_player(1)).where() == FIGHT_CLUB
 
@@ -142,10 +142,10 @@ async def test_a_free_fighter_walks_out(db):
     travel.watch(keeper)
 
     keeper.busy = False
-    place = await travel.go(player, "weapons")
+    place = await travel.go(player, "weapon_shop")
 
-    assert place.code == "weapons"
-    assert (await db.get_player(1)).travel_to == "weapons"
+    assert place.code == "weapon_shop"
+    assert (await db.get_player(1)).travel_to == "weapon_shop"
 
 
 async def test_the_road_cannot_be_interrupted_by_another_road(db):
@@ -156,7 +156,7 @@ async def test_the_road_cannot_be_interrupted_by_another_road(db):
 
     await travel.go(player, "pharmacy", now=1000)
     with pytest.raises(TravelError, match="ещё в дороге"):
-        await travel.go(player, "weapons", now=1005)
+        await travel.go(player, "weapon_shop", now=1005)
 
 
 async def test_walking_where_you_already_stand_is_refused(db):
@@ -173,3 +173,75 @@ def test_the_club_is_where_the_ring_is():
     """Клуб — единственное место с рингом: бои в городе больше нигде."""
     ringed = [place for place in get_location(FIGHT_CLUB).services]
     assert Service.FIGHT in ringed
+
+
+# ---------- зоны нажатия ----------
+
+
+def overlap(first, second) -> float:
+    """Площадь пересечения двух зон в долях карты."""
+    wide = min(first.x + first.w, second.x + second.w) - max(first.x, second.x)
+    tall = min(first.y + first.h, second.y + second.h) - max(first.y, second.y)
+    return max(0.0, wide) * max(0.0, tall)
+
+
+def test_every_zone_stays_inside_its_map():
+    """Зона за краем картинки недостижима: до неё не дотянуться пальцем."""
+    from bot.game.locations import EXIT_ZONE, LOCATIONS
+
+    for place in list(LOCATIONS) + [None]:
+        zone = EXIT_ZONE if place is None else place.zone
+        where = "выход" if place is None else place.code
+        assert 0 <= zone.x and zone.x + zone.w <= 1.0 + 1e-9, where
+        assert 0 <= zone.y and zone.y + zone.h <= 1.0 + 1e-9, where
+        assert zone.w > 0 and zone.h > 0, where
+
+
+def test_houses_on_one_map_do_not_share_a_zone():
+    """Два дома под одним пальцем — это нажатие наугад."""
+    from bot.game.locations import DISTRICTS
+
+    for district in DISTRICTS:
+        places = district.places
+        for index, one in enumerate(places):
+            for other in places[index + 1:]:
+                assert overlap(one.zone, other.zone) == 0, (
+                    f"{one.code} и {other.code} налезают друг на друга"
+                )
+
+
+def test_the_way_out_is_not_covered_by_a_house():
+    """Нижний проход общий для всех карт — его не должен закрывать дом."""
+    from bot.game.locations import EXIT_ZONE, LOCATIONS
+
+    for place in LOCATIONS:
+        assert overlap(place.zone, EXIT_ZONE) == 0, f"{place.code} закрыл выход"
+
+
+def test_a_touch_finds_the_house_under_it():
+    """Касание в середину дома попадает в него, а мимо — никуда."""
+    from bot.game.locations import get_location
+
+    club = get_location("fight_club")
+    middle_x = club.zone.x + club.zone.w / 2
+    middle_y = club.zone.y + club.zone.h / 2
+
+    assert club.zone.holds(middle_x, middle_y)
+    assert not club.zone.holds(middle_x, 0.99)
+
+
+def test_houses_without_a_trade_are_still_on_the_map():
+    """Банк, рынок, почта, бар, стадион и «Вал» пока только стоят.
+
+    Зайти в них можно — иначе город выглядит нарисованным наполовину, —
+    но никакой услуги за ними нет, и сервер её не знает.
+    """
+    from bot.game.locations import LOCATIONS
+
+    coming = [place for place in LOCATIONS if not place.works]
+    assert {place.code for place in coming} == {
+        "northern_wall_shop", "bank", "market", "post_office", "stadium", "bar"
+    }
+    for place in coming:
+        assert place.soon, f"{place.code}: не сказано, что здесь будет"
+        assert place.services == ()

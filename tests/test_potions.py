@@ -6,6 +6,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.game.classes import Stats, get_class
 from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.game.potions import (
     EFFECT_SECONDS,
     POTIONS,
@@ -38,6 +39,8 @@ def make_player(user_id: int = 1, credits: int = 1000, level: int = 5) -> Player
         class_code=fclass.code,
         level=level,
         credits=credits,
+        # Склянки продают в аптеке: с картой у каждого дела свой адрес
+        location="pharmacy",
         **stats.as_dict(),
     )
 
@@ -255,7 +258,7 @@ def test_a_drunk_elixir_goes_into_the_fist_fight_too():
 
 def test_the_counter_has_a_shelf_for_everything_you_drink():
     player = make_player()
-    shop = build_shop(player)
+    shop = build_shop(player, Service.POTIONS)
     misc = shop["sections"][-1]
 
     assert misc["slot"] == "misc"
@@ -270,7 +273,7 @@ def test_the_counter_has_a_shelf_for_everything_you_drink():
 
 def test_a_locked_potion_is_shown_but_marked():
     rookie = make_player(level=1)
-    misc = build_shop(rookie)["sections"][-1]
+    misc = build_shop(rookie, Service.POTIONS)["sections"][-1]
     rows = {row["code"]: row for row in misc["items"]}
 
     assert rows["heal_small"]["unlocked"]
@@ -402,7 +405,7 @@ def test_every_potion_is_drawn_and_no_two_share_a_bottle():
 def test_the_shop_row_carries_the_potion_picture():
     from bot.webapp.card import build_shop
 
-    misc = build_shop(make_player())["sections"][-1]
+    misc = build_shop(make_player(), Service.POTIONS)["sections"][-1]
     rows = {row["code"]: row for row in misc["items"]}
 
     assert rows["heal_small"]["image"] == get_potion("heal_small").picture
