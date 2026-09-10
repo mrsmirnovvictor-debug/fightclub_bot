@@ -3149,6 +3149,38 @@ async def test_the_highlight_sits_on_the_door(server):
         await browser.close()
 
 
+@pytest.mark.parametrize(
+    "district,where",
+    [("main_hub", "fight_club"), ("pawnshop_casino", "pawnshop"),
+     ("stadium_bar", "bar")],
+)
+async def test_the_sign_hangs_under_the_door_and_stays_on_the_map(
+    server, district, where
+):
+    """Подпись висит под дверью — над ней нарисована вывеска самого дома.
+
+    Снизу тесно: у комиссионки и бара двери у самой земли, а ниже идёт
+    проход в выбор района. Поэтому проверяем не только «под дверью», но и
+    что подпись не уехала за край карты и не легла на этот проход.
+    """
+    async with async_playwright() as pw:
+        # карта открывается там, где боец, — значит, его дом уже на экране
+        browser, page = await open_map(pw, server, city_map(where))
+
+        house = page.locator(".zone-house.here")
+        door = await house.locator(".zone-line").bounding_box()
+        sign = await house.locator(".zone-sign").bounding_box()
+        frame = await page.locator(".map-frame").bounding_box()
+        way_out = await page.locator(".zone-exit rect").bounding_box()
+
+        assert sign["y"] > door["y"] + door["height"], "подпись налезла на вывеску"
+        assert sign["y"] + sign["height"] <= frame["y"] + frame["height"] + 0.5
+        assert sign["y"] + sign["height"] <= way_out["y"] + 0.5, (
+            f"{district}: подпись легла на проход в районы"
+        )
+        await browser.close()
+
+
 async def test_the_map_canvas_follows_the_picture(server):
     """Холст с домами вписывается тем же правилом, что и картинка.
 

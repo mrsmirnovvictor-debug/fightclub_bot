@@ -1213,6 +1213,13 @@ const MAP_H = 1672;
 // сама дверь, а рамка вокруг неё с запасом, — её присылает сервер.
 // Подсветка при этом остаётся ровно на двери: расширение невидимо
 
+// Просвет между порогом двери и верхом подписи, в единицах карты.
+// Подпись выровнена по верхнему краю (`hanging`), а не по базовой линии:
+// иначе отступ пришлось бы считать от высоты букв. Просвета всё равно
+// берём с запасом: обводка подписи и значок «здесь» вылезают вверх за
+// её край, и без запаса они цепляют порог
+const SIGN_DROP = 34;
+
 function svgNode(name, attrs) {
   const node = document.createElementNS("http://www.w3.org/2000/svg", name);
   Object.entries(attrs || {}).forEach(([key, value]) => {
@@ -1265,13 +1272,14 @@ function houseShape(place) {
     class: "zone-line",
   }));
 
-  // Подпись над дверью: под ней на рисунке крыльцо и тротуар, и текст
-  // там ложится на соседний дом
+  // Подпись под дверью. Над ней нельзя: там на рисунке нарисована
+  // настоящая вывеска дома, и наша ложится прямо на неё
   const sign = svgNode("text", {
     x: (place.zone.x + place.zone.w / 2) * MAP_W,
-    y: place.zone.y * MAP_H - 14,
+    y: (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP,
     class: "zone-sign",
     "text-anchor": "middle",
+    "dominant-baseline": "hanging",
   });
   sign.textContent = place.here ? "📍 " + place.title : place.title;
   group.appendChild(sign);
