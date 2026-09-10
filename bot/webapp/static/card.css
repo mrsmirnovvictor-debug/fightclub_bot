@@ -728,6 +728,87 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .fighter-info:active { transform: scale(0.92); }
 .info-btn:active { background: var(--accent); color: #fff; }
 
+/* ---------- карта города ---------- */
+
+/* Рамка держит соотношение сторон нарисованных карт (941×1672): при нём
+   полей по краям не появляется вовсе. Но кнопки домов всё равно кладутся
+   по замеренной картинке — на случай, если рамка однажды станет другой. */
+.map-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 941 / 1672;
+  margin: 10px 0 12px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.map-pic {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.map-zones { position: absolute; inset: 0; }
+
+/* Дом на карте: прозрачная кнопка по фасаду. Обводка нужна, иначе по
+   картинке не видно, куда можно нажать, — а гадать пальцем плохо */
+.zone-house,
+.zone-exit {
+  position: absolute;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.zone-house.here { border-color: var(--accent); border-width: 2px; }
+.zone-house.soon { border-style: dashed; opacity: 0.75; }
+.zone-house:active,
+.zone-exit:active { background: rgba(255, 255, 255, 0.12); }
+
+/* Подпись прижата к низу фасада и на тёмной подложке: поверх рисунка
+   белый текст читается через раз */
+.zone-sign {
+  max-width: 100%;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.62);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zone-exit {
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* Дорога: пока боец идёт, это главное, что он хочет знать */
+.road {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.city.on-road { color: var(--accent); font-weight: 700; }
+
 /* ---------- пузыри фильтров ---------- */
 
 .bubbles {

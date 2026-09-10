@@ -15,12 +15,18 @@ from bot.game.locations import (
     EXIT_ZONE,
     Location,
     get_location,
+    travel_seconds,
 )
 from bot.models import Player
 
 
 def place_row(place: Location, here: str) -> dict:
-    """Дом на карте: зона нажатия, чем занят и стоит ли в нём боец."""
+    """Дом на карте: зона нажатия, чем занят и сколько до него идти.
+
+    Секунды считает сервер, хотя правило простое. Стоит повторить его на
+    клиенте — и однажды они разойдутся: человек согласится на десять
+    секунд, а прождёт двадцать.
+    """
     return {
         "code": place.code,
         "title": place.title,
@@ -30,6 +36,7 @@ def place_row(place: Location, here: str) -> dict:
         "soon": place.soon,
         "works": place.works,
         "here": place.code == here,
+        "walk": travel_seconds(here, place.code),
     }
 
 

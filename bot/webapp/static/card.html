@@ -57,13 +57,35 @@
   </main>
 
   <!-- ---------- 2. Магазины: лавка клуба и комиссионка ---------- -->
+  <!-- ---------- 2. Карта города ---------- -->
+  <main id="map" class="screen hidden">
+    <header class="screen-head">
+      <h1 class="screen-title">🗺 Vegas City</h1>
+      <span class="screen-count" id="map-here"></span>
+    </header>
+
+    <p class="road hidden" id="map-road"></p>
+
+    <!-- Районы: шесть карт, между ними переключаются, ходят ногами -->
+    <div class="bubbles" id="map-districts"></div>
+
+    <!-- Подсказка стоит до карты, а не после: её читают перед тем, как
+         ткнуть в дом, и под самой картой её просто не видно -->
+    <p class="screen-note" id="map-note"></p>
+
+    <!-- Сама карта. Дома — кнопки поверх картинки: их кладут по тому,
+         как картинка нарисовалась, а не по размеру окна -->
+    <div class="map-frame" id="map-frame">
+      <img class="map-pic" id="map-pic" alt="Карта района">
+      <div class="map-zones" id="map-zones"></div>
+    </div>
+  </main>
+
   <main id="shop" class="screen shop hidden">
     <header class="screen-head">
       <h1 class="screen-title" id="shop-title">🏪 Лавка клуба</h1>
       <span class="shop-purse" id="shop-purse"></span>
     </header>
-
-    <div class="bubbles" id="shop-sections"></div>
 
     <!-- Лавка клуба: товар по типам вещей -->
     <section id="shop-club">
@@ -124,7 +146,7 @@
       <h2 class="bag-head">🎒 Инвентарь <span class="bag-count" id="bag-count"></span></h2>
       <div class="bag-list" id="bag-list"></div>
       <p class="bag-empty hidden" id="bag-empty">
-        Рюкзак пуст. Вещи покупаются в лавке клуба — вкладка «Магазины».
+        Рюкзак пуст. За вещами — на карту: оружие у оружейника, одежда у одёжника.
       </p>
 
       <div id="potion-box" class="hidden">
@@ -190,11 +212,8 @@
     <button type="button" class="bar-tab" id="tab-club">
       <span class="bar-icon">🥊</span><span class="bar-label">Клуб</span>
     </button>
-    <button type="button" class="bar-tab" id="tab-shop">
-      <span class="bar-icon">🏪</span><span class="bar-label">Магазины</span>
-    </button>
-    <button type="button" class="bar-tab" id="tab-magic">
-      <span class="bar-icon">🔮</span><span class="bar-label">Лавка мага</span>
+    <button type="button" class="bar-tab" id="tab-map">
+      <span class="bar-icon">🗺</span><span class="bar-label">Карта</span>
     </button>
     <button type="button" class="bar-tab" id="tab-bag">
       <span class="bar-icon">🎒</span><span class="bar-label">Инвентарь</span>

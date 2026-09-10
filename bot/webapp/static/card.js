@@ -795,25 +795,28 @@ function shopNote(data) {
 // Какая лавка открыта на вкладке магазинов
 let shopSection = "club";
 
+// Как называется прилавок, на который смотрят. Раньше лавка была одна и
+// звалась «Лавкой клуба»; теперь это дома на карте, и у каждого своё имя
+const SHOP_TITLES = {
+  weapons: "🗡 Оружейный магазин",
+  clothes: "👕 Магазин одежды",
+  potions: "💊 Аптека",
+  market: "🤝 Комиссионный магазин",
+};
+
+function openShop() {
+  pickShopSection("club");
+  showTab("shop");
+}
+
 function pickShopSection(name) {
   shopSection = name;
   el("shop-club").classList.toggle("hidden", name !== "club");
   el("shop-market").classList.toggle("hidden", name !== "market");
-  el("shop-title").textContent =
-    name === "club" ? "🏪 Лавка клуба" : "🤝 Комиссионный магазин";
-  renderShopSections();
-  if (name === "market") loadMarket();
-}
-
-function renderShopSections() {
-  const box = el("shop-sections");
-  box.textContent = "";
-  [
-    ["club", "Лавка клуба"],
-    ["market", "Комиссионка"],
-  ].forEach(([code, label]) => {
-    box.appendChild(chip(label, shopSection === code, () => pickShopSection(code)));
-  });
+  if (name === "market") {
+    el("shop-title").textContent = SHOP_TITLES.market;
+    loadMarket();
+  }
 }
 
 function renderShop(data) {
@@ -821,7 +824,7 @@ function renderShop(data) {
   el("shop-purse").textContent = "";
   el("shop-purse").appendChild(purse(data.credits));
   el("shop-note").textContent = shopNote(data);
-  renderShopSections();
+  el("shop-title").textContent = SHOP_TITLES[data.service] || "🏪 Лавка";
   renderFilters(data);
 
   const list = el("shop-list");
@@ -1088,25 +1091,34 @@ function lotCard(lot) {
   return box;
 }
 
-const SCREENS = ["club", "shop", "magic", "bag", "hero"];
+const SCREENS = ["club", "map", "shop", "magic", "bag", "hero"];
+// Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
+// Пока в них стоишь, горит «Карта» — оттуда в них и пришли
+const TABS = ["club", "map", "bag", "hero"];
+const OPENED_FROM = { shop: "map", magic: "map" };
 let lastTab = "hero";
 
 function showTab(name) {
   SCREENS.forEach((screen) => {
     el(screen).classList.toggle("hidden", screen !== name);
   });
-  SCREENS.forEach((screen) => {
-    el("tab-" + screen).classList.toggle("active", screen === name);
+  const lit = OPENED_FROM[name] || name;
+  TABS.forEach((tab) => {
+    el("tab-" + tab).classList.toggle("active", tab === lit);
   });
   el("topup").classList.add("hidden");
   lastTab = name;
   window.scrollTo(0, 0);
   // На этих двух экранах живут уровень и свободные очки: заходим — сверяемся
   if (name === "hero" || name === "bag") catchUp();
-  if (name === "shop" && !shopData) loadShop();
-  // Комиссионку перечитываем при каждом заходе: её полка меняется чужими
-  // руками, а рюкзак — своими
-  if (name === "shop") pickShopSection(shopSection);
+  // Прилавок у каждой лавки свой — перечитываем при каждом заходе.
+  // Комиссионка живёт на том же экране, но это другой дом: её полка
+  // приходит своей ручкой, и грузить поверх неё лавку нельзя
+  if (name === "shop") {
+    if (shopSection === "market") pickShopSection("market");
+    else loadShop();
+  }
+  if (name === "map") loadMap();
   if (name === "club" && !clubData) loadClub();
   if (name === "magic" && !magicData) loadMagic();
   // Ринг опрашиваем, только пока на него смотрят: ушли со вкладки — молчим
@@ -1121,6 +1133,245 @@ function showTopUp() {
   window.scrollTo(0, 0);
   loadTopUp();
 }
+
+// ---------- карта города ----------
+//
+// Дома — кнопки поверх картинки. Класть их по размеру окна нельзя:
+// картинка показывается целиком (`object-fit: contain`), и на экране с
+// другим соотношением сторон сверху и снизу появляются поля. Поэтому
+// каждый раз меряем, куда картинка легла на самом деле, и от этого
+// прямоугольника и считаем.
+
+let mapData = null;
+let mapShown = "";  // какой район открыт: смотреть можно любой
+let roadTimer = null;
+
+async function loadMap() {
+  try {
+    const response = await fetch("api/map", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Карта не открылась.");
+    renderMap(await response.json());
+  } catch (error) {
+    el("map-note").textContent = error.message;
+  }
+}
+
+function renderMap(data) {
+  mapData = data;
+  // Пришли на карту — показываем тот район, где стоим. Дальше человек
+  // листает сам, и его выбор не сбрасывается каждым обновлением
+  if (!mapShown || !data.districts.some((one) => one.code === mapShown)) {
+    mapShown = data.district || data.districts[0].code;
+  }
+  el("map-here").textContent = data.here_title;
+  renderDistricts();
+  paintDistrict();
+  paintRoad();
+}
+
+function renderDistricts() {
+  const box = el("map-districts");
+  box.textContent = "";
+  mapData.districts.forEach((district) => {
+    const label = district.here ? district.title + " ·" : district.title;
+    box.appendChild(
+      chip(label, district.code === mapShown, () => {
+        mapShown = district.code;
+        renderDistricts();
+        paintDistrict();
+      })
+    );
+  });
+}
+
+function shownDistrict() {
+  return mapData.districts.find((one) => one.code === mapShown);
+}
+
+function paintDistrict() {
+  const district = shownDistrict();
+  if (!district) return;
+  const pic = el("map-pic");
+  if (pic.getAttribute("src") !== district.image) pic.src = district.image;
+  pic.alt = "Район: " + district.title;
+  el("map-note").textContent = district.here
+    ? "Ты в этом районе. Нажми на дом, чтобы зайти."
+    : "Другой район. Нажми на дом — боец пойдёт туда.";
+  placeZones();
+}
+
+/** Куда картинка легла внутри рамки: без полей по краям и с ними. */
+function drawnBox(pic) {
+  const width = pic.clientWidth;
+  const height = pic.clientHeight;
+  const natural = pic.naturalWidth && pic.naturalHeight
+    ? pic.naturalWidth / pic.naturalHeight
+    : MAP_RATIO;
+  if (!width || !height) return null;
+  // Картинка вписывается целиком: по ширине, если рамка выше, и по
+  // высоте, если рамка шире. Остаток по краям — те самые поля
+  const drawnWidth = Math.min(width, height * natural);
+  const drawnHeight = drawnWidth / natural;
+  return {
+    left: (width - drawnWidth) / 2,
+    top: (height - drawnHeight) / 2,
+    width: drawnWidth,
+    height: drawnHeight,
+  };
+}
+
+// Соотношение сторон нарисованных карт: 941×1672. Нужно, только пока
+// картинка не загрузилась и своего размера ещё не назвала
+const MAP_RATIO = 941 / 1672;
+
+function placeZones() {
+  const district = shownDistrict();
+  const box = el("map-zones");
+  box.textContent = "";
+  if (!district) return;
+  const drawn = drawnBox(el("map-pic"));
+  if (!drawn) return;
+
+  const put = (zone, node) => {
+    node.style.left = drawn.left + zone.x * drawn.width + "px";
+    node.style.top = drawn.top + zone.y * drawn.height + "px";
+    node.style.width = zone.w * drawn.width + "px";
+    node.style.height = zone.h * drawn.height + "px";
+    box.appendChild(node);
+  };
+
+  district.places.forEach((place) => put(place.zone, houseButton(place)));
+  put(mapData.exit_zone, exitButton());
+}
+
+function houseButton(place) {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.className =
+    "zone-house" + (place.here ? " here" : "") + (place.works ? "" : " soon");
+  node.dataset.code = place.code;
+  node.setAttribute("aria-label", place.title);
+
+  const sign = document.createElement("span");
+  sign.className = "zone-sign";
+  sign.textContent = place.here ? "📍 " + place.title : place.title;
+  node.appendChild(sign);
+
+  node.addEventListener("click", () => enterHouse(place));
+  return node;
+}
+
+function exitButton() {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.className = "zone-exit";
+  node.id = "map-exit";
+  node.setAttribute("aria-label", "Выбрать район");
+  node.textContent = "⬆ Районы";
+  node.addEventListener("click", () => {
+    el("map-districts").scrollIntoView({ block: "center" });
+  });
+  return node;
+}
+
+/** Что открывает дом, если боец уже в нём. */
+const HOUSE_SCREENS = {
+  fight: () => {
+    showTab("club");
+    pickClubSection("fights");
+  },
+  raid: () => {
+    showTab("club");
+    pickClubSection("raid");
+  },
+  weapons: () => openShop(),
+  clothes: () => openShop(),
+  potions: () => openShop(),
+  premium: () => showTab("magic"),
+  market: () => {
+    pickShopSection("market");
+    showTab("shop");
+  },
+  repair: () => {
+    showTab("bag");
+    popup("Мастерская", "Чинят вещи в рюкзаке: у каждой своя кнопка починки.");
+  },
+};
+
+async function enterHouse(place) {
+  if (place.here) {
+    if (!place.works) {
+      popup(place.title, "Скоро здесь появится новая услуга: " + place.soon + ".");
+      return;
+    }
+    const open = HOUSE_SCREENS[place.services[0]];
+    if (open) open();
+    return;
+  }
+  if (mapData.road.going) {
+    popup("Ты в пути", mapData.road.text);
+    return;
+  }
+  // До дома без услуги дойти можно: город не должен выглядеть
+  // наполовину нарисованным. Что он пока пуст, скажем уже на месте
+  // Спрашиваем до выхода: дорога занимает время, и уходить молча нечестно
+  const go = await askConfirm(
+    "Идём?",
+    "Дойти до дома «" + place.title + "» — " + walkText(place)
+  );
+  if (go) await travelTo(place.code);
+}
+
+function walkText(place) {
+  // Сколько идти, считает сервер: у него же и решение, пускать ли
+  return place.walk + " сек пути.";
+}
+
+async function travelTo(code) {
+  try {
+    const body = await post("api/travel", { to: code });
+    renderMap(body.map);
+    render(body.card, true);
+  } catch (error) {
+    popup("Не выйдет", error.message);
+  }
+}
+
+function paintRoad() {
+  const road = mapData.road;
+  const line = el("map-road");
+  line.classList.toggle("hidden", !road.going);
+  if (!road.going) {
+    if (roadTimer) clearInterval(roadTimer);
+    roadTimer = null;
+    return;
+  }
+  let left = road.seconds_left;
+  const tick = () => {
+    line.textContent = left > 0
+      ? "🚶 В пути до дома «" + road.to_title + "» — " + left + " сек"
+      : "🚶 Пришли.";
+    if (left <= 0) {
+      clearInterval(roadTimer);
+      roadTimer = null;
+      loadMap();
+      catchUp();
+      return;
+    }
+    left -= 1;
+  };
+  tick();
+  if (roadTimer) clearInterval(roadTimer);
+  roadTimer = setInterval(tick, 1000);
+}
+
+// Окно меняет размер — картинка ложится иначе, и дома едут вместе с ней
+window.addEventListener("resize", () => {
+  if (mapData && !el("map").classList.contains("hidden")) placeZones();
+});
+el("map-pic").addEventListener("load", placeZones);
 
 // ---------- лавка мага ----------
 
@@ -1507,10 +1758,11 @@ function pickClubSection(name) {
 function renderClubSections() {
   const box = el("club-sections");
   box.textContent = "";
+  // Рейда среди пузырей нет: в подвал спускаются из казино на карте.
+  // Раздел жив и открывается оттуда — но зайти в него мимо казино нельзя
   [
     ["fights", "Бои"],
     ["battle", "Отряд"],
-    ["raid", "Рейд"],
     ["players", "Игроки"],
     ["stats", "Статистика"],
   ].forEach(([code, label]) => {
@@ -3591,8 +3843,7 @@ function render(card, keepTab) {
   // комиссию. Без этого экран комиссионки остаётся с прежним списком: он
   // грузится один раз, и надетая или проданная вещь висит в нём как живая.
   marketFollowsBag();
-  el("city").textContent = card.city;
-  el("hero-city").textContent = card.city;
+  paintCity(card);
 
   const stats = el("stats");
   stats.textContent = "";
@@ -3685,6 +3936,19 @@ function render(card, keepTab) {
   if (!keepTab) showTab("hero");
 }
 
+function paintCity(card) {
+  // Строка под куклой: город и дом, в котором боец стоит. В пути дом
+  // сменяется дорогой — иначе выходит, что он одновременно и там, и там
+  const place = card.place || {};
+  const line = place.seconds_left
+    ? "🚶 В пути до дома «" + place.going_to + "» — " + place.seconds_left + " сек"
+    : card.city + (place.title ? " · 📍 " + place.title : "");
+  ["city", "hero-city"].forEach((id) => {
+    el(id).textContent = line;
+    el(id).classList.toggle("on-road", Boolean(place.seconds_left));
+  });
+}
+
 function fail(message) {
   el("loader").classList.add("hidden");
   const box = el("error");
@@ -3754,8 +4018,9 @@ el("hero-avatar").addEventListener("click", () => {
 el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
 
-SCREENS.forEach((screen) => {
-  el("tab-" + screen).addEventListener("click", () => showTab(screen));
+// Кнопок на панели меньше, чем экранов: лавки открываются с карты
+TABS.forEach((tab) => {
+  el("tab-" + tab).addEventListener("click", () => showTab(tab));
 });
 el("topup-back").addEventListener("click", () => showTab(lastTab));
 
