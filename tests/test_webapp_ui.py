@@ -261,6 +261,13 @@ async def weapon_page(db):
 
 
 @pytest.fixture
+async def fan_page(db):
+    """Прилавок фанатского магазина: линия своей команды целиком."""
+    async for page in shop_screen(db, Service.FAN):
+        yield page
+
+
+@pytest.fixture
 async def pharmacy_page(db):
     """Прилавок аптеки: склянки."""
     async for page in shop_screen(db, Service.POTIONS):
@@ -353,6 +360,23 @@ async def test_the_weapon_shop_holds_only_what_you_hold(weapon_page):
     titles = await visible_titles(weapon_page)
     assert "Кастет" in titles  # открыто по уровню
     assert "Бита" not in titles  # закрыто, лежит под кнопкой
+
+
+async def test_the_fan_shop_shows_its_own_line(fan_page):
+    """«Северный Вал» одевает целиком: бита и кроссовки одной команды."""
+    heads = await shelves(fan_page)
+    # восемь полок: своей линии нет только в перчатках, и пустой полки тут нет
+    assert [head.split("\n")[0] for head in heads] == [
+        "Голова", "Оружие", "Щиты", "Футболки", "Пояс",
+        "Верхняя одежда", "Ноги", "Обувь",
+    ]
+    assert await fan_page.locator("#shop-title").inner_text() == (
+        "🧣 Магазин «Северный Вал»"
+    )
+    # товар открывается десятым уровнем, а боец пятого — значит, под замком
+    note = await fan_page.locator("#shop-note").inner_text()
+    assert "десятый уровень" in note
+    assert "Бита с гвоздями" not in await visible_titles(fan_page)
 
 
 async def test_an_empty_shelf_says_the_goods_are_coming(server):

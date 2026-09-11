@@ -25,6 +25,7 @@ from bot.game.equipment import (
     ALL_SLOTS,
     LEFT_SLOTS,
     UNDER_SLOTS,
+    FAN_SHELF,
     MAGIC_ITEMS,
     RIGHT_SLOTS,
     Equipment,
@@ -469,6 +470,10 @@ def sells(service: Service, slot: Slot) -> bool:
         return slot in WEAPON_SLOTS
     if service is Service.CLOTHES:
         return slot not in WEAPON_SLOTS
+    # Фанатский магазин одевает целиком: там и бита, и кроссовки одной
+    # команды. Делить его надвое незачем — прилавок и так свой
+    if service is Service.FAN:
+        return True
     return False
 
 
@@ -479,9 +484,11 @@ def build_shop(player: Player, service: Service = Service.CLOTHES) -> dict:
         mine[owned.code] = mine.get(owned.code, 0) + 1
 
     sections = []
-    for slot, items in shop_sections():
-        if not sells(service, slot):
-            continue
+    # У фанатского магазина свой прилавок: клубной витрины там нет вовсе
+    shelf = FAN_SHELF if service is Service.FAN else ""
+    for slot, items in shop_sections(shelf):
+        if not items or not sells(service, slot):
+            continue  # пустой раздел — пустая полка: показывать нечего
         rows = [goods_payload(player, item, mine.get(item.code, 0)) for item in items]
         sections.append(
             {

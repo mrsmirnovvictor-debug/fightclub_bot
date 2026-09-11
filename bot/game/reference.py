@@ -10,7 +10,15 @@ from __future__ import annotations
 
 from bot.game.classes import START_POINTS, FighterClass, Stat, Stats
 from bot.game.economy import MICRO_UPS_PER_LEVEL
-from bot.game.equipment import ALL_SLOTS, SHOWCASE, Equipment, Item, OwnedItem, Slot
+from bot.game.equipment import (
+    ALL_SLOTS,
+    FAN_ITEMS,
+    SHOWCASE,
+    Equipment,
+    Item,
+    OwnedItem,
+    Slot,
+)
 
 # Во что вкладывается боец каждого класса, по кругу
 FOCUS: dict[str, tuple[str, ...]] = {
@@ -46,14 +54,41 @@ def best_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
     return kit
 
 
+def fan_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
+    """Комплект из фанатского магазина: своё — оттуда, остальное клубное.
+
+    Фанатская экипировка стоит десять уровней дохода за вещь, поэтому в
+    эталон она не идёт. Но носить её будут — и в бою против такого же
+    одетого круг классов обязан держаться, иначе тематический магазин
+    ломает игру тем, кто до него добрался. Этим комплектом круг и
+    проверяется; им же одевают фанатских NPC.
+    """
+    kit = best_kit(fclass, level)
+    for slot in ALL_SLOTS:
+        mine = [
+            item
+            for item in FAN_ITEMS
+            if item.slot is slot
+            and item.level_required <= level
+            and fclass.code in item.for_classes
+        ]
+        # Чужую линию не подбираем: танк не наденет беговые кроссовки,
+        # даже если в его слоте пусто, — он донашивает клубное
+        if mine:
+            kit[slot] = max(mine, key=lambda item: item.price)
+    return kit
+
+
+def equipment_of(kit: dict[Slot, Item]) -> Equipment:
+    """Комплект, надетый по слотам."""
+    return Equipment(
+        items={slot: OwnedItem(item=item, slot=slot) for slot, item in kit.items()}
+    )
+
+
 def reference_equipment(fclass: FighterClass, level: int) -> Equipment:
     """Полный комплект своего уровня, надетый по слотам."""
-    return Equipment(
-        items={
-            slot: OwnedItem(item=item, slot=slot)
-            for slot, item in best_kit(fclass, level).items()
-        }
-    )
+    return equipment_of(best_kit(fclass, level))
 
 
 def kit_price(fclass: FighterClass, level: int) -> int:

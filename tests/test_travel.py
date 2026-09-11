@@ -284,7 +284,7 @@ def test_a_touch_finds_the_door_under_it():
 
 
 def test_houses_without_a_trade_are_still_on_the_map():
-    """Банк, рынок, почта, бар, стадион и «Вал» пока только стоят.
+    """Банк, рынок, почта, бар и стадион пока только стоят.
 
     Зайти в них можно — иначе город выглядит нарисованным наполовину, —
     но никакой услуги за ними нет, и сервер её не знает.
@@ -293,7 +293,7 @@ def test_houses_without_a_trade_are_still_on_the_map():
 
     coming = [place for place in LOCATIONS if not place.works]
     assert {place.code for place in coming} == {
-        "northern_wall_shop", "bank", "market", "post_office", "stadium", "bar"
+        "bank", "market", "post_office", "stadium", "bar"
     }
     for place in coming:
         assert place.soon, f"{place.code}: не сказано, что здесь будет"

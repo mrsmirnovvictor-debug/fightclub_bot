@@ -783,6 +783,12 @@ function shelf(section) {
 }
 
 function shopNote(data) {
+  // Фанатский прилавок открывается целиком и сразу: там одна ступень,
+  // и «следующая партия» на ней не бывает
+  if (data.service === "fan") {
+    return "Экипировка своей команды: одна ступень, десятый уровень. "
+      + "Копится долго — зато носится до конца.";
+  }
   const next = data.sections
     .flatMap((section) => section.items)
     .filter((item) => !item.unlocked)
@@ -801,6 +807,7 @@ const SHOP_TITLES = {
   weapons: "🗡 Оружейный магазин",
   clothes: "👕 Магазин одежды",
   potions: "💊 Аптека",
+  fan: "🧣 Магазин «Северный Вал»",
   market: "🤝 Комиссионный магазин",
 };
 
@@ -1420,6 +1427,7 @@ const HOUSE_SCREENS = {
   weapons: () => openShop(),
   clothes: () => openShop(),
   potions: () => openShop(),
+  fan: () => openShop(),
   premium: () => showTab("magic"),
   market: () => {
     pickShopSection("market");

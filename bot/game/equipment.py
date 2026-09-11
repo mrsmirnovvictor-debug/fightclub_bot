@@ -20,6 +20,8 @@ from bot.content.items import (
     ITEM_ART,
     ITEMS,
     MAGIC_ART,
+    FAN_ITEMS,
+    FAN_SHELF,
     MAGIC_ITEMS,
     ROGUE,
     SHOWCASE,
@@ -28,6 +30,7 @@ from bot.content.items import (
     WEAPON_ART,
     get_item,
     items_unlocked_at,
+    shelf_of,
     shop_sections,
 )
 from bot.game.classes import Stats, Zone
@@ -264,6 +267,8 @@ __all__ = [
     "LATE_SHARE_CAP",
     "LEFT_SLOTS",
     "MAGIC_ART",
+    "FAN_ITEMS",
+    "FAN_SHELF",
     "MAGIC_ITEMS",
     "MAX_WEAR",
     "OwnedItem",
@@ -294,5 +299,6 @@ __all__ = [
     "repair",
     "repair_points",
     "roll_fight_wear",
+    "shelf_of",
     "shop_sections",
 ]

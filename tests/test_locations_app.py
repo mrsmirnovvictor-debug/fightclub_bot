@@ -69,6 +69,7 @@ async def test_houses_without_a_trade_say_so(client, db):
     assert houses["bank"]["works"] is False
     assert houses["bank"]["soon"] and houses["bank"]["services"] == []
     assert houses["workshop"]["services"] == ["repair"]
+    assert houses["northern_wall_shop"]["services"] == ["fan"]
 
 
 # ---------- дорога ----------
@@ -189,3 +190,64 @@ async def test_the_club_is_where_fights_live(client, db):
 
     assert body["at_club"] is False
     assert body["club_title"] == "Бойцовский клуб VEGAS"
+
+
+# ---------- фанатский магазин ----------
+
+
+async def test_the_fan_shop_sells_its_own_line(client, db):
+    """«Северный Вал» торгует своим товаром, а не витриной клуба."""
+    from bot.game.equipment import FAN_ITEMS
+
+    await db.save_player(make_player(location="northern_wall_shop"))
+
+    body = await (await client.get("/api/shop", headers=headers())).json()
+
+    assert body["service"] == "fan"
+    codes = {row["code"] for section in body["sections"] for row in section["items"]}
+    assert codes == {item.code for item in FAN_ITEMS}
+    # одевает целиком: и бита, и кроссовки одной команды
+    assert {"weapon", "boots"} <= {row["slot"] for row in body["sections"]}
+    # перчаток в этой линии нет — пустой полки на экране тоже
+    assert "gloves" not in {row["slot"] for row in body["sections"]}
+
+
+async def test_the_fan_line_is_not_sold_anywhere_else(client, db):
+    """Фанатскую биту не купить ни у оружейника, ни у одёжника."""
+    await db.save_player(make_player(location="weapon_shop"))
+
+    response = await client.post(
+        "/api/buy", json={"code": "fan_boss_bat"}, headers=headers()
+    )
+
+    assert response.status == 409
+    assert "Северный Вал" in (await response.json())["error"]
+
+    # и на прилавке оружейника её нет
+    shelf = await (await client.get("/api/shop", headers=headers())).json()
+    codes = {row["code"] for section in shelf["sections"] for row in section["items"]}
+    assert "fan_boss_bat" not in codes
+
+
+async def test_the_fan_line_is_bought_and_handed_in_at_its_own_counter(client, db):
+    """Купил на Валу — туда же и сдавать: чужой прилавок её не примет."""
+    player = make_player(location="northern_wall_shop")
+    player.level, player.credits = 10, 3000
+    await db.save_player(player)
+
+    bought = await client.post(
+        "/api/buy", json={"code": "fan_assassin_cap"}, headers=headers()
+    )
+    assert bought.status == 200
+    owned = (await db.get_player(42)).gear
+    assert [one.code for one in owned] == ["fan_assassin_cap"]
+
+    # уйдём к одёжнику — там её не примут
+    away = make_player(location="clothes_shop")
+    away.level, away.credits = 10, 1800
+    await db.save_player(away)
+    refused = await client.post(
+        "/api/handin", json={"item_id": owned[0].id}, headers=headers()
+    )
+    assert refused.status == 409
+    assert "Северный Вал" in (await refused.json())["error"]

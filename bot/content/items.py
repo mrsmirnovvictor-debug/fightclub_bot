@@ -37,6 +37,10 @@ MAGIC_ART = art.MAGIC
 
 WARRIOR, ROGUE, ASSASSIN, TANK = "warrior", "rogue", "assassin", "tank"
 
+# Прилавок фанатского магазина на Северном Валу: свой товар, своя цена и
+# своя лестница. Пустой `shelf` — товар клубной лавки
+FAN_SHELF = "fan"
+
 ITEMS: tuple[Item, ...] = (
     # ---------- с чего начинают: уровни 1–3 ----------
     Item(
@@ -1028,6 +1032,357 @@ ITEMS: tuple[Item, ...] = (
         image=art.shirt("wife_beater"),
         reward=True,
     ),
+    # ---------- фанатский магазин «Северный Вал»: экипировка своей команды ----------
+    #
+    # Отдельный прилавок, а не следующая ступень клубной лавки. Вещи тут
+    # десятого уровня и от тысячи кредитов — это десять уровней дохода за
+    # одну вещь, поэтому в эталонный комплект они не идут: эталон — это
+    # осмысленно одетый боец, а не тот, кто копил семь тысяч. Числа при
+    # этом держатся в тех же потолках, что и витрина клуба: +4 плоских и
+    # 10% — выше них ломается круг классов.
+    #
+    # Линий три, по фанатским ролям: тяжёлая «босса», средняя «воина» и
+    # лёгкая техничная. Лёгкую носят и ассасин, и трикстер, поэтому
+    # надевается она по выносливости — ловкость с интуицией у этих двоих
+    # разные, и общее требование отсекло бы одного из них.
+    Item(
+        "fan_boss_bat",
+        "Бита с гвоздями",
+        Slot.WEAPON,
+        "🔨",
+        kind=ItemKind.WEAPON,
+        instrumental="битой с гвоздями",
+        strength=3,
+        damage_min=22,
+        damage_max=28,
+        accuracy=0.08,
+        anticrit=0.07,
+        level_required=10,
+        requires=Stats(strength=15, endurance=26),
+        price=1600,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_boss_shield",
+        "Щит фанатского сектора",
+        Slot.OFFHAND,
+        "🛡",
+        kind=ItemKind.SHIELD,
+        hp=24,
+        armor_min=12,
+        armor_max=16,
+        anticrit=0.09,
+        level_required=10,
+        requires=Stats(strength=15, endurance=24),
+        price=1400,
+        for_classes=(TANK, WARRIOR),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_boss_polo",
+        "Плотное поло",
+        Slot.SHIRT,
+        "👕",
+        hp=10,
+        anticrit=0.06,
+        level_required=10,
+        requires=Stats(endurance=24),
+        price=1000,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_boss_jacket",
+        "Тяжёлая полевая куртка",
+        Slot.JACKET,
+        "🧥",
+        hp=18,
+        armor_min=4,
+        armor_max=6,
+        anticrit=0.04,
+        level_required=10,
+        requires=Stats(endurance=24),
+        price=1500,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_boss_track_pants",
+        "Плотные спортивные штаны",
+        Slot.PANTS,
+        "👖",
+        hp=8,
+        armor_min=3,
+        armor_max=5,
+        level_required=10,
+        requires=Stats(endurance=22),
+        price=1100,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_boss_sneakers",
+        "Замшевые террас-кроссовки",
+        Slot.BOOTS,
+        "👟",
+        hp=8,
+        armor_min=3,
+        armor_max=4,
+        level_required=10,
+        requires=Stats(endurance=22),
+        price=1100,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_boss_cap",
+        "Кепка фанатского сектора",
+        Slot.HEAD,
+        "🧢",
+        hp=16,
+        armor_min=3,
+        armor_max=5,
+        anticrit=0.06,
+        level_required=10,
+        requires=Stats(endurance=24),
+        price=1200,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_boss_belt",
+        "Широкий кожаный пояс",
+        Slot.BELT,
+        "🥋",
+        strength=2,
+        hp=4,
+        armor_min=2,
+        armor_max=4,
+        level_required=10,
+        requires=Stats(strength=14, endurance=20),
+        price=1000,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_warrior_bat",
+        "Бейсбольная бита",
+        Slot.WEAPON,
+        "🏏",
+        kind=ItemKind.WEAPON,
+        instrumental="бейсбольной битой",
+        strength=4,
+        damage_min=19,
+        damage_max=31,
+        accuracy=0.08,
+        level_required=10,
+        requires=Stats(strength=24),
+        price=1500,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_warrior_tee",
+        "Спортивная футболка",
+        Slot.SHIRT,
+        "🎽",
+        strength=1,
+        hp=10,
+        counter=0.03,
+        level_required=10,
+        requires=Stats(strength=20),
+        price=1000,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_warrior_harrington",
+        "Куртка-харрингтон",
+        Slot.JACKET,
+        "🧥",
+        strength=1,
+        hp=16,
+        armor_min=3,
+        armor_max=5,
+        level_required=10,
+        requires=Stats(strength=22),
+        price=1400,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_warrior_track_pants",
+        "Спортивные штаны",
+        Slot.PANTS,
+        "👖",
+        hp=10,
+        armor_min=3,
+        armor_max=4,
+        level_required=10,
+        requires=Stats(strength=20),
+        price=1100,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_warrior_sneakers",
+        "Массивные ретро-кроссовки",
+        Slot.BOOTS,
+        "👟",
+        hp=8,
+        armor_min=2,
+        armor_max=4,
+        counter=0.04,
+        level_required=10,
+        requires=Stats(strength=20),
+        price=1100,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_warrior_cap",
+        "Ретро-спортивная кепка",
+        Slot.HEAD,
+        "🧢",
+        strength=1,
+        hp=10,
+        armor_min=3,
+        armor_max=4,
+        accuracy=0.03,
+        level_required=10,
+        requires=Stats(strength=20),
+        price=1200,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_warrior_belt",
+        "Тканевый спортивный пояс",
+        Slot.BELT,
+        "🥋",
+        strength=1,
+        hp=6,
+        armor_min=2,
+        armor_max=3,
+        level_required=10,
+        requires=Stats(strength=20),
+        price=1000,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_assassin_knife",
+        "Складной нож",
+        Slot.WEAPON,
+        "🔪",
+        kind=ItemKind.WEAPON,
+        instrumental="складным ножом",
+        intuition=4,
+        damage_min=11,
+        damage_max=39,
+        crit=0.08,
+        level_required=10,
+        requires=Stats(intuition=20),
+        price=1500,
+        for_classes=(ASSASSIN,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_assassin_polo",
+        "Техническое поло",
+        Slot.SHIRT,
+        "👕",
+        agility=1,
+        hp=8,
+        dodge=0.04,
+        level_required=10,
+        requires=Stats(endurance=18),
+        price=1000,
+        for_classes=(ASSASSIN, ROGUE),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_assassin_track_jacket",
+        "Лёгкая спортивная куртка",
+        Slot.JACKET,
+        "🧥",
+        agility=1,
+        intuition=1,
+        armor_min=2,
+        armor_max=4,
+        dodge=0.04,
+        hp=10,
+        level_required=10,
+        requires=Stats(endurance=18),
+        price=1400,
+        for_classes=(ASSASSIN, ROGUE),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_assassin_track_pants",
+        "Зауженные технические штаны",
+        Slot.PANTS,
+        "👖",
+        agility=1,
+        armor_min=1,
+        armor_max=3,
+        dodge=0.04,
+        hp=6,
+        level_required=10,
+        requires=Stats(endurance=18),
+        price=1100,
+        for_classes=(ASSASSIN, ROGUE),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_assassin_sneakers",
+        "Лёгкие беговые кроссовки",
+        Slot.BOOTS,
+        "👟",
+        agility=2,
+        hp=6,
+        armor_min=1,
+        armor_max=2,
+        dodge=0.05,
+        level_required=10,
+        requires=Stats(endurance=18),
+        price=1100,
+        for_classes=(ASSASSIN, ROGUE),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_assassin_cap",
+        "Техническая кепка",
+        Slot.HEAD,
+        "🧢",
+        intuition=2,
+        hp=6,
+        armor_min=1,
+        armor_max=2,
+        crit=0.05,
+        level_required=10,
+        requires=Stats(endurance=18),
+        price=1200,
+        for_classes=(ASSASSIN, ROGUE),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_assassin_belt",
+        "Компактный тактический пояс",
+        Slot.BELT,
+        "🥋",
+        intuition=1,
+        armor_min=1,
+        armor_max=2,
+        crit=0.04,
+        counter=0.04,
+        level_required=10,
+        requires=Stats(endurance=18),
+        price=1000,
+        for_classes=(ASSASSIN, ROGUE),
+        shelf=FAN_SHELF,
+    ),
     # ---------- лавка мага: только за звёзды ----------
     Item(
         "lightsaber",
@@ -1056,7 +1411,17 @@ CATALOGUE: dict[str, Item] = {item.code: item for item in ITEMS}
 # купить, и висеть на прилавке рядом с кастетом им незачем.
 SHOWCASE: tuple[Item, ...] = tuple(
     sorted(
-        (item for item in ITEMS if not item.is_magic and item.on_sale),
+        (item for item in ITEMS if not item.is_magic and item.on_sale and not item.shelf),
+        key=lambda item: (ALL_SLOTS.index(item.slot), item.level_required, item.price),
+    )
+)
+
+# Прилавок фанатского магазина: та же раскладка по слотам, но свой товар.
+# В витрину клуба он не входит — и потому не тянет за собой ни лестницу
+# цен, ни правило «никто не отстаёт больше чем на три уровня»
+FAN_ITEMS: tuple[Item, ...] = tuple(
+    sorted(
+        (item for item in ITEMS if item.shelf == FAN_SHELF and item.on_sale),
         key=lambda item: (ALL_SLOTS.index(item.slot), item.level_required, item.price),
     )
 )
@@ -1070,10 +1435,16 @@ MAGIC_ITEMS: tuple[Item, ...] = tuple(
 )
 
 
-def shop_sections() -> list[tuple[Slot, tuple[Item, ...]]]:
+def shelf_of(shelf: str = "") -> tuple[Item, ...]:
+    """Товар названного прилавка: пусто — клубная витрина."""
+    return FAN_ITEMS if shelf == FAN_SHELF else SHOWCASE
+
+
+def shop_sections(shelf: str = "") -> list[tuple[Slot, tuple[Item, ...]]]:
     """Товары, разложенные по типам — так магазин и показывает их."""
+    goods = shelf_of(shelf)
     return [
-        (slot, tuple(item for item in SHOWCASE if item.slot is slot))
+        (slot, tuple(item for item in goods if item.slot is slot))
         for slot in ALL_SLOTS
     ]
 

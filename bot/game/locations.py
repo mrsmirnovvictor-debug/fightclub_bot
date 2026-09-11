@@ -38,6 +38,7 @@ class Service(str, Enum):
     CLOTHES = "clothes"  # одежда и всё прочее носимое
     POTIONS = "potions"  # аптека: эликсиры
     PREMIUM = "premium"  # элитный магазин, за звёзды
+    FAN = "fan"  # фанатский магазин: экипировка своей команды
     MARKET = "market"  # комиссионка: торговля между бойцами
 
     @property
@@ -53,6 +54,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.CLOTHES: "торговать одеждой",
     Service.POTIONS: "покупать эликсиры",
     Service.PREMIUM: "покупать за звёзды",
+    Service.FAN: "покупать фанатскую экипировку",
     Service.MARKET: "торговать с бойцами",
 }
 
@@ -364,7 +366,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.455898, 0.261364), (0.557917, 0.266148),
             (0.557917, 0.338517), (0.449522, 0.333134),
         ),
-        soon="фанатская экипировка",
+        services=(Service.FAN,),
         genitive="фанатского магазина",
     ),
     Location(
@@ -464,6 +466,7 @@ SHOP_SERVICES: tuple[Service, ...] = (
     Service.CLOTHES,
     Service.POTIONS,
     Service.PREMIUM,
+    Service.FAN,
 )
 
 
@@ -473,7 +476,7 @@ def service_for(code: str) -> Service:
     По коду, а не по слоту: склянки слота не имеют вовсе, а на прилавке
     стоят наравне с вещами.
     """
-    from bot.game.equipment import Slot, get_item
+    from bot.game.equipment import FAN_SHELF, Slot, get_item
     from bot.game.potions import get_potion
 
     if get_potion(code) is not None:
@@ -483,6 +486,10 @@ def service_for(code: str) -> Service:
         return Service.CLOTHES  # чего нет в каталоге, то не купят нигде
     if item.is_magic:
         return Service.PREMIUM
+    # У тематического магазина свой прилавок: и купить, и сдать фанатскую
+    # биту можно только там, хотя слот у неё оружейный
+    if item.shelf == FAN_SHELF:
+        return Service.FAN
     return (
         Service.WEAPONS
         if item.slot in (Slot.WEAPON, Slot.OFFHAND)
