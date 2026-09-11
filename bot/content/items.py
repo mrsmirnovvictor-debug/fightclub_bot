@@ -1290,7 +1290,7 @@ ITEMS: tuple[Item, ...] = (
     ),
     Item(
         "fan_assassin_polo",
-        "Техническое поло",
+        "Модное поло",
         Slot.SHIRT,
         "👕",
         agility=1,
@@ -1321,7 +1321,7 @@ ITEMS: tuple[Item, ...] = (
     ),
     Item(
         "fan_assassin_track_pants",
-        "Зауженные технические штаны",
+        "Зауженные модные штаны",
         Slot.PANTS,
         "👖",
         agility=1,
@@ -1353,7 +1353,7 @@ ITEMS: tuple[Item, ...] = (
     ),
     Item(
         "fan_assassin_cap",
-        "Техническая кепка",
+        "Модная кепка",
         Slot.HEAD,
         "🧢",
         intuition=2,
