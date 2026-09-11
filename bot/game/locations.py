@@ -22,7 +22,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from bot.game import art
@@ -178,10 +178,14 @@ class Location:
 
 @dataclass(frozen=True)
 class District:
-    """Район: одна нарисованная карта и дома на ней."""
+    """Район: одна нарисованная карта, дома на ней и соседи по сторонам."""
 
     code: str
     title: str
+    # Куда ведут стрелки: сторона света → код соседнего района. Города
+    # на карте не видно целиком, и это единственное, что связывает шесть
+    # картинок в один город
+    around: dict[str, str] = field(default_factory=dict)
 
     @property
     def image(self) -> str:
@@ -219,23 +223,48 @@ def travel_seconds(source: str, target: str) -> int:
 
 FIGHT_CLUB = "fight_club"
 
-# Нижний проход, общий для всех карт: им выходят в выбор района
-EXIT_ZONE = Rect(0.35, 0.84, 0.30, 0.14)
-
 # На сколько невидимо расширить дверь под палец, долями от карты.
 # Подсветка при этом остаётся ровно на двери: расширение только для
 # касания, иначе на рисунке загорится кусок стены рядом с ней
 TOUCH_PAD_X = 0.025
 TOUCH_PAD_Y = 0.015
 
+# Куда можно шагнуть с каждой карты. Соседство взаимное: если из центра
+# вверх Северный Вал, то из Вала вниз — центр. Это стережёт тест, иначе
+# однажды из района можно будет выйти, но не вернуться.
+UP, DOWN, LEFT, RIGHT = "up", "down", "left", "right"
+
 DISTRICTS: tuple[District, ...] = (
-    District("main_hub", "Центр"),
-    District("clothes_pharmacy", "Торговый квартал"),
-    District("pawnshop_casino", "Старый город"),
-    District("northern_wall_premium", "Северный Вал"),
-    District("bank_market_post", "Деловой квартал"),
-    District("stadium_bar", "Стадион"),
+    District("main_hub", "Центр", {
+        UP: "northern_wall_premium",
+        RIGHT: "clothes_pharmacy",
+        LEFT: "pawnshop_casino",
+    }),
+    District("clothes_pharmacy", "Торговый квартал", {
+        LEFT: "main_hub",
+        UP: "stadium_bar",
+    }),
+    District("pawnshop_casino", "Старый город", {
+        RIGHT: "main_hub",
+        UP: "bank_market_post",
+    }),
+    District("northern_wall_premium", "Северный Вал", {
+        DOWN: "main_hub",
+        RIGHT: "stadium_bar",
+        LEFT: "bank_market_post",
+    }),
+    District("bank_market_post", "Деловой квартал", {
+        DOWN: "pawnshop_casino",
+        RIGHT: "northern_wall_premium",
+    }),
+    District("stadium_bar", "Стадион", {
+        DOWN: "clothes_pharmacy",
+        LEFT: "northern_wall_premium",
+    }),
 )
+
+# Какая сторона какой противоположна: по этому и проверяется взаимность
+OPPOSITE: dict[str, str] = {UP: DOWN, DOWN: UP, LEFT: RIGHT, RIGHT: LEFT}
 
 LOCATIONS: tuple[Location, ...] = (
     # ---------- Центр: клуб, оружие, мастерская ----------
@@ -473,7 +502,11 @@ __all__ = [
     "BY_CODE",
     "DISTRICTS",
     "District",
-    "EXIT_ZONE",
+    "DOWN",
+    "LEFT",
+    "OPPOSITE",
+    "RIGHT",
+    "UP",
     "FIGHT_CLUB",
     "LOCATIONS",
     "Location",

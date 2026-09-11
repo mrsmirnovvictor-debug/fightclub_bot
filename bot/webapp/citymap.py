@@ -12,7 +12,6 @@ from __future__ import annotations
 from bot.game.health import format_duration
 from bot.game.locations import (
     DISTRICTS,
-    EXIT_ZONE,
     Location,
     get_location,
     travel_seconds,
@@ -50,6 +49,9 @@ def district_row(district, here: str) -> dict:
         "title": district.title,
         "image": district.image,
         "here": any(place.code == here for place in district.places),
+        # Куда ведут стрелки. Города целиком не видно — это единственное,
+        # что связывает шесть картинок в один город
+        "around": dict(district.around),
         "places": [place_row(place, here) for place in district.places],
     }
 
@@ -69,11 +71,15 @@ def build_map(player: Player, now: int | None = None) -> dict:
             "to": going.code if going else "",
             "to_title": going.title if going else "",
             "seconds_left": left,
+            # Вся дорога целиком: без неё на клиенте нечем нарисовать,
+            # насколько она пройдена, — а заряд батарейки считается
+            # именно от этого. Заново открыв карту в пути, клиент
+            # начала дороги уже не помнит
+            "seconds": travel_seconds(here, going.code) if going else 0,
             "text": f"В пути до {going.whither} — {format_duration(left)}"
             if going
             else "",
         },
-        "exit_zone": EXIT_ZONE.as_dict(),
         "districts": [district_row(district, here) for district in DISTRICTS],
     }
 

@@ -191,7 +191,7 @@ def grid_points():
 
 def test_every_entrance_is_four_points_inside_its_map():
     """Вход — четырёхугольник по двери, и он на карте, а не за краем."""
-    from bot.game.locations import EXIT_ZONE, LOCATIONS
+    from bot.game.locations import LOCATIONS
 
     for place in LOCATIONS:
         assert len(place.entrance) == 4, f"{place.code}: не четыре точки"
@@ -199,7 +199,6 @@ def test_every_entrance_is_four_points_inside_its_map():
             assert 0 <= x <= 1 and 0 <= y <= 1, f"{place.code}: точка {x},{y}"
         box = place.bounds
         assert box.w > 0 and box.h > 0, place.code
-    assert EXIT_ZONE.x + EXIT_ZONE.w <= 1.0 and EXIT_ZONE.y + EXIT_ZONE.h <= 1.0
 
 
 def test_an_entrance_is_a_door_and_not_a_whole_building():
@@ -271,17 +270,6 @@ def test_the_touch_area_is_wider_than_the_door_but_only_around_it():
     assert abs((door.y - near.y) - TOUCH_PAD_Y) < 1e-9
     # запас по ширине больше: соседние дома стоят бок о бок
     assert TOUCH_PAD_X > TOUCH_PAD_Y
-
-
-def test_the_way_out_is_not_covered_by_a_door():
-    """Нижний проход общий для всех карт — его не должна закрывать дверь."""
-    from bot.game.locations import EXIT_ZONE, LOCATIONS
-
-    for x, y in grid_points():
-        if not EXIT_ZONE.holds(x, y):
-            continue
-        covered = [one.code for one in LOCATIONS if one.touch.holds(x, y)]
-        assert not covered, f"{covered} закрыли выход в точке {x:.3f},{y:.3f}"
 
 
 def test_a_touch_finds_the_door_under_it():

@@ -3126,13 +3126,12 @@ async def test_the_map_opens_on_the_district_you_stand_in(server):
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server, city_map("pharmacy"))
 
-        assert "Аптека" in await page.locator("#map-here").inner_text()
-        # шесть районов пузырями, открыт тот, где боец
-        chips = await page.locator("#map-districts .chip").all_inner_texts()
-        assert len(chips) == 6
         assert await page.locator("#map-pic").get_attribute("src") is not None
+        # Ни заголовка, ни панели над картой: экран занимает сама карта
+        assert await page.locator("#map .screen-head").count() == 0
         houses = await page.locator(".zone-house .zone-sign").all_text_contents()
-        assert "📍 Аптека" in houses and "Магазин одежды" in houses
+        assert "📍 Аптека" in houses
+        assert "Магазин одежды" in houses
         await browser.close()
 
 
@@ -3184,9 +3183,9 @@ async def test_the_sign_hangs_under_the_door_and_stays_on_the_map(
 ):
     """Подпись висит под дверью — над ней нарисована вывеска самого дома.
 
-    Снизу тесно: у комиссионки и бара двери у самой земли, а ниже идёт
-    проход в выбор района. Поэтому проверяем не только «под дверью», но и
-    что подпись не уехала за край карты и не легла на этот проход.
+    Снизу тесно: у комиссионки и бара двери у самой земли, а нижним краем
+    карта уходит под панель вкладок. Поэтому проверяем не только «под
+    дверью», но и что подпись видно целиком — панель её не срезала.
     """
     async with async_playwright() as pw:
         # карта открывается там, где боец, — значит, его дом уже на экране
@@ -3195,13 +3194,11 @@ async def test_the_sign_hangs_under_the_door_and_stays_on_the_map(
         house = page.locator(".zone-house.here")
         door = await house.locator(".zone-line").bounding_box()
         sign = await house.locator(".zone-sign").bounding_box()
-        frame = await page.locator(".map-frame").bounding_box()
-        way_out = await page.locator(".zone-exit rect").bounding_box()
+        bar = await page.locator("#bar").bounding_box()
 
         assert sign["y"] > door["y"] + door["height"], "подпись налезла на вывеску"
-        assert sign["y"] + sign["height"] <= frame["y"] + frame["height"] + 0.5
-        assert sign["y"] + sign["height"] <= way_out["y"] + 0.5, (
-            f"{district}: подпись легла на проход в районы"
+        assert sign["y"] + sign["height"] <= bar["y"] + 0.5, (
+            f"{district}: подпись ушла под панель вкладок"
         )
         await browser.close()
 
@@ -3240,8 +3237,12 @@ async def test_the_map_canvas_follows_the_picture(server):
         await browser.close()
 
 
-async def test_walking_asks_first_and_then_counts_down(server):
-    """Дорога занимает время: сначала спрашивают, потом идёт отсчёт."""
+async def test_walking_starts_at_once_and_charges_like_a_battery(server):
+    """Дорога начинается сразу, а её отсчёт идёт батарейкой в углу.
+
+    Согласия не спрашиваем: дорога занимает секунды, и окно «идём?» на
+    каждый шаг превращает город в анкету.
+    """
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server)
         asked = []
@@ -3253,7 +3254,8 @@ async def test_walking_asks_first_and_then_counts_down(server):
                 body=json.dumps({
                     "map": city_map("fight_club", {
                         "going": True, "to": "pharmacy", "to_title": "Аптека",
-                        "seconds_left": 20, "text": "В пути до аптеки — 20 сек",
+                        "seconds_left": 20, "seconds": 20,
+                        "text": "В пути до аптеки — 20 сек",
                     }),
                     "card": build_card(make_player(), TOKEN, viewer_id=42),
                 }),
@@ -3261,21 +3263,66 @@ async def test_walking_asks_first_and_then_counts_down(server):
 
         await page.route("**/api/travel", road)
 
-        # сначала спрашивают, и в вопросе стоит цена дороги
         questions = []
-
-        async def answer(dialog):
-            questions.append(dialog.message)
-            await dialog.accept()
-
-        page.on("dialog", answer)
+        page.on("dialog", lambda dialog: questions.append(dialog.message) or
+                asyncio.ensure_future(dialog.dismiss()))
         await page.locator(".zone-house").filter(has_text="Мастерская").click()
         await page.wait_for_selector("#map-road:not(.hidden)")
 
-        assert questions and "10 сек" in questions[0]
-
+        assert not questions, "о дороге спросили, хотя не должны были"
         assert json.loads(asked[0]) == {"to": "workshop"}
-        assert "20 сек" in await page.locator("#map-road").inner_text()
+        # секунды — числом, а пройденное — зелёными клетками батарейки
+        assert await page.locator("#road-clock").inner_text() == "00:20"
+        cells = page.locator("#road-cells .road-cell")
+        assert await cells.count() == 12, "батарейка длиннее дюжины клеток"
+        assert await page.locator("#road-cells .road-cell.on").count() == 0
+
+        # прошла треть дороги — заполнена треть батарейки
+        await page.evaluate(
+            "() => { mapData.road.seconds_left = 13; paintRoad(); }"
+        )
+        assert await page.locator("#road-clock").inner_text() == "00:13"
+        lit = await page.locator("#road-cells .road-cell.on").count()
+        assert lit == 4, f"горит {lit} клеток из двенадцати"
+
+        # батарейка стоит в правом нижнем углу, над панелью вкладок
+        box = await page.locator("#map-road").bounding_box()
+        frame = await page.locator(".map-frame").bounding_box()
+        bar = await page.locator("#bar").bounding_box()
+        assert box["x"] > frame["x"] + frame["width"] / 2
+        assert box["y"] + box["height"] <= bar["y"] + 0.5
+        await browser.close()
+
+
+async def test_the_arrows_lead_to_the_neighbouring_districts(server):
+    """По городу ходят стрелками: вверх, вниз, влево, вправо.
+
+    Города целиком не видно, и без стрелок шесть карт остаются шестью
+    картинками. Стрелка показывает только туда, куда из района есть ход.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server)
+
+        # центр: вверх Северный Вал, вправо Торговый квартал, влево Старый город
+        sides = await page.locator(".map-arrow").evaluate_all(
+            "nodes => nodes.map(one => one.dataset.side + ':' + one.dataset.to)"
+        )
+        assert sorted(sides) == sorted([
+            "up:northern_wall_premium", "right:clothes_pharmacy",
+            "left:pawnshop_casino",
+        ])
+
+        # шагнули вверх — сменилась картинка и дома под ней
+        before = await page.locator("#map-pic").get_attribute("src")
+        await page.locator(".map-arrow.up").click()
+        await page.wait_for_selector(".map-arrow.down")
+
+        assert await page.locator("#map-pic").get_attribute("src") != before
+        houses = await page.locator(".zone-house .zone-sign").all_text_contents()
+        assert any("Элитный" in one or "Вал" in one for one in houses), houses
+        # обратный ход с Северного Вала — вниз, в центр
+        back = await page.locator(".map-arrow.down").get_attribute("data-to")
+        assert back == "main_hub"
         await browser.close()
 
 
@@ -3283,7 +3330,6 @@ async def test_a_house_without_a_trade_says_when_it_opens(server):
     """Банк на карте есть, зайти можно, а услуги пока нет."""
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server, city_map("bank"))
-        await page.get_by_role("button", name="Деловой квартал ·").click()
 
         said = []
         page.on("dialog", lambda dialog: said.append(dialog.message) or

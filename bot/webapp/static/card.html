@@ -58,26 +58,22 @@
 
   <!-- ---------- 2. Магазины: лавка клуба и комиссионка ---------- -->
   <!-- ---------- 2. Карта города ---------- -->
-  <main id="map" class="screen hidden">
-    <header class="screen-head">
-      <h1 class="screen-title">🗺 Vegas City</h1>
-      <span class="screen-count" id="map-here"></span>
-    </header>
-
-    <p class="road hidden" id="map-road"></p>
-
-    <!-- Районы: шесть карт, между ними переключаются, ходят ногами -->
-    <div class="bubbles" id="map-districts"></div>
-
-    <!-- Подсказка стоит до карты, а не после: её читают перед тем, как
-         ткнуть в дом, и под самой картой её просто не видно -->
-    <p class="screen-note" id="map-note"></p>
-
-    <!-- Сама карта. Дома — кнопки поверх картинки: их кладут по тому,
-         как картинка нарисовалась, а не по размеру окна -->
+  <!-- Заголовков и пузырей здесь нет: экран занимает карта целиком, а
+       всё управление лежит поверх неё — стрелки по сторонам и отсчёт
+       дороги в углу. -->
+  <main id="map" class="screen map hidden">
     <div class="map-frame" id="map-frame">
       <img class="map-pic" id="map-pic" alt="Карта района">
       <div class="map-zones" id="map-zones"></div>
+
+      <!-- Стрелки в соседние районы: видны только те, куда есть ход -->
+      <div class="map-arrows" id="map-arrows"></div>
+
+      <!-- Отсчёт дороги: батарейка в углу, пока боец идёт -->
+      <div class="road hidden" id="map-road">
+        <div class="road-cells" id="road-cells"></div>
+        <span class="road-clock" id="road-clock"></span>
+      </div>
     </div>
   </main>
 

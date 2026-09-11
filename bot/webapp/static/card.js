@@ -1146,6 +1146,7 @@ function showTopUp() {
 
 let mapData = null;
 let mapShown = "";  // какой район открыт: смотреть можно любой
+let mapWas = "";    // где боец стоял в прошлый раз — чтобы идти за ним
 let roadTimer = null;
 
 async function loadMap() {
@@ -1156,36 +1157,26 @@ async function loadMap() {
     if (!response.ok) throw new Error("Карта не открылась.");
     renderMap(await response.json());
   } catch (error) {
-    el("map-note").textContent = error.message;
+    popup("Карта", error.message);
   }
 }
 
 function renderMap(data) {
   mapData = data;
   // Пришли на карту — показываем тот район, где стоим. Дальше человек
-  // листает сам, и его выбор не сбрасывается каждым обновлением
-  if (!mapShown || !data.districts.some((one) => one.code === mapShown)) {
+  // листает сам, и его выбор не сбрасывается каждым обновлением. Но
+  // когда боец сам перешёл в другой район, карта идёт за ним: иначе
+  // после дороги он стоит на одной карте, а смотрит на другую
+  if (
+    !mapShown
+    || !data.districts.some((one) => one.code === mapShown)
+    || (data.district && data.district !== mapWas)
+  ) {
     mapShown = data.district || data.districts[0].code;
   }
-  el("map-here").textContent = data.here_title;
-  renderDistricts();
+  mapWas = data.district || "";
   paintDistrict();
   paintRoad();
-}
-
-function renderDistricts() {
-  const box = el("map-districts");
-  box.textContent = "";
-  mapData.districts.forEach((district) => {
-    const label = district.here ? district.title + " ·" : district.title;
-    box.appendChild(
-      chip(label, district.code === mapShown, () => {
-        mapShown = district.code;
-        renderDistricts();
-        paintDistrict();
-      })
-    );
-  });
 }
 
 function shownDistrict() {
@@ -1198,10 +1189,36 @@ function paintDistrict() {
   const pic = el("map-pic");
   if (pic.getAttribute("src") !== district.image) pic.src = district.image;
   pic.alt = "Район: " + district.title;
-  el("map-note").textContent = district.here
-    ? "Ты в этом районе. Нажми на дом, чтобы зайти."
-    : "Другой район. Нажми на дом — боец пойдёт туда.";
   placeZones();
+  placeArrows();
+}
+
+// Стрелки в соседние районы. Города целиком не видно, и без них шесть
+// карт остаются шестью картинками: по ним и понятно, что это один город.
+const ARROW_SIGNS = { up: "▲", down: "▼", left: "◀", right: "▶" };
+
+function placeArrows() {
+  const box = el("map-arrows");
+  box.textContent = "";
+  const district = shownDistrict();
+  if (!district) return;
+  Object.entries(district.around || {}).forEach(([side, code]) => {
+    const to = mapData.districts.find((one) => one.code === code);
+    if (!to) return;
+    const arrow = document.createElement("button");
+    arrow.type = "button";
+    arrow.className = "map-arrow " + side;
+    arrow.dataset.side = side;
+    arrow.dataset.to = code;
+    arrow.title = to.title;
+    arrow.setAttribute("aria-label", "Смотреть район: " + to.title);
+    arrow.textContent = ARROW_SIGNS[side] || "•";
+    arrow.addEventListener("click", () => {
+      mapShown = code;
+      paintDistrict();
+    });
+    box.appendChild(arrow);
+  });
 }
 
 // Дома рисуются поверх карты одним SVG. Так вышло проще и точнее, чем
@@ -1246,7 +1263,6 @@ function placeZones() {
     class: "map-svg",
   });
   district.places.forEach((place) => canvas.appendChild(houseShape(place)));
-  canvas.appendChild(exitShape());
   box.appendChild(canvas);
 }
 
@@ -1294,38 +1310,6 @@ function houseShape(place) {
   return group;
 }
 
-function exitShape() {
-  const zone = mapData.exit_zone;
-  const group = svgNode("g", {
-    class: "zone-exit",
-    role: "button",
-    tabindex: "0",
-    "aria-label": "Выбрать район",
-  });
-  group.appendChild(svgNode("rect", {
-    x: zone.x * MAP_W,
-    y: zone.y * MAP_H,
-    width: zone.w * MAP_W,
-    height: zone.h * MAP_H,
-    rx: 14,
-  }));
-  const sign = svgNode("text", {
-    x: (zone.x + zone.w / 2) * MAP_W,
-    y: (zone.y + zone.h / 2) * MAP_H,
-    class: "zone-sign",
-    "text-anchor": "middle",
-    "dominant-baseline": "middle",
-  });
-  sign.textContent = "⬆ Районы";
-  group.appendChild(sign);
-  const up = () => el("map-districts").scrollIntoView({ block: "center" });
-  group.addEventListener("click", up);
-  group.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") up();
-  });
-  return group;
-}
-
 /** Что открывает дом, если боец уже в нём. */
 const HOUSE_SCREENS = {
   fight: () => showTab("club"),
@@ -1358,19 +1342,12 @@ async function enterHouse(place) {
     popup("Ты в пути", mapData.road.text);
     return;
   }
+  // Согласия не спрашиваем: дорога занимает секунды, и окно «идём?» на
+  // каждый шаг превращает город в анкету. Ошиблись домом — дойдите и
+  // пойдите дальше, потеряв те же секунды
   // До дома без услуги дойти можно: город не должен выглядеть
   // наполовину нарисованным. Что он пока пуст, скажем уже на месте
-  // Спрашиваем до выхода: дорога занимает время, и уходить молча нечестно
-  const go = await askConfirm(
-    "Идём?",
-    "Дойти до дома «" + place.title + "» — " + walkText(place)
-  );
-  if (go) await travelTo(place.code);
-}
-
-function walkText(place) {
-  // Сколько идти, считает сервер: у него же и решение, пускать ли
-  return place.walk + " сек пути.";
+  await travelTo(place.code);
 }
 
 async function travelTo(code) {
@@ -1383,23 +1360,56 @@ async function travelTo(code) {
   }
 }
 
+// Отсчёт дороги — батарейка в углу: клеток ровно столько, сколько
+// секунд идти, и каждую секунду загорается ещё одна. Так видно не только
+// «сколько осталось», но и сколько уже прошло, — а числом под ней
+// написано то же самое, для тех, кому клетки считать неохота.
+const ROAD_CELLS_MAX = 12;
+
+function roadClock(left) {
+  const minutes = Math.floor(left / 60);
+  const seconds = left % 60;
+  return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+}
+
+function stopRoad() {
+  if (roadTimer) clearInterval(roadTimer);
+  roadTimer = null;
+}
+
 function paintRoad() {
   const road = mapData.road;
-  const line = el("map-road");
-  line.classList.toggle("hidden", !road.going);
+  const box = el("map-road");
+  box.classList.toggle("hidden", !road.going);
   if (!road.going) {
-    if (roadTimer) clearInterval(roadTimer);
-    roadTimer = null;
+    stopRoad();
     return;
   }
+
+  // Длинная дорога не должна разносить батарейку на пол-экрана: клеток
+  // берём не больше дюжины, и тогда одна стоит несколько секунд
+  const whole = Math.max(road.seconds || road.seconds_left, 1);
+  const cells = Math.min(whole, ROAD_CELLS_MAX);
+  const strip = el("road-cells");
+  strip.textContent = "";
+  const lamps = [];
+  for (let i = 0; i < cells; i += 1) {
+    const cell = document.createElement("i");
+    cell.className = "road-cell";
+    strip.appendChild(cell);
+    lamps.push(cell);
+  }
+  box.title = road.text;
+  box.setAttribute("aria-label", road.text);
+
   let left = road.seconds_left;
   const tick = () => {
-    line.textContent = left > 0
-      ? "🚶 В пути до дома «" + road.to_title + "» — " + left + " сек"
-      : "🚶 Пришли.";
+    const gone = Math.min(Math.max(whole - left, 0), whole);
+    const lit = Math.round((gone / whole) * cells);
+    lamps.forEach((cell, i) => cell.classList.toggle("on", i < lit));
+    el("road-clock").textContent = roadClock(Math.max(left, 0));
     if (left <= 0) {
-      clearInterval(roadTimer);
-      roadTimer = null;
+      stopRoad();
       loadMap();
       catchUp();
       return;
@@ -1407,7 +1417,7 @@ function paintRoad() {
     left -= 1;
   };
   tick();
-  if (roadTimer) clearInterval(roadTimer);
+  stopRoad();
   roadTimer = setInterval(tick, 1000);
 }
 
