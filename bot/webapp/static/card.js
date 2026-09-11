@@ -1338,7 +1338,8 @@ function houseShape(place) {
 // подписи, — значит, растёт вместе с картой и стоит там же на любом экране.
 const PLATE_W = 500;
 const PLATE_DROP = 54;  // просвет между подписью дома и плашкой
-const PLATE_LINE = 52;
+const PLATE_LINE = 46;  // высота строки внутри плашки
+const PLATE_PAD = 14;   // поля сверху и снизу
 
 function plateClock(seconds) {
   const parts = [
@@ -1356,7 +1357,10 @@ function raidPlate(place) {
   const lines = raid.state === "done" ? 1 : 2;
   const middle = (place.zone.x + place.zone.w / 2) * MAP_W;
   const top = (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP + PLATE_DROP;
-  const height = 24 + lines * PLATE_LINE;
+  const height = PLATE_PAD * 2 + lines * PLATE_LINE;
+  // Строки стоят от середины плашки, а не от её верха: так и одна
+  // строка, и две лежат в боксе ровно посередине
+  const centre = top + height / 2;
 
   const plate = svgNode("g", { class: "zone-plate " + raid.state });
   plate.appendChild(svgNode("rect", {
@@ -1370,10 +1374,10 @@ function raidPlate(place) {
 
   const word = svgNode("text", {
     x: middle,
-    y: top + 12,
+    y: lines > 1 ? centre - PLATE_LINE / 2 : centre,
     class: "plate-word",
     "text-anchor": "middle",
-    "dominant-baseline": "hanging",
+    "dominant-baseline": "central",
   });
   word.textContent = raid.text;
   plate.appendChild(word);
@@ -1381,11 +1385,11 @@ function raidPlate(place) {
   if (lines > 1) {
     const clock = svgNode("text", {
       x: middle,
-      y: top + 12 + PLATE_LINE,
+      y: centre + PLATE_LINE / 2,
       id: "raid-clock",
       class: "plate-clock",
       "text-anchor": "middle",
-      "dominant-baseline": "hanging",
+      "dominant-baseline": "central",
     });
     clock.textContent = plateClock(raid.seconds_left);
     plate.appendChild(clock);

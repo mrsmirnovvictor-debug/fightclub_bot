@@ -822,8 +822,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-family: inherit;
   font-weight: 700;
 }
-.plate-word { font-size: 34px; }
-.plate-clock { font-size: 46px; letter-spacing: 1px; }
+.plate-word { font-size: 29px; }
+.plate-clock { font-size: 39px; letter-spacing: 1px; }
 
 /* ---------- стрелки в соседние районы ---------- */
 

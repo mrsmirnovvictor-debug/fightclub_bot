@@ -3480,6 +3480,19 @@ async def test_the_casino_counts_the_raid_down_on_the_map(
         box = await plate.locator(".plate-box").bounding_box()
         assert box["y"] > sign["y"] + sign["height"]
 
+        # обе строки стоят по центру бокса — и вдоль, и поперёк
+        word = await plate.locator(".plate-word").bounding_box()
+        clock = await page.locator("#raid-clock").bounding_box()
+        middle = box["x"] + box["width"] / 2
+        for line in (word, clock):
+            assert abs(line["x"] + line["width"] / 2 - middle) < 1
+            assert line["width"] < box["width"], "строка не помещается в плашку"
+        # середина между строками — середина плашки. Считаем по центрам
+        # самих строк: высота букв у слова и у часов разная, и по краям
+        # они симметричными не выглядят
+        pair = [line["y"] + line["height"] / 2 for line in (word, clock)]
+        assert abs(sum(pair) / 2 - (box["y"] + box["height"] / 2)) < 1
+
         # и цвет говорит то же, что и слова
         fill = await plate.locator(".plate-box").evaluate(
             "node => getComputedStyle(node).fill"
@@ -3507,6 +3520,11 @@ async def test_a_finished_raid_shows_green_without_a_clock(server):
         assert "done" in (await plate.get_attribute("class"))
         assert await plate.locator(".plate-word").text_content() == "Рейд завершён"
         assert await page.locator("#raid-clock").count() == 0
+        # одна строка — ровно посередине плашки
+        box = await plate.locator(".plate-box").bounding_box()
+        word = await plate.locator(".plate-word").bounding_box()
+        assert abs(word["y"] + word["height"] / 2 - (box["y"] + box["height"] / 2)) < 1
+        assert abs(word["x"] + word["width"] / 2 - (box["x"] + box["width"] / 2)) < 1
         fill = await plate.locator(".plate-box").evaluate(
             "node => getComputedStyle(node).fill"
         )
