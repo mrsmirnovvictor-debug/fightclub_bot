@@ -36,7 +36,7 @@ from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
-from bot.webapp.raid import build_raid, gate_payload, raid_row
+from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
 from bot.game.health import format_duration, now_ts
 from bot.game.locations import (
     SHOP_SERVICES,
@@ -207,12 +207,18 @@ async def api_oops(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def _city(request: web.Request, player) -> dict:
+    """Карта вместе с отсчётом рейда: плашке нужна база, карте — нет."""
+    plate = await plate_payload(player, request.app.get(RAIDS_KEY))
+    return build_map(player, raid=plate)
+
+
 async def api_map(request: web.Request) -> web.Response:
     """Город целиком: районы, дома и где сейчас боец."""
     player = await _fighter(request)
     if player.arrive():
         await request.app[DB_KEY].save_player(player)
-    return web.json_response(build_map(player))
+    return web.json_response(await _city(request, player))
 
 
 async def api_travel(request: web.Request) -> web.Response:
@@ -223,7 +229,7 @@ async def api_travel(request: web.Request) -> web.Response:
     config = request.app[CONFIG_KEY]
     return web.json_response(
         {
-            "map": build_map(player),
+            "map": await _city(request, player),
             "card": build_card(player, config.bot_token, player.user_id),
         }
     )

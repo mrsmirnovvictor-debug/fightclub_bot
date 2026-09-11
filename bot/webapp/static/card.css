@@ -806,6 +806,25 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   pointer-events: none;
 }
 
+/* Отсчёт рейда под вывеской казино. Цвет говорит то же, что и слова:
+   синий — скоро откроется, жёлтый — идёт, зелёный — своё уже взял */
+.zone-plate { pointer-events: none; }
+.plate-box {
+  fill: #1f6feb;
+  stroke: rgba(255, 255, 255, 0.55);
+  stroke-width: 3;
+}
+.zone-plate.open .plate-box { fill: #d29200; }
+.zone-plate.done .plate-box { fill: #2ea043; }
+.plate-word,
+.plate-clock {
+  fill: #fff;
+  font-family: inherit;
+  font-weight: 700;
+}
+.plate-word { font-size: 34px; }
+.plate-clock { font-size: 46px; letter-spacing: 1px; }
+
 /* ---------- стрелки в соседние районы ---------- */
 
 /* Стрелки лежат по краям экрана, каждая со своей стороны: город

@@ -189,3 +189,75 @@ async def test_the_club_is_told_where_to_go(bot, db):
         assert "startapp=ring" in board_posts(bot, FIST_THREAD)[0]
     finally:
         links.configure(bot_username="", miniapp_name="")
+
+
+# ---------- окно рейда ----------
+
+
+def moscow(hour: int, minute: int = 0, day: int = 8) -> int:
+    from datetime import datetime
+
+    from bot.game.raid import MOSCOW
+
+    return int(datetime(2026, 9, day, hour, minute, tzinfo=MOSCOW).timestamp())
+
+
+def scheduled(bot, db) -> RaidService:
+    """Рейды по расписанию: именно его объявляет бот сам, без игроков."""
+    return RaidService(
+        bot=bot,
+        db=db,
+        config=Config(bot_token="test", raid_any_time=False, raid_lobby_timeout=60),
+    )
+
+
+async def test_the_open_window_is_announced_and_pinned(bot, db):
+    """Подвал открылся — об этом узнаёт весь клуб, а не только гуляющие по карте."""
+    from bot.game.raid import WINDOW_HOURS, slots_on
+
+    await mark_all(db)
+    raids = scheduled(bot, db)
+    opens = slots_on(__import__("datetime").date(2026, 9, 8))[0]
+
+    await raids._check_window(moscow(opens, 1))
+
+    posts = board_posts(bot, RAID_THREAD)
+    assert len(posts) == 1
+    assert "подвал открыт" in posts[0].lower()
+    # сколько он продлится — в самом объявлении: два часа
+    assert f"до {opens + WINDOW_HOURS:02d}:00" in posts[0]
+    assert bot.pinned == [(CLUB, bot.sent[0].message_id)]
+
+    # пока окно то же, второй раз не объявляем
+    await raids._check_window(moscow(opens, 30))
+    assert len(board_posts(bot, RAID_THREAD)) == 1
+
+
+async def test_a_restart_inside_the_window_does_not_announce_it_twice(bot, db):
+    """Перезапуск посреди окна не зовёт в подвал во второй раз."""
+    from bot.game.raid import slots_on
+
+    await mark_all(db)
+    opens = slots_on(__import__("datetime").date(2026, 9, 8))[0]
+    await scheduled(bot, db)._check_window(moscow(opens, 1))
+    assert len(board_posts(bot, RAID_THREAD)) == 1
+
+    # новый сервис с той же базой — как после рестарта
+    await scheduled(bot, db)._check_window(moscow(opens, 40))
+    assert len(board_posts(bot, RAID_THREAD)) == 1
+
+
+async def test_the_closed_window_lets_the_pin_go(bot, db):
+    """Окно кончилось — закреп снимается: звать больше некуда."""
+    from bot.game.raid import slots_on
+
+    await mark_all(db)
+    raids = scheduled(bot, db)
+    opens = slots_on(__import__("datetime").date(2026, 9, 8))[0]
+
+    await raids._check_window(moscow(opens, 1))
+    await raids._check_window(moscow(opens + 3))  # окно уже закрылось
+
+    assert bot.unpinned == bot.pinned
+    # объявление переписано на итог: оно больше не зовёт
+    assert "закрыто" in bot.edits[-1].text

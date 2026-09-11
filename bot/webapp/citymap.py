@@ -56,8 +56,14 @@ def district_row(district, here: str) -> dict:
     }
 
 
-def build_map(player: Player, now: int | None = None) -> dict:
-    """Город целиком: где боец, куда идёт и что где стоит."""
+def build_map(
+    player: Player, now: int | None = None, raid: dict | None = None
+) -> dict:
+    """Город целиком: где боец, куда идёт и что где стоит.
+
+    `raid` — плашка под вывеской казино: её считает сервер, потому что
+    для неё нужна база (свой рейд в этом окне уже пройден или ещё нет).
+    """
     here = player.where(now)
     place = get_location(here)
     left = player.road_left(now)
@@ -80,6 +86,8 @@ def build_map(player: Player, now: int | None = None) -> dict:
             if going
             else "",
         },
+        # Отсчёт рейда: пусто — плашки на карте нет
+        "raid": raid or {"state": "", "text": "", "seconds_left": 0},
         "districts": [district_row(district, here) for district in DISTRICTS],
     }
 

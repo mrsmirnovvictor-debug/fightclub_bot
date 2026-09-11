@@ -35,6 +35,8 @@ from bot.game.fightlog import turn_payload
 from bot.game.narrator import (
     board_raid,
     board_raid_over,
+    board_window_open,
+    board_window_over,
     esc,
     health_warning,
     plain,
@@ -72,6 +74,10 @@ from bot.messaging import Announcer
 from bot.models import Player
 
 logger = logging.getLogger(__name__)
+
+# Как часто сверяемся с расписанием. Окно длится два часа, так что
+# полминуты запаздывания никто не заметит, а чаще будить бота незачем
+WINDOW_TICK = 30
 
 ChatKey = tuple[int, int | None]
 
@@ -224,6 +230,56 @@ class RaidService:
         self._by_chat: dict[ChatKey, int] = {}
         self._busy: dict[int, str] = {}  # боец → «lobby» или «raid»
         self._results: dict[int, RaidSession] = {}
+        self._watch: asyncio.Task | None = None
+        # Закреп объявления об открытом окне: снимается, когда оно закроется
+        self._window_pins: list[Pin] = []
+        self._window_open: Window | None = None
+
+    # ---------- расписание ----------
+
+    def start_watching(self) -> None:
+        """Следить за расписанием: открылось окно — объявить, закрылось — снять.
+
+        Отдельной задачей, а не проверкой на входе игрока: объявление
+        нужно тем, кто сейчас не в приложении, — иначе о рейде узнают
+        только те, кто и так смотрел на карту в нужную минуту.
+        """
+        if self._watch is None and not self.config.raid_any_time:
+            self._watch = asyncio.create_task(self._watch_windows())
+
+    async def _watch_windows(self) -> None:
+        while True:
+            try:
+                await self._check_window()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # pragma: no cover - расписание не стоит бота
+                logger.exception("Не вышло объявить окно рейда")
+            await asyncio.sleep(WINDOW_TICK)
+
+    async def _check_window(self, moment: int | None = None) -> None:
+        """Одна сверка с расписанием: объявить открытое окно и закрыть прошлое."""
+        window = self.window_now(moment)
+        if self._window_open and (
+            window is None or window.start != self._window_open.start
+        ):
+            closed, self._window_open = self._window_open, None
+            pins, self._window_pins = self._window_pins, []
+            if pins:
+                await self.board.close(pins, board_window_over(CELLAR_BOSS, closed))
+        if window is None or self._window_open is not None:
+            return
+        # Заявку на объявление ставим в базе: перезапуск бота посреди окна
+        # не должен объявлять его во второй раз
+        if not await self.db.mark_announced(0, f"raid-window:{window.start}"):
+            self._window_open = window
+            return
+        self._window_open = window
+        self._window_pins = await self.board.announce(
+            RAID,
+            board_window_open(CELLAR_BOSS, window),
+            disable_web_page_preview=True,
+        )
 
     # ---------- сбор отряда ----------
 
@@ -797,6 +853,11 @@ class RaidService:
         return user_id in self._busy
 
     async def shutdown(self) -> None:
+        if self._watch is not None:
+            self._watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._watch
+            self._watch = None
         tasks = [lobby.task for lobby in self._lobbies.values() if lobby.task]
         tasks += [raid.timer for raid in self._raids.values() if raid.timer]
         for task in tasks:

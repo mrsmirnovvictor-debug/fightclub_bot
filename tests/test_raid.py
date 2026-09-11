@@ -5,6 +5,7 @@
 """
 
 import random
+from datetime import date, timedelta
 
 import pytest
 
@@ -25,8 +26,13 @@ from bot.game.raid import (
     ELIXIR_CHANCE,
     ELIXIR_PRIZES,
     MOSCOW,
+    RAIDS_PER_DAY,
     RAID_PURSE,
+    RAID_SLOTS,
+    WINDOW_HOURS,
     next_window,
+    schedule_text,
+    slots_on,
     shares_of,
     window_of,
 )
@@ -227,21 +233,66 @@ def moscow(hour: int, minute: int = 0, day: int = 8) -> int:
     return int(datetime(2026, 9, day, hour, minute, tzinfo=MOSCOW).timestamp())
 
 
-def test_the_cellar_opens_five_times_a_day():
-    """Пять окон по два часа, всё остальное время подвал закрыт."""
-    open_hours = {0, 1, 8, 9, 12, 13, 16, 17, 20, 21}
+DAY = date(2026, 9, 8)
+
+
+def test_the_cellar_opens_twice_a_day():
+    """Два окна по два часа, всё остальное время подвал закрыт."""
+    slots = slots_on(DAY)
+    assert len(slots) == RAIDS_PER_DAY
+    open_hours = {hour + step for hour in slots for step in range(WINDOW_HOURS)}
+
     for hour in range(24):
         window = window_of(moscow(hour))
         assert bool(window) is (hour in open_hours), hour
-    assert window_of(moscow(20, 59)).title == "с 20:00 до 22:00 мск"
-    assert window_of(moscow(8)).start == moscow(8)
+
+    first = slots[0]
+    assert window_of(moscow(first)).start == moscow(first)
+    assert window_of(moscow(first, 59)).title == (
+        f"с {first:02d}:00 до {first + WINDOW_HOURS:02d}:00 мск"
+    )
+
+
+def test_the_slots_are_drawn_anew_every_day():
+    """Слоты меняются изо дня в день и берутся из установленных."""
+    seen = []
+    for step in range(60):
+        slots = slots_on(DAY + timedelta(days=step))
+        assert len(slots) == RAIDS_PER_DAY
+        assert set(slots) <= set(RAID_SLOTS), slots
+        # в одно и то же время два дня подряд подвал не открывается
+        assert not (seen and set(slots) & set(seen[-1])), (seen[-1], slots)
+        seen.append(slots)
+    # и это не круг из двух расписаний: за два месяца выпадают все пары
+    assert len(set(seen)) > RAIDS_PER_DAY * 2
+
+
+def test_the_draw_is_the_same_for_everyone():
+    """Жребий заведён датой: бот, мини-апп и перезапуск видят одно и то же."""
+    import bot.game.raid as rules
+
+    before = slots_on(DAY + timedelta(days=3))
+    rules._SLOTS.clear()  # как после перезапуска — память пуста
+    assert slots_on(DAY + timedelta(days=3)) == before
 
 
 def test_the_next_window_is_the_one_you_wait_for():
-    assert next_window(moscow(3)).start == moscow(8)
-    assert next_window(moscow(9)).start == moscow(12)
+    first, second = slots_on(DAY)
+    tomorrow = slots_on(DAY + timedelta(days=1))[0]
+
+    assert next_window(moscow(first) - 1).start == moscow(first)
+    assert next_window(moscow(first) + 60).start == moscow(second)
     # после последнего окна суток ждут первого завтрашнего
-    assert next_window(moscow(23)).start == moscow(0, day=9)
+    assert next_window(moscow(23, 59)).start == moscow(tomorrow, day=9)
+
+
+def test_the_schedule_says_todays_hours():
+    """Расписание — на сегодня: слоты каждый день свои."""
+    first, second = slots_on(DAY)
+    assert schedule_text(moscow(12)) == (
+        f"сегодня с {first}:00 до {first + WINDOW_HOURS}:00 "
+        f"и с {second}:00 до {second + WINDOW_HOURS}:00 мск"
+    )
 
 
 # ---------- сбор отряда ----------
@@ -325,14 +376,18 @@ async def test_the_cellar_is_shut_outside_its_hours(bot, db, monkeypatch):
 
     service = make_service(bot, db, raid_any_time=False)
     player = (await fill(db, 1))[0]
-    monkeypatch.setattr(rules, "now_ts", lambda: moscow(3))  # глухая ночь
+    slots = slots_on(DAY)
+    shut = next(hour for hour in range(24) if all(
+        not (opens <= hour < opens + WINDOW_HOURS) for opens in slots
+    ))
+    monkeypatch.setattr(rules, "now_ts", lambda: moscow(shut))  # подвал закрыт
 
     with pytest.raises(RaidError, match="Подвал закрыт"):
         await service.open_raid(CHAT_ID, THREAD_ID, player)
     # пропуск остался в рюкзаке: за закрытую дверь не платят
     assert (await db.get_player(player.user_id)).potion_count(RAID_PASS) == 1
 
-    monkeypatch.setattr(rules, "now_ts", lambda: moscow(9))  # окно открылось
+    monkeypatch.setattr(rules, "now_ts", lambda: moscow(slots[0]))  # окно открылось
     await service.open_raid(CHAT_ID, THREAD_ID, player)
     assert service.lobby_of_user(player.user_id) is not None
 

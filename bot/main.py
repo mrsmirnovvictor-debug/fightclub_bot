@@ -121,6 +121,8 @@ async def run(config: Config | None = None) -> None:
     )
     # Турниры живут дольше одного запуска: поднимаем недоигранные сетки
     await tournaments.resume()
+    # Подвал открывается по расписанию — об этом объявляет сам бот
+    raids.start_watching()
     # Разовые выдачи и правки на время тестов — см. bot/seed.py
     await grant_test_relic(db)
     await grant_test_gear(db)

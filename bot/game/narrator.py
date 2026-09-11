@@ -756,6 +756,20 @@ def board_raid(lobby, seconds: int) -> str:
     )
 
 
+def board_window_open(boss, window) -> str:
+    """Подвал открылся: объявление на всю группу, с закрепом на два часа."""
+    return (
+        f"🎲 <b>{esc(boss.raid_name)}</b> — подвал открыт!\n"
+        f"Окно {window.title}: два часа, дальше босс уходит до следующего раза."
+        + _board_link("raid", "Спуститься в подвал")
+    )
+
+
+def board_window_over(boss, window) -> str:
+    """Окно закрылось — объявление больше не зовёт."""
+    return f"🎲 {esc(boss.raid_name)}. Окно {window.title} закрыто."
+
+
 def board_raid_over(lobby, started: bool) -> str:
     """Отряд ушёл вниз или разошёлся — объявление больше не зовёт."""
     tail = "Отряд ушёл в подвал." if started else "Отряд не собрался."

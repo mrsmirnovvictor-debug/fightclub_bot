@@ -1119,6 +1119,9 @@ function showTab(name) {
     else loadShop();
   }
   if (name === "map") loadMap();
+  // Часы рейда идут, только пока на карту смотрят
+  if (name === "map") startRaidClock();
+  else stopRaidClock();
   if (name === "club" && !clubData) loadClub();
   if (name === "magic" && !magicData) loadMagic();
   // Заходим на экран клуба — раздел пересобирается под здешний дом
@@ -1306,12 +1309,108 @@ function houseShape(place) {
   sign.textContent = place.here ? "📍 " + place.title : place.title;
   group.appendChild(sign);
 
+  // Под вывеской казино — отсчёт рейда: подвал открыт не всегда, и
+  // единственное место, где это видно заранее, — карта
+  if ((place.services || []).includes("raid")) {
+    const plate = raidPlate(place);
+    if (plate) group.appendChild(plate);
+  }
+
   const enter = () => enterHouse(place);
   group.addEventListener("click", enter);
   group.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") enter();
   });
   return group;
+}
+
+// ---------- отсчёт рейда на карте ----------
+//
+// Плашка под вывеской казино: синяя за час до окна, жёлтая пока подвал
+// открыт, зелёная тому, кто своё уже взял. Живёт в том же холсте, что и
+// подписи, — значит, растёт вместе с картой и стоит там же на любом экране.
+const PLATE_W = 500;
+const PLATE_DROP = 54;  // просвет между подписью дома и плашкой
+const PLATE_LINE = 52;
+
+function plateClock(seconds) {
+  const parts = [
+    Math.floor(seconds / 3600),
+    Math.floor(seconds / 60) % 60,
+    seconds % 60,
+  ];
+  return parts.map((one) => String(one).padStart(2, "0")).join(":");
+}
+
+function raidPlate(place) {
+  const raid = (mapData && mapData.raid) || {};
+  if (!raid.state) return null;
+
+  const lines = raid.state === "done" ? 1 : 2;
+  const middle = (place.zone.x + place.zone.w / 2) * MAP_W;
+  const top = (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP + PLATE_DROP;
+  const height = 24 + lines * PLATE_LINE;
+
+  const plate = svgNode("g", { class: "zone-plate " + raid.state });
+  plate.appendChild(svgNode("rect", {
+    x: middle - PLATE_W / 2,
+    y: top,
+    width: PLATE_W,
+    height: height,
+    rx: 18,
+    class: "plate-box",
+  }));
+
+  const word = svgNode("text", {
+    x: middle,
+    y: top + 12,
+    class: "plate-word",
+    "text-anchor": "middle",
+    "dominant-baseline": "hanging",
+  });
+  word.textContent = raid.text;
+  plate.appendChild(word);
+
+  if (lines > 1) {
+    const clock = svgNode("text", {
+      x: middle,
+      y: top + 12 + PLATE_LINE,
+      id: "raid-clock",
+      class: "plate-clock",
+      "text-anchor": "middle",
+      "dominant-baseline": "hanging",
+    });
+    clock.textContent = plateClock(raid.seconds_left);
+    plate.appendChild(clock);
+  }
+  return plate;
+}
+
+let raidClockTimer = null;
+
+function startRaidClock() {
+  if (raidClockTimer) return;
+  raidClockTimer = setInterval(tickRaidClock, 1000);
+}
+
+function stopRaidClock() {
+  if (!raidClockTimer) return;
+  clearInterval(raidClockTimer);
+  raidClockTimer = null;
+}
+
+function tickRaidClock() {
+  const raid = mapData && mapData.raid;
+  if (!raid || !raid.state || raid.state === "done") return;
+  raid.seconds_left -= 1;
+  if (raid.seconds_left <= 0) {
+    // Время вышло: что теперь с подвалом, знает сервер — спрашиваем его,
+    // а не переписываем плашку сами
+    loadMap();
+    return;
+  }
+  const shown = el("raid-clock");
+  if (shown) shown.textContent = plateClock(raid.seconds_left);
 }
 
 /** Что открывает дом, если боец уже в нём. */

@@ -182,7 +182,15 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
         raise AssertionError
 
 
-def city_map(here: str = "fight_club", road: dict | None = None) -> dict:
+def to_rgb(hexed: str) -> str:
+    """Цвет так, как его возвращает браузер: «rgb(31, 111, 235)»."""
+    red, green, blue = (int(hexed[step:step + 2], 16) for step in (1, 3, 5))
+    return f"rgb({red}, {green}, {blue})"
+
+
+def city_map(
+    here: str = "fight_club", road: dict | None = None, raid: dict | None = None
+) -> dict:
     """Карта города так, как её отдаёт сервер."""
     from bot.game.classes import get_class
     from bot.models import Player
@@ -196,6 +204,8 @@ def city_map(here: str = "fight_club", road: dict | None = None) -> dict:
     body = build_map(walker)
     if road:
         body["road"] = {**body["road"], **road}
+    if raid:
+        body["raid"] = {**body["raid"], **raid}
     return body
 
 
@@ -3411,6 +3421,83 @@ async def test_a_link_to_the_raid_sends_you_walking_if_you_are_not_there(server)
 
         assert await page.locator("#map:not(.hidden)").count() == 1
         assert await page.locator("#club").is_hidden()
+        await browser.close()
+
+
+@pytest.mark.parametrize(
+    "state,words,shade",
+    [
+        ("soon", "Рейд начнётся через", "#1f6feb"),
+        ("open", "Рейд закончится через", "#d29200"),
+    ],
+)
+async def test_the_casino_counts_the_raid_down_on_the_map(
+    server, state, words, shade
+):
+    """Под вывеской казино — плашка с отсчётом: скоро или уже идёт."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server,
+            city_map("casino", raid={
+                "state": state, "text": words, "seconds_left": 2064,
+            }),
+            card=build_card(make_player("casino"), TOKEN, viewer_id=42),
+        )
+
+        plate = page.locator(".zone-plate")
+        assert await plate.count() == 1, "плашка висит только у казино"
+        assert state in (await plate.get_attribute("class"))
+        assert await plate.locator(".plate-word").text_content() == words
+        # часы идут часами: 00:34:24, а не 34:24
+        assert await page.locator("#raid-clock").text_content() == "00:34:24"
+
+        # плашка стоит под подписью дома, а не поверх неё
+        sign = await page.locator(".zone-house.here .zone-sign").bounding_box()
+        box = await plate.locator(".plate-box").bounding_box()
+        assert box["y"] > sign["y"] + sign["height"]
+
+        # и цвет говорит то же, что и слова
+        fill = await plate.locator(".plate-box").evaluate(
+            "node => getComputedStyle(node).fill"
+        )
+        assert fill == to_rgb(shade), fill
+
+        # секунды тикают сами, без нового запроса
+        await page.wait_for_timeout(1100)
+        assert await page.locator("#raid-clock").text_content() == "00:34:23"
+        await browser.close()
+
+
+async def test_a_finished_raid_shows_green_without_a_clock(server):
+    """Своё взял — вместо часов «Рейд завершён»: ждать больше нечего."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server,
+            city_map("casino", raid={
+                "state": "done", "text": "Рейд завершён", "seconds_left": 0,
+            }),
+            card=build_card(make_player("casino"), TOKEN, viewer_id=42),
+        )
+
+        plate = page.locator(".zone-plate")
+        assert "done" in (await plate.get_attribute("class"))
+        assert await plate.locator(".plate-word").text_content() == "Рейд завершён"
+        assert await page.locator("#raid-clock").count() == 0
+        fill = await plate.locator(".plate-box").evaluate(
+            "node => getComputedStyle(node).fill"
+        )
+        assert fill == to_rgb("#2ea043")
+        await browser.close()
+
+
+async def test_without_a_window_the_map_says_nothing_about_the_raid(server):
+    """Вне окна и часа перед ним плашки нет: карта — не расписание на сутки."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("casino"),
+                                       card=build_card(make_player("casino"),
+                                                       TOKEN, viewer_id=42))
+
+        assert await page.locator(".zone-plate").count() == 0
         await browser.close()
 
 
