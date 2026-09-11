@@ -1123,9 +1123,13 @@ function showTab(name) {
   if (name === "magic" && !magicData) loadMagic();
   // Заходим на экран клуба — раздел пересобирается под здешний дом
   if (name === "club") pickClubSection(clubSection);
-  // Ринг опрашиваем, только пока на него смотрят: ушли со вкладки — молчим
-  if (name === "club" && clubHouse() === "club") startWatchingFights();
-  else stopWatchingFights();
+  // Ринг опрашиваем, только пока на него смотрят и только там, где
+  // дерутся: ушли со вкладки или стоите в аптеке — молчим
+  if (name === "club" && clubHouse === "club" && canFightHere()) {
+    startWatchingFights();
+  } else {
+    stopWatchingFights();
+  }
 }
 
 // Касса — не вкладка, а лист поверх экрана: в панель она не попадает
@@ -1312,8 +1316,8 @@ function houseShape(place) {
 
 /** Что открывает дом, если боец уже в нём. */
 const HOUSE_SCREENS = {
-  fight: () => showTab("club"),
-  raid: () => showTab("club"),
+  fight: () => openClub(),
+  raid: () => openCasino(),
   weapons: () => openShop(),
   clothes: () => openShop(),
   potions: () => openShop(),
@@ -1807,7 +1811,7 @@ function stopWatchingFights() {
 }
 
 function pickClubSection(name) {
-  const house = CLUB_HOUSES[clubHouse()];
+  const house = CLUB_HOUSES[clubHouse];
   const allowed = clubSections().map(([code]) => code);
   // Рейд открывается только в казино, бои — только в клубе. Пришли не с
   // тем разделом (например, вернулись из казино) — показываем здешний
@@ -1817,32 +1821,60 @@ function pickClubSection(name) {
     el("club-" + section).classList.toggle("hidden", section !== name);
   });
   renderClubSections();
+  // Ринг и отряд собираются в клубе. В других домах раздел открывается,
+  // но вместо вызовов в нём записка: так видно, что бои есть, просто не
+  // здесь, — а кнопки, на которые сервер всё равно ответит отказом, не
+  // рисуются вовсе
+  const locked = (name === "fights" || name === "battle") && !canFightHere();
+  if (locked) sayNoFightsHere(name);
   if (name === "players" && !clubData) loadClub();
   if (name === "stats" && !statsData) loadHistory(statsWho);
   // Рейд живёт волнами: пока раздел открыт, спрашиваем состояние
   if (name === "raid") startWatchingRaid();
   else stopWatchingRaid();
   // Групповой бой тоже идёт раундами и без тебя — следим так же
-  if (name === "battle") startWatchingBattle();
+  if (name === "battle" && !locked) startWatchingBattle();
   else stopWatchingBattle();
 }
 
-// Один экран обслуживает два дома: клуб и казино. Чем он будет, решает
-// не то, как в него вошли, а то, где боец стоит, — иначе, уйдя из казино
-// в клуб, он видел бы раздел рейда, в который его всё равно не пустят.
+function sayNoFightsHere(name) {
+  const note = name === "fights" ? "fights-note" : "battle-note";
+  const body = name === "fights" ? "fights-body" : "battle-body";
+  el(note).textContent = "";
+  const said = document.createElement("p");
+  said.className = "club-locked";
+  said.textContent = NO_FIGHTS_HERE;
+  el(body).textContent = "";
+  el(body).appendChild(said);
+}
+
+// Один экран обслуживает два дома: клуб и казино. Казино — не вкладка, а
+// дом: его открывает дверь на карте, и только она. Кнопка внизу остаётся
+// «Клубом» всегда: она ведёт в клуб, где бы боец ни стоял, — а раздел
+// рейда за ней не прячется, иначе, выйдя из казино, он бы там и остался.
 const CLUB_HOUSES = {
-  club: { title: "🥊 Бойцовский клуб", start: "fights", icon: "🥊", tab: "Клуб" },
-  casino: { title: "🎲 Казино", start: "raid", icon: "🎲", tab: "Казино" },
+  club: { title: "🥊 Бойцовский клуб", start: "fights" },
+  casino: { title: "🎲 Казино", start: "raid" },
 };
 
-function clubHouse() {
-  const services = (myPlace && myPlace.services) || [];
-  return services.includes("raid") ? "casino" : "club";
+let clubHouse = "club";
+
+function inCasino() {
+  return ((myPlace && myPlace.services) || []).includes("raid");
 }
+
+// Драться можно не везде: в аптеке боёв нет, и вкладку «Бои» там
+// заменяет записка. Прячем не саму вкладку — человеку полезно видеть,
+// что у клуба есть, — а только её содержимое
+function canFightHere() {
+  return ((myPlace && myPlace.services) || []).includes("fight");
+}
+
+const NO_FIGHTS_HERE = "Бои между игроками недоступны в данной локации.";
 
 function clubSections() {
   // В казино разделов нет вовсе: там одно дело — рейд
-  if (clubHouse() === "casino") return [];
+  if (clubHouse === "casino") return [];
   return [
     ["fights", "Бои"],
     ["battle", "Отряд"],
@@ -1851,14 +1883,21 @@ function clubSections() {
   ];
 }
 
+function openClub() {
+  clubHouse = "club";
+  showTab("club");
+}
+
+function openCasino() {
+  clubHouse = "casino";
+  clubSection = "raid";
+  showTab("club");
+}
+
 function renderClubSections() {
   const box = el("club-sections");
   box.textContent = "";
-  const house = CLUB_HOUSES[clubHouse()];
-  el("club-title").textContent = house.title;
-  // Кнопка внизу называется так же: стоя в казино, читать «Клуб» странно
-  el("tab-club").querySelector(".bar-icon").textContent = house.icon;
-  el("tab-club").querySelector(".bar-label").textContent = house.tab;
+  el("club-title").textContent = CLUB_HOUSES[clubHouse].title;
   clubSections().forEach(([code, label]) => {
     box.appendChild(chip(label, clubSection === code, () => pickClubSection(code)));
   });
@@ -4036,6 +4075,13 @@ let myPlace = null;
 
 function paintCity(card) {
   if (card.is_self) myPlace = card.place || null;
+  // Вышли из казино — подвал закрывается сам: держать его открытым
+  // значит показывать рейд, в который с улицы всё равно не пустят
+  if (!inCasino() && clubHouse === "casino") {
+    clubHouse = "club";
+    clubSection = "fights";
+    if (lastTab === "club") pickClubSection("fights");
+  }
   // Строка под куклой: город и дом, в котором боец стоит. В пути дом
   // сменяется дорогой — иначе выходит, что он одновременно и там, и там
   const place = card.place || {};
@@ -4067,7 +4113,7 @@ const SCREEN_PARAMS = {
   raid: () => {
     // Из чата зовут в подвал — но спуститься можно только из казино.
     // Кто не там, попадает на карту: пусть сначала дойдёт
-    if (clubHouse() === "casino") showTab("club");
+    if (inCasino()) openCasino();
     else showTab("map");
   },
 };
@@ -4121,7 +4167,12 @@ el("sheet-back").addEventListener("click", closeSheet);
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты
 TABS.forEach((tab) => {
-  el("tab-" + tab).addEventListener("click", () => showTab(tab));
+  el("tab-" + tab).addEventListener("click", () => {
+    // Казино открывает только его дверь. Кнопка внизу — всегда клуб,
+    // даже если боец стоит в казино и только что смотрел рейд
+    if (tab === "club") clubHouse = "club";
+    showTab(tab);
+  });
 });
 el("topup-back").addEventListener("click", () => showTab(lastTab));
 

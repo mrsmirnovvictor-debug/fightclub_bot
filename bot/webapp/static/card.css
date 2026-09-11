@@ -905,6 +905,23 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   gap: 6px;
   margin-bottom: 14px;
 }
+/* Разделы клуба стоят по центру: их всего четыре, и прижатые к левому
+   краю они читаются как начало списка, который не поместился */
+#club-sections { justify-content: center; }
+
+/* Записка вместо ринга там, где не дерутся. Строкой под разделами она
+   терялась: экран выглядел сломанным — вкладки есть, а под ними пусто */
+.club-locked {
+  margin: 40px auto 0;
+  max-width: 320px;
+  padding: 18px 16px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
 
 /* ---------- лавка мага ---------- */
 

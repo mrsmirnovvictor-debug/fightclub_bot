@@ -2252,14 +2252,16 @@ async def open_raid(pw, server, raid=None):
     казино на карте. Сам раздел жив, и тесты рейда — про него, а не про
     дорогу до казино; её проверяет test_locations_app.
     """
-    # Рейд открывается только в казино: экран клуба показывает тот дом,
-    # в котором боец стоит, — потому и ставим его туда
+    # Подвал открывает дверь казино, и только она: кнопка внизу — клуб,
+    # где бы боец ни стоял. Потому и идём сюда через карту
     browser, page = await open_page(
         pw, server, build_card(make_player("casino"), TOKEN, viewer_id=42),
-        raid=raid,
+        raid=raid, city=city_map("casino"),
     )
     await page.wait_for_selector("#hero:not(.hidden)")
-    await page.locator("#tab-club").click()
+    await page.locator("#tab-map").click()
+    await page.wait_for_selector(".zone-house")
+    await page.locator(".zone-house").filter(has_text="Казино").click()
     await page.wait_for_selector("#club-raid:not(.hidden)")
     return browser, page
 
@@ -3415,21 +3417,63 @@ async def test_a_link_to_the_raid_sends_you_walking_if_you_are_not_there(server)
 # ---------- клуб и казино делят экран ----------
 
 
-async def test_the_casino_is_not_the_fight_club(server):
-    """В казино нет ни рингов, ни разделов клуба — только рейд."""
+async def test_the_casino_opens_only_by_its_own_door(server):
+    """Казино открывает дверь на карте, а не вкладка внизу.
+
+    Вкладка «Клуб» — всегда клуб: боец, стоящий в казино, приходит по ней
+    в клуб, и подвал за ней не прячется.
+    """
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server, city_map("casino"),
                                        card=build_card(make_player("casino"),
                                                        TOKEN, viewer_id=42))
+        # кнопка внизу зовётся «Клуб» и ведёт в клуб — даже отсюда
+        assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
         await page.locator("#tab-club").click()
         await page.wait_for_selector("#club:not(.hidden)")
 
+        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
+        assert await page.locator("#club-raid").is_hidden(), "подвал открылся сам"
+
+        # а дверь казино — открывает, и в нём одно дело: рейд
+        await page.locator("#tab-map").click()
+        await page.locator(".zone-house").filter(has_text="Казино").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+
         assert await page.locator("#club-title").inner_text() == "🎲 Казино"
         assert await page.locator("#club-sections .chip").count() == 0
-        # и кнопка внизу зовётся так же: стоя в казино, читать «Клуб» странно
-        assert await page.locator("#tab-club .bar-label").inner_text() == "Казино"
-        assert await page.locator("#club-raid").is_visible()
+        assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
         assert await page.locator("#club-fights").is_hidden()
+        await browser.close()
+
+
+async def test_the_club_keeps_all_its_sections_away_from_the_ring(server):
+    """Разделы клуба видны везде, но драться зовут туда, где дерутся."""
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player("pharmacy"), TOKEN, viewer_id=42),
+            build_shop(make_player("pharmacy"), Service.POTIONS),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club:not(.hidden)")
+
+        chips = await page.locator("#club-sections .chip").all_inner_texts()
+        assert chips == ["Бои", "Отряд", "Игроки", "Статистика"]
+        # и стоят они по центру экрана, а не прижаты к левому краю
+        box = await page.locator("#club-sections").bounding_box()
+        first = await page.locator("#club-sections .chip").first.bounding_box()
+        last = await page.locator("#club-sections .chip").last.bounding_box()
+        left = first["x"] - box["x"]
+        right = box["x"] + box["width"] - (last["x"] + last["width"])
+        assert abs(left - right) < 2, f"слева {left:.0f}, справа {right:.0f}"
+
+        note = "Бои между игроками недоступны в данной локации."
+        assert await page.locator("#club-fights .club-locked").inner_text() == note
+        await page.locator("#club-sections .chip").nth(1).click()
+        assert await page.locator("#club-battle .club-locked").inner_text() == note
+        # звать драться отсюда нечем: кнопок ринга здесь нет
+        assert await page.locator("#club-battle button").count() == 0
         await browser.close()
 
 
@@ -3443,7 +3487,7 @@ async def test_leaving_the_casino_leaves_the_raid_behind(server):
         browser, page = await open_map(pw, server, city_map("casino"),
                                        card=build_card(make_player("casino"),
                                                        TOKEN, viewer_id=42))
-        await page.locator("#tab-club").click()
+        await page.locator(".zone-house").filter(has_text="Казино").click()
         await page.wait_for_selector("#club-raid:not(.hidden)")
 
         # боец дошёл до клуба — карточка перерисовалась
@@ -3458,5 +3502,4 @@ async def test_leaving_the_casino_leaves_the_raid_behind(server):
         await page.wait_for_selector("#club-fights:not(.hidden)")
         assert await page.locator("#club-raid").is_hidden(), "рейд уехал следом"
         assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
-        assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
         await browser.close()
