@@ -1527,7 +1527,7 @@ function paintRoad() {
 // Пересчитывать зоны при смене размера не нужно: холст SVG вписывается
 // в рамку тем же правилом, что и картинка, и едет вместе с ней сам
 
-// ---------- лавка мага ----------
+// ---------- магазин «Элита» ----------
 
 let magicData = null;
 
@@ -1606,7 +1606,7 @@ function proCard(pro) {
 function renderMagic(data) {
   magicData = data;
   el("magic-note").textContent =
-    "Товар мага берут за звёзды Telegram — кредиты тут не в ходу. "
+    "Товары здесь берут за звёзды Telegram — кредиты тут не в ходу. "
     + "Купленное падает в инвентарь.";
   // Подписка стоит первой и никуда не девается: прилавок может быть пуст,
   // а она — нет.
@@ -1654,7 +1654,7 @@ async function loadMagic() {
     const response = await fetch("api/magic", {
       headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
     });
-    if (!response.ok) throw new Error("Лавка мага закрыта.");
+    if (!response.ok) throw new Error("Магазин «Элита» закрыт.");
     renderMagic(await response.json());
   } catch (error) {
     el("magic-note").textContent = error.message;

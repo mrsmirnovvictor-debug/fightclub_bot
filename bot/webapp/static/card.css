@@ -942,7 +942,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   text-align: center;
 }
 
-/* ---------- лавка мага ---------- */
+/* ---------- магазин «Элита» ---------- */
 
 .soon {
   background: var(--panel);

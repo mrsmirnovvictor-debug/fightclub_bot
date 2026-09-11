@@ -390,7 +390,7 @@ def effect_payload(effect: ActiveEffect, now: int) -> dict:
 
 
 def relic_payload(player: Player, item: Item, owned: int) -> dict:
-    """Товар мага. Ключи те же, что у вещи в лавке, только цена в звёздах."""
+    """Звёздный товар. Ключи те же, что у вещи в лавке, только цена в звёздах."""
     row = goods_payload(player, item, owned)
     row["stars"] = item.stars
     row["price"] = 0
@@ -404,7 +404,7 @@ def relic_payload(player: Player, item: Item, owned: int) -> dict:
 def pro_payload(
     player: Player, now: int | None = None, promo_claimed: bool = False
 ) -> dict:
-    """Карточка подписки: она всегда стоит первой на прилавке мага.
+    """Карточка подписки: она всегда стоит первой на элитном прилавке.
 
     `promo_claimed` — забирал ли боец бесплатную неделю. Она даётся один
     раз, поэтому кнопка после этого всегда ведёт в счёт: иначе «продлить
@@ -442,7 +442,7 @@ def pro_payload(
 def build_magic(
     player: Player, now: int | None = None, promo_claimed: bool = False
 ) -> dict:
-    """Лавка мага: подписка сверху, за ней товар за звёзды."""
+    """Магазин «Элита»: подписка сверху, за ней товар за звёзды."""
     mine: dict[str, int] = {}
     for owned in player.gear:
         mine[owned.code] = mine.get(owned.code, 0) + 1

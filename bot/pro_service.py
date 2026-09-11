@@ -102,7 +102,8 @@ async def claim_free_pro(
     """
     if not promo_is_on():
         raise ProError(
-            "Акция кончилась — подписку теперь берут за звёзды в лавке мага."
+            "Акция кончилась — подписку теперь берут "
+            "за звёзды в магазине «Элита»."
         )
 
     first = await db.add_purchase(
@@ -117,7 +118,7 @@ async def claim_free_pro(
     if not first:
         raise ProError(
             "Бесплатную неделю ты уже забирал — она даётся один раз. "
-            "Продлить подписку можно за звёзды в лавке мага."
+            "Продлить подписку можно за звёзды в магазине «Элита»."
         )
     return await grant_pro(db, player, promo_offer(), now)
 
