@@ -22,7 +22,9 @@ from bot.game.combat import (
     boxing_round,
     turn_in_round,
 )
+from bot.game.locations import FIGHT_CLUB, Service, get_location
 from bot.game.modes import FightMode, mode_of
+from bot.game.scout import advise
 from bot.models import Player
 
 # Кнопки удара одни и те же на весь клуб: зон пять, и от снаряжения их
@@ -173,7 +175,41 @@ def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
         "yours": viewer_id in session.fighters,
         # Разбор по ходам: свежий ход последний, как в ветке
         "log": session.rounds,
+        # Подсказки аналитика — только подписчику и только про соперника
+        "scout": scout_payload(session, viewer_id),
     }
+
+
+def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, str] | None:
+    """Что аналитик говорит этому бойцу перед ходом. None — молчит.
+
+    Считается по законченным ходам и по прошлым боям соперника. Текущий
+    выбор соперника сюда не попадает: `session.choices` этот код не
+    трогает, и подсказка ничего не знает о нажатых прямо сейчас кнопках.
+
+    Ответ у каждого свой: карточку боя мини-апп собирает под зрителя, и
+    строки аналитика видит только тот, кто за него платит.
+    """
+    if session.finished or viewer_id not in session.fighters:
+        return None
+    player = session.players.get(viewer_id)
+    if player is None or not player.is_pro():
+        return None
+    rival_id = next(uid for uid in session.order if uid != viewer_id)
+    habits = session.habits.get(rival_id)
+    if habits is None:
+        return None
+    advice = advise(habits, session.rounds, rival_id)
+    return advice.as_dict()
+
+
+FIGHT_CLUB_TITLE = get_location(FIGHT_CLUB).title
+
+
+def at_club(player: Player) -> bool:
+    """Стоит ли боец там, где дерутся."""
+    place = get_location(player.where())
+    return place is not None and place.allows(Service.FIGHT)
 
 
 def build_fights(player: Player, service: DuelService | None) -> dict[str, Any]:
@@ -186,6 +222,10 @@ def build_fights(player: Player, service: DuelService | None) -> dict[str, Any]:
         "challenge": None,
         "challenges": [],
         "can_fight": player.can_fight(),
+        # Драться можно только в клубе. Список боёв при этом отдаём:
+        # ушедшему за покупками полезно видеть, что его ждут
+        "at_club": at_club(player),
+        "club_title": FIGHT_CLUB_TITLE,
     }
     if service is None:  # pragma: no cover - бот без сервиса боёв не живёт
         return body
@@ -278,15 +318,24 @@ def build_history(
         if not days or days[-1]["date"] != fight["date"]:
             days.append({"date": fight["date"], "fights": []})
         days[-1]["fights"].append(fight)
+    # Считаем врозь: подвал — не бой с человеком, и в карточке он тоже
+    # стоит своей строкой. В самом списке рейды идут вперемешку с
+    # дуэлями, по времени: как журнал он честнее так
     counts = {"win": 0, "loss": 0, "draw": 0}
+    raid_counts = {"win": 0, "loss": 0, "draw": 0}
     for fight in fights:
-        counts[fight["result"]] += 1
+        where = raid_counts if fight["kind"] == "raid" else counts
+        where[fight["result"]] += 1
     return {
         "user_id": user_id,
         "name": name,
         "days": days,
         "total": len(fights),
         "counts": counts,
+        "raids": {
+            "wins": raid_counts["win"],
+            "total": sum(raid_counts.values()),
+        },
         # Куда листать дальше: последний бой этой страницы
         "before": fights[-1]["id"] if fights else None,
     }

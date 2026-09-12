@@ -675,18 +675,21 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 
 /* ---------- бойцовский клуб ---------- */
 
+/* Список бойцов держим плотным: в клубе их сотни, и каждая лишняя
+   пара пикселей на строке — это ещё один экран прокрутки. Строка
+   ужата до одной кнопки, поэтому высоту задаёт уже не она, а текст. */
 .fighter {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
+  border-radius: 7px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
 }
 .fighter.me { border-color: var(--accent); }
-.fighter-class { font-size: 17px; }
+.fighter-class { font-size: 15px; }
 .fighter-name {
   font-weight: 700;
   flex: 1;
@@ -695,9 +698,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.fighter-level { color: var(--muted); font-weight: 700; }
+.fighter-level { color: var(--muted); font-weight: 700; font-size: 13px; }
 .fighter-info,
-.fighter-stats,
 .info-btn {
   width: 26px;
   height: 26px;
@@ -712,8 +714,237 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   line-height: 1;
   cursor: pointer;
 }
-.fighter-info:active,
+/* Значок ℹ️ рисует сам шрифт эмодзи: наклон и жирность ему только мешают,
+   а кружок вокруг цветной картинки выглядит обводкой по обводке */
+.fighter-info {
+  width: 24px;
+  height: 24px;
+  border: none;
+  font-style: normal;
+  font-weight: 400;
+  font-size: 15px;
+  padding: 0;
+}
+.fighter-info:active { transform: scale(0.92); }
 .info-btn:active { background: var(--accent); color: #fff; }
+
+/* ---------- карта города ---------- */
+
+/* Карта занимает экран целиком: заголовка над ней нет, отступы страницы
+   она обходит, и нижним краем уходит под панель вкладок. Потому и
+   `fixed`, а не отрицательные поля: так экран заведомо не прокручивается
+   и карта не съезжает вслед за длинным списком под ней.
+   Слой ниже панели (z-index 15) — вкладки остаются сверху. */
+.screen.map {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  max-width: none;
+  margin: 0;
+  background: var(--bg);
+}
+.map-frame {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+.map-pic {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.map-zones { position: absolute; inset: 0; }
+
+/* Холст с домами лежит поверх картинки и вписывается тем же правилом,
+   что и она: координаты силуэтов совпадают с рисунком на любом экране */
+.map-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* Цель на карте — дверь дома. Подсветка нужна, иначе по картинке не
+   видно, куда нажимать, а гадать пальцем плохо */
+.zone-house { cursor: pointer; }
+.zone-line {
+  fill: rgba(255, 255, 255, 0.06);
+  stroke: rgba(255, 255, 255, 0.5);
+  stroke-width: 4;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+/* Рамка с запасом вокруг двери: она и ловит палец. Дверь для этого
+   мала — а подсветка от расширения не растёт и остаётся на двери */
+.zone-touch {
+  fill: transparent;
+  stroke: none;
+  pointer-events: all;
+}
+.zone-house.here .zone-line {
+  stroke: var(--accent);
+  stroke-width: 8;
+  fill: rgba(58, 134, 255, 0.14);
+}
+.zone-house.soon .zone-line { stroke-dasharray: 14 10; opacity: 0.7; }
+.zone-house:active .zone-line,
+.zone-house:focus-visible .zone-line { fill: rgba(255, 255, 255, 0.2); }
+
+/* Подписи живут в холсте и потому растут вместе с картой: на широком
+   экране их не приходится разглядывать */
+.zone-sign {
+  fill: #fff;
+  /* Не сокращённой записью: `font: 700 30px/1 inherit` целиком
+     невалидна — `inherit` не годится на месте семейства, — и подпись
+     тогда рисуется шестью пикселями вместо задуманных пятнадцати */
+  font-family: inherit;
+  font-size: 38px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.75);
+  stroke-width: 7;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+/* Отсчёт рейда под вывеской казино. Цвет говорит то же, что и слова:
+   синий — скоро откроется, жёлтый — идёт, зелёный — своё уже взял */
+.zone-plate { pointer-events: none; }
+.plate-box {
+  fill: #1f6feb;
+  stroke: rgba(255, 255, 255, 0.55);
+  stroke-width: 3;
+}
+.zone-plate.open .plate-box { fill: #d29200; }
+.zone-plate.done .plate-box { fill: #2ea043; }
+.plate-word,
+.plate-clock {
+  fill: #fff;
+  font-family: inherit;
+  font-weight: 700;
+}
+.plate-word { font-size: 29px; }
+.plate-clock { font-size: 39px; letter-spacing: 1px; }
+
+/* ---------- стрелки в соседние районы ---------- */
+
+/* Стрелки лежат по краям экрана, каждая со своей стороны: город
+   листается так же, как он устроен, — вверх значит на север. Кладём их
+   на край рамки, а не картинки: у картинки поля сверху и снизу, и
+   стрелка уехала бы на середину экрана. */
+.map-arrows {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.map-arrow {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+.map-arrow:active { background: var(--accent); }
+.map-arrow.up { top: 10px; left: 50%; transform: translateX(-50%); }
+/* Снизу — выше панели вкладок: под ней стрелку не нажать */
+.map-arrow.down {
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+}
+.map-arrow.left { left: 10px; top: 50%; transform: translateY(-50%); }
+.map-arrow.right { right: 10px; top: 50%; transform: translateY(-50%); }
+
+/* ---------- отсчёт дороги ---------- */
+
+/* Пока боец идёт, в углу горит батарейка: клетки заполняются зелёным, и
+   рядом те же секунды числом. Занимает угол, а не полосу поперёк карты,
+   — дорога длится секунды, и закрывать ради неё город незачем */
+.road {
+  position: absolute;
+  right: 12px;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.road-cells {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  border-radius: 3px;
+}
+/* Носик батарейки: без него полоска клеток — просто полоска клеток */
+.road-cells::after {
+  content: "";
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  width: 3px;
+  height: 8px;
+  transform: translateY(-50%);
+  border-radius: 0 2px 2px 0;
+  background: rgba(255, 255, 255, 0.75);
+}
+.road-cell {
+  width: 5px;
+  height: 13px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.16);
+}
+.road-cell.on { background: #34c759; }
+.road-clock {
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.city.on-road { color: var(--accent); font-weight: 700; }
+
+/* ---------- аналитик боя ---------- */
+
+/* Подсказки подписчика стоят над кнопками хода и не спорят с ними за
+   внимание: рамка тонкая, буквы мелкие. Читают их перед выбором, а
+   смотрят всё равно на зоны */
+.scout {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+}
+.scout-head {
+  margin: 0 0 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: none;
+}
+.scout-line {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.scout-line:last-child { margin-bottom: 0; }
+.scout-mark { flex: none; }
 
 /* ---------- пузыри фильтров ---------- */
 
@@ -723,8 +954,25 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   gap: 6px;
   margin-bottom: 14px;
 }
+/* Разделы клуба стоят по центру: их всего четыре, и прижатые к левому
+   краю они читаются как начало списка, который не поместился */
+#club-sections { justify-content: center; }
 
-/* ---------- лавка мага ---------- */
+/* Записка вместо ринга там, где не дерутся. Строкой под разделами она
+   терялась: экран выглядел сломанным — вкладки есть, а под ними пусто */
+.club-locked {
+  margin: 40px auto 0;
+  max-width: 320px;
+  padding: 18px 16px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* ---------- магазин «Элита» ---------- */
 
 .soon {
   background: var(--panel);
@@ -1015,5 +1263,18 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .fight-row:active { transform: scale(0.99); }
 .fight-row-line { font-size: 13.5px; }
 .fight-row-note { font-size: 12px; color: var(--muted); }
-/* Значок статистики — эмодзи: курсив и жирность ему не нужны */
-.fighter-stats { font-style: normal; font-weight: 400; }
+/* Полоска здоровья в карточке бойца: та же, что на своей, только со
+   своими полями — в выдвижном листе сверху уже стоит кукла */
+.sheet-place {
+  margin: 0 2px 12px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.sheet-hp { margin-top: 12px; }
+.sheet-hp-note { margin: 5px 2px 12px; }
+/* Кто в клубе прямо сейчас — зелёным: это главное, что решает, есть ли
+   смысл его вызывать */
+.sheet-hp-note.online { color: var(--hp-green); font-weight: 700; }
+/* Кнопка под карточкой одна, и она про всю карточку целиком —
+   поэтому во всю ширину, а не по ширине надписи */
+.sheet-actions { margin-bottom: 4px; }

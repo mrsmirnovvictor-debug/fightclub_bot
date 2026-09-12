@@ -79,6 +79,26 @@ class CardLinks:
             return None
         return f"https://t.me/{self.bot_username}?start={CARD_PAYLOAD}{user_id}"
 
+    def screen_url(self, screen: str) -> str | None:
+        """Ссылка, открывающая мини-апп сразу на нужном экране.
+
+        Тем же способом, что и карточку, только вместо номера бойца в
+        `startapp` едет имя экрана: «ring» — бои, «raid» — подвал,
+        «shop» — лавка. Номером это быть не может, и карточка по такой
+        ссылке открывается своя — а дальше страница сама переключает
+        вкладку.
+        """
+        if not self.bot_username:
+            return None
+        if self.miniapp_name:
+            return (
+                f"https://t.me/{self.bot_username}/{self.miniapp_name}"
+                f"?startapp={screen}"
+            )
+        if self.main_app:
+            return f"https://t.me/{self.bot_username}?startapp={screen}"
+        return None
+
     def href(self, user_id: int) -> str:
         """Куда вести имя бойца: в карточку, если она есть, иначе в профиль."""
         return (

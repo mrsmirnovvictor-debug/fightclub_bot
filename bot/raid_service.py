@@ -26,12 +26,17 @@ from dataclasses import dataclass, field
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
 
+from bot.board_service import RAID, Board, Pin
 from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.combat import Action, Fighter, resolve_round
 from bot.game.fightlog import turn_payload
 from bot.game.narrator import (
+    board_raid,
+    board_raid_over,
+    board_window_open,
+    board_window_over,
     esc,
     health_warning,
     plain,
@@ -54,15 +59,13 @@ from bot.game.raid import (
     shares_of,
     window_of,
     MAX_PARTY,
-    MAX_WAVES,
+    FATIGUE_WAVES,
     MIN_PARTY,
     Boss,
     CELLAR_BOSS,
-    RaidEnd,
     RaidOutcome,
     boss_action,
     boss_fighter,
-    damage_board,
     judge_raid,
 )
 from bot.inventory_service import wear_after_fight
@@ -71,6 +74,10 @@ from bot.messaging import Announcer
 from bot.models import Player
 
 logger = logging.getLogger(__name__)
+
+# Как часто сверяемся с расписанием. Окно длится два часа, так что
+# полминуты запаздывания никто не заметит, а чаще будить бота незачем
+WINDOW_TICK = 30
 
 ChatKey = tuple[int, int | None]
 
@@ -122,6 +129,8 @@ class RaidLobby:
     levels: dict[int, int] = field(default_factory=dict)
     message_id: int | None = None
     task: asyncio.Task | None = None
+    # Объявления о сборе, развешанные по веткам клуба
+    pins: list[Pin] = field(default_factory=list)
     # Когда объявили сбор: по этой метке считается обратный отсчёт. Часы
     # монотонные — перевод системного времени сбор не сломает.
     opened_at: float = field(default_factory=time.monotonic)
@@ -213,6 +222,7 @@ class RaidService:
         self.db = db
         self.config = config
         self.voice = Announcer(bot)
+        self.board = Board(db, self.voice)
         self.rng = rng or random.Random()
         self._ids = itertools.count(1)
         self._lobbies: dict[int, RaidLobby] = {}
@@ -220,6 +230,56 @@ class RaidService:
         self._by_chat: dict[ChatKey, int] = {}
         self._busy: dict[int, str] = {}  # боец → «lobby» или «raid»
         self._results: dict[int, RaidSession] = {}
+        self._watch: asyncio.Task | None = None
+        # Закреп объявления об открытом окне: снимается, когда оно закроется
+        self._window_pins: list[Pin] = []
+        self._window_open: Window | None = None
+
+    # ---------- расписание ----------
+
+    def start_watching(self) -> None:
+        """Следить за расписанием: открылось окно — объявить, закрылось — снять.
+
+        Отдельной задачей, а не проверкой на входе игрока: объявление
+        нужно тем, кто сейчас не в приложении, — иначе о рейде узнают
+        только те, кто и так смотрел на карту в нужную минуту.
+        """
+        if self._watch is None and not self.config.raid_any_time:
+            self._watch = asyncio.create_task(self._watch_windows())
+
+    async def _watch_windows(self) -> None:
+        while True:
+            try:
+                await self._check_window()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # pragma: no cover - расписание не стоит бота
+                logger.exception("Не вышло объявить окно рейда")
+            await asyncio.sleep(WINDOW_TICK)
+
+    async def _check_window(self, moment: int | None = None) -> None:
+        """Одна сверка с расписанием: объявить открытое окно и закрыть прошлое."""
+        window = self.window_now(moment)
+        if self._window_open and (
+            window is None or window.start != self._window_open.start
+        ):
+            closed, self._window_open = self._window_open, None
+            pins, self._window_pins = self._window_pins, []
+            if pins:
+                await self.board.close(pins, board_window_over(CELLAR_BOSS, closed))
+        if window is None or self._window_open is not None:
+            return
+        # Заявку на объявление ставим в базе: перезапуск бота посреди окна
+        # не должен объявлять его во второй раз
+        if not await self.db.mark_announced(0, f"raid-window:{window.start}"):
+            self._window_open = window
+            return
+        self._window_open = window
+        self._window_pins = await self.board.announce(
+            RAID,
+            board_window_open(CELLAR_BOSS, window),
+            disable_web_page_preview=True,
+        )
 
     # ---------- сбор отряда ----------
 
@@ -319,6 +379,14 @@ class RaidService:
             reply_markup=raid_lobby_keyboard(lobby),
         )
         lobby.message_id = message.message_id if message else None
+        # Отряд собирают в мини-аппе, и в чате об этом иначе не узнать:
+        # объявление зовёт тех, кто сейчас не в приложении
+        lobby.pins = await self.board.announce(
+            RAID,
+            board_raid(lobby, self.config.raid_lobby_timeout),
+            skip=(chat_id, thread_id),
+            disable_web_page_preview=True,
+        )
         lobby.task = asyncio.create_task(self._lobby_timer(lobby))
         return lobby
 
@@ -407,7 +475,7 @@ class RaidService:
         await self.db.drop_raid_record(lobby.record_id)
         await self.voice.edit(lobby.chat_id, lobby.message_id, f"🚫 {why}")
 
-    def _forget_lobby(self, lobby: RaidLobby) -> None:
+    def _forget_lobby(self, lobby: RaidLobby, started: bool = False) -> None:
         self._lobbies.pop(lobby.id, None)
         if lobby.key is not None and self._by_chat.get(lobby.key) == lobby.id:
             self._by_chat.pop(lobby.key, None)
@@ -417,12 +485,17 @@ class RaidService:
         if lobby.task and not lobby.task.done():
             if lobby.task is not asyncio.current_task():
                 lobby.task.cancel()
+        # Сбор кончился — объявление снимаем с закрепа: звать больше некуда
+        if lobby.pins:
+            asyncio.create_task(
+                self.board.close(lobby.pins, board_raid_over(lobby, started))
+            )
 
     # ---------- бой ----------
 
     async def _start_from_lobby(self, lobby: RaidLobby) -> RaidSession | None:
         members = dict(lobby.members)
-        self._forget_lobby(lobby)
+        self._forget_lobby(lobby, started=True)
 
         players: dict[int, Player] = {}
         for user_id in members:
@@ -567,8 +640,8 @@ class RaidService:
             boss_action(session.enemy, self.rng),
             session.wave,
             self.rng,
-            # Усталость растянута на все волны рейда, а не на длину дуэли
-            limit=MAX_WAVES,
+            # Усталость растянута на длину рейда, а не дуэли
+            limit=FATIGUE_WAVES,
         )
         # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
         said = strike_lines(result, {user_id: fighter, BOSS_ID: session.enemy}, self.rng)
@@ -607,14 +680,12 @@ class RaidService:
         self._cancel_timer(session)
         await self._close_panel(session, self._wave_report(session))
 
+        # Рейд идёт, пока кто-нибудь не упадёт: босс или отряд. Счётчика
+        # волн у него нет — раньше на тридцатой судья закрывал бой
+        # поражением, и отряд, у которого никто даже не был ранен, уходил
+        # ни с чем. Доводит бой до конца усталость: она растёт с каждой
+        # волной и дальше тридцатой, а с ней растёт и урон
         outcome = self._judge(session)
-        if outcome is None and session.wave >= MAX_WAVES:
-            # Рейд не может длиться вечно: босс на ногах — отряд ушёл ни с чем
-            outcome = RaidOutcome(
-                end=RaidEnd.LOSS,
-                survivors=session.alive_ids,
-                damage=damage_board(session.fighters),
-            )
         if outcome is not None:
             await self._finish(session, outcome)
         elif session.strikes >= self.config.raid_strikes_per_break:
@@ -714,13 +785,13 @@ class RaidService:
             player = await self.db.get_player(user_id)
             if player is None:  # pragma: no cover - персонажа удалили по ходу
                 continue
+            # Подвал идёт по своему счёту: босс — не человек, и валят его
+            # толпой. В победах и поражениях бойца остаются только те, кого
+            # он бил сам
+            player.raid_fights += 1
             if outcome.won:
-                player.wins += 1
+                player.raid_wins += 1
                 player.credits += session.shares.get(user_id, 0)
-            elif outcome.draw:
-                player.draws += 1
-            else:
-                player.losses += 1
             ruined = await wear_after_fight(self.db, player, outcome.won, self.rng)
             if ruined:  # pragma: no cover - износ считается своим тестом
                 logger.info("Рейд износил вещи бойца %s: %s", user_id, len(ruined))
@@ -782,6 +853,11 @@ class RaidService:
         return user_id in self._busy
 
     async def shutdown(self) -> None:
+        if self._watch is not None:
+            self._watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._watch
+            self._watch = None
         tasks = [lobby.task for lobby in self._lobbies.values() if lobby.task]
         tasks += [raid.timer for raid in self._raids.values() if raid.timer]
         for task in tasks:

@@ -7,12 +7,12 @@ from datetime import datetime
 
 from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats, get_class
 from bot.game.combat import (
-    MAX_ACCURACY,
-    MAX_ANTICRIT,
+    MAX_ACCURACY_TOTAL,
+    MAX_ANTICRIT_TOTAL,
     MAX_BLOCK_HOLD,
     MAX_COUNTER_CHANCE,
-    MAX_CRIT_CHANCE,
-    MAX_DODGE_CHANCE,
+    MAX_CRIT_TOTAL,
+    MAX_DODGE_TOTAL,
     total_accuracy,
     total_anticrit,
     total_block_hold,
@@ -25,6 +25,7 @@ from bot.game.equipment import (
     ALL_SLOTS,
     LEFT_SLOTS,
     UNDER_SLOTS,
+    FAN_SHELF,
     MAGIC_ITEMS,
     RIGHT_SLOTS,
     Equipment,
@@ -36,11 +37,14 @@ from bot.game.equipment import (
 )
 from bot.game.market import FEE as MARKET_FEE, buyback
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
+from bot.game.locations import Service, get_location
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
+from bot.game.presence import is_online, presence_text
 from bot.game.pro import PRO_BADGE, current_offer
 from bot.game.potions import (
     POTIONS,
+    effects_bonus,
     SECTION_CODE,
     SECTION_EMOJI,
     SECTION_TITLE,
@@ -387,7 +391,7 @@ def effect_payload(effect: ActiveEffect, now: int) -> dict:
 
 
 def relic_payload(player: Player, item: Item, owned: int) -> dict:
-    """Товар мага. Ключи те же, что у вещи в лавке, только цена в звёздах."""
+    """Звёздный товар. Ключи те же, что у вещи в лавке, только цена в звёздах."""
     row = goods_payload(player, item, owned)
     row["stars"] = item.stars
     row["price"] = 0
@@ -401,7 +405,7 @@ def relic_payload(player: Player, item: Item, owned: int) -> dict:
 def pro_payload(
     player: Player, now: int | None = None, promo_claimed: bool = False
 ) -> dict:
-    """Карточка подписки: она всегда стоит первой на прилавке мага.
+    """Карточка подписки: она всегда стоит первой на элитном прилавке.
 
     `promo_claimed` — забирал ли боец бесплатную неделю. Она даётся один
     раз, поэтому кнопка после этого всегда ведёт в счёт: иначе «продлить
@@ -439,7 +443,7 @@ def pro_payload(
 def build_magic(
     player: Player, now: int | None = None, promo_claimed: bool = False
 ) -> dict:
-    """Лавка мага: подписка сверху, за ней товар за звёзды."""
+    """Магазин «Элита»: подписка сверху, за ней товар за звёзды."""
     mine: dict[str, int] = {}
     for owned in player.gear:
         mine[owned.code] = mine.get(owned.code, 0) + 1
@@ -454,14 +458,37 @@ def build_magic(
     }
 
 
-def build_shop(player: Player) -> dict:
-    """Магазин: товары, разложенные по типам вещей."""
+# Чем торгует каждый магазин города. Оружейник держит то, что берут в
+# руки, — оружие и щиты; в лавке одежды всё остальное носимое; склянки
+# стоят в аптеке. Один прилавок на всё был, пока магазин был вкладкой.
+WEAPON_SLOTS = (Slot.WEAPON, Slot.OFFHAND)
+
+
+def sells(service: Service, slot: Slot) -> bool:
+    """Торгует ли этот магазин вещами такого слота."""
+    if service is Service.WEAPONS:
+        return slot in WEAPON_SLOTS
+    if service is Service.CLOTHES:
+        return slot not in WEAPON_SLOTS
+    # Фанатский магазин одевает целиком: там и бита, и кроссовки одной
+    # команды. Делить его надвое незачем — прилавок и так свой
+    if service is Service.FAN:
+        return True
+    return False
+
+
+def build_shop(player: Player, service: Service = Service.CLOTHES) -> dict:
+    """Прилавок магазина: только то, чем торгуют именно здесь."""
     mine: dict[str, int] = {}
     for owned in player.gear:
         mine[owned.code] = mine.get(owned.code, 0) + 1
 
     sections = []
-    for slot, items in shop_sections():
+    # У фанатского магазина свой прилавок: клубной витрины там нет вовсе
+    shelf = FAN_SHELF if service is Service.FAN else ""
+    for slot, items in shop_sections(shelf):
+        if not items or not sells(service, slot):
+            continue  # пустой раздел — пустая полка: показывать нечего
         rows = [goods_payload(player, item, mine.get(item.code, 0)) for item in items]
         sections.append(
             {
@@ -472,13 +499,34 @@ def build_shop(player: Player) -> dict:
                 "items": rows,
             }
         )
-    # Эликсиры идут последними: их не надевают, и слота у них нет
-    sections.append(potions_section(player))
+    # Склянки не надевают, слота у них нет — и стоят они в аптеке
+    if service is Service.POTIONS:
+        sections.append(potions_section(player))
     return {
         "credits": player.credits,
         "level": player.level,
+        "service": service.value,
         "fclass": {"code": player.fclass.code, "title": player.fclass.title},
         "sections": sections,
+    }
+
+
+# ---------- где боец ----------
+
+
+def place_payload(player: Player, now: int | None = None) -> dict:
+    """Где боец стоит — и сколько ему ещё идти, если он в пути."""
+    place = get_location(player.where(now))
+    road = player.road_left(now)
+    return {
+        "code": place.code if place else "",
+        "title": place.title if place else "—",
+        "district": place.district if place else "",
+        # Пока идёт, показываем, куда именно: иначе на карточке пусто
+        "going_to": (get_location(player.travel_to).title
+                     if road and player.travel_to else ""),
+        "seconds_left": road,
+        "services": [service.value for service in place.services] if place else [],
     }
 
 
@@ -716,7 +764,15 @@ def build_card(
             "regen_seconds": FULL_REGEN_SECONDS,
             "full_in_text": format_duration(full_in) if full_in else "",
         },
-        "stats": stats_payload(player.base_stats, equipment.bonus),
+        # Выпитое идёт в ту же прибавку, что и надетое. Боевые числа его
+        # и так считали (движок берёт player.stats), а строка
+        # характеристики — нет: эликсир ловкости поднимал уворот, но
+        # «Ловкость» на карточке оставалась прежней, и выходило, что
+        # склянка не подействовала
+        "stats": stats_payload(
+            player.base_stats,
+            equipment.bonus.merge(effects_bonus(player.effects, moment)),
+        ),
         "slots": {
             "left": [slot_payload(equipment, slot, fclass) for slot in LEFT_SLOTS],
             "right": [slot_payload(equipment, slot, fclass) for slot in RIGHT_SLOTS],
@@ -749,10 +805,21 @@ def build_card(
             "max_level": MAX_LEVEL,
             "free_points": player.free_points,
         },
+        "place": place_payload(player, moment),
+        # Кто сейчас в клубе, а кого давно не видели. Видно всем, кто
+        # открыл карточку: по этому и решают, есть ли смысл вызывать
+        "seen": {
+            "online": is_online(player.seen_at, moment),
+            "text": presence_text(player.seen_at, moment),
+        },
         "record": {
             "wins": player.wins,
             "losses": player.losses,
             "draws": player.draws,
+            # Подвал стоит своей строкой: победы над боссом — не победы
+            # над людьми, и складывать их в один счёт нечестно
+            "raid_wins": player.raid_wins,
+            "raid_fights": player.raid_fights,
             "rating": player.rating,
             # Чужой кошелёк не наше дело: карточку соседа открывают из чата боя
             "credits": player.credits if is_self else 0,
@@ -814,18 +881,24 @@ def build_card(
             # Те же числа, но с потолком и слагаемыми: карточка показывает,
             # сколько дали характеристики, сколько вещи и что срезал потолок
             "caps": {
+                # Потолок здесь — тот, что режет итог вместе с вещами. Он
+                # выше потолка характеристик и почти никогда не срабатывает:
+                # доли спорят вычитанием, и резать итог значило бы решать
+                # бой потолком
                 "crit_chance": capped_share(
-                    derived.crit_chance, equipment.crit, total_crit, MAX_CRIT_CHANCE
+                    derived.crit_chance, equipment.crit, total_crit, MAX_CRIT_TOTAL
                 ),
                 "anticrit": capped_share(
-                    derived.anticrit, equipment.anticrit, total_anticrit, MAX_ANTICRIT
+                    derived.anticrit, equipment.anticrit, total_anticrit,
+                    MAX_ANTICRIT_TOTAL,
                 ),
                 "dodge_chance": capped_share(
                     derived.dodge_chance, equipment.dodge, total_dodge,
-                    MAX_DODGE_CHANCE,
+                    MAX_DODGE_TOTAL,
                 ),
                 "accuracy": capped_share(
-                    derived.accuracy, equipment.accuracy, total_accuracy, MAX_ACCURACY
+                    derived.accuracy, equipment.accuracy, total_accuracy,
+                    MAX_ACCURACY_TOTAL,
                 ),
                 "counter_chance": capped_share(
                     derived.counter_chance, equipment.counter, total_counter,

@@ -26,6 +26,8 @@ async def cellar(db):
     for user_id, nickname in ((42, "Тайлер"), (43, "Марла"), (44, "Зевака")):
         player = make_player(user_id, nickname)
         player.credits = 500
+        # В подвал спускаются из казино: рейд теперь дом на карте
+        player.location = "casino"
         await db.save_player(player)
         await db.add_potion(user_id, RAID_PASS)
     app = create_app(FakeBot(), db, config, raids=raids)
@@ -105,7 +107,10 @@ async def test_the_gate_tells_what_it_will_cost(cellar):
     assert gate["passes"] == 1 and gate["spent"] is False
     assert gate["open"] is True and gate["won"] is False
     assert gate["pass_price"] == get_potion(RAID_PASS).price
-    assert "8–10" in gate["schedule"]
+    # расписание — сегодняшнее: слоты каждый день свои
+    from bot.game.raid import schedule_text
+
+    assert gate["schedule"] == schedule_text()
 
     # без пропуска и без согласия на покупку внутрь не пускают
     await db.take_potion(42, RAID_PASS)
@@ -268,7 +273,10 @@ async def test_a_raid_lands_in_the_list_of_fights(cellar):
     assert row["kind"] == "raid"
     assert row["caption"] == f"Победа (с Марла) — рейд против {CELLAR_BOSS.whom}"
     assert row["waves"] == 1 and row["damage"] > 0
-    assert body["total"] == 1 and body["counts"]["win"] == 1
+    # В списке рейд стоит вместе с дуэлями, а в счёте — отдельно от них
+    assert body["total"] == 1
+    assert body["raids"] == {"wins": 1, "total": 1}
+    assert body["counts"] == {"win": 0, "loss": 0, "draw": 0}
 
 
 async def test_the_boss_card_comes_with_the_section(cellar):
@@ -308,3 +316,63 @@ async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
     assert next(row for row in left if row["slot"] == "weapon")["item"]["title"] == (
         "Кувалда"
     )
+
+
+# ---------- отсчёт на карте ----------
+
+
+async def test_the_map_brings_the_raid_countdown(cellar):
+    """Плашку под вывеской казино считает сервер: ему видна и база."""
+    client, raids, db = cellar
+
+    response = await client.get("/api/map", headers=headers(42))
+    body = await response.json()
+
+    assert response.status == 200
+    # подвал в этих тестах открыт круглосуточно — значит, идёт
+    assert body["raid"]["state"] == "open"
+    assert body["raid"]["text"] == "Рейд закончится через"
+    assert body["raid"]["seconds_left"] > 0
+
+
+async def test_the_plate_lights_up_an_hour_before_and_goes_out_after(db):
+    """Синяя за час до окна, жёлтая в окне, зелёная тому, кто своё взял."""
+    from datetime import date, datetime
+
+    from bot.game.raid import MOSCOW, RAID_SOON, WINDOW_HOURS, slots_on
+    from bot.webapp.raid import plate_payload
+
+    raids = make_service(DuelBot(), db, raid_any_time=False)
+    player = make_player(42, "Тайлер")
+    await db.save_player(player)
+
+    day = date(2026, 9, 8)
+    opens = slots_on(day)[0]
+    start = int(datetime(2026, 9, 8, opens, tzinfo=MOSCOW).timestamp())
+
+    # задолго до окна карта о рейде молчит
+    far = await plate_payload(player, raids, start - RAID_SOON - 60)
+    assert far["state"] == ""
+
+    soon = await plate_payload(player, raids, start - 34 * 60)
+    assert soon["state"] == "soon" and soon["text"] == "Рейд начнётся через"
+    assert soon["seconds_left"] == 34 * 60
+
+    going = await plate_payload(player, raids, start + 60)
+    assert going["state"] == "open" and going["text"] == "Рейд закончится через"
+    assert going["seconds_left"] == WINDOW_HOURS * 3600 - 60
+
+    # взял своё — вместо часов «Рейд завершён»
+    await db.close_raid_window(player.user_id, start)
+    done = await plate_payload(player, raids, start + 60)
+    assert done == {"state": "done", "text": "Рейд завершён", "seconds_left": 0}
+
+
+async def test_the_raid_has_no_analyst(cellar):
+    """В рейде аналитика нет: разбирают живого соперника, а не босса."""
+    client, raids, db = cellar
+    await act(client, 42, action="open")
+    body = await state(client, 42)
+
+    assert "scout" not in body
+    assert "scout" not in (body.get("lobby") or {})

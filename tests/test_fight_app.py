@@ -612,3 +612,92 @@ async def test_fights_from_before_the_sides_table_come_back(arena):
     assert [row["id"] for row in await db.fights_of(42)] == [fight_id]
     assert [row["id"] for row in await db.fights_of(43)] == [fight_id]
     assert (await history(client, 42))["total"] == 1
+
+
+# ---------- аналитик подписчика ----------
+
+
+def rival_log(rival_id: int, foe_id: int = 99) -> list[dict]:
+    """Бой соперника из прошлого: он бьёт в голову и закрывает пояс с ногами."""
+    return [
+        {
+            "number": number,
+            "strikes": [
+                {"attacker_id": foe_id, "defender_id": rival_id, "zone": "chest",
+                 "outcome": "block", "block": ["belt", "legs"]},
+                {"attacker_id": rival_id, "defender_id": foe_id, "zone": "head",
+                 "outcome": "hit", "block": ["head", "chest"]},
+            ],
+        }
+        for number in range(1, 4)
+    ]
+
+
+async def make_pro(db, user_id: int) -> None:
+    from bot.game.pro import DAY
+
+    player = await db.get_player(user_id)
+    player.extend_pro(DAY)
+    await db.save_player(player)
+
+
+async def past_fights(db, rival_id: int, count: int = 3) -> None:
+    for _ in range(count):
+        await db.add_duel(
+            chat_id=None, thread_id=None, challenger_id=rival_id, opponent_id=99,
+            winner_id=rival_id, rounds=3, end_reason="ko", log=rival_log(rival_id),
+        )
+
+
+async def test_the_analyst_comes_with_the_subscription(arena):
+    """Разбор соперника видит подписчик — и только он."""
+    client, duels, db = arena
+    await past_fights(db, 43)
+    await make_pro(db, 42)
+
+    await start_fight(client, duels)
+
+    mine = (await state(client, 42))["duel"]["scout"]
+    assert mine is not None
+    assert "реже всего блокирует" in mine["attack"]
+    assert "первый удар в Голову — 100%" in mine["block"]
+    assert "3 боя" in mine["title"]
+
+    # у соперника подписки нет — и разбора тоже
+    assert (await state(client, 43))["duel"]["scout"] is None
+
+
+async def test_the_analyst_never_sees_the_pending_move(arena):
+    """Пока ход не посчитан, аналитик о нём не знает.
+
+    Соперник нажимает кнопки — подсказка обязана остаться прежней, иначе
+    подписка превращается в подглядывание.
+    """
+    client, duels, db = arena
+    await past_fights(db, 43)
+    await make_pro(db, 42)
+    await start_fight(client, duels)
+
+    before = (await state(client, 42))["duel"]["scout"]
+    # бьёт в живот — зону, которой в его прошлых боях не было вовсе
+    await act(client, 43, action="turn", attacks={"0": "belly"}, block="head")
+    after = (await state(client, 42))["duel"]["scout"]
+
+    assert before == after
+    assert "Живот" not in after["attack"] + after["block"]
+
+
+async def test_the_analyst_follows_the_fight(arena):
+    """После хода подсказка меняется: она считается по следу боя."""
+    client, duels, db = arena
+    await past_fights(db, 43)
+    await make_pro(db, 42)
+    await start_fight(client, duels)
+
+    opening = (await state(client, 42))["duel"]["scout"]
+    await act(client, 43, action="turn", attacks={"0": "head"}, block="belt")
+    await act(client, 42, action="turn", attacks={"0": "legs"}, block="head")
+
+    after = (await state(client, 42))["duel"]["scout"]
+    assert after != opening
+    assert "В прошлом ходу" in after["block"]

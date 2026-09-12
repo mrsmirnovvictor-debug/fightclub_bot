@@ -9,6 +9,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from bot.battle_service import BattleError, BattleService
+from bot.board_service import ARMED, FIST, KIND_TITLES, KINDS, RAID
 from bot.database import Database
 from bot.duel_service import DuelError, DuelService
 from bot.game.battle import (
@@ -188,6 +189,65 @@ async def cmd_updates(message: Message, db: Database, bot: Bot) -> None:
         + ("\n\nСейчас покажу последнее изменение." if left else "")
     )
     await catch_up(bot, db, message.chat.id, thread_id)
+
+
+# Как называют вид объявлений в команде: /announce кулачные
+ANNOUNCE_WORDS: dict[str, str] = {
+    "fist": FIST,
+    "кулачные": FIST,
+    "кулаки": FIST,
+    "armed": ARMED,
+    "gear": ARMED,
+    "оружие": ARMED,
+    "raid": RAID,
+    "рейд": RAID,
+    "рейды": RAID,
+}
+
+
+@router.message(Command("announce", "board"), F.chat.type.in_(GROUP_TYPES))
+async def cmd_announce(
+    message: Message, command: CommandObject, db: Database, bot: Bot
+) -> None:
+    """Отметить ветку, куда бот приносит объявления этого вида.
+
+    Бои и рейды теперь заводят в мини-аппе, и в чате об этом не знает
+    никто: боец открыл вызов, а звать некому. Размеченная ветка — то
+    место, где бот об этом объявит и закрепит объявление, пока зовут.
+    """
+    kind = ANNOUNCE_WORDS.get((command.args or "").strip().lower())
+    if kind is None:
+        marked = await db.announce_threads_of(message.chat.id)
+        lines = ["📌 <b>Ветки объявлений</b>", ""]
+        for code in KINDS:
+            where = "эта ветка" if code in marked else "не размечена"
+            lines.append(f"• {KIND_TITLES[code]} — {where}")
+        lines += [
+            "",
+            "Создайте ветку, зайдите в неё и отправьте:",
+            "/announce кулачные · /announce оружие · /announce рейды",
+        ]
+        await message.reply("\n".join(lines))
+        return
+
+    if not await _is_admin(bot, message.chat.id, message.from_user.id):
+        await message.reply("Ветки объявлений размечают администраторы группы.")
+        return
+
+    thread_id = thread_id_of(message)
+    title = (message.reply_to_message.forum_topic_created.name
+             if message.reply_to_message
+             and message.reply_to_message.forum_topic_created
+             else "")
+    await db.set_announce_thread(message.chat.id, kind, thread_id, title)
+
+    where = "Эта ветка" if thread_id is not None else "Этот чат"
+    await message.reply(
+        f"✅ {where} — объявления клуба: {KIND_TITLES[kind]}. Как только "
+        "кто-то позовёт, бот принесёт сюда объявление и закрепит его, пока "
+        "зовут.\n\nЗакреплять бот умеет, только если он администратор "
+        "группы с правом закрепления."
+    )
 
 
 @router.message(Command("rings", "arenas"), F.chat.type.in_(GROUP_TYPES))

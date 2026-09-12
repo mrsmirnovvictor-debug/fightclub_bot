@@ -48,7 +48,7 @@ async def choose_look(db: Database, player: Player, code: str) -> LookChoice:
     owned = await db.owned_looks(player.user_id)
     if look.pro and look.code not in owned:
         # Образ подписки за кредиты не берут: он приходит вместе с PRO
-        raise LookError("Этот образ приходит с подпиской PRO. Лавка мага — /pro")
+        raise LookError("Этот образ приходит с подпиской PRO. Оформить — /pro")
     bought = False
     if look.paid and look.code not in owned:
         if player.credits < look.price:

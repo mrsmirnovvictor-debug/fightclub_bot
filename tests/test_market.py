@@ -18,7 +18,9 @@ from bot.models import Player
 
 def make_player(user_id: int, nickname: str, credits: int = 0) -> Player:
     return Player(
-        user_id=user_id, nickname=nickname, class_code="warrior", credits=credits
+        user_id=user_id, nickname=nickname, class_code="warrior", credits=credits,
+        # Комиссионка — дом на карте, торгуют в нём
+        location="pawnshop",
     )
 
 

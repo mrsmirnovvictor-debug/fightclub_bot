@@ -21,8 +21,10 @@ from bot.game.combat import (
     total_dodge,
 )
 from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS, get_item
+from bot.game.health import now_ts
 from bot.game.raid import (
     BOSS_HP_SHARE,
+    RAID_SOON,
     LEVELS_ABOVE,
     MAX_PARTY,
     MIN_PARTY,
@@ -218,6 +220,43 @@ def raid_payload(session: RaidSession, viewer_id: int) -> dict[str, Any]:
     }
 
 
+async def plate_payload(
+    player: Player, service: RaidService | None, moment: int | None = None
+) -> dict[str, Any]:
+    """Плашка рейда на карте: скоро, идёт или пройден.
+
+    Висит под вывеской казино и живёт по расписанию: за час до окна —
+    отсчёт до начала, в окне — отсчёт до конца, а тому, кто своё уже взял,
+    вместо часов «Рейд завершён». Вне этих часов плашки нет вовсе: карта
+    не место для расписания на сутки вперёд.
+    """
+    moment = now_ts() if moment is None else moment
+    blank = {"state": "", "text": "", "seconds_left": 0}
+    if service is None:  # pragma: no cover - бот без рейдов не живёт
+        return blank
+
+    window = service.window_now(moment)
+    if window is not None:
+        seen = await service.db.raid_window(player.user_id, window.start)
+        if seen and seen["won"]:
+            return {"state": "done", "text": "Рейд завершён", "seconds_left": 0}
+        return {
+            "state": "open",
+            "text": "Рейд закончится через",
+            "seconds_left": window.seconds_left(moment),
+        }
+
+    soon = next_window(moment)
+    left = soon.start - moment
+    if left > RAID_SOON:
+        return blank
+    return {
+        "state": "soon",
+        "text": "Рейд начнётся через",
+        "seconds_left": max(left, 0),
+    }
+
+
 async def gate_payload(
     player: Player, service: RaidService | None
 ) -> dict[str, Any]:
@@ -342,6 +381,7 @@ __all__ = [
     "build_raid",
     "gate_payload",
     "lobby_payload",
+    "plate_payload",
     "raid_payload",
     "raid_row",
 ]

@@ -783,6 +783,12 @@ function shelf(section) {
 }
 
 function shopNote(data) {
+  // Фанатский прилавок открывается целиком и сразу: там одна ступень,
+  // и «следующая партия» на ней не бывает
+  if (data.service === "fan") {
+    return "Экипировка своей команды: одна ступень, десятый уровень. "
+      + "Копится долго — зато носится до конца.";
+  }
   const next = data.sections
     .flatMap((section) => section.items)
     .filter((item) => !item.unlocked)
@@ -795,25 +801,29 @@ function shopNote(data) {
 // Какая лавка открыта на вкладке магазинов
 let shopSection = "club";
 
+// Как называется прилавок, на который смотрят. Раньше лавка была одна и
+// звалась «Лавкой клуба»; теперь это дома на карте, и у каждого своё имя
+const SHOP_TITLES = {
+  weapons: "🗡 Оружейный магазин",
+  clothes: "👕 Магазин одежды",
+  potions: "💊 Аптека",
+  fan: "🧣 Магазин «Северный Вал»",
+  market: "🤝 Комиссионный магазин",
+};
+
+function openShop() {
+  pickShopSection("club");
+  showTab("shop");
+}
+
 function pickShopSection(name) {
   shopSection = name;
   el("shop-club").classList.toggle("hidden", name !== "club");
   el("shop-market").classList.toggle("hidden", name !== "market");
-  el("shop-title").textContent =
-    name === "club" ? "🏪 Лавка клуба" : "🤝 Комиссионный магазин";
-  renderShopSections();
-  if (name === "market") loadMarket();
-}
-
-function renderShopSections() {
-  const box = el("shop-sections");
-  box.textContent = "";
-  [
-    ["club", "Лавка клуба"],
-    ["market", "Комиссионка"],
-  ].forEach(([code, label]) => {
-    box.appendChild(chip(label, shopSection === code, () => pickShopSection(code)));
-  });
+  if (name === "market") {
+    el("shop-title").textContent = SHOP_TITLES.market;
+    loadMarket();
+  }
 }
 
 function renderShop(data) {
@@ -821,7 +831,7 @@ function renderShop(data) {
   el("shop-purse").textContent = "";
   el("shop-purse").appendChild(purse(data.credits));
   el("shop-note").textContent = shopNote(data);
-  renderShopSections();
+  el("shop-title").textContent = SHOP_TITLES[data.service] || "🏪 Лавка";
   renderFilters(data);
 
   const list = el("shop-list");
@@ -1088,30 +1098,48 @@ function lotCard(lot) {
   return box;
 }
 
-const SCREENS = ["club", "shop", "magic", "bag", "hero"];
+const SCREENS = ["club", "map", "shop", "magic", "bag", "hero"];
+// Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
+// Пока в них стоишь, горит «Карта» — оттуда в них и пришли
+const TABS = ["club", "map", "bag", "hero"];
+const OPENED_FROM = { shop: "map", magic: "map" };
 let lastTab = "hero";
 
 function showTab(name) {
   SCREENS.forEach((screen) => {
     el(screen).classList.toggle("hidden", screen !== name);
   });
-  SCREENS.forEach((screen) => {
-    el("tab-" + screen).classList.toggle("active", screen === name);
+  const lit = OPENED_FROM[name] || name;
+  TABS.forEach((tab) => {
+    el("tab-" + tab).classList.toggle("active", tab === lit);
   });
   el("topup").classList.add("hidden");
   lastTab = name;
   window.scrollTo(0, 0);
   // На этих двух экранах живут уровень и свободные очки: заходим — сверяемся
   if (name === "hero" || name === "bag") catchUp();
-  if (name === "shop" && !shopData) loadShop();
-  // Комиссионку перечитываем при каждом заходе: её полка меняется чужими
-  // руками, а рюкзак — своими
-  if (name === "shop") pickShopSection(shopSection);
+  // Прилавок у каждой лавки свой — перечитываем при каждом заходе.
+  // Комиссионка живёт на том же экране, но это другой дом: её полка
+  // приходит своей ручкой, и грузить поверх неё лавку нельзя
+  if (name === "shop") {
+    if (shopSection === "market") pickShopSection("market");
+    else loadShop();
+  }
+  if (name === "map") loadMap();
+  // Часы рейда идут, только пока на карту смотрят
+  if (name === "map") startRaidClock();
+  else stopRaidClock();
   if (name === "club" && !clubData) loadClub();
   if (name === "magic" && !magicData) loadMagic();
-  // Ринг опрашиваем, только пока на него смотрят: ушли со вкладки — молчим
-  if (name === "club") startWatchingFights();
-  else stopWatchingFights();
+  // Заходим на экран клуба — раздел пересобирается под здешний дом
+  if (name === "club") pickClubSection(clubSection);
+  // Ринг опрашиваем, только пока на него смотрят и только там, где
+  // дерутся: ушли со вкладки или стоите в аптеке — молчим
+  if (name === "club" && clubHouse === "club" && canFightHere()) {
+    startWatchingFights();
+  } else {
+    stopWatchingFights();
+  }
 }
 
 // Касса — не вкладка, а лист поверх экрана: в панель она не попадает
@@ -1122,7 +1150,396 @@ function showTopUp() {
   loadTopUp();
 }
 
-// ---------- лавка мага ----------
+// ---------- карта города ----------
+//
+// Дома — кнопки поверх картинки. Класть их по размеру окна нельзя:
+// картинка показывается целиком (`object-fit: contain`), и на экране с
+// другим соотношением сторон сверху и снизу появляются поля. Поэтому
+// каждый раз меряем, куда картинка легла на самом деле, и от этого
+// прямоугольника и считаем.
+
+let mapData = null;
+let mapShown = "";  // какой район открыт: смотреть можно любой
+let mapWas = "";    // где боец стоял в прошлый раз — чтобы идти за ним
+let roadTimer = null;
+
+async function loadMap() {
+  try {
+    const response = await fetch("api/map", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Карта не открылась.");
+    renderMap(await response.json());
+  } catch (error) {
+    popup("Карта", error.message);
+  }
+}
+
+function renderMap(data) {
+  mapData = data;
+  // Пришли на карту — показываем тот район, где стоим. Дальше человек
+  // листает сам, и его выбор не сбрасывается каждым обновлением. Но
+  // когда боец сам перешёл в другой район, карта идёт за ним: иначе
+  // после дороги он стоит на одной карте, а смотрит на другую
+  if (
+    !mapShown
+    || !data.districts.some((one) => one.code === mapShown)
+    || (data.district && data.district !== mapWas)
+  ) {
+    mapShown = data.district || data.districts[0].code;
+  }
+  mapWas = data.district || "";
+  paintDistrict();
+  paintRoad();
+}
+
+function shownDistrict() {
+  return mapData.districts.find((one) => one.code === mapShown);
+}
+
+function paintDistrict() {
+  const district = shownDistrict();
+  if (!district) return;
+  const pic = el("map-pic");
+  if (pic.getAttribute("src") !== district.image) pic.src = district.image;
+  pic.alt = "Район: " + district.title;
+  placeZones();
+  placeArrows();
+}
+
+// Стрелки в соседние районы. Города целиком не видно, и без них шесть
+// карт остаются шестью картинками: по ним и понятно, что это один город.
+const ARROW_SIGNS = { up: "▲", down: "▼", left: "◀", right: "▶" };
+
+function placeArrows() {
+  const box = el("map-arrows");
+  box.textContent = "";
+  const district = shownDistrict();
+  if (!district) return;
+  Object.entries(district.around || {}).forEach(([side, code]) => {
+    const to = mapData.districts.find((one) => one.code === code);
+    if (!to) return;
+    const arrow = document.createElement("button");
+    arrow.type = "button";
+    arrow.className = "map-arrow " + side;
+    arrow.dataset.side = side;
+    arrow.dataset.to = code;
+    arrow.title = to.title;
+    arrow.setAttribute("aria-label", "Смотреть район: " + to.title);
+    arrow.textContent = ARROW_SIGNS[side] || "•";
+    arrow.addEventListener("click", () => {
+      mapShown = code;
+      paintDistrict();
+    });
+    box.appendChild(arrow);
+  });
+}
+
+// Дома рисуются поверх карты одним SVG. Так вышло проще и точнее, чем
+// считать поля руками: `preserveAspectRatio="xMidYMid meet"` вписывает
+// холст ровно так же, как `object-fit: contain` вписывает картинку, —
+// значит, координаты силуэтов совпадают с домами на рисунке при любом
+// экране. Нажатие ловит сам многоугольник, а не рамка вокруг него.
+const MAP_W = 941;
+const MAP_H = 1672;
+// Целятся в дверь, а она на карте с ноготь. Поэтому касание ловит не
+// сама дверь, а рамка вокруг неё с запасом, — её присылает сервер.
+// Подсветка при этом остаётся ровно на двери: расширение невидимо
+
+// Просвет между порогом двери и верхом подписи, в единицах карты.
+// Подпись выровнена по верхнему краю (`hanging`), а не по базовой линии:
+// иначе отступ пришлось бы считать от высоты букв. Просвета всё равно
+// берём с запасом: обводка подписи и значок «здесь» вылезают вверх за
+// её край, и без запаса они цепляют порог
+const SIGN_DROP = 34;
+
+function svgNode(name, attrs) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+  Object.entries(attrs || {}).forEach(([key, value]) => {
+    node.setAttribute(key, value);
+  });
+  return node;
+}
+
+function pointsOf(polygon) {
+  return polygon.map(([x, y]) => x * MAP_W + "," + y * MAP_H).join(" ");
+}
+
+function placeZones() {
+  const district = shownDistrict();
+  const box = el("map-zones");
+  box.textContent = "";
+  if (!district) return;
+
+  const canvas = svgNode("svg", {
+    viewBox: "0 0 " + MAP_W + " " + MAP_H,
+    preserveAspectRatio: "xMidYMid meet",
+    class: "map-svg",
+  });
+  district.places.forEach((place) => canvas.appendChild(houseShape(place)));
+  box.appendChild(canvas);
+}
+
+function houseShape(place) {
+  const group = svgNode("g", {
+    class: "zone-house" + (place.here ? " here" : "") + (place.works ? "" : " soon"),
+    role: "button",
+    tabindex: "0",
+    "aria-label": place.title,
+  });
+  group.dataset.code = place.code;
+
+  // Невидимая рамка под палец. Она и ловит нажатие
+  group.appendChild(svgNode("rect", {
+    x: place.touch.x * MAP_W,
+    y: place.touch.y * MAP_H,
+    width: place.touch.w * MAP_W,
+    height: place.touch.h * MAP_H,
+    rx: 12,
+    class: "zone-touch",
+  }));
+  // Видимая подсветка — ровно по двери, как она нарисована
+  group.appendChild(svgNode("polygon", {
+    points: pointsOf(place.entrance),
+    class: "zone-line",
+  }));
+
+  // Подпись под дверью. Над ней нельзя: там на рисунке нарисована
+  // настоящая вывеска дома, и наша ложится прямо на неё
+  const sign = svgNode("text", {
+    x: (place.zone.x + place.zone.w / 2) * MAP_W,
+    y: (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP,
+    class: "zone-sign",
+    "text-anchor": "middle",
+    "dominant-baseline": "hanging",
+  });
+  sign.textContent = place.here ? "📍 " + place.title : place.title;
+  group.appendChild(sign);
+
+  // Под вывеской казино — отсчёт рейда: подвал открыт не всегда, и
+  // единственное место, где это видно заранее, — карта
+  if ((place.services || []).includes("raid")) {
+    const plate = raidPlate(place);
+    if (plate) group.appendChild(plate);
+  }
+
+  const enter = () => enterHouse(place);
+  group.addEventListener("click", enter);
+  group.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") enter();
+  });
+  return group;
+}
+
+// ---------- отсчёт рейда на карте ----------
+//
+// Плашка под вывеской казино: синяя за час до окна, жёлтая пока подвал
+// открыт, зелёная тому, кто своё уже взял. Живёт в том же холсте, что и
+// подписи, — значит, растёт вместе с картой и стоит там же на любом экране.
+const PLATE_W = 500;
+const PLATE_DROP = 54;  // просвет между подписью дома и плашкой
+const PLATE_LINE = 46;  // высота строки внутри плашки
+const PLATE_PAD = 14;   // поля сверху и снизу
+
+function plateClock(seconds) {
+  const parts = [
+    Math.floor(seconds / 3600),
+    Math.floor(seconds / 60) % 60,
+    seconds % 60,
+  ];
+  return parts.map((one) => String(one).padStart(2, "0")).join(":");
+}
+
+function raidPlate(place) {
+  const raid = (mapData && mapData.raid) || {};
+  if (!raid.state) return null;
+
+  const lines = raid.state === "done" ? 1 : 2;
+  const middle = (place.zone.x + place.zone.w / 2) * MAP_W;
+  const top = (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP + PLATE_DROP;
+  const height = PLATE_PAD * 2 + lines * PLATE_LINE;
+  // Строки стоят от середины плашки, а не от её верха: так и одна
+  // строка, и две лежат в боксе ровно посередине
+  const centre = top + height / 2;
+
+  const plate = svgNode("g", { class: "zone-plate " + raid.state });
+  plate.appendChild(svgNode("rect", {
+    x: middle - PLATE_W / 2,
+    y: top,
+    width: PLATE_W,
+    height: height,
+    rx: 18,
+    class: "plate-box",
+  }));
+
+  const word = svgNode("text", {
+    x: middle,
+    y: lines > 1 ? centre - PLATE_LINE / 2 : centre,
+    class: "plate-word",
+    "text-anchor": "middle",
+    "dominant-baseline": "central",
+  });
+  word.textContent = raid.text;
+  plate.appendChild(word);
+
+  if (lines > 1) {
+    const clock = svgNode("text", {
+      x: middle,
+      y: centre + PLATE_LINE / 2,
+      id: "raid-clock",
+      class: "plate-clock",
+      "text-anchor": "middle",
+      "dominant-baseline": "central",
+    });
+    clock.textContent = plateClock(raid.seconds_left);
+    plate.appendChild(clock);
+  }
+  return plate;
+}
+
+let raidClockTimer = null;
+
+function startRaidClock() {
+  if (raidClockTimer) return;
+  raidClockTimer = setInterval(tickRaidClock, 1000);
+}
+
+function stopRaidClock() {
+  if (!raidClockTimer) return;
+  clearInterval(raidClockTimer);
+  raidClockTimer = null;
+}
+
+function tickRaidClock() {
+  const raid = mapData && mapData.raid;
+  if (!raid || !raid.state || raid.state === "done") return;
+  raid.seconds_left -= 1;
+  if (raid.seconds_left <= 0) {
+    // Время вышло: что теперь с подвалом, знает сервер — спрашиваем его,
+    // а не переписываем плашку сами
+    loadMap();
+    return;
+  }
+  const shown = el("raid-clock");
+  if (shown) shown.textContent = plateClock(raid.seconds_left);
+}
+
+/** Что открывает дом, если боец уже в нём. */
+const HOUSE_SCREENS = {
+  fight: () => openClub(),
+  raid: () => openCasino(),
+  weapons: () => openShop(),
+  clothes: () => openShop(),
+  potions: () => openShop(),
+  fan: () => openShop(),
+  premium: () => showTab("magic"),
+  market: () => {
+    pickShopSection("market");
+    showTab("shop");
+  },
+  repair: () => {
+    showTab("bag");
+    popup("Мастерская", "Чинят вещи в рюкзаке: у каждой своя кнопка починки.");
+  },
+};
+
+async function enterHouse(place) {
+  if (place.here) {
+    if (!place.works) {
+      popup(place.title, "Скоро здесь появится новая услуга: " + place.soon + ".");
+      return;
+    }
+    const open = HOUSE_SCREENS[place.services[0]];
+    if (open) open();
+    return;
+  }
+  if (mapData.road.going) {
+    popup("Ты в пути", mapData.road.text);
+    return;
+  }
+  // Согласия не спрашиваем: дорога занимает секунды, и окно «идём?» на
+  // каждый шаг превращает город в анкету. Ошиблись домом — дойдите и
+  // пойдите дальше, потеряв те же секунды
+  // До дома без услуги дойти можно: город не должен выглядеть
+  // наполовину нарисованным. Что он пока пуст, скажем уже на месте
+  await travelTo(place.code);
+}
+
+async function travelTo(code) {
+  try {
+    const body = await post("api/travel", { to: code });
+    renderMap(body.map);
+    render(body.card, true);
+  } catch (error) {
+    popup("Не выйдет", error.message);
+  }
+}
+
+// Отсчёт дороги — батарейка в углу: клеток ровно столько, сколько
+// секунд идти, и каждую секунду загорается ещё одна. Так видно не только
+// «сколько осталось», но и сколько уже прошло, — а числом под ней
+// написано то же самое, для тех, кому клетки считать неохота.
+const ROAD_CELLS_MAX = 12;
+
+function roadClock(left) {
+  const minutes = Math.floor(left / 60);
+  const seconds = left % 60;
+  return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+}
+
+function stopRoad() {
+  if (roadTimer) clearInterval(roadTimer);
+  roadTimer = null;
+}
+
+function paintRoad() {
+  const road = mapData.road;
+  const box = el("map-road");
+  box.classList.toggle("hidden", !road.going);
+  if (!road.going) {
+    stopRoad();
+    return;
+  }
+
+  // Длинная дорога не должна разносить батарейку на пол-экрана: клеток
+  // берём не больше дюжины, и тогда одна стоит несколько секунд
+  const whole = Math.max(road.seconds || road.seconds_left, 1);
+  const cells = Math.min(whole, ROAD_CELLS_MAX);
+  const strip = el("road-cells");
+  strip.textContent = "";
+  const lamps = [];
+  for (let i = 0; i < cells; i += 1) {
+    const cell = document.createElement("i");
+    cell.className = "road-cell";
+    strip.appendChild(cell);
+    lamps.push(cell);
+  }
+  box.title = road.text;
+  box.setAttribute("aria-label", road.text);
+
+  let left = road.seconds_left;
+  const tick = () => {
+    const gone = Math.min(Math.max(whole - left, 0), whole);
+    const lit = Math.round((gone / whole) * cells);
+    lamps.forEach((cell, i) => cell.classList.toggle("on", i < lit));
+    el("road-clock").textContent = roadClock(Math.max(left, 0));
+    if (left <= 0) {
+      stopRoad();
+      loadMap();
+      catchUp();
+      return;
+    }
+    left -= 1;
+  };
+  tick();
+  stopRoad();
+  roadTimer = setInterval(tick, 1000);
+}
+
+// Пересчитывать зоны при смене размера не нужно: холст SVG вписывается
+// в рамку тем же правилом, что и картинка, и едет вместе с ней сам
+
+// ---------- магазин «Элита» ----------
 
 let magicData = null;
 
@@ -1201,7 +1618,7 @@ function proCard(pro) {
 function renderMagic(data) {
   magicData = data;
   el("magic-note").textContent =
-    "Товар мага берут за звёзды Telegram — кредиты тут не в ходу. "
+    "Товары здесь берут за звёзды Telegram — кредиты тут не в ходу. "
     + "Купленное падает в инвентарь.";
   // Подписка стоит первой и никуда не девается: прилавок может быть пуст,
   // а она — нет.
@@ -1249,7 +1666,7 @@ async function loadMagic() {
     const response = await fetch("api/magic", {
       headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
     });
-    if (!response.ok) throw new Error("Лавка мага закрыта.");
+    if (!response.ok) throw new Error("Магазин «Элита» закрыт.");
     renderMagic(await response.json());
   } catch (error) {
     el("magic-note").textContent = error.message;
@@ -1312,29 +1729,26 @@ function fighterRow(fighter) {
   level.className = "fighter-level";
   level.textContent = "[" + fighter.level + "]";
 
+  // Один вход на строку: значок ведёт в карточку, а статистика живёт
+  // уже там. Две кнопки на строку делали список выше и заставляли
+  // выбирать между ними, ни разу не показав, что за боец внутри
   const info = document.createElement("button");
   info.type = "button";
   info.className = "fighter-info";
-  info.textContent = "i";
+  info.textContent = "ℹ️";
   info.title = "Карточка бойца";
   info.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
   info.addEventListener("click", () => showFighter(fighter));
 
-  const stats = document.createElement("button");
-  stats.type = "button";
-  // Своим классом, а не «fighter-info»: две одинаковые кнопки в строке —
-  // это неоднозначность и для теста, и для читалки экрана
-  stats.className = "fighter-stats";
-  stats.textContent = "📊";
-  stats.title = "Статистика боёв";
-  stats.setAttribute("aria-label", "Статистика боёв " + fighter.nickname);
-  stats.addEventListener("click", () => {
-    pickClubSection("stats");
-    loadHistory(fighter.is_self ? null : fighter.user_id);
-  });
-
-  box.append(face, name, level, stats, info);
+  box.append(face, name, level, info);
   return box;
+}
+
+function raidScore(record) {
+  // «4 / 10» — побед из походов. Одним числом здесь не обойтись: рейд
+  // проигрывают отрядом, и десять заходов с четырьмя победами говорят о
+  // бойце совсем не то же, что четыре захода с четырьмя
+  return num(record.raid_wins) + " / " + num(record.raid_fights);
 }
 
 function sheetRows(pairs) {
@@ -1364,9 +1778,53 @@ function sheetDoll(card) {
   return doll;
 }
 
+function sheetHealth(hp) {
+  const box = document.createElement("div");
+  box.className = "hp sheet-hp " + (hp.color || "green");
+
+  const fill = document.createElement("div");
+  fill.className = "hp-fill";
+  fill.style.width = Math.max(0, Math.min(100, hp.percent)) + "%";
+
+  const text = document.createElement("div");
+  text.className = "hp-text";
+  text.textContent = num(Math.floor(hp.current)) + " / " + num(hp.max);
+
+  box.append(fill, text);
+  return box;
+}
+
 function fighterCard(card) {
   const box = document.createDocumentFragment();
   box.appendChild(sheetDoll(card));
+
+  // Здоровье — первое, что хотят знать о чужом бойце: цел он или
+  // отлёживается. Под шкалой не «готов к бою» — это и так видно по самой
+  // шкале, — а в клубе ли он сейчас: вызывать ушедшего некому
+  if (card.hp) {
+    box.appendChild(sheetHealth(card.hp));
+    const note = document.createElement("p");
+    note.className = "hp-note sheet-hp-note";
+    if (card.seen && card.seen.online) note.classList.add("online");
+    note.textContent = (card.seen && card.seen.text) || "";
+    // Сколько ему до строя — единственное, чего по шкале не понять
+    if (card.hp.ready_in_text) {
+      note.textContent += " · в строю через " + card.hp.ready_in_text;
+    }
+    box.appendChild(note);
+  }
+
+  // Где боец сейчас. Вызывать его есть смысл, только если он в клубе, —
+  // а по карточке это иначе не понять
+  if (card.place) {
+    const where = document.createElement("p");
+    where.className = "sheet-place";
+    where.textContent = card.place.seconds_left
+      ? "🚶 В пути до дома «" + card.place.going_to + "» — "
+        + card.place.seconds_left + " сек"
+      : "📍 " + card.place.title;
+    box.appendChild(where);
+  }
 
   const panel = document.createElement("section");
   panel.className = "panel";
@@ -1386,6 +1844,7 @@ function fighterCard(card) {
       ["Побед", num(card.record.wins)],
       ["Поражений", num(card.record.losses)],
       ["Ничьих", num(card.record.draws)],
+      ["Рейды", raidScore(card.record)],
       ["Рейтинг", num(card.record.rating)],
     ])
   );
@@ -1397,6 +1856,21 @@ function fighterCard(card) {
     ])
   );
   box.appendChild(panel);
+
+  // Статистика боёв переехала со строки списка сюда: смотреть её идут,
+  // уже увидев, кто перед тобой
+  const actions = document.createElement("div");
+  actions.className = "thing-buttons sheet-actions";
+  actions.appendChild(
+    button("📊 Статистика боёв", {
+      onClick: () => {
+        closeSheet();
+        pickClubSection("stats");
+        loadHistory(card.is_self ? null : card.user_id);
+      },
+    })
+  );
+  box.appendChild(actions);
   return box;
 }
 
@@ -1448,31 +1922,94 @@ function stopWatchingFights() {
 }
 
 function pickClubSection(name) {
+  const house = CLUB_HOUSES[clubHouse];
+  const allowed = clubSections().map(([code]) => code);
+  // Рейд открывается только в казино, бои — только в клубе. Пришли не с
+  // тем разделом (например, вернулись из казино) — показываем здешний
+  if (name !== house.start && !allowed.includes(name)) name = house.start;
   clubSection = name;
   ["fights", "battle", "raid", "players", "stats"].forEach((section) => {
     el("club-" + section).classList.toggle("hidden", section !== name);
   });
   renderClubSections();
+  // Ринг и отряд собираются в клубе. В других домах раздел открывается,
+  // но вместо вызовов в нём записка: так видно, что бои есть, просто не
+  // здесь, — а кнопки, на которые сервер всё равно ответит отказом, не
+  // рисуются вовсе
+  const locked = (name === "fights" || name === "battle") && !canFightHere();
+  if (locked) sayNoFightsHere(name);
   if (name === "players" && !clubData) loadClub();
   if (name === "stats" && !statsData) loadHistory(statsWho);
   // Рейд живёт волнами: пока раздел открыт, спрашиваем состояние
   if (name === "raid") startWatchingRaid();
   else stopWatchingRaid();
   // Групповой бой тоже идёт раундами и без тебя — следим так же
-  if (name === "battle") startWatchingBattle();
+  if (name === "battle" && !locked) startWatchingBattle();
   else stopWatchingBattle();
+}
+
+function sayNoFightsHere(name) {
+  const note = name === "fights" ? "fights-note" : "battle-note";
+  const body = name === "fights" ? "fights-body" : "battle-body";
+  el(note).textContent = "";
+  const said = document.createElement("p");
+  said.className = "club-locked";
+  said.textContent = NO_FIGHTS_HERE;
+  el(body).textContent = "";
+  el(body).appendChild(said);
+}
+
+// Один экран обслуживает два дома: клуб и казино. Казино — не вкладка, а
+// дом: его открывает дверь на карте, и только она. Кнопка внизу остаётся
+// «Клубом» всегда: она ведёт в клуб, где бы боец ни стоял, — а раздел
+// рейда за ней не прячется, иначе, выйдя из казино, он бы там и остался.
+const CLUB_HOUSES = {
+  club: { title: "🥊 Бойцовский клуб", start: "fights" },
+  casino: { title: "🎲 Казино", start: "raid" },
+};
+
+let clubHouse = "club";
+
+function inCasino() {
+  return ((myPlace && myPlace.services) || []).includes("raid");
+}
+
+// Драться можно не везде: в аптеке боёв нет, и вкладку «Бои» там
+// заменяет записка. Прячем не саму вкладку — человеку полезно видеть,
+// что у клуба есть, — а только её содержимое
+function canFightHere() {
+  return ((myPlace && myPlace.services) || []).includes("fight");
+}
+
+const NO_FIGHTS_HERE = "Бои между игроками недоступны в данной локации.";
+
+function clubSections() {
+  // В казино разделов нет вовсе: там одно дело — рейд
+  if (clubHouse === "casino") return [];
+  return [
+    ["fights", "Бои"],
+    ["battle", "Отряд"],
+    ["players", "Игроки"],
+    ["stats", "Статистика"],
+  ];
+}
+
+function openClub() {
+  clubHouse = "club";
+  showTab("club");
+}
+
+function openCasino() {
+  clubHouse = "casino";
+  clubSection = "raid";
+  showTab("club");
 }
 
 function renderClubSections() {
   const box = el("club-sections");
   box.textContent = "";
-  [
-    ["fights", "Бои"],
-    ["battle", "Отряд"],
-    ["raid", "Рейд"],
-    ["players", "Игроки"],
-    ["stats", "Статистика"],
-  ].forEach(([code, label]) => {
+  el("club-title").textContent = CLUB_HOUSES[clubHouse].title;
+  clubSections().forEach(([code, label]) => {
     box.appendChild(chip(label, clubSection === code, () => pickClubSection(code)));
   });
 }
@@ -1736,9 +2273,43 @@ function paintDraft() {
   if (go) go.disabled = !draftReady(hands);
 }
 
+// ---------- аналитик ----------
+//
+// Подсказки подписчика над кнопками хода. Строки две: одна помогает
+// выбрать удар, другая — блок, и у каждой свой значок. Столбцы на
+// телефоне узкие, предложение в них не помещается, поэтому панель стоит
+// над ними целиком — но выше кнопок, как ей и положено.
+function scoutPanel(scout) {
+  if (!scout || (!scout.attack && !scout.block)) return null;
+  const box = document.createElement("section");
+  box.className = "scout";
+
+  const head = document.createElement("p");
+  head.className = "scout-head";
+  head.textContent = "🔍 Аналитик" + (scout.title ? " · " + scout.title : "");
+  box.appendChild(head);
+
+  [["⚔️", scout.attack], ["🛡", scout.block]].forEach(([sign, text]) => {
+    if (!text) return;
+    const line = document.createElement("p");
+    line.className = "scout-line";
+    const mark = document.createElement("span");
+    mark.className = "scout-mark";
+    mark.textContent = sign;
+    line.appendChild(mark);
+    line.appendChild(document.createTextNode(text));
+    box.appendChild(line);
+  });
+  return box;
+}
+
 function turnForm(data) {
   const box = document.createElement("div");
   box.className = "turn-form";
+
+  // Разбор соперника — над кнопками: его видит только тот, кому он пришёл
+  const scout = scoutPanel(data.duel.scout);
+  if (scout) box.appendChild(scout);
 
   // Столбцов ударов столько, сколько рук с оружием, а блок бывает шире:
   // со щитом он держит три зоны вместо двух
@@ -2073,7 +2644,7 @@ function renderRaid(data) {
 }
 
 function raidHead(boss) {
-  // «Ограбление Босса подпольного казино (i)» — заголовок и всё о нём
+  // «Ограбление Босса Казино (i)» — заголовок и всё о нём
   const box = document.createElement("div");
   box.className = "raid-head";
   const title = document.createElement("h2");
@@ -2793,11 +3364,19 @@ async function loadHistory(userId) {
 function renderHistory(data) {
   statsData = data;
   const counts = data.counts;
+  const people = counts.win + counts.loss + counts.draw;
+  const raids = data.raids || { wins: 0, total: 0 };
+  // Рейды считаем отдельной припиской: в списке они идут вперемешку с
+  // дуэлями, но складывать победу над боссом с победой над человеком
+  // нельзя — счёт от этого врёт в обе стороны
+  const tail = raids.total
+    ? " · рейды " + raids.wins + " / " + raids.total
+    : "";
   el("stats-note").textContent = data.total
-    ? data.name + ": " + data.total + " " +
-      plural(data.total, "бой", "боя", "боёв") + " — " +
+    ? data.name + ": " + people + " " +
+      plural(people, "бой", "боя", "боёв") + " — " +
       counts.win + " побед, " + counts.loss + " поражений, " +
-      counts.draw + " ничьих"
+      counts.draw + " ничьих" + tail
     : data.name + " ещё не дрался.";
 
   const body = el("stats-body");
@@ -2952,7 +3531,7 @@ function renderClub(data) {
     ? data.total + " " + plural(data.total, "боец", "бойца", "бойцов")
     : "";
   el("club-note").textContent = data.total
-    ? "Все, кто завёл бойца. Кнопка «i» открывает карточку."
+    ? "Все, кто завёл бойца. Значок ℹ️ открывает его карточку."
     : "В клубе пока никого.";
 
   const list = el("club-list");
@@ -3542,8 +4121,7 @@ function render(card, keepTab) {
   // комиссию. Без этого экран комиссионки остаётся с прежним списком: он
   // грузится один раз, и надетая или проданная вещь висит в нём как живая.
   marketFollowsBag();
-  el("city").textContent = card.city;
-  el("hero-city").textContent = card.city;
+  paintCity(card);
 
   const stats = el("stats");
   stats.textContent = "";
@@ -3618,6 +4196,7 @@ function render(card, keepTab) {
   record.appendChild(row("Побед", num(card.record.wins)));
   record.appendChild(row("Поражений", num(card.record.losses)));
   record.appendChild(row("Ничьих", num(card.record.draws)));
+  record.appendChild(row("Рейды", raidScore(card.record)));
   record.appendChild(row("Рейтинг", num(card.record.rating)));
   if (card.is_self) {
     record.appendChild(row("Кредиты", purse(card.record.credits)));
@@ -3635,6 +4214,31 @@ function render(card, keepTab) {
   if (!keepTab) showTab("hero");
 }
 
+// Где боец стоит, по последней карточке: по этому и решается, чем
+// показывать экран клуба и что на нём можно
+let myPlace = null;
+
+function paintCity(card) {
+  if (card.is_self) myPlace = card.place || null;
+  // Вышли из казино — подвал закрывается сам: держать его открытым
+  // значит показывать рейд, в который с улицы всё равно не пустят
+  if (!inCasino() && clubHouse === "casino") {
+    clubHouse = "club";
+    clubSection = "fights";
+    if (lastTab === "club") pickClubSection("fights");
+  }
+  // Строка под куклой: город и дом, в котором боец стоит. В пути дом
+  // сменяется дорогой — иначе выходит, что он одновременно и там, и там
+  const place = card.place || {};
+  const line = place.seconds_left
+    ? "🚶 В пути до дома «" + place.going_to + "» — " + place.seconds_left + " сек"
+    : card.city + (place.title ? " · 📍 " + place.title : "");
+  ["city", "hero-city"].forEach((id) => {
+    el(id).textContent = line;
+    el(id).classList.toggle("on-road", Boolean(place.seconds_left));
+  });
+}
+
 function fail(message) {
   el("loader").classList.add("hidden");
   const box = el("error");
@@ -3642,13 +4246,31 @@ function fail(message) {
   box.classList.remove("hidden");
 }
 
-function wantsShop() {
+// Куда просили открыть приложение. Объявление в чате ведёт сюда же:
+// «ring» — бои, «raid» — подвал, «shop» — лавка. Номер бойца в этом же
+// месте означает чужую карточку, поэтому экраны названы словами.
+const SCREEN_PARAMS = {
+  shop: () => showTab("shop"),
+  ring: () => {
+    showTab("club");
+    pickClubSection("fights");
+  },
+  raid: () => {
+    // Из чата зовут в подвал — но спуститься можно только из казино.
+    // Кто не там, попадает на карту: пусть сначала дойдёт
+    if (inCasino()) openCasino();
+    else showTab("map");
+  },
+};
+
+function wantedScreen() {
   const params = new URLSearchParams(window.location.search);
-  return (
-    params.get("view") === "shop" ||
-    params.get("tgWebAppStartParam") === "shop" ||
-    (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param === "shop")
-  );
+  const asked =
+    params.get("view") ||
+    params.get("tgWebAppStartParam") ||
+    (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) ||
+    "";
+  return Object.prototype.hasOwnProperty.call(SCREEN_PARAMS, asked) ? asked : "";
 }
 
 async function load() {
@@ -3671,7 +4293,8 @@ async function load() {
     }
     const card = await response.json();
     render(card);
-    if (card.is_self && wantsShop()) showTab("shop");
+    const screen = wantedScreen();
+    if (card.is_self && screen) SCREEN_PARAMS[screen]();
   } catch (error) {
     console.error("card load failed", error);
     reportOops(error, "загрузка карточки");
@@ -3687,8 +4310,14 @@ el("hero-avatar").addEventListener("click", () => {
 el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
 
-SCREENS.forEach((screen) => {
-  el("tab-" + screen).addEventListener("click", () => showTab(screen));
+// Кнопок на панели меньше, чем экранов: лавки открываются с карты
+TABS.forEach((tab) => {
+  el("tab-" + tab).addEventListener("click", () => {
+    // Казино открывает только его дверь. Кнопка внизу — всегда клуб,
+    // даже если боец стоит в казино и только что смотрел рейд
+    if (tab === "club") clubHouse = "club";
+    showTab(tab);
+  });
 });
 el("topup-back").addEventListener("click", () => showTab(lastTab));
 

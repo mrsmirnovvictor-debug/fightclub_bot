@@ -7,6 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
 from bot.game.classes import Stats, get_class
+from bot.game.locations import Service
 from bot.game.modes import FightMode
 from bot.game.equipment import (
     ALL_SLOTS,
@@ -350,7 +351,8 @@ async def test_the_shelf_price_and_the_buyback_agree(db):
 async def test_handing_in_goes_through_the_app(client, db):
     from bot.game.market import buyback
 
-    player = make_player(credits=500, level=8)
+    # Оружие сдают оружейнику: где купил, туда и принёс
+    player = make_player(credits=500, level=8, location="weapon_shop")
     await db.save_player(player)
     owned = await buy(db, player, "bat")
     purse = player.credits
@@ -545,7 +547,7 @@ async def test_mini_app_explains_why_the_button_is_grey(client, db):
 
 
 async def test_mini_app_repairs_for_credits(client, db):
-    player = make_player(user_id=42, credits=200)
+    player = make_player(user_id=42, credits=200, location="workshop")
     await db.save_player(player)
     owned = await buy(db, player, "sneakers")
     owned.wear = 5
@@ -677,7 +679,7 @@ def test_shop_marks_what_is_locked_owned_and_affordable():
     player = make_player(level=5, credits=100, stats=Stats(strength=13, agility=8, intuition=8, endurance=13))
     player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, slot=Slot.WEAPON)]
 
-    shop = build_shop(player)
+    shop = build_shop(player, Service.WEAPONS)
     weapons = next(s for s in shop["sections"] if s["slot"] == "weapon")
     goods = {row["code"]: row for row in weapons["items"]}
 
@@ -709,15 +711,17 @@ async def test_the_counter_refuses_goods_above_your_level(db):
 
 
 async def test_mini_app_serves_the_shop_and_takes_the_money(client, db):
-    player = make_player(user_id=42, level=4, credits=200, stats=Stats(strength=12, agility=8, intuition=8, endurance=10))
+    player = make_player(
+        user_id=42, level=4, credits=200, location="weapon_shop",
+        stats=Stats(strength=12, agility=8, intuition=8, endurance=10),
+    )
     await db.save_player(player)
 
     response = await client.get("/api/shop", headers=headers(42))
     assert response.status == 200
     shop = await response.json()
-    assert [section["slot"] for section in shop["sections"]] == [
-        s.value for s in ALL_SLOTS
-    ] + ["misc"]  # эликсиры идут последними: слота у них нет
+    # У оружейника на прилавке только то, что берут в руки
+    assert [section["slot"] for section in shop["sections"]] == ["weapon", "offhand"]
 
     response = await client.post("/api/buy", json={"code": "pipe"}, headers=headers(42))
     body = await response.json()
@@ -904,7 +908,7 @@ def test_shop_sections_are_named_after_body_parts():
     assert Slot.SHIRT.title == "футболка"
     assert Slot.JACKET.title == "верхняя одежда"
     assert Slot.PANTS.title == "штаны"
-    assert build_shop(make_player())["sections"][0]["title"] == "Голова"
+    assert build_shop(make_player(), Service.CLOTHES)["sections"][0]["title"] == "Голова"
 
 
 def test_every_look_points_at_its_own_picture():

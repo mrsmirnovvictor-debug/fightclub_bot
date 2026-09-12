@@ -18,7 +18,7 @@
   <!-- ---------- 1. Бойцовский клуб ---------- -->
   <main id="club" class="screen club hidden">
     <header class="screen-head">
-      <h1 class="screen-title">🥊 Бойцовский клуб</h1>
+      <h1 class="screen-title" id="club-title">🥊 Бойцовский клуб</h1>
       <span class="screen-count" id="club-count"></span>
     </header>
 
@@ -57,13 +57,31 @@
   </main>
 
   <!-- ---------- 2. Магазины: лавка клуба и комиссионка ---------- -->
+  <!-- ---------- 2. Карта города ---------- -->
+  <!-- Заголовков и пузырей здесь нет: экран занимает карта целиком, а
+       всё управление лежит поверх неё — стрелки по сторонам и отсчёт
+       дороги в углу. -->
+  <main id="map" class="screen map hidden">
+    <div class="map-frame" id="map-frame">
+      <img class="map-pic" id="map-pic" alt="Карта района">
+      <div class="map-zones" id="map-zones"></div>
+
+      <!-- Стрелки в соседние районы: видны только те, куда есть ход -->
+      <div class="map-arrows" id="map-arrows"></div>
+
+      <!-- Отсчёт дороги: батарейка в углу, пока боец идёт -->
+      <div class="road hidden" id="map-road">
+        <div class="road-cells" id="road-cells"></div>
+        <span class="road-clock" id="road-clock"></span>
+      </div>
+    </div>
+  </main>
+
   <main id="shop" class="screen shop hidden">
     <header class="screen-head">
       <h1 class="screen-title" id="shop-title">🏪 Лавка клуба</h1>
       <span class="shop-purse" id="shop-purse"></span>
     </header>
-
-    <div class="bubbles" id="shop-sections"></div>
 
     <!-- Лавка клуба: товар по типам вещей -->
     <section id="shop-club">
@@ -82,18 +100,18 @@
     </section>
   </main>
 
-  <!-- ---------- 3. Лавка мага ---------- -->
+  <!-- ---------- 3. Магазин «Элита» ---------- -->
   <main id="magic" class="screen magic hidden">
     <header class="screen-head">
-      <h1 class="screen-title">🔮 Лавка мага</h1>
+      <h1 class="screen-title">💎 Магазин «Элита»</h1>
     </header>
     <p class="screen-note" id="magic-note"></p>
     <div id="pro-card"></div>
     <div id="magic-list"></div>
     <div class="soon hidden" id="magic-empty">
-      <div class="soon-emoji">🔮</div>
+      <div class="soon-emoji">💎</div>
       <h2 class="soon-title">Прилавок пуст</h2>
-      <p class="soon-text muted">Маг ещё раскладывает товар. Загляни позже.</p>
+      <p class="soon-text muted">Товар ещё раскладывают. Загляни позже.</p>
     </div>
   </main>
 
@@ -124,7 +142,7 @@
       <h2 class="bag-head">🎒 Инвентарь <span class="bag-count" id="bag-count"></span></h2>
       <div class="bag-list" id="bag-list"></div>
       <p class="bag-empty hidden" id="bag-empty">
-        Рюкзак пуст. Вещи покупаются в лавке клуба — вкладка «Магазины».
+        Рюкзак пуст. За вещами — на карту: оружие у оружейника, одежда у одёжника.
       </p>
 
       <div id="potion-box" class="hidden">
@@ -190,11 +208,8 @@
     <button type="button" class="bar-tab" id="tab-club">
       <span class="bar-icon">🥊</span><span class="bar-label">Клуб</span>
     </button>
-    <button type="button" class="bar-tab" id="tab-shop">
-      <span class="bar-icon">🏪</span><span class="bar-label">Магазины</span>
-    </button>
-    <button type="button" class="bar-tab" id="tab-magic">
-      <span class="bar-icon">🔮</span><span class="bar-label">Лавка мага</span>
+    <button type="button" class="bar-tab" id="tab-map">
+      <span class="bar-icon">🗺</span><span class="bar-label">Карта</span>
     </button>
     <button type="button" class="bar-tab" id="tab-bag">
       <span class="bar-icon">🎒</span><span class="bar-label">Инвентарь</span>

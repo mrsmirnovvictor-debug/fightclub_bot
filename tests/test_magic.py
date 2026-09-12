@@ -1,4 +1,4 @@
-"""Лавка мага: товар за звёзды, выдача в рюкзак, возврат и тестовая выдача."""
+"""Магазин «Элита»: товар за звёзды, выдача в рюкзак, возврат и тестовая выдача."""
 
 import pytest
 from aiogram.types import SuccessfulPayment
@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.game import art
 from bot.game.classes import Stats
-from bot.game.combat import MAX_DODGE_CHANCE, Fighter
+from bot.game.combat import Fighter
 from bot.game.equipment import (
     MAGIC_ITEMS,
     SHOWCASE,
@@ -36,6 +36,8 @@ def make_player(user_id: int = 42, level: int = 5, **kwargs) -> Player:
         nickname=kwargs.pop("nickname", "Тайлер"),
         class_code="warrior",
         level=level,
+        # Звёздный товар лежит в элитном магазине
+        location=kwargs.pop("location", "premium_shop"),
         **stats.as_dict(),
         **kwargs,
     )
@@ -364,9 +366,16 @@ def test_the_profile_text_counts_gear_the_same_way():
     assert f"🛡🩸 Держит блок: <b>{fighter.block_hold:.0%}</b>" in text
 
 
-def test_the_card_never_promises_more_than_the_ring_allows():
-    """Потолок боя виден и на карточке: выше него карточка не обещает."""
-    from bot.game.stats import NO_LIMITS
+def test_the_card_shows_the_same_dodge_the_ring_counts():
+    """Карточка показывает ровно то, с чем боец выйдет на ринг.
+
+    Потолков теперь два: характеристики упираются в свой, итог вместе с
+    вещами — в свой, заметно выше. Карточка показывает итог, и он должен
+    совпадать с тем, что считает движок. Сколько от этого уворота
+    останется против конкретного соперника, решает уже его точность:
+    доли спорят вычитанием, и этот спор идёт на ринге, а не в карточке.
+    """
+    from bot.game.stats import MAX_DODGE_TOTAL, NO_LIMITS
 
     if NO_LIMITS:
         pytest.skip("потолки сняты в bot/game/stats.py — проверять нечего")
@@ -377,9 +386,10 @@ def test_the_card_never_promises_more_than_the_ring_allows():
     card = build_card(player, TOKEN, viewer_id=player.user_id)["combat"]
     fighter = Fighter.from_player(player, armed=True)
 
-    assert card["dodge_chance"] == round(fighter.dodge * 100) == round(
-        MAX_DODGE_CHANCE * 100
-    )
+    assert card["dodge_chance"] == round(fighter.dodge * 100)
+    assert fighter.dodge <= MAX_DODGE_TOTAL
+    # и это больше, чем дают одни характеристики: доля с меча дошла до боя
+    assert fighter.dodge > fighter.derived.dodge_chance
 
 
 # ---------- оружие в руках класса ----------

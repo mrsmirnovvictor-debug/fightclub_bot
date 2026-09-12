@@ -13,11 +13,13 @@ from dataclasses import dataclass, field
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
 
+from bot.board_service import ARMED, FIST, Board, Pin
 from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.modes import FightMode
+from bot.game.scout import SCOUT_FIGHTS, Habits, read_habits
 from bot.game.combat import (
     MAX_MISSED_TURNS,
     TURNS_PER_ROUND,
@@ -42,6 +44,8 @@ from bot.game.economy import (
     win_exp,
 )
 from bot.game.narrator import (
+    board_call,
+    board_call_over,
     corner_break,
     duel_intro,
     fight_board,
@@ -84,6 +88,9 @@ class Challenge:
     task: asyncio.Task | None = None
     chat_title: str = ""
     mode: FightMode = FightMode.FIST
+    # Объявления о вызове, развешанные по веткам клуба: их снимают, когда
+    # звать больше некуда
+    pins: list[Pin] = field(default_factory=list)
 
     @property
     def key(self) -> ChatKey | None:
@@ -158,6 +165,10 @@ class DuelSession:
     # мини-апп рисует по ним разбор сам — и тем же списком потом ляжет лог
     # в историю боёв.
     rounds: list[dict] = field(default_factory=list)
+    # Привычки бойца по его прошлым боям — для аналитика подписчика. Ключ
+    # тот, чьи это привычки: разбирают ведь соперника. Пусто — подписки
+    # нет ни у кого, и разбор никто не заказывал
+    habits: dict[int, Habits] = field(default_factory=dict)
     # Слова судьи в конце боя — уже без разметки. В ветке они остаются
     # сообщением, а в мини-аппе показывать нечего: бой из списка исчезает
     # ровно в тот момент, когда игроку и надо прочитать итог.
@@ -216,6 +227,7 @@ class DuelService:
         self.db = db
         self.config = config
         self.voice = Announcer(bot)
+        self.board = Board(db, self.voice)
         self.rng = rng or random.Random()
         self._ids = itertools.count(1)
         self._challenges: dict[int, Challenge] = {}
@@ -281,6 +293,15 @@ class DuelService:
             chat_id, thread_id, text, reply_markup=challenge_keyboard(challenge.id)
         )
         challenge.message_id = message.message_id if message else None
+        # Тот же вызов — объявлением в клубной ветке своего вида. Вызов из
+        # мини-аппа иначе не видит никто: он живёт без ветки, и звать
+        # соперника ему нечем
+        challenge.pins = await self.board.announce(
+            ARMED if mode.armed else FIST,
+            board_call(challenge, target),
+            skip=(chat_id, thread_id),
+            disable_web_page_preview=True,
+        )
         challenge.task = asyncio.create_task(self._expire_challenge(challenge))
         self._challenges[challenge.id] = challenge
         self._busy[challenger.user_id] = "challenge"
@@ -295,7 +316,7 @@ class DuelService:
             return
         if self._challenges.get(challenge.id) is not challenge:
             return
-        self._drop_challenge(challenge)
+        self._drop_challenge(challenge, "expired")
         await self._edit(
             challenge.chat_id,
             challenge.message_id,
@@ -303,18 +324,27 @@ class DuelService:
             "остался без ответа. Ринг свободен.",
         )
 
-    def _drop_challenge(self, challenge: Challenge) -> None:
+    def _drop_challenge(self, challenge: Challenge, reason: str = "closed") -> None:
         self._challenges.pop(challenge.id, None)
         if self._busy.get(challenge.challenger.user_id) == "challenge":
             self._busy.pop(challenge.challenger.user_id, None)
         if challenge.task and not challenge.task.done():
             challenge.task.cancel()
+        # Звать больше некуда — объявление снимаем с закрепа. Отдельной
+        # задачей: снимать закрепы посреди синхронного разбора нечем, а
+        # ждать этого никому не нужно
+        if challenge.pins:
+            asyncio.create_task(self._close_call(challenge, reason))
+
+    async def _close_call(self, challenge: Challenge, reason: str) -> None:
+        """Снять объявление о вызове и дописать, чем он кончился."""
+        await self.board.close(challenge.pins, board_call_over(challenge, reason))
 
     async def _withdraw_challenges_of(self, user_id: int) -> None:
         for challenge in list(self._challenges.values()):
             if challenge.challenger.user_id != user_id:
                 continue
-            self._drop_challenge(challenge)
+            self._drop_challenge(challenge, "withdrawn")
             await self._edit(
                 challenge.chat_id,
                 challenge.message_id,
@@ -328,7 +358,7 @@ class DuelService:
             raise DuelError("Этот вызов уже неактуален.")
         if challenge.challenger.user_id != user_id:
             raise DuelError("Отозвать вызов может только тот, кто его бросил.")
-        self._drop_challenge(challenge)
+        self._drop_challenge(challenge, "withdrawn")
         await self._edit(
             challenge.chat_id,
             challenge.message_id,
@@ -353,7 +383,7 @@ class DuelService:
         if challenge.key is not None and challenge.key in self._duel_by_chat:
             raise DuelError("В этой ветке уже идёт бой.")
 
-        self._drop_challenge(challenge)
+        self._drop_challenge(challenge, "accepted")
         challenger = await self.db.get_player(challenge.challenger.user_id)
         if challenger is None:  # pragma: no cover - персонажа удалили посреди вызова
             raise DuelError("Соперник куда-то пропал вместе со своим персонажем.")
@@ -394,6 +424,7 @@ class DuelService:
         кто бросил вызов, и увидеть соперника до первого удара он должен и там.
         """
         session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
+        await self._hire_scout(session)
         message = await self._send(
             chat_id,
             thread_id,
@@ -520,6 +551,23 @@ class DuelService:
         for user_id in session.order:
             self._busy.pop(user_id, None)
 
+    async def _hire_scout(self, session: DuelSession) -> None:
+        """Поднять привычки соперника — тем, у кого есть подписка.
+
+        Один раз на бой: десять чужих боёв перечитывать на каждый ход
+        незачем, привычки за бой не меняются. Считаем только подписчику и
+        только про его соперника — на обычный бой лишней работы не ложится.
+        """
+        for user_id in session.order:
+            player = session.players.get(user_id)
+            if player is None or not player.is_pro():
+                continue
+            rival_id = next(uid for uid in session.order if uid != user_id)
+            if rival_id in session.habits:
+                continue
+            fights = await self.db.recent_duel_logs(rival_id, SCOUT_FIGHTS)
+            session.habits[rival_id] = read_habits(fights, rival_id)
+
     async def start_duel(
         self,
         chat_id: int | None,
@@ -534,6 +582,7 @@ class DuelService:
         session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
         session.started = True
         session.on_finish = on_finish
+        await self._hire_scout(session)
         await self._send(
             chat_id,
             thread_id,

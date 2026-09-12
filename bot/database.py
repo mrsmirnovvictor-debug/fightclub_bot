@@ -11,6 +11,7 @@ from typing import Any, Iterable
 import aiosqlite
 
 from bot.game.economy import RATING_START
+from bot.game.locations import FIGHT_CLUB
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
 from bot.game.health import now_ts
 from bot.game.modes import FightMode, mode_of
@@ -48,6 +49,15 @@ CREATE TABLE IF NOT EXISTS players (
     wins           INTEGER NOT NULL DEFAULT 0,
     losses         INTEGER NOT NULL DEFAULT 0,
     draws          INTEGER NOT NULL DEFAULT 0,
+    -- Подвал считается отдельно от боёв с людьми
+    raid_wins      INTEGER NOT NULL DEFAULT 0,
+    raid_fights    INTEGER NOT NULL DEFAULT 0,
+    -- Где боец на карте города и куда идёт
+    -- Когда мини-апп последний раз отзывался от имени этого бойца
+    seen_at        INTEGER NOT NULL DEFAULT 0,
+    location       TEXT    NOT NULL DEFAULT 'fight_club',
+    travel_to      TEXT,
+    arrives_at     INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -282,6 +292,17 @@ CREATE INDEX IF NOT EXISTS idx_purchases_user
 
 -- Ветка новостей: куда бот сам приносит объявления об изменениях.
 -- Одна на группу, поэтому chat_id и есть ключ.
+-- Ветки, куда бот приносит объявления о начатых боях и рейдах. На каждый
+-- вид событий своя ветка, размечает их админ группы. Ветки нет — объявлять
+-- некуда, и бот молчит: это не ошибка, а не настроенный клуб.
+CREATE TABLE IF NOT EXISTS announce_threads (
+    chat_id   INTEGER NOT NULL,
+    kind      TEXT    NOT NULL,  -- fist, armed, raid
+    thread_id INTEGER,
+    title     TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (chat_id, kind)
+);
+
 CREATE TABLE IF NOT EXISTS noticeboards (
     chat_id   INTEGER PRIMARY KEY,
     thread_id INTEGER,
@@ -302,6 +323,7 @@ PLAYER_COLUMNS = (
     "user_id, nickname, class_code, avatar, avatar_file_id, look, strength, "
     "agility, intuition, endurance, free_points, level, exp, total_exp, "
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
+    "raid_wins, raid_fights, seen_at, location, travel_to, arrives_at, "
     "city, birthplace, pro_until, gender, created_at"
 )
 
@@ -318,6 +340,13 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("look", "TEXT NOT NULL DEFAULT ''"),
     ("pro_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — подписки нет
     ("gender", "TEXT NOT NULL DEFAULT ''"),  # пусто — бойца заводили до выбора
+    ("raid_wins", "INTEGER NOT NULL DEFAULT 0"),
+    ("raid_fights", "INTEGER NOT NULL DEFAULT 0"),
+    # Все, кто завёл бойца до карты, стоят там же, где начинают новые
+    ("location", f"TEXT NOT NULL DEFAULT '{FIGHT_CLUB}'"),
+    ("travel_to", "TEXT"),
+    ("arrives_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("seen_at", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -345,8 +374,49 @@ class Database:
                     f"ALTER TABLE players ADD COLUMN {column} {definition}"
                 )
                 logger.info("База обновлена: добавлена колонка players.%s", column)
+        if "raid_fights" not in existing:
+            await self._split_raids_from_record()
         await self._migrate_duels()
         await self._migrate_arenas()
+
+    async def _split_raids_from_record(self) -> None:
+        """Вынуть рейды из личного счёта бойца — один раз, при обновлении.
+
+        Раньше подвал писался туда же, куда бои с людьми: победа над
+        боссом шла победой, неудачный заход — поражением. Счёт врал в обе
+        стороны, и по нему нельзя было понять, кого боец бил на самом деле.
+
+        Пересчитываем по журналу рейдов: там есть и состав отряда, и исход
+        каждого захода, поэтому историю терять не нужно — достаточно
+        переложить её в свою колонку. Считаем только законченные рейды: у
+        брошенного `outcome` пуст, и в счёт он не попадал.
+        """
+
+        def counted(outcome: str | None) -> str:
+            """Сколько рейдов с таким исходом за плечами у этой строки."""
+            filter_by = "r.outcome IS NOT NULL" if outcome is None else (
+                f"r.outcome = '{outcome}'"
+            )
+            return (
+                "SELECT COUNT(*) FROM raid_members m "
+                "JOIN raids r ON r.id = m.raid_id "
+                f"WHERE m.user_id = players.user_id AND {filter_by}"
+            )
+
+        # Все выражения UPDATE читают старые значения строки, поэтому
+        # вычитание из побед и запись в raid_wins не мешают друг другу
+        await self.conn.execute(
+            f"""
+            UPDATE players SET
+                raid_fights = ({counted(None)}),
+                raid_wins   = ({counted("win")}),
+                wins   = MAX(0, wins   - ({counted("win")})),
+                draws  = MAX(0, draws  - ({counted("draw")})),
+                losses = MAX(0, losses - ({counted("loss")}))
+            """
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: рейды вынесены из личного счёта бойцов")
 
     async def _migrate_duels(self) -> None:
         """Записи боёв прошлой версии — кулачные: другого режима тогда не было."""
@@ -483,9 +553,10 @@ class Database:
                 user_id, nickname, class_code, avatar, avatar_file_id, look,
                 strength, agility, intuition, endurance, free_points, level,
                 exp, total_exp, micro_ups, credits, rating, hp, hp_at,
-                wins, losses, draws, city, birthplace, pro_until, gender,
-                created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                wins, losses, draws, raid_wins, raid_fights, seen_at,
+                location, travel_to, arrives_at,
+                city, birthplace, pro_until, gender, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -510,6 +581,12 @@ class Database:
                 wins           = excluded.wins,
                 losses         = excluded.losses,
                 draws          = excluded.draws,
+                raid_wins      = excluded.raid_wins,
+                raid_fights    = excluded.raid_fights,
+                seen_at        = excluded.seen_at,
+                location       = excluded.location,
+                travel_to      = excluded.travel_to,
+                arrives_at     = excluded.arrives_at,
                 pro_until      = excluded.pro_until,
                 gender         = excluded.gender
             """,
@@ -536,6 +613,12 @@ class Database:
                 player.wins,
                 player.losses,
                 player.draws,
+                player.raid_wins,
+                player.raid_fights,
+                player.seen_at,
+                player.location,
+                player.travel_to,
+                player.arrives_at,
                 player.city,
                 player.birthplace,
                 player.pro_until,
@@ -802,6 +885,50 @@ class Database:
         )
         await self.conn.commit()
 
+    async def set_announce_thread(
+        self, chat_id: int, kind: str, thread_id: int | None, title: str = ""
+    ) -> None:
+        """Отметить ветку, куда бот приносит объявления этого вида."""
+        await self.conn.execute(
+            """
+            INSERT INTO announce_threads (chat_id, kind, thread_id, title)
+            VALUES (?,?,?,?)
+            ON CONFLICT(chat_id, kind) DO UPDATE SET
+                thread_id = excluded.thread_id,
+                title     = excluded.title
+            """,
+            (chat_id, kind, thread_id, title),
+        )
+        await self.conn.commit()
+
+    async def drop_announce_thread(self, chat_id: int, kind: str) -> None:
+        await self.conn.execute(
+            "DELETE FROM announce_threads WHERE chat_id = ? AND kind = ?",
+            (chat_id, kind),
+        )
+        await self.conn.commit()
+
+    async def announce_threads(self, kind: str) -> list[tuple[int, int | None]]:
+        """Все ветки этого вида: чат и ветка в нём.
+
+        Клубов может быть несколько, и вызов из мини-аппа принимает кто
+        угодно, — поэтому объявление идёт во все размеченные ветки, а не в
+        одну «родную» группу.
+        """
+        async with self.conn.execute(
+            "SELECT chat_id, thread_id FROM announce_threads WHERE kind = ?",
+            (kind,),
+        ) as cursor:
+            return [(row["chat_id"], row["thread_id"]) for row in await cursor.fetchall()]
+
+    async def announce_threads_of(self, chat_id: int) -> dict[str, int | None]:
+        """Что размечено в этом чате: вид события — ветка."""
+        async with self.conn.execute(
+            "SELECT kind, thread_id FROM announce_threads WHERE chat_id = ?",
+            (chat_id,),
+        ) as cursor:
+            return {row["kind"]: row["thread_id"] for row in await cursor.fetchall()}
+
     async def get_noticeboard(self, chat_id: int) -> tuple[int | None, str] | None:
         async with self.conn.execute(
             "SELECT thread_id, title FROM noticeboards WHERE chat_id = ?",
@@ -943,6 +1070,35 @@ class Database:
             row = await cursor.fetchone()
         return dict(row) if row else None
 
+    async def recent_duel_logs(
+        self, user_id: int, limit: int = 10
+    ) -> list[list[dict[str, Any]]]:
+        """Разборы последних боёв бойца — по списку ходов на бой.
+
+        Одним запросом, а не боем за раз: аналитик поднимает их перед
+        каждым боем, и десять отдельных походов в базу на это жалко.
+        Бои без лога (шли до того, как их начали писать) просто не придут.
+        """
+        async with self.conn.execute(
+            """
+            SELECT log.duel_id, log.strikes
+            FROM duel_log AS log
+            JOIN (
+                SELECT d.id FROM duel_sides AS side
+                JOIN duels AS d ON d.id = side.duel_id
+                WHERE side.user_id = ?
+                ORDER BY d.id DESC LIMIT ?
+            ) AS recent ON recent.id = log.duel_id
+            ORDER BY log.duel_id DESC, log.number
+            """,
+            (user_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        fights: dict[int, list[dict[str, Any]]] = {}
+        for row in rows:
+            fights.setdefault(row["duel_id"], []).append(json.loads(row["strikes"]))
+        return list(fights.values())
+
     async def duel_log(self, duel_id: int) -> list[dict[str, Any]]:
         """Разбор боя по ходам. Пусто — бой шёл до того, как их начали писать."""
         async with self.conn.execute(
@@ -1056,6 +1212,17 @@ class Database:
                 (raid_id, user_id, damage, 1 if alive else 0, prize)
                 for user_id, damage, alive, prize in members
             ],
+        )
+        await self.conn.commit()
+
+    async def mark_seen(self, user_id: int, moment: int) -> None:
+        """Отметить, что боец только что был в клубе.
+
+        Отдельным запросом, а не через save_player: тот пишет бойца
+        целиком и затёр бы то, что успело поменяться рядом.
+        """
+        await self.conn.execute(
+            "UPDATE players SET seen_at = ? WHERE user_id = ?", (moment, user_id)
         )
         await self.conn.commit()
 

@@ -248,6 +248,15 @@ async def on_buy(callback: CallbackQuery, callback_data: BuyCB, db: Database) ->
         return
 
     item = get_item(callback_data.code)
+    # Кнопки строятся по витрине клуба, но нажатие приходит кодом: чужой
+    # прилавок этим кодом не открыть. За фанатской экипировкой ходят в
+    # магазин на карте — там за неё и спрашивают место
+    if item is None or item.shelf:
+        await callback.answer(
+            "Этого в лавке клуба нет: загляни в магазин на карте.",
+            show_alert=True,
+        )
+        return
     try:
         await buy(db, player, callback_data.code)
     except InventoryError as error:

@@ -19,6 +19,7 @@ from bot.game.health import now_ts
 from bot.game.potions import ActiveEffect
 from bot.game.store import PACKS
 from bot.models import Player
+from bot.game.locations import Service
 from bot.webapp.card import build_card, build_magic, build_shop, build_topup
 from bot.webapp.server import create_app
 from tests.test_webapp import TOKEN
@@ -43,7 +44,7 @@ IMAGES = "**/*.{jpeg,jpg,png}"
 pytestmark = pytest.mark.skipif(CHROMIUM is None, reason="Chromium не найден")
 
 
-def make_player() -> Player:
+def make_player(location: str = "fight_club") -> Player:
     stats = Stats(strength=14, agility=8, intuition=8, endurance=13)
     player = Player(
         user_id=42,
@@ -51,6 +52,7 @@ def make_player() -> Player:
         class_code="warrior",
         level=5,
         credits=214,
+        location=location,
         **stats.as_dict(),
     )
     player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, wear=3, slot=Slot.WEAPON)]
@@ -81,8 +83,8 @@ EMPTY_MARKET = {
 }
 
 BOSS_CARD = {
-    "code": "cellar_boss", "title": "Босс подпольного казино", "emoji": "🩸",
-    "image": "", "raid_name": "Ограбление Босса подпольного казино",
+    "code": "cellar_boss", "title": "Босс Казино", "emoji": "🩸",
+    "image": "", "raid_name": "Ограбление Босса Казино",
     "tagline": "Он тут всё построил и всех похоронил.", "live": False,
     "levels_above": 4, "level": 9, "fclass": "Танк", "fclass_emoji": "🛡️",
     "max_hp": 304, "weapon": "Кувалда", "weapon_icon": "🔨", "damage": [15, 25],
@@ -180,10 +182,37 @@ class FakeBot:  # pragma: no cover - аватар в этом тесте не т
         raise AssertionError
 
 
+def to_rgb(hexed: str) -> str:
+    """Цвет так, как его возвращает браузер: «rgb(31, 111, 235)»."""
+    red, green, blue = (int(hexed[step:step + 2], 16) for step in (1, 3, 5))
+    return f"rgb({red}, {green}, {blue})"
+
+
+def city_map(
+    here: str = "fight_club", road: dict | None = None, raid: dict | None = None
+) -> dict:
+    """Карта города так, как её отдаёт сервер."""
+    from bot.game.classes import get_class
+    from bot.models import Player
+    from bot.webapp.citymap import build_map
+
+    fclass = get_class("warrior")
+    walker = Player(
+        user_id=42, nickname="Тайлер", class_code="warrior", location=here,
+        **fclass.base_stats.as_dict(),
+    )
+    body = build_map(walker)
+    if road:
+        body["road"] = {**body["road"], **road}
+    if raid:
+        body["raid"] = {**body["raid"], **raid}
+    return body
+
+
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
-    battle=None,
+    battle=None, city=None,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -206,6 +235,7 @@ async def open_page(
     await page.route("**/api/raid*", canned(raid or EMPTY_RAID))
     await page.route("**/api/market*", canned(market or EMPTY_MARKET))
     await page.route("**/api/battle*", canned(battle or EMPTY_BATTLE))
+    await page.route("**/api/map*", canned(city or city_map()))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
@@ -218,12 +248,43 @@ async def open_page(
 
 @pytest.fixture
 async def shop_page(db):
-    """Страница мини-аппа с подменёнными ответами API."""
+    """Прилавок магазина одежды: на нём всё носимое, кроме оружия."""
+    async for page in shop_screen(db, Service.CLOTHES):
+        yield page
+
+
+@pytest.fixture
+async def weapon_page(db):
+    """Прилавок оружейника: только то, что берут в руки."""
+    async for page in shop_screen(db, Service.WEAPONS):
+        yield page
+
+
+@pytest.fixture
+async def fan_page(db):
+    """Прилавок фанатского магазина: линия своей команды целиком."""
+    async for page in shop_screen(db, Service.FAN):
+        yield page
+
+
+@pytest.fixture
+async def pharmacy_page(db):
+    """Прилавок аптеки: склянки."""
+    async for page in shop_screen(db, Service.POTIONS):
+        yield page
+
+
+async def shop_screen(db, service: Service):
+    """Страница мини-аппа с подменёнными ответами API.
+
+    Магазин теперь не один: у оружейника, одёжника и аптеки свои
+    прилавки, и открывается тот, в чьей локации боец стоит.
+    """
     from bot.config import Config
 
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    shop = build_shop(player)
+    shop = build_shop(player, service)
 
     server = TestServer(create_app(FakeBot(), db, Config(bot_token=TOKEN)))
     await server.start_server()
@@ -251,11 +312,21 @@ async def shop_page(db):
         await page.route("**/api/fights*", canned(EMPTY_RING))
         await page.goto(f"{server.make_url('/')}")
         await page.wait_for_selector("#hero:not(.hidden)")
-        await page.locator("#tab-shop").click()
+        await open_screen(page, "shop")
         await page.wait_for_selector(".shelf")
         yield page
         await browser.close()
     await server.close()
+
+
+async def open_screen(page, name: str) -> None:
+    """Открыть экран, минуя карту.
+
+    Лавки теперь дома на карте, и человек приходит в них ногами. Тесты
+    самой дороги ходят этим путём целиком; остальным она не предмет, и
+    им короче открыть экран напрямую.
+    """
+    await page.evaluate(f"showTab('{name}')")
 
 
 async def shelves(page) -> list[str]:
@@ -266,18 +337,46 @@ async def visible_titles(page) -> list[str]:
     return await page.locator(".shelf-list:not(.hidden) .thing-title").all_inner_texts()
 
 
-async def test_shop_opens_with_all_types_on_the_counter(shop_page):
-    # девять полок с экипировкой плюс «Прочее» — эликсиры
+async def test_the_clothes_shop_holds_everything_but_weapons(shop_page):
+    """У одёжника семь полок: всё носимое, кроме того, что берут в руки."""
     heads = await shelves(shop_page)
-    assert len(heads) == 10
+    assert len(heads) == 7
+    assert not [head for head in heads if "Оружие" in head or "Щиты" in head]
+
     titles = await visible_titles(shop_page)
-    assert "Кастет" in titles  # открыто по уровню
-    assert "Бита" not in titles  # закрыто, лежит под кнопкой
+    assert "Кастет" not in titles, "оружие торгуют у оружейника"
 
     # футболки на прилавке: пять штук, часть открыта по уровню
     shirts = next(head for head in heads if "Футболки" in head)
     assert "из 5" in shirts
     assert "Майка-алкоголичка" in titles
+
+
+async def test_the_weapon_shop_holds_only_what_you_hold(weapon_page):
+    """У оружейника две полки: оружие и щиты."""
+    heads = await shelves(weapon_page)
+    assert [head.split("\n")[0] for head in heads] == ["Оружие", "Щиты"]
+
+    titles = await visible_titles(weapon_page)
+    assert "Кастет" in titles  # открыто по уровню
+    assert "Бита" not in titles  # закрыто, лежит под кнопкой
+
+
+async def test_the_fan_shop_shows_its_own_line(fan_page):
+    """«Северный Вал» одевает целиком: бита и кроссовки одной команды."""
+    heads = await shelves(fan_page)
+    # восемь полок: своей линии нет только в перчатках, и пустой полки тут нет
+    assert [head.split("\n")[0] for head in heads] == [
+        "Голова", "Оружие", "Щиты", "Футболки", "Пояс",
+        "Верхняя одежда", "Ноги", "Обувь",
+    ]
+    assert await fan_page.locator("#shop-title").inner_text() == (
+        "🧣 Магазин «Северный Вал»"
+    )
+    # товар открывается десятым уровнем, а боец пятого — значит, под замком
+    note = await fan_page.locator("#shop-note").inner_text()
+    assert "десятый уровень" in note
+    assert "Бита с гвоздями" not in await visible_titles(fan_page)
 
 
 async def test_an_empty_shelf_says_the_goods_are_coming(server):
@@ -296,7 +395,7 @@ async def test_an_empty_shelf_says_the_goods_are_coming(server):
             pw, server, build_card(make_player(), TOKEN, viewer_id=42), shop=empty
         )
         await page.wait_for_selector("#hero:not(.hidden)")
-        await page.locator("#tab-shop").click()
+        await open_screen(page, "shop")
         await page.wait_for_selector(".shelf")
 
         assert "открыто 0 из 0" in (await shelves(page))[0]
@@ -304,16 +403,17 @@ async def test_an_empty_shelf_says_the_goods_are_coming(server):
         await browser.close()
 
 
-async def test_type_filter_leaves_one_shelf(shop_page):
-    await shop_page.get_by_role("button", name="Оружие", exact=True).click()
+async def test_type_filter_leaves_one_shelf(weapon_page):
+    await weapon_page.get_by_role("button", name="Оружие", exact=True).click()
 
     # значков в заголовках полок нет: тип и так назван словом
-    assert [head.split("\n")[0] for head in await shelves(shop_page)] == ["Оружие"]
+    assert [head.split("\n")[0] for head in await shelves(weapon_page)] == ["Оружие"]
     assert all(
         title
         in ("Кастет", "Деревянная бита", "Выкидуха", "Строительный нож",
-            "Монтировка", "Нож", "Стилет ассасина")
-        for title in await visible_titles(shop_page)
+            "Монтировка", "Нож", "Дубинка бойца", "Трость шулера",
+            "Кувалда вышибалы")
+        for title in await visible_titles(weapon_page)
     )
 
 
@@ -438,39 +538,42 @@ MARKET = {
 
 
 async def open_market(pw, server, market=None):
-    """Открыть вкладку магазинов на комиссионке."""
+    """Открыть комиссионку — она теперь свой дом на карте."""
     player = make_player()
     browser, page = await open_page(
         pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
-        build_shop(player), market=market or MARKET,
+        build_shop(player, Service.CLOTHES), market=market or MARKET,
     )
     await page.wait_for_selector("#hero:not(.hidden)")
-    await page.locator("#tab-shop").click()
-    await page.wait_for_selector(".shelf")
-    await page.get_by_role("button", name="Комиссионка", exact=True).click()
+    await page.evaluate("showTab('shop'); pickShopSection('market')")
     await page.wait_for_selector("#shop-market:not(.hidden)")
     return browser, page
 
 
-async def test_the_shop_tab_holds_two_shops(server):
-    """Вкладка «Магазины»: лавка клуба и комиссионка на одном экране."""
+async def test_a_shop_screen_says_whose_counter_it_is(server):
+    """Лавка одна не бывает: у каждой своё имя, и оно в заголовке.
+
+    Раньше на вкладке «Магазины» лежали лавка клуба и комиссионка, и их
+    переключали пузырями. Теперь это разные дома города, и попасть в них
+    можно только ногами — переключать нечего.
+    """
     async with async_playwright() as pw:
         player = make_player()
         browser, page = await open_page(
             pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
-            build_shop(player),
+            build_shop(player, Service.WEAPONS),
         )
         await page.wait_for_selector("#hero:not(.hidden)")
-        await page.locator("#tab-shop").click()
+        await open_screen(page, "shop")
         await page.wait_for_selector(".shelf")
 
-        assert await page.locator("#tab-shop").inner_text() == "🏪\nМагазины"
-        sections = await page.locator("#shop-sections .chip").all_inner_texts()
-        assert sections == ["Лавка клуба", "Комиссионка"]
+        assert "Оружейный магазин" in await page.locator("#shop-title").inner_text()
+        assert await page.locator("#shop-sections").count() == 0
         assert await page.locator("#shop-club").is_visible()
         assert await page.locator("#shop-market").is_hidden()
 
-        await page.get_by_role("button", name="Комиссионка", exact=True).click()
+        # комиссионка — другой дом, и открывается она из него
+        await page.evaluate("pickShopSection('market'); showTab('shop')")
         await page.wait_for_selector("#shop-market:not(.hidden)")
 
         assert await page.locator("#shop-club").is_hidden()
@@ -614,20 +717,18 @@ async def test_the_market_rereads_the_backpack_when_you_come_back(server):
         player = make_player()
         browser, page = await open_page(
             pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
-            build_shop(player),
+            build_shop(player, Service.CLOTHES),
         )
         await page.route("**/api/market*", market_route)
         await page.wait_for_selector("#hero:not(.hidden)")
-        await page.locator("#tab-shop").click()
-        await page.wait_for_selector(".shelf")
-        await page.get_by_role("button", name="Комиссионка", exact=True).click()
+        await page.evaluate("showTab('shop'); pickShopSection('market')")
         await page.wait_for_selector("#shop-market:not(.hidden)")
 
         assert "Бандана" in await page.locator("#market-body").inner_text()
 
         # ушли на другую вкладку и вернулись — список перечитан
         await page.locator("#tab-hero").click()
-        await page.locator("#tab-shop").click()
+        await open_screen(page, "shop")  # комиссионка помнит, что открыта она
         await page.wait_for_selector("text=В рюкзаке пусто")
 
         body = await page.locator("#market-body").inner_text()
@@ -654,7 +755,7 @@ async def test_the_counter_has_no_level_filter_any_more(shop_page):
     labels = await shop_page.locator("#filter-type .chip").all_inner_texts()
 
     assert labels[0] == "Все"
-    assert "Оружие" in labels
+    assert "Футболки" in labels
     assert not [label for label in labels if any(ch > "\u2000" for ch in label)], (
         "в фильтрах остались значки"
     )
@@ -662,13 +763,13 @@ async def test_the_counter_has_no_level_filter_any_more(shop_page):
     assert await shop_page.locator(".filters").count() == 0
 
 
-async def test_locked_goods_stay_folded_at_the_end_of_the_shelf(shop_page):
+async def test_locked_goods_stay_folded_at_the_end_of_the_shelf(weapon_page):
     """Закрытое по уровню видно только под кнопкой — это не фильтр, а раскладка."""
-    titles = await visible_titles(shop_page)
+    titles = await visible_titles(weapon_page)
     assert "Кастет" in titles  # открыто по уровню
     assert "Бита" not in titles  # закрыто
 
-    text = await shop_page.locator("#shop-list").inner_text()
+    text = await weapon_page.locator("#shop-list").inner_text()
     assert "Показать закрытые" in text
 
 
@@ -711,8 +812,12 @@ async def test_stranger_card_has_no_backpack_and_no_shop(server):
         await browser.close()
 
 
-async def test_the_bottom_bar_switches_five_screens(server):
-    """Панель снизу: клуб, магазин, лавка мага, инвентарь, персонаж."""
+async def test_the_bottom_bar_switches_four_screens(server):
+    """Панель снизу: клуб, карта, инвентарь, персонаж.
+
+    Магазинов на панели больше нет — они дома на карте, и лавка мага тоже
+    (теперь это элитный магазин). Панель стала короче ровно настолько.
+    """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
@@ -721,16 +826,16 @@ async def test_the_bottom_bar_switches_five_screens(server):
         await page.wait_for_selector("#hero:not(.hidden)")
 
         assert await page.locator("#bar").is_visible()
-        assert await page.locator(".bar-tab").count() == 5
+        assert await page.locator(".bar-tab").count() == 4
         # открывается карточка персонажа, её вкладка и подсвечена
         assert await page.locator("#tab-hero").get_attribute("class") == "bar-tab active"
 
-        for tab in ("club", "shop", "magic", "bag", "hero"):
+        for tab in ("club", "map", "bag", "hero"):
             await page.locator("#tab-" + tab).click()
             await page.wait_for_selector("#" + tab + ":not(.hidden)")
             shown = [
                 screen
-                for screen in ("club", "shop", "magic", "bag", "hero")
+                for screen in ("club", "map", "shop", "magic", "bag", "hero")
                 if await page.locator("#" + screen).is_visible()
             ]
             assert shown == [tab], f"вместе с {tab} открыто {shown}"
@@ -779,7 +884,7 @@ async def test_the_shop_purse_has_the_same_plus(server):
             pw, server, card, build_shop(player), topup=build_topup(player)
         )
         await page.wait_for_selector("#hero:not(.hidden)")
-        await page.locator("#tab-shop").click()
+        await open_screen(page, "shop")
         await page.wait_for_selector("#shop:not(.hidden)")
 
         await page.locator("#shop-purse .plus").click()
@@ -983,45 +1088,42 @@ async def test_the_hero_screen_reads_without_extra_icons(server):
 
 
 async def test_a_percentage_says_when_the_ceiling_cut_it(server):
-    """Вещи дают уворота выше потолка, в строке потолок — карточка объясняет."""
-    from bot.game.combat import MAX_DODGE_CHANCE
-    from bot.game.stats import MAX_CRIT_CHANCE, NO_LIMITS
+    """Вещи дали выше потолка — карточка это объясняет, а не молчит.
+
+    Режущих потолков осталось два: контрудар и стойкость блока. У пар
+    «уворот — точность» и «крит — антикрит» потолок итога намеренно
+    поставлен выше всего, что можно собрать: они спорят вычитанием, и
+    резать итог значило бы решать бой потолком.
+    """
+    from bot.game.stats import MAX_COUNTER_CHANCE, MAX_DODGE_TOTAL, NO_LIMITS
 
     if NO_LIMITS:
         pytest.skip("потолки сняты в bot/game/stats.py")
-    ceiling = round(MAX_DODGE_CHANCE * 100)
+    ceiling = round(MAX_COUNTER_CHANCE * 100)
     player = make_player()
-    player.gear = [
-        OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON),
-        OwnedItem(item=CATALOGUE["test_wraps"], id=2, slot=Slot.GLOVES),
-        OwnedItem(item=CATALOGUE["test_sneakers"], id=3, slot=Slot.BOOTS),
-        OwnedItem(item=CATALOGUE["shadow_coat"], id=4, slot=Slot.JACKET),
-        OwnedItem(item=CATALOGUE["sheath_pants"], id=5, slot=Slot.PANTS),
-    ]
+    player.agility = 80
+    player.gear = [OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON)]
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    gear = round(sum(owned.item.dodge for owned in player.gear) * 100)
-    assert card["combat"]["caps"]["dodge_chance"]["gear"] == gear > ceiling
+    assert card["combat"]["caps"]["counter_chance"]["capped"]
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-hero").click()
 
-        dodge = page.locator("#combat li").filter(has_text="Уворот").first
+        counter = page.locator("#combat li").filter(has_text="Контрудар").first
         # срезанный процент подписью не помечают — его красят золотом
-        assert await dodge.inner_text() == f"🌀 Уворот\n{ceiling}%"
-        assert await dodge.locator(".value.capped").count() == 1
-        assert f"вещи {gear}%" in await dodge.get_attribute("title")
+        assert await counter.inner_text() == f"🔄 Контрудар\n{ceiling}%"
+        assert await counter.locator(".value.capped").count() == 1
         assert f"но выше {ceiling}% не растёт" in (
-            await dodge.get_attribute("title")
+            await counter.get_attribute("title")
         )
 
-        # непотолочная строка объясняет то же самое, но золотом не горит
-        crit = page.locator("#combat li").filter(has_text="Крит").first
-        assert await crit.locator(".value.capped").count() == 0
-        assert f"потолок {round(MAX_CRIT_CHANCE * 100)}%" in (
-            await crit.get_attribute("title")
-        )
+        # а уворот золотом не горит: его потолок выше всего собираемого
+        dodge = page.locator("#combat li").filter(has_text="Уворот").first
+        assert await dodge.locator(".value.capped").count() == 0
+        assert MAX_DODGE_TOTAL >= 1.0
+        assert "потолков сейчас нет" in await dodge.get_attribute("title")
         await browser.close()
 
 
@@ -1078,7 +1180,7 @@ async def test_the_card_catches_up_with_a_level_taken_in_a_fight(server):
 
         # ушли в чат, подрались, вернулись
         served[0] = after
-        await page.locator("#tab-shop").click()
+        await open_screen(page, "shop")
         await page.locator("#tab-hero").click()
         await page.wait_for_selector("#upgrade:not(.hidden)")
 
@@ -1141,7 +1243,7 @@ def club_of(*fighters) -> dict:
 
 
 async def test_the_club_lists_everyone_and_opens_a_card(server):
-    """Список клуба: ник, уровень и кнопка «i» с карточкой соседа."""
+    """Список клуба: ник, уровень и значок ℹ️ с карточкой соседа."""
     me = make_player()
     rival = make_player()
     rival.user_id = 43
@@ -1195,12 +1297,106 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         card_text = await page.locator("#sheet-list").inner_text()
         for line in ("Сила", "Ловкость", "Интуиция", "Выносливость"):
             assert line in card_text
-        for line in ("Уровень", "Опыт", "Побед", "Поражений", "Ничьих", "Рейтинг"):
+        for line in ("Уровень", "Опыт", "Побед", "Поражений", "Ничьих",
+                     "Рейды", "Рейтинг"):
             assert line in card_text
         assert "Клуб на Вязов" in card_text
         assert "День рождения персонажа" in card_text
         # чужой кошелёк в карточке не показываем
         assert "Кредиты" not in card_text
+        await browser.close()
+
+
+async def test_a_fighter_row_has_one_way_in_and_it_is_the_card(server):
+    """В строке списка одна кнопка — значок ℹ️. Статистика живёт в карточке.
+
+    Раньше кнопок было две, и они делили строку: значок вёл в карточку,
+    таблица — сразу в статистику. Выбирать между ними приходилось, ни
+    разу не увидев бойца, а список от этого был вдвое длиннее.
+    """
+    me = make_player()
+    rival = make_player()
+    rival.user_id = 43
+    rival.nickname = "Марла"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(me, TOKEN, viewer_id=me.user_id),
+            build_shop(me), club=club_of(me, rival),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role("button", name="Игроки", exact=True).click()
+        await page.wait_for_selector(".fighter")
+
+        row = page.locator(".fighter").first
+        assert await row.locator("button").count() == 1
+        assert await row.locator(".fighter-info").inner_text() == "ℹ️"
+        assert await page.locator(".fighter-stats").count() == 0
+
+        # и строки стоят плотно: список читают, а не листают
+        first = await page.locator(".fighter").nth(0).bounding_box()
+        second = await page.locator(".fighter").nth(1).bounding_box()
+        assert first["height"] <= 40, f"строка выросла до {first['height']}"
+        assert second["y"] - (first["y"] + first["height"]) <= 6
+        await browser.close()
+
+
+async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
+    """В карточке бойца видно здоровье, а кнопка ведёт в его статистику."""
+    me = make_player()
+    rival = make_player()
+    rival.user_id = 43
+    rival.nickname = "Марла"
+    rival.set_hp(rival.max_hp // 3)  # отлёживается после боя
+    rival.seen_at = now_ts() - 20 * 60  # и заходил давно
+    rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
+    assert rival_card["hp"]["percent"] < 100, "боец должен быть побит"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(me, TOKEN, viewer_id=me.user_id),
+            build_shop(me), club=club_of(me, rival),
+        )
+        await page.route(
+            "**/api/card?user_id=43",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(rival_card),
+            ),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role("button", name="Игроки", exact=True).click()
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+
+        bar = page.locator("#sheet-list .hp")
+        assert await bar.count() == 1
+        assert await bar.locator(".hp-text").inner_text() == "{} / {}".format(
+            rival_card["hp"]["current"], rival_card["hp"]["max"]
+        )
+        # полоска налита ровно на столько, сколько здоровья осталось
+        width = await bar.locator(".hp-fill").evaluate("node => node.style.width")
+        assert width == f"{rival_card['hp']['percent']}%"
+
+        # под шкалой — не «готов к бою», а в клубе ли он сейчас
+        note = await page.locator("#sheet-list .sheet-hp-note").inner_text()
+        assert "Не был в клубе 20 минут" in note
+        assert "готов к бою" not in note.lower()
+        # и сколько ему до строя: этого по шкале не понять
+        assert "в строю через" in note
+
+        # и видно, где он сейчас: вызывать есть смысл только того, кто в клубе
+        assert "📍 Бойцовский клуб VEGAS" in await page.locator(
+            "#sheet-list .sheet-place"
+        ).inner_text()
+
+        # кнопка уводит в статистику именно этого бойца
+        await page.get_by_role("button", name="📊 Статистика боёв").click()
+        assert await page.locator("#sheet.hidden").count() == 1
+        await page.wait_for_selector("#club-stats:not(.hidden)")
         await browser.close()
 
 
@@ -1230,7 +1426,9 @@ async def test_the_bag_pours_a_potion_and_the_counter_sells_them(server):
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     async with async_playwright() as pw:
-        browser, page = await open_page(pw, server, card, build_shop(player))
+        browser, page = await open_page(
+            pw, server, card, build_shop(player, Service.POTIONS)
+        )
         drunk = []
 
         async def pour(route):
@@ -1275,8 +1473,8 @@ async def test_the_bag_pours_a_potion_and_the_counter_sells_them(server):
         # ответ дошёл: карточка перерисовалась, полка склянок на месте
         assert await page.locator("#potion-box").is_visible()
 
-        # на прилавке склянки лежат под своим фильтром
-        await page.locator("#tab-shop").click()
+        # на прилавке аптеки склянки лежат под своим фильтром
+        await open_screen(page, "shop")
         await page.wait_for_selector(".shelf")
         await page.get_by_role("button", name="Прочее", exact=True).click()
         titles = await page.locator(
@@ -1297,7 +1495,7 @@ async def test_the_mage_sells_for_stars_and_never_for_credits(server):
             pw, server, card, build_shop(player), magic=build_magic(player)
         )
         await page.wait_for_selector("#hero:not(.hidden)")
-        await page.locator("#tab-magic").click()
+        await open_screen(page, "magic")
         await page.wait_for_selector("#magic .thing")
 
         counter = page.locator("#magic")
@@ -1351,7 +1549,7 @@ async def test_the_pro_card_always_leads_the_mage_counter(server):
 
         await page.route("**/api/pro", give)
         await page.wait_for_selector("#hero:not(.hidden)")
-        await page.locator("#tab-magic").click()
+        await open_screen(page, "magic")
         await page.wait_for_selector("#pro-card .thing")
 
         pro = page.locator("#pro-card .thing")
@@ -1576,6 +1774,9 @@ def ring_with_duel(chosen=None) -> dict:
             "resting": False,
             "yours": True,
             "chosen": chosen or {"attack": None, "block": None},
+            # Подсказки аналитика приходят только подписчику; в этой
+            # заготовке их нет — тест аналитика кладёт их сам
+            "scout": None,
             "fighters": [
                 {
                     "user_id": 42, "name": "Растафарайчик", "level": 5,
@@ -1641,7 +1842,8 @@ async def test_the_club_tab_opens_on_the_ring_and_switches_to_players(server):
         browser, page = await open_ring(pw, server, None)
 
         sections = await page.locator("#club-sections .chip").all_inner_texts()
-        assert sections == ["Бои", "Отряд", "Рейд", "Игроки", "Статистика"]
+        # рейда среди пузырей нет: в подвал спускаются из казино
+        assert sections == ["Бои", "Отряд", "Игроки", "Статистика"]
         assert await page.locator("#club-fights").is_visible()
         assert await page.locator("#club-players").is_hidden()
 
@@ -2079,13 +2281,22 @@ def raid_with_wave(over=None) -> dict:
 
 
 async def open_raid(pw, server, raid=None):
-    """Открыть вкладку клуба на разделе рейда."""
+    """Открыть подвал.
+
+    Пузыря «Рейд» среди разделов клуба больше нет: в подвал спускаются из
+    казино на карте. Сам раздел жив, и тесты рейда — про него, а не про
+    дорогу до казино; её проверяет test_locations_app.
+    """
+    # Подвал открывает дверь казино, и только она: кнопка внизу — клуб,
+    # где бы боец ни стоял. Потому и идём сюда через карту
     browser, page = await open_page(
-        pw, server, build_card(make_player(), TOKEN, viewer_id=42), raid=raid
+        pw, server, build_card(make_player("casino"), TOKEN, viewer_id=42),
+        raid=raid, city=city_map("casino"),
     )
     await page.wait_for_selector("#hero:not(.hidden)")
-    await page.locator("#tab-club").click()
-    await page.get_by_role("button", name="Рейд", exact=True).click()
+    await page.locator("#tab-map").click()
+    await page.wait_for_selector(".zone-house")
+    await page.locator(".zone-house").filter(has_text="Казино").click()
     await page.wait_for_selector("#club-raid:not(.hidden)")
     return browser, page
 
@@ -2096,7 +2307,7 @@ async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
         browser, page = await open_raid(pw, server)
 
         head = await page.locator(".raid-head").inner_text()
-        assert "Ограбление Босса подпольного казино" in head
+        assert "Ограбление Босса Казино" in head
         assert await page.locator(".boss-stats").count() == 0
 
         await page.locator("#boss-info").click()
@@ -2228,7 +2439,7 @@ async def test_the_opener_starts_the_raid_by_that_name(server):
             "in_app": True, "seconds_left": 65, "timeout": 120,
             "can_start": True,
             "boss": {
-                "code": "cellar_boss", "title": "Босс подпольного казино",
+                "code": "cellar_boss", "title": "Босс Казино",
                 "emoji": "🩸", "image": "", "tagline": "",
             },
             "members": [
@@ -2871,4 +3082,603 @@ async def test_an_empty_history_says_so(server):
 
         assert "ещё не дрался" in await page.locator("#stats-note").inner_text()
         assert await page.locator(".fight-row").count() == 0
+        await browser.close()
+
+
+async def test_raids_are_counted_apart_from_fights_with_people(server):
+    """Подвал стоит своей строкой: «4 / 10» походов, а победы — только людские.
+
+    Босса валят отрядом, и он не человек. Пока рейды писались в общий
+    счёт, десять заходов раздували победы, а неудачный поход портил
+    репутацию бойца — по такому счёту нельзя было понять, кого он бил.
+    """
+    player = make_player()
+    player.wins, player.losses, player.draws = 4, 2, 1
+    player.raid_wins, player.raid_fights = 4, 10
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-hero").click()
+
+        rows = page.locator("#record li")
+        assert await rows.filter(has_text="Побед").first.inner_text() == "Побед\n4"
+        assert await rows.filter(has_text="Рейды").first.inner_text() == "Рейды\n4 / 10"
+        await browser.close()
+
+
+@pytest.mark.parametrize(
+    "screen,section,where",
+    [("ring", "fights", "fight_club"), ("raid", "raid", "casino"),
+     ("shop", None, "clothes_shop")],
+)
+async def test_a_link_from_the_chat_opens_the_screen_it_promised(
+    server, screen, section, where
+):
+    """Объявление в чате ведёт не «в приложение», а на нужный экран.
+
+    Иначе зовущая ссылка высаживает человека на карточке персонажа, и
+    искать бой, на который его позвали, он идёт сам. Экран при этом
+    открывается тот, что доступен на месте: подвал — из казино.
+    """
+    player = make_player(where)
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), query=f"?view={screen}"
+        )
+        # Ждём не «Персонажа»: по такой ссылке карточка как раз уступает
+        # место тому экрану, ради которого человек и пришёл
+        await page.wait_for_selector("#bar:not(.hidden)")
+
+        if section is None:
+            assert await page.locator("#shop:not(.hidden)").count() == 1
+        else:
+            assert await page.locator("#club:not(.hidden)").count() == 1
+            assert await page.locator(f"#club-{section}:not(.hidden)").count() == 1
+        await browser.close()
+
+
+# ---------- карта города ----------
+
+
+async def open_map(pw, server, city=None, card=None):
+    """Открыть вкладку карты."""
+    player = make_player()
+    browser, page = await open_page(
+        pw, server, card or build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player, Service.CLOTHES), city=city,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.locator("#tab-map").click()
+    await page.wait_for_selector("#map:not(.hidden)")
+    await page.wait_for_selector(".zone-house")
+    return browser, page
+
+
+async def test_the_map_opens_on_the_district_you_stand_in(server):
+    """Карта открывается там, где боец: искать себя по городу не надо."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("pharmacy"))
+
+        assert await page.locator("#map-pic").get_attribute("src") is not None
+        # Ни заголовка, ни панели над картой: экран занимает сама карта
+        assert await page.locator("#map .screen-head").count() == 0
+        houses = await page.locator(".zone-house .zone-sign").all_text_contents()
+        assert "📍 Аптека" in houses
+        assert "Магазин одежды" in houses
+        await browser.close()
+
+
+async def test_the_highlight_sits_on_the_door(server):
+    """Подсвечена дверь, а касание ловит рамка с запасом вокруг неё.
+
+    Дом занимает полкарты, войти в него можно в одном месте — туда и
+    целятся. Но дверь на телефоне с ноготь, поэтому область касания шире
+    двери; подсветка при этом остаётся ровно на ней, иначе на рисунке
+    загорится кусок стены.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server)
+
+        club = page.locator(".zone-house").first
+        points = await club.locator(".zone-line").get_attribute("points")
+        corners = [pair.split(",") for pair in points.split(" ")]
+
+        assert len(corners) == 4, "вход — четырёхугольник"
+        # Числом угол не проверяем: разметку дверей правят руками по
+        # картам, и такой тест ломался бы на каждой правке, ничего при
+        # этом не сторожа. Сторожим другое — что клиент рисует ровно то,
+        # что прислал сервер, и в единицах самой карты
+        from bot.game.locations import get_location
+
+        door = get_location("fight_club").entrance
+        for (x, y), (drawn_x, drawn_y) in zip(door, corners):
+            assert abs(float(drawn_x) - x * 941) < 0.01
+            assert abs(float(drawn_y) - y * 1672) < 0.01
+
+        door = await club.locator(".zone-line").bounding_box()
+        touch = await club.locator(".zone-touch").bounding_box()
+
+        assert touch["width"] > door["width"], "под палец не расширили"
+        assert touch["height"] > door["height"]
+        # и расширили именно вокруг двери, а не куда попало
+        assert touch["x"] < door["x"] and touch["y"] < door["y"]
+        assert touch["x"] + touch["width"] > door["x"] + door["width"]
+        await browser.close()
+
+
+@pytest.mark.parametrize(
+    "district,where",
+    [("main_hub", "fight_club"), ("pawnshop_casino", "pawnshop"),
+     ("stadium_bar", "bar")],
+)
+async def test_the_sign_hangs_under_the_door_and_stays_on_the_map(
+    server, district, where
+):
+    """Подпись висит под дверью — над ней нарисована вывеска самого дома.
+
+    Снизу тесно: у комиссионки и бара двери у самой земли, а нижним краем
+    карта уходит под панель вкладок. Поэтому проверяем не только «под
+    дверью», но и что подпись видно целиком — панель её не срезала.
+    """
+    async with async_playwright() as pw:
+        # карта открывается там, где боец, — значит, его дом уже на экране
+        browser, page = await open_map(pw, server, city_map(where))
+
+        house = page.locator(".zone-house.here")
+        door = await house.locator(".zone-line").bounding_box()
+        sign = await house.locator(".zone-sign").bounding_box()
+        bar = await page.locator("#bar").bounding_box()
+
+        assert sign["y"] > door["y"] + door["height"], "подпись налезла на вывеску"
+        assert sign["y"] + sign["height"] <= bar["y"] + 0.5, (
+            f"{district}: подпись ушла под панель вкладок"
+        )
+        await browser.close()
+
+
+async def test_the_map_canvas_follows_the_picture(server):
+    """Холст с домами вписывается тем же правилом, что и картинка.
+
+    Карта показывается целиком, и на экране другого сложения по краям
+    появляются поля. Считать зоны от окна значит сдвинуть все дома на
+    высоту этих полей — и человек будет попадать мимо.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server)
+
+        same = await page.evaluate(
+            """() => {
+                const pic = document.getElementById('map-pic');
+                const svg = document.querySelector('.map-svg');
+                const one = pic.getBoundingClientRect();
+                const two = svg.getBoundingClientRect();
+                return {
+                    fit: svg.getAttribute('preserveAspectRatio'),
+                    view: svg.getAttribute('viewBox'),
+                    same: Math.abs(one.width - two.width) < 0.5
+                        && Math.abs(one.height - two.height) < 0.5
+                        && Math.abs(one.left - two.left) < 0.5
+                        && Math.abs(one.top - two.top) < 0.5,
+                };
+            }"""
+        )
+
+        assert same["view"] == "0 0 941 1672"
+        # то же правило, что и object-fit: contain у картинки
+        assert same["fit"] == "xMidYMid meet"
+        assert same["same"], "холст лёг не так, как картинка"
+        await browser.close()
+
+
+async def test_walking_starts_at_once_and_charges_like_a_battery(server):
+    """Дорога начинается сразу, а её отсчёт идёт батарейкой в углу.
+
+    Согласия не спрашиваем: дорога занимает секунды, и окно «идём?» на
+    каждый шаг превращает город в анкету.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server)
+        asked = []
+
+        async def road(route):
+            asked.append(route.request.post_data)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({
+                    "map": city_map("fight_club", {
+                        "going": True, "to": "pharmacy", "to_title": "Аптека",
+                        "seconds_left": 20, "seconds": 20,
+                        "text": "В пути до аптеки — 20 сек",
+                    }),
+                    "card": build_card(make_player(), TOKEN, viewer_id=42),
+                }),
+            )
+
+        await page.route("**/api/travel", road)
+
+        questions = []
+        page.on("dialog", lambda dialog: questions.append(dialog.message) or
+                asyncio.ensure_future(dialog.dismiss()))
+        await page.locator(".zone-house").filter(has_text="Мастерская").click()
+        await page.wait_for_selector("#map-road:not(.hidden)")
+
+        assert not questions, "о дороге спросили, хотя не должны были"
+        assert json.loads(asked[0]) == {"to": "workshop"}
+        # секунды — числом, а пройденное — зелёными клетками батарейки
+        assert await page.locator("#road-clock").inner_text() == "00:20"
+        cells = page.locator("#road-cells .road-cell")
+        assert await cells.count() == 12, "батарейка длиннее дюжины клеток"
+        assert await page.locator("#road-cells .road-cell.on").count() == 0
+
+        # прошла треть дороги — заполнена треть батарейки
+        await page.evaluate(
+            "() => { mapData.road.seconds_left = 13; paintRoad(); }"
+        )
+        assert await page.locator("#road-clock").inner_text() == "00:13"
+        lit = await page.locator("#road-cells .road-cell.on").count()
+        assert lit == 4, f"горит {lit} клеток из двенадцати"
+
+        # батарейка стоит в правом нижнем углу, над панелью вкладок
+        box = await page.locator("#map-road").bounding_box()
+        frame = await page.locator(".map-frame").bounding_box()
+        bar = await page.locator("#bar").bounding_box()
+        assert box["x"] > frame["x"] + frame["width"] / 2
+        assert box["y"] + box["height"] <= bar["y"] + 0.5
+        await browser.close()
+
+
+async def test_the_arrows_lead_to_the_neighbouring_districts(server):
+    """По городу ходят стрелками: вверх, вниз, влево, вправо.
+
+    Города целиком не видно, и без стрелок шесть карт остаются шестью
+    картинками. Стрелка показывает только туда, куда из района есть ход.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server)
+
+        # центр: вверх Северный Вал, вправо Торговый квартал, влево Старый город
+        sides = await page.locator(".map-arrow").evaluate_all(
+            "nodes => nodes.map(one => one.dataset.side + ':' + one.dataset.to)"
+        )
+        assert sorted(sides) == sorted([
+            "up:northern_wall_premium", "right:clothes_pharmacy",
+            "left:pawnshop_casino",
+        ])
+
+        # шагнули вверх — сменилась картинка и дома под ней
+        before = await page.locator("#map-pic").get_attribute("src")
+        await page.locator(".map-arrow.up").click()
+        await page.wait_for_selector(".map-arrow.down")
+
+        assert await page.locator("#map-pic").get_attribute("src") != before
+        houses = await page.locator(".zone-house .zone-sign").all_text_contents()
+        assert any("Элитный" in one or "Вал" in one for one in houses), houses
+        # обратный ход с Северного Вала — вниз, в центр
+        back = await page.locator(".map-arrow.down").get_attribute("data-to")
+        assert back == "main_hub"
+        await browser.close()
+
+
+async def test_a_house_without_a_trade_says_when_it_opens(server):
+    """Банк на карте есть, зайти можно, а услуги пока нет."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("bank"))
+
+        said = []
+        page.on("dialog", lambda dialog: said.append(dialog.message) or
+                asyncio.ensure_future(dialog.dismiss()))
+        await page.locator(".zone-house").filter(has_text="Банк").click()
+        await page.wait_for_timeout(300)
+
+        assert said and "Скоро" in said[0] and "хранение денег" in said[0]
+        await browser.close()
+
+
+async def test_the_card_says_where_the_fighter_stands(server):
+    """Строка под куклой: город и дом. В пути — дорога вместо дома."""
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player, Service.CLOTHES),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#hero-city").inner_text() == (
+            "Vegas City · 📍 Бойцовский клуб VEGAS"
+        )
+
+        walker = make_player()
+        walker.set_out("pharmacy", 20)
+        moving = build_card(walker, TOKEN, viewer_id=walker.user_id)
+        await page.evaluate("card => render(card)", moving)
+
+        line = await page.locator("#hero-city").inner_text()
+        assert "В пути до дома «Аптека»" in line
+        await browser.close()
+
+
+async def test_the_info_card_says_where_the_fighter_is_walking(server):
+    """Соперник в пути — в его карточке дорога, а не дом."""
+    me = make_player()
+    rival = make_player()
+    rival.user_id = 43
+    rival.nickname = "Марла"
+    rival.set_out("pharmacy", 20)
+    rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(me, TOKEN, viewer_id=me.user_id),
+            build_shop(me, Service.CLOTHES), club=club_of(me, rival),
+        )
+        await page.route(
+            "**/api/card?user_id=43",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(rival_card),
+            ),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role("button", name="Игроки", exact=True).click()
+        await page.locator(".fighter").nth(1).locator(".fighter-info").click()
+        await page.wait_for_selector(".sheet-doll")
+
+        line = await page.locator("#sheet-list .sheet-place").inner_text()
+        assert "В пути до дома «Аптека»" in line
+        await browser.close()
+
+
+async def test_a_link_to_the_raid_sends_you_walking_if_you_are_not_there(server):
+    """Позвали в подвал, а боец не в казино — ссылка ведёт на карту."""
+    player = make_player("pharmacy")
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player, Service.POTIONS), query="?view=raid",
+        )
+        await page.wait_for_selector("#bar:not(.hidden)")
+
+        assert await page.locator("#map:not(.hidden)").count() == 1
+        assert await page.locator("#club").is_hidden()
+        await browser.close()
+
+
+@pytest.mark.parametrize(
+    "state,words,shade",
+    [
+        ("soon", "Рейд начнётся через", "#1f6feb"),
+        ("open", "Рейд закончится через", "#d29200"),
+    ],
+)
+async def test_the_casino_counts_the_raid_down_on_the_map(
+    server, state, words, shade
+):
+    """Под вывеской казино — плашка с отсчётом: скоро или уже идёт."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server,
+            city_map("casino", raid={
+                "state": state, "text": words, "seconds_left": 2064,
+            }),
+            card=build_card(make_player("casino"), TOKEN, viewer_id=42),
+        )
+
+        plate = page.locator(".zone-plate")
+        assert await plate.count() == 1, "плашка висит только у казино"
+        assert state in (await plate.get_attribute("class"))
+        assert await plate.locator(".plate-word").text_content() == words
+        # часы идут часами: 00:34:24, а не 34:24
+        assert await page.locator("#raid-clock").text_content() == "00:34:24"
+
+        # плашка стоит под подписью дома, а не поверх неё
+        sign = await page.locator(".zone-house.here .zone-sign").bounding_box()
+        box = await plate.locator(".plate-box").bounding_box()
+        assert box["y"] > sign["y"] + sign["height"]
+
+        # обе строки стоят по центру бокса — и вдоль, и поперёк
+        word = await plate.locator(".plate-word").bounding_box()
+        clock = await page.locator("#raid-clock").bounding_box()
+        middle = box["x"] + box["width"] / 2
+        for line in (word, clock):
+            assert abs(line["x"] + line["width"] / 2 - middle) < 1
+            assert line["width"] < box["width"], "строка не помещается в плашку"
+        # середина между строками — середина плашки. Считаем по центрам
+        # самих строк: высота букв у слова и у часов разная, и по краям
+        # они симметричными не выглядят
+        pair = [line["y"] + line["height"] / 2 for line in (word, clock)]
+        assert abs(sum(pair) / 2 - (box["y"] + box["height"] / 2)) < 1
+
+        # и цвет говорит то же, что и слова
+        fill = await plate.locator(".plate-box").evaluate(
+            "node => getComputedStyle(node).fill"
+        )
+        assert fill == to_rgb(shade), fill
+
+        # секунды тикают сами, без нового запроса
+        await page.wait_for_timeout(1100)
+        assert await page.locator("#raid-clock").text_content() == "00:34:23"
+        await browser.close()
+
+
+async def test_a_finished_raid_shows_green_without_a_clock(server):
+    """Своё взял — вместо часов «Рейд завершён»: ждать больше нечего."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server,
+            city_map("casino", raid={
+                "state": "done", "text": "Рейд завершён", "seconds_left": 0,
+            }),
+            card=build_card(make_player("casino"), TOKEN, viewer_id=42),
+        )
+
+        plate = page.locator(".zone-plate")
+        assert "done" in (await plate.get_attribute("class"))
+        assert await plate.locator(".plate-word").text_content() == "Рейд завершён"
+        assert await page.locator("#raid-clock").count() == 0
+        # одна строка — ровно посередине плашки
+        box = await plate.locator(".plate-box").bounding_box()
+        word = await plate.locator(".plate-word").bounding_box()
+        assert abs(word["y"] + word["height"] / 2 - (box["y"] + box["height"] / 2)) < 1
+        assert abs(word["x"] + word["width"] / 2 - (box["x"] + box["width"] / 2)) < 1
+        fill = await plate.locator(".plate-box").evaluate(
+            "node => getComputedStyle(node).fill"
+        )
+        assert fill == to_rgb("#2ea043")
+        await browser.close()
+
+
+async def test_without_a_window_the_map_says_nothing_about_the_raid(server):
+    """Вне окна и часа перед ним плашки нет: карта — не расписание на сутки."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("casino"),
+                                       card=build_card(make_player("casino"),
+                                                       TOKEN, viewer_id=42))
+
+        assert await page.locator(".zone-plate").count() == 0
+        await browser.close()
+
+
+async def test_the_analyst_speaks_above_the_buttons(server):
+    """Разбор соперника стоит над кнопками хода, а не под ними."""
+    ring = ring_with_duel()
+    ring["duel"]["scout"] = {
+        "title": "Разбор соперника: 10 боёв, 70 ходов.",
+        "attack": "По статистике в первом ходу соперник реже всего блокирует "
+                  "Пояс — 8%, Ноги — 14% и Голову — 22%.",
+        "block": "По статистике соперник чаще всего наносит первый удар в "
+                 "Голову — 45%, Ноги — 20% и Пояс — 10%.",
+    }
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        scout = page.locator(".scout")
+        assert await scout.count() == 1
+        said = await scout.inner_text()
+        assert "Аналитик" in said and "10 боёв" in said
+        assert "реже всего блокирует" in said and "первый удар в Голову" in said
+
+        # обе строки — выше кнопок выбора зоны
+        panel = await scout.bounding_box()
+        columns = await page.locator(".zone-columns").bounding_box()
+        assert panel["y"] + panel["height"] <= columns["y"] + 0.5
+        await browser.close()
+
+
+async def test_without_a_subscription_the_analyst_is_silent(server):
+    """Без подписки панели нет вовсе: это платная подсказка."""
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring_with_duel(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        assert await page.locator(".scout").count() == 0
+        await browser.close()
+
+
+# ---------- клуб и казино делят экран ----------
+
+
+async def test_the_casino_opens_only_by_its_own_door(server):
+    """Казино открывает дверь на карте, а не вкладка внизу.
+
+    Вкладка «Клуб» — всегда клуб: боец, стоящий в казино, приходит по ней
+    в клуб, и подвал за ней не прячется.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("casino"),
+                                       card=build_card(make_player("casino"),
+                                                       TOKEN, viewer_id=42))
+        # кнопка внизу зовётся «Клуб» и ведёт в клуб — даже отсюда
+        assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club:not(.hidden)")
+
+        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
+        assert await page.locator("#club-raid").is_hidden(), "подвал открылся сам"
+
+        # а дверь казино — открывает, и в нём одно дело: рейд
+        await page.locator("#tab-map").click()
+        await page.locator(".zone-house").filter(has_text="Казино").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+
+        assert await page.locator("#club-title").inner_text() == "🎲 Казино"
+        assert await page.locator("#club-sections .chip").count() == 0
+        assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
+        assert await page.locator("#club-fights").is_hidden()
+        await browser.close()
+
+
+async def test_the_club_keeps_all_its_sections_away_from_the_ring(server):
+    """Разделы клуба видны везде, но драться зовут туда, где дерутся."""
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(make_player("pharmacy"), TOKEN, viewer_id=42),
+            build_shop(make_player("pharmacy"), Service.POTIONS),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club:not(.hidden)")
+
+        chips = await page.locator("#club-sections .chip").all_inner_texts()
+        assert chips == ["Бои", "Отряд", "Игроки", "Статистика"]
+        # и стоят они по центру экрана, а не прижаты к левому краю
+        box = await page.locator("#club-sections").bounding_box()
+        first = await page.locator("#club-sections .chip").first.bounding_box()
+        last = await page.locator("#club-sections .chip").last.bounding_box()
+        left = first["x"] - box["x"]
+        right = box["x"] + box["width"] - (last["x"] + last["width"])
+        assert abs(left - right) < 2, f"слева {left:.0f}, справа {right:.0f}"
+
+        note = "Бои между игроками недоступны в данной локации."
+        assert await page.locator("#club-fights .club-locked").inner_text() == note
+        await page.locator("#club-sections .chip").nth(1).click()
+        assert await page.locator("#club-battle .club-locked").inner_text() == note
+        # звать драться отсюда нечем: кнопок ринга здесь нет
+        assert await page.locator("#club-battle button").count() == 0
+        await browser.close()
+
+
+async def test_leaving_the_casino_leaves_the_raid_behind(server):
+    """Ушёл в клуб — раздел рейда не едет следом.
+
+    Он оставался открытым и после перехода: рейд из него всё равно не
+    начать, а выглядело так, будто подвал доступен откуда угодно.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("casino"),
+                                       card=build_card(make_player("casino"),
+                                                       TOKEN, viewer_id=42))
+        await page.locator(".zone-house").filter(has_text="Казино").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+
+        # боец дошёл до клуба — карточка перерисовалась
+        await page.evaluate(
+            "card => render(card, true)",
+            build_card(make_player("fight_club"), TOKEN, viewer_id=42),
+        )
+        await page.locator("#tab-club").click()
+
+        # ждём именно раздел, а не его наполнение: список боёв приезжает
+        # отдельным запросом и до него секция пуста
+        await page.wait_for_selector("#club-fights:not(.hidden)")
+        assert await page.locator("#club-raid").is_hidden(), "рейд уехал следом"
+        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
         await browser.close()

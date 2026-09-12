@@ -5,6 +5,7 @@
 """
 
 import random
+from datetime import date, timedelta
 
 import pytest
 
@@ -25,8 +26,13 @@ from bot.game.raid import (
     ELIXIR_CHANCE,
     ELIXIR_PRIZES,
     MOSCOW,
+    RAIDS_PER_DAY,
     RAID_PURSE,
+    RAID_SLOTS,
+    WINDOW_HOURS,
     next_window,
+    schedule_text,
+    slots_on,
     shares_of,
     window_of,
 )
@@ -227,21 +233,66 @@ def moscow(hour: int, minute: int = 0, day: int = 8) -> int:
     return int(datetime(2026, 9, day, hour, minute, tzinfo=MOSCOW).timestamp())
 
 
-def test_the_cellar_opens_five_times_a_day():
-    """Пять окон по два часа, всё остальное время подвал закрыт."""
-    open_hours = {0, 1, 8, 9, 12, 13, 16, 17, 20, 21}
+DAY = date(2026, 9, 8)
+
+
+def test_the_cellar_opens_twice_a_day():
+    """Два окна по два часа, всё остальное время подвал закрыт."""
+    slots = slots_on(DAY)
+    assert len(slots) == RAIDS_PER_DAY
+    open_hours = {hour + step for hour in slots for step in range(WINDOW_HOURS)}
+
     for hour in range(24):
         window = window_of(moscow(hour))
         assert bool(window) is (hour in open_hours), hour
-    assert window_of(moscow(20, 59)).title == "с 20:00 до 22:00 мск"
-    assert window_of(moscow(8)).start == moscow(8)
+
+    first = slots[0]
+    assert window_of(moscow(first)).start == moscow(first)
+    assert window_of(moscow(first, 59)).title == (
+        f"с {first:02d}:00 до {first + WINDOW_HOURS:02d}:00 мск"
+    )
+
+
+def test_the_slots_are_drawn_anew_every_day():
+    """Слоты меняются изо дня в день и берутся из установленных."""
+    seen = []
+    for step in range(60):
+        slots = slots_on(DAY + timedelta(days=step))
+        assert len(slots) == RAIDS_PER_DAY
+        assert set(slots) <= set(RAID_SLOTS), slots
+        # в одно и то же время два дня подряд подвал не открывается
+        assert not (seen and set(slots) & set(seen[-1])), (seen[-1], slots)
+        seen.append(slots)
+    # и это не круг из двух расписаний: за два месяца выпадают все пары
+    assert len(set(seen)) > RAIDS_PER_DAY * 2
+
+
+def test_the_draw_is_the_same_for_everyone():
+    """Жребий заведён датой: бот, мини-апп и перезапуск видят одно и то же."""
+    import bot.game.raid as rules
+
+    before = slots_on(DAY + timedelta(days=3))
+    rules._SLOTS.clear()  # как после перезапуска — память пуста
+    assert slots_on(DAY + timedelta(days=3)) == before
 
 
 def test_the_next_window_is_the_one_you_wait_for():
-    assert next_window(moscow(3)).start == moscow(8)
-    assert next_window(moscow(9)).start == moscow(12)
+    first, second = slots_on(DAY)
+    tomorrow = slots_on(DAY + timedelta(days=1))[0]
+
+    assert next_window(moscow(first) - 1).start == moscow(first)
+    assert next_window(moscow(first) + 60).start == moscow(second)
     # после последнего окна суток ждут первого завтрашнего
-    assert next_window(moscow(23)).start == moscow(0, day=9)
+    assert next_window(moscow(23, 59)).start == moscow(tomorrow, day=9)
+
+
+def test_the_schedule_says_todays_hours():
+    """Расписание — на сегодня: слоты каждый день свои."""
+    first, second = slots_on(DAY)
+    assert schedule_text(moscow(12)) == (
+        f"сегодня с {first}:00 до {first + WINDOW_HOURS}:00 "
+        f"и с {second}:00 до {second + WINDOW_HOURS}:00 мск"
+    )
 
 
 # ---------- сбор отряда ----------
@@ -325,14 +376,18 @@ async def test_the_cellar_is_shut_outside_its_hours(bot, db, monkeypatch):
 
     service = make_service(bot, db, raid_any_time=False)
     player = (await fill(db, 1))[0]
-    monkeypatch.setattr(rules, "now_ts", lambda: moscow(3))  # глухая ночь
+    slots = slots_on(DAY)
+    shut = next(hour for hour in range(24) if all(
+        not (opens <= hour < opens + WINDOW_HOURS) for opens in slots
+    ))
+    monkeypatch.setattr(rules, "now_ts", lambda: moscow(shut))  # подвал закрыт
 
     with pytest.raises(RaidError, match="Подвал закрыт"):
         await service.open_raid(CHAT_ID, THREAD_ID, player)
     # пропуск остался в рюкзаке: за закрытую дверь не платят
     assert (await db.get_player(player.user_id)).potion_count(RAID_PASS) == 1
 
-    monkeypatch.setattr(rules, "now_ts", lambda: moscow(9))  # окно открылось
+    monkeypatch.setattr(rules, "now_ts", lambda: moscow(slots[0]))  # окно открылось
     await service.open_raid(CHAT_ID, THREAD_ID, player)
     assert service.lobby_of_user(player.user_id) is not None
 
@@ -536,7 +591,10 @@ async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
     assert sum(paid) == 100  # весь кошель дошёл до отряда
     assert max(paid) - min(paid) <= 1  # и разошёлся поровну
     for player in players:
-        assert (await db.get_player(player.user_id)).wins == 1
+        fresh = await db.get_player(player.user_id)
+        # Победа над боссом идёт в счёт рейдов, а не в личные победы
+        assert (fresh.raid_wins, fresh.raid_fights) == (1, 1)
+        assert (fresh.wins, fresh.losses, fresh.draws) == (0, 0, 0)
         assert await db.list_gear(player.user_id) == [], "вещей за рейд не дают"
 
     raids = await db.raids_of(players[0].user_id)
@@ -567,7 +625,11 @@ async def test_a_lost_raid_pays_nothing(bot, db):
 
     for player in players:
         fresh = await db.get_player(player.user_id)
-        assert fresh.credits == 500 and fresh.losses == 1  # кошелёк не тронут
+        assert fresh.credits == 500  # кошелёк не тронут
+        # Неудачный заход в подвал не портит личный счёт: там дрались с
+        # боссом, а не с человеком
+        assert (fresh.raid_wins, fresh.raid_fights) == (0, 1)
+        assert (fresh.wins, fresh.losses, fresh.draws) == (0, 0, 0)
         assert await db.list_gear(player.user_id) == []
     assert (await db.raids_of(players[0].user_id))[0]["outcome"] == "loss"
 
@@ -632,3 +694,113 @@ async def test_the_fatigue_counts_waves_not_swings(bot, db):
     assert session.wave <= 3
     # каждому ходу движок отдавал номер волны, а не номер размена
     assert max(turn["number"] for turn in session.rounds) <= session.wave
+
+
+# ---------- рейды отделены от боёв с людьми ----------
+
+
+async def test_old_raids_move_out_of_the_personal_record(bot, db):
+    """Прошлые походы уезжают из побед и поражений при обновлении базы.
+
+    До этой версии подвал писался в общий счёт: победа над боссом шла
+    победой, неудачный заход — поражением. Терять историю не нужно —
+    журнал рейдов помнит и состав отряда, и исход каждого захода,
+    поэтому старые числа просто перекладываются в свою колонку.
+    """
+    player = make_player(1, "Ветеран")
+    player.wins, player.losses, player.draws = 7, 4, 2
+    await db.save_player(player)
+    other = make_player(2, "Сосед")
+    other.wins = 3
+    await db.save_player(other)
+
+    # три похода ветерана: победа, поражение и ничья — и один брошенный
+    for outcome in ("win", "loss", "draw"):
+        raid_id = await db.open_raid_record(
+            chat_id=None, thread_id=None, opener_id=1, boss="cellar_boss", size=1
+        )
+        await db.close_raid_record(raid_id, outcome, waves=1, boss_level=5,
+                                   members=[(1, 100, True, None)])
+    abandoned = await db.open_raid_record(
+        chat_id=None, thread_id=None, opener_id=1, boss="cellar_boss", size=1
+    )
+    assert abandoned  # без outcome он в счёт не идёт
+
+    # база прошлой версии: колонок рейда в ней ещё нет
+    await db.conn.execute("UPDATE players SET raid_wins = 0, raid_fights = 0")
+    await db.conn.commit()
+    await db._split_raids_from_record()
+
+    veteran = await db.get_player(1)
+    assert (veteran.raid_wins, veteran.raid_fights) == (1, 3)
+    # из личного счёта ушли ровно те три похода
+    assert (veteran.wins, veteran.losses, veteran.draws) == (6, 3, 1)
+    # тот, кто в подвал не ходил, остался как был
+    neighbour = await db.get_player(2)
+    assert (neighbour.wins, neighbour.raid_fights) == (3, 0)
+
+
+async def test_the_split_never_drives_a_record_below_zero(bot, db):
+    """Счёт мог разъехаться с журналом — вычитание не уводит его в минус."""
+    player = make_player(1, "Счетовод")
+    player.wins = 0
+    await db.save_player(player)
+    raid_id = await db.open_raid_record(
+        chat_id=None, thread_id=None, opener_id=1, boss="cellar_boss", size=1
+    )
+    await db.close_raid_record(raid_id, "win", waves=1, boss_level=5,
+                               members=[(1, 10, True, None)])
+
+    await db._split_raids_from_record()
+
+    fresh = await db.get_player(1)
+    assert fresh.wins == 0 and (fresh.raid_wins, fresh.raid_fights) == (1, 1)
+
+
+# ---------- рейд идёт, пока кто-нибудь не упадёт ----------
+
+
+async def test_a_raid_runs_past_thirty_waves_if_everyone_is_still_standing(bot, db):
+    """Счётчика волн у рейда нет: бой идёт столько, сколько нужно.
+
+    Раньше на тридцатой волне судья закрывал рейд поражением отряда.
+    Выглядело это дико: босс на ногах, но и в отряде никто даже не ранен,
+    а рейд уже проигран. Особенно часто это ловил большой отряд — там
+    урон на каждого меньше, и до тридцатой волны никто не успевал упасть.
+    """
+    from bot.game.raid import FATIGUE_WAVES
+
+    service = make_service(bot, db)
+    players, session = await gather(service, db, 2)
+
+    # Держим обоих и босса живыми: пусть волн пройдёт заведомо больше потолка
+    for _ in range(FATIGUE_WAVES + 5):
+        if service.raid_of_user(players[0].user_id) is None:
+            break
+        session.enemy.hp = session.enemy.max_hp
+        for player in players:
+            session.fighters[player.user_id].hp = (
+                session.fighters[player.user_id].max_hp
+            )
+        await storm(service, session, players)
+
+    assert session.wave > FATIGUE_WAVES, "волн прошло меньше потолка"
+    assert service.raid_of_user(players[0].user_id) is not None, (
+        "рейд закрыли, хотя все живы"
+    )
+
+
+async def test_the_fatigue_keeps_growing_past_its_own_scale(bot, db):
+    """Именно усталость и доводит рейд до конца, поэтому она не упирается.
+
+    Раз счётчик волн убран, что-то должно гарантировать конец боя. Это
+    усталость: она растёт и после своей шкалы, а с ней растёт урон — рано
+    или поздно кто-то падает.
+    """
+    from bot.game.combat import fatigue_multiplier
+    from bot.game.raid import FATIGUE_WAVES
+
+    on_scale = fatigue_multiplier(FATIGUE_WAVES, limit=FATIGUE_WAVES)
+    beyond = fatigue_multiplier(FATIGUE_WAVES * 2, limit=FATIGUE_WAVES)
+
+    assert beyond > on_scale > 1.0

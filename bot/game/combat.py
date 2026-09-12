@@ -35,11 +35,12 @@ from bot.game.stats import (
     BLOCK_BREAK_CHANCE,
     BLOCK_BREAK_DAMAGE_SHARE,
     COUNTER_DAMAGE_MULT,
-    MAX_ACCURACY,
-    MAX_ANTICRIT,
+    MAX_ACCURACY_TOTAL,
+    MAX_ANTICRIT_TOTAL,
     MAX_BLOCK_HOLD,
     MAX_COUNTER_CHANCE,
-    MAX_CRIT_CHANCE,
+    MAX_CRIT_TOTAL,
+    MAX_DODGE_TOTAL,
     MIN_BLOCK_BREAK,
     DerivedStats,
     derive,
@@ -142,19 +143,19 @@ class Action:
 
 
 def total_accuracy(base: float, gear: float) -> float:
-    return min(MAX_ACCURACY, base + gear)
+    return min(MAX_ACCURACY_TOTAL, base + gear)
 
 
 def total_anticrit(base: float, gear: float) -> float:
-    return min(MAX_ANTICRIT, base + gear)
+    return min(MAX_ANTICRIT_TOTAL, base + gear)
 
 
 def total_dodge(base: float, gear: float) -> float:
-    return min(MAX_DODGE_CHANCE, base + gear)
+    return min(MAX_DODGE_TOTAL, base + gear)
 
 
 def total_crit(base: float, gear: float) -> float:
-    return min(MAX_CRIT_CHANCE, base + gear)
+    return min(MAX_CRIT_TOTAL, base + gear)
 
 
 def total_counter(base: float, gear: float) -> float:
@@ -344,6 +345,10 @@ class Strike:
     defender_id: int
     zone: Zone | None
     outcome: Outcome
+    # Что защищающийся закрывал в этот ход. Нужно не бою, а разбору: по
+    # логу видно, куда били, но не видно, чего ждали, — а привычки бойца
+    # читаются именно по блокам
+    block: tuple[Zone, ...] = ()
     weapon: str = BARE_HANDS
     damage: int = 0
     counter_damage: int = 0
@@ -461,6 +466,7 @@ def strike_of(
         defender_id=defender.user_id,
         zone=zone,
         outcome=Outcome.SKIP,
+        block=tuple(defender_action.block),
         weapon=weapon,
         missed_turn=missed_turn,
     )

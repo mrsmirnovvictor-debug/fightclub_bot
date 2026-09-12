@@ -45,7 +45,12 @@ from bot.game.combat import (
     validate_action,
 )
 from bot.game.equipment import CATALOGUE, Equipment, Slot
-from bot.game.reference import developed_stats, reference_equipment
+from bot.game.reference import (
+    developed_stats,
+    equipment_of,
+    fan_kit,
+    reference_equipment,
+)
 from bot.game.stats import (
     BLOCK_BREAK_CHANCE,
     BLOCK_BREAK_DAMAGE_SHARE,
@@ -913,22 +918,77 @@ def test_the_circle_holds_on_every_level(winner, loser, why, level):
     )
 
 
-@pytest.mark.parametrize("level", [3, 4, 5])
+@pytest.mark.parametrize("level", [3, 4])
 def test_the_circle_narrows_but_does_not_flip_in_the_middle(level):
     """На середине лестницы танк держит ассасина еле-еле — но держит.
 
-    С третьего по пятый уровень у ассасина уже есть свой набор, а танк
-    донашивает предыдущий: перевес у него сходится к полутора очкам. Это
-    и есть самое узкое место круга, поэтому проверяем не «больше
-    половины» (столько разброса не переспорить), а коридор. Круг тут
-    ломался по-крупному — усиленные вещи с прилавка роняли танка до 15%,
-    — и коридор такое ловит.
+    Третий и четвёртый уровни: у ассасина уже есть свой набор, а танк
+    донашивает предыдущий, и перевес у него сходится к полутора очкам. Это
+    самое узкое место круга, поэтому проверяем не «больше половины»
+    (столько разброса не переспорить), а коридор. Круг тут ломался
+    по-крупному — усиленные вещи с прилавка роняли танка до 15%, — и
+    коридор такое ловит.
+
+    С пятого уровня у танка появился свой набор (кувалда вышибалы и
+    броня), а у ассасина на этой ступени нового нет: его клинок приходит
+    с подпиской. Перевес там уже не полуторный, и коридор ему не нужен —
+    эту клетку сторожит общий тест круга.
     """
     share = sum(
         duel_share("tank", "assassin", level=level, runs=400, seed=seed + level)
         for seed in (2024, 4048, 6072, 8096)
     ) / 4
     assert 0.45 < share < 0.62, f"танк против ассасина: {share:.0%} на {level} уровне"
+
+
+def fan_share(first: str, second: str, runs: int, seed: int) -> float:
+    """То же, но в фанатских комплектах: своё из магазина, прочее клубное."""
+    rng = random.Random(seed)
+    wins = 0.0
+    for _ in range(runs):
+        fighters = []
+        for index, code in enumerate((first, second), start=1):
+            fclass = FIGHTER_CLASSES[code]
+            equipment = equipment_of(fan_kit(fclass, 10))
+            stats = developed_stats(fclass, 10).merge(equipment.bonus)
+            fighters.append(
+                Fighter(index, fclass.title, fclass, stats, 10, equipment=equipment)
+            )
+        a, b = fighters
+        number = 1
+        while True:
+            result = resolve_round(
+                a, random_action(a, rng), b, random_action(b, rng), number, rng
+            )
+            if result.finished:
+                break
+            number += 1
+        if result.winner_id == 1:
+            wins += 1
+        elif result.winner_id is None:
+            wins += 0.5
+    return wins / runs
+
+
+@pytest.mark.parametrize(
+    "winner,loser",
+    [("rogue", "tank"), ("tank", "assassin"), ("assassin", "rogue")],
+)
+def test_the_circle_holds_in_fan_gear(winner, loser):
+    """Круг держится и в фанатской экипировке.
+
+    Магазин на Северном Валу не входит в эталонный комплект: вещь там
+    стоит десять уровней дохода, и одетый так боец — не эталон. Но
+    встречаться такие бойцы будут, и если тяжёлая линия перебьёт лёгкую,
+    тематический магазин сломает игру тем, кто до него добрался.
+    """
+    share = sum(
+        fan_share(winner, loser, runs=400, seed=seed) for seed in (2024, 4048, 6072, 8096)
+    ) / 4
+    assert share > 0.5, (
+        f"{FIGHTER_CLASSES[winner].title} против {FIGHTER_CLASSES[loser].title} "
+        f"в фанатских комплектах: {share:.0%}"
+    )
 
 
 def test_the_warrior_stays_out_of_the_circle():
