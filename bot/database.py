@@ -1070,6 +1070,35 @@ class Database:
             row = await cursor.fetchone()
         return dict(row) if row else None
 
+    async def recent_duel_logs(
+        self, user_id: int, limit: int = 10
+    ) -> list[list[dict[str, Any]]]:
+        """Разборы последних боёв бойца — по списку ходов на бой.
+
+        Одним запросом, а не боем за раз: аналитик поднимает их перед
+        каждым боем, и десять отдельных походов в базу на это жалко.
+        Бои без лога (шли до того, как их начали писать) просто не придут.
+        """
+        async with self.conn.execute(
+            """
+            SELECT log.duel_id, log.strikes
+            FROM duel_log AS log
+            JOIN (
+                SELECT d.id FROM duel_sides AS side
+                JOIN duels AS d ON d.id = side.duel_id
+                WHERE side.user_id = ?
+                ORDER BY d.id DESC LIMIT ?
+            ) AS recent ON recent.id = log.duel_id
+            ORDER BY log.duel_id DESC, log.number
+            """,
+            (user_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        fights: dict[int, list[dict[str, Any]]] = {}
+        for row in rows:
+            fights.setdefault(row["duel_id"], []).append(json.loads(row["strikes"]))
+        return list(fights.values())
+
     async def duel_log(self, duel_id: int) -> list[dict[str, Any]]:
         """Разбор боя по ходам. Пусто — бой шёл до того, как их начали писать."""
         async with self.conn.execute(

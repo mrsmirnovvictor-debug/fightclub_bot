@@ -366,3 +366,13 @@ async def test_the_plate_lights_up_an_hour_before_and_goes_out_after(db):
     await db.close_raid_window(player.user_id, start)
     done = await plate_payload(player, raids, start + 60)
     assert done == {"state": "done", "text": "Рейд завершён", "seconds_left": 0}
+
+
+async def test_the_raid_has_no_analyst(cellar):
+    """В рейде аналитика нет: разбирают живого соперника, а не босса."""
+    client, raids, db = cellar
+    await act(client, 42, action="open")
+    body = await state(client, 42)
+
+    assert "scout" not in body
+    assert "scout" not in (body.get("lobby") or {})

@@ -19,6 +19,7 @@ from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.modes import FightMode
+from bot.game.scout import SCOUT_FIGHTS, Habits, read_habits
 from bot.game.combat import (
     MAX_MISSED_TURNS,
     TURNS_PER_ROUND,
@@ -164,6 +165,10 @@ class DuelSession:
     # мини-апп рисует по ним разбор сам — и тем же списком потом ляжет лог
     # в историю боёв.
     rounds: list[dict] = field(default_factory=list)
+    # Привычки бойца по его прошлым боям — для аналитика подписчика. Ключ
+    # тот, чьи это привычки: разбирают ведь соперника. Пусто — подписки
+    # нет ни у кого, и разбор никто не заказывал
+    habits: dict[int, Habits] = field(default_factory=dict)
     # Слова судьи в конце боя — уже без разметки. В ветке они остаются
     # сообщением, а в мини-аппе показывать нечего: бой из списка исчезает
     # ровно в тот момент, когда игроку и надо прочитать итог.
@@ -419,6 +424,7 @@ class DuelService:
         кто бросил вызов, и увидеть соперника до первого удара он должен и там.
         """
         session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
+        await self._hire_scout(session)
         message = await self._send(
             chat_id,
             thread_id,
@@ -545,6 +551,23 @@ class DuelService:
         for user_id in session.order:
             self._busy.pop(user_id, None)
 
+    async def _hire_scout(self, session: DuelSession) -> None:
+        """Поднять привычки соперника — тем, у кого есть подписка.
+
+        Один раз на бой: десять чужих боёв перечитывать на каждый ход
+        незачем, привычки за бой не меняются. Считаем только подписчику и
+        только про его соперника — на обычный бой лишней работы не ложится.
+        """
+        for user_id in session.order:
+            player = session.players.get(user_id)
+            if player is None or not player.is_pro():
+                continue
+            rival_id = next(uid for uid in session.order if uid != user_id)
+            if rival_id in session.habits:
+                continue
+            fights = await self.db.recent_duel_logs(rival_id, SCOUT_FIGHTS)
+            session.habits[rival_id] = read_habits(fights, rival_id)
+
     async def start_duel(
         self,
         chat_id: int | None,
@@ -559,6 +582,7 @@ class DuelService:
         session = self._make_session(chat_id, thread_id, first, second, chat_title, mode)
         session.started = True
         session.on_finish = on_finish
+        await self._hire_scout(session)
         await self._send(
             chat_id,
             thread_id,

@@ -24,6 +24,7 @@ from bot.game.combat import (
 )
 from bot.game.locations import FIGHT_CLUB, Service, get_location
 from bot.game.modes import FightMode, mode_of
+from bot.game.scout import advise
 from bot.models import Player
 
 # Кнопки удара одни и те же на весь клуб: зон пять, и от снаряжения их
@@ -174,7 +175,32 @@ def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
         "yours": viewer_id in session.fighters,
         # Разбор по ходам: свежий ход последний, как в ветке
         "log": session.rounds,
+        # Подсказки аналитика — только подписчику и только про соперника
+        "scout": scout_payload(session, viewer_id),
     }
+
+
+def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, str] | None:
+    """Что аналитик говорит этому бойцу перед ходом. None — молчит.
+
+    Считается по законченным ходам и по прошлым боям соперника. Текущий
+    выбор соперника сюда не попадает: `session.choices` этот код не
+    трогает, и подсказка ничего не знает о нажатых прямо сейчас кнопках.
+
+    Ответ у каждого свой: карточку боя мини-апп собирает под зрителя, и
+    строки аналитика видит только тот, кто за него платит.
+    """
+    if session.finished or viewer_id not in session.fighters:
+        return None
+    player = session.players.get(viewer_id)
+    if player is None or not player.is_pro():
+        return None
+    rival_id = next(uid for uid in session.order if uid != viewer_id)
+    habits = session.habits.get(rival_id)
+    if habits is None:
+        return None
+    advice = advise(habits, session.rounds, rival_id)
+    return advice.as_dict()
 
 
 FIGHT_CLUB_TITLE = get_location(FIGHT_CLUB).title

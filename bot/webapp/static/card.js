@@ -2273,9 +2273,43 @@ function paintDraft() {
   if (go) go.disabled = !draftReady(hands);
 }
 
+// ---------- аналитик ----------
+//
+// Подсказки подписчика над кнопками хода. Строки две: одна помогает
+// выбрать удар, другая — блок, и у каждой свой значок. Столбцы на
+// телефоне узкие, предложение в них не помещается, поэтому панель стоит
+// над ними целиком — но выше кнопок, как ей и положено.
+function scoutPanel(scout) {
+  if (!scout || (!scout.attack && !scout.block)) return null;
+  const box = document.createElement("section");
+  box.className = "scout";
+
+  const head = document.createElement("p");
+  head.className = "scout-head";
+  head.textContent = "🔍 Аналитик" + (scout.title ? " · " + scout.title : "");
+  box.appendChild(head);
+
+  [["⚔️", scout.attack], ["🛡", scout.block]].forEach(([sign, text]) => {
+    if (!text) return;
+    const line = document.createElement("p");
+    line.className = "scout-line";
+    const mark = document.createElement("span");
+    mark.className = "scout-mark";
+    mark.textContent = sign;
+    line.appendChild(mark);
+    line.appendChild(document.createTextNode(text));
+    box.appendChild(line);
+  });
+  return box;
+}
+
 function turnForm(data) {
   const box = document.createElement("div");
   box.className = "turn-form";
+
+  // Разбор соперника — над кнопками: его видит только тот, кому он пришёл
+  const scout = scoutPanel(data.duel.scout);
+  if (scout) box.appendChild(scout);
 
   // Столбцов ударов столько, сколько рук с оружием, а блок бывает шире:
   // со щитом он держит три зоны вместо двух

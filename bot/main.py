@@ -26,7 +26,12 @@ from bot.tournament_service import TournamentService
 from bot.game.links import links
 from bot.handlers import build_router
 from bot.news_service import publish_pending
-from bot.seed import fix_promo_overrun, grant_test_gear, grant_test_relic
+from bot.seed import (
+    fix_promo_overrun,
+    grant_test_gear,
+    grant_test_pro,
+    grant_test_relic,
+)
 from bot.webapp import run_webapp
 
 logger = logging.getLogger(__name__)
@@ -127,6 +132,9 @@ async def run(config: Config | None = None) -> None:
     await grant_test_relic(db)
     await grant_test_gear(db)
     await fix_promo_overrun(db)
+    # Подписка выдаётся последней: правка сроков выше урезает набежавшее,
+    # и подарок не должен попасть ей под нож
+    await grant_test_pro(db)
     # Что нового в клубе — в ветку новостей, если её отметили командой /updates
     try:
         await publish_pending(bot, db)

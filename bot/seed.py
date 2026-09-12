@@ -57,6 +57,42 @@ async def grant_test_relic(db: Database) -> bool:
     return True
 
 
+# Неделя подписки на время тестов аналитика: без PRO его подсказок не
+# видно, а проверять их нужно вживую
+PRO_DAYS = 7
+PRO_GIFT_ID = f"gift:pro-scout:{TEST_FIGHTER.lower()}"
+
+
+async def grant_test_pro(db: Database) -> bool:
+    """Выдать бойцу неделю PRO. True — выдали прямо сейчас, впервые.
+
+    Срок прибавляется к тому, что уже есть: подписку, купленную за
+    звёзды, подарок не укорачивает.
+    """
+    player = await db.find_by_nickname(TEST_FIGHTER)
+    if player is None:
+        logger.info("Бойца %s пока нет — тестовая подписка подождёт", TEST_FIGHTER)
+        return False
+
+    fresh = await db.add_purchase(
+        user_id=player.user_id,
+        code="pro",
+        stars=0,
+        credits=0,
+        charge_id=PRO_GIFT_ID,
+        kind="gift",
+    )
+    if not fresh:
+        return False
+
+    player.extend_pro(PRO_DAYS * DAY)
+    await db.save_player(player)
+    logger.info(
+        "Тестовая выдача: %s получает PRO на %s дней", TEST_FIGHTER, PRO_DAYS
+    )
+    return True
+
+
 async def fix_promo_overrun(db: Database) -> bool:
     """Урезать подписку, набежавшую от повторных нажатий «забрать даром».
 

@@ -345,6 +345,10 @@ class Strike:
     defender_id: int
     zone: Zone | None
     outcome: Outcome
+    # Что защищающийся закрывал в этот ход. Нужно не бою, а разбору: по
+    # логу видно, куда били, но не видно, чего ждали, — а привычки бойца
+    # читаются именно по блокам
+    block: tuple[Zone, ...] = ()
     weapon: str = BARE_HANDS
     damage: int = 0
     counter_damage: int = 0
@@ -462,6 +466,7 @@ def strike_of(
         defender_id=defender.user_id,
         zone=zone,
         outcome=Outcome.SKIP,
+        block=tuple(defender_action.block),
         weapon=weapon,
         missed_turn=missed_turn,
     )

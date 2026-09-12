@@ -1774,6 +1774,9 @@ def ring_with_duel(chosen=None) -> dict:
             "resting": False,
             "yours": True,
             "chosen": chosen or {"attack": None, "block": None},
+            # Подсказки аналитика приходят только подписчику; в этой
+            # заготовке их нет — тест аналитика кладёт их сам
+            "scout": None,
             "fighters": [
                 {
                     "user_id": 42, "name": "Растафарайчик", "level": 5,
@@ -3538,6 +3541,55 @@ async def test_without_a_window_the_map_says_nothing_about_the_raid(server):
                                                        TOKEN, viewer_id=42))
 
         assert await page.locator(".zone-plate").count() == 0
+        await browser.close()
+
+
+async def test_the_analyst_speaks_above_the_buttons(server):
+    """Разбор соперника стоит над кнопками хода, а не под ними."""
+    ring = ring_with_duel()
+    ring["duel"]["scout"] = {
+        "title": "Разбор соперника: 10 боёв, 70 ходов.",
+        "attack": "По статистике в первом ходу соперник реже всего блокирует "
+                  "Пояс — 8%, Ноги — 14% и Голову — 22%.",
+        "block": "По статистике соперник чаще всего наносит первый удар в "
+                 "Голову — 45%, Ноги — 20% и Пояс — 10%.",
+    }
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        scout = page.locator(".scout")
+        assert await scout.count() == 1
+        said = await scout.inner_text()
+        assert "Аналитик" in said and "10 боёв" in said
+        assert "реже всего блокирует" in said and "первый удар в Голову" in said
+
+        # обе строки — выше кнопок выбора зоны
+        panel = await scout.bounding_box()
+        columns = await page.locator(".zone-columns").bounding_box()
+        assert panel["y"] + panel["height"] <= columns["y"] + 0.5
+        await browser.close()
+
+
+async def test_without_a_subscription_the_analyst_is_silent(server):
+    """Без подписки панели нет вовсе: это платная подсказка."""
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring_with_duel(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        assert await page.locator(".scout").count() == 0
         await browser.close()
 
 

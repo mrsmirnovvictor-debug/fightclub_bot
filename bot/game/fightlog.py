@@ -40,6 +40,8 @@ def strike_payload(strike: Strike) -> dict[str, Any]:
         # «в голову», «по ногам» — падеж берём из той же таблицы, по которой
         # говорит судья в ветке: иначе выходит «в голова»
         "zone_where": ZONE_PREPOSITIONAL[strike.zone] if strike.zone else "",
+        # Что защищающийся закрывал: по этому читаются его привычки
+        "block": [zone.value for zone in strike.block],
         "outcome": strike.outcome.value,
         "emoji": emoji,
         "title": title,
