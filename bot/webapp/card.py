@@ -7,12 +7,12 @@ from datetime import datetime
 
 from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats, get_class
 from bot.game.combat import (
-    MAX_ACCURACY,
-    MAX_ANTICRIT,
+    MAX_ACCURACY_TOTAL,
+    MAX_ANTICRIT_TOTAL,
     MAX_BLOCK_HOLD,
     MAX_COUNTER_CHANCE,
-    MAX_CRIT_CHANCE,
-    MAX_DODGE_CHANCE,
+    MAX_CRIT_TOTAL,
+    MAX_DODGE_TOTAL,
     total_accuracy,
     total_anticrit,
     total_block_hold,
@@ -881,18 +881,24 @@ def build_card(
             # Те же числа, но с потолком и слагаемыми: карточка показывает,
             # сколько дали характеристики, сколько вещи и что срезал потолок
             "caps": {
+                # Потолок здесь — тот, что режет итог вместе с вещами. Он
+                # выше потолка характеристик и почти никогда не срабатывает:
+                # доли спорят вычитанием, и резать итог значило бы решать
+                # бой потолком
                 "crit_chance": capped_share(
-                    derived.crit_chance, equipment.crit, total_crit, MAX_CRIT_CHANCE
+                    derived.crit_chance, equipment.crit, total_crit, MAX_CRIT_TOTAL
                 ),
                 "anticrit": capped_share(
-                    derived.anticrit, equipment.anticrit, total_anticrit, MAX_ANTICRIT
+                    derived.anticrit, equipment.anticrit, total_anticrit,
+                    MAX_ANTICRIT_TOTAL,
                 ),
                 "dodge_chance": capped_share(
                     derived.dodge_chance, equipment.dodge, total_dodge,
-                    MAX_DODGE_CHANCE,
+                    MAX_DODGE_TOTAL,
                 ),
                 "accuracy": capped_share(
-                    derived.accuracy, equipment.accuracy, total_accuracy, MAX_ACCURACY
+                    derived.accuracy, equipment.accuracy, total_accuracy,
+                    MAX_ACCURACY_TOTAL,
                 ),
                 "counter_chance": capped_share(
                     derived.counter_chance, equipment.counter, total_counter,

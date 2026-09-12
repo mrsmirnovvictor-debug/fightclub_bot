@@ -411,7 +411,8 @@ async def test_type_filter_leaves_one_shelf(weapon_page):
     assert all(
         title
         in ("Кастет", "Деревянная бита", "Выкидуха", "Строительный нож",
-            "Монтировка", "Нож")
+            "Монтировка", "Нож", "Дубинка бойца", "Трость шулера",
+            "Кувалда вышибалы")
         for title in await visible_titles(weapon_page)
     )
 
@@ -1087,45 +1088,42 @@ async def test_the_hero_screen_reads_without_extra_icons(server):
 
 
 async def test_a_percentage_says_when_the_ceiling_cut_it(server):
-    """Вещи дают уворота выше потолка, в строке потолок — карточка объясняет."""
-    from bot.game.combat import MAX_DODGE_CHANCE
-    from bot.game.stats import MAX_CRIT_CHANCE, NO_LIMITS
+    """Вещи дали выше потолка — карточка это объясняет, а не молчит.
+
+    Режущих потолков осталось два: контрудар и стойкость блока. У пар
+    «уворот — точность» и «крит — антикрит» потолок итога намеренно
+    поставлен выше всего, что можно собрать: они спорят вычитанием, и
+    резать итог значило бы решать бой потолком.
+    """
+    from bot.game.stats import MAX_COUNTER_CHANCE, MAX_DODGE_TOTAL, NO_LIMITS
 
     if NO_LIMITS:
         pytest.skip("потолки сняты в bot/game/stats.py")
-    ceiling = round(MAX_DODGE_CHANCE * 100)
+    ceiling = round(MAX_COUNTER_CHANCE * 100)
     player = make_player()
-    player.gear = [
-        OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON),
-        OwnedItem(item=CATALOGUE["test_wraps"], id=2, slot=Slot.GLOVES),
-        OwnedItem(item=CATALOGUE["test_sneakers"], id=3, slot=Slot.BOOTS),
-        OwnedItem(item=CATALOGUE["shadow_coat"], id=4, slot=Slot.JACKET),
-        OwnedItem(item=CATALOGUE["sheath_pants"], id=5, slot=Slot.PANTS),
-    ]
+    player.agility = 80
+    player.gear = [OwnedItem(item=CATALOGUE["lightsaber"], id=1, slot=Slot.WEAPON)]
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    gear = round(sum(owned.item.dodge for owned in player.gear) * 100)
-    assert card["combat"]["caps"]["dodge_chance"]["gear"] == gear > ceiling
+    assert card["combat"]["caps"]["counter_chance"]["capped"]
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-hero").click()
 
-        dodge = page.locator("#combat li").filter(has_text="Уворот").first
+        counter = page.locator("#combat li").filter(has_text="Контрудар").first
         # срезанный процент подписью не помечают — его красят золотом
-        assert await dodge.inner_text() == f"🌀 Уворот\n{ceiling}%"
-        assert await dodge.locator(".value.capped").count() == 1
-        assert f"вещи {gear}%" in await dodge.get_attribute("title")
+        assert await counter.inner_text() == f"🔄 Контрудар\n{ceiling}%"
+        assert await counter.locator(".value.capped").count() == 1
         assert f"но выше {ceiling}% не растёт" in (
-            await dodge.get_attribute("title")
+            await counter.get_attribute("title")
         )
 
-        # непотолочная строка объясняет то же самое, но золотом не горит
-        crit = page.locator("#combat li").filter(has_text="Крит").first
-        assert await crit.locator(".value.capped").count() == 0
-        assert f"потолок {round(MAX_CRIT_CHANCE * 100)}%" in (
-            await crit.get_attribute("title")
-        )
+        # а уворот золотом не горит: его потолок выше всего собираемого
+        dodge = page.locator("#combat li").filter(has_text="Уворот").first
+        assert await dodge.locator(".value.capped").count() == 0
+        assert MAX_DODGE_TOTAL >= 1.0
+        assert "потолков сейчас нет" in await dodge.get_attribute("title")
         await browser.close()
 
 

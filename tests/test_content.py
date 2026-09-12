@@ -26,6 +26,8 @@ from bot.game.equipment import (
     Item,
     Slot,
     items_unlocked_at,
+    weapon_share_cap,
+    weapon_share_floor,
 )
 
 
@@ -67,20 +69,86 @@ def test_the_whole_catalogue_lives_in_one_bucket():
 
 
 def test_percent_bonuses_stay_within_their_caps():
-    """Проценты растут со ступенью, но не настолько, чтобы стирать класс.
+    """Проценты идут лестницей, и у одежды с оружием она разная.
 
-    Потолок держит лавку клуба — то, что берут за кредиты и что определяет
-    баланс между классами. Товар мага живёт по своим правилам: он и должен
-    быть заметно сильнее, иначе за него не платили бы звёздами.
+    Главные доли живут на оружии: 10–15% на пятом уровне, 45–50% на
+    десятом. Числа крупные намеренно — в бою они вычитаются парами, и
+    решает разница, а не величина. Мелкая доля тонула в характеристиках:
+    у трикстера с ассасином уворот и крит и без вещей упирались в свой
+    потолок, и написанное на оружии в бой просто не доходило.
 
-    Вещи с числами выше потолка в игре есть — те, что выдают руками на
-    тестовых бойцов. Но они помечены наградой, на прилавок не попадают, и
-    правило их не касается: витрина проверяется целиком, без исключений.
+    Одежда процентами не торгует: её дело — броня и запас. Восемь вещей
+    складывают свои доли, оружие в руках одно, поэтому потолок у одежды
+    прежний и маленький.
+
+    Товар мага живёт по своим правилам: он и должен быть заметно сильнее,
+    иначе за него не платили бы звёздами. Вещи с ручными числами помечены
+    наградой и на прилавок не попадают — витрина проверяется целиком.
     """
     for item in SHOWCASE:
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
-        cap = EARLY_SHARE_CAP if item.level_required <= EARLY_LEVELS else LATE_SHARE_CAP
+        cap = (
+            weapon_share_cap(item.level_required)
+            if item.is_weapon
+            else (
+                EARLY_SHARE_CAP
+                if item.level_required <= EARLY_LEVELS
+                else LATE_SHARE_CAP
+            )
+        )
         assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%} > {cap:.0%}"
+
+
+def test_every_weapon_of_its_tier_carries_the_share_of_its_tier():
+    """Оружие своей ступени прибавляет заметно — иначе доля ничего не решает.
+
+    Полоса узкая (пять пунктов), и главная доля обязана в неё попасть.
+    Вторая доля — ответ той паре, которой этот класс держит удар, — может
+    быть и меньше: у трикстера контрудар вполовину уворота, потому что
+    гасить крит — дело танка, и в этом весь круг.
+    """
+    for item in SHOWCASE:
+        if not item.is_weapon or item.level_required < EARLY_LEVELS:
+            continue
+        shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
+        # Катана с двуручником долей не дают вовсе: они меняют проценты на
+        # урон, и это честный выбор. А вот половина полосы — это уже
+        # обещание, которого вещь не держит
+        if not max(shares):
+            continue
+        floor = weapon_share_floor(item.level_required)
+        assert max(shares) >= floor - 1e-9, (
+            f"{item.title}: {max(shares):.0%} — ниже полосы {floor:.0%}"
+        )
+
+
+def test_the_pair_of_a_share_grows_along_with_it():
+    """У каждой доли есть пара, и она идёт по той же лестнице.
+
+    Уворот сбивается точностью, крит — антикритом. Если одна сторона
+    выросла, а вторая осталась внизу, потолок и класс решают бой сами:
+    трикстер становится неуязвимым, ассасин — неостановимым. Поэтому на
+    каждой ступени оружия обе стороны обеих пар есть у кого-то из
+    четверых, и в одной полосе.
+    """
+    from bot.game.equipment import CATALOGUE
+
+    tiers: dict[int, list] = {}
+    for item in CATALOGUE.values():
+        if item.is_weapon and not item.is_magic and item.level_required >= EARLY_LEVELS:
+            tiers.setdefault(item.level_required, []).append(item)
+
+    for level, items in sorted(tiers.items()):
+        floor = weapon_share_floor(level)
+        for one, other in (("dodge", "accuracy"), ("crit", "anticrit")):
+            mine = max(getattr(item, one) for item in items)
+            answer = max(getattr(item, other) for item in items)
+            if mine < floor:
+                continue  # этой стороны на ступени нет вовсе — спорить не с чем
+            assert answer >= floor - 1e-9, (
+                f"{level} уровень: {one} на {mine:.0%}, а {other} только на "
+                f"{answer:.0%} — пара разъехалась"
+            )
 
 
 def test_items_never_hand_out_endurance():
@@ -119,6 +187,7 @@ def test_weapon_spread_matches_the_character_of_its_class():
 
     for tier in (
         ("pipe", "switchblade", "awl", "crowbar"),
+        ("pit_fighter_baton", "cardsharp_cane", "assassin_stiletto", "bouncer_sledge"),
         ("bat", "machete", "stiletto", "sledge"),
         ("fire_axe", "balisong", "ice_pick", "chain"),
         ("cleaver", "razor", "needle", "pry_bar"),
@@ -177,14 +246,15 @@ def test_pictures_are_wired_to_the_right_bucket():
     """Картинки предметов лежат в R2 и не повторяются у разных вещей."""
     from bot.game.equipment import ART, SHOWCASE
 
-    pictures = [item.image for item in SHOWCASE if item.image]
+    pictures = [item.picture for item in SHOWCASE]
     assert pictures, "картинок нет вовсе"
     assert len(set(pictures)) == len(pictures), "две вещи делят одну картинку"
     assert all(picture.startswith("https://") for picture in pictures)
 
     for item in SHOWCASE:
-        if item.is_weapon:
-            assert item.image.startswith(ART), f"{item.code}: не из бакета клуба"
+        # Адрес обычно считается по коду; явный `image=` остался у старых
+        # файлов, чьи имена под это правило не подходят
+        assert item.picture.startswith(ART), f"{item.code}: не из бакета клуба"
 
 
 def test_the_whole_catalogue_is_drawn():
@@ -402,7 +472,8 @@ def test_the_fan_shelf_keeps_the_same_ceilings():
     """
     for item in fan_items():
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
-        assert max(shares) <= LATE_SHARE_CAP + 1e-9, f"{item.title}: {max(shares):.0%}"
+        cap = weapon_share_cap(10) if item.is_weapon else LATE_SHARE_CAP
+        assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%}"
         for stat in ("strength", "agility", "intuition"):
             assert getattr(item, stat) <= flat_cap(item.level_required), item.title
         assert item.bonus.endurance == 0, item.title

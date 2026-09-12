@@ -35,11 +35,12 @@ from bot.game.stats import (
     BLOCK_BREAK_CHANCE,
     BLOCK_BREAK_DAMAGE_SHARE,
     COUNTER_DAMAGE_MULT,
-    MAX_ACCURACY,
-    MAX_ANTICRIT,
+    MAX_ACCURACY_TOTAL,
+    MAX_ANTICRIT_TOTAL,
     MAX_BLOCK_HOLD,
     MAX_COUNTER_CHANCE,
-    MAX_CRIT_CHANCE,
+    MAX_CRIT_TOTAL,
+    MAX_DODGE_TOTAL,
     MIN_BLOCK_BREAK,
     DerivedStats,
     derive,
@@ -142,19 +143,19 @@ class Action:
 
 
 def total_accuracy(base: float, gear: float) -> float:
-    return min(MAX_ACCURACY, base + gear)
+    return min(MAX_ACCURACY_TOTAL, base + gear)
 
 
 def total_anticrit(base: float, gear: float) -> float:
-    return min(MAX_ANTICRIT, base + gear)
+    return min(MAX_ANTICRIT_TOTAL, base + gear)
 
 
 def total_dodge(base: float, gear: float) -> float:
-    return min(MAX_DODGE_CHANCE, base + gear)
+    return min(MAX_DODGE_TOTAL, base + gear)
 
 
 def total_crit(base: float, gear: float) -> float:
-    return min(MAX_CRIT_CHANCE, base + gear)
+    return min(MAX_CRIT_TOTAL, base + gear)
 
 
 def total_counter(base: float, gear: float) -> float:
