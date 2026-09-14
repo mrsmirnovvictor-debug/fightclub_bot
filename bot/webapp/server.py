@@ -428,18 +428,22 @@ async def api_repair(request: web.Request) -> web.Response:
     """Починить вещь за кредиты."""
     data = await _payload(request)
     points = None if data.get("points") is None else _int_field(data, "points")
+    db = request.app[DB_KEY]
     try:
         player = await _at(request, Service.REPAIR)
-        result = await repair_item(
-            request.app[DB_KEY], player, _int_field(data, "item_id"), points
-        )
+        result = await repair_item(db, player, _int_field(data, "item_id"), points)
     except InventoryError as error:
         return web.json_response({"error": str(error)}, status=409)
 
     config = request.app[CONFIG_KEY]
+    # Мастерская возвращается вместе с ответом, как у мастера и прилавка:
+    # починенная вещь должна уйти из списка сразу, а не после того, как
+    # игрок сам переоткроет дверь
+    mine = await db.list_mods(player.user_id)
     return web.json_response(
         {
             "card": build_card(player, config.bot_token, player.user_id),
+            "workshop": build_workshop(player, mine),
             "repair": {
                 "points": result.points,
                 "price": result.price,

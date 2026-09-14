@@ -3729,6 +3729,37 @@ async def test_the_master_needs_both_slots(server):
         await browser.close()
 
 
+async def test_a_repaired_thing_leaves_the_bench_at_once(server):
+    """Починили — вещь уходит из списка сразу, а не после переоткрытия двери.
+
+    Список ремонта приходит тем же ответом, что и починка: целой вещи на
+    вкладке делать нечего, и ждать, пока игрок сам закроет и откроет
+    мастерскую, чтобы это увидеть, он не должен.
+    """
+    state = workshop_state()
+    async with async_playwright() as pw:
+        browser, page = await open_workshop(pw, server, state)
+
+        await page.route("**/api/repair", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "card": build_card(make_player("workshop"), TOKEN, viewer_id=42),
+                "workshop": {**state, "repair": []},
+                "repair": {
+                    "points": 4, "price": 4, "degraded": False, "destroyed": False,
+                },
+            }),
+        ))
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+
+        assert await page.locator("#repair-list .thing").count() == 1
+        await page.locator("#repair-list button").first.click()
+
+        await page.wait_for_selector("#repair-list .thing", state="detached")
+        assert "Чинить нечего" in await page.locator("#repair-note").inner_text()
+        await browser.close()
+
+
 async def test_the_master_burns_and_leaves_a_star(server):
     """Нажали «Модифицировать» — слоты сошлись, вспыхнуло, звёздочка осталась."""
     state = workshop_state()

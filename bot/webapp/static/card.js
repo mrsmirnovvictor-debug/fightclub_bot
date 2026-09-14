@@ -4196,6 +4196,9 @@ async function repair(item, points) {
   try {
     const data = await post("api/repair", { item_id: item.id, points: points });
     render(data.card, true);
+    // Список ремонта приходит вместе с ответом: починенная вещь исчезает
+    // из него тут же, а не ждёт, пока дверь откроют заново
+    if (data.workshop) renderWorkshop(data.workshop);
     shopData = null;  // кредитов стало меньше
     const done = data.repair;
     let text = "Снято износа: " + done.points + ", списано " + done.price + " 💰.";

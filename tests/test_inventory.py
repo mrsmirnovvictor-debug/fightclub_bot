@@ -562,6 +562,10 @@ async def test_mini_app_repairs_for_credits(client, db):
     assert body["repair"]["price"] == 5
     assert body["card"]["inventory"][0]["wear"] == 0
     assert body["card"]["record"]["credits"] == 200 - SNEAKERS.price - 5
+    # Мастерская приходит тем же ответом, и починенной вещи в ней уже нет:
+    # список чинить нечего, потому что всё снятое стало целым
+    assert body["workshop"]["repair"] == []
+    assert body["workshop"]["credits"] == body["card"]["record"]["credits"]
 
 
 async def test_nobody_touches_a_stranger_backpack(client, db):
