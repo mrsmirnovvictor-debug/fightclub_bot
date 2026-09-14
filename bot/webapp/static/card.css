@@ -942,7 +942,30 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .mod.lvl3 { border-left: 3px solid #e07b39; }
 .mod.lvl4 { border-left: 3px solid #a44dd6; }
 .mod.lvl5 { border-left: 3px solid #d93f3f; }
-.mod-star { font-size: 18px; line-height: 1.2; }
+.mod-pic {
+  position: relative;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  overflow: hidden;
+}
+.mod-pic img { width: 100%; height: 100%; object-fit: cover; }
+/* Звёздочка ступени сидит на углу картинки: цвет виден и на тёмном арте */
+.mod-star {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  font-size: 14px;
+  line-height: 1;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.75);
+}
 .mod-body { flex: 1; min-width: 0; }
 .mod-title { font-size: 13.5px; font-weight: 700; }
 .mod-gain { font-size: 12.5px; color: var(--accent); margin-top: 2px; }

@@ -60,6 +60,15 @@ def test_the_star_says_the_step():
     assert [star_of(level) for level in (1, 2, 3, 4, 5)] == ["⚪", "🟡", "🟠", "🟣", "🔴"]
 
 
+def test_every_modifier_knows_where_its_picture_lies():
+    """Картинка берётся от кода, как у вещей: `items/<code>.jpeg`."""
+    from bot.game import art
+
+    assert len({mod.picture for mod in MODS}) == len(MODS), "у каждого своя"
+    assert get_mod("mod_counter_4").picture == art.item("mod_counter_4")
+    assert all(mod.picture.endswith(f"items/{mod.code}.jpeg") for mod in MODS)
+
+
 # ---------- что модификатор делает с вещью ----------
 
 

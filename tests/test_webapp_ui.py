@@ -3729,6 +3729,25 @@ async def test_the_master_needs_both_slots(server):
         await browser.close()
 
 
+async def test_the_counter_shows_the_art_of_every_modifier(server):
+    """У каждого модификатора на прилавке своя картинка и звёздочка на ней.
+
+    Картинки в тестах режет маршрут, и вместо не доехавшего файла страница
+    честно оставляет значок вида — проверяем и это: прилавок не должен
+    рассыпаться, если одна картинка не открылась.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_workshop(pw, server)
+        await page.locator("#workshop-tabs .chip").nth(1).click()
+
+        pics = page.locator("#workshop-shop .mod .mod-pic")
+        assert await pics.count() == 5, "пять ступеней заточки оружия"
+        first = pics.first
+        assert await first.locator(".mod-star").inner_text() == "⚪"
+        assert "🗡" in await first.inner_text(), "картинка не доехала — виден значок"
+        await browser.close()
+
+
 async def test_a_repaired_thing_leaves_the_bench_at_once(server):
     """Починили — вещь уходит из списка сразу, а не после переоткрытия двери.
 

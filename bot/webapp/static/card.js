@@ -3973,10 +3973,16 @@ function modCard(mod, buyable) {
   const box = document.createElement("div");
   box.className = "mod lvl" + mod.level;
 
+  // Картинка модификатора, а на её углу — звёздочка ступени. Не доехал
+  // файл — на его месте остаётся значок вида, как и у вещей
+  const pic = document.createElement("div");
+  pic.className = "mod-pic";
+  pic.appendChild(slotPicture(mod, mod.icon));
   const star = document.createElement("span");
   star.className = "mod-star";
   star.textContent = mod.star;
-  box.appendChild(star);
+  pic.appendChild(star);
+  box.appendChild(pic);
 
   const body = document.createElement("div");
   body.className = "mod-body";
