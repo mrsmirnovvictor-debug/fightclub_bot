@@ -285,7 +285,10 @@ function button(text, options) {
   return btn;
 }
 
-function thingCard(item, credits, shop) {
+// `bare` — карточка без своих кнопок: вещь показывают, но ничего с ней
+// отсюда не делают. Так она выглядит у мастера, где с вещью делают ровно
+// одно, и это одно приписывает сама вкладка
+function thingCard(item, credits, shop, bare) {
   const box = document.createElement("div");
   box.className = "thing" + (shop && !item.unlocked ? " locked" : "");
 
@@ -407,6 +410,11 @@ function thingCard(item, credits, shop) {
       );
       body.appendChild(buy);
     }
+    box.appendChild(body);
+    return box;
+  }
+
+  if (bare) {
     box.appendChild(body);
     return box;
   }
@@ -3925,24 +3933,25 @@ function renderRepairTab(data) {
     : "Чинить нечего: всё снятое целое, а надетое сюда не берут.";
   const list = el("repair-list");
   list.textContent = "";
+  // На вкладке лежит только побитое, и делают тут одно — чинят. Поэтому
+  // на карточке одна кнопка: не хватает на всю починку — чиним на сколько
+  // хватает, и это написано прямо на ней
   data.repair.forEach((item) => {
-    const card = thingCard(item, data.credits, false);
+    const card = thingCard(item, data.credits, false, true);
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
     const affordable = Math.min(item.wear, data.credits);
     const full = item.repair_price <= data.credits;
     buttons.appendChild(
       button(
-        item.wear
-          ? full
-            ? "Чинить · " + item.repair_price + " 💰"
-            : affordable > 0
-              ? "Чинить на " + affordable + " 💰"
-              : "Чинить · " + item.repair_price + " 💰"
-          : "Целая",
+        full
+          ? "Чинить · " + item.repair_price + " 💰"
+          : affordable > 0
+            ? "Чинить на " + affordable + " 💰"
+            : "Чинить · " + item.repair_price + " 💰",
         {
           secondary: true,
-          disabled: !item.wear || affordable <= 0,
+          disabled: affordable <= 0,
           onClick: () => repair(item, full ? null : affordable),
         }
       )
@@ -4077,7 +4086,7 @@ function renderMasterPicker(data) {
     const list = document.createElement("div");
     list.className = "bag-list";
     rows.forEach((row) => {
-      const card = thingCard(row, data.credits, false);
+      const card = thingCard(row, data.credits, false, true);
       card.classList.add("pickable");
       card.addEventListener("click", () => {
         masterPick.item = row;

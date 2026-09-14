@@ -3657,11 +3657,13 @@ async def test_the_workshop_has_three_tabs(server):
         tabs = await page.locator("#workshop-tabs .chip").all_inner_texts()
         assert tabs == ["🔧 Ремонт", "🛒 Модификаторы", "✨ Мастер"]
 
-        # открыт ремонт: снятая вещь с кнопкой починки
+        # открыт ремонт: снятая вещь и ровно одна кнопка — «Чинить».
+        # Ни надеть, ни продать у мастера нельзя: сюда приходят чиниться
         assert await page.locator("#workshop-repair:not(.hidden)").count() == 1
         repair = page.locator("#repair-list .thing").first
         assert "Бита" in await repair.inner_text()
-        assert "Чинить" in await repair.locator("button").last.inner_text()
+        buttons = await repair.locator("button").all_inner_texts()
+        assert len(buttons) == 1 and buttons[0].startswith("Чинить"), buttons
         await browser.close()
 
 
@@ -3709,9 +3711,12 @@ async def test_the_master_needs_both_slots(server):
         go = page.locator("#master-go")
         assert await go.is_disabled()
 
-        # кладём вещь
+        # кладём вещь. В выборе карточка — сама кнопка, и других на ней
+        # нет: «Надеть» или «Сдать» здесь означали бы промах мимо выбора
         await page.locator("#master-item").click()
-        await page.locator("#master-picker .thing").first.click()
+        pick = page.locator("#master-picker .thing").first
+        assert await pick.locator("button").count() == 0
+        await pick.click()
         assert await go.is_disabled(), "одной вещи мало"
 
         # и модификатор

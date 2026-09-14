@@ -63,12 +63,14 @@ def build_workshop(player: Player, mine: dict[str, int]) -> dict[str, Any]:
     """Мастерская целиком: три вкладки одним ответом."""
     return {
         "credits": player.credits,
-        # Починка: всё, что не надето. Надетое чинить не дают — сначала
-        # снимают, иначе вещь чинится прямо на бойце
+        # Починка: только то, что не надето и при этом побито. Надетое
+        # чинить не дают — сначала снимают, иначе вещь чинится прямо на
+        # бойце. Целое на вкладке не лежит вовсе: мастеру его показывать
+        # незачем, а список от этого читается одним взглядом
         "repair": [
             item_payload(player, owned)
             for owned in player.gear
-            if not owned.is_equipped
+            if not owned.is_equipped and owned.wear > 0
         ],
         "shop": [
             {
