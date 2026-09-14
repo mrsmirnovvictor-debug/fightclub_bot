@@ -36,6 +36,34 @@ body.dark {
   --gold: #e8c04a;
 }
 
+/* Цвета ступеней модификации. Один список на все места, где ступень
+   показывают цветом: кромка карточки на прилавке и обводка картинки у
+   модифицированной вещи. Те же пять цветов, что у точек ⚪ 🟡 🟠 🟣 🔴 */
+:root {
+  --tier1: #b9c0c8;
+  --tier2: #e2b714;
+  --tier3: #e07b39;
+  --tier4: #a44dd6;
+  --tier5: #d93f3f;
+}
+
+/* Обводка ступени: рисуется поверх картинки и внутри её рамки, поэтому
+   не двигает вёрстку и видна на любом арте. Носителю класса нужен
+   position: relative — у клетки куклы и картинки вещи он есть */
+.tier::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--tier);
+  border-radius: inherit;
+  pointer-events: none;
+}
+.tier.lvl1 { --tier: var(--tier1); }
+.tier.lvl2 { --tier: var(--tier2); }
+.tier.lvl3 { --tier: var(--tier3); }
+.tier.lvl4 { --tier: var(--tier4); }
+.tier.lvl5 { --tier: var(--tier5); }
+
 * { box-sizing: border-box; }
 
 body {
@@ -163,17 +191,6 @@ body {
 /* Подложки нарисованы под тёмную тему; на светлой приглушаем их */
 body:not(.dark) .slot.empty img { opacity: 0.6; }
 .slot:active { transform: scale(0.95); }
-/* Точка ступени на надетой вещи: её видит и хозяин, и соперник —
-   карточку смотрят оба, и по точке понятно, что вещь не простая */
-.slot-star {
-  position: absolute;
-  right: 2px;
-  top: 1px;
-  font-size: 11px;
-  line-height: 1;
-  text-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
-  pointer-events: none;
-}
 
 .avatar {
   /* Рамка тянется по колонке слотов, поэтому она заметно выше, чем широкая:
@@ -483,6 +500,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   padding: 10px 12px;
 }
 .thing-pic {
+  position: relative;
   width: 104px;
   height: 104px;
   border: 1px solid var(--slot-line);
@@ -950,10 +968,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   background: var(--panel);
   border: 1px solid var(--line);
 }
-.mod.lvl2 { border-left: 3px solid #e2b714; }
-.mod.lvl3 { border-left: 3px solid #e07b39; }
-.mod.lvl4 { border-left: 3px solid #a44dd6; }
-.mod.lvl5 { border-left: 3px solid #d93f3f; }
+.mod.lvl2 { border-left: 3px solid var(--tier2); }
+.mod.lvl3 { border-left: 3px solid var(--tier3); }
+.mod.lvl4 { border-left: 3px solid var(--tier4); }
+.mod.lvl5 { border-left: 3px solid var(--tier5); }
 .mod-pic {
   flex: 0 0 auto;
   width: 104px;

@@ -201,13 +201,10 @@ function renderSlots(container, slots, own) {
     box.appendChild(
       shown ? slotPicture(shown, slot.placeholder) : emptySlotPicture(slot, box)
     );
-    // Точка ступени на надетой вещи. Кукла открыта всем, кто смотрит
-    // карточку, — по ней соперник и понимает, что вещь не простая
-    if (shown && shown.mod && shown.mod.star) {
-      const star = document.createElement("span");
-      star.className = "slot-star lvl" + shown.mod.level;
-      star.textContent = shown.mod.star;
-      box.appendChild(star);
+    // Обводка ступени на надетой вещи. Кукла открыта всем, кто смотрит
+    // карточку, — по цвету рамки соперник и понимает, что вещь не простая
+    if (shown && shown.mod && shown.mod.level) {
+      box.classList.add("tier", "lvl" + shown.mod.level);
     }
     box.addEventListener("click", () => {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
@@ -313,6 +310,8 @@ function thingCard(item, credits, shop, bare) {
 
   const pic = document.createElement("div");
   pic.className = "thing-pic";
+  // Модифицированную вещь обводим цветом ступени — так же, как в кукле
+  if (item.mod && item.mod.level) pic.classList.add("tier", "lvl" + item.mod.level);
   pic.appendChild(slotPicture(item, item.icon));
   box.appendChild(pic);
 

@@ -3685,10 +3685,10 @@ async def test_the_repair_button_left_the_bag(server):
         await browser.close()
 
 
-async def test_the_rival_sees_the_dot_on_a_modified_thing(server):
-    """Точка ступени горит на надетой вещи — и в чужой карточке тоже.
+async def test_the_rival_sees_the_ring_on_a_modified_thing(server):
+    """Обводка ступени горит на надетой вещи — и в чужой карточке тоже.
 
-    В этом и смысл переноса точки с прилавка на вещь: соперник, открывший
+    В этом и смысл переноса метки с прилавка на вещь: соперник, открывший
     карточку перед боем, должен видеть, что оружие не простое, а какое —
     сказать по цвету.
     """
@@ -3700,16 +3700,19 @@ async def test_the_rival_sees_the_dot_on_a_modified_thing(server):
         browser, page = await open_page(pw, server, card, query="?user_id=42")
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        # кукла на странице нарисована дважды — в шапке и ниже; точка на
-        # вещи стоит в обеих
-        star = page.locator("#hero-slots-left .slot-star")
-        assert await star.count() == 1
-        assert await star.inner_text() == "🟣"
-        assert await page.locator(".slot .slot-star").count() == 2
+        # кукла на странице нарисована дважды — в шапке и ниже; обводка
+        # ступени стоит в обеих
+        marked = page.locator("#hero-slots-left .slot.tier")
+        assert await marked.count() == 1
+        assert "lvl4" in await marked.get_attribute("class"), "цвет не той ступени"
+        assert await page.locator(".slot.tier").count() == 2
+        # обводка нарисована поверх картинки и внутри рамки клетки
+        ring = await marked.evaluate(
+            "box => getComputedStyle(box, '::after').borderTopColor"
+        )
+        assert ring == "rgb(164, 77, 214)", ring
         # и подсказка клетки говорит, что именно дала модификация
-        hint = await page.locator("#hero-slots-left .slot").filter(
-            has=page.locator(".slot-star")
-        ).get_attribute("title")
+        hint = await marked.get_attribute("title")
         assert "Мастерская заточка оружия" in hint and "урон +12" in hint
         await browser.close()
 
@@ -3855,10 +3858,13 @@ async def test_the_master_burns_and_leaves_a_star(server):
         await page.wait_for_selector(".master.boom")
         await page.wait_for_selector(".master:not(.going)")
 
-        # на вещи осталась звёздочка своей ступени
+        # на вещи осталась метка своей ступени: точка у названия и
+        # обводка того же цвета вокруг картинки
         await page.locator("#workshop-tabs .chip").first.click()
         star = page.locator("#repair-list .thing-star").first
         assert await star.inner_text() == "🟡"
+        pic = page.locator("#repair-list .thing-pic").first
+        assert "lvl2" in await pic.get_attribute("class")
         await browser.close()
 
 
