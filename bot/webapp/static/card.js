@@ -170,6 +170,9 @@ function emptySlotPicture(slot, box) {
 
 function wornLine(item, slotTitle) {
   const parts = [item.title + " — " + slotTitle];
+  if (item.mod && item.mod.star) {
+    parts.push(item.mod.star + " " + item.mod.title + ": " + item.mod.gain);
+  }
   if (item.bonus) parts.push(item.bonus);
   if (item.in_hands) parts.push(item.in_hands);
   return parts.join("\n");
@@ -198,6 +201,14 @@ function renderSlots(container, slots, own) {
     box.appendChild(
       shown ? slotPicture(shown, slot.placeholder) : emptySlotPicture(slot, box)
     );
+    // Точка ступени на надетой вещи. Кукла открыта всем, кто смотрит
+    // карточку, — по ней соперник и понимает, что вещь не простая
+    if (shown && shown.mod && shown.mod.star) {
+      const star = document.createElement("span");
+      star.className = "slot-star lvl" + shown.mod.level;
+      star.textContent = shown.mod.star;
+      box.appendChild(star);
+    }
     box.addEventListener("click", () => {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
       if (!slot.item && slot.under) {
@@ -3973,15 +3984,12 @@ function modCard(mod, buyable) {
   const box = document.createElement("div");
   box.className = "mod lvl" + mod.level;
 
-  // Картинка модификатора, а на её углу — звёздочка ступени. Не доехал
-  // файл — на его месте остаётся значок вида, как и у вещей
+  // Картинка модификатора. Точки ступени здесь нет намеренно: она
+  // принадлежит вещи, а не заточке. Ступень на прилавке видно по
+  // названию, полосе и цветной кромке карточки
   const pic = document.createElement("div");
   pic.className = "mod-pic";
   pic.appendChild(slotPicture(mod, mod.icon));
-  const star = document.createElement("span");
-  star.className = "mod-star";
-  star.textContent = mod.star;
-  pic.appendChild(star);
   box.appendChild(pic);
 
   const body = document.createElement("div");

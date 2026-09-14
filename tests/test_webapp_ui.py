@@ -3685,8 +3685,42 @@ async def test_the_repair_button_left_the_bag(server):
         await browser.close()
 
 
+async def test_the_rival_sees_the_dot_on_a_modified_thing(server):
+    """Точка ступени горит на надетой вещи — и в чужой карточке тоже.
+
+    В этом и смысл переноса точки с прилавка на вещь: соперник, открывший
+    карточку перед боем, должен видеть, что оружие не простое, а какое —
+    сказать по цвету.
+    """
+    rival = make_player()
+    rival.gear[0].modify("sharpen_weapon_4", 12)
+    card = build_card(rival, TOKEN, viewer_id=999)  # смотрит соперник
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, query="?user_id=42")
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # кукла на странице нарисована дважды — в шапке и ниже; точка на
+        # вещи стоит в обеих
+        star = page.locator("#hero-slots-left .slot-star")
+        assert await star.count() == 1
+        assert await star.inner_text() == "🟣"
+        assert await page.locator(".slot .slot-star").count() == 2
+        # и подсказка клетки говорит, что именно дала модификация
+        hint = await page.locator("#hero-slots-left .slot").filter(
+            has=page.locator(".slot-star")
+        ).get_attribute("title")
+        assert "Мастерская заточка оружия" in hint and "урон +12" in hint
+        await browser.close()
+
+
 async def test_the_counter_sells_five_steps(server):
-    """Прилавок: пять ступеней со своей полосой, ценой и звёздочкой."""
+    """Прилавок: пять ступеней со своей полосой и ценой.
+
+    Точки ступени на прилавке нет: она принадлежит вещи, а не заточке.
+    Ступень здесь называют словом («Простая», «Элитная») и показывают
+    цветом кромки карточки.
+    """
     async with async_playwright() as pw:
         browser, page = await open_workshop(pw, server)
         await page.locator("#workshop-tabs .chip").nth(1).click()
@@ -3696,9 +3730,11 @@ async def test_the_counter_sells_five_steps(server):
         first = await rows.first.inner_text()
         assert "Простая заточка оружия" in first and "500" in first
         assert "урон +1…+5" in first
-        # ступени различимы звёздочкой
-        stars = await page.locator("#mods-list .mod-star").all_inner_texts()
-        assert stars == ["⚪", "🟡", "🟠", "🟣", "🔴"]
+        assert await page.locator("#mods-list .mod-star").count() == 0
+        # ступень различима кромкой: у каждой карточки свой класс
+        assert [
+            await row.get_attribute("class") for row in await rows.all()
+        ] == ["mod lvl1", "mod lvl2", "mod lvl3", "mod lvl4", "mod lvl5"]
         await browser.close()
 
 
@@ -3743,8 +3779,9 @@ async def test_the_counter_shows_the_art_of_every_modifier(server):
         pics = page.locator("#workshop-shop .mod .mod-pic")
         assert await pics.count() == 5, "пять ступеней заточки оружия"
         first = pics.first
-        assert await first.locator(".mod-star").inner_text() == "⚪"
         assert "🗡" in await first.inner_text(), "картинка не доехала — виден значок"
+        box = await first.bounding_box()
+        assert box["width"] >= 96, f"картинка мелковата: {box['width']}"
         await browser.close()
 
 

@@ -140,6 +140,7 @@ body {
 }
 .slots { display: grid; gap: 9px; align-content: start; }
 .slot {
+  position: relative;
   aspect-ratio: 1;
   border: 1px solid var(--slot-line);
   border-radius: 5px;
@@ -162,6 +163,17 @@ body {
 /* Подложки нарисованы под тёмную тему; на светлой приглушаем их */
 body:not(.dark) .slot.empty img { opacity: 0.6; }
 .slot:active { transform: scale(0.95); }
+/* Точка ступени на надетой вещи: её видит и хозяин, и соперник —
+   карточку смотрят оба, и по точке понятно, что вещь не простая */
+.slot-star {
+  position: absolute;
+  right: 2px;
+  top: 1px;
+  font-size: 11px;
+  line-height: 1;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+}
 
 .avatar {
   /* Рамка тянется по колонке слотов, поэтому она заметно выше, чем широкая:
@@ -943,29 +955,19 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .mod.lvl4 { border-left: 3px solid #a44dd6; }
 .mod.lvl5 { border-left: 3px solid #d93f3f; }
 .mod-pic {
-  position: relative;
   flex: 0 0 auto;
-  width: 64px;
-  height: 64px;
+  width: 104px;
+  height: 104px;
   border: 1px solid var(--slot-line);
   border-radius: 8px;
   background: var(--slot);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
+  font-size: 44px;
   overflow: hidden;
 }
 .mod-pic img { width: 100%; height: 100%; object-fit: cover; }
-/* Звёздочка ступени сидит на углу картинки: цвет виден и на тёмном арте */
-.mod-star {
-  position: absolute;
-  right: 2px;
-  bottom: 1px;
-  font-size: 14px;
-  line-height: 1;
-  text-shadow: 0 0 3px rgba(0, 0, 0, 0.75);
-}
 .mod-body { flex: 1; min-width: 0; }
 .mod-title { font-size: 13.5px; font-weight: 700; }
 .mod-gain { font-size: 12.5px; color: var(--accent); margin-top: 2px; }
@@ -988,7 +990,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .master-slot {
   flex: 1;
   min-width: 0;
-  min-height: 104px;
+  min-height: 148px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1005,7 +1007,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .master-slot.full { border-style: solid; border-color: var(--accent); }
 .master-empty { font-size: 12.5px; color: var(--muted); }
 .master-title { font-size: 12.5px; font-weight: 700; text-align: center; }
-.master-pic { width: 46px; height: 46px; }
+.master-pic {
+  width: 88px;
+  height: 88px;
+  font-size: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .master-pic img { width: 100%; height: 100%; object-fit: contain; }
 .master-plus { font-size: 18px; color: var(--muted); transition: opacity 0.3s; }
 
