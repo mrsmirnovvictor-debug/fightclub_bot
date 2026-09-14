@@ -916,6 +916,98 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .city.on-road { color: var(--accent); font-weight: 700; }
 
+/* ---------- мастерская ---------- */
+
+/* Звёздочка модификации у названия вещи: цвет — ступень. Серая простая,
+   красная элитная; ровно те же цвета, что на прилавке модификаторов */
+.thing-star {
+  margin-left: 6px;
+  font-size: 12px;
+}
+
+.mod-list { display: grid; gap: 8px; margin-bottom: 16px; }
+.mod {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.mod.lvl2 { border-left: 3px solid #e2b714; }
+.mod.lvl3 { border-left: 3px solid #e07b39; }
+.mod.lvl4 { border-left: 3px solid #a44dd6; }
+.mod.lvl5 { border-left: 3px solid #d93f3f; }
+.mod-star { font-size: 18px; line-height: 1.2; }
+.mod-body { flex: 1; min-width: 0; }
+.mod-title { font-size: 13.5px; font-weight: 700; }
+.mod-gain { font-size: 12.5px; color: var(--accent); margin-top: 2px; }
+.mod-have { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* Карточка, по которой выбирают: она кликабельна целиком */
+.pickable { cursor: pointer; }
+.pickable:active { transform: scale(0.99); }
+
+/* Мастер: два слота, между ними плюс. При модификации слоты сходятся,
+   потом вспыхивает взрыв — и на вещи остаётся звёздочка */
+.master {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 4px 0 14px;
+}
+.master-slot {
+  flex: 1;
+  min-width: 0;
+  min-height: 104px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 8px;
+  border-radius: 12px;
+  border: 1px dashed var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  transition: transform 0.4s ease;
+}
+.master-slot.full { border-style: solid; border-color: var(--accent); }
+.master-empty { font-size: 12.5px; color: var(--muted); }
+.master-title { font-size: 12.5px; font-weight: 700; text-align: center; }
+.master-pic { width: 46px; height: 46px; }
+.master-pic img { width: 100%; height: 100%; object-fit: contain; }
+.master-plus { font-size: 18px; color: var(--muted); transition: opacity 0.3s; }
+
+/* Сходятся навстречу друг другу: плюс между ними гаснет */
+.master.going .master-slot:first-child { transform: translateX(38%); }
+.master.going .master-slot:nth-child(3) { transform: translateX(-38%); }
+.master.going .master-plus { opacity: 0; }
+
+.master-burst {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%) scale(0);
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff 0%, #ffd166 40%, #ef476f 70%, transparent 72%);
+  opacity: 0;
+  pointer-events: none;
+}
+.master.boom .master-burst { animation: master-boom 0.5s ease-out; }
+
+@keyframes master-boom {
+  0% { transform: translate(-50%, -50%) scale(0); opacity: 1; }
+  60% { transform: translate(-50%, -50%) scale(26); opacity: 0.9; }
+  100% { transform: translate(-50%, -50%) scale(34); opacity: 0; }
+}
+
 /* ---------- аналитик боя ---------- */
 
 /* Подсказки подписчика стоят над кнопками хода и не спорят с ними за

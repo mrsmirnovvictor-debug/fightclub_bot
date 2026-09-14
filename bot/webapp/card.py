@@ -86,7 +86,7 @@ CELL_TITLES: dict[Slot, str] = {Slot.JACKET: "тело"}
 
 def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
     """Надетая вещь так, как её показывает клетка куклы."""
-    in_hands = weapon_in_hands(owned.item, fclass)
+    in_hands = weapon_in_hands(owned.real, fclass)
     return {
         "id": owned.id,
         "slot": owned.item.slot.value,
@@ -101,6 +101,7 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
         else "",
         "wear": owned.wear,
         "max_wear": owned.max_wear,
+        "mod": mod_mark(owned),
     }
 
 
@@ -111,7 +112,7 @@ def slot_payload(
     # Что надето под этой вещью: футболка под верхней одеждой
     under_slot = UNDER_SLOTS.get(slot)
     under = equipment.get(under_slot) if under_slot else None
-    in_hands = weapon_in_hands(owned.item, fclass) if owned else ""
+    in_hands = weapon_in_hands(owned.real, fclass) if owned else ""
     return {
         "slot": slot.value,
         "title": slot.title,
@@ -136,6 +137,7 @@ def slot_payload(
             else "",
             "wear": owned.wear,
             "max_wear": owned.max_wear,
+            "mod": mod_mark(owned),
         },
     }
 
@@ -173,9 +175,29 @@ def requirements_payload(player: Player, item: Item) -> list[dict]:
     return rows
 
 
+def mod_mark(owned: OwnedItem) -> dict:
+    """Звёздочка модификации на вещи. Пусто — вещь не трогали."""
+    modifier = owned.modifier
+    if modifier is None:
+        return {}
+    from bot.content.mods import star_of
+
+    return {
+        "code": modifier.code,
+        "title": modifier.title,
+        "level": modifier.level,
+        "star": star_of(modifier.level),
+        "gain": modifier.describe(owned.mod_value),
+    }
+
+
 def item_payload(player: Player, owned: OwnedItem) -> dict:
-    """Строка инвентаря: картинка, тип, износ, требования, свойства, кнопки."""
-    item = owned.item
+    """Строка инвентаря: картинка, тип, износ, требования, свойства, кнопки.
+
+    Числа берутся у модифицированной вещи: боец должен видеть то, с чем
+    выйдет на ринг, а не то, что лежало на прилавке.
+    """
+    item = owned.real
     return {
         "id": owned.id,
         "code": owned.code,
@@ -198,6 +220,8 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "can_equip": player.can_equip(item),
         "bonus": item.describe_bonus(),
         "bonuses": bonuses_payload(item, player.fclass),
+        # Модификация: звёздочка ступени и что она дала
+        "mod": mod_mark(owned),
     }
 
 

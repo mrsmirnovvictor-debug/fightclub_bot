@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS inventory (
     wear     INTEGER NOT NULL DEFAULT 0,
     max_wear INTEGER NOT NULL DEFAULT 20,
     slot     TEXT,
+    -- Модификация: какой модификатор лёг на вещь и сколько выпало. Пусто —
+    -- вещь как из лавки. Модифицируют один раз, поэтому пары полей хватает
+    mod       TEXT    NOT NULL DEFAULT '',
+    mod_value INTEGER NOT NULL DEFAULT 0,
     bought_at TEXT   NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -85,6 +89,16 @@ CREATE TABLE IF NOT EXISTS player_looks (
 -- Эликсиры лежат стопкой: у одного бойца их может быть сколько угодно
 -- штук, а различать их между собой незачем — они одинаковые.
 CREATE TABLE IF NOT EXISTS potions (
+    user_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, code)
+);
+
+-- Модификаторы лежат стопкой, как эликсиры: купленные заточки одинаковы
+-- между собой, и различать их незачем — число выпадает при модификации,
+-- а не при покупке.
+CREATE TABLE IF NOT EXISTS mods (
     user_id INTEGER NOT NULL,
     code    TEXT    NOT NULL,
     count   INTEGER NOT NULL DEFAULT 0,
@@ -350,6 +364,13 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Колонки инвентаря, добавленные после первой версии
+INVENTORY_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("mod", "TEXT NOT NULL DEFAULT ''"),
+    ("mod_value", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
 class Database:
     def __init__(self, path: str) -> None:
         self.path = path
@@ -376,8 +397,22 @@ class Database:
                 logger.info("База обновлена: добавлена колонка players.%s", column)
         if "raid_fights" not in existing:
             await self._split_raids_from_record()
+        await self._migrate_inventory()
         await self._migrate_duels()
         await self._migrate_arenas()
+
+    async def _migrate_inventory(self) -> None:
+        """Дописать колонки модификации в уже живой инвентарь."""
+        async with self.conn.execute("PRAGMA table_info(inventory)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        for column, definition in INVENTORY_MIGRATIONS:
+            if column in columns:
+                continue
+            await self.conn.execute(
+                f"ALTER TABLE inventory ADD COLUMN {column} {definition}"
+            )
+            logger.info("База обновлена: добавлена колонка inventory.%s", column)
+        await self.conn.commit()
 
     async def _split_raids_from_record(self) -> None:
         """Вынуть рейды из личного счёта бойца — один раз, при обновлении.
@@ -684,7 +719,7 @@ class Database:
         """Всё, что у бойца есть: и надетое, и лежащее в рюкзаке."""
         async with self.conn.execute(
             """
-            SELECT id, code, wear, max_wear, slot FROM inventory
+            SELECT id, code, wear, max_wear, slot, mod, mod_value FROM inventory
             WHERE user_id = ? ORDER BY id
             """,
             (user_id,),
@@ -714,14 +749,78 @@ class Database:
 
     async def save_gear(self, owned: OwnedItem) -> None:
         await self.conn.execute(
-            "UPDATE inventory SET wear = ?, max_wear = ?, slot = ? WHERE id = ?",
-            (owned.wear, owned.max_wear, owned.slot.value if owned.slot else None, owned.id),
+            "UPDATE inventory SET wear = ?, max_wear = ?, slot = ?, mod = ?, "
+            "mod_value = ? WHERE id = ?",
+            (
+                owned.wear,
+                owned.max_wear,
+                owned.slot.value if owned.slot else None,
+                owned.mod,
+                owned.mod_value,
+                owned.id,
+            ),
         )
         await self.conn.commit()
 
     async def delete_gear(self, item_id: int) -> None:
         await self.conn.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
         await self.conn.commit()
+
+    # ---------- модификаторы ----------
+
+    async def list_mods(self, user_id: int) -> dict[str, int]:
+        """Что у бойца в модификаторах: код → сколько штук."""
+        from bot.content.mods import get_mod
+
+        async with self.conn.execute(
+            "SELECT code, count FROM mods WHERE user_id = ? AND count > 0",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {
+            row["code"]: int(row["count"])
+            for row in rows
+            if get_mod(row["code"]) is not None
+        }
+
+    async def add_mod(self, user_id: int, code: str, count: int = 1) -> int:
+        """Положить купленный модификатор в рюкзак. Вернуть, сколько стало."""
+        from bot.content.mods import get_mod
+
+        if get_mod(code) is None:
+            raise ValueError(f"Неизвестный модификатор: {code}")
+        await self.conn.execute(
+            """
+            INSERT INTO mods (user_id, code, count) VALUES (?,?,?)
+            ON CONFLICT(user_id, code) DO UPDATE SET count = count + excluded.count
+            """,
+            (user_id, code, count),
+        )
+        await self.conn.commit()
+        async with self.conn.execute(
+            "SELECT count FROM mods WHERE user_id = ? AND code = ?", (user_id, code)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["count"]) if row else 0
+
+    async def take_mod(self, user_id: int, code: str) -> bool:
+        """Забрать один модификатор. False — брать было нечего.
+
+        Списание атомарное: два нажатия подряд не потратят один и тот же
+        модификатор дважды.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE mods SET count = count - 1 WHERE user_id = ? AND code = ? "
+            "AND count > 0",
+            (user_id, code),
+        )
+        taken = cursor.rowcount > 0
+        await self.conn.execute(
+            "DELETE FROM mods WHERE user_id = ? AND code = ? AND count <= 0",
+            (user_id, code),
+        )
+        await self.conn.commit()
+        return taken
 
     # ---------- эликсиры ----------
 
@@ -1622,10 +1721,14 @@ def _to_owned_item(row: Any) -> OwnedItem | None:
             slot = Slot(row["slot"])
         except ValueError:  # pragma: no cover - слот из будущей версии
             slot = None
+    keys = row.keys()
     return OwnedItem(
         item=item,
         id=int(row["id"]),
         wear=int(row["wear"]),
         max_wear=int(row["max_wear"]),
         slot=slot,
+        # Вещи из баз, заведённых до мастерской, приходят без этих колонок
+        mod=str(row["mod"]) if "mod" in keys and row["mod"] else "",
+        mod_value=int(row["mod_value"]) if "mod_value" in keys else 0,
     )

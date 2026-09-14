@@ -37,6 +37,9 @@ from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
+from bot.webapp.workshop import build_workshop
+from bot.content.mods import star_of
+from bot.mods_service import ModError, apply_mod, buy_mod
 from bot.game.health import format_duration, now_ts
 from bot.game.locations import (
     SHOP_SERVICES,
@@ -373,6 +376,52 @@ async def api_unequip(request: web.Request) -> web.Response:
     except InventoryError as error:
         return web.json_response({"error": str(error)}, status=409)
     return _card_response(request, player)
+
+
+async def api_workshop(request: web.Request) -> web.Response:
+    """Мастерская целиком: починка, прилавок модификаторов и мастер."""
+    player = await _at(request, Service.REPAIR)
+    mine = await request.app[DB_KEY].list_mods(player.user_id)
+    return web.json_response(build_workshop(player, mine))
+
+
+async def api_mod(request: web.Request) -> web.Response:
+    """Купить модификатор или наложить его на вещь — обе руки мастера."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    try:
+        player = await _at(request, Service.REPAIR)
+        if action == "buy":
+            mod = await buy_mod(db, player, str(data.get("code") or ""))
+            done = {"title": mod.title, "price": mod.price, "star": star_of(mod.level)}
+        elif action == "apply":
+            result = await apply_mod(
+                db, player, _int_field(data, "item_id"), str(data.get("code") or "")
+            )
+            done = {
+                "title": result.owned.title,
+                "mod": result.mod.title,
+                "level": result.mod.level,
+                "star": result.star,
+                "value": result.value,
+                "gain": result.gain,
+                "item_id": result.owned.id,
+            }
+        else:
+            return web.json_response({"error": "Мастер такого не делает."}, status=400)
+    except (ModError, InventoryError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    mine = await db.list_mods(player.user_id)
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "workshop": build_workshop(player, mine),
+            "done": done,
+        }
+    )
 
 
 async def api_repair(request: web.Request) -> web.Response:
@@ -1051,6 +1100,8 @@ def create_app(
             web.post("/api/equip", api_equip),
             web.post("/api/unequip", api_unequip),
             web.post("/api/repair", api_repair),
+            web.get("/api/workshop", api_workshop),
+            web.post("/api/mod", api_mod),
             web.post("/api/handin", api_handin),
             web.get("/api/shop", api_shop),
             web.post("/api/buy", api_buy),

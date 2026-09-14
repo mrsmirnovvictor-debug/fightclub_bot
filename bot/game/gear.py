@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Iterable
 
@@ -354,6 +354,109 @@ class Item:
         return " ".join(parts)
 
 
+# ---------- модификаторы ----------
+#
+# Заточка добавляет оружию урон, щиту броню, а «модификация предмета» —
+# одну долю: точность, уворот, крит, антикрит или контрудар. Число внутри
+# полосы модификатора выпадает броском при самой модификации и остаётся с
+# вещью навсегда: два одинаковых модификатора на двух одинаковых вещах
+# дадут разное, и это и есть азарт мастерской.
+#
+# Правила здесь, а сам товар — в `bot/content/mods.py`, как и вещи.
+
+
+class ModKind(str, Enum):
+    """Что модификатор умеет точить."""
+
+    WEAPON = "weapon"  # заточка оружия: урон
+    SHIELD = "shield"  # заточка щита: броня
+    GEAR = "gear"  # модификация предмета: одна доля
+
+
+# Доли, которые умеет давать модификация предмета. Проценты целые:
+# «+7% уворота» читается, «+6.83%» — нет
+MOD_SHARES: tuple[str, ...] = ("accuracy", "dodge", "crit", "anticrit", "counter")
+
+
+@dataclass(frozen=True)
+class Modifier:
+    """Товар мастерской: что он точит, на сколько и почём."""
+
+    code: str
+    title: str
+    kind: ModKind
+    level: int  # 1–5: от простой заточки до элитной
+    low: int  # нижний край полосы
+    high: int  # верхний
+    price: int
+    # Какую долю поднимает модификация предмета. У заточек пусто
+    stat: str = ""
+    icon: str = "✨"
+
+    @property
+    def is_sharpen(self) -> bool:
+        return self.kind in (ModKind.WEAPON, ModKind.SHIELD)
+
+    @property
+    def span(self) -> str:
+        """Полоса словами: «1–5» у заточки, «5–7%» у модификации."""
+        tail = "" if self.is_sharpen else "%"
+        return f"{self.low}–{self.high}{tail}"
+
+    @property
+    def picture(self) -> str:
+        return art.item(self.code)
+
+    def fits(self, item: Item) -> bool:
+        """Ложится ли этот модификатор на эту вещь."""
+        if self.kind is ModKind.WEAPON:
+            return item.is_weapon
+        if self.kind is ModKind.SHIELD:
+            return item.is_shield
+        return not item.is_weapon and not item.is_shield
+
+    def roll(self, rng: random.Random | None = None) -> int:
+        """Сколько выпало: любое число полосы с равным шансом."""
+        return (rng or random).randint(self.low, self.high)
+
+    def describe(self, value: int) -> str:
+        """Что модификатор дал этой вещи: строка для карточки."""
+        if self.kind is ModKind.WEAPON:
+            return f"урон +{value}"
+        if self.kind is ModKind.SHIELD:
+            return f"броня +{value}"
+        return f"{MOD_STAT_TITLES.get(self.stat, self.stat)} +{value}%"
+
+
+MOD_STAT_TITLES: dict[str, str] = {
+    "accuracy": "точность",
+    "dodge": "уворот",
+    "crit": "крит",
+    "anticrit": "антикрит",
+    "counter": "контрудар",
+}
+
+
+def modified(item: Item, mod: Modifier, value: int) -> Item:
+    """Предмет с наложенной модификацией — тот, что идёт в бой.
+
+    Заточка поднимает обе границы: и минимальный урон, и максимальный.
+    Модификация прибавляет долю к своей характеристике, даже если у вещи
+    её не было вовсе, — в этом и смысл: кроссовки начинают уворачиваться.
+    """
+    if mod.kind is ModKind.WEAPON:
+        return replace(
+            item, damage_min=item.damage_min + value, damage_max=item.damage_max + value
+        )
+    if mod.kind is ModKind.SHIELD:
+        return replace(
+            item, armor_min=item.armor_min + value, armor_max=item.armor_max + value
+        )
+    if mod.stat not in MOD_SHARES:  # pragma: no cover - каталог этого не даёт
+        return item
+    return replace(item, **{mod.stat: getattr(item, mod.stat) + value / 100})
+
+
 @dataclass
 class OwnedItem:
     """Экземпляр предмета у бойца: сам предмет плюс его износ.
@@ -366,6 +469,45 @@ class OwnedItem:
     wear: int = 0
     max_wear: int = MAX_WEAR
     slot: Slot | None = None
+    # Модификация: код модификатора и выпавшее число. Пусто — вещь как из
+    # лавки. Модифицируют вещь один раз, поэтому пары полей хватает
+    mod: str = ""
+    mod_value: int = 0
+    # Готовый предмет с модификацией: считается один раз и живёт с
+    # экземпляром. В бою к нему обращаются на каждый удар, и собирать его
+    # заново каждый раз незачем
+    _real: Item | None = field(default=None, init=False, repr=False, compare=False)
+
+    @property
+    def real(self) -> Item:
+        """Предмет с учётом модификации — именно он идёт в бой и в карточку."""
+        if not self.mod or not self.mod_value:
+            return self.item
+        if self._real is None:
+            from bot.content.mods import get_mod
+
+            mod = get_mod(self.mod)
+            self._real = (
+                modified(self.item, mod, self.mod_value) if mod else self.item
+            )
+        return self._real
+
+    @property
+    def modifier(self) -> "Modifier | None":
+        """Чем вещь модифицирована. None — вещь не трогали."""
+        from bot.content.mods import get_mod
+
+        return get_mod(self.mod) if self.mod else None
+
+    @property
+    def is_modified(self) -> bool:
+        return bool(self.mod)
+
+    def modify(self, code: str, value: int) -> None:
+        """Записать модификацию на экземпляр и забыть собранный предмет."""
+        self.mod = code
+        self.mod_value = value
+        self._real = None
 
     # ---------- то, что берут у самого предмета ----------
 
@@ -395,14 +537,14 @@ class OwnedItem:
 
     @property
     def bonus(self) -> Stats:
-        return self.item.bonus
+        return self.real.bonus
 
     @property
     def hp(self) -> int:
-        return self.item.hp
+        return self.real.hp
 
     def describe_bonus(self) -> str:
-        return self.item.describe_bonus()
+        return self.real.describe_bonus()
 
     # ---------- износ ----------
 
