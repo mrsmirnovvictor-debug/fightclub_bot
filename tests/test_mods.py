@@ -10,7 +10,15 @@ import random
 
 import pytest
 
-from bot.content.mods import LEVELS, MODS, SHARES, SHARPEN, get_mod, star_of
+from bot.content.mods import (
+    LEVELS,
+    MIXED_UP,
+    MODS,
+    SHARES,
+    SHARPEN,
+    get_mod,
+    star_of,
+)
 from bot.game.equipment import Equipment, OwnedItem, Slot, get_item
 from bot.game.gear import ModKind, modified
 from bot.mods_service import ModError, apply_mod, buy_mod
@@ -65,8 +73,29 @@ def test_every_modifier_knows_where_its_picture_lies():
     from bot.game import art
 
     assert len({mod.picture for mod in MODS}) == len(MODS), "у каждого своя"
-    assert get_mod("mod_counter_4").picture == art.item("mod_counter_4")
-    assert all(mod.picture.endswith(f"items/{mod.code}.jpeg") for mod in MODS)
+    assert get_mod("mod_counter_4").picture == art.item(MIXED_UP["mod_counter_4"])
+    for mod in MODS:
+        if mod.code not in MIXED_UP:
+            assert mod.picture.endswith(f"items/{mod.code}.jpeg"), mod.code
+
+
+def test_the_mixed_up_pictures_are_a_closed_swap():
+    """Перепутанные файлы разведены перестановкой, а не как попало.
+
+    Тринадцать картинок приехали в бакет не под своими именами. Развести
+    их можно только взаимно однозначно: если два модификатора показывают
+    на один файл, третий остаётся без картинки вовсе — а такую ошибку в
+    мини-аппе видно не сразу, там просто окажется не та заточка.
+    """
+    from bot.game import art
+
+    assert set(MIXED_UP) == set(MIXED_UP.values()), "цикл разомкнут"
+    assert len(set(MIXED_UP.values())) == len(MIXED_UP), "файл занят дважды"
+    # и ни один не показывает сам на себя: это была бы лишняя запись
+    assert all(code != file for code, file in MIXED_UP.items())
+
+    for code, file in MIXED_UP.items():
+        assert get_mod(code).picture == art.item(file), code
 
 
 # ---------- что модификатор делает с вещью ----------

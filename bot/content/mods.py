@@ -11,10 +11,16 @@
 
 Картинка у каждого модификатора своя и берётся от кода (`items/<code>.jpeg`),
 как и у вещей. Не доехал файл — на его месте останется значок вида.
+
+Тринадцать файлов приехали в бакет перепутанными между собой: на картинке
+профессиональной заточки щита нарисована элитная, и так далее по цепочке.
+Переименовать их в бакете дороже, чем развести адреса здесь, — для того у
+модификатора и есть поле `image`. Разбирается это ниже, в `MIXED_UP`.
 """
 
 from __future__ import annotations
 
+from bot.game.art import item as item_art
 from bot.game.gear import MOD_STAT_TITLES, ModKind, Modifier
 
 # Ступени: номер, название, цена. Цена одна на все три вида — платят за
@@ -68,6 +74,37 @@ SHARE_ICONS: dict[str, str] = {
 }
 
 
+# Код модификатора → файл, в котором на самом деле лежит его картинка.
+# Это замкнутая перестановка: каждый файл из списка используется ровно
+# один раз, и тест это проверяет — иначе два модификатора поделили бы одну
+# картинку, а третий остался бы без своей.
+MIXED_UP: dict[str, str] = {
+    # заточка щита: 3→4→5→3
+    "sharpen_shield_3": "sharpen_shield_4",
+    "sharpen_shield_4": "sharpen_shield_5",
+    "sharpen_shield_5": "sharpen_shield_3",
+    # точность: мастерская с элитной поменялись местами
+    "mod_accuracy_4": "mod_accuracy_5",
+    "mod_accuracy_5": "mod_accuracy_4",
+    # элитный крит уехал к улучшенному антикриту, и наоборот
+    "mod_crit_5": "mod_anticrit_2",
+    "mod_anticrit_2": "mod_crit_5",
+    # длинная цепочка: контрудар и верх антикрита сдвинуты по кругу
+    "mod_counter_1": "mod_anticrit_5",
+    "mod_counter_2": "mod_counter_1",
+    "mod_counter_4": "mod_counter_2",
+    "mod_counter_5": "mod_counter_4",
+    "mod_anticrit_4": "mod_counter_5",
+    "mod_anticrit_5": "mod_anticrit_4",
+}
+
+
+def _art(code: str) -> str:
+    """Адрес картинки: пусто у тех, чей файл лежит под своим кодом."""
+    file = MIXED_UP.get(code)
+    return item_art(file) if file else ""
+
+
 def _sharpen(kind: ModKind, what: str, icon: str) -> list[Modifier]:
     """Пять ступеней заточки для оружия или щита."""
     return [
@@ -80,6 +117,7 @@ def _sharpen(kind: ModKind, what: str, icon: str) -> list[Modifier]:
             high=SHARPEN[level][1],
             price=price,
             icon=icon,
+            image=_art(f"sharpen_{kind.value}_{level}"),
         )
         for level, name, price in LEVELS
     ]
@@ -101,6 +139,7 @@ def _shares() -> list[Modifier]:
                     price=price,
                     stat=stat,
                     icon=SHARE_ICONS.get(stat, "✨"),
+                    image=_art(f"mod_{stat}_{level}"),
                 )
             )
     return rows
@@ -135,6 +174,7 @@ def star_of(level: int) -> str:
 
 __all__ = [
     "CATALOGUE",
+    "MIXED_UP",
     "LEVELS",
     "MODS",
     "SHARES",

@@ -392,6 +392,9 @@ class Modifier:
     # Какую долю поднимает модификация предмета. У заточек пусто
     stat: str = ""
     icon: str = "✨"
+    # Адрес картинки, если файл лежит не под кодом модификатора. Так же,
+    # как у вещи: правило «картинка по коду» знает исключения
+    image: str = ""
 
     @property
     def is_sharpen(self) -> bool:
@@ -405,7 +408,8 @@ class Modifier:
 
     @property
     def picture(self) -> str:
-        return art.item(self.code)
+        """Адрес картинки: свой, если задан, иначе по коду модификатора."""
+        return self.image or art.item(self.code)
 
     def fits(self, item: Item) -> bool:
         """Ложится ли этот модификатор на эту вещь."""
