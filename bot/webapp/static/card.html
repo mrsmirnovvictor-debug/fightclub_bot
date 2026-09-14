@@ -115,6 +115,46 @@
     </div>
   </main>
 
+  <!-- ---------- 3a. Мастерская: починка, прилавок и мастер ---------- -->
+  <main id="workshop" class="screen hidden">
+    <header class="screen-head">
+      <h1 class="screen-title">🔧 Мастерская</h1>
+      <span class="shop-purse" id="shop-purse-workshop"></span>
+    </header>
+
+    <!-- Три вкладки одной локации -->
+    <div class="bubbles" id="workshop-tabs"></div>
+
+    <section id="workshop-repair">
+      <p class="screen-note" id="repair-note"></p>
+      <div class="bag-list" id="repair-list"></div>
+    </section>
+
+    <section id="workshop-shop" class="hidden">
+      <p class="screen-note" id="mods-note"></p>
+      <div id="mods-list"></div>
+    </section>
+
+    <section id="workshop-master" class="hidden">
+      <p class="screen-note" id="master-note"></p>
+      <!-- Два слота: вещь и модификатор. Между ними — вспышка модификации -->
+      <div class="master">
+        <button type="button" class="master-slot" id="master-item">
+          <span class="master-empty">Вещь</span>
+        </button>
+        <span class="master-plus" id="master-plus">＋</span>
+        <button type="button" class="master-slot" id="master-mod">
+          <span class="master-empty">Модификатор</span>
+        </button>
+        <div class="master-burst" id="master-burst"></div>
+      </div>
+      <button type="button" class="btn wide" id="master-go" disabled>
+        Модифицировать
+      </button>
+      <div id="master-picker"></div>
+    </section>
+  </main>
+
   <!-- ---------- 4. Инвентарь ---------- -->
   <main id="bag" class="screen hidden">
     <header class="head">

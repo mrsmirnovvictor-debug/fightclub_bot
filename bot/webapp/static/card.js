@@ -170,6 +170,9 @@ function emptySlotPicture(slot, box) {
 
 function wornLine(item, slotTitle) {
   const parts = [item.title + " — " + slotTitle];
+  if (item.mod && item.mod.star) {
+    parts.push(item.mod.star + " " + item.mod.title + ": " + item.mod.gain);
+  }
   if (item.bonus) parts.push(item.bonus);
   if (item.in_hands) parts.push(item.in_hands);
   return parts.join("\n");
@@ -198,6 +201,14 @@ function renderSlots(container, slots, own) {
     box.appendChild(
       shown ? slotPicture(shown, slot.placeholder) : emptySlotPicture(slot, box)
     );
+    // Точка ступени на надетой вещи. Кукла открыта всем, кто смотрит
+    // карточку, — по ней соперник и понимает, что вещь не простая
+    if (shown && shown.mod && shown.mod.star) {
+      const star = document.createElement("span");
+      star.className = "slot-star lvl" + shown.mod.level;
+      star.textContent = shown.mod.star;
+      box.appendChild(star);
+    }
     box.addEventListener("click", () => {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
       if (!slot.item && slot.under) {
@@ -256,6 +267,14 @@ function bonusList(item) {
       gain.text === undefined
         ? gain.emoji + " " + gain.title + " +" + gain.value
         : gain.emoji + " " + gain.title + ": " + gain.text;
+    // Сколько в этом числе от мастера: «урон 12–16 (+5)». Число уже
+    // посчитано с модификацией, и без подписи не видно, что она там есть
+    if (gain.plus) {
+      const plus = document.createElement("span");
+      plus.className = "gain-plus";
+      plus.textContent = " (" + gain.plus + ")";
+      li.appendChild(plus);
+    }
     // Класс проворачивает оружие по-своему: рядом с числом вещи говорим,
     // во что оно превратится в этих руках.
     if (gain.hint) {
@@ -285,7 +304,10 @@ function button(text, options) {
   return btn;
 }
 
-function thingCard(item, credits, shop) {
+// `bare` — карточка без своих кнопок: вещь показывают, но ничего с ней
+// отсюда не делают. Так она выглядит у мастера, где с вещью делают ровно
+// одно, и это одно приписывает сама вкладка
+function thingCard(item, credits, shop, bare) {
   const box = document.createElement("div");
   box.className = "thing" + (shop && !item.unlocked ? " locked" : "");
 
@@ -300,6 +322,14 @@ function thingCard(item, credits, shop) {
   const title = document.createElement("div");
   title.className = "thing-title";
   title.textContent = item.title;
+  // Звёздочка модификации: цвет говорит о ступени, подсказка — что дала
+  if (item.mod && item.mod.star) {
+    const star = document.createElement("span");
+    star.className = "thing-star lvl" + item.mod.level;
+    star.textContent = item.mod.star;
+    star.title = item.mod.title + ": " + item.mod.gain;
+    title.appendChild(star);
+  }
   body.appendChild(title);
 
   const kind = document.createElement("div");
@@ -403,6 +433,11 @@ function thingCard(item, credits, shop) {
     return box;
   }
 
+  if (bare) {
+    box.appendChild(body);
+    return box;
+  }
+
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
 
@@ -431,23 +466,7 @@ function thingCard(item, credits, shop) {
     );
   });
 
-  if (item.wear > 0) {
-    const affordable = Math.min(item.wear, credits);
-    const full = item.repair_price <= credits;
-    const label = full
-      ? "Чинить · " + item.repair_price + " 💰"
-      : affordable > 0
-        ? "Чинить на " + affordable + " 💰"
-        : "Чинить · " + item.repair_price + " 💰";
-    buttons.appendChild(
-      button(label, {
-        secondary: true,
-        disabled: affordable <= 0,
-        onClick: () => repair(item, full ? null : affordable),
-      })
-    );
-  }
-
+  // Кнопки починки здесь больше нет: чинят у мастера, а не на ходу
   // Сдать можно любую вещь с прилавка, хоть разбитую: износ на выплату
   // не влияет
   if (item.buyback > 0) {
@@ -1098,11 +1117,11 @@ function lotCard(lot) {
   return box;
 }
 
-const SCREENS = ["club", "map", "shop", "magic", "bag", "hero"];
+const SCREENS = ["club", "map", "shop", "magic", "workshop", "bag", "hero"];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
-const OPENED_FROM = { shop: "map", magic: "map" };
+const OPENED_FROM = { shop: "map", magic: "map", workshop: "map" };
 let lastTab = "hero";
 
 function showTab(name) {
@@ -1125,6 +1144,7 @@ function showTab(name) {
     if (shopSection === "market") pickShopSection("market");
     else loadShop();
   }
+  if (name === "workshop") loadWorkshop();
   if (name === "map") loadMap();
   // Часы рейда идут, только пока на карту смотрят
   if (name === "map") startRaidClock();
@@ -1437,10 +1457,7 @@ const HOUSE_SCREENS = {
     pickShopSection("market");
     showTab("shop");
   },
-  repair: () => {
-    showTab("bag");
-    popup("Мастерская", "Чинят вещи в рюкзаке: у каждой своя кнопка починки.");
-  },
+  repair: () => openWorkshop(),
 };
 
 async function enterHouse(place) {
@@ -3871,12 +3888,339 @@ async function act(url, body) {
   }
 }
 
+// ---------- мастерская ----------
+//
+// Три вкладки одной локации: починка, прилавок модификаторов и мастер.
+// Мастер — два слота: вещь и модификатор. Пока в слотах не оба, кнопка
+// молчит; при нажатии слоты сходятся, вспыхивает модификация, и на вещи
+// остаётся звёздочка своей ступени.
+
+let workshopData = null;
+let workshopTab = "repair";
+let masterPick = { item: null, mod: null };
+
+const WORKSHOP_TABS = [
+  ["repair", "🔧 Ремонт"],
+  ["shop", "🛒 Модификаторы"],
+  ["master", "✨ Мастер"],
+];
+
+async function loadWorkshop() {
+  try {
+    const response = await fetch("api/workshop", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Мастерская закрыта.");
+    renderWorkshop(await response.json());
+  } catch (error) {
+    popup("Мастерская", error.message);
+  }
+}
+
+function openWorkshop() {
+  pickWorkshopTab("repair");
+  showTab("workshop");
+}
+
+function pickWorkshopTab(name) {
+  workshopTab = name;
+  WORKSHOP_TABS.forEach(([code]) => {
+    el("workshop-" + code).classList.toggle("hidden", code !== name);
+  });
+  if (workshopData) renderWorkshop(workshopData);
+}
+
+function renderWorkshop(data) {
+  workshopData = data;
+  el("shop-purse-workshop").textContent = "";
+  el("shop-purse-workshop").appendChild(purse(data.credits));
+
+  const tabs = el("workshop-tabs");
+  tabs.textContent = "";
+  WORKSHOP_TABS.forEach(([code, label]) => {
+    tabs.appendChild(chip(label, workshopTab === code, () => pickWorkshopTab(code)));
+  });
+
+  renderRepairTab(data);
+  renderModsTab(data);
+  renderMasterTab(data);
+}
+
+function renderRepairTab(data) {
+  el("repair-note").textContent = data.repair.length
+    ? "Чинят только снятое: сначала снимите вещь в инвентаре, потом несите сюда."
+    : "Чинить нечего: всё снятое целое, а надетое сюда не берут.";
+  const list = el("repair-list");
+  list.textContent = "";
+  // На вкладке лежит только побитое, и делают тут одно — чинят. Поэтому
+  // на карточке одна кнопка: не хватает на всю починку — чиним на сколько
+  // хватает, и это написано прямо на ней
+  data.repair.forEach((item) => {
+    const card = thingCard(item, data.credits, false, true);
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    const affordable = Math.min(item.wear, data.credits);
+    const full = item.repair_price <= data.credits;
+    buttons.appendChild(
+      button(
+        full
+          ? "Чинить · " + item.repair_price + " 💰"
+          : affordable > 0
+            ? "Чинить на " + affordable + " 💰"
+            : "Чинить · " + item.repair_price + " 💰",
+        {
+          secondary: true,
+          disabled: affordable <= 0,
+          onClick: () => repair(item, full ? null : affordable),
+        }
+      )
+    );
+    card.querySelector(".thing-body").appendChild(buttons);
+    list.appendChild(card);
+  });
+}
+
+function modCard(mod, buyable) {
+  const box = document.createElement("div");
+  box.className = "mod lvl" + mod.level;
+
+  // Картинка модификатора. Точки ступени здесь нет намеренно: она
+  // принадлежит вещи, а не заточке. Ступень на прилавке видно по
+  // названию, полосе и цветной кромке карточки
+  const pic = document.createElement("div");
+  pic.className = "mod-pic";
+  pic.appendChild(slotPicture(mod, mod.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "mod-body";
+
+  const title = document.createElement("div");
+  title.className = "mod-title";
+  title.textContent = mod.icon + " " + mod.title;
+  body.appendChild(title);
+
+  const gain = document.createElement("div");
+  gain.className = "mod-gain";
+  gain.textContent = mod.gain;
+  body.appendChild(gain);
+
+  if (mod.owned) {
+    const have = document.createElement("div");
+    have.className = "mod-have";
+    have.textContent = "🎒 В рюкзаке: " + mod.owned + " шт.";
+    body.appendChild(have);
+  }
+
+  if (buyable) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button(
+        mod.can_afford ? "Купить · " + mod.price + " 💰" : "Не хватает кредитов",
+        { disabled: !mod.can_afford, onClick: () => buyMod(mod) }
+      )
+    );
+    body.appendChild(buttons);
+  }
+  box.appendChild(body);
+  return box;
+}
+
+function renderModsTab(data) {
+  el("mods-note").textContent =
+    "Заточка добавляет оружию урон, щиту броню, модификатор — одну "
+    + "характеристику. Сколько именно, решает бросок у мастера.";
+  const list = el("mods-list");
+  list.textContent = "";
+  data.shop.forEach((section) => {
+    const head = document.createElement("h2");
+    head.className = "shelf-head";
+    head.textContent = section.icon + " " + section.title;
+    list.appendChild(head);
+    const rows = document.createElement("div");
+    rows.className = "mod-list";
+    section.items.forEach((mod) => rows.appendChild(modCard(mod, true)));
+    list.appendChild(rows);
+  });
+}
+
+// Слот мастера: пустой ждёт выбора, полный показывает, что в него положили
+function fillSlot(box, chosen, empty) {
+  box.textContent = "";
+  box.classList.toggle("full", Boolean(chosen));
+  if (!chosen) {
+    const hint = document.createElement("span");
+    hint.className = "master-empty";
+    hint.textContent = empty;
+    box.appendChild(hint);
+    return;
+  }
+  const pic = document.createElement("div");
+  pic.className = "master-pic";
+  pic.appendChild(slotPicture(chosen, chosen.icon || chosen.star));
+  box.appendChild(pic);
+  const title = document.createElement("span");
+  title.className = "master-title";
+  title.textContent = chosen.title;
+  box.appendChild(title);
+}
+
+function renderMasterTab(data) {
+  const item = masterPick.item
+    ? data.targets.find((row) => row.id === masterPick.item.id)
+    : null;
+  const mod = masterPick.mod
+    ? data.mods.find((row) => row.code === masterPick.mod.code)
+    : null;
+  masterPick = { item: item || null, mod: mod || null };
+
+  el("master-note").textContent = data.targets.length
+    ? "Модифицировать вещь можно один раз — второй звёздочки не будет."
+    : "Модифицировать нечего: на всех вещах уже стоят звёздочки.";
+  fillSlot(el("master-item"), masterPick.item, "Вещь");
+  fillSlot(el("master-mod"), masterPick.mod, "Модификатор");
+  el("master-go").disabled = !(masterPick.item && masterPick.mod);
+  renderMasterPicker(data);
+}
+
+let masterPicking = "";
+
+function renderMasterPicker(data) {
+  const box = el("master-picker");
+  box.textContent = "";
+  if (!masterPicking) return;
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent =
+    masterPicking === "item" ? "Что модифицируем" : "Чем модифицируем";
+  box.appendChild(head);
+
+  if (masterPicking === "item") {
+    // Если модификатор уже выбран, показываем только то, на что он ложится
+    const fit = masterPick.mod ? masterPick.mod.kind : null;
+    const rows = data.targets.filter((row) => !fit || row.mod_kind === fit);
+    if (!rows.length) {
+      box.appendChild(emptyLine("Подходящих вещей нет."));
+      return;
+    }
+    const list = document.createElement("div");
+    list.className = "bag-list";
+    rows.forEach((row) => {
+      const card = thingCard(row, data.credits, false, true);
+      card.classList.add("pickable");
+      card.addEventListener("click", () => {
+        masterPick.item = row;
+        masterPicking = "";
+        renderWorkshop(data);
+      });
+      list.appendChild(card);
+    });
+    box.appendChild(list);
+    return;
+  }
+
+  const fit = masterPick.item ? masterPick.item.mod_kind : null;
+  const rows = data.mods.filter((row) => !fit || row.kind === fit);
+  if (!rows.length) {
+    box.appendChild(
+      emptyLine(
+        data.mods.length
+          ? "Под эту вещь в рюкзаке модификаторов нет."
+          : "Модификаторов в рюкзаке нет — их покупают на соседней вкладке."
+      )
+    );
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "mod-list";
+  rows.forEach((row) => {
+    const card = modCard(row, false);
+    card.classList.add("pickable");
+    card.addEventListener("click", () => {
+      masterPick.mod = row;
+      masterPicking = "";
+      renderWorkshop(data);
+    });
+    list.appendChild(card);
+  });
+  box.appendChild(list);
+}
+
+function emptyLine(text) {
+  const line = document.createElement("p");
+  line.className = "screen-note";
+  line.textContent = text;
+  return line;
+}
+
+async function buyMod(mod) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/mod", { action: "buy", code: mod.code });
+    render(data.card, true);
+    renderWorkshop(data.workshop);
+    popup(mod.title, "Куплено за " + data.done.price + " 💰. Модификатор в рюкзаке.");
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
+// Вспышка модификации: слоты сходятся, гремит взрыв, и только потом
+// показываем, что выпало. Запрос идёт параллельно — ждём оба
+function playBurst() {
+  const stage = document.querySelector(".master");
+  if (!stage) return Promise.resolve();
+  stage.classList.add("going");
+  return new Promise((done) => {
+    setTimeout(() => {
+      stage.classList.add("boom");
+      setTimeout(() => {
+        stage.classList.remove("going", "boom");
+        done();
+      }, 520);
+    }, 420);
+  });
+}
+
+async function runMaster() {
+  if (busy || !(masterPick.item && masterPick.mod)) return;
+  busy = true;
+  const item = masterPick.item;
+  const mod = masterPick.mod;
+  try {
+    const [data] = await Promise.all([
+      post("api/mod", { action: "apply", item_id: item.id, code: mod.code }),
+      playBurst(),
+    ]);
+    masterPick = { item: null, mod: null };
+    render(data.card, true);
+    renderWorkshop(data.workshop);
+    const done = data.done;
+    popup(
+      done.star + " " + done.title,
+      mod.title + ": " + done.gain + ".\nЗвёздочка осталась на вещи навсегда."
+    );
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
 async function repair(item, points) {
   if (busy) return;
   busy = true;
   try {
     const data = await post("api/repair", { item_id: item.id, points: points });
     render(data.card, true);
+    // Список ремонта приходит вместе с ответом: починенная вещь исчезает
+    // из него тут же, а не ждёт, пока дверь откроют заново
+    if (data.workshop) renderWorkshop(data.workshop);
     shopData = null;  // кредитов стало меньше
     const done = data.repair;
     let text = "Снято износа: " + done.points + ", списано " + done.price + " 💰.";
@@ -4320,6 +4664,17 @@ TABS.forEach((tab) => {
   });
 });
 el("topup-back").addEventListener("click", () => showTab(lastTab));
+
+// Мастерская: слоты открывают выбор, кнопка запускает модификацию
+el("master-item").addEventListener("click", () => {
+  masterPicking = masterPicking === "item" ? "" : "item";
+  if (workshopData) renderWorkshop(workshopData);
+});
+el("master-mod").addEventListener("click", () => {
+  masterPicking = masterPicking === "mod" ? "" : "mod";
+  if (workshopData) renderWorkshop(workshopData);
+});
+el("master-go").addEventListener("click", runMaster);
 
 if (tg) {
   tg.ready();

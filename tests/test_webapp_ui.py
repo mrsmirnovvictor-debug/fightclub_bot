@@ -71,6 +71,16 @@ EMPTY_RING = {
 }
 
 
+# Мастерская без вещей: прилавок модификаторов на месте, чинить нечего
+EMPTY_WORKSHOP = {
+    "credits": 0,
+    "repair": [],
+    "shop": [{"kind": "weapon", "title": "Заточка оружия", "icon": "🗡", "items": []}],
+    "mods": [],
+    "targets": [],
+}
+
+
 # Никто ещё не дрался
 EMPTY_HISTORY = {
     "user_id": 42, "name": "Растафарайчик", "days": [], "total": 0,
@@ -212,7 +222,7 @@ def city_map(
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
-    battle=None, city=None,
+    battle=None, city=None, workshop=None,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -236,6 +246,7 @@ async def open_page(
     await page.route("**/api/market*", canned(market or EMPTY_MARKET))
     await page.route("**/api/battle*", canned(battle or EMPTY_BATTLE))
     await page.route("**/api/map*", canned(city or city_map()))
+    await page.route("**/api/workshop*", canned(workshop or EMPTY_WORKSHOP))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
@@ -3590,6 +3601,292 @@ async def test_without_a_subscription_the_analyst_is_silent(server):
         await page.wait_for_selector(".zone-columns")
 
         assert await page.locator(".scout").count() == 0
+        await browser.close()
+
+
+# ---------- мастерская ----------
+
+
+def workshop_state() -> dict:
+    """Мастерская, как её отдаёт сервер: и чинить есть что, и точить."""
+    from bot.content.mods import MODS
+    from bot.webapp.card import item_payload
+    from bot.webapp.workshop import mod_payload, target_payload
+
+    player = make_player("workshop")
+    player.credits = 9000
+    worn = OwnedItem(item=CATALOGUE["bat"], id=7, wear=4, slot=None)
+    player.gear = [worn]
+    mine = {"sharpen_weapon_2": 1}
+    return {
+        "credits": player.credits,
+        "repair": [item_payload(player, worn)],
+        "shop": [
+            {
+                "kind": "weapon", "title": "Заточка оружия", "icon": "🗡",
+                "items": [
+                    mod_payload(mod, player, mine)
+                    for mod in MODS if mod.kind.value == "weapon"
+                ],
+            }
+        ],
+        "mods": [
+            mod_payload(mod, player, mine) for mod in MODS if mine.get(mod.code)
+        ],
+        "targets": [target_payload(player, worn)],
+    }
+
+
+async def open_workshop(pw, server, state=None):
+    player = make_player("workshop")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), workshop=state or workshop_state(),
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "workshop")
+    await page.wait_for_selector("#workshop-tabs .chip")
+    return browser, page
+
+
+async def test_the_workshop_has_three_tabs(server):
+    """Починка, прилавок модификаторов и мастер — три вкладки одной двери."""
+    async with async_playwright() as pw:
+        browser, page = await open_workshop(pw, server)
+
+        tabs = await page.locator("#workshop-tabs .chip").all_inner_texts()
+        assert tabs == ["🔧 Ремонт", "🛒 Модификаторы", "✨ Мастер"]
+
+        # открыт ремонт: снятая вещь и ровно одна кнопка — «Чинить».
+        # Ни надеть, ни продать у мастера нельзя: сюда приходят чиниться
+        assert await page.locator("#workshop-repair:not(.hidden)").count() == 1
+        repair = page.locator("#repair-list .thing").first
+        assert "Бита" in await repair.inner_text()
+        buttons = await repair.locator("button").all_inner_texts()
+        assert len(buttons) == 1 and buttons[0].startswith("Чинить"), buttons
+        await browser.close()
+
+
+async def test_the_repair_button_left_the_bag(server):
+    """В рюкзаке кнопки починки больше нет: чинят у мастера."""
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["bat"], id=7, wear=5, slot=None)]
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag-list .thing")
+
+        buttons = await page.locator("#bag-list .thing button").all_inner_texts()
+        assert not [one for one in buttons if "Чинить" in one]
+        await browser.close()
+
+
+async def test_the_rival_sees_the_dot_on_a_modified_thing(server):
+    """Точка ступени горит на надетой вещи — и в чужой карточке тоже.
+
+    В этом и смысл переноса точки с прилавка на вещь: соперник, открывший
+    карточку перед боем, должен видеть, что оружие не простое, а какое —
+    сказать по цвету.
+    """
+    rival = make_player()
+    rival.gear[0].modify("sharpen_weapon_4", 12)
+    card = build_card(rival, TOKEN, viewer_id=999)  # смотрит соперник
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, query="?user_id=42")
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # кукла на странице нарисована дважды — в шапке и ниже; точка на
+        # вещи стоит в обеих
+        star = page.locator("#hero-slots-left .slot-star")
+        assert await star.count() == 1
+        assert await star.inner_text() == "🟣"
+        assert await page.locator(".slot .slot-star").count() == 2
+        # и подсказка клетки говорит, что именно дала модификация
+        hint = await page.locator("#hero-slots-left .slot").filter(
+            has=page.locator(".slot-star")
+        ).get_attribute("title")
+        assert "Мастерская заточка оружия" in hint and "урон +12" in hint
+        await browser.close()
+
+
+async def test_the_counter_sells_five_steps(server):
+    """Прилавок: пять ступеней со своей полосой и ценой.
+
+    Точки ступени на прилавке нет: она принадлежит вещи, а не заточке.
+    Ступень здесь называют словом («Простая», «Элитная») и показывают
+    цветом кромки карточки.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_workshop(pw, server)
+        await page.locator("#workshop-tabs .chip").nth(1).click()
+
+        rows = page.locator("#mods-list .mod")
+        assert await rows.count() == 5
+        first = await rows.first.inner_text()
+        assert "Простая заточка оружия" in first and "500" in first
+        assert "урон +1…+5" in first
+        assert await page.locator("#mods-list .mod-star").count() == 0
+        # ступень различима кромкой: у каждой карточки свой класс
+        assert [
+            await row.get_attribute("class") for row in await rows.all()
+        ] == ["mod lvl1", "mod lvl2", "mod lvl3", "mod lvl4", "mod lvl5"]
+        await browser.close()
+
+
+async def test_the_master_needs_both_slots(server):
+    """Кнопка молчит, пока в слотах не окажутся и вещь, и модификатор."""
+    async with async_playwright() as pw:
+        browser, page = await open_workshop(pw, server)
+        await page.locator("#workshop-tabs .chip").nth(2).click()
+
+        go = page.locator("#master-go")
+        assert await go.is_disabled()
+
+        # кладём вещь. В выборе карточка — сама кнопка, и других на ней
+        # нет: «Надеть» или «Сдать» здесь означали бы промах мимо выбора
+        await page.locator("#master-item").click()
+        pick = page.locator("#master-picker .thing").first
+        assert await pick.locator("button").count() == 0
+        await pick.click()
+        assert await go.is_disabled(), "одной вещи мало"
+
+        # и модификатор
+        await page.locator("#master-mod").click()
+        await page.locator("#master-picker .mod").first.click()
+
+        assert await go.is_enabled()
+        assert "Бита" in await page.locator("#master-item").inner_text()
+        assert "заточка" in (await page.locator("#master-mod").inner_text()).lower()
+        await browser.close()
+
+
+async def test_the_counter_shows_the_art_of_every_modifier(server):
+    """У каждого модификатора на прилавке своя картинка и звёздочка на ней.
+
+    Картинки в тестах режет маршрут, и вместо не доехавшего файла страница
+    честно оставляет значок вида — проверяем и это: прилавок не должен
+    рассыпаться, если одна картинка не открылась.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_workshop(pw, server)
+        await page.locator("#workshop-tabs .chip").nth(1).click()
+
+        pics = page.locator("#workshop-shop .mod .mod-pic")
+        assert await pics.count() == 5, "пять ступеней заточки оружия"
+        first = pics.first
+        assert "🗡" in await first.inner_text(), "картинка не доехала — виден значок"
+        box = await first.bounding_box()
+        assert box["width"] >= 96, f"картинка мелковата: {box['width']}"
+        await browser.close()
+
+
+async def test_a_repaired_thing_leaves_the_bench_at_once(server):
+    """Починили — вещь уходит из списка сразу, а не после переоткрытия двери.
+
+    Список ремонта приходит тем же ответом, что и починка: целой вещи на
+    вкладке делать нечего, и ждать, пока игрок сам закроет и откроет
+    мастерскую, чтобы это увидеть, он не должен.
+    """
+    state = workshop_state()
+    async with async_playwright() as pw:
+        browser, page = await open_workshop(pw, server, state)
+
+        await page.route("**/api/repair", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "card": build_card(make_player("workshop"), TOKEN, viewer_id=42),
+                "workshop": {**state, "repair": []},
+                "repair": {
+                    "points": 4, "price": 4, "degraded": False, "destroyed": False,
+                },
+            }),
+        ))
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+
+        assert await page.locator("#repair-list .thing").count() == 1
+        await page.locator("#repair-list button").first.click()
+
+        await page.wait_for_selector("#repair-list .thing", state="detached")
+        assert "Чинить нечего" in await page.locator("#repair-note").inner_text()
+        await browser.close()
+
+
+async def test_the_master_burns_and_leaves_a_star(server):
+    """Нажали «Модифицировать» — слоты сошлись, вспыхнуло, звёздочка осталась."""
+    state = workshop_state()
+    async with async_playwright() as pw:
+        browser, page = await open_workshop(pw, server, state)
+
+        done = dict(state)
+        done_item = json.loads(json.dumps(state["targets"][0]))
+        done_item["mod"] = {
+            "code": "sharpen_weapon_2", "title": "Улучшенная заточка оружия",
+            "level": 2, "star": "🟡", "gain": "урон +5",
+        }
+        done = {**state, "targets": [], "repair": [done_item], "mods": []}
+        await page.route("**/api/mod", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "card": build_card(make_player("workshop"), TOKEN, viewer_id=42),
+                "workshop": done,
+                "done": {
+                    "title": "Бита", "mod": "Улучшенная заточка оружия",
+                    "level": 2, "star": "🟡", "value": 5, "gain": "урон +5",
+                    "item_id": 7,
+                },
+            }),
+        ))
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+
+        await page.locator("#workshop-tabs .chip").nth(2).click()
+        await page.locator("#master-item").click()
+        await page.locator("#master-picker .thing").first.click()
+        await page.locator("#master-mod").click()
+        await page.locator("#master-picker .mod").first.click()
+        await page.locator("#master-go").click()
+
+        # слоты сходятся и гремит взрыв
+        await page.wait_for_selector(".master.going")
+        await page.wait_for_selector(".master.boom")
+        await page.wait_for_selector(".master:not(.going)")
+
+        # на вещи осталась звёздочка своей ступени
+        await page.locator("#workshop-tabs .chip").first.click()
+        star = page.locator("#repair-list .thing-star").first
+        assert await star.inner_text() == "🟡"
+        await browser.close()
+
+
+async def test_the_bag_shows_what_the_master_added(server):
+    """В рюкзаке рядом с итогом стоит прибавка мастера: «12–16 (+5)».
+
+    Число в строке уже посчитано с модификацией, и без подписи заточенную
+    биту не отличить от той, что такой и продавалась.
+    """
+    from bot.webapp.card import item_payload
+
+    player = make_player()
+    bat = OwnedItem(item=CATALOGUE["bat"], id=7, wear=0, slot=None)
+    bat.modify("sharpen_weapon_2", 5)
+    player.gear = [bat]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    assert item_payload(player, bat)["bonuses"][0]["plus"] == "+5"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        damage = page.locator("#bag-list .thing-gain li").first
+        said = await damage.inner_text()
+        # сначала итог, потом прибавка мастера, и только потом — что из
+        # этого выйдет в руках класса: три числа, и каждое о своём
+        assert said == "👊 Урон: " + bat.real.describe_damage() + " (+5) (у воина 11–14)"
+        assert await damage.locator(".gain-plus").inner_text() == " (+5)"
         await browser.close()
 
 

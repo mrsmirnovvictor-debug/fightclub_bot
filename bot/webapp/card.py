@@ -35,6 +35,7 @@ from bot.game.equipment import (
     get_item,
     shop_sections,
 )
+from bot.game.gear import ModKind
 from bot.game.market import FEE as MARKET_FEE, buyback
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
 from bot.game.locations import Service, get_location
@@ -86,7 +87,7 @@ CELL_TITLES: dict[Slot, str] = {Slot.JACKET: "тело"}
 
 def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
     """Надетая вещь так, как её показывает клетка куклы."""
-    in_hands = weapon_in_hands(owned.item, fclass)
+    in_hands = weapon_in_hands(owned.real, fclass)
     return {
         "id": owned.id,
         "slot": owned.item.slot.value,
@@ -101,6 +102,7 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
         else "",
         "wear": owned.wear,
         "max_wear": owned.max_wear,
+        "mod": mod_mark(owned),
     }
 
 
@@ -111,7 +113,7 @@ def slot_payload(
     # Что надето под этой вещью: футболка под верхней одеждой
     under_slot = UNDER_SLOTS.get(slot)
     under = equipment.get(under_slot) if under_slot else None
-    in_hands = weapon_in_hands(owned.item, fclass) if owned else ""
+    in_hands = weapon_in_hands(owned.real, fclass) if owned else ""
     return {
         "slot": slot.value,
         "title": slot.title,
@@ -136,6 +138,7 @@ def slot_payload(
             else "",
             "wear": owned.wear,
             "max_wear": owned.max_wear,
+            "mod": mod_mark(owned),
         },
     }
 
@@ -173,9 +176,29 @@ def requirements_payload(player: Player, item: Item) -> list[dict]:
     return rows
 
 
+def mod_mark(owned: OwnedItem) -> dict:
+    """Звёздочка модификации на вещи. Пусто — вещь не трогали."""
+    modifier = owned.modifier
+    if modifier is None:
+        return {}
+    from bot.content.mods import star_of
+
+    return {
+        "code": modifier.code,
+        "title": modifier.title,
+        "level": modifier.level,
+        "star": star_of(modifier.level),
+        "gain": modifier.describe(owned.mod_value),
+    }
+
+
 def item_payload(player: Player, owned: OwnedItem) -> dict:
-    """Строка инвентаря: картинка, тип, износ, требования, свойства, кнопки."""
-    item = owned.item
+    """Строка инвентаря: картинка, тип, износ, требования, свойства, кнопки.
+
+    Числа берутся у модифицированной вещи: боец должен видеть то, с чем
+    выйдет на ринг, а не то, что лежало на прилавке.
+    """
+    item = owned.real
     return {
         "id": owned.id,
         "code": owned.code,
@@ -197,7 +220,9 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "requirements": requirements_payload(player, item),
         "can_equip": player.can_equip(item),
         "bonus": item.describe_bonus(),
-        "bonuses": bonuses_payload(item, player.fclass),
+        "bonuses": bonuses_payload(item, player.fclass, owned),
+        # Модификация: звёздочка ступени и что она дала
+        "mod": mod_mark(owned),
     }
 
 
@@ -218,39 +243,76 @@ def weapon_in_hands(item: Item, fclass: FighterClass | None) -> str:
     return f"{low}–{high}"
 
 
-def bonuses_payload(item: Item, fclass: FighterClass | None = None) -> list[dict]:
+def mod_plus(owned: OwnedItem | None) -> tuple[str, str]:
+    """Какую строку свойств подписать прибавкой и что в ней написать.
+
+    Числа в карточке уже посчитаны с модификацией, и по ним не видно, что
+    из этого дал мастер. Заточка подписывает урон или броню, модификатор —
+    ту долю, которую поднял: «уворот 23% (+5%)».
+    """
+    modifier = owned.modifier if owned is not None else None
+    if modifier is None:
+        return "", ""
+    if modifier.kind is ModKind.WEAPON:
+        return "damage", f"+{owned.mod_value}"
+    if modifier.kind is ModKind.SHIELD:
+        return "armor", f"+{owned.mod_value}"
+    return modifier.stat, f"+{owned.mod_value}%"
+
+
+def bonuses_payload(
+    item: Item,
+    fclass: FighterClass | None = None,
+    owned: OwnedItem | None = None,
+) -> list[dict]:
     """Что вещь даёт, когда надета.
 
     Строка с диапазоном («Урон: 13–21») приходит текстом, прибавка к
     характеристике — числом: на экране они рисуются по-разному.
+
+    `owned` — экземпляр вещи, если строка о конкретной вещи бойца: по нему
+    видно, что в числах от модификации.
     """
+    marked, plus = mod_plus(owned)
     rows: list[dict] = []
     if item.damage_max:
-        row = {"emoji": "👊", "title": "Урон", "text": item.describe_damage()}
+        row = {
+            "code": "damage", "emoji": "👊", "title": "Урон",
+            "text": item.describe_damage(),
+        }
         in_hands = weapon_in_hands(item, fclass)
         if in_hands:
             row["hint"] = f"у {fclass.title.lower()}а {in_hands}"
         rows.append(row)
     if item.armor_max:
-        rows.append({"emoji": "🛡", "title": "Броня", "text": item.describe_armor()})
+        rows.append({
+            "code": "armor", "emoji": "🛡", "title": "Броня",
+            "text": item.describe_armor(),
+        })
     rows += [
-        {"emoji": stat.emoji, "title": stat.title.capitalize(), "value": value}
+        {
+            "code": stat.value, "emoji": stat.emoji,
+            "title": stat.title.capitalize(), "value": value,
+        }
         for stat, value in ((stat, item.bonus.get(stat)) for stat in ALL_STATS)
         if value
     ]
     if item.hp:
-        rows.append({"emoji": "❤️", "title": "Здоровье", "value": item.hp})
+        rows.append({"code": "hp", "emoji": "❤️", "title": "Здоровье", "value": item.hp})
     rows += [
-        {"emoji": emoji, "title": title, "text": f"{share:.0%}"}
-        for emoji, title, share in (
-            ("🎯", "Точность", item.accuracy),
-            ("🌀", "Уворот", item.dodge),
-            ("💥", "Крит", item.crit),
-            ("🚫", "Антикрит", item.anticrit),
-            ("🔄", "Контрудар", item.counter),
+        {"code": code, "emoji": emoji, "title": title, "text": f"{share:.0%}"}
+        for code, emoji, title, share in (
+            ("accuracy", "🎯", "Точность", item.accuracy),
+            ("dodge", "🌀", "Уворот", item.dodge),
+            ("crit", "💥", "Крит", item.crit),
+            ("anticrit", "🚫", "Антикрит", item.anticrit),
+            ("counter", "🔄", "Контрудар", item.counter),
         )
         if share
     ]
+    for row in rows:
+        if row["code"] == marked:
+            row["plus"] = plus
     return rows
 
 

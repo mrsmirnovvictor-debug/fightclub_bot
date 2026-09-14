@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
@@ -74,6 +77,38 @@ GROUP_COMMANDS = [
 ]
 
 
+# Первый разговор с Telegram случается до того, как поднят мини-апп, и
+# сеть на старте подводит чаще прочего: одного сброшенного коннекта к
+# api.telegram.org хватает, чтобы процесс умер, healthcheck не дождался
+# ответа и весь деплой откатился. Поэтому стартовые вызовы делаются с
+# повторами — пауз мало и они короткие, чтобы уложиться до проверки.
+BOOT_TRIES = 4
+BOOT_PAUSE = 2.0
+
+
+async def boot_call(what: str, call: Callable[[], Awaitable[Any]], *, required: bool):
+    """Стартовый вызов к Telegram с повторами.
+
+    `required=False` — вызов украшательский: не вышло за все попытки,
+    пишем в лог и живём дальше. Меню команд не стоит того, чтобы из-за
+    него не открылся клуб.
+    """
+    for attempt in range(1, BOOT_TRIES + 1):
+        try:
+            return await call()
+        except TelegramNetworkError:
+            if attempt == BOOT_TRIES:
+                if required:
+                    raise
+                logger.exception("%s: не вышло за %d попыток, обходимся без этого",
+                                 what, BOOT_TRIES)
+                return None
+            logger.warning("%s: сеть подвела (попытка %d из %d), пробуем ещё",
+                           what, attempt, BOOT_TRIES)
+            await asyncio.sleep(BOOT_PAUSE * attempt)
+    return None
+
+
 async def setup_commands(bot: Bot) -> None:
     await bot.set_my_commands(PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
     await bot.set_my_commands(GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())
@@ -103,8 +138,9 @@ async def run(config: Config | None = None) -> None:
     dispatcher["config"] = config
     dispatcher.include_router(build_router())
 
-    await setup_commands(bot)
-    me = await bot.get_me()
+    # Меню команд — украшение: без него клуб работает, без бота — нет
+    await boot_call("Меню команд", lambda: setup_commands(bot), required=False)
+    me = await boot_call("Знакомство с Telegram", bot.get_me, required=True)
     links.configure(me.username or "", config.miniapp_name, config.miniapp_main)
     if config.miniapp_name and not config.webapp_enabled:
         logger.warning(

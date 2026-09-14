@@ -180,39 +180,39 @@ class Equipment:
 
     @property
     def accuracy(self) -> float:
-        return sum(item.item.accuracy for item in self.items.values())
+        return sum(item.real.accuracy for item in self.items.values())
 
     @property
     def anticrit(self) -> float:
-        return sum(item.item.anticrit for item in self.items.values())
+        return sum(item.real.anticrit for item in self.items.values())
 
     @property
     def dodge(self) -> float:
-        return sum(item.item.dodge for item in self.items.values())
+        return sum(item.real.dodge for item in self.items.values())
 
     @property
     def crit(self) -> float:
-        return sum(item.item.crit for item in self.items.values())
+        return sum(item.real.crit for item in self.items.values())
 
     @property
     def counter(self) -> float:
-        return sum(item.item.counter for item in self.items.values())
+        return sum(item.real.counter for item in self.items.values())
 
     def armor_range(self, zone: Zone) -> tuple[int, int]:
         """Сколько брони прикрывает эту зону: сумма по всем вещам."""
         low = high = 0
         for owned in self.items.values():
-            if zone in owned.item.zones:
-                low += owned.item.armor_min
-                high += owned.item.armor_max
+            if zone in owned.real.zones:
+                low += owned.real.armor_min
+                high += owned.real.armor_max
         return low, high
 
     def roll_armor(self, zone: Zone, rng: random.Random | None = None) -> int:
         """Бросок брони на пропущенный удар в эту зону."""
         return sum(
-            owned.item.roll_armor(rng)
+            owned.real.roll_armor(rng)
             for owned in self.items.values()
-            if zone in owned.item.zones
+            if zone in owned.real.zones
         )
 
     @property
@@ -220,13 +220,13 @@ class Equipment:
         """Прибавка к урону от оружия основной руки. Без оружия — ничего."""
         if not self.weapon:
             return (0, 0)
-        return (self.weapon.item.damage_min, self.weapon.item.damage_max)
+        return (self.weapon.real.damage_min, self.weapon.real.damage_max)
 
     @property
     def weapon_damages(self) -> tuple[tuple[int, int], ...]:
         """Прибавка к урону от каждой руки — по порядку ударов."""
         return tuple(
-            (hand.item.damage_min, hand.item.damage_max) if hand else (0, 0)
+            (hand.real.damage_min, hand.real.damage_max) if hand else (0, 0)
             for hand in self.weapons
         )
 
@@ -239,12 +239,12 @@ class Equipment:
     ) -> int:
         """Что добавит оружие этой руки. Кулак не добавляет ничего."""
         hand = self.hand(index)
-        return hand.item.roll_damage(rng) if hand else 0
+        return hand.real.roll_damage(rng) if hand else 0
 
     def weapon_damage_max(self, index: int = 0) -> int:
         """Потолок прибавки этой руки — без броска."""
         hand = self.hand(index)
-        return hand.item.damage_max if hand else 0
+        return hand.real.damage_max if hand else 0
 
     def __bool__(self) -> bool:
         return bool(self.items)

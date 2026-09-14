@@ -9,6 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
 from bot.game.classes import get_class
+from bot.game.equipment import Slot
 from bot.game.locations import FIGHT_CLUB, STEP_BETWEEN
 from bot.models import Player
 from bot.webapp.server import create_app
@@ -251,3 +252,80 @@ async def test_the_fan_line_is_bought_and_handed_in_at_its_own_counter(client, d
     )
     assert refused.status == 409
     assert "Северный Вал" in (await refused.json())["error"]
+
+
+# ---------- мастерская ----------
+
+
+async def test_the_workshop_opens_only_at_the_workshop(client, db):
+    """Три вкладки мастера доступны только в мастерской."""
+    await db.save_player(make_player(location="clothes_shop"))
+    refused = await client.get("/api/workshop", headers=headers())
+    assert refused.status == 409
+    assert "Мастерская" in (await refused.json())["error"]
+
+    await db.save_player(make_player(location="workshop"))
+    body = await (await client.get("/api/workshop", headers=headers())).json()
+
+    assert {"credits", "repair", "shop", "mods", "targets"} <= set(body)
+    # прилавок разложен по трём видам товара
+    assert [row["kind"] for row in body["shop"]] == ["weapon", "shield", "gear"]
+    assert sum(len(row["items"]) for row in body["shop"]) == 35
+
+
+async def test_the_repair_bench_holds_only_what_needs_repairing(client, db):
+    """На вкладке ремонта лежит побитое и снятое — и больше ничего.
+
+    Целой вещи у мастера делать нечего: кнопка на ней всё равно не
+    нажимается, а список от неё длиннее. Надетое сюда тоже не попадает —
+    сначала снимают.
+    """
+    player = make_player(location="workshop")
+    await db.save_player(player)
+    worn = await db.add_gear(player.user_id, "bat", wear=12)
+    await db.add_gear(player.user_id, "army_boots")  # целые
+    equipped = await db.add_gear(player.user_id, "bat", wear=7)
+    equipped.slot = Slot.WEAPON  # надетое чинят только сняв
+    await db.save_gear(equipped)
+
+    body = await (await client.get("/api/workshop", headers=headers())).json()
+
+    assert [row["id"] for row in body["repair"]] == [worn.id]
+    assert all(row["wear"] > 0 for row in body["repair"])
+
+
+async def test_modifiers_are_bought_and_applied_at_the_workshop(client, db):
+    """Купить и наложить модификатор можно только у мастера."""
+    player = make_player(location="workshop")
+    player.credits = 3000
+    await db.save_player(player)
+    bat = await db.add_gear(player.user_id, "bat")
+
+    bought = await client.post(
+        "/api/mod", json={"action": "buy", "code": "sharpen_weapon_1"},
+        headers=headers(),
+    )
+    assert bought.status == 200
+    assert (await bought.json())["workshop"]["credits"] == 2500
+
+    applied = await client.post(
+        "/api/mod",
+        json={"action": "apply", "item_id": bat.id, "code": "sharpen_weapon_1"},
+        headers=headers(),
+    )
+    body = await applied.json()
+
+    assert applied.status == 200
+    assert body["done"]["star"] == "⚪" and "урон" in body["done"]["gain"]
+    # вещь ушла из списка тех, что ещё можно модифицировать
+    assert [row["id"] for row in body["workshop"]["targets"]] == []
+
+    # а издалека мастер не работает
+    away = make_player(location="clothes_shop")
+    away.credits = 3000
+    await db.save_player(away)
+    refused = await client.post(
+        "/api/mod", json={"action": "buy", "code": "sharpen_weapon_1"},
+        headers=headers(),
+    )
+    assert refused.status == 409
