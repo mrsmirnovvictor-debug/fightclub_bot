@@ -507,6 +507,9 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .thing-req li.bad { color: var(--hp-red); font-weight: 700; }
 .thing-gain li { color: var(--hp-green); font-weight: 600; }
 .thing-gain .gain-hint { color: var(--muted); font-weight: 500; }
+/* Прибавка мастера — зелёным: в строке уже стоит итог, и глазу нужно
+   видеть, какая его часть пришла с модификацией */
+.thing-gain .gain-plus { color: var(--hp-green); font-weight: 700; }
 .thing-label { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
 
 .thing-buttons {

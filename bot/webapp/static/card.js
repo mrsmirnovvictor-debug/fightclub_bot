@@ -256,6 +256,14 @@ function bonusList(item) {
       gain.text === undefined
         ? gain.emoji + " " + gain.title + " +" + gain.value
         : gain.emoji + " " + gain.title + ": " + gain.text;
+    // Сколько в этом числе от мастера: «урон 12–16 (+5)». Число уже
+    // посчитано с модификацией, и без подписи не видно, что она там есть
+    if (gain.plus) {
+      const plus = document.createElement("span");
+      plus.className = "gain-plus";
+      plus.textContent = " (" + gain.plus + ")";
+      li.appendChild(plus);
+    }
     // Класс проворачивает оружие по-своему: рядом с числом вещи говорим,
     // во что оно превратится в этих руках.
     if (gain.hint) {

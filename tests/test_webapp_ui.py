@@ -3806,6 +3806,34 @@ async def test_the_master_burns_and_leaves_a_star(server):
         await browser.close()
 
 
+async def test_the_bag_shows_what_the_master_added(server):
+    """В рюкзаке рядом с итогом стоит прибавка мастера: «12–16 (+5)».
+
+    Число в строке уже посчитано с модификацией, и без подписи заточенную
+    биту не отличить от той, что такой и продавалась.
+    """
+    from bot.webapp.card import item_payload
+
+    player = make_player()
+    bat = OwnedItem(item=CATALOGUE["bat"], id=7, wear=0, slot=None)
+    bat.modify("sharpen_weapon_2", 5)
+    player.gear = [bat]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    assert item_payload(player, bat)["bonuses"][0]["plus"] == "+5"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        damage = page.locator("#bag-list .thing-gain li").first
+        said = await damage.inner_text()
+        # сначала итог, потом прибавка мастера, и только потом — что из
+        # этого выйдет в руках класса: три числа, и каждое о своём
+        assert said == "👊 Урон: " + bat.real.describe_damage() + " (+5) (у воина 11–14)"
+        assert await damage.locator(".gain-plus").inner_text() == " (+5)"
+        await browser.close()
+
+
 # ---------- клуб и казино делят экран ----------
 
 

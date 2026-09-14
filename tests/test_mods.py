@@ -133,6 +133,61 @@ def test_a_modifier_fits_only_its_own_kind():
     assert not get_mod("mod_dodge_1").fits(bat)
 
 
+# ---------- что видно в карточке ----------
+
+
+def test_the_card_says_how_much_of_the_number_the_master_gave():
+    """Рядом с итогом стоит прибавка: «урон 12–16 (+5)».
+
+    Числа в карточке уже посчитаны с модификацией, и без подписи не
+    отличить заточенную биту от той, что такой и лежала на прилавке.
+    """
+    from bot.webapp.card import bonuses_payload
+
+    bat = OwnedItem(item=get_item("bat"), id=1, slot=Slot.WEAPON)
+    bat.modify("sharpen_weapon_2", 5)
+
+    rows = {row["code"]: row for row in bonuses_payload(bat.real, None, bat)}
+
+    assert rows["damage"]["text"] == bat.real.describe_damage()
+    assert rows["damage"]["plus"] == "+5"
+    # подписана ровно одна строка — та, которую поднимал мастер
+    assert [code for code, row in rows.items() if row.get("plus")] == ["damage"]
+
+
+def test_a_share_is_signed_in_percents():
+    """Доля подписывается процентами: «уворот 22% (+22%)»."""
+    from bot.webapp.card import bonuses_payload
+
+    boots = OwnedItem(item=get_item("army_boots"), id=2, slot=Slot.BOOTS)
+    boots.modify("mod_dodge_4", 22)
+
+    rows = {row["code"]: row for row in bonuses_payload(boots.real, None, boots)}
+
+    assert rows["dodge"]["text"] == "22%" and rows["dodge"]["plus"] == "+22%"
+
+
+def test_a_shield_signs_its_armour():
+    from bot.webapp.card import bonuses_payload
+
+    shield = OwnedItem(item=get_item("riot_shield"), id=3, slot=Slot.OFFHAND)
+    shield.modify("sharpen_shield_5", 18)
+
+    rows = {row["code"]: row for row in bonuses_payload(shield.real, None, shield)}
+
+    assert rows["armor"]["plus"] == "+18"
+
+
+def test_an_untouched_thing_is_not_signed():
+    """На витрине и на нетронутой вещи прибавки нет вовсе."""
+    from bot.webapp.card import bonuses_payload
+
+    bat = OwnedItem(item=get_item("bat"), id=4, slot=Slot.WEAPON)
+
+    assert not any("plus" in row for row in bonuses_payload(bat.real, None, bat))
+    assert not any("plus" in row for row in bonuses_payload(get_item("bat")))
+
+
 # ---------- мастерская ----------
 
 
