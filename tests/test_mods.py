@@ -57,7 +57,7 @@ def test_the_bands_are_the_ones_the_owner_set():
 
 def test_the_star_says_the_step():
     """Звёздочка на вещи — это её ступень: серая простая, красная элитная."""
-    assert [star_of(level) for level in (1, 2, 3, 4, 5)] == ["⚪", "⭐", "🟠", "🟣", "🔴"]
+    assert [star_of(level) for level in (1, 2, 3, 4, 5)] == ["⚪", "🟡", "🟠", "🟣", "🔴"]
 
 
 # ---------- что модификатор делает с вещью ----------

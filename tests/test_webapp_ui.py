@@ -3696,7 +3696,7 @@ async def test_the_counter_sells_five_steps(server):
         assert "урон +1…+5" in first
         # ступени различимы звёздочкой
         stars = await page.locator("#mods-list .mod-star").all_inner_texts()
-        assert stars == ["⚪", "⭐", "🟠", "🟣", "🔴"]
+        assert stars == ["⚪", "🟡", "🟠", "🟣", "🔴"]
         await browser.close()
 
 
@@ -3734,7 +3734,7 @@ async def test_the_master_burns_and_leaves_a_star(server):
         done_item = json.loads(json.dumps(state["targets"][0]))
         done_item["mod"] = {
             "code": "sharpen_weapon_2", "title": "Улучшенная заточка оружия",
-            "level": 2, "star": "⭐", "gain": "урон +5",
+            "level": 2, "star": "🟡", "gain": "урон +5",
         }
         done = {**state, "targets": [], "repair": [done_item], "mods": []}
         await page.route("**/api/mod", lambda route: route.fulfill(
@@ -3744,7 +3744,7 @@ async def test_the_master_burns_and_leaves_a_star(server):
                 "workshop": done,
                 "done": {
                     "title": "Бита", "mod": "Улучшенная заточка оружия",
-                    "level": 2, "star": "⭐", "value": 5, "gain": "урон +5",
+                    "level": 2, "star": "🟡", "value": 5, "gain": "урон +5",
                     "item_id": 7,
                 },
             }),
@@ -3766,7 +3766,7 @@ async def test_the_master_burns_and_leaves_a_star(server):
         # на вещи осталась звёздочка своей ступени
         await page.locator("#workshop-tabs .chip").first.click()
         star = page.locator("#repair-list .thing-star").first
-        assert await star.inner_text() == "⭐"
+        assert await star.inner_text() == "🟡"
         await browser.close()
 
 
