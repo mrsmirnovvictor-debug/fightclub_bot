@@ -454,7 +454,7 @@ def test_the_fan_shelf_is_a_counter_of_its_own():
     """Фанатский товар не лежит на витрине клуба и не путается с ней."""
     from bot.game.equipment import FAN_SHELF, SHOWCASE
 
-    assert len(fan_items()) == 22, "пак приехал не целиком"
+    assert len(fan_items()) == 29, "пак приехал не целиком"
     shelf = {item.code for item in SHOWCASE}
     for item in fan_items():
         assert item.shelf == FAN_SHELF, item.code
@@ -480,11 +480,11 @@ def test_the_fan_shelf_keeps_the_same_ceilings():
 
 
 def test_the_fan_shelf_dresses_every_class():
-    """Три линии, и каждому классу есть что надеть.
+    """Четыре линии, и каждому классу есть что надеть.
 
-    Тяжёлую линию носит танк, среднюю — воин, лёгкую — ассасин с
-    трикстером. Класс, которому в магазине нечего взять, туда и не
-    пойдёт, а вещи оттуда встретит на чужих плечах.
+    Тяжёлую носит танк, среднюю — воин, лёгких две: у ассасина она под
+    крит, у трикстера под уворот. Класс, которому в магазине нечего
+    взять, туда и не пойдёт, а вещи оттуда встретит на чужих плечах.
     """
     covered = {code for item in fan_items() for code in item.for_classes}
     assert covered == set(FIGHTER_CLASSES), covered
@@ -503,7 +503,7 @@ def test_fan_weapons_are_worth_their_price():
 
     club = max(average(item) for item in SHOWCASE if item.is_weapon)
     fan = [item for item in fan_items() if item.is_weapon]
-    assert len(fan) == 3
+    assert len(fan) == 4
     for item in fan:
         assert average(item) > club, f"{item.code}: {average(item)} против {club}"
         assert item.price > max(one.price for one in SHOWCASE if one.is_weapon)
