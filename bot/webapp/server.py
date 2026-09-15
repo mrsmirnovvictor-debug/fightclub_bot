@@ -442,6 +442,7 @@ def daily_payload(visit) -> dict:
     """Окно входа: лестница месяца и то, что ждёт в руках."""
     return {
         "days": visit.days,
+        "month": visit.month,
         "fresh": visit.fresh,
         "next_day": visit.next_day,
         "resets_at": int(visit.resets_at),
@@ -477,6 +478,7 @@ async def api_daily(request: web.Request) -> web.Response:
             "done": {
                 "credits": taken.credits,
                 "potions": taken.potions,
+                "mods": taken.mods,
                 "rewards": [
                     {"title": one.title, "icon": one.icon, "day": one.day}
                     for one in taken.rewards

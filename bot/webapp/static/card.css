@@ -1613,36 +1613,76 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .daily-head { margin: 0 0 4px; font-size: 16px; }
 .daily-note { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
 
-.daily-ladder { display: grid; gap: 6px; }
-.gift {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 9px;
-  border-radius: 9px;
-  background: var(--panel);
-  border: 1px solid var(--line);
+/* Календарь месяца: семь клеток в ряд, по клетке на каждый день. Ряды —
+   не недели: клетка считает входы, а не числа месяца, поэтому подписывать
+   их понедельником и вторником было бы враньём. Семь в ряд взято ради
+   привычной глазу сетки и потому, что на узком экране больше не влезает */
+.daily-ladder {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 5px;
 }
-.gift-day {
-  flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--slot);
+.gift {
+  position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  gap: 1px;
+  aspect-ratio: 1;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.gift-day { font-size: 10px; font-weight: 700; color: var(--muted); line-height: 1; }
+.gift-icon { font-size: 15px; line-height: 1; }
+
+/* Зелёная галочка в углу — по ней видно, что за день уже забрано */
+.gift-mark {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--hp-green);
+  color: #fff;
+  font-size: 9px;
+  line-height: 13px;
+  text-align: center;
   font-weight: 700;
 }
-.gift-body { flex: 1; min-width: 0; }
-.gift-title { font-size: 13px; font-weight: 700; }
-.gift-note { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
-.gift-mark { font-size: 14px; }
 
 /* Забранное гаснет, ждущее — светится: две судьбы, и их не спутать */
-.gift.done { opacity: 0.5; }
-.gift.ready { border-color: var(--hp-green); box-shadow: 0 0 0 1px var(--hp-green) inset; }
+.gift.done { opacity: 0.55; }
+.gift.ready {
+  border-color: var(--hp-green);
+  box-shadow: 0 0 0 1px var(--hp-green) inset;
+}
+/* Веха крупнее буден: иначе тридцать одинаковых клеток читаются как обои */
+.gift.big { background: var(--slot); border-color: var(--accent); }
+.gift.big .gift-icon { font-size: 18px; }
+
+.daily-pick {
+  margin: 8px 0 0;
+  min-height: 30px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* Кнопка календаря на карточке: одна, и во всю ширину — рядом с ней
+   ничего не стоит, а половинная смотрелась бы обрубком */
+.hero-acts { margin: 8px 0 2px; }
+.hero-acts .btn { width: 100%; }
+
+@media (max-width: 340px) {
+  .gift-icon { font-size: 13px; }
+  .gift.big .gift-icon { font-size: 15px; }
+}
 
 .daily-buttons { display: flex; gap: 8px; margin-top: 12px; }
 .daily-buttons .btn { flex: 1; }

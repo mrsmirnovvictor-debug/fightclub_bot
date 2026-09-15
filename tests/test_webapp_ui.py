@@ -8,6 +8,7 @@
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -4178,23 +4179,27 @@ async def test_the_fork_is_impossible_to_miss(server):
 # ---------- награда за вход ----------
 
 
-def daily_state(days=3, waiting=True, fresh=True) -> dict:
-    """Окно входа так, как его отдаёт сервер."""
-    gift = {"day": 3, "title": "Эликсир восстановления", "icon": "🧪",
-            "note": "Ставит на ноги."}
-    ladder = [
-        {"day": 1, "title": "25 кредитов", "icon": "💰", "note": "",
-         "credits": 25, "potion": "", "ready": False, "done": True},
-        {"day": 3, "title": "Эликсир восстановления", "icon": "🧪",
-         "note": "Ставит на ноги.", "credits": 0, "potion": "heal_small",
-         "ready": waiting, "done": not waiting},
-        {"day": 7, "title": "50 кредитов", "icon": "💰", "note": "",
-         "credits": 50, "potion": "", "ready": False, "done": False},
-    ]
-    return {
-        "days": days, "fresh": fresh, "next_day": 7, "resets_at": 0,
-        "ladder": ladder, "waiting": [gift] if waiting else [],
-    }
+def daily_state(days=3, waiting=True, fresh=True, month="2026-09") -> dict:
+    """Окно входа так, как его отдаёт сервер.
+
+    Собираем настоящим `daily_payload`, а не руками: календарь считается
+    по месяцу, и выдуманная лестница из трёх строк молча разошлась бы с
+    тем, что видит игрок.
+    """
+    from bot.content.daily import next_milestone, unclaimed
+    from bot.daily_service import VisitState
+    from bot.webapp.server import daily_payload
+
+    return daily_payload(
+        VisitState(
+            days=days,
+            month=month,
+            fresh=fresh,
+            waiting=unclaimed(days, 0 if waiting else days, month),
+            next_day=next_milestone(days, month),
+            resets_at=0,
+        )
+    )
 
 
 async def test_the_daily_window_pops_up_on_the_first_look(server):
@@ -4211,31 +4216,18 @@ async def test_the_daily_window_pops_up_on_the_first_look(server):
         assert await veil.is_visible()
         said = await veil.inner_text()
         assert "день 3" in said and "Забирайте" in said
-        # вся лестница месяца видна разом
-        rows = veil.locator(".gift")
-        assert await rows.count() == 3
-
-        # Строка — именно строка: кружок дня слева, текст справа от него и
-        # не поверх. Проверяем геометрией, а не классами: имя `.step` уже
-        # было занято кнопками прокачки, мои строки унаследовали от них
-        # размер 30×30, и текст вывалился наружу — на классах это не видно
-        first = rows.first
-        box = await first.bounding_box()
-        day = await first.locator(".gift-day").bounding_box()
-        title = await first.locator(".gift-title").bounding_box()
-        assert box["height"] > day["height"], "строка сплющена до кружка"
-        assert title["x"] >= day["x"] + day["width"], "текст налез на кружок"
-        assert title["y"] >= box["y"] and (
-            title["y"] + title["height"] <= box["y"] + box["height"] + 0.5
-        ), "текст вылез за строку"
-        # и строки не наезжают друг на друга
-        second = await rows.nth(1).bounding_box()
-        assert second["y"] >= box["y"] + box["height"] - 0.5
+        # клетка на каждый день сентября, и ни одной лишней
+        assert await veil.locator(".gift").count() == 30
         await browser.close()
 
 
-async def test_the_taken_and_the_waiting_look_different(server):
-    """Забранное гаснет, ждущее светится — две судьбы, и их не спутать."""
+async def test_the_calendar_stands_seven_cells_to_a_row(server):
+    """Семь в ряд — и ряды не наползают друг на друга.
+
+    Проверяем геометрией, а не классами: имя `.step` однажды уже было
+    занято кнопками прокачки, клетки унаследовали чужой размер и вёрстка
+    рассыпалась — на классах такое не видно.
+    """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     card["daily"] = daily_state()
@@ -4244,14 +4236,114 @@ async def test_the_taken_and_the_waiting_look_different(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#daily-veil:not(.hidden)")
 
-        steps = page.locator("#daily-ladder .gift")
-        assert "done" in await steps.nth(0).get_attribute("class")
-        assert "ready" in await steps.nth(1).get_attribute("class")
-        assert await steps.nth(1).locator(".gift-mark").inner_text() == "🎁"
-        assert await steps.nth(0).locator(".gift-mark").inner_text() == "✔"
+        cells = page.locator("#daily-ladder .gift")
+        boxes = [await cells.nth(i).bounding_box() for i in range(await cells.count())]
+
+        # первый ряд — ровно семь клеток на одной высоте
+        top = boxes[0]["y"]
+        first_row = [one for one in boxes if abs(one["y"] - top) < 1]
+        assert len(first_row) == 7, "в ряду должно стоять семь клеток"
+        # восьмая ушла на следующую строку и не налезла на первую
+        assert boxes[7]["y"] >= top + boxes[0]["height"] - 0.5
+
+        # клетка квадратная и не схлопнулась
+        assert boxes[0]["width"] > 20
+        assert abs(boxes[0]["width"] - boxes[0]["height"]) < 3
+        # и в строку клетки не вылезают за окно
+        box = await page.locator("#daily-box").bounding_box()
+        assert first_row[-1]["x"] + first_row[-1]["width"] <= box["x"] + box["width"] + 1
+        await browser.close()
+
+
+async def test_a_short_month_gets_a_short_calendar(server):
+    """В феврале клеток двадцать восемь — календарь считает по месяцу."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(month="2026-02")
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        assert await page.locator("#daily-ladder .gift").count() == 28
+        await browser.close()
+
+
+async def test_the_taken_and_the_waiting_look_different(server):
+    """Забранное помечено зелёной галочкой, ждущее — светится."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # первые два дня забраны, третий ждёт в руках
+    card["daily"] = daily_state(days=3, waiting=True)
+    card["daily"]["ladder"][0].update(done=True, ready=False)
+    card["daily"]["ladder"][1].update(done=True, ready=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cells = page.locator("#daily-ladder .gift")
+        assert "done" in await cells.nth(0).get_attribute("class")
+        assert await cells.nth(0).locator(".gift-mark").inner_text() == "✔"
+
+        # галочка именно зелёная — по цвету её и узнают
+        colour = await cells.nth(0).locator(".gift-mark").evaluate(
+            "node => getComputedStyle(node).backgroundColor"
+        )
+        red, green, blue = [int(one) for one in re.findall(r"\d+", colour)[:3]]
+        assert green > red and green > blue, f"галочка не зелёная: {colour}"
+
+        # ждущее светится, но галочки не носит: его ещё не забрали
+        assert "ready" in await cells.nth(2).get_attribute("class")
+        assert await cells.nth(2).locator(".gift-mark").count() == 0
         # до чего ещё расти — без пометок
-        third = await steps.nth(2).get_attribute("class")
-        assert "done" not in third and "ready" not in third
+        rest = await cells.nth(9).get_attribute("class")
+        assert "done" not in rest and "ready" not in rest
+        await browser.close()
+
+
+async def test_a_cell_tells_what_lies_in_it(server):
+    """Тридцать значков сами за себя не скажут — клетка отвечает на нажатие."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        # второй день — будни: там лежит рейд-пасс
+        await page.locator("#daily-ladder .gift").nth(1).click()
+        said = await page.locator("#daily-pick").inner_text()
+        assert "2-й день" in said and "Рейд-пасс" in said
+
+        # последний день месяца — заточка
+        await page.locator("#daily-ladder .gift").nth(29).click()
+        said = await page.locator("#daily-pick").inner_text()
+        assert "30-й день" in said and "заточка" in said.lower()
+        await browser.close()
+
+
+async def test_the_hero_tab_opens_the_calendar_on_demand(server):
+    """Кнопка «Ежедневные награды» открывает окно, когда игрок сам захочет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # окно само не всплывает: день засчитан, забирать нечего
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        assert await page.locator("#daily-veil").is_hidden()
+
+        gate = page.locator("#hero-daily")
+        assert await gate.is_visible()
+        assert "Ежедневные награды" in await gate.inner_text()
+
+        await gate.click()
+
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        assert await page.locator("#daily-ladder .gift").count() == 30
         await browser.close()
 
 
@@ -4267,7 +4359,7 @@ async def test_nothing_to_take_means_no_claim_button(server):
 
         buttons = await page.locator("#daily-buttons button").all_inner_texts()
         assert [one.strip() for one in buttons] == ["Закрыть"]
-        assert "Следующая награда на 7-й день" in await page.locator(
+        assert "Следующая награда — на 3-й день" in await page.locator(
             "#daily-note"
         ).inner_text()
         await browser.close()

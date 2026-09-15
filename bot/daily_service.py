@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from bot.content.daily import next_milestone, reward_for, unclaimed
+from bot.content.daily import month_days, next_milestone, reward_for, unclaimed
 from bot.database import Database
 from bot.game.daily import Reward, club_day, month_key, next_reset
 from bot.game.health import now_ts
@@ -47,6 +47,7 @@ class Claimed:
     rewards: tuple[Reward, ...] = ()
     credits: int = 0
     potions: list[str] = field(default_factory=list)
+    mods: list[str] = field(default_factory=list)
 
 
 async def check_in(
@@ -67,7 +68,7 @@ async def check_in(
         month=month,
         fresh=fresh,
         waiting=unclaimed(row["days"], row["claimed"], month),
-        next_day=next_milestone(row["days"]),
+        next_day=next_milestone(row["days"], month),
         resets_at=next_reset(moment),
     )
 
@@ -94,6 +95,9 @@ async def claim(
         if reward.potion:
             await db.add_potion(player.user_id, reward.potion)
             taken.potions.append(reward.potion)
+        if reward.mod:
+            await db.add_mod(player.user_id, reward.mod)
+            taken.mods.append(reward.mod)
     if taken.credits:
         await db.save_player(player)
     # Отмечаем забранным самый высокий из взятых дней: всё, что ниже, уже
@@ -105,14 +109,16 @@ async def claim(
 
 
 def ladder_view(state: VisitState) -> list[dict]:
-    """Вся лестница месяца для окна: что пройдено, что ждёт, что впереди."""
-    from bot.content.daily import MILESTONES
+    """Календарь месяца для окна: клетка на каждый день, по порядку.
 
+    Клеток ровно столько, сколько дней в месяце, — и пустых среди них нет.
+    У каждой три состояния: забрано, ждёт в руках, ещё расти.
+    """
     rows = []
     waiting = {reward.day for reward in state.waiting}
-    for day in MILESTONES:
+    for day in range(1, month_days(state.month) + 1):
         reward = reward_for(day, state.month)
-        if reward is None:  # pragma: no cover - лестница не бывает дырявой
+        if reward is None:  # pragma: no cover - календарь не бывает дырявым
             continue
         rows.append(
             {
@@ -122,7 +128,10 @@ def ladder_view(state: VisitState) -> list[dict]:
                 "note": reward.note,
                 "credits": reward.credits,
                 "potion": reward.potion,
-                # Три состояния: забрано, ждёт в руках, ещё расти
+                "mod": reward.mod,
+                # Веху в сетке видно крупнее: будни все на одно лицо, и
+                # без этого календарь читается как обои
+                "big": reward.big,
                 "ready": day in waiting,
                 "done": day <= state.days and day not in waiting,
             }

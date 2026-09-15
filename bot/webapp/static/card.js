@@ -500,9 +500,16 @@ function requirementText(item) {
 // отрисовке нельзя: окно закрывалось бы само собой под руками.
 let dailyShown = false;
 
+// Последняя награда за вход — чтобы окно можно было открыть кнопкой, а не
+// только при заходе. Карточка перерисовывается часто, состояние живёт тут
+let dailyState = null;
+
 function renderDaily(card) {
   const state = card.daily;
   if (!state) return;
+  dailyState = state;
+  el("hero-daily").classList.remove("hidden");
+
   const veil = el("daily-veil");
   if (dailyShown) {
     // Уже показывали: содержимое обновим, а прятать или открывать заново
@@ -514,47 +521,35 @@ function renderDaily(card) {
     veil.classList.add("hidden");
     return;
   }
+  fillDaily(state);
+  veil.classList.remove("hidden");
+}
 
+// Кнопка «Ежедневные награды» на карточке: календарь можно открыть в любой
+// момент, а не только когда окно всплыло само
+function openDaily() {
+  if (!dailyState) return;
+  dailyShown = true;
+  fillDaily(dailyState);
+  el("daily-veil").classList.remove("hidden");
+}
+
+function fillDaily(state) {
   el("daily-head").textContent = "🎁 Вход в клуб · день " + state.days;
   el("daily-note").textContent = state.waiting.length
     ? "Забирайте — награда ваша."
     : state.next_day
-      ? "Сегодня пусто. Следующая награда на " + state.next_day + "-й день."
-      : "Лестница этого месяца пройдена. В следующем начнётся заново.";
+      ? "Сегодня всё забрано. Следующая награда — на " + state.next_day + "-й день."
+      : "Календарь этого месяца пройден. В следующем начнётся заново.";
 
+  // Сетка по семь в ряд. Клетка — это по счёту вход за месяц, а не число
+  // месяца: подписывать её днями недели было бы враньём
   const ladder = el("daily-ladder");
   ladder.textContent = "";
   state.ladder.forEach((step) => {
-    const row = document.createElement("div");
-    row.className =
-      "gift" + (step.ready ? " ready" : "") + (step.done ? " done" : "");
-
-    const day = document.createElement("span");
-    day.className = "gift-day";
-    day.textContent = step.day;
-    row.appendChild(day);
-
-    const body = document.createElement("div");
-    body.className = "gift-body";
-    const title = document.createElement("div");
-    title.className = "gift-title";
-    title.textContent = step.icon + " " + step.title;
-    body.appendChild(title);
-    if (step.note) {
-      const note = document.createElement("div");
-      note.className = "gift-note";
-      note.textContent = step.note;
-      body.appendChild(note);
-    }
-    row.appendChild(body);
-
-    const mark = document.createElement("span");
-    mark.className = "gift-mark";
-    mark.textContent = step.done ? "✔" : step.ready ? "🎁" : "";
-    row.appendChild(mark);
-
-    ladder.appendChild(row);
+    ladder.appendChild(giftCell(step, state));
   });
+  describeGift(state.ladder.find((step) => step.ready) || null, state);
 
   const buttons = el("daily-buttons");
   buttons.textContent = "";
@@ -564,10 +559,57 @@ function renderDaily(card) {
   buttons.appendChild(
     button(state.waiting.length ? "Потом" : "Закрыть", {
       secondary: true,
-      onClick: () => veil.classList.add("hidden"),
+      onClick: () => el("daily-veil").classList.add("hidden"),
     })
   );
-  veil.classList.remove("hidden");
+}
+
+function giftCell(step, state) {
+  const cell = document.createElement("button");
+  cell.type = "button";
+  cell.className =
+    "gift" +
+    (step.ready ? " ready" : "") +
+    (step.done ? " done" : "") +
+    (step.big ? " big" : "");
+  cell.title = step.day + "-й день · " + step.title;
+
+  const day = document.createElement("span");
+  day.className = "gift-day";
+  day.textContent = step.day;
+  cell.appendChild(day);
+
+  const icon = document.createElement("span");
+  icon.className = "gift-icon";
+  icon.textContent = step.icon;
+  cell.appendChild(icon);
+
+  // Забранное помечено зелёной галочкой — по ней видно пройденный месяц
+  if (step.done) {
+    const mark = document.createElement("span");
+    mark.className = "gift-mark";
+    mark.textContent = "✔";
+    cell.appendChild(mark);
+  }
+
+  cell.addEventListener("click", () => describeGift(step, state));
+  return cell;
+}
+
+// Строка под календарём: что лежит в выбранной клетке. Тридцать значков
+// сами за себя не скажут, а подписывать каждый негде
+function describeGift(step, state) {
+  const box = el("daily-pick");
+  if (!step) {
+    box.textContent = state.next_day
+      ? "Нажмите на клетку, чтобы посмотреть, что в ней лежит."
+      : "Весь календарь пройден.";
+    return;
+  }
+  const mark = step.done ? " · забрано" : step.ready ? " · ждёт вас" : "";
+  box.textContent =
+    step.day + "-й день: " + step.icon + " " + step.title + mark +
+    (step.note ? " — " + step.note : "");
 }
 
 async function claimDaily() {
@@ -4967,6 +5009,7 @@ el("hero-avatar").addEventListener("click", () => {
 });
 el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
+el("hero-daily").addEventListener("click", openDaily);
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты
 TABS.forEach((tab) => {

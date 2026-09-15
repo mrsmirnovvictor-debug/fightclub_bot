@@ -19,7 +19,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from calendar import monthrange
+from dataclasses import dataclass, replace
 from datetime import date
 
 from bot.game.clock import MOSCOW, club_day, next_midnight
@@ -27,18 +28,57 @@ from bot.game.clock import MOSCOW, club_day, next_midnight
 
 @dataclass(frozen=True)
 class Reward:
-    """Что дают за этот день: кредиты или склянка."""
+    """Что дают за этот день: кредиты, склянка или заточка.
+
+    Три поля, а не одно, потому что в один день может сойтись сразу
+    несколько подарков: последний день февраля — это и двадцать восьмой
+    вход, и последний день месяца.
+    """
 
     day: int  # какой по счёту вход в месяце
     title: str
     icon: str = "🎁"
     credits: int = 0
-    potion: str = ""  # код эликсира
+    potion: str = ""  # код эликсира или пропуска
+    mod: str = ""  # код заточки или модификатора
     note: str = ""
+    big: bool = False  # веха: в сетке её видно крупнее, чем будни
 
     @property
     def empty(self) -> bool:
-        return not (self.credits or self.potion)
+        return not (self.credits or self.potion or self.mod)
+
+
+def merge(first: Reward, second: Reward) -> Reward:
+    """Два подарка, сошедшихся в один день, — одной наградой.
+
+    Такое бывает раз в год: в феврале двадцать восьмой вход и последний
+    день месяца — это один и тот же день. Отдавать что-то одно значит
+    отнять у февраля либо веху, либо заточку.
+
+    Первый — заглавный: его значок и его подпись достаются дню целиком.
+    Звать поимённо оба подарка некуда, а клетка в календаре одна.
+    """
+    if first.empty:
+        return replace(second, day=first.day or second.day)
+    if second.empty:
+        return first
+    return Reward(
+        day=first.day or second.day,
+        title=f"{first.title} и {second.title.lower()}",
+        icon=first.icon,
+        credits=first.credits + second.credits,
+        potion=first.potion or second.potion,
+        mod=first.mod or second.mod,
+        note=first.note or second.note,
+        big=True,  # день, в котором сошлось двое, будней крупнее
+    )
+
+
+def days_in_month(month: str) -> int:
+    """Сколько дней в этом месяце: столько же клеток и в календаре."""
+    year, number = month.split("-")
+    return monthrange(int(year), int(number))[1]
 
 
 def month_key(day: date) -> str:
@@ -61,6 +101,8 @@ __all__ = [
     "MOSCOW",
     "Reward",
     "club_day",
+    "days_in_month",
+    "merge",
     "month_index",
     "month_key",
     "next_reset",
