@@ -26,7 +26,8 @@ from bot.game.abilities import (
     TIERS,
     Effect,
     Loadout,
-    Scale,
+    Source,
+    energy_gain,
 )
 from bot.game.classes import ASSASSIN, FIGHTER_CLASSES, ROGUE, TANK, WARRIOR, Zone
 from bot.game.combat import Action, Fighter, Outcome, resolve_round, strike_of
@@ -47,9 +48,9 @@ def armed(fighter: Fighter, code: str, slot: Slot = Slot.WEAPON) -> Fighter:
 
 
 def teach(fighter: Fighter, code: str, tier: int = 1) -> Fighter:
-    """Выучить приём и сразу дать энергии ровно на него — на его шкалу."""
+    """Выучить приём и сразу дать энергии ровно на него."""
     fighter.loadout.learn(code, tier)
-    fighter.gain_energy(TIER_COST[tier], CATALOGUE[code].scale)
+    fighter.gain_energy(TIER_COST[tier])
     return fighter
 
 
@@ -161,16 +162,26 @@ def test_the_price_belongs_to_the_step_not_to_the_trick():
 # ---------- энергия ----------
 
 
-def test_energy_comes_from_hits_and_blocks():
-    """Точный удар — единица, удержанный блок — единица."""
-    first, second = make(user_id=1), make(WARRIOR, user_id=2)
+def test_the_warrior_fills_his_bar_by_hitting():
+    """Воин копит ударами: блок ему энергии не приносит вовсе."""
+    warrior, tank = make(WARRIOR, user_id=1), make(TANK, user_id=2)
 
-    resolve_round(first, Action(attacks=(HEAD,), block=(BELT, LEGS)),
-                  second, Action(attacks=(BELT,), block=(HEAD, CHEST)), 1,
+    # воин бьёт в незакрытую голову и доходит; танк бьёт в закрытый пояс
+    resolve_round(warrior, Action(attacks=(HEAD,), block=(BELT, LEGS)),
+                  tank, Action(attacks=(BELT,), block=(BELT, LEGS)), 1,
                   random.Random(4))
 
-    # первый бил в закрытую голову, второй — в закрытый пояс: по блоку каждому
-    assert first.energy >= 1 and second.energy >= 1
+    assert warrior.energy == energy_gain("warrior", Source.HIT)
+    assert tank.energy == 0, "танк ничего не блокировал и не бил в цель"
+
+    # а теперь воин бьёт в закрытую голову: платят за это танку, не ему
+    was = warrior.energy
+    resolve_round(warrior, Action(attacks=(HEAD,), block=(BELT, LEGS)),
+                  tank, Action(attacks=(BELT,), block=(HEAD, CHEST)), 2,
+                  random.Random(4))
+
+    assert tank.energy == energy_gain("tank", Source.BLOCK)
+    assert warrior.energy == was, "блок воину энергии не приносит"
 
 
 def test_a_shield_block_is_worth_two():
@@ -179,24 +190,12 @@ def test_a_shield_block_is_worth_two():
     armed(shielded, "riot_shield", Slot.OFFHAND)
     assert shielded.has_shield and not plain.has_shield
 
-    for one in (plain, shielded):
-        one.gain_energy(0)
     resolve_round(plain, Action(attacks=(HEAD,), block=(HEAD, CHEST)),
                   shielded, Action(attacks=(HEAD,), block=(HEAD, CHEST)), 1,
                   random.Random(2))
 
-    assert shielded.energy == 2 * plain.energy == 2
-
-
-def test_a_dodge_fills_nobody():
-    """Шкала растёт от попаданий и блоков, а не от промахов мимо."""
-    attacker, dodger = make(user_id=1), make(ROGUE, user_id=2)
-
-    # уворот своим броском, без всякого приёма
-    strike = hit(attacker, dodger, block=(BELT, LEGS), seed=1)
-
-    assert strike.outcome is Outcome.DODGE, "нужен именно ушедший мимо удар"
-    assert dodger.energy == 0 and attacker.energy == 0
+    assert plain.energy == energy_gain("tank", Source.BLOCK)
+    assert shielded.energy == 2 * plain.energy
 
 
 def test_the_bar_has_a_ceiling():
@@ -206,73 +205,56 @@ def test_the_bar_has_a_ceiling():
     assert fighter.energy == MAX_ENERGY
 
 
-def test_the_two_scales_are_filled_by_different_work():
-    """Уворот кормится уворотами, сила — ударами, блок кормит обе.
+def test_each_class_fills_its_bar_with_its_own_work():
+    """Шкала одна, но кормится тем, в чём класс силён.
 
-    Это и есть тормоз, которого системе не хватало: пока обе ветки
-    кормились с одной шкалы, трикстер нажимал «Проворность» каждый раунд —
-    гарантированный уворот отменяет удар целиком, а гарантированный крит
-    лишь добавляет урона, и платить за них поровну нельзя.
+    Событие, классу не свойственное, приносит ноль — и это не
+    забывчивость, а рычаг: класс, чьи приёмы сильнее, копит медленнее.
     """
-    assert CATALOGUE["nimble"].scale is Scale.EVASION
-    assert CATALOGUE["cunning"].scale is Scale.EVASION
-    assert CATALOGUE["strong_hit"].scale is Scale.FORCE
-    assert CATALOGUE["crit_hit"].scale is Scale.FORCE
-    # «Парирование» — не уворот, а выдержанный удар: платит блоками
-    assert CATALOGUE["parry"].scale is Scale.FORCE
+    assert energy_gain("warrior", Source.HIT) > 0
+    assert energy_gain("warrior", Source.DODGE) == 0
+    assert energy_gain("rogue", Source.DODGE) > 0
+    assert energy_gain("tank", Source.BLOCK) > 0
+    # редкое событие стоит дороже частого: критов за бой меньше одного
+    assert energy_gain("assassin", Source.CRIT) > energy_gain("assassin", Source.HIT)
 
 
-def test_a_hit_never_pays_for_a_dodge():
-    """Бьющий боец копит на удар, а не на неуязвимость."""
-    striker, target = make(user_id=1), make(TANK, user_id=2)
+def test_a_shield_doubles_what_a_block_brings():
+    assert energy_gain("tank", Source.BLOCK, shield=True) == 2 * energy_gain(
+        "tank", Source.BLOCK
+    )
+    # у щита нет власти над тем, чего класс не копит вовсе
+    assert energy_gain("rogue", Source.BLOCK, shield=True) == 0
 
-    strike = hit(striker, target, seed=13)
 
-    assert strike.outcome in (Outcome.HIT, Outcome.CRIT)
+def test_a_trick_never_pays_for_itself():
+    """Исход, устроенный приёмом, энергии не приносит.
+
+    Это главное правило шкалы, и держится на нём весь баланс. Без него
+    гарантированный уворот начисляет за уворот, этого хватает на следующую
+    «Проворность», и трикстер уворачивается вечно: петля не закрывается ни
+    при какой цене события. Круг классов переворачивался именно здесь.
+    """
+    rogue = teach(make(ROGUE, user_id=2), "nimble")
+    rogue.use("nimble")
+    assert rogue.energy == 0
+
     resolve_round(make(user_id=1), Action(attacks=(HEAD,), block=(BELT, LEGS)),
-                  make(TANK, user_id=2), Action(attacks=(HEAD,), block=(BELT, LEGS)),
-                  1, random.Random(13))
-    # шкала уворота растёт только от уворотов и блоков — см. соседний тест
-    assert striker.evasion_energy == 0
+                  rogue, Action(attacks=(BELT,), block=(BELT, LEGS)), 1,
+                  random.Random(13))
+
+    assert rogue.energy == 0, "приём оплатил сам себя — петля вернулась"
 
 
-def test_a_dodge_fills_the_evasion_scale_only():
+def test_a_dodge_you_earned_still_pays():
+    """Ушёл своим броском — энергия начисляется как обычно."""
     attacker, dodger = make(user_id=1), make(ROGUE, user_id=2)
 
-    # трикстер уходит от удара в голову, а сам бьёт в закрытый пояс: своей
-    # работы на эту шкалу он не сделал, только ушёл
     resolve_round(attacker, Action(attacks=(HEAD,), block=(BELT, LEGS)),
                   dodger, Action(attacks=(BELT,), block=(BELT, LEGS)), 1,
                   random.Random(1))
 
-    assert dodger.evasion_energy > 0
-    assert dodger.energy == 0, "уворот не кормит силу"
-
-
-def test_a_block_feeds_both_scales():
-    """Блок — и защита, и работа: платит по обеим шкалам."""
-    first, second = make(TANK, user_id=1), make(TANK, user_id=2)
-
-    resolve_round(first, Action(attacks=(HEAD,), block=(HEAD, CHEST)),
-                  second, Action(attacks=(HEAD,), block=(HEAD, CHEST)), 1,
-                  random.Random(2))
-
-    assert first.energy == first.evasion_energy == 1
-
-
-def test_each_trick_pays_from_its_own_scale():
-    """Полная шкала силы не оплачивает уворот, и наоборот."""
-    rogue = make(ROGUE)
-    rogue.loadout.learn("nimble", 1)
-    rogue.gain_energy(MAX_ENERGY, Scale.FORCE)
-
-    assert not rogue.can_use("nimble"), "сила за уворот не платит"
-
-    rogue.gain_energy(TIER_COST[1], Scale.EVASION)
-    assert rogue.can_use("nimble")
-    rogue.use("nimble")
-    assert rogue.energy == MAX_ENERGY, "списалось не с той шкалы"
-    assert rogue.evasion_energy == 0
+    assert dodger.energy == energy_gain("rogue", Source.DODGE)
 
 
 def test_a_broken_block_pays_nobody_for_holding():
