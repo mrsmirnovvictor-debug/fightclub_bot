@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from enum import Enum
 
 from bot.game import art
+from bot.game.clock import MOSCOW, club_day as _day_of
 from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES, BLOCK_WIDTH, block_combo
 from bot.game.combat import Action, Fighter
 from bot.game.equipment import Equipment, OwnedItem, get_item
@@ -72,7 +73,8 @@ ELIXIR_PRIZES: tuple[str, ...] = (
 # расписание, которое можно выучить наизусть, перестаёт быть событием, а
 # одно и то же время изо дня в день отсекает тех, кто в этот час работает.
 # Время московское и без перевода часов, поэтому смещение постоянное.
-MOSCOW = timezone(timedelta(hours=3))
+# Часы общие с остальным клубом: `MOSCOW` и `_day_of` берутся из
+# `bot.game.clock`.
 RAID_SLOTS: tuple[int, ...] = (0, 8, 12, 16, 20)
 RAIDS_PER_DAY = 2
 WINDOW_HOURS = 2
@@ -127,11 +129,6 @@ def slots_on(day: date) -> tuple[int, ...]:
         slots = _draw(step, free)
         _SLOTS[step] = slots
     return slots
-
-
-def _day_of(moment: int) -> date:
-    """Московская дата этого момента: сутки расписания считаются по ней."""
-    return datetime.fromtimestamp(moment, MOSCOW).date()
 
 
 def _start_of(day: date, hour: int) -> int:

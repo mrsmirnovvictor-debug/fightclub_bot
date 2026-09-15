@@ -20,10 +20,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 
-# Сутки клуба кончаются в полночь по Москве
-MOSCOW = timezone(timedelta(hours=3))
+from bot.game.clock import MOSCOW, club_day, next_midnight
 
 
 @dataclass(frozen=True)
@@ -42,11 +41,6 @@ class Reward:
         return not (self.credits or self.potion)
 
 
-def club_day(moment: float) -> date:
-    """Какой сегодня день по часам клуба."""
-    return datetime.fromtimestamp(moment, MOSCOW).date()
-
-
 def month_key(day: date) -> str:
     """Месяц, к которому день относится: по нему и обнуляется счёт."""
     return f"{day.year:04d}-{day.month:02d}"
@@ -60,11 +54,7 @@ def month_index(key: str) -> int:
 
 def next_reset(moment: float) -> float:
     """Когда обновится счётчик входа: ближайшая полночь по Москве."""
-    here = datetime.fromtimestamp(moment, MOSCOW)
-    midnight = (here + timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    return midnight.timestamp()
+    return next_midnight(moment)
 
 
 __all__ = [

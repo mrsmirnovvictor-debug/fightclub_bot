@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from bot.game.clock import club_date
 from bot.game.classes import ALL_ZONES, BLOCK_WIDTH
 from bot.game.combat import (
     Fighter,
@@ -377,7 +378,9 @@ def raid_row(row: dict[str, Any]) -> dict[str, Any]:
         "alive": bool(row["alive"]),
         "prize": prize.title if prize else None,
         "created_at": row["created_at"],
-        "date": (row["created_at"] or "")[:10],
+        # День московский: бой в час ночи — это уже новые сутки, а метка в
+        # базе лежит в UTC и сама по себе указала бы на вчера
+        "date": club_date(row["created_at"]),
     }
 
 

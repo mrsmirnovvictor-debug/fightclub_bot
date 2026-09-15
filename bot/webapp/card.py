@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
 
+from bot.game.clock import club_time
 from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats, get_class
 from bot.game.combat import (
     MAX_ACCURACY_TOTAL,
@@ -70,15 +70,12 @@ STATE_COLORS = {
 
 
 def format_birthday(created_at: str | None) -> str:
-    """«2013-10-26 22:31:00» → «26.10.13 22:31»."""
+    """«2013-10-26 22:31:00» → «27.10.13 01:31»: час рождения московский."""
     if not created_at:
         return "—"
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M"):
-        try:
-            return datetime.strptime(created_at[:19], fmt).strftime("%d.%m.%y %H:%M")
-        except ValueError:
-            continue
-    return created_at  # pragma: no cover - формат из будущей версии
+    # Метку из будущей версии показываем как есть: лучше непонятная
+    # строка, чем прочерк на месте дня рождения
+    return club_time(created_at) or created_at
 
 
 # Как клетка называется на кукле. Верхняя одежда и футболка делят одну

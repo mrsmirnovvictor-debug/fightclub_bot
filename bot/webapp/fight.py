@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from bot.duel_service import Challenge, DuelService, DuelSession
+from bot.game.clock import club_date
 from bot.game.classes import ALL_ZONES, BLOCK_WIDTH, block_button, block_combos
 from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.combat import (
@@ -360,7 +361,9 @@ def fight_row(row: dict[str, Any], user_id: int) -> dict[str, Any]:
         "mode": mode_payload(mode),
         "in_app": row["chat_id"] is None,
         "created_at": row["created_at"],
-        "date": (row["created_at"] or "")[:10],
+        # День московский: бой в час ночи — это уже новые сутки, а метка в
+        # базе лежит в UTC и сама по себе указала бы на вчера
+        "date": club_date(row["created_at"]),
     }
 
 
