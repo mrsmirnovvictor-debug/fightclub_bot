@@ -3985,3 +3985,187 @@ async def test_leaving_the_casino_leaves_the_raid_behind(server):
         assert await page.locator("#club-raid").is_hidden(), "рейд уехал следом"
         assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
         await browser.close()
+
+
+# ---------- приёмы ----------
+
+
+def tricks_state(energy: int = 9) -> dict:
+    """Шкала и четыре приёма так, как их отдаёт сервер."""
+    return {
+        "energy": energy,
+        "max": 20,
+        "source": "за точные удары",
+        "tricks": [
+            {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+             "image": "https://example.test/items/strong_hit.jpeg",
+             "note": "+15 урона.", "cost": 3, "ready": energy >= 3, "armed": False},
+            {"code": "power_hit", "title": "Мощный удар", "icon": "👊",
+             "image": "https://example.test/items/power_hit.jpeg",
+             "note": "+30 урона.", "cost": 6, "ready": energy >= 6, "armed": False},
+            {"code": "crushing_hit", "title": "Сокрушительный удар", "icon": "👊",
+             "image": "https://example.test/items/crushing_hit.jpeg",
+             "note": "+45 урона.", "cost": 9, "ready": energy >= 9, "armed": True},
+            {"code": "mass_hit", "title": "Массовый удар", "icon": "💢",
+             "image": "https://example.test/items/mass_hit.jpeg",
+             "note": "+60 урона.", "cost": 12, "ready": energy >= 12, "armed": False},
+        ],
+    }
+
+
+async def test_the_tricks_stand_above_the_turn_buttons(server):
+    """Приёмы жмут до удара и блока — и стоят на экране выше их."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state()
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        tricks = page.locator(".tricks")
+        assert await tricks.count() == 1
+        assert await tricks.locator(".trick").count() == 4
+
+        panel = await tricks.bounding_box()
+        columns = await page.locator(".zone-columns").bounding_box()
+        assert panel["y"] + panel["height"] <= columns["y"] + 0.5
+        await browser.close()
+
+
+async def test_a_trick_is_grey_until_the_bar_fills(server):
+    """Не хватает энергии — приём чёрно-белый и не нажимается."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=4)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        tricks = page.locator(".trick")
+        # первый по карману, остальные — нет
+        assert "cold" not in await tricks.nth(0).get_attribute("class")
+        assert await tricks.nth(0).is_enabled()
+        assert "cold" in await tricks.nth(1).get_attribute("class")
+        assert await tricks.nth(1).is_disabled()
+
+        # серым приём делает именно фильтр, а не просто прозрачность
+        grey = await tricks.nth(1).locator(".trick-pic").evaluate(
+            "box => getComputedStyle(box).filter"
+        )
+        assert "grayscale" in grey
+        colour = await tricks.nth(0).locator(".trick-pic").evaluate(
+            "box => getComputedStyle(box).filter"
+        )
+        assert colour == "none", "доступный приём должен быть цветным"
+        await browser.close()
+
+
+async def test_a_pressed_trick_shows_it_is_waiting(server):
+    """Нажатая заготовка светится: она ждёт своего момента, а не пропала."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state()
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        armed = page.locator(".trick.armed")
+        assert await armed.count() == 1
+        assert "наготове" in await armed.inner_text()
+        assert await armed.is_disabled(), "дважды одну заготовку не кладут"
+        await browser.close()
+
+
+async def test_the_energy_bar_shows_what_it_counts(server):
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=9)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".energy")
+
+        assert "9 / 20" in await page.locator(".energy-label").inner_text()
+        assert "за точные удары" in await page.locator(".energy-note").inner_text()
+        # полоса налита ровно на долю накопленного
+        width = await page.locator(".energy-fill").evaluate(
+            "fill => fill.style.width"
+        )
+        assert width == "45%"
+        await browser.close()
+
+
+async def test_the_card_lists_what_the_fighter_knows(server):
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = {
+        "known": [
+            {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+             "image": "https://example.test/items/strong_hit.jpeg",
+             "note": "+15 урона.", "tier": 1, "cost": 3},
+        ],
+        "slots": 4, "choice": None, "next_tier": 3,
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        box = page.locator("#skills-box")
+        assert await box.locator(".skill").count() == 1
+        assert "1 из 4" in await page.locator("#skills-count").inner_text()
+        assert "на 3 уровне" in await page.locator("#skills-note").inner_text()
+        await browser.close()
+
+
+async def test_the_fork_is_impossible_to_miss(server):
+    """Дорос до ступени — развилка стоит в карточке и предупреждает."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = {
+        "known": [], "slots": 4, "next_tier": 6,
+        "choice": {
+            "tier": 3,
+            "options": [
+                {"code": "power_hit", "title": "Мощный удар", "icon": "👊",
+                 "image": "https://example.test/items/power_hit.jpeg",
+                 "note": "+30 урона.", "cost": 6, "own": True},
+                {"code": "nimble", "title": "Проворность", "icon": "🌀",
+                 "image": "https://example.test/items/nimble.jpeg",
+                 "note": "Уворот наверняка.", "cost": 6, "own": False},
+                {"code": "crit_hit", "title": "Критический удар", "icon": "💥",
+                 "image": "https://example.test/items/crit_hit.jpeg",
+                 "note": "Крит без проверки.", "cost": 6, "own": False},
+            ],
+        },
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        fork = page.locator(".fork")
+        assert await fork.count() == 1
+        said = await fork.inner_text()
+        assert "3 уровень" in said and "навсегда" in said
+        assert await fork.locator(".skill").count() == 3
+        # классовый приём помечен
+        assert await fork.locator(".fork-own").inner_text() == "свой"
+        await browser.close()

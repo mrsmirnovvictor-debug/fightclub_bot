@@ -1423,3 +1423,156 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* Кнопка под карточкой одна, и она про всю карточку целиком —
    поэтому во всю ширину, а не по ширине надписи */
 .sheet-actions { margin-bottom: 4px; }
+
+/* ---------- приёмы в бою ---------- */
+
+/* Панель стоит над кнопками хода: приём жмут до удара и блока, и порядок
+   на экране повторяет порядок в бою */
+.tricks { margin: 0 0 10px; }
+
+.energy {
+  position: relative;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--hp-track);
+  overflow: hidden;
+}
+.energy-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4a86d8, #7cc4ff);
+  transition: width 0.3s;
+}
+.energy-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
+}
+.energy-note {
+  margin: 3px 0 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* Приёмов не больше четырёх, и все должны поместиться в строку на
+   телефоне: отсюда и узкая карточка, и картинка 16:9 под неё */
+.trick-row { display: flex; gap: 6px; }
+.trick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+}
+.trick-pic {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  overflow: hidden;
+}
+.trick-pic img { width: 100%; height: 100%; object-fit: cover; }
+.trick-name {
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+}
+.trick-cost { font-size: 10px; color: var(--muted); font-weight: 600; }
+
+/* Энергии не хватает — приём гаснет. Ровно так и просили: чёрно-белый,
+   пока нажать нельзя, цветной, когда можно */
+.trick.cold { opacity: 0.55; cursor: default; }
+/* Гасим всю плашку, а не только картинку: не доехал файл — на его месте
+   значок, и он тоже должен быть серым */
+.trick.cold .trick-pic { filter: grayscale(1); }
+
+/* Нажатый приём ждёт своего момента — и светится, пока ждёт */
+.trick.armed {
+  border-color: var(--hp-green);
+  box-shadow: 0 0 0 1px var(--hp-green) inset;
+  cursor: default;
+}
+.trick.armed .trick-cost { color: var(--hp-green); }
+.trick:active:not(:disabled) { transform: scale(0.97); }
+
+/* ---------- приёмы в карточке ---------- */
+
+.skills { margin-top: 16px; }
+.skill-list { display: grid; gap: 8px; }
+.skill {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+/* Картинка приёма горизонтальная, 16:9 — в отличие от квадратных вещей */
+.skill-pic {
+  flex: 0 0 auto;
+  width: 112px;
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  overflow: hidden;
+}
+.skill-pic img { width: 100%; height: 100%; object-fit: cover; }
+.skill-body { min-width: 0; }
+.skill-title { font-weight: 700; font-size: 13.5px; }
+.skill-cost { font-size: 11.5px; color: var(--accent); margin-top: 2px; }
+.skill-note {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+  line-height: 1.35;
+}
+
+/* Развилка: её нельзя не заметить, поэтому рамка и свой заголовок */
+.fork {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+}
+.fork-head { margin: 0; font-weight: 700; font-size: 13.5px; }
+.fork-warn { margin: 0; font-size: 11.5px; color: var(--hp-yellow); }
+.fork-own {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+@media (max-width: 380px) {
+  .skill-pic { width: 88px; }
+  .trick-name { font-size: 9.5px; }
+}

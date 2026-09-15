@@ -489,6 +489,115 @@ function requirementText(item) {
     .join(", ");
 }
 
+// Приёмы в карточке: что выучено и что предстоит выбрать. Список видят
+// все, кто открыл карточку, — соперник должен знать, чего ждать. Развилку
+// показываем только хозяину: это про то, чего у бойца ещё нет.
+function renderSkills(card) {
+  const box = el("skills-box");
+  const state = card.abilities;
+  if (!state || (!state.known.length && !state.choice)) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  el("skills-count").textContent = "· " + state.known.length + " из " + state.slots;
+
+  const list = el("skills-list");
+  list.textContent = "";
+  state.known.forEach((trick) => list.appendChild(skillCard(trick)));
+
+  // Развилка — отдельной плашкой под списком: её нельзя не заметить
+  const old = box.querySelector(".fork");
+  if (old) old.remove();
+  if (state.choice) box.appendChild(forkCard(state.choice));
+
+  const note = el("skills-note");
+  note.textContent = state.choice
+    ? ""
+    : state.next_tier
+      ? "Следующий приём — на " + state.next_tier + " уровне."
+      : "Все приёмы изучены.";
+}
+
+function skillCard(trick) {
+  const box = document.createElement("div");
+  box.className = "skill";
+
+  const pic = document.createElement("div");
+  pic.className = "skill-pic";
+  pic.appendChild(slotPicture(trick, trick.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "skill-body";
+
+  const title = document.createElement("div");
+  title.className = "skill-title";
+  title.textContent = trick.title;
+  body.appendChild(title);
+
+  const cost = document.createElement("div");
+  cost.className = "skill-cost";
+  cost.textContent = trick.cost + " ⚡ · выучен на " + trick.tier + " уровне";
+  body.appendChild(cost);
+
+  const note = document.createElement("div");
+  note.className = "skill-note";
+  note.textContent = trick.note;
+  body.appendChild(note);
+
+  box.appendChild(body);
+  return box;
+}
+
+function forkCard(choice) {
+  const box = document.createElement("div");
+  box.className = "fork";
+
+  const head = document.createElement("p");
+  head.className = "fork-head";
+  head.textContent = "🎓 " + choice.tier + " уровень: выберите приём";
+  box.appendChild(head);
+
+  const warn = document.createElement("p");
+  warn.className = "fork-warn";
+  warn.textContent = "Выбор один и навсегда: два других приёма не достанутся.";
+  box.appendChild(warn);
+
+  choice.options.forEach((option) => {
+    const card = skillCard({ ...option, tier: choice.tier });
+    card.classList.add("pickable");
+    if (option.own) {
+      const mark = document.createElement("span");
+      mark.className = "fork-own";
+      mark.textContent = "свой";
+      card.querySelector(".skill-title").appendChild(mark);
+    }
+    card.addEventListener("click", () => pickAbility(option, choice.tier));
+    box.appendChild(card);
+  });
+  return box;
+}
+
+async function pickAbility(option, tier) {
+  if (busy) return;
+  const ok = await confirmAction(
+    "Выучить «" + option.title + "»?\n\n" +
+      "Два других приёма " + tier + " уровня больше не предложат."
+  );
+  if (!ok) return;
+  busy = true;
+  try {
+    const data = await post("api/ability", { code: option.code });
+    render(data.card, true);
+    popup(data.done.icon + " " + data.done.title, data.done.note);
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
 function renderBag(card) {
   const bag = el("bag-box");
   if (!card.is_self) {
@@ -2319,9 +2428,90 @@ function scoutPanel(scout) {
   return box;
 }
 
+// Приёмы бойца и его шкала — над кнопками хода. Приём жмут до выбора
+// удара и блока, поэтому и стоит он выше: порядок на экране повторяет
+// порядок в бою.
+//
+// Значок приёма цветной, когда энергии хватает, и серый, когда нет, — так
+// и просили. Нажатый приём светится: заготовка ждёт своего момента и может
+// провисеть несколько ходов, и боец должен видеть, что она в деле.
+function abilityPanel(state) {
+  if (!state || !state.tricks || !state.tricks.length) return null;
+  const box = document.createElement("section");
+  box.className = "tricks";
+
+  const bar = document.createElement("div");
+  bar.className = "energy";
+  const fill = document.createElement("div");
+  fill.className = "energy-fill";
+  fill.style.width = Math.round((state.energy / state.max) * 100) + "%";
+  bar.appendChild(fill);
+  const label = document.createElement("span");
+  label.className = "energy-label";
+  label.textContent = "⚡ " + state.energy + " / " + state.max;
+  bar.appendChild(label);
+  box.appendChild(bar);
+
+  if (state.source) {
+    const note = document.createElement("p");
+    note.className = "energy-note";
+    note.textContent = "Копится " + state.source;
+    box.appendChild(note);
+  }
+
+  const row = document.createElement("div");
+  row.className = "trick-row";
+  state.tricks.forEach((trick) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className =
+      "trick" + (trick.ready ? "" : " cold") + (trick.armed ? " armed" : "");
+    card.disabled = !trick.ready || trick.armed;
+    card.title = trick.title + " · " + trick.cost + " ⚡\n" + trick.note;
+
+    const pic = document.createElement("div");
+    pic.className = "trick-pic";
+    pic.appendChild(slotPicture(trick, trick.icon));
+    card.appendChild(pic);
+
+    const name = document.createElement("span");
+    name.className = "trick-name";
+    name.textContent = trick.title;
+    card.appendChild(name);
+
+    const price = document.createElement("span");
+    price.className = "trick-cost";
+    price.textContent = trick.armed ? "наготове" : trick.cost + " ⚡";
+    card.appendChild(price);
+
+    card.addEventListener("click", () => useAbility(trick));
+    row.appendChild(card);
+  });
+  box.appendChild(row);
+  return box;
+}
+
+async function useAbility(trick) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/fight", { action: "ability", code: trick.code });
+    renderFights(data);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
 function turnForm(data) {
   const box = document.createElement("div");
   box.className = "turn-form";
+
+  // Приёмы выше всего: их жмут до удара и блока
+  const tricks = abilityPanel(data.duel.abilities);
+  if (tricks) box.appendChild(tricks);
 
   // Разбор соперника — над кнопками: его видит только тот, кому он пришёл
   const scout = scoutPanel(data.duel.scout);
@@ -4459,6 +4649,7 @@ function render(card, keepTab) {
   renderSlots(el("slots-right"), card.slots.right, card.is_self);
   renderSlots(el("hero-slots-left"), card.slots.left, card.is_self);
   renderSlots(el("hero-slots-right"), card.slots.right, card.is_self);
+  renderSkills(card);
   renderBag(card);
   // Рюкзак поменялся — значит поменялось и то, что можно выставить на
   // комиссию. Без этого экран комиссионки остаётся с прежним списком: он
