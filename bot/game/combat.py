@@ -36,6 +36,7 @@ from bot.game.abilities import (
     Charge,
     Effect,
     Loadout,
+    Scale,
     energy_for_block,
 )
 from bot.game.equipment import BARE_HANDS, BARE_HANDS_ICON, Equipment
@@ -195,7 +196,8 @@ class Fighter:
     # Приёмы: что выучено, сколько энергии накоплено и что уже нажато.
     # Энергия живёт только внутри боя — в базу она не уходит
     loadout: Loadout = field(default_factory=Loadout)
-    energy: int = 0
+    energy: int = 0  # сила: точные удары и блоки
+    evasion_energy: int = 0  # уворот: увороты и блоки
     charges: list[Charge] = field(default_factory=list)
     derived: DerivedStats = field(init=False)
 
@@ -325,15 +327,28 @@ class Fighter:
 
     # ---------- приёмы ----------
 
-    def gain_energy(self, amount: int) -> None:
-        """Накопить энергию. Выше потолка шкала не растёт."""
-        self.energy = min(MAX_ENERGY, self.energy + amount)
+    def gain_energy(self, amount: int, scale: Scale = Scale.FORCE) -> None:
+        """Накопить энергию на этой шкале. Выше потолка она не растёт."""
+        if scale is Scale.EVASION:
+            self.evasion_energy = min(MAX_ENERGY, self.evasion_energy + amount)
+        else:
+            self.energy = min(MAX_ENERGY, self.energy + amount)
+
+    def energy_on(self, scale: Scale) -> int:
+        return self.evasion_energy if scale is Scale.EVASION else self.energy
+
+    def scale_of(self, code: str) -> Scale:
+        """С какой шкалы платит этот приём."""
+        from bot.content.abilities import CATALOGUE
+
+        return CATALOGUE[code].scale
 
     def can_use(self, code: str) -> bool:
         """Хватает ли энергии и выучен ли приём. Мёртвый не может ничего."""
         if not self.alive or code not in self.loadout:
             return False
-        return self.energy >= self.loadout.cost_of(code)
+        scale = self.scale_of(code)
+        return self.energy_on(scale) >= self.loadout.cost_of(code)
 
     def use(self, code: str) -> Charge:
         """Нажать приём: списать энергию и положить заготовку.
@@ -345,13 +360,17 @@ class Fighter:
         if code not in self.loadout:
             raise ValueError(f"Приём {code} не выучен")
         cost = self.loadout.cost_of(code)
-        if self.energy < cost:
+        scale = self.scale_of(code)
+        if self.energy_on(scale) < cost:
             raise ValueError("Не хватает энергии")
         if not self.alive:
             raise ValueError("Мёртвый боец приёмов не применяет")
         from bot.content.abilities import CATALOGUE
 
-        self.energy -= cost
+        if scale is Scale.EVASION:
+            self.evasion_energy -= cost
+        else:
+            self.energy -= cost
         charge = Charge(ability=CATALOGUE[code], tier=self.loadout.tier_of(code))
         self.charges.append(charge)
         return charge
@@ -772,16 +791,20 @@ def _fill_energy(strikes: list[Strike], fighters: dict[int, Fighter]) -> None:
     копит вдвое быстрее, а щит вдвое ускоряет шкалу блоков — та же плата
     за слот второй руки, что и везде.
 
-    Пробитый блок (`BREAK`) защитнику не засчитывается: он не удержался.
-    Уворот не засчитывается никому — шкала растёт от попаданий и блоков,
-    а не от того, что удар прошёл мимо.
+    Шкал две. Сила растёт от точных ударов, уворот — от уворотов, а блок
+    кормит обе: он и защита, и работа. Пробитый блок (`BREAK`) защитнику не
+    засчитывается никуда — он не удержался.
     """
     for strike in strikes:
         if strike.outcome in (Outcome.HIT, Outcome.CRIT, Outcome.BREAK):
-            fighters[strike.attacker_id].gain_energy(ENERGY_PER_HIT)
+            fighters[strike.attacker_id].gain_energy(ENERGY_PER_HIT, Scale.FORCE)
         elif strike.outcome is Outcome.BLOCK:
             defender = fighters[strike.defender_id]
-            defender.gain_energy(energy_for_block(defender.has_shield))
+            gained = energy_for_block(defender.has_shield)
+            defender.gain_energy(gained, Scale.FORCE)
+            defender.gain_energy(gained, Scale.EVASION)
+        elif strike.outcome in (Outcome.DODGE, Outcome.COUNTER):
+            fighters[strike.defender_id].gain_energy(ENERGY_PER_HIT, Scale.EVASION)
 
 
 def _fill_running_hp(strikes: list[Strike], fighters: dict[int, Fighter]) -> None:

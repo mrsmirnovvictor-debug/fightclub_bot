@@ -26,6 +26,7 @@ from bot.game.abilities import (
     TIERS,
     Effect,
     Loadout,
+    Scale,
 )
 from bot.game.classes import ASSASSIN, FIGHTER_CLASSES, ROGUE, TANK, WARRIOR, Zone
 from bot.game.combat import Action, Fighter, Outcome, resolve_round, strike_of
@@ -46,9 +47,9 @@ def armed(fighter: Fighter, code: str, slot: Slot = Slot.WEAPON) -> Fighter:
 
 
 def teach(fighter: Fighter, code: str, tier: int = 1) -> Fighter:
-    """Выучить приём и сразу дать энергии ровно на него."""
+    """Выучить приём и сразу дать энергии ровно на него — на его шкалу."""
     fighter.loadout.learn(code, tier)
-    fighter.gain_energy(TIER_COST[tier])
+    fighter.gain_energy(TIER_COST[tier], CATALOGUE[code].scale)
     return fighter
 
 
@@ -203,6 +204,75 @@ def test_the_bar_has_a_ceiling():
     fighter.gain_energy(MAX_ENERGY * 3)
 
     assert fighter.energy == MAX_ENERGY
+
+
+def test_the_two_scales_are_filled_by_different_work():
+    """Уворот кормится уворотами, сила — ударами, блок кормит обе.
+
+    Это и есть тормоз, которого системе не хватало: пока обе ветки
+    кормились с одной шкалы, трикстер нажимал «Проворность» каждый раунд —
+    гарантированный уворот отменяет удар целиком, а гарантированный крит
+    лишь добавляет урона, и платить за них поровну нельзя.
+    """
+    assert CATALOGUE["nimble"].scale is Scale.EVASION
+    assert CATALOGUE["cunning"].scale is Scale.EVASION
+    assert CATALOGUE["strong_hit"].scale is Scale.FORCE
+    assert CATALOGUE["crit_hit"].scale is Scale.FORCE
+    # «Парирование» — не уворот, а выдержанный удар: платит блоками
+    assert CATALOGUE["parry"].scale is Scale.FORCE
+
+
+def test_a_hit_never_pays_for_a_dodge():
+    """Бьющий боец копит на удар, а не на неуязвимость."""
+    striker, target = make(user_id=1), make(TANK, user_id=2)
+
+    strike = hit(striker, target, seed=13)
+
+    assert strike.outcome in (Outcome.HIT, Outcome.CRIT)
+    resolve_round(make(user_id=1), Action(attacks=(HEAD,), block=(BELT, LEGS)),
+                  make(TANK, user_id=2), Action(attacks=(HEAD,), block=(BELT, LEGS)),
+                  1, random.Random(13))
+    # шкала уворота растёт только от уворотов и блоков — см. соседний тест
+    assert striker.evasion_energy == 0
+
+
+def test_a_dodge_fills_the_evasion_scale_only():
+    attacker, dodger = make(user_id=1), make(ROGUE, user_id=2)
+
+    # трикстер уходит от удара в голову, а сам бьёт в закрытый пояс: своей
+    # работы на эту шкалу он не сделал, только ушёл
+    resolve_round(attacker, Action(attacks=(HEAD,), block=(BELT, LEGS)),
+                  dodger, Action(attacks=(BELT,), block=(BELT, LEGS)), 1,
+                  random.Random(1))
+
+    assert dodger.evasion_energy > 0
+    assert dodger.energy == 0, "уворот не кормит силу"
+
+
+def test_a_block_feeds_both_scales():
+    """Блок — и защита, и работа: платит по обеим шкалам."""
+    first, second = make(TANK, user_id=1), make(TANK, user_id=2)
+
+    resolve_round(first, Action(attacks=(HEAD,), block=(HEAD, CHEST)),
+                  second, Action(attacks=(HEAD,), block=(HEAD, CHEST)), 1,
+                  random.Random(2))
+
+    assert first.energy == first.evasion_energy == 1
+
+
+def test_each_trick_pays_from_its_own_scale():
+    """Полная шкала силы не оплачивает уворот, и наоборот."""
+    rogue = make(ROGUE)
+    rogue.loadout.learn("nimble", 1)
+    rogue.gain_energy(MAX_ENERGY, Scale.FORCE)
+
+    assert not rogue.can_use("nimble"), "сила за уворот не платит"
+
+    rogue.gain_energy(TIER_COST[1], Scale.EVASION)
+    assert rogue.can_use("nimble")
+    rogue.use("nimble")
+    assert rogue.energy == MAX_ENERGY, "списалось не с той шкалы"
+    assert rogue.evasion_energy == 0
 
 
 def test_a_broken_block_pays_nobody_for_holding():
