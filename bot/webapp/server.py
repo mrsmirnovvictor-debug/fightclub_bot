@@ -12,6 +12,7 @@ from aiohttp import web
 
 from bot.config import Config
 from bot.abilities_service import AbilityError, ensure_starter
+from bot.daily_service import DailyError, check_in, claim, ladder_view
 from bot.abilities_service import learn as learn_ability
 from bot.database import Database
 from bot.battle_service import BattleError
@@ -264,9 +265,14 @@ async def api_card(request: web.Request) -> web.Response:
     # доходит и до тех, кто завёл бойца до появления приёмов: догонять их
     # отдельной разовой раздачей пришлось бы ровно один раз, а забыть о
     # ней — навсегда
+    visit = None
     if player.user_id == viewer.user_id:
         await ensure_starter(db, player)
-    return web.json_response(build_card(player, config.bot_token, viewer.user_id))
+        visit = await check_in(db, player)
+    card = build_card(player, config.bot_token, viewer.user_id)
+    if visit is not None:
+        card["daily"] = daily_payload(visit)
+    return web.json_response(card)
 
 
 async def _own_player(request: web.Request):
@@ -428,6 +434,54 @@ async def api_mod(request: web.Request) -> web.Response:
             "card": build_card(player, config.bot_token, player.user_id),
             "workshop": build_workshop(player, mine),
             "done": done,
+        }
+    )
+
+
+def daily_payload(visit) -> dict:
+    """Окно входа: лестница месяца и то, что ждёт в руках."""
+    return {
+        "days": visit.days,
+        "fresh": visit.fresh,
+        "next_day": visit.next_day,
+        "resets_at": int(visit.resets_at),
+        "ladder": ladder_view(visit),
+        "waiting": [
+            {
+                "day": reward.day,
+                "title": reward.title,
+                "icon": reward.icon,
+                "note": reward.note,
+            }
+            for reward in visit.waiting
+        ],
+    }
+
+
+async def api_daily(request: web.Request) -> web.Response:
+    """Забрать награду за вход. Место ни при чём — это не услуга города."""
+    player = await _own_player(request)
+    db = request.app[DB_KEY]
+    try:
+        taken = await claim(db, player)
+    except DailyError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    visit = await check_in(db, player)
+    card = build_card(player, config.bot_token, player.user_id)
+    card["daily"] = daily_payload(visit)
+    return web.json_response(
+        {
+            "card": card,
+            "done": {
+                "credits": taken.credits,
+                "potions": taken.potions,
+                "rewards": [
+                    {"title": one.title, "icon": one.icon, "day": one.day}
+                    for one in taken.rewards
+                ],
+            },
         }
     )
 
@@ -1165,6 +1219,7 @@ def create_app(
             web.post("/api/unequip", api_unequip),
             web.post("/api/repair", api_repair),
             web.post("/api/ability", api_ability),
+            web.post("/api/daily", api_daily),
             web.get("/api/workshop", api_workshop),
             web.post("/api/mod", api_mod),
             web.post("/api/handin", api_handin),

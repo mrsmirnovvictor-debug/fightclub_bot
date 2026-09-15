@@ -4169,3 +4169,144 @@ async def test_the_fork_is_impossible_to_miss(server):
         # классовый приём помечен
         assert await fork.locator(".fork-own").inner_text() == "свой"
         await browser.close()
+
+
+# ---------- награда за вход ----------
+
+
+def daily_state(days=3, waiting=True, fresh=True) -> dict:
+    """Окно входа так, как его отдаёт сервер."""
+    gift = {"day": 3, "title": "Эликсир восстановления", "icon": "🧪",
+            "note": "Ставит на ноги."}
+    ladder = [
+        {"day": 1, "title": "25 кредитов", "icon": "💰", "note": "",
+         "credits": 25, "potion": "", "ready": False, "done": True},
+        {"day": 3, "title": "Эликсир восстановления", "icon": "🧪",
+         "note": "Ставит на ноги.", "credits": 0, "potion": "heal_small",
+         "ready": waiting, "done": not waiting},
+        {"day": 7, "title": "50 кредитов", "icon": "💰", "note": "",
+         "credits": 50, "potion": "", "ready": False, "done": False},
+    ]
+    return {
+        "days": days, "fresh": fresh, "next_day": 7, "resets_at": 0,
+        "ladder": ladder, "waiting": [gift] if waiting else [],
+    }
+
+
+async def test_the_daily_window_pops_up_on_the_first_look(server):
+    """Первый за сутки вход — и окно само встаёт поверх карточки."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        veil = page.locator("#daily-veil")
+        assert await veil.is_visible()
+        said = await veil.inner_text()
+        assert "день 3" in said and "Забирайте" in said
+        # вся лестница месяца видна разом
+        assert await veil.locator(".step").count() == 3
+        await browser.close()
+
+
+async def test_the_taken_and_the_waiting_look_different(server):
+    """Забранное гаснет, ждущее светится — две судьбы, и их не спутать."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        steps = page.locator("#daily-ladder .step")
+        assert "done" in await steps.nth(0).get_attribute("class")
+        assert "ready" in await steps.nth(1).get_attribute("class")
+        assert await steps.nth(1).locator(".step-mark").inner_text() == "🎁"
+        assert await steps.nth(0).locator(".step-mark").inner_text() == "✔"
+        # до чего ещё расти — без пометок
+        third = await steps.nth(2).get_attribute("class")
+        assert "done" not in third and "ready" not in third
+        await browser.close()
+
+
+async def test_nothing_to_take_means_no_claim_button(server):
+    """Пустой день окно показывает, но забирать не предлагает."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        buttons = await page.locator("#daily-buttons button").all_inner_texts()
+        assert [one.strip() for one in buttons] == ["Закрыть"]
+        assert "Следующая награда на 7-й день" in await page.locator(
+            "#daily-note"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_an_unclaimed_gift_keeps_the_window_coming_back(server):
+    """Не забрал — окно всплывёт снова: невзятое не прячут."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # день уже засчитан раньше (fresh=False), но награда так и ждёт
+    card["daily"] = daily_state(fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#daily-veil").is_visible()
+        await browser.close()
+
+
+async def test_a_quiet_day_does_not_nag(server):
+    """День засчитан, забирать нечего — окно больше не лезет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#daily-veil").is_hidden()
+        await browser.close()
+
+
+async def test_taking_the_gift_closes_the_window(server):
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+    done = json.loads(json.dumps(card))
+    done["daily"] = daily_state(waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        await page.route("**/api/daily", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "card": done,
+                "done": {
+                    "credits": 0, "potions": ["heal_small"],
+                    "rewards": [{"title": "Эликсир восстановления",
+                                 "icon": "🧪", "day": 3}],
+                },
+            }),
+        ))
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+
+        await page.locator("#daily-buttons button").first.click()
+
+        # Ждём именно скрытия: `wait_for_selector` по умолчанию ждёт
+        # видимый элемент и скрытого не дождётся никогда
+        await page.wait_for_selector("#daily-veil", state="hidden")
+        assert "hidden" in await page.locator("#daily-veil").get_attribute("class")
+        await browser.close()

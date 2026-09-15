@@ -489,6 +489,106 @@ function requirementText(item) {
     .join(", ");
 }
 
+// ---------- награда за вход ----------
+//
+// Окно всплывает при первом за сутки открытии карточки, а если награду не
+// забрали — всплывает и дальше, пока не заберут. Невзятое не сгорает, и
+// прятать его было бы обманом.
+
+// Окно всплывает один раз за открытие мини-аппа. Карточка перерисовывается
+// много раз — после каждого действия, — и решать видимость на каждой
+// отрисовке нельзя: окно закрывалось бы само собой под руками.
+let dailyShown = false;
+
+function renderDaily(card) {
+  const state = card.daily;
+  if (!state) return;
+  const veil = el("daily-veil");
+  if (dailyShown) {
+    // Уже показывали: содержимое обновим, а прятать или открывать заново
+    // не будем — это решает игрок
+    if (veil.classList.contains("hidden")) return;
+  } else if (state.fresh || state.waiting.length) {
+    dailyShown = true;
+  } else {
+    veil.classList.add("hidden");
+    return;
+  }
+
+  el("daily-head").textContent = "🎁 Вход в клуб · день " + state.days;
+  el("daily-note").textContent = state.waiting.length
+    ? "Забирайте — награда ваша."
+    : state.next_day
+      ? "Сегодня пусто. Следующая награда на " + state.next_day + "-й день."
+      : "Лестница этого месяца пройдена. В следующем начнётся заново.";
+
+  const ladder = el("daily-ladder");
+  ladder.textContent = "";
+  state.ladder.forEach((step) => {
+    const row = document.createElement("div");
+    row.className =
+      "step" + (step.ready ? " ready" : "") + (step.done ? " done" : "");
+
+    const day = document.createElement("span");
+    day.className = "step-day";
+    day.textContent = step.day;
+    row.appendChild(day);
+
+    const body = document.createElement("div");
+    body.className = "step-body";
+    const title = document.createElement("div");
+    title.className = "step-title";
+    title.textContent = step.icon + " " + step.title;
+    body.appendChild(title);
+    if (step.note) {
+      const note = document.createElement("div");
+      note.className = "step-note";
+      note.textContent = step.note;
+      body.appendChild(note);
+    }
+    row.appendChild(body);
+
+    const mark = document.createElement("span");
+    mark.className = "step-mark";
+    mark.textContent = step.done ? "✔" : step.ready ? "🎁" : "";
+    row.appendChild(mark);
+
+    ladder.appendChild(row);
+  });
+
+  const buttons = el("daily-buttons");
+  buttons.textContent = "";
+  if (state.waiting.length) {
+    buttons.appendChild(button("Забрать", { onClick: claimDaily }));
+  }
+  buttons.appendChild(
+    button(state.waiting.length ? "Потом" : "Закрыть", {
+      secondary: true,
+      onClick: () => veil.classList.add("hidden"),
+    })
+  );
+  veil.classList.remove("hidden");
+}
+
+async function claimDaily() {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/daily", {});
+    // Окно закрываем до сообщения, а не после: сообщение блокирует поток
+    // до нажатия «ок», и закрытие повисало бы за ним
+    el("daily-veil").classList.add("hidden");
+    render(data.card, true);
+    const done = data.done;
+    const parts = done.rewards.map((one) => one.icon + " " + one.title);
+    popup("Награда за вход", parts.join("\n"));
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
+
 // Приёмы в карточке: что выучено и что предстоит выбрать. Список видят
 // все, кто открыл карточку, — соперник должен знать, чего ждать. Развилку
 // показываем только хозяину: это про то, чего у бойца ещё нет.
@@ -4662,6 +4762,7 @@ function render(card, keepTab) {
   renderSlots(el("hero-slots-left"), card.slots.left, card.is_self);
   renderSlots(el("hero-slots-right"), card.slots.right, card.is_self);
   renderSkills(card);
+  renderDaily(card);
   renderBag(card);
   // Рюкзак поменялся — значит поменялось и то, что можно выставить на
   // комиссию. Без этого экран комиссионки остаётся с прежним списком: он

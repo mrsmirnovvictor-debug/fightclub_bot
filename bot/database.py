@@ -106,6 +106,18 @@ CREATE TABLE IF NOT EXISTS mods (
     PRIMARY KEY (user_id, code)
 );
 
+-- Входы в клуб: сколько разных дней боец заглядывал за месяц и до какого
+-- дня награды уже забраны. Считается по часам Москвы — там же, где
+-- кончаются сутки рейда. `last_day` хранится строкой ISO, чтобы сутки
+-- пережили перезапуск и не зависели от часов машины.
+CREATE TABLE IF NOT EXISTS visits (
+    user_id  INTEGER PRIMARY KEY,
+    month    TEXT    NOT NULL DEFAULT '',
+    days     INTEGER NOT NULL DEFAULT 0,
+    last_day TEXT    NOT NULL DEFAULT '',
+    claimed  INTEGER NOT NULL DEFAULT 0
+);
+
 -- Выученные приёмы: код и ступень, на которой боец его взял. Ступень
 -- хранится потому, что от неё зависит цена в энергии: «Сильный удар»
 -- стоит три своим и шесть, если взят кросс-классом на третьем уровне.
@@ -781,6 +793,60 @@ class Database:
         await self.conn.commit()
 
     # ---------- модификаторы ----------
+
+    # ---------- входы в клуб ----------
+
+    async def visit_row(self, user_id: int) -> dict:
+        """Счёт входов бойца. Пусто — он ещё ни разу не заходил."""
+        async with self.conn.execute(
+            "SELECT month, days, last_day, claimed FROM visits WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return {"month": "", "days": 0, "last_day": "", "claimed": 0}
+        return {
+            "month": row["month"],
+            "days": int(row["days"]),
+            "last_day": row["last_day"],
+            "claimed": int(row["claimed"]),
+        }
+
+    async def save_visit(
+        self, user_id: int, month: str, days: int, last_day: str, claimed: int
+    ) -> None:
+        await self.conn.execute(
+            """
+            INSERT INTO visits (user_id, month, days, last_day, claimed)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                month = excluded.month,
+                days = excluded.days,
+                last_day = excluded.last_day,
+                claimed = excluded.claimed
+            """,
+            (user_id, month, days, last_day, claimed),
+        )
+        await self.conn.commit()
+
+    async def count_visit(self, user_id: int, day: str, month: str) -> tuple[dict, bool]:
+        """Отметить вход этим днём. Отдаёт счёт и то, был ли день новым.
+
+        Новый месяц обнуляет и счёт, и забранное: лестница начинается
+        заново. День, уже отмеченный, второй раз не считается — зашёл
+        трижды за вечер, а вход всё равно один.
+        """
+        row = await self.visit_row(user_id)
+        if row["month"] != month:
+            row = {"month": month, "days": 0, "last_day": "", "claimed": 0}
+        if row["last_day"] == day:
+            return row, False
+        row["days"] += 1
+        row["last_day"] = day
+        await self.save_visit(
+            user_id, month, row["days"], day, row["claimed"]
+        )
+        return row, True
 
     # ---------- приёмы ----------
 
