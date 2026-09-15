@@ -1,0 +1,201 @@
+"""Приёмы: что боец умеет помимо удара и блока.
+
+Правила здесь, содержимое — в `bot/content/abilities.py`, как у вещей и
+модификаторов. Тут описано, из чего приём состоит и как он ложится на бой;
+там — какие приёмы есть и кому что достаётся на каком уровне.
+
+Устройство короткое, и держится оно на трёх вещах.
+
+**Энергия.** Одна шкала на бойца, копится в бою и только в бою: точный
+удар — единица, удержанный блок — единица, блок щитом — две. Потолок
+двадцать, после боя всё сбрасывается. Ничего из этого не переносится между
+боями: приём — это то, что боец заработал прямо сейчас, а не принёс с
+собой.
+
+**Заготовка.** Нажатый приём почти никогда не срабатывает сразу: он ложится
+заготовкой и ждёт своего момента — следующего своего удара, следующего
+чужого. Поэтому эффекты разделены на два вида: `INSTANT` делает своё дело в
+момент нажатия (лечение), остальные висят и ждут. Заготовка живёт до
+срабатывания, а не до конца раунда: нажал «Сильный удар», промахнулся —
+заготовка осталась, прибавка уйдёт в следующий точный удар.
+
+**Слоты.** Их четыре, и это потолок. Ступеней тоже четыре (1, 3, 6, 10),
+так что своим ходом боец их ровно заполняет; забывание нужно для приёмов,
+которые придут не с уровнем, а из обучения, — модель его умеет уже сейчас.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+
+# Потолок шкалы: выше не копится, сколько ни бей
+MAX_ENERGY = 20
+
+# Сколько энергии приносит удачное действие
+ENERGY_PER_HIT = 1  # точный удар — любой, дошедший до тела
+ENERGY_PER_BLOCK = 1  # блок, который устоял
+ENERGY_PER_SHIELD_BLOCK = 2  # блок щитом стоит вдвое: за это слот и держат
+
+# Сколько приёмов боец носит с собой
+MAX_ABILITIES = 4
+
+# Ступени обучения и цена приёма на каждой. Цена — у ступени, а не у
+# приёма: «Сильный удар» стоит 3 энергии первым выученным и 6, если взят
+# кросс-классом на третьем уровне. Платят за то, когда научился
+TIERS: tuple[int, ...] = (1, 3, 6, 10)
+TIER_COST: dict[int, int] = {1: 3, 3: 6, 6: 9, 10: 12}
+
+
+class Effect(str, Enum):
+    """Что приём делает. Одно значение — одна ветка в движке боя."""
+
+    DAMAGE = "damage"  # прибавка к следующему точному удару
+    DODGE = "dodge"  # следующий чужой удар уходит в пустоту
+    COUNTER = "counter"  # то же, но с ответом
+    CRIT = "crit"  # следующий свой удар — критический
+    BREAK = "break"  # то же, и проламывает блок
+    DOUBLE = "double"  # то же, и урон вдвое
+    PARRY = "parry"  # следующий чужой удар не наносит урона вовсе
+    HEAL = "heal"  # мгновенное лечение, ход не тратится
+
+
+# Эффекты, которые ждут своего момента, и те, что срабатывают сразу
+INSTANT: frozenset[Effect] = frozenset({Effect.HEAL})
+
+# Заготовки, которые ждут чужого удара. Остальные ждут своего
+ON_DEFENCE: frozenset[Effect] = frozenset({Effect.DODGE, Effect.COUNTER, Effect.PARRY})
+
+
+@dataclass(frozen=True)
+class Ability:
+    """Приём: что делает, почём и на какой ступени достаётся.
+
+    `damage` — прибавка к удару, `heal` — доля здоровья, `splash` — урон
+    остальным противникам, `aura` — приём, который ложится союзникам.
+    Пустые поля у приёма, которому они не нужны: у «Проворности» нет ни
+    урона, ни лечения, она просто уводит с линии удара.
+    """
+
+    code: str
+    title: str
+    effect: Effect
+    tier: int  # уровень, на котором приём вообще появляется в игре
+    icon: str = "✨"
+    note: str = ""
+    damage: int = 0  # плоская прибавка к урону
+    heal: float = 0.0  # доля максимального здоровья
+    splash: int = 0  # урон каждому из остальных противников
+    aura: str = ""  # код приёма, который ложится союзникам
+    counter: bool = False  # уворот идёт с ответом
+    crit_counter: bool = False  # и ответ этот критический
+
+    @property
+    def instant(self) -> bool:
+        """Срабатывает в момент нажатия, а не ждёт удара."""
+        return self.effect in INSTANT
+
+    @property
+    def defensive(self) -> bool:
+        """Ждёт чужого удара, а не своего."""
+        return self.effect in ON_DEFENCE
+
+    @property
+    def group(self) -> bool:
+        """Задевает кого-то кроме бойца и его соперника."""
+        return bool(self.splash or self.aura)
+
+    @property
+    def picture(self) -> str:
+        """Адрес картинки: по коду приёма, как у вещей."""
+        from bot.game import art
+
+        return art.item(self.code)
+
+    def cost(self, tier: int) -> int:
+        """Цена приёма, выученного на этой ступени."""
+        return TIER_COST[tier]
+
+
+@dataclass
+class Charge:
+    """Заготовка: нажатый приём, который ждёт своего момента.
+
+    Помнит и приём, и ступень, на которой он выучен, — цена уже списана, но
+    по ступени судья потом расскажет, что именно сработало.
+    """
+
+    ability: Ability
+    tier: int
+
+
+@dataclass
+class Loadout:
+    """Четыре слота бойца: что выучено и на какой ступени.
+
+    Ступень хранится рядом с приёмом, потому что от неё зависит цена:
+    выученный кросс-классом «Сильный удар» дороже своего.
+    """
+
+    slots: dict[str, int] = field(default_factory=dict)  # код приёма → ступень
+
+    def __len__(self) -> int:
+        return len(self.slots)
+
+    def __contains__(self, code: str) -> bool:
+        return code in self.slots
+
+    @property
+    def full(self) -> bool:
+        return len(self.slots) >= MAX_ABILITIES
+
+    def tier_of(self, code: str) -> int:
+        return self.slots[code]
+
+    def cost_of(self, code: str) -> int:
+        """Сколько энергии стоит этот приём у этого бойца."""
+        return TIER_COST[self.slots[code]]
+
+    def learn(self, code: str, tier: int, forget: str = "") -> None:
+        """Выучить приём. `forget` — что забыть, если слоты кончились.
+
+        Забытое не возвращается: приём уходит из слотов совсем. Пока
+        ступеней ровно четыре, до этого не доходит, но приёмы придут и из
+        обучения — тогда выбор «кого забыть» станет обычным делом.
+        """
+        if code in self.slots:
+            raise ValueError(f"Приём {code} уже выучен")
+        if forget:
+            if forget not in self.slots:
+                raise ValueError(f"Приём {forget} не выучен — забывать нечего")
+            del self.slots[forget]
+        if self.full:
+            raise ValueError("Все слоты заняты: сначала забудьте один приём")
+        self.slots[code] = tier
+
+    def relearn(self, old: str, code: str, tier: int) -> None:
+        """Поменять один приём на другой: забыть старый и выучить новый."""
+        self.learn(code, tier, forget=old)
+
+
+def energy_for_block(shield: bool) -> int:
+    """Сколько даёт удержанный блок: щитом вдвое больше."""
+    return ENERGY_PER_SHIELD_BLOCK if shield else ENERGY_PER_BLOCK
+
+
+__all__ = [
+    "Ability",
+    "Charge",
+    "Effect",
+    "ENERGY_PER_BLOCK",
+    "ENERGY_PER_HIT",
+    "ENERGY_PER_SHIELD_BLOCK",
+    "INSTANT",
+    "Loadout",
+    "MAX_ABILITIES",
+    "MAX_ENERGY",
+    "ON_DEFENCE",
+    "TIERS",
+    "TIER_COST",
+    "energy_for_block",
+]
