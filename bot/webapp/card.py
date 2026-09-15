@@ -35,6 +35,7 @@ from bot.game.equipment import (
     get_item,
     shop_sections,
 )
+from bot.game.abilities import MAX_ABILITIES, TIER_COST
 from bot.game.gear import ModKind
 from bot.game.market import FEE as MARKET_FEE, buyback
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
@@ -224,6 +225,53 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         # Модификация: звёздочка ступени и что она дала
         "mod": mod_mark(owned),
     }
+
+
+def abilities_payload(player: Player) -> dict:
+    """Приёмы бойца в карточке: что выучено и что предстоит выбрать."""
+    from bot.abilities_service import known, next_tier_after, pending_choice
+
+    choice = pending_choice(player)
+    return {
+        "known": [
+            {
+                "code": ability.code,
+                "title": ability.title,
+                "icon": ability.icon,
+                "image": ability.picture,
+                "note": ability.note,
+                "tier": tier,
+                "cost": TIER_COST[tier],
+            }
+            for ability, tier in known(player)
+        ],
+        "slots": MAX_ABILITIES,
+        # Развилка, если боец дорос и ещё не выбрал
+        "choice": None if choice is None else {
+            "tier": choice.tier,
+            "options": [
+                {
+                    "code": one.code,
+                    "title": one.title,
+                    "icon": one.icon,
+                    "image": one.picture,
+                    "note": one.note,
+                    "cost": TIER_COST[choice.tier],
+                    "own": index == 0,  # классовый приём стоит первым
+                }
+                for index, one in enumerate(choice.options)
+            ],
+        },
+        # До какой ступени расти дальше. Ноль — учиться больше нечему
+        "next_tier": next_tier_after(player.level),
+    }
+
+
+def public_abilities(player: Player) -> dict:
+    """То же, но для чужих глаз: приёмы видно, развилку — нет."""
+    rows = abilities_payload(player)
+    return {"known": rows["known"], "slots": rows["slots"],
+            "choice": None, "next_tier": 0}
 
 
 def weapon_in_hands(item: Item, fclass: FighterClass | None) -> str:
@@ -839,6 +887,10 @@ def build_card(
             "left": [slot_payload(equipment, slot, fclass) for slot in LEFT_SLOTS],
             "right": [slot_payload(equipment, slot, fclass) for slot in RIGHT_SLOTS],
         },
+        # Приёмы видны всем: соперник должен знать, чего от бойца ждать, —
+        # как и надетые вещи. Развилку и цены прячем от чужих: это уже не
+        # про соперника, а про то, чего у него ещё нет
+        "abilities": abilities_payload(player) if is_self else public_abilities(player),
         # Рюкзак показываем только хозяину карточки
         "inventory": [item_payload(player, owned) for owned in player.backpack]
         if is_self

@@ -24,6 +24,8 @@ from bot.game.combat import (
 )
 from bot.game.locations import FIGHT_CLUB, Service, get_location
 from bot.game.modes import FightMode, mode_of
+from bot.content.abilities import get_ability
+from bot.game.abilities import MAX_ENERGY
 from bot.game.scout import advise
 from bot.models import Player
 
@@ -177,6 +179,42 @@ def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
         "log": session.rounds,
         # Подсказки аналитика — только подписчику и только про соперника
         "scout": scout_payload(session, viewer_id),
+        # Приёмы и шкала энергии — только свои: чужие заготовки соперник
+        # видеть не должен, иначе приём перестаёт быть неожиданностью
+        "abilities": abilities_payload(session.fighters.get(viewer_id)),
+    }
+
+
+def abilities_payload(fighter: Fighter | None) -> dict[str, Any] | None:
+    """Шкала бойца и его приёмы: что нажимается, а что ещё копится.
+
+    Заготовки показываем свои: боец должен видеть, что уже нажал, — приём
+    ждёт своего момента и может провисеть несколько ходов.
+    """
+    if fighter is None:
+        return None
+    pressed = {charge.ability.code for charge in fighter.charges}
+    return {
+        "energy": fighter.energy,
+        "max": MAX_ENERGY,
+        # Чем этот класс копит — подписываем шкалу, иначе непонятно, за что
+        "source": ENERGY_TITLES.get(fighter.fclass.code, ""),
+        "tricks": [
+            {
+                "code": code,
+                "title": ability.title,
+                "icon": ability.icon,
+                "image": ability.picture,
+                "note": ability.note,
+                "cost": fighter.loadout.cost_of(code),
+                "ready": fighter.can_use(code),
+                "armed": code in pressed,
+            }
+            for code, ability in (
+                (code, get_ability(code)) for code in fighter.loadout.slots
+            )
+            if ability is not None
+        ],
     }
 
 
@@ -202,6 +240,14 @@ def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, str] | None
     advice = advise(habits, session.rounds, rival_id)
     return advice.as_dict()
 
+
+# Чем копится шкала у каждого класса — словами, для подписи под баром
+ENERGY_TITLES: dict[str, str] = {
+    "warrior": "за точные удары",
+    "rogue": "за увороты",
+    "assassin": "за критические удары",
+    "tank": "за блоки",
+}
 
 FIGHT_CLUB_TITLE = get_location(FIGHT_CLUB).title
 

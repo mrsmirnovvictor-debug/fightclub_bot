@@ -435,3 +435,124 @@ def test_a_dodge_charge_is_not_spent_on_a_blocked_strike():
 
     assert strike.outcome is Outcome.BLOCK
     assert tank.charges, "уворот ждёт удара, который надо уворачивать"
+
+
+# ---------- хранение и выбор на уровне ----------
+
+
+def grown(level: int, class_code: str = "warrior"):
+    """Боец нужного уровня, без единого выученного приёма."""
+    from bot.models import Player
+
+    fclass = FIGHTER_CLASSES[class_code]
+    return Player(
+        user_id=42, nickname="Тайлер", class_code=class_code, level=level,
+        **fclass.base_stats.as_dict(),
+    )
+
+
+async def test_the_class_trick_comes_without_asking(db):
+    """Первая ступень выбора не знает: класс приходит со своим приёмом."""
+    from bot.abilities_service import ensure_starter, pending_choice
+
+    player = grown(1, "tank")
+    await db.save_player(player)
+
+    given = await ensure_starter(db, player)
+
+    assert given.code == "recovery"
+    assert pending_choice(player) is None, "на первой ступени не выбирают"
+    # и он лёг в базу, а не только в память
+    assert (await db.list_abilities(42)).slots == {"recovery": 1}
+
+
+async def test_the_debt_is_counted_from_the_fighter_himself(db):
+    """Долг по приёму не хранится: он виден из уровня и слотов.
+
+    Поэтому боец, выросший до третьего уровня задолго до появления
+    приёмов, получает развилку сам — без разовой раздачи, о которой
+    однажды забыли бы.
+    """
+    from bot.abilities_service import ensure_starter, pending_choice, pending_tier
+
+    old_timer = grown(6, "rogue")
+    await db.save_player(old_timer)
+    await ensure_starter(db, old_timer)
+
+    # шестой уровень, а взят только стартовый — должен две ступени
+    assert pending_tier(old_timer) == 3
+    choice = pending_choice(old_timer)
+    assert choice.tier == 3
+    assert [one.code for one in choice.options] == list(CHOICES["rogue"][3])
+
+
+async def test_the_steps_are_taken_from_the_bottom(db):
+    """Перескочивший через ступень выбирает по одной, снизу вверх."""
+    from bot.abilities_service import ensure_starter, learn, pending_tier
+
+    player = grown(10, "warrior")
+    await db.save_player(player)
+    await ensure_starter(db, player)
+
+    assert pending_tier(player) == 3
+    await learn(db, player, "power_hit")
+    assert pending_tier(player) == 6, "шестая ступень не даётся раньше третьей"
+    await learn(db, player, "crushing_hit")
+    assert pending_tier(player) == 10
+
+
+async def test_a_trick_from_another_step_is_refused(db):
+    from bot.abilities_service import AbilityError, ensure_starter, learn
+
+    player = grown(3, "warrior")
+    await db.save_player(player)
+    await ensure_starter(db, player)
+
+    with pytest.raises(AbilityError, match="выбирают из трёх"):
+        await learn(db, player, "mass_hit")  # приём десятой ступени
+
+    assert (await db.list_abilities(42)).slots == {"strong_hit": 1}
+
+
+async def test_nothing_to_choose_before_the_next_step(db):
+    from bot.abilities_service import AbilityError, ensure_starter, learn
+
+    player = grown(2, "tank")
+    await db.save_player(player)
+    await ensure_starter(db, player)
+
+    with pytest.raises(AbilityError, match="Выбирать нечего"):
+        await learn(db, player, "will_to_win")
+
+
+async def test_what_is_learned_survives_a_reload(db):
+    """Приёмы поднимаются вместе с бойцом — как вещи и склянки."""
+    from bot.abilities_service import ensure_starter, learn
+
+    player = grown(3, "assassin")
+    await db.save_player(player)
+    await ensure_starter(db, player)
+    await learn(db, player, "breach")
+
+    fresh = await db.get_player(42)
+
+    assert fresh.loadout.slots == {"crit_hit": 1, "breach": 3}
+    assert fresh.loadout.cost_of("breach") == 6
+
+
+async def test_the_fighter_takes_his_tricks_to_the_ring_but_not_his_energy(db):
+    """На ринг приёмы едут, энергия — нет: она копится с нуля каждый бой."""
+    from bot.abilities_service import ensure_starter, learn
+
+    player = grown(3, "rogue")
+    await db.save_player(player)
+    await ensure_starter(db, player)
+    await learn(db, player, "cunning")
+
+    fighter = Fighter.from_player(await db.get_player(42))
+
+    assert fighter.loadout.slots == {"nimble": 1, "cunning": 3}
+    assert fighter.energy == 0
+    # слоты — копия: бой не должен править запись игрока
+    fighter.loadout.slots.clear()
+    assert (await db.get_player(42)).loadout.slots

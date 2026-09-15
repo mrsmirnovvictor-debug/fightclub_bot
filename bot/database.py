@@ -12,6 +12,7 @@ import aiosqlite
 
 from bot.game.economy import RATING_START
 from bot.game.locations import FIGHT_CLUB
+from bot.game.abilities import Loadout
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
 from bot.game.health import now_ts
 from bot.game.modes import FightMode, mode_of
@@ -102,6 +103,18 @@ CREATE TABLE IF NOT EXISTS mods (
     user_id INTEGER NOT NULL,
     code    TEXT    NOT NULL,
     count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, code)
+);
+
+-- Выученные приёмы: код и ступень, на которой боец его взял. Ступень
+-- хранится потому, что от неё зависит цена в энергии: «Сильный удар»
+-- стоит три своим и шесть, если взят кросс-классом на третьем уровне.
+-- Слотов четыре, но потолок держит не база, а `Loadout`: забытый приём
+-- уходит отсюда совсем.
+CREATE TABLE IF NOT EXISTS abilities (
+    user_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    tier    INTEGER NOT NULL,
     PRIMARY KEY (user_id, code)
 );
 
@@ -576,6 +589,7 @@ class Database:
         player.gear = await self.list_gear(player.user_id)
         player.potions = await self.list_potions(player.user_id)
         player.effects = await self.list_effects(player.user_id)
+        player.loadout = await self.list_abilities(player.user_id)
         return player
 
     async def save_player(self, player: Player) -> None:
@@ -767,6 +781,36 @@ class Database:
         await self.conn.commit()
 
     # ---------- модификаторы ----------
+
+    # ---------- приёмы ----------
+
+    async def list_abilities(self, user_id: int) -> Loadout:
+        """Что боец выучил: приём → ступень, на которой он его взял."""
+        from bot.content.abilities import get_ability
+
+        async with self.conn.execute(
+            "SELECT code, tier FROM abilities WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        # Приём, которого больше нет в каталоге, молча пропускаем: правки
+        # содержимого не должны ронять карточку
+        return Loadout(
+            slots={
+                row["code"]: int(row["tier"])
+                for row in rows
+                if get_ability(row["code"]) is not None
+            }
+        )
+
+    async def save_abilities(self, user_id: int, loadout: Loadout) -> None:
+        """Переписать слоты целиком: забытое исчезает вместе с записью."""
+        await self.conn.execute("DELETE FROM abilities WHERE user_id = ?", (user_id,))
+        if loadout.slots:
+            await self.conn.executemany(
+                "INSERT INTO abilities (user_id, code, tier) VALUES (?,?,?)",
+                [(user_id, code, tier) for code, tier in loadout.slots.items()],
+            )
+        await self.conn.commit()
 
     async def list_mods(self, user_id: int) -> dict[str, int]:
         """Что у бойца в модификаторах: код → сколько штук."""

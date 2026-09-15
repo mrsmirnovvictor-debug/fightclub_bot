@@ -11,6 +11,8 @@ from pathlib import Path
 from aiohttp import web
 
 from bot.config import Config
+from bot.abilities_service import AbilityError, ensure_starter
+from bot.abilities_service import learn as learn_ability
 from bot.database import Database
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError
@@ -258,6 +260,12 @@ async def api_card(request: web.Request) -> web.Response:
             },
             status=404,
         )
+    # Классовый приём выдаётся при первом же взгляде на карточку. Так он
+    # доходит и до тех, кто завёл бойца до появления приёмов: догонять их
+    # отдельной разовой раздачей пришлось бы ровно один раз, а забыть о
+    # ней — навсегда
+    if player.user_id == viewer.user_id:
+        await ensure_starter(db, player)
     return web.json_response(build_card(player, config.bot_token, viewer.user_id))
 
 
@@ -420,6 +428,37 @@ async def api_mod(request: web.Request) -> web.Response:
             "card": build_card(player, config.bot_token, player.user_id),
             "workshop": build_workshop(player, mine),
             "done": done,
+        }
+    )
+
+
+async def api_ability(request: web.Request) -> web.Response:
+    """Выбрать приём на своей ступени.
+
+    Место тут ни при чём: приём выбирают где угодно, хоть в дороге. Это
+    не услуга города, а рост бойца, и запирать его в локацию значило бы
+    держать игрока с невыбранной развилкой до ближайшего клуба.
+    """
+    data = await _payload(request)
+    player = await _own_player(request)
+    try:
+        ability = await learn_ability(
+            request.app[DB_KEY], player, str(data.get("code") or ""),
+            forget=str(data.get("forget") or ""),
+        )
+    except AbilityError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "done": {
+                "code": ability.code,
+                "title": ability.title,
+                "icon": ability.icon,
+                "note": ability.note,
+            },
         }
     )
 
@@ -700,6 +739,13 @@ async def api_fight(request: web.Request) -> web.Response:
                     duel.id, player.user_id, "attack", zone, hand
                 )
             await duels.handle_choice(duel.id, player.user_id, "block", block)
+        elif action == "ability":
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Ты сейчас не на ринге.")
+            await duels.use_ability(
+                duel.id, player.user_id, str(data.get("code", ""))
+            )
         elif action in {"attack", "block"}:
             duel = duels.duel_of_user(player.user_id)
             if duel is None:
@@ -1104,6 +1150,7 @@ def create_app(
             web.post("/api/equip", api_equip),
             web.post("/api/unequip", api_unequip),
             web.post("/api/repair", api_repair),
+            web.post("/api/ability", api_ability),
             web.get("/api/workshop", api_workshop),
             web.post("/api/mod", api_mod),
             web.post("/api/handin", api_handin),

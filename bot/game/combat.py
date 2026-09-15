@@ -406,6 +406,11 @@ class Fighter:
             pro=bool(getattr(player, "is_pro", bool)()),
         )
         fighter.hp = max(1, min(player.current_hp(), fighter.max_hp))
+        # Приёмы боец приносит с собой, а энергию — нет: она копится с нуля
+        # в каждом бою. Слоты копируем, чтобы бой не менял запись игрока
+        learned = getattr(player, "loadout", None)
+        if learned is not None:
+            fighter.loadout = Loadout(slots=dict(learned.slots))
         return fighter
 
 

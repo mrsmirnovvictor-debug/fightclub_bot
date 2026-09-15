@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from bot.game.classes import ALL_STATS, FighterClass, Stat, Stats, get_class
 from bot.game.modes import FightMode
+from bot.game.abilities import Loadout
 from bot.game.equipment import (
     Equipment,
     Item,
@@ -120,6 +121,8 @@ class Player:
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
+    # Выученные приёмы: код → ступень. Подгружается из базы вместе с бойцом
+    loadout: Loadout = field(default_factory=Loadout)
 
     @property
     def base_stats(self) -> Stats:
