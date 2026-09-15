@@ -1606,7 +1606,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .daily-note { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
 
 .daily-ladder { display: grid; gap: 6px; }
-.step {
+.gift {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1615,7 +1615,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   background: var(--panel);
   border: 1px solid var(--line);
 }
-.step-day {
+.gift-day {
   flex: 0 0 auto;
   width: 26px;
   height: 26px;
@@ -1627,14 +1627,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-size: 12px;
   font-weight: 700;
 }
-.step-body { flex: 1; min-width: 0; }
-.step-title { font-size: 13px; font-weight: 700; }
-.step-note { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
-.step-mark { font-size: 14px; }
+.gift-body { flex: 1; min-width: 0; }
+.gift-title { font-size: 13px; font-weight: 700; }
+.gift-note { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.gift-mark { font-size: 14px; }
 
 /* Забранное гаснет, ждущее — светится: две судьбы, и их не спутать */
-.step.done { opacity: 0.5; }
-.step.ready { border-color: var(--hp-green); box-shadow: 0 0 0 1px var(--hp-green) inset; }
+.gift.done { opacity: 0.5; }
+.gift.ready { border-color: var(--hp-green); box-shadow: 0 0 0 1px var(--hp-green) inset; }
 
 .daily-buttons { display: flex; gap: 8px; margin-top: 12px; }
 .daily-buttons .btn { flex: 1; }

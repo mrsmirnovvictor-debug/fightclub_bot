@@ -4208,7 +4208,25 @@ async def test_the_daily_window_pops_up_on_the_first_look(server):
         said = await veil.inner_text()
         assert "день 3" in said and "Забирайте" in said
         # вся лестница месяца видна разом
-        assert await veil.locator(".step").count() == 3
+        rows = veil.locator(".gift")
+        assert await rows.count() == 3
+
+        # Строка — именно строка: кружок дня слева, текст справа от него и
+        # не поверх. Проверяем геометрией, а не классами: имя `.step` уже
+        # было занято кнопками прокачки, мои строки унаследовали от них
+        # размер 30×30, и текст вывалился наружу — на классах это не видно
+        first = rows.first
+        box = await first.bounding_box()
+        day = await first.locator(".gift-day").bounding_box()
+        title = await first.locator(".gift-title").bounding_box()
+        assert box["height"] > day["height"], "строка сплющена до кружка"
+        assert title["x"] >= day["x"] + day["width"], "текст налез на кружок"
+        assert title["y"] >= box["y"] and (
+            title["y"] + title["height"] <= box["y"] + box["height"] + 0.5
+        ), "текст вылез за строку"
+        # и строки не наезжают друг на друга
+        second = await rows.nth(1).bounding_box()
+        assert second["y"] >= box["y"] + box["height"] - 0.5
         await browser.close()
 
 
@@ -4222,11 +4240,11 @@ async def test_the_taken_and_the_waiting_look_different(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#daily-veil:not(.hidden)")
 
-        steps = page.locator("#daily-ladder .step")
+        steps = page.locator("#daily-ladder .gift")
         assert "done" in await steps.nth(0).get_attribute("class")
         assert "ready" in await steps.nth(1).get_attribute("class")
-        assert await steps.nth(1).locator(".step-mark").inner_text() == "🎁"
-        assert await steps.nth(0).locator(".step-mark").inner_text() == "✔"
+        assert await steps.nth(1).locator(".gift-mark").inner_text() == "🎁"
+        assert await steps.nth(0).locator(".gift-mark").inner_text() == "✔"
         # до чего ещё расти — без пометок
         third = await steps.nth(2).get_attribute("class")
         assert "done" not in third and "ready" not in third

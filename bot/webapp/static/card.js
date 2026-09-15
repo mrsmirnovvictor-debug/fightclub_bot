@@ -527,29 +527,29 @@ function renderDaily(card) {
   state.ladder.forEach((step) => {
     const row = document.createElement("div");
     row.className =
-      "step" + (step.ready ? " ready" : "") + (step.done ? " done" : "");
+      "gift" + (step.ready ? " ready" : "") + (step.done ? " done" : "");
 
     const day = document.createElement("span");
-    day.className = "step-day";
+    day.className = "gift-day";
     day.textContent = step.day;
     row.appendChild(day);
 
     const body = document.createElement("div");
-    body.className = "step-body";
+    body.className = "gift-body";
     const title = document.createElement("div");
-    title.className = "step-title";
+    title.className = "gift-title";
     title.textContent = step.icon + " " + step.title;
     body.appendChild(title);
     if (step.note) {
       const note = document.createElement("div");
-      note.className = "step-note";
+      note.className = "gift-note";
       note.textContent = step.note;
       body.appendChild(note);
     }
     row.appendChild(body);
 
     const mark = document.createElement("span");
-    mark.className = "step-mark";
+    mark.className = "gift-mark";
     mark.textContent = step.done ? "✔" : step.ready ? "🎁" : "";
     row.appendChild(mark);
 
