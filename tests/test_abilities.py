@@ -556,3 +556,168 @@ async def test_the_fighter_takes_his_tricks_to_the_ring_but_not_his_energy(db):
     # слоты — копия: бой не должен править запись игрока
     fighter.loadout.slots.clear()
     assert (await db.get_player(42)).loadout.slots
+
+
+# ---------- вторая половина приёмов десятой ступени ----------
+
+
+def squad(*codes, side=0, start=1):
+    """Отряд из бойцов одной стороны: id → боец, id → сторона."""
+    fighters, sides = {}, {}
+    for offset, code in enumerate(codes):
+        uid = start + offset
+        fighters[uid] = make(FIGHTER_CLASSES[code], user_id=uid, name=f"Боец{uid}")
+        sides[uid] = side
+    return fighters, sides
+
+
+def struck(attacker_id, defender_id, ability="", defence=""):
+    """Удар, на котором сработал приём, — так его запоминает движок."""
+    from bot.game.combat import Strike
+
+    return Strike(
+        attacker_id=attacker_id, defender_id=defender_id, zone=HEAD,
+        outcome=Outcome.HIT, ability=ability, defence_ability=defence,
+    )
+
+
+def test_a_mass_hit_reaches_everyone_but_the_one_already_struck():
+    """«Массовый удар» достаёт остальных врагов — и только врагов."""
+    from bot.game.combat import group_aftermath
+
+    ours, our_side = squad("warrior", "tank", side=0, start=1)
+    theirs, their_side = squad("rogue", "assassin", "warrior", side=1, start=10)
+    everyone = {**ours, **theirs}
+    sides = {**our_side, **their_side}
+    before = {uid: one.hp for uid, one in everyone.items()}
+
+    echoes = group_aftermath([struck(1, 10, ability="mass_hit")], everyone, sides)
+
+    echo = echoes[0]
+    # тому, кого ударили, второй раз не достаётся: ему хватило удара
+    assert set(echo.splashed) == {11, 12}
+    assert all(damage == 15 for damage in echo.splashed.values())
+    assert everyone[10].hp == before[10], "уже получивший не платит дважды"
+    assert everyone[2].hp == before[2], "свои под массовый удар не попадают"
+    assert everyone[1].damage_dealt == 30, "разлёт идёт в счёт нанесённого"
+
+
+def test_the_trickster_god_hands_nimbleness_to_the_squad():
+    """«Бог обмана» кладёт «Проворность» союзникам — даром."""
+    from bot.game.combat import group_aftermath
+
+    ours, our_side = squad("rogue", "warrior", "tank", side=0, start=1)
+    theirs, their_side = squad("assassin", side=1, start=10)
+    everyone, sides = {**ours, **theirs}, {**our_side, **their_side}
+
+    echoes = group_aftermath(
+        [struck(10, 1, defence="trickster_god")], everyone, sides
+    )
+
+    assert echoes[0].blessed == (2, 3)
+    for uid in (2, 3):
+        assert [c.ability.code for c in everyone[uid].charges] == ["nimble"]
+        assert everyone[uid].energy == 0, "за чужой приём союзник не платит"
+    # врагу не достаётся, и себе тоже — своя половина уже сработала
+    assert not everyone[10].charges and not everyone[1].charges
+
+
+def test_a_gift_is_not_stacked_twice():
+    """Две одинаковые заготовки уводят от одного удара — вторая лишняя."""
+    from bot.game.combat import group_aftermath, lay_charge
+
+    ours, sides = squad("rogue", "warrior", side=0, start=1)
+    assert lay_charge(ours[2], "nimble")
+
+    group_aftermath([struck(2, 1, defence="trickster_god")], ours, sides)
+
+    assert len(ours[1].charges) <= 1
+    assert not lay_charge(ours[2], "nimble"), "дважды одно не кладётся"
+
+
+def test_the_dead_are_neither_healed_nor_blessed():
+    """Приём лечит, а не воскрешает."""
+    from bot.game.combat import group_aftermath, lay_charge, spread_heal
+
+    ours, our_side = squad("tank", "warrior", "rogue", side=0, start=1)
+    theirs, their_side = squad("assassin", side=1, start=10)
+    everyone, sides = {**ours, **theirs}, {**our_side, **their_side}
+    ours[2].hp = 0  # павший
+    ours[3].hp = 5
+
+    healed = spread_heal(CATALOGUE["life_master"], ours[1], [ours[2], ours[3]])
+
+    assert 2 not in healed, "мёртвого не лечат"
+    assert healed[3] > 0
+    assert not lay_charge(ours[2], "nimble"), "мёртвому заготовку не кладут"
+
+    # и в общей раздаче павший тоже пропущен: жив только третий
+    echo = group_aftermath(
+        [struck(1, 10, ability="blood_call")], everyone, sides
+    )[0]
+
+    assert echo.blessed == (3,)
+    assert not ours[2].charges
+
+
+def test_a_royale_has_no_allies_at_all():
+    """В мясорубке каждый сам за себя: раздавать приём некому.
+
+    Зато «Массовый удар» достаёт там вообще всех — в этом она и есть.
+    """
+    from bot.game.combat import group_aftermath
+
+    fighters = {
+        uid: make(WARRIOR, user_id=uid, name=f"Боец{uid}") for uid in (1, 2, 3, 4)
+    }
+    sides = {uid: uid for uid in fighters}  # каждый своей стороной
+
+    blessing = group_aftermath([struck(2, 1, defence="trickster_god")], fighters, sides)
+    assert blessing == [], "союзников нет — и раздачи нет"
+
+    mass = group_aftermath([struck(1, 2, ability="mass_hit")], fighters, sides)
+    assert set(mass[0].splashed) == {3, 4}
+
+
+def test_a_raid_squad_shares_the_blessing_but_not_the_splash():
+    """В рейде отряд заодно, а противник один — разлетаться некуда."""
+    from bot.game.combat import group_aftermath
+
+    BOSS = 999
+    squad_ids = (1, 2, 3)
+    fighters = {
+        uid: make(FIGHTER_CLASSES["assassin"], user_id=uid, name=f"Боец{uid}")
+        for uid in squad_ids
+    }
+    fighters[BOSS] = make(TANK, user_id=BOSS, name="Босс")
+    sides = {uid: 0 for uid in squad_ids} | {BOSS: 1}
+
+    call = group_aftermath([struck(1, BOSS, ability="blood_call")], fighters, sides)
+    assert call[0].blessed == (2, 3)
+
+    mass = group_aftermath([struck(1, BOSS, ability="mass_hit")], fighters, sides)
+    assert mass == [], "бить больше некого — приём молчит второй половиной"
+
+
+def test_a_splash_can_finish_someone_off():
+    """Разлёт добивает — и судья обязан об этом сказать."""
+    from bot.game.combat import group_aftermath
+
+    ours, our_side = squad("warrior", side=0, start=1)
+    theirs, their_side = squad("rogue", "rogue", side=1, start=10)
+    theirs[11].hp = 5
+    everyone, sides = {**ours, **theirs}, {**our_side, **their_side}
+
+    echo = group_aftermath([struck(1, 10, ability="mass_hit")], everyone, sides)[0]
+
+    assert echo.fallen == (11,) and not everyone[11].alive
+
+
+def test_ordinary_tricks_leave_the_squad_alone():
+    """Приёмы младших ступеней второй половины не имеют вовсе."""
+    from bot.game.combat import group_aftermath
+
+    ours, sides = squad("warrior", "tank", "rogue", side=0, start=1)
+
+    assert group_aftermath([struck(1, 2, ability="strong_hit")], ours, sides) == []
+    assert group_aftermath([struck(1, 2, defence="nimble")], ours, sides) == []

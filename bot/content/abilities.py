@@ -177,7 +177,7 @@ ABILITIES: tuple[Ability, ...] = (
         tier=10,
         icon="💖",
         heal=0.30,
-        aura="heal_allies",
+        ally_heal=0.20,
         note="Возвращает 30% здоровья себе и 20% каждому союзнику. "
         "Ход удара не тратится.",
     ),

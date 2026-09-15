@@ -25,6 +25,7 @@ from bot.game.classes import BLOCK_WIDTH
 from bot.models import Player
 from bot.webapp.fight import (
     ATTACK_BUTTONS,
+    abilities_payload,
     BLOCK_BUTTONS,
     block_buttons,
     hands_payload,
@@ -127,6 +128,9 @@ def battle_payload(session: BattleSession, viewer_id: int) -> dict[str, Any]:
             },
             "block": mine.block[0].value if mine and mine.block else None,
         },
+        # Приёмы и шкала — только свои: чужие заготовки соперник видеть не
+        # должен, иначе приём перестаёт быть неожиданностью
+        "abilities": abilities_payload(fighter),
         "log": session.rounds,
     }
 

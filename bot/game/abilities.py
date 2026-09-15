@@ -130,6 +130,7 @@ class Ability:
     heal: float = 0.0  # доля максимального здоровья
     splash: int = 0  # урон каждому из остальных противников
     aura: str = ""  # код приёма, который ложится союзникам
+    ally_heal: float = 0.0  # доля здоровья, которую получает каждый союзник
     counter: bool = False  # уворот идёт с ответом
     crit_counter: bool = False  # и ответ этот критический
 
@@ -146,7 +147,7 @@ class Ability:
     @property
     def group(self) -> bool:
         """Задевает кого-то кроме бойца и его соперника."""
-        return bool(self.splash or self.aura)
+        return bool(self.splash or self.aura or self.ally_heal)
 
     @property
     def picture(self) -> str:

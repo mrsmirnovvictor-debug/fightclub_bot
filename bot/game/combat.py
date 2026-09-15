@@ -775,6 +775,136 @@ def resolve_round(
     return result
 
 
+@dataclass
+class GroupEcho:
+    """Вторая половина приёма десятой ступени: то, что летит мимо пары.
+
+    Приём этой ступени бьёт не только по сопернику: «Массовый удар»
+    достаёт остальных противников, «Бог обмана» и «Призыв к крови» кладут
+    заготовку союзникам, «Мастер жизни» их лечит. Сам движок про состав
+    отряда не знает — стороны ему приносит служба боя, а он отвечает, кого
+    и на сколько задело.
+    """
+
+    owner_id: int
+    ability: Ability
+    splashed: dict[int, int] = field(default_factory=dict)  # id → урон
+    healed: dict[int, int] = field(default_factory=dict)  # id → сколько вернулось
+    blessed: tuple[int, ...] = ()  # кому легла заготовка
+    fallen: tuple[int, ...] = ()  # кто от этого упал
+
+    @property
+    def empty(self) -> bool:
+        return not (self.splashed or self.healed or self.blessed)
+
+
+def lay_charge(fighter: Fighter, code: str) -> bool:
+    """Положить бойцу чужую заготовку даром. False — она у него уже есть.
+
+    Даром — потому что платит за неё тот, кто нажал приём. Дважды одна и
+    та же заготовка не кладётся: две «Проворности» уводят от одного удара
+    ровно так же, как одна, и вторая просто сгорела бы.
+    """
+    from bot.content.abilities import CATALOGUE
+
+    ability = CATALOGUE.get(code)
+    if ability is None or not fighter.alive:
+        return False
+    if any(charge.ability.code == code for charge in fighter.charges):
+        return False
+    fighter.charges.append(Charge(ability=ability, tier=ability.tier))
+    return True
+
+
+def spread_heal(
+    ability: Ability, owner: Fighter, allies: list[Fighter]
+) -> dict[int, int]:
+    """Лечение союзников — та часть приёма, что срабатывает сразу.
+
+    Мёртвого не поднимают: приём лечит, а не воскрешает.
+    """
+    if not ability.ally_heal:
+        return {}
+    healed: dict[int, int] = {}
+    for mate in allies:
+        if mate.user_id == owner.user_id or not mate.alive:
+            continue
+        gained = mate.heal_by(ability.ally_heal)
+        if gained:
+            healed[mate.user_id] = gained
+    return healed
+
+
+def group_aftermath(
+    strikes: list[Strike],
+    fighters: dict[int, Fighter],
+    sides: dict[int, int],
+) -> list[GroupEcho]:
+    """Разнести по отряду то, что приёмы этого раунда сделали сверх удара.
+
+    `sides` — кто с кем: одинаковое число значит союзники. Босс рейда
+    стоит своей стороной, в мясорубке каждый сам себе сторона, и тогда
+    союзников нет ни у кого — приём срабатывает своей первой половиной и
+    молчит второй.
+
+    Считается после раунда, а не внутри удара, и намеренно: удар знает
+    только двоих, а эта половина приёма — про всех остальных.
+    """
+    echoes: list[GroupEcho] = []
+    for strike in strikes:
+        for owner_id, code in (
+            (strike.attacker_id, strike.ability),
+            (strike.defender_id, strike.defence_ability),
+        ):
+            if not code:
+                continue
+            from bot.content.abilities import CATALOGUE
+
+            ability = CATALOGUE.get(code)
+            if ability is None or not ability.group:
+                continue
+            owner = fighters.get(owner_id)
+            if owner is None:
+                continue
+            echo = GroupEcho(owner_id=owner_id, ability=ability)
+            mine = sides.get(owner_id)
+
+            if ability.splash:
+                # «Остальные противники» — все чужие, кроме того, кто уже
+                # получил этим ударом: ему досталось и так
+                struck = strike.defender_id if owner_id == strike.attacker_id else None
+                fallen = []
+                for other_id, other in fighters.items():
+                    if (
+                        other_id in (owner_id, struck)
+                        or not other.alive
+                        or sides.get(other_id) == mine
+                    ):
+                        continue
+                    other.hp = max(0, other.hp - ability.splash)
+                    owner.damage_dealt += ability.splash
+                    echo.splashed[other_id] = ability.splash
+                    if not other.alive:
+                        fallen.append(other_id)
+                echo.fallen = tuple(fallen)
+
+            allies = [
+                one
+                for other_id, one in fighters.items()
+                if other_id != owner_id and sides.get(other_id) == mine
+            ]
+            if ability.aura:
+                echo.blessed = tuple(
+                    one.user_id for one in allies if lay_charge(one, ability.aura)
+                )
+            if ability.ally_heal:
+                echo.healed = spread_heal(ability, owner, allies)
+
+            if not echo.empty:
+                echoes.append(echo)
+    return echoes
+
+
 def _fill_energy(strikes: list[Strike], fighters: dict[int, Fighter]) -> None:
     """Начислить энергию за раунд: за точные удары и удержанные блоки.
 

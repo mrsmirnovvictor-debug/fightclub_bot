@@ -36,6 +36,7 @@ from bot.game.raid import (
 )
 from bot.game.potions import RAID_PASS, get_potion
 from bot.models import Player
+from bot.webapp.fight import abilities_payload
 from bot.raid_service import RaidLobby, RaidService, RaidSession
 from bot.webapp.card import slot_payload
 from bot.webapp.fight import ATTACK_BUTTONS, BLOCK_BUTTONS, block_buttons, hands_payload
@@ -216,6 +217,9 @@ def raid_payload(session: RaidSession, viewer_id: int) -> dict[str, Any]:
             "attack": mine.attack.value if mine and mine.attack else None,
             "block": mine.block[0].value if mine and mine.block else None,
         },
+        # Приёмы и шкала — только свои: чужие заготовки соперник видеть не
+        # должен, иначе приём перестаёт быть неожиданностью
+        "abilities": abilities_payload(fighter),
         "log": session.rounds,
     }
 

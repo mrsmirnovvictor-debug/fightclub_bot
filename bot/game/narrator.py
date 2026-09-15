@@ -382,6 +382,43 @@ def rest_phrase(seconds: int) -> str:
     return f"{seconds} секунд"
 
 
+def echo_lines(echoes, fighters: dict[int, Fighter]) -> list[str]:
+    """Слова судьи о второй половине приёмов десятой ступени.
+
+    Первую половину — сам удар — судья уже рассказал обычной строкой. Здесь
+    только то, что прилетело мимо пары, и молчать об этом нельзя: боец
+    видит, что здоровье просело, а удара по нему не было.
+    """
+    lines: list[str] = []
+    for echo in echoes:
+        who = fighters.get(echo.owner_id)
+        name = who.name if who else "Боец"
+        mark = f"{echo.ability.icon} <b>{echo.ability.title}</b>"
+        if echo.splashed:
+            hurt = ", ".join(
+                f"{fighters[user_id].name} −{damage}"
+                for user_id, damage in echo.splashed.items()
+                if user_id in fighters
+            )
+            lines.append(f"{mark}: {name} достаёт и остальных — {hurt}.")
+        if echo.healed:
+            saved = ", ".join(
+                f"{fighters[user_id].name} +{gained}"
+                for user_id, gained in echo.healed.items()
+                if user_id in fighters
+            )
+            lines.append(f"{mark}: {name} поднимает своих — {saved}.")
+        if echo.blessed:
+            mates = ", ".join(
+                fighters[user_id].name for user_id in echo.blessed if user_id in fighters
+            )
+            lines.append(f"{mark}: {name} делится приёмом — {mates} наготове.")
+        for user_id in echo.fallen:
+            if user_id in fighters:
+                lines.append(f"💀 {fighters[user_id].name} падает от этого.")
+    return lines
+
+
 def strike_lines(
     result: RoundResult,
     fighters: dict[int, Fighter],

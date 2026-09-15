@@ -2435,8 +2435,10 @@ function scoutPanel(scout) {
 // Значок приёма цветной, когда энергии хватает, и серый, когда нет, — так
 // и просили. Нажатый приём светится: заготовка ждёт своего момента и может
 // провисеть несколько ходов, и боец должен видеть, что она в деле.
-function abilityPanel(state) {
+function abilityPanel(state, send) {
   if (!state || !state.tricks || !state.tricks.length) return null;
+  // Куда слать нажатие: у ринга, отряда и рейда свои адреса, а панель одна
+  send = send || ((trick) => useAbility("api/fight", trick, renderFights));
   const box = document.createElement("section");
   box.className = "tricks";
 
@@ -2484,19 +2486,19 @@ function abilityPanel(state) {
     price.textContent = trick.armed ? "наготове" : trick.cost + " ⚡";
     card.appendChild(price);
 
-    card.addEventListener("click", () => useAbility(trick));
+    card.addEventListener("click", () => send(trick));
     row.appendChild(card);
   });
   box.appendChild(row);
   return box;
 }
 
-async function useAbility(trick) {
+async function useAbility(where, trick, repaint) {
   if (busy) return;
   busy = true;
   try {
-    const data = await post("api/fight", { action: "ability", code: trick.code });
-    renderFights(data);
+    const data = await post(where, { action: "ability", code: trick.code });
+    repaint(data);
     if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
   } catch (error) {
     popup("Не вышло", error.message);
@@ -3171,6 +3173,11 @@ function raidTurnForm(data) {
   const hands = raidHands(data);
   const blocks = (data.raid && data.raid.blocks) || data.blocks;
 
+  const tricks = abilityPanel(data.raid && data.raid.abilities, (trick) =>
+    useAbility("api/raid", trick, renderRaid)
+  );
+  if (tricks) box.appendChild(tricks);
+
   box.appendChild(
     zoneColumns(
       hands, data.attacks, blocks, () => raidDraft, "raid", paintRaidDraft
@@ -3477,6 +3484,11 @@ function battleTurnForm(data) {
   box.className = "turn-form";
   const hands = battleHands(data);
   const blocks = (data.battle && data.battle.blocks) || data.blocks;
+
+  const tricks = abilityPanel(data.battle && data.battle.abilities, (trick) =>
+    useAbility("api/battle", trick, renderBattle)
+  );
+  if (tricks) box.appendChild(tricks);
 
   box.appendChild(
     zoneColumns(

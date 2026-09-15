@@ -865,6 +865,13 @@ async def api_raid_action(request: web.Request) -> web.Response:
                     session.id, player.user_id, "attack", zone, hand
                 )
             await raids.handle_choice(session.id, player.user_id, "block", block)
+        elif action == "ability":
+            session = raids.raid_of_user(player.user_id)
+            if session is None:
+                raise RaidError("Ты сейчас не в рейде.")
+            await raids.use_ability(
+                session.id, player.user_id, str(data.get("code") or "")
+            )
         elif action == "done":
             raids.forget_result(player.user_id)
         else:
@@ -929,6 +936,13 @@ async def api_battle_action(request: web.Request) -> web.Response:
                     session.id, player.user_id, "attack", zone, hand
                 )
             await battles.handle_choice(session.id, player.user_id, "block", block)
+        elif action == "ability":
+            session = battles.battle_of_user(player.user_id)
+            if session is None:
+                raise BattleError("Ты сейчас не в бою.")
+            await battles.use_ability(
+                session.id, player.user_id, str(data.get("code") or "")
+            )
         elif action == "done":
             battles.forget_result(player.user_id)
         else:

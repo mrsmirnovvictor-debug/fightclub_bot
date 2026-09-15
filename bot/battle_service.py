@@ -35,7 +35,13 @@ from bot.game.battle import (
     team_name,
 )
 from bot.game.classes import Zone, block_combo, block_title
-from bot.game.combat import Action, Fighter, resolve_round
+from bot.game.combat import (
+    Action,
+    Fighter,
+    group_aftermath,
+    resolve_round,
+    spread_heal,
+)
 from bot.game.economy import (
     pro_exp,
     rating_delta,
@@ -43,6 +49,7 @@ from bot.game.economy import (
 )
 from bot.game.modes import FightMode
 from bot.game.narrator import (
+    echo_lines,
     battle_intro,
     battle_result,
     battle_rewards_report,
@@ -557,6 +564,54 @@ class BattleService:
         finally:
             session.resolving = False
 
+    def _sides(self, session: BattleSession) -> dict[int, int]:
+        """Кто с кем. В мясорубке каждый сам себе сторона — союзников нет.
+
+        Оттого приёмы десятой ступени там работают только своей первой
+        половиной: раздавать «Проворность» некому, а «Массовый удар»,
+        наоборот, достаёт вообще всех — в этом и вся мясорубка.
+        """
+        if session.kind is BattleKind.ROYALE:
+            return {user_id: user_id for user_id in session.fighters}
+        return dict(session.teams)
+
+    async def use_ability(self, battle_id: int, user_id: int, code: str) -> str:
+        """Нажать приём в групповом бою. Жмут до выбора удара и блока."""
+        session = self._battles.get(battle_id)
+        if session is None:
+            raise BattleError("Этого боя уже нет.")
+        if user_id not in session.fighters:
+            raise BattleError("Ты не участвуешь в этом бою.")
+        if session.resolving:
+            raise BattleError("Раунд уже считается, поздно.")
+        fighter = session.fighters[user_id]
+        if code not in fighter.loadout:
+            raise BattleError("Этот приём не выучен.")
+        if not fighter.can_use(code):
+            cost = fighter.loadout.cost_of(code)
+            raise BattleError(
+                f"Не хватает энергии: нужно {cost}, а накоплено {fighter.energy}."
+            )
+        ability = fighter.use(code).ability
+        if not ability.heal:
+            return f"{ability.icon} {ability.title} наготове."
+
+        # Лечение не ждёт удара — ни своё, ни союзникам
+        gained = fighter.heal_by(ability.heal)
+        fighter.charges.pop()
+        sides = self._sides(session)
+        mine = sides.get(user_id)
+        allies = [
+            one
+            for other_id, one in session.fighters.items()
+            if other_id != user_id and sides.get(other_id) == mine
+        ]
+        healed = spread_heal(ability, fighter, allies)
+        line = f"{ability.icon} {ability.title}: +{gained} ❤️"
+        if healed:
+            line += f", и ещё {len(healed)} бойцам отряда"
+        return line
+
     async def _play_round(self, session: BattleSession) -> None:
         standing = {
             user_id for user_id, fighter in session.fighters.items() if fighter.alive
@@ -579,6 +634,14 @@ class BattleService:
             )
             results.append(result)
             spoken = strike_lines(result, session.fighters, self.rng)
+            # Вторая половина приёмов десятой ступени: она летит мимо пары,
+            # и разнести её может только тот, кто знает стороны
+            spoken.extend(
+                echo_lines(
+                    group_aftermath(result.strikes, session.fighters, self._sides(session)),
+                    session.fighters,
+                )
+            )
             said.append(spoken)
             session.rounds.append(turn_payload(result, spoken))
 
