@@ -25,7 +25,12 @@ from bot.game.combat import (
 from bot.game.locations import FIGHT_CLUB, Service, get_location
 from bot.game.modes import FightMode, mode_of
 from bot.content.abilities import get_ability
-from bot.game.abilities import MAX_ENERGY
+from bot.game.abilities import (
+    MAX_ENERGY,
+    MAX_PER_TURN,
+    Source,
+    energy_gain,
+)
 from bot.game.scout import advise
 from bot.models import Player
 
@@ -197,8 +202,12 @@ def abilities_payload(fighter: Fighter | None) -> dict[str, Any] | None:
     return {
         "energy": fighter.energy,
         "max": MAX_ENERGY,
-        # Чем этот класс копит — подписываем шкалу, иначе непонятно, за что
-        "source": ENERGY_TITLES.get(fighter.fclass.code, ""),
+        # Чем этот класс копит и по сколько — иначе прыжок шкалы на три
+        # выглядит как подарок ниоткуда
+        "source": energy_note(fighter),
+        # Сколько приёмов ещё можно пустить в дело в этом ходу
+        "left": max(0, MAX_PER_TURN - fighter.pressed),
+        "per_turn": MAX_PER_TURN,
         "tricks": [
             {
                 "code": code,
@@ -241,13 +250,25 @@ def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, str] | None
     return advice.as_dict()
 
 
-# Чем копится шкала у каждого класса — словами, для подписи под баром
-ENERGY_TITLES: dict[str, str] = {
-    "warrior": "за точные удары",
-    "rogue": "за увороты",
-    "assassin": "за критические удары",
-    "tank": "за блоки",
+# Чем копится шкала у каждого класса — словами, для подписи под баром.
+# Ставку пишем числом намеренно: у воина удар даёт сразу три, шкала растёт
+# прыжками, и без подписи это выглядит как будто энергия взялась сама
+ENERGY_TITLES: dict[str, tuple[Source, str]] = {
+    "warrior": (Source.HIT, "за точный удар"),
+    "rogue": (Source.DODGE, "за уворот"),
+    "assassin": (Source.CRIT, "за критический удар"),
+    "tank": (Source.BLOCK, "за блок"),
 }
+
+
+def energy_note(fighter: Fighter) -> str:
+    """Подпись под шкалой: сколько и за что."""
+    row = ENERGY_TITLES.get(fighter.fclass.code)
+    if row is None:  # pragma: no cover - классов ровно четыре
+        return ""
+    source, words = row
+    points = energy_gain(fighter.fclass.code, source, fighter.has_shield)
+    return f"+{points} {words}"
 
 FIGHT_CLUB_TITLE = get_location(FIGHT_CLUB).title
 

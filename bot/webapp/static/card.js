@@ -2554,18 +2554,29 @@ function abilityPanel(state, send) {
   bar.appendChild(label);
   box.appendChild(bar);
 
-  if (state.source) {
-    const note = document.createElement("p");
-    note.className = "energy-note";
-    note.textContent = "Копится " + state.source;
-    box.appendChild(note);
+  const note = document.createElement("p");
+  note.className = "energy-note";
+  // Сколько даёт событие и сколько приёмов осталось на ход — два числа,
+  // без которых шкала и лимит выглядят произволом
+  const parts = [];
+  if (state.source) parts.push(state.source);
+  if (state.per_turn) {
+    parts.push(
+      state.left > 0
+        ? "за ход осталось приёмов: " + state.left
+        : "приёмы на этот ход кончились"
+    );
   }
+  note.textContent = parts.join(" · ");
+  if (parts.length) box.appendChild(note);
 
   const row = document.createElement("div");
   row.className = "trick-row";
   state.tricks.forEach((trick) => {
     const card = document.createElement("button");
     card.type = "button";
+    // Готов — цветной, не по карману или норма выбрана — серый, нажатый —
+    // в зелёной обводке. Три состояния, и все видны с одного взгляда
     card.className =
       "trick" + (trick.ready ? "" : " cold") + (trick.armed ? " armed" : "");
     card.disabled = !trick.ready || trick.armed;

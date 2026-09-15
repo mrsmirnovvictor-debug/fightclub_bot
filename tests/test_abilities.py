@@ -721,3 +721,111 @@ def test_ordinary_tricks_leave_the_squad_alone():
 
     assert group_aftermath([struck(1, 2, ability="strong_hit")], ours, sides) == []
     assert group_aftermath([struck(1, 2, defence="nimble")], ours, sides) == []
+
+
+# ---------- до трёх приёмов за ход ----------
+
+
+def test_three_tricks_a_turn_and_not_a_fourth():
+    """Норма на ход — три приёма, четвёртый не пускают."""
+    from bot.game.abilities import MAX_PER_TURN
+
+    fighter = make(WARRIOR)
+    for code, tier in (("strong_hit", 1), ("power_hit", 3),
+                       ("crushing_hit", 6), ("mass_hit", 10)):
+        fighter.loadout.learn(code, tier)
+    fighter.gain_energy(MAX_ENERGY)
+
+    for code in ("strong_hit", "power_hit", "crushing_hit"):
+        fighter.use(code)
+
+    assert fighter.pressed == MAX_PER_TURN and fighter.out_of_turns
+    assert not fighter.can_use("mass_hit"), "энергия есть, а норма выбрана"
+    with pytest.raises(ValueError, match="не больше"):
+        fighter.use("mass_hit")
+
+
+def test_the_same_trick_is_not_pressed_twice():
+    """Две одинаковые заготовки — вторая просто сгорела бы."""
+    fighter = teach(make(), "strong_hit")
+    fighter.gain_energy(MAX_ENERGY)
+    fighter.use("strong_hit")
+
+    assert not fighter.can_use("strong_hit")
+    with pytest.raises(ValueError, match="уже наготове"):
+        fighter.use("strong_hit")
+
+
+def test_the_turn_norm_starts_over_every_round():
+    """Норма выбирается заново каждый раунд, а заготовки остаются."""
+    first, second = make(user_id=1), make(user_id=2)
+    first.loadout.learn("strong_hit", 1)
+    first.gain_energy(MAX_ENERGY)
+    first.use("strong_hit")
+    assert first.pressed == 1
+
+    resolve_round(first, Action(attacks=(HEAD,), block=(HEAD, CHEST)),
+                  second, Action(attacks=(BELT,), block=(BELT, LEGS)), 1,
+                  random.Random(5))
+
+    assert first.pressed == 0, "норма на новый ход свежая"
+
+
+def test_damage_bonuses_add_up():
+    """Три прибавки к урону дают сумму, а не самую крупную из них."""
+    plain = hit(make(user_id=1), make(user_id=2), seed=17)
+
+    loaded = make(user_id=1)
+    for code, tier in (("strong_hit", 1), ("power_hit", 3), ("crushing_hit", 6)):
+        loaded.loadout.learn(code, tier)
+    loaded.gain_energy(MAX_ENERGY)
+    for code in ("strong_hit", "power_hit", "crushing_hit"):
+        loaded.use(code)
+
+    together = hit(loaded, make(user_id=2), seed=17)
+
+    # +15, +30 и +45 — до брони, поэтому на теле видно чуть меньше суммы,
+    # но заметно больше любой одной прибавки
+    assert together.damage > plain.damage + 45
+    assert not loaded.charges, "все три заготовки сработали разом"
+
+
+def test_the_strongest_of_a_branch_works_and_the_rest_step_aside():
+    """Из приёмов одной ветки срабатывает сильнейший, снимаются все."""
+    crit_only = make(ASSASSIN, user_id=1)
+    crit_only.loadout.learn("crit_hit", 1)
+    crit_only.gain_energy(MAX_ENERGY)
+    crit_only.use("crit_hit")
+    ordinary = hit(crit_only, make(user_id=2), seed=21)
+
+    both = make(ASSASSIN, user_id=1)
+    both.loadout.learn("crit_hit", 1)
+    both.loadout.learn("deadly_hit", 6)
+    both.gain_energy(MAX_ENERGY)
+    both.use("crit_hit")
+    both.use("deadly_hit")
+    doubled = hit(both, make(user_id=2), seed=21)
+
+    assert doubled.damage > ordinary.damage, "работает удвоение, а не простой крит"
+    assert not both.charges, "обе заготовки сняты: за них уже заплачено"
+    assert doubled.ability == "deadly_hit"
+
+
+def test_a_strike_and_a_dodge_work_in_the_same_turn():
+    """Приёмы разных веток не мешают друг другу — в этом весь смысл."""
+    rogue = make(ROGUE, user_id=2)
+    rogue.loadout.learn("nimble", 1)
+    rogue.loadout.learn("strong_hit", 3)
+    rogue.gain_energy(MAX_ENERGY)
+    rogue.use("nimble")
+    rogue.use("strong_hit")
+
+    # чужой удар уходит в пустоту: сработала «Проворность»
+    incoming = hit(make(ASSASSIN, user_id=1), rogue, seed=3)
+    assert incoming.outcome is Outcome.DODGE
+    assert incoming.defence_ability == "nimble"
+
+    # а прибавка к урону осталась ждать своего удара
+    assert [charge.ability.code for charge in rogue.charges] == ["strong_hit"]
+    mine = hit(rogue, make(user_id=1), seed=17)
+    assert mine.ability == "strong_hit"

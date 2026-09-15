@@ -3990,12 +3990,14 @@ async def test_leaving_the_casino_leaves_the_raid_behind(server):
 # ---------- приёмы ----------
 
 
-def tricks_state(energy: int = 9) -> dict:
-    """Шкала и четыре приёма так, как их отдаёт сервер."""
+def tricks_state(energy: int = 9, count: int = 4, left: int = 3) -> dict:
+    """Шкала и приёмы так, как их отдаёт сервер."""
     return {
         "energy": energy,
         "max": 20,
-        "source": "за точные удары",
+        "source": "+3 за точный удар",
+        "left": left,
+        "per_turn": 3,
         "tricks": [
             {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
              "image": "https://example.test/items/strong_hit.jpeg",
@@ -4009,7 +4011,7 @@ def tricks_state(energy: int = 9) -> dict:
             {"code": "mass_hit", "title": "Массовый удар", "icon": "💢",
              "image": "https://example.test/items/mass_hit.jpeg",
              "note": "+60 урона.", "cost": 12, "ready": energy >= 12, "armed": False},
-        ],
+        ][:count],
     }
 
 
@@ -4105,7 +4107,9 @@ async def test_the_energy_bar_shows_what_it_counts(server):
         await page.wait_for_selector(".energy")
 
         assert "9 / 20" in await page.locator(".energy-label").inner_text()
-        assert "за точные удары" in await page.locator(".energy-note").inner_text()
+        said = await page.locator(".energy-note").inner_text()
+        assert "+3 за точный удар" in said, "ставка должна стоять числом"
+        assert "осталось приёмов: 3" in said
         # полоса налита ровно на долю накопленного
         width = await page.locator(".energy-fill").evaluate(
             "fill => fill.style.width"
@@ -4327,4 +4331,106 @@ async def test_taking_the_gift_closes_the_window(server):
         # видимый элемент и скрытого не дождётся никогда
         await page.wait_for_selector("#daily-veil", state="hidden")
         assert "hidden" in await page.locator("#daily-veil").get_attribute("class")
+        await browser.close()
+
+
+async def test_all_four_tricks_fit_in_one_row(server):
+    """Четыре приёма обязаны поместиться в строку, не перенесясь."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=20)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        tiles = page.locator(".trick")
+        assert await tiles.count() == 4
+        boxes = [await tiles.nth(i).bounding_box() for i in range(4)]
+        # все на одной строке: верхние края совпадают
+        assert len({round(box["y"]) for box in boxes}) == 1, "плашки перенеслись"
+        # и строка не вылезла за экран
+        row = await page.locator(".trick-row").bounding_box()
+        assert row["x"] >= -0.5 and row["x"] + row["width"] <= 420.5
+        await browser.close()
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+async def test_fewer_tricks_stand_in_the_middle(server, count):
+    """Меньше четырёх — строка собирается по центру, а не липнет к краю."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=20, count=count)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        tiles = page.locator(".trick")
+        assert await tiles.count() == count
+        row = await page.locator(".trick-row").bounding_box()
+        first = await tiles.first.bounding_box()
+        last = await tiles.nth(count - 1).bounding_box()
+        left = first["x"] - row["x"]
+        right = row["x"] + row["width"] - (last["x"] + last["width"])
+        assert abs(left - right) <= 1.5, f"поля разъехались: {left} и {right}"
+        # и плашки не растянулись на всю ширину
+        assert first["width"] <= 92.5
+        await browser.close()
+
+
+async def test_a_pressed_trick_wears_a_green_ring(server):
+    """Нажал — плашка в зелёной обводке, и энергия уже списана."""
+    ring = ring_with_duel()
+    state = tricks_state(energy=20)
+    state["tricks"][2]["armed"] = True
+    ring["duel"]["abilities"] = state
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        armed = page.locator(".trick.armed")
+        assert await armed.count() == 1
+        ring_colour = await armed.evaluate("box => getComputedStyle(box).boxShadow")
+        border = await armed.evaluate("box => getComputedStyle(box).borderTopColor")
+        # зелёный — тот же, каким горит здоровье
+        green = await page.evaluate(
+            "getComputedStyle(document.documentElement).getPropertyValue('--hp-green')"
+        )
+        assert "rgb" in ring_colour and border.startswith("rgb")
+        assert green.strip(), "токен зелёного должен существовать"
+        # соседняя плашка обводки не носит
+        plain = page.locator(".trick:not(.armed)").first
+        assert "none" in await plain.evaluate("b => getComputedStyle(b).boxShadow")
+        await browser.close()
+
+
+async def test_when_the_turn_norm_is_spent_the_panel_says_so(server):
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=20, left=0)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".energy-note")
+
+        assert "кончились" in await page.locator(".energy-note").inner_text()
         await browser.close()
