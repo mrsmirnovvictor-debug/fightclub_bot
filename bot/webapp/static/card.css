@@ -45,6 +45,10 @@ body.dark {
   --tier3: #e07b39;
   --tier4: #a44dd6;
   --tier5: #d93f3f;
+  /* Фон, залитый в картинках инвентаря. Клетка календаря с кредитами
+     красится им же: иначе мешок денег сидел бы на подложке карточки, а
+     склянка рядом — на своей, и ряд разъезжался бы на глазах */
+  --gift-back: #60656b;
 }
 
 /* Обводка ступени: рисуется поверх картинки и внутри её рамки, поэтому
@@ -1622,39 +1626,26 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   grid-template-columns: repeat(7, 1fr);
   gap: 5px;
 }
+/* Клетка одна на всех: и там, где лежит вещь, и там, где кредиты. Фон
+   общий, картинка кроет его целиком, значок садится на него же — ряд
+   читается как один ряд, а не как чересполосица */
 .gift {
   position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1px;
   aspect-ratio: 1;
-  padding: 2px;
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--gift-back);
   border: 1px solid var(--line);
   color: inherit;
   font: inherit;
   cursor: pointer;
 }
-.gift-day { font-size: 10px; font-weight: 700; color: var(--muted); line-height: 1; }
-.gift-icon { font-size: 15px; line-height: 1; }
-
-/* Клетка с вещью: картинка занимает её целиком, а номер дня ложится
-   поверх. Под номером тёмная плашка — иначе на светлом углу картинки его
-   не прочесть, а картинки тут разные и угол заранее не известен */
-.gift-pic {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: inherit;
-}
-.gift.has-pic { padding: 0; }
-.gift.has-pic .gift-icon { display: none; }
-.gift.has-pic .gift-day {
+/* Номер дня — в левом верхнем углу, на тёмной плашке. Плашка нужна
+   всегда: картинки тут разные, и какой угол окажется светлым, заранее не
+   известно */
+.gift-day {
   position: absolute;
   top: 1px;
   left: 1px;
@@ -1663,7 +1654,20 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
 }
+.gift-icon { font-size: 20px; line-height: 1; }
+.gift-pic {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+.gift.has-pic .gift-icon { display: none; }
 
 /* Зелёная галочка в углу — по ней видно, что за день уже забрано */
 .gift-mark {
@@ -1694,9 +1698,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border-color: var(--hp-green);
   box-shadow: 0 0 0 1px var(--hp-green);
 }
-/* Веха крупнее буден: иначе тридцать одинаковых клеток читаются как обои */
-.gift.big { background: var(--slot); border-color: var(--accent); }
-.gift.big .gift-icon { font-size: 18px; }
+/* Веху отмечаем кромкой и значком покрупнее. Подложку не трогаем: фон у
+   всех клеток один, и менять его вехе значило бы снова разнести ряд */
+.gift.big { border-color: var(--accent); }
+.gift.big .gift-icon { font-size: 23px; }
 
 .daily-pick {
   margin: 8px 0 0;
@@ -1720,8 +1725,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 
 @media (max-width: 340px) {
-  .gift-icon { font-size: 13px; }
-  .gift.big .gift-icon { font-size: 15px; }
+  .gift-icon { font-size: 17px; }
+  .gift.big .gift-icon { font-size: 19px; }
 }
 
 .daily-buttons { display: flex; gap: 8px; margin-top: 12px; }

@@ -4410,6 +4410,54 @@ async def test_a_gift_cell_shows_the_thing_itself(server):
         await browser.close()
 
 
+async def test_every_cell_looks_the_same_whatever_lies_in_it(server):
+    """Клетка с мешком денег и клетка с вещью — одной масти.
+
+    Фон у картинок инвентаря залит одним цветом, и клетка с кредитами
+    красится им же. Номер дня у всех в левом верхнем углу: иначе в ряду
+    мешок сидел бы по центру, а склянка — в углу, и ряд разъезжался бы.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cells = page.locator("#daily-ladder .gift")
+        money = cells.nth(0)  # первый день — кредиты
+        thing = cells.nth(2)  # третий — склянка
+        assert await money.locator(".gift-pic").count() == 0
+        assert await thing.locator(".gift-pic").count() == 1
+
+        # Фон — тот самый, что залит в картинках инвентаря
+        back = await money.evaluate("node => getComputedStyle(node).backgroundColor")
+        assert back == "rgb(96, 101, 107)", f"фон клетки с кредитами чужой: {back}"
+        assert back == await thing.evaluate(
+            "node => getComputedStyle(node).backgroundColor"
+        )
+
+        # Номер дня у обеих — в левом верхнем углу, на одной высоте от края
+        def corner(cell):
+            return cell.evaluate(
+                "node => {"
+                "  const box = node.getBoundingClientRect();"
+                "  const day = node.querySelector('.gift-day').getBoundingClientRect();"
+                "  return [Math.round(day.x - box.x), Math.round(day.y - box.y)];"
+                "}"
+            )
+
+        assert await corner(money) == await corner(thing)
+        # и это действительно угол, а не середина
+        left, top = await corner(money)
+        box = await money.bounding_box()
+        assert left < box["width"] / 3 and top < box["height"] / 3
+        await browser.close()
+
+
 async def test_the_picture_fills_the_cell_and_leaves_the_marks_visible(server):
     """Картинка занимает клетку целиком, но день и галочку не прячет."""
     player = make_player()
