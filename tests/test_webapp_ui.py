@@ -4284,11 +4284,16 @@ async def test_a_short_month_gets_a_short_calendar(server):
         await browser.close()
 
 
-async def test_the_taken_and_the_waiting_look_different(server):
-    """Забранное помечено зелёной галочкой, ждущее — светится."""
+async def test_the_border_says_what_to_do_with_the_day(server):
+    """Кромка отвечает на один вопрос: что с этим днём делать.
+
+    Зелёная — забрано. Синяя — вот оно, забирайте. Серая — ещё расти. И
+    больше кромку не красит ничто: веха, до которой не дошли, обязана
+    оставаться серой, иначе она обещает то, чего не даёт.
+    """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    # первые два дня забраны, третий ждёт в руках
+    # первые два дня забраны, третий — сегодняшний, ждёт в руках
     card["daily"] = daily_state(days=3, waiting=True)
     card["daily"]["ladder"][0].update(done=True, ready=False)
     card["daily"]["ladder"][1].update(done=True, ready=False)
@@ -4298,22 +4303,64 @@ async def test_the_taken_and_the_waiting_look_different(server):
         await page.wait_for_selector("#daily-veil:not(.hidden)")
 
         cells = page.locator("#daily-ladder .gift")
-        assert "done" in await cells.nth(0).get_attribute("class")
+
+        def edge(index):
+            return cells.nth(index).evaluate(
+                "node => getComputedStyle(node).borderTopColor"
+            )
+
+        def hue(colour):
+            return [int(one) for one in re.findall(r"\d+", colour)[:3]]
+
+        taken = hue(await edge(0))
+        assert taken[1] > taken[0] and taken[1] > taken[2], f"забранное не зелёное: {taken}"
+
+        ours = hue(await edge(2))
+        assert ours[2] > ours[0] and ours[2] > ours[1], f"сегодняшнее не синее: {ours}"
+
+        # веха двадцать первого дня — впереди, и кромка у неё та же, что у
+        # соседнего рейд-пасса: серая
+        assert "big" in await cells.nth(20).get_attribute("class")
+        assert await edge(20) == await edge(9), "веха впереди красится не как будни"
+        grey = hue(await edge(20))
+        assert max(grey) - min(grey) < 30, f"предстоящее не серое: {grey}"
+
+        # галочка стоит только на забранном и остаётся зелёной
         assert await cells.nth(0).locator(".gift-mark").inner_text() == "✔"
-
-        # галочка именно зелёная — по цвету её и узнают
-        colour = await cells.nth(0).locator(".gift-mark").evaluate(
-            "node => getComputedStyle(node).backgroundColor"
-        )
-        red, green, blue = [int(one) for one in re.findall(r"\d+", colour)[:3]]
-        assert green > red and green > blue, f"галочка не зелёная: {colour}"
-
-        # ждущее светится, но галочки не носит: его ещё не забрали
-        assert "ready" in await cells.nth(2).get_attribute("class")
         assert await cells.nth(2).locator(".gift-mark").count() == 0
-        # до чего ещё расти — без пометок
-        rest = await cells.nth(9).get_attribute("class")
-        assert "done" not in rest and "ready" not in rest
+        mark = hue(
+            await cells.nth(0).locator(".gift-mark").evaluate(
+                "node => getComputedStyle(node).backgroundColor"
+            )
+        )
+        assert mark[1] > mark[0] and mark[1] > mark[2], f"галочка не зелёная: {mark}"
+        await browser.close()
+
+
+async def test_the_day_taken_today_turns_green_too(server):
+    """Сегодняшняя забранная — такая же зелёная, как вчерашние.
+
+    Пока награда в руках, клетка синяя; забрали — и она встаёт в общий
+    зелёный ряд, а не остаётся выделенной до завтра.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=3, waiting=False)  # всё забрано, включая сегодня
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cells = page.locator("#daily-ladder .gift")
+        today = cells.nth(2)
+        assert "done" in await today.get_attribute("class")
+        assert "ready" not in await today.get_attribute("class")
+
+        colour = await today.evaluate("node => getComputedStyle(node).borderTopColor")
+        red, green, blue = [int(one) for one in re.findall(r"\d+", colour)[:3]]
+        assert green > red and green > blue, f"сегодняшняя забранная не зелёная: {colour}"
+        # и ни одна клетка не осталась синей: забирать нечего
+        assert await page.locator("#daily-ladder .gift.ready").count() == 0
         await browser.close()
 
 
