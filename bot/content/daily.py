@@ -22,8 +22,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from bot.content.mods import get_mod
 from bot.game.daily import Reward, days_in_month, merge, month_index
-from bot.game.potions import RAID_PASS
+from bot.game.potions import RAID_PASS, get_potion
 
 # Эликсир за четырнадцатый вход меняется от месяца к месяцу: три склянки
 # по кругу, чтобы за квартал боец собрал все три
@@ -138,6 +139,25 @@ def reward_for(day: int, month: str) -> Reward | None:
     return merge(base, LAST_DAY) if base.big else merge(LAST_DAY, base)
 
 
+def gift_picture(reward: Reward) -> str:
+    """Картинка подарка для клетки календаря. Пусто — хватит значка.
+
+    Адрес берётся от кода вещи — там же, где его берут рюкзак и витрина:
+    в клетке должно лежать ровно то, что потом окажется в мешке. За
+    кредиты картинки нет и быть не может, это не вещь.
+
+    Когда в клетке сошлись заточка и пропуск, показываем заточку: она в
+    этот день главная, и значок у клетки тоже её.
+    """
+    if reward.mod:
+        mod = get_mod(reward.mod)
+        return mod.picture if mod else ""
+    if reward.potion:
+        potion = get_potion(reward.potion)
+        return potion.picture if potion else ""
+    return ""
+
+
 def month_days(month: str) -> int:
     """Сколько клеток в календаре этого месяца."""
     return days_in_month(month)
@@ -163,6 +183,7 @@ def next_milestone(days: int, month: str) -> int:
 
 __all__ = [
     "EVERYDAY",
+    "gift_picture",
     "LADDER",
     "LAST_DAY",
     "LAST_DAY_MOD",

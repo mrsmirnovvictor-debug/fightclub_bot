@@ -1641,9 +1641,34 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .gift-day { font-size: 10px; font-weight: 700; color: var(--muted); line-height: 1; }
 .gift-icon { font-size: 15px; line-height: 1; }
 
+/* Клетка с вещью: картинка занимает её целиком, а номер дня ложится
+   поверх. Под номером тёмная плашка — иначе на светлом углу картинки его
+   не прочесть, а картинки тут разные и угол заранее не известен */
+.gift-pic {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+.gift.has-pic { padding: 0; }
+.gift.has-pic .gift-icon { display: none; }
+.gift.has-pic .gift-day {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  z-index: 1;
+  padding: 1px 3px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
 /* Зелёная галочка в углу — по ней видно, что за день уже забрано */
 .gift-mark {
   position: absolute;
+  z-index: 2;
   top: -3px;
   right: -3px;
   width: 13px;
@@ -1657,11 +1682,17 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-weight: 700;
 }
 
-/* Забранное гаснет, ждущее — светится: две судьбы, и их не спутать */
-.gift.done { opacity: 0.55; }
+/* Забранное гаснет, ждущее — светится: две судьбы, и их не спутать.
+   Галочку не гасим: по ней клетку и узнают */
+.gift.done .gift-day,
+.gift.done .gift-icon,
+.gift.done .gift-pic { opacity: 0.5; }
+.gift.done { opacity: 0.85; }
+/* Зелёное кольцо рисуем наружу, а не внутрь: картинка лежит поверх
+   подложки клетки и внутреннюю тень попросту закрыла бы */
 .gift.ready {
   border-color: var(--hp-green);
-  box-shadow: 0 0 0 1px var(--hp-green) inset;
+  box-shadow: 0 0 0 1px var(--hp-green);
 }
 /* Веха крупнее буден: иначе тридцать одинаковых клеток читаются как обои */
 .gift.big { background: var(--slot); border-color: var(--accent); }

@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -42,6 +43,13 @@ def find_chromium() -> str | None:
 CHROMIUM = find_chromium()
 # Всё, что рисуется картинкой: у лавки клуба jpeg, у мага png
 IMAGES = "**/*.{jpeg,jpg,png}"
+
+# Однопиксельный png для тех тестов, где картинка должна загрузиться. По
+# умолчанию страница картинок не грузит вовсе — до бакета из тестов не
+# дотянуться, — и вёрстку с картинками иначе было бы не проверить
+PIXEL = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 pytestmark = pytest.mark.skipif(CHROMIUM is None, reason="Chromium не найден")
 
 
@@ -223,7 +231,7 @@ def city_map(
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
-    battle=None, city=None, workshop=None,
+    battle=None, city=None, workshop=None, images=False,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -253,7 +261,15 @@ async def open_page(
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body=""
     ))
-    await page.route(IMAGES, lambda route: route.abort())
+    # Картинки по умолчанию не грузим: до бакета из тестов не дотянуться,
+    # и каждая была бы секундой ожидания. Кому нужна настоящая — просит
+    # `images=True` и получает пиксель
+    if images:
+        await page.route(IMAGES, lambda route: route.fulfill(
+            status=200, content_type="image/png", body=PIXEL
+        ))
+    else:
+        await page.route(IMAGES, lambda route: route.abort())
     await page.goto(f"{server.make_url('/')}{query}")
     return browser, page
 
@@ -318,7 +334,6 @@ async def shop_screen(db, service: Service):
             status=200, content_type="application/javascript", body=""
         ))
         await page.route(IMAGES, lambda route: route.abort())
-
         await page.route("**/api/club*", canned({"fighters": [], "total": 0}))
         await page.route("**/api/magic*", canned({"items": [], "credits": 0}))
         await page.route("**/api/fights*", canned(EMPTY_RING))
@@ -4358,6 +4373,100 @@ async def test_the_bag_shows_the_pass_wear_and_not_undefined(server):
         await browser.close()
 
 
+async def test_a_gift_cell_shows_the_thing_itself(server):
+    """Где лежит вещь — там её картинка, а где кредиты — значок.
+
+    «🧪» на все склянки разом не говорит, какая именно ждёт. Картинка
+    берётся от кода вещи — та же, что потом окажется в рюкзаке.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cells = page.locator("#daily-ladder .gift")
+        # первый день — кредиты: вещи нет, стоит значок
+        assert await cells.nth(0).locator(".gift-pic").count() == 0
+        assert await cells.nth(0).locator(".gift-icon").inner_text() == "💰"
+
+        # третий — эликсир восстановления: тут картинка вместо значка
+        potion = cells.nth(2)
+        assert "has-pic" in await potion.get_attribute("class")
+        assert "potions/heal_small" in await potion.locator(".gift-pic").get_attribute(
+            "src"
+        )
+        assert await potion.locator(".gift-icon").is_hidden(), "значок под картинкой"
+
+        # последний день — заточка, и она из другой папки
+        stone = cells.nth(29)
+        assert "items/sharpen_weapon_1" in await stone.locator(
+            ".gift-pic"
+        ).get_attribute("src")
+        await browser.close()
+
+
+async def test_the_picture_fills_the_cell_and_leaves_the_marks_visible(server):
+    """Картинка занимает клетку целиком, но день и галочку не прячет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=3, waiting=True)
+    card["daily"]["ladder"][2].update(done=True, ready=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cell = page.locator("#daily-ladder .gift").nth(2)
+        box = await cell.bounding_box()
+        pic = await cell.locator(".gift-pic").bounding_box()
+
+        # картинка кроет клетку, а не жмётся значком в середине
+        assert pic["width"] >= box["width"] - 3
+        assert pic["height"] >= box["height"] - 3
+
+        # номер дня читается поверх неё, а не спрятан под ней
+        assert await cell.locator(".gift-day").is_visible()
+        day = await cell.locator(".gift-day").bounding_box()
+        assert day["x"] >= box["x"] - 1 and day["y"] >= box["y"] - 1
+
+        # и зелёная галочка забранного дня не срезана краем клетки
+        mark = cell.locator(".gift-mark")
+        assert await mark.is_visible(), "галочку съела клетка с картинкой"
+        spot = await mark.bounding_box()
+        assert spot["width"] > 5 and spot["height"] > 5
+        await browser.close()
+
+
+async def test_a_missing_picture_falls_back_to_the_icon(server):
+    """Не доехал файл — в клетке остаётся значок, а не дыра."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+    for step in card["daily"]["ladder"]:
+        if step["image"]:
+            step["image"] = "https://example.invalid/нет-такого.jpeg"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cell = page.locator("#daily-ladder .gift").nth(2)
+        # ждём, пока картинка сдастся и клетка вернётся к значку
+        await page.wait_for_selector("#daily-ladder .gift:nth-child(3):not(.has-pic)")
+
+        assert await cell.locator(".gift-pic").count() == 0
+        assert await cell.locator(".gift-icon").is_visible()
+        assert await cell.locator(".gift-icon").inner_text() == "🧪"
+        await browser.close()
+
+
 async def test_the_calendar_button_is_dressed_like_the_panel(server):
     """Кнопка одета как таблица под ней: тот же фон, кромка и цвет текста.
 
@@ -4428,7 +4537,7 @@ async def test_nothing_to_take_means_no_claim_button(server):
 
         buttons = await page.locator("#daily-buttons button").all_inner_texts()
         assert [one.strip() for one in buttons] == ["Закрыть"]
-        assert "Следующая награда — на 3-й день" in await page.locator(
+        assert "Сегодня награда получена. Приходите завтра." in await page.locator(
             "#daily-note"
         ).inner_text()
         await browser.close()

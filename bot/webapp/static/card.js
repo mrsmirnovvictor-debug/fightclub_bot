@@ -548,7 +548,7 @@ function fillDaily(state) {
   el("daily-note").textContent = state.waiting.length
     ? "Забирайте — награда ваша."
     : state.next_day
-      ? "Сегодня всё забрано. Следующая награда — на " + state.next_day + "-й день."
+      ? "Сегодня награда получена. Приходите завтра."
       : "Календарь этого месяца пройден. В следующем начнётся заново.";
 
   // Сетка по семь в ряд. Клетка — это по счёту вход за месяц, а не число
@@ -588,10 +588,27 @@ function giftCell(step, state) {
   day.textContent = step.day;
   cell.appendChild(day);
 
+  // Вещь показываем ею самой: 🧪 на все склянки разом ничего не говорит,
+  // а картинка — та же, что потом ляжет в рюкзак. За кредиты картинки нет:
+  // это не вещь, там и остаётся значок
   const icon = document.createElement("span");
   icon.className = "gift-icon";
   icon.textContent = step.icon;
   cell.appendChild(icon);
+  if (step.image) {
+    cell.classList.add("has-pic");
+    const pic = document.createElement("img");
+    pic.className = "gift-pic";
+    pic.src = step.image;
+    pic.alt = step.title;
+    // Не доехал файл — убираем картинку, и клетка возвращается к значку:
+    // он всё это время лежал под ней, просто был спрятан
+    pic.addEventListener("error", () => {
+      pic.remove();
+      cell.classList.remove("has-pic");
+    });
+    cell.appendChild(pic);
+  }
 
   // Забранное помечено зелёной галочкой — по ней видно пройденный месяц
   if (step.done) {

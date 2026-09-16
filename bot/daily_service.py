@@ -13,7 +13,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from bot.content.daily import month_days, next_milestone, reward_for, unclaimed
+from bot.content.daily import (
+    gift_picture,
+    month_days,
+    next_milestone,
+    reward_for,
+    unclaimed,
+)
 from bot.database import Database
 from bot.game.daily import Reward, club_day, month_key, next_reset
 from bot.game.health import now_ts
@@ -125,6 +131,9 @@ def ladder_view(state: VisitState) -> list[dict]:
                 "day": day,
                 "title": reward.title,
                 "icon": reward.icon,
+                # Вещь в клетке показываем ею самой, а не значком: картинка
+                # говорит про подарок больше, чем 🧪 на все склянки разом
+                "image": gift_picture(reward),
                 "note": reward.note,
                 "credits": reward.credits,
                 "potion": reward.potion,
