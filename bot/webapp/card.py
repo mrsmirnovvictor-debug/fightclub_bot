@@ -446,6 +446,12 @@ def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
         "boost": potion.is_boost,
         "slot": SECTION_CODE,
         "slot_title": SECTION_TITLE,
+        # Полоса износа: у пропуска она есть, у склянок её нет. Без этих
+        # ключей карточка вещи рисовала пропуску «Износ: undefined» —
+        # рисует её одна и та же карточка, а ключей у склянки не было
+        "wear": 0,
+        "max_wear": potion.max_wear,
+        "wear_text": potion.describe_wear(),
         "note": potion.note,
         "price": potion.price,
         "level_required": potion.level_required,

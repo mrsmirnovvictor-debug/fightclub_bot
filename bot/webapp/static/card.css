@@ -1675,9 +1675,18 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 
 /* Кнопка календаря на карточке: одна, и во всю ширину — рядом с ней
-   ничего не стоит, а половинная смотрелась бы обрубком */
+   ничего не стоит, а половинная смотрелась бы обрубком. Одета как панель
+   под ней: тот же фон, та же кромка, тот же цвет текста и тот же радиус.
+   Синяя кнопка посреди спокойной карточки читается как чужая */
 .hero-acts { margin: 8px 0 2px; }
-.hero-acts .btn { width: 100%; }
+.hero-acts .btn {
+  width: 100%;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+}
 
 @media (max-width: 340px) {
   .gift-icon { font-size: 13px; }

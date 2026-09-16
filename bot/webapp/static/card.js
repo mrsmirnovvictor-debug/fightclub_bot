@@ -336,7 +336,9 @@ function thingCard(item, credits, shop, bare) {
   kind.textContent = item.slot_title;
   body.appendChild(kind);
 
-  if (!shop && item.consumable) {
+  // Пропуск копится стопкой, как склянка, хоть его и не пьют: без счёта
+  // полоса износа «0/1» говорила бы, что талон один, а их может быть пять
+  if (!shop && (item.consumable || item.kind === "pass")) {
     const have = document.createElement("div");
     have.className = "thing-have";
     have.textContent = "В рюкзаке: " + item.owned + " шт.";
@@ -351,12 +353,19 @@ function thingCard(item, credits, shop, bare) {
     }
   }
 
-  if (!shop && !item.consumable) {
+  // Полосу износа рисуем только тому, у кого есть шкала: у склянки её нет,
+  // и без этой проверки пропуск получал «Износ: undefined»
+  if (!shop && !item.consumable && item.max_wear) {
     const wear = document.createElement("div");
     const left = item.max_wear - item.wear;
-    wear.className = "thing-wear" + (left <= 1 ? " dying" : item.wear ? " worn" : "");
+    const ticket = item.kind === "pass";
+    wear.className =
+      "thing-wear" + (left <= 1 && !ticket ? " dying" : item.wear ? " worn" : "");
     wear.textContent = "🔧 Износ: " + item.wear_text;
-    if (left <= 1) wear.textContent += " — ещё один бой, и рассыплется";
+    // Пропуск не рассыпается, а отрабатывает своё: предупреждать о его
+    // последнем бое незачем — других у него и не бывает
+    if (ticket) wear.textContent += " — хватает на один рейд";
+    else if (left <= 1) wear.textContent += " — ещё один бой, и рассыплется";
     body.appendChild(wear);
   }
 

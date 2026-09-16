@@ -4324,6 +4324,75 @@ async def test_a_cell_tells_what_lies_in_it(server):
         await browser.close()
 
 
+async def test_the_bag_shows_the_pass_wear_and_not_undefined(server):
+    """У пропуска в рюкзаке стоит «Износ: 0/1», а у склянки строки нет.
+
+    Пропуск рисует та же карточка, что и оружие, и она печатает износ
+    всему, что не пьётся. Ключей износа у склянок не было вовсе — и в
+    рюкзаке у талона стояло «Износ: undefined».
+    """
+    from bot.game.potions import RAID_PASS
+
+    player = make_player()
+    player.potions = {RAID_PASS: 2, "heal_small": 1}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+
+        shelf = page.locator("#potion-list .thing")
+        said = await shelf.first.inner_text()
+        assert "Износ: 0/1" in said
+        assert "undefined" not in (await page.locator("#potion-list").inner_text())
+        assert "один рейд" in said, "не сказано, на сколько талона хватает"
+        # и сколько талонов на руках: износ «0/1» иначе говорил бы, что он один
+        assert "В рюкзаке: 2 шт." in said
+        # и талон не грозит рассыпаться: он отрабатывает своё, а не ветшает
+        assert "рассыплется" not in said
+
+        # у склянки полосы износа нет вовсе
+        assert await shelf.nth(1).locator(".thing-wear").count() == 0
+        await browser.close()
+
+
+async def test_the_calendar_button_is_dressed_like_the_panel(server):
+    """Кнопка одета как таблица под ней: тот же фон, кромка и цвет текста.
+
+    Синяя кнопка посреди спокойной карточки читается как чужая, поэтому
+    сверяем не класс, а посчитанные браузером цвета — они и решают.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        def looks(selector):
+            return page.locator(selector).evaluate(
+                "node => {"
+                "  const style = getComputedStyle(node);"
+                "  return {"
+                "    back: style.backgroundColor,"
+                "    ink: style.color,"
+                "    edge: style.borderTopColor,"
+                "    width: style.borderTopWidth,"
+                "    round: style.borderTopLeftRadius,"
+                "  };"
+                "}"
+            )
+
+        gate = await looks("#hero-daily")
+        panel = await looks("#hero .panel")
+
+        assert gate == panel, f"кнопка выбивается из карточки: {gate} против {panel}"
+        await browser.close()
+
+
 async def test_the_hero_tab_opens_the_calendar_on_demand(server):
     """Кнопка «Ежедневные награды» открывает окно, когда игрок сам захочет."""
     player = make_player()
