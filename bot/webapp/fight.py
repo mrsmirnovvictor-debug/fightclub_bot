@@ -228,7 +228,7 @@ def abilities_payload(fighter: Fighter | None) -> dict[str, Any] | None:
     }
 
 
-def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, str] | None:
+def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, Any] | None:
     """Что аналитик говорит этому бойцу перед ходом. None — молчит.
 
     Считается по законченным ходам и по прошлым боям соперника. Текущий
@@ -247,7 +247,11 @@ def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, str] | None
     habits = session.habits.get(rival_id)
     if habits is None:
         return None
-    advice = advise(habits, session.rounds, rival_id)
+    # Совет по блоку считаем на ширину блока этого бойца: со щитом он
+    # держит три зоны, и советовать ему пару значило бы советовать меньше
+    # того, что он может нажать
+    fighter = session.fighters[viewer_id]
+    advice = advise(habits, session.rounds, rival_id, fighter.block_width)
     return advice.as_dict()
 
 

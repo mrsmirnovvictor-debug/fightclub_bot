@@ -3580,6 +3580,10 @@ async def test_the_analyst_speaks_above_the_buttons(server):
                   "Пояс — 8%, Ноги — 14% и Голову — 22%.",
         "block": "По статистике соперник чаще всего наносит первый удар в "
                  "Голову — 45%, Ноги — 20% и Пояс — 10%.",
+        "attack_tip": {"move": "Бей в Корпус",
+                       "why": "он закроет его с вероятностью 25%"},
+        "block_tip": {"move": "Закрывай Ноги+Голова",
+                      "why": "вероятность отбить удар 56%"},
     }
     player = make_player()
     async with async_playwright() as pw:
@@ -3601,6 +3605,116 @@ async def test_the_analyst_speaks_above_the_buttons(server):
         panel = await scout.bounding_box()
         columns = await page.locator(".zone-columns").bounding_box()
         assert panel["y"] + panel["height"] <= columns["y"] + 0.5
+        await browser.close()
+
+
+async def test_each_tip_stands_over_the_buttons_it_talks_about(server):
+    """Совет по удару — над ударами, совет по блоку — над блоком.
+
+    Разбор читать между ходами успевает не каждый, и совет должен
+    находиться там, где рука уже тянется нажимать.
+    """
+    ring = ring_with_duel()
+    ring["duel"]["scout"] = {
+        "title": "Разбор соперника: 10 боёв, 70 ходов.",
+        "attack": "После таких он обычно закрывает Ноги и Голову (34%).",
+        "block": "После таких он обычно бьёт в Ноги (44%).",
+        "attack_tip": {"move": "Бей в Корпус",
+                       "why": "он закроет его с вероятностью 25%"},
+        "block_tip": {"move": "Закрывай Ноги+Голова",
+                      "why": "вероятность отбить удар 56%"},
+    }
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        tips = page.locator("#club-fights .zone-tip")
+        assert await tips.count() == 2
+        assert "Бей в Корпус" in await tips.nth(0).inner_text()
+        assert "25%" in await tips.nth(0).inner_text()
+        assert "Закрывай Ноги+Голова" in await tips.nth(1).inner_text()
+
+        # Совет по удару стоит над столбцом удара, по блоку — над блоком:
+        # сверяем не порядок в разметке, а то, где они на экране
+        strike = await tips.nth(0).bounding_box()
+        guard = await tips.nth(1).bounding_box()
+        heads = page.locator("#club-fights .zone-head")
+        attack_head = await heads.nth(0).bounding_box()
+        block_head = await heads.last.bounding_box()
+
+        assert "Удар" in await heads.nth(0).inner_text()
+        assert "Блок" in await heads.last.inner_text()
+        # каждый совет — над своим заголовком и в его колонке
+        for tip, head in ((strike, attack_head), (guard, block_head)):
+            assert tip["y"] + tip["height"] <= head["y"] + 0.5, "совет не над кнопками"
+            middle = head["x"] + head["width"] / 2
+            assert tip["x"] - 1 <= middle <= tip["x"] + tip["width"] + 1
+
+        # и они не налезают друг на друга: это два разных столбца
+        assert strike["x"] + strike["width"] <= guard["x"] + 0.5
+        await browser.close()
+
+
+async def test_the_tips_wear_their_own_colour(server):
+    """Совет выделен цветом: иначе он тонет в разборе и кнопках."""
+    ring = ring_with_duel()
+    ring["duel"]["scout"] = {
+        "title": "Разбор соперника: 10 боёв, 70 ходов.",
+        "attack": "После таких он обычно закрывает Ноги и Голову (34%).",
+        "block": "После таких он обычно бьёт в Ноги (44%).",
+        "attack_tip": {"move": "Бей в Корпус", "why": "закроет 25%"},
+        "block_tip": {"move": "Закрывай Ноги+Голова", "why": "отобьёшь 56%"},
+    }
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-tip")
+
+        def ink(selector):
+            return page.locator(selector).first.evaluate(
+                "node => getComputedStyle(node).color"
+            )
+
+        tip = await ink("#club-fights .zone-tip")
+        line = await ink("#club-fights .scout-line")
+        head = await ink("#club-fights .zone-head")
+
+        assert tip != line, "совет того же цвета, что и разбор"
+        assert tip != head, "совет того же цвета, что и кнопки"
+        await browser.close()
+
+
+async def test_without_a_tip_the_columns_stand_as_before(server):
+    """Нечего советовать — и клеток совета нет: пустых мест не оставляем."""
+    ring = ring_with_duel()
+    ring["duel"]["scout"] = {
+        "title": "Соперник новичок: разбирать пока нечего.",
+        "attack": "", "block": "",
+        "attack_tip": {"move": "", "why": ""},
+        "block_tip": {"move": "", "why": ""},
+    }
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        assert await page.locator("#club-fights .zone-tip").count() == 0
         await browser.close()
 
 

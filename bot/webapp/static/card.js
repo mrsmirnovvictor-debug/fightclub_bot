@@ -2512,10 +2512,21 @@ function zoneList(column, repaint) {
   return box;
 }
 
-function zoneColumns(hands, attacks, blocks, draft, prefix, repaint) {
+function zoneColumns(hands, attacks, blocks, draft, prefix, repaint, scout) {
   // Столбцы выбора хода: по столбцу на руку с оружием и один на защиту.
   const box = document.createElement("div");
   box.className = "zone-columns" + (hands.length > 1 ? " three" : "");
+
+  // Советы аналитика — прямо над теми кнопками, которых они касаются:
+  // совет по удару над ударами, по блоку над блоком. Разбор читать
+  // между ходами успевает не каждый, а совет — это одно действие и одно
+  // число. Совет по удару один на обе руки и растянут на их столбцы:
+  // бить в слабое место стоит и левой, и правой
+  const tips = scout && (scout.attack_tip || scout.block_tip);
+  if (tips && (scout.attack_tip.move || scout.block_tip.move)) {
+    box.appendChild(tipCell(scout.attack_tip, hands.length));
+    box.appendChild(tipCell(scout.block_tip, 1));
+  }
   // Заголовок короткий — «Удар 1», — а чем именно бьёт эта рука, говорит
   // подсказка: столбцов бывает три, и название оружия в них не помещается
   const columns = hands.map((hand, index) => ({
@@ -2551,6 +2562,24 @@ function zoneColumns(hands, attacks, blocks, draft, prefix, repaint) {
     box.appendChild(head);
   });
   columns.forEach((column) => box.appendChild(zoneList(column, repaint)));
+  return box;
+}
+
+function tipCell(tip, span) {
+  const box = document.createElement("div");
+  box.className = "zone-tip";
+  if (span > 1) box.style.gridColumn = "span " + span;
+  if (!tip || !tip.move) return box;  // советовать нечего — клетка пустая
+  const move = document.createElement("span");
+  move.className = "zone-tip-move";
+  move.textContent = "💡 " + tip.move;
+  box.appendChild(move);
+  if (tip.why) {
+    const why = document.createElement("span");
+    why.className = "zone-tip-why";
+    why.textContent = tip.why;
+    box.appendChild(why);
+  }
   return box;
 }
 
@@ -2705,7 +2734,8 @@ function turnForm(data) {
 
   box.appendChild(
     zoneColumns(
-      hands, data.attacks, blocks, () => turnDraft, "turn", paintDraft
+      hands, data.attacks, blocks, () => turnDraft, "turn", paintDraft,
+      data.duel.scout
     )
   );
 
