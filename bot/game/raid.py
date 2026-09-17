@@ -26,6 +26,7 @@ from bot.game import art
 from bot.game.clock import MOSCOW, club_day as _day_of
 from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES, BLOCK_WIDTH, block_combo
 from bot.game.combat import Action, Fighter
+from bot.game.economy import MAX_LEVEL
 from bot.game.equipment import Equipment, OwnedItem, get_item
 from bot.game.health import now_ts
 from bot.game.reference import best_kit, developed_stats
@@ -75,6 +76,9 @@ ELIXIR_PRIZES: tuple[str, ...] = (
 # Время московское и без перевода часов, поэтому смещение постоянное.
 # Часы общие с остальным клубом: `MOSCOW` и `_day_of` берутся из
 # `bot.game.clock`.
+# По какой ступени прилавка одет босс. Своя, а не отрядная: см. boss_kit
+BOSS_GEAR_LEVEL = MAX_LEVEL
+
 RAID_SLOTS: tuple[int, ...] = (0, 8, 12, 16, 20)
 RAIDS_PER_DAY = 2
 WINDOW_HOURS = 2
@@ -291,7 +295,7 @@ BOSSES: tuple[Boss, ...] = (
         title="Босс Казино",
         emoji="🩸",
         class_code="tank",
-        weapon="sledge",
+        weapon="boss_sledge",
         genitive="Босса Казино",
         tagline="Он тут всё построил и всех похоронил.",
         raid_title="Ограбление Босса Казино",
@@ -320,10 +324,18 @@ def boss_level(levels: list[int]) -> int:
     return round(sum(levels) / len(levels)) + LEVELS_ABOVE
 
 
-def boss_kit(boss: Boss, level: int) -> Equipment:
-    """Полный комплект босса: лучшее по его уровню, оружие — своё."""
+def boss_kit(boss: Boss, level: int = BOSS_GEAR_LEVEL) -> Equipment:
+    """Полный комплект босса: одет по десятому уровню, оружие — своё.
+
+    Уровень снаряжения у босса свой и не зависит от отряда. Раньше он
+    одевался по собственному уровню, а тот считается от отряда: трое
+    третьего уровня встречали босса в вещах седьмого. Босс Казино — один
+    на весь клуб, и одет он всегда по верхней ступени прилавка, кто бы к
+    нему ни пришёл. Расти от отряда продолжают запас здоровья и
+    характеристики — этого хватает, чтобы новичков он не сносил.
+    """
     fclass = FIGHTER_CLASSES[boss.class_code]
-    kit = dict(best_kit(fclass, level))
+    kit = dict(best_kit(fclass, BOSS_GEAR_LEVEL))
     weapon = get_item(boss.weapon)
     if weapon is not None:
         kit[weapon.slot] = weapon
@@ -450,6 +462,7 @@ def shares_of(purse: int, party: int) -> list[int]:
 
 __all__ = [
     "BOSSES",
+    "BOSS_GEAR_LEVEL",
     "BOSS_HP_SHARE",
     "BOSS_ID",
     "CELLAR_BOSS",

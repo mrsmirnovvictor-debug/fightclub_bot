@@ -11,6 +11,7 @@ import pytest
 
 from bot.config import Config
 from bot.game.combat import Fighter
+from bot.game.economy import MAX_LEVEL
 from bot.game.potions import RAID_PASS
 from bot.game.raid import (
     BOSS_ID,
@@ -112,6 +113,18 @@ async def storm(service, session, players) -> None:
 def weaken(session, hp: int = 1) -> None:
     """Оставить боссу на один удар: рейд должен закончиться победой."""
     session.enemy.hp = hp
+
+
+def toughen(session, hp: int = 5000) -> None:
+    """Подпереть отряду здоровье, когда проверяем не живучесть.
+
+    Босс Казино бьёт своей кувалдой так, что отряд среднего уровня ложится
+    за несколько волн. Тестам про передышку, кошель и счётчик волн это
+    мешает: они про другое, а падают на том, что бойцы не дожили до
+    проверяемого места.
+    """
+    for fighter in session.fighters.values():
+        fighter.hp = hp
 
 
 # ---------- правила ----------
@@ -539,6 +552,7 @@ async def test_silence_costs_a_turn_but_the_boss_swings_anyway(bot, db):
 async def test_the_judge_calls_a_break_after_six_strikes(bot, db):
     service = make_service(bot, db, raid_break=60, raid_strikes_per_break=6)
     players, session = await gather(service, db, 3, size=3)
+    toughen(session)  # проверяем передышку, а не то, кто кого перебьёт
 
     for _ in range(2):  # шесть ударов: три бойца по два раза
         for player in players:
@@ -577,6 +591,7 @@ async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
     """Кошель делится поровну, вещей за рейд не дают вовсе."""
     service = make_service(bot, db, raid_purse=100)
     players, session = await gather(service, db, 4, size=4)
+    toughen(session)  # кошель делят живые, а живучесть тут не проверяется
     purse = [(await db.get_player(p.user_id)).credits for p in players]
 
     for _ in range(4):
@@ -772,16 +787,16 @@ async def test_a_raid_runs_past_thirty_waves_if_everyone_is_still_standing(bot, 
 
     service = make_service(bot, db)
     players, session = await gather(service, db, 2)
+    toughen(session)
 
     # Держим обоих и босса живыми: пусть волн пройдёт заведомо больше потолка
     for _ in range(FATIGUE_WAVES + 5):
         if service.raid_of_user(players[0].user_id) is None:
             break
         session.enemy.hp = session.enemy.max_hp
-        for player in players:
-            session.fighters[player.user_id].hp = (
-                session.fighters[player.user_id].max_hp
-            )
+        # Подпираем здоровье заново: усталость растёт, и к концу кувалда
+        # босса снимает больше, чем у бойца всего здоровья
+        toughen(session)
         await storm(service, session, players)
 
     assert session.wave > FATIGUE_WAVES, "волн прошло меньше потолка"
@@ -888,3 +903,84 @@ async def test_the_judge_names_the_trick_in_the_raid_log(bot, db):
 
     said = "\n".join(session.said)
     assert "Сильный удар" in said, f"приём сработал молча:\n{said}"
+
+
+# ---------- чем вооружён босс ----------
+
+
+def test_the_boss_carries_his_own_hammer():
+    """Кувалда Босса — его и только его: купить её негде.
+
+    Раньше босс ходил с прилавочной кувалдой шестого уровня. Её урон 8–10,
+    а сам он к тому времени успевал вырасти до четырнадцатого: одетый
+    игрок бил больнее босса, и рейд разваливался об это.
+    """
+    from bot.content.items import SHOWCASE
+    from bot.game.equipment import get_item
+
+    hammer = get_item(CELLAR_BOSS.weapon)
+
+    assert hammer is not None and hammer.code == "boss_sledge"
+    assert hammer not in SHOWCASE, "оружие босса попало на прилавок"
+    assert not hammer.on_sale, "оружие босса продаётся"
+    # медленная, но сокрушительная: разброс шире и потолок выше прилавочного
+    assert hammer.damage_max - hammer.damage_min >= 20
+    assert hammer.damage_max > get_item("splitting_axe").damage_max
+    assert hammer.accuracy < get_item("splitting_axe").accuracy, "не медленная"
+
+
+def test_the_boss_is_dressed_by_his_own_step_not_the_partys():
+    """Босс одет по десятому уровню, кто бы к нему ни пришёл.
+
+    Уровень босса считается от отряда, и раньше по нему же собирался
+    комплект: трое третьего уровня встречали босса в вещах седьмого.
+    """
+    from bot.game.equipment import Slot
+    from bot.game.raid import BOSS_GEAR_LEVEL, boss_kit
+    from bot.game.reference import best_kit
+    from bot.game.classes import get_class
+
+    assert BOSS_GEAR_LEVEL == MAX_LEVEL
+
+    rookies = boss_fighter(CELLAR_BOSS, [3, 3, 3])
+    veterans = boss_fighter(CELLAR_BOSS, [10, 10, 10])
+    # уровень по-прежнему растёт от отряда — а вещи одни и те же
+    assert rookies.level < veterans.level
+    worn = lambda one: {  # noqa: E731
+        slot: owned.item.code for slot, owned in one.equipment.items.items()
+    }
+    assert worn(rookies) == worn(veterans)
+
+    # и это ровно верхняя ступень прилавка, плюс своя кувалда
+    shop = dict(best_kit(get_class(CELLAR_BOSS.class_code), MAX_LEVEL))
+    mine = boss_kit(CELLAR_BOSS)
+    for slot, item in shop.items():
+        if slot is Slot.WEAPON:
+            continue
+        assert mine.items[slot].item.code == item.code
+    assert mine.items[Slot.WEAPON].item.code == "boss_sledge"
+
+
+def test_the_hammer_makes_the_boss_hit_harder_than_a_dressed_player():
+    """Смысл кувалды в том, чтобы босс перестал быть слабее игрока.
+
+    Сравниваем потолок удара: у босса он обязан быть выше, чем у танка
+    десятого уровня в лучшем, что есть на прилавке.
+    """
+    from bot.game.classes import get_class
+    from bot.game.combat import Fighter
+    from bot.game.reference import best_kit, developed_stats, equipment_of
+
+    fclass = get_class("tank")
+    gear = equipment_of(dict(best_kit(fclass, MAX_LEVEL)))
+    player = Fighter(
+        user_id=1, name="Танк", fclass=fclass,
+        stats=developed_stats(fclass, MAX_LEVEL).merge(gear.bonus),
+        level=MAX_LEVEL, equipment=gear,
+    )
+    boss = boss_fighter(CELLAR_BOSS, [MAX_LEVEL] * 3)
+
+    def ceiling(one):
+        return one.derived.damage_max + one.equipment.weapon_damage[1] * one.fclass.damage_mult
+
+    assert ceiling(boss) > ceiling(player)
