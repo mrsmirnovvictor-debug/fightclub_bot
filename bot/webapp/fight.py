@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from bot.duel_service import Challenge, DuelService, DuelSession
+from bot.game.clock import club_date
 from bot.game.classes import ALL_ZONES, BLOCK_WIDTH, block_button, block_combos
 from bot.game.equipment import BARE_HANDS_ICON
 from bot.game.combat import (
@@ -24,6 +25,13 @@ from bot.game.combat import (
 )
 from bot.game.locations import FIGHT_CLUB, Service, get_location
 from bot.game.modes import FightMode, mode_of
+from bot.content.abilities import get_ability
+from bot.game.abilities import (
+    MAX_ENERGY,
+    MAX_PER_TURN,
+    Source,
+    energy_gain,
+)
 from bot.game.scout import advise
 from bot.models import Player
 
@@ -177,10 +185,50 @@ def duel_payload(session: DuelSession, viewer_id: int) -> dict[str, Any]:
         "log": session.rounds,
         # Подсказки аналитика — только подписчику и только про соперника
         "scout": scout_payload(session, viewer_id),
+        # Приёмы и шкала энергии — только свои: чужие заготовки соперник
+        # видеть не должен, иначе приём перестаёт быть неожиданностью
+        "abilities": abilities_payload(session.fighters.get(viewer_id)),
     }
 
 
-def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, str] | None:
+def abilities_payload(fighter: Fighter | None) -> dict[str, Any] | None:
+    """Шкала бойца и его приёмы: что нажимается, а что ещё копится.
+
+    Заготовки показываем свои: боец должен видеть, что уже нажал, — приём
+    ждёт своего момента и может провисеть несколько ходов.
+    """
+    if fighter is None:
+        return None
+    pressed = {charge.ability.code for charge in fighter.charges}
+    return {
+        "energy": fighter.energy,
+        "max": MAX_ENERGY,
+        # Чем этот класс копит и по сколько — иначе прыжок шкалы на три
+        # выглядит как подарок ниоткуда
+        "source": energy_note(fighter),
+        # Сколько приёмов ещё можно пустить в дело в этом ходу
+        "left": max(0, MAX_PER_TURN - fighter.pressed),
+        "per_turn": MAX_PER_TURN,
+        "tricks": [
+            {
+                "code": code,
+                "title": ability.title,
+                "icon": ability.icon,
+                "image": ability.picture,
+                "note": ability.note,
+                "cost": fighter.loadout.cost_of(code),
+                "ready": fighter.can_use(code),
+                "armed": code in pressed,
+            }
+            for code, ability in (
+                (code, get_ability(code)) for code in fighter.loadout.slots
+            )
+            if ability is not None
+        ],
+    }
+
+
+def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, Any] | None:
     """Что аналитик говорит этому бойцу перед ходом. None — молчит.
 
     Считается по законченным ходам и по прошлым боям соперника. Текущий
@@ -199,9 +247,33 @@ def scout_payload(session: DuelSession, viewer_id: int) -> dict[str, str] | None
     habits = session.habits.get(rival_id)
     if habits is None:
         return None
-    advice = advise(habits, session.rounds, rival_id)
+    # Совет по блоку считаем на ширину блока этого бойца: со щитом он
+    # держит три зоны, и советовать ему пару значило бы советовать меньше
+    # того, что он может нажать
+    fighter = session.fighters[viewer_id]
+    advice = advise(habits, session.rounds, rival_id, fighter.block_width)
     return advice.as_dict()
 
+
+# Чем копится шкала у каждого класса — словами, для подписи под баром.
+# Ставку пишем числом намеренно: у воина удар даёт сразу три, шкала растёт
+# прыжками, и без подписи это выглядит как будто энергия взялась сама
+ENERGY_TITLES: dict[str, tuple[Source, str]] = {
+    "warrior": (Source.HIT, "за точный удар"),
+    "rogue": (Source.DODGE, "за уворот"),
+    "assassin": (Source.CRIT, "за критический удар"),
+    "tank": (Source.BLOCK, "за блок"),
+}
+
+
+def energy_note(fighter: Fighter) -> str:
+    """Подпись под шкалой: сколько и за что."""
+    row = ENERGY_TITLES.get(fighter.fclass.code)
+    if row is None:  # pragma: no cover - классов ровно четыре
+        return ""
+    source, words = row
+    points = energy_gain(fighter.fclass.code, source, fighter.has_shield)
+    return f"+{points} {words}"
 
 FIGHT_CLUB_TITLE = get_location(FIGHT_CLUB).title
 
@@ -293,7 +365,9 @@ def fight_row(row: dict[str, Any], user_id: int) -> dict[str, Any]:
         "mode": mode_payload(mode),
         "in_app": row["chat_id"] is None,
         "created_at": row["created_at"],
-        "date": (row["created_at"] or "")[:10],
+        # День московский: бой в час ночи — это уже новые сутки, а метка в
+        # базе лежит в UTC и сама по себе указала бы на вчера
+        "date": club_date(row["created_at"]),
     }
 
 

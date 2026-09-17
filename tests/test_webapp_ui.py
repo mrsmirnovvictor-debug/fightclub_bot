@@ -6,8 +6,10 @@
 """
 
 import asyncio
+import base64
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -41,6 +43,13 @@ def find_chromium() -> str | None:
 CHROMIUM = find_chromium()
 # Всё, что рисуется картинкой: у лавки клуба jpeg, у мага png
 IMAGES = "**/*.{jpeg,jpg,png}"
+
+# Однопиксельный png для тех тестов, где картинка должна загрузиться. По
+# умолчанию страница картинок не грузит вовсе — до бакета из тестов не
+# дотянуться, — и вёрстку с картинками иначе было бы не проверить
+PIXEL = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 pytestmark = pytest.mark.skipif(CHROMIUM is None, reason="Chromium не найден")
 
 
@@ -222,7 +231,7 @@ def city_map(
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
-    battle=None, city=None, workshop=None,
+    battle=None, city=None, workshop=None, images=False,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -252,7 +261,15 @@ async def open_page(
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body=""
     ))
-    await page.route(IMAGES, lambda route: route.abort())
+    # Картинки по умолчанию не грузим: до бакета из тестов не дотянуться,
+    # и каждая была бы секундой ожидания. Кому нужна настоящая — просит
+    # `images=True` и получает пиксель
+    if images:
+        await page.route(IMAGES, lambda route: route.fulfill(
+            status=200, content_type="image/png", body=PIXEL
+        ))
+    else:
+        await page.route(IMAGES, lambda route: route.abort())
     await page.goto(f"{server.make_url('/')}{query}")
     return browser, page
 
@@ -317,7 +334,6 @@ async def shop_screen(db, service: Service):
             status=200, content_type="application/javascript", body=""
         ))
         await page.route(IMAGES, lambda route: route.abort())
-
         await page.route("**/api/club*", canned({"fighters": [], "total": 0}))
         await page.route("**/api/magic*", canned({"items": [], "credits": 0}))
         await page.route("**/api/fights*", canned(EMPTY_RING))
@@ -3564,6 +3580,10 @@ async def test_the_analyst_speaks_above_the_buttons(server):
                   "Пояс — 8%, Ноги — 14% и Голову — 22%.",
         "block": "По статистике соперник чаще всего наносит первый удар в "
                  "Голову — 45%, Ноги — 20% и Пояс — 10%.",
+        "attack_tip": {"move": "Бей в Корпус",
+                       "why": "он закроет его с вероятностью 25%"},
+        "block_tip": {"move": "Закрывай Ноги+Голова",
+                      "why": "вероятность отбить удар 56%"},
     }
     player = make_player()
     async with async_playwright() as pw:
@@ -3585,6 +3605,116 @@ async def test_the_analyst_speaks_above_the_buttons(server):
         panel = await scout.bounding_box()
         columns = await page.locator(".zone-columns").bounding_box()
         assert panel["y"] + panel["height"] <= columns["y"] + 0.5
+        await browser.close()
+
+
+async def test_each_tip_stands_over_the_buttons_it_talks_about(server):
+    """Совет по удару — над ударами, совет по блоку — над блоком.
+
+    Разбор читать между ходами успевает не каждый, и совет должен
+    находиться там, где рука уже тянется нажимать.
+    """
+    ring = ring_with_duel()
+    ring["duel"]["scout"] = {
+        "title": "Разбор соперника: 10 боёв, 70 ходов.",
+        "attack": "После таких он обычно закрывает Ноги и Голову (34%).",
+        "block": "После таких он обычно бьёт в Ноги (44%).",
+        "attack_tip": {"move": "Бей в Корпус",
+                       "why": "он закроет его с вероятностью 25%"},
+        "block_tip": {"move": "Закрывай Ноги+Голова",
+                      "why": "вероятность отбить удар 56%"},
+    }
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        tips = page.locator("#club-fights .zone-tip")
+        assert await tips.count() == 2
+        assert "Бей в Корпус" in await tips.nth(0).inner_text()
+        assert "25%" in await tips.nth(0).inner_text()
+        assert "Закрывай Ноги+Голова" in await tips.nth(1).inner_text()
+
+        # Совет по удару стоит над столбцом удара, по блоку — над блоком:
+        # сверяем не порядок в разметке, а то, где они на экране
+        strike = await tips.nth(0).bounding_box()
+        guard = await tips.nth(1).bounding_box()
+        heads = page.locator("#club-fights .zone-head")
+        attack_head = await heads.nth(0).bounding_box()
+        block_head = await heads.last.bounding_box()
+
+        assert "Удар" in await heads.nth(0).inner_text()
+        assert "Блок" in await heads.last.inner_text()
+        # каждый совет — над своим заголовком и в его колонке
+        for tip, head in ((strike, attack_head), (guard, block_head)):
+            assert tip["y"] + tip["height"] <= head["y"] + 0.5, "совет не над кнопками"
+            middle = head["x"] + head["width"] / 2
+            assert tip["x"] - 1 <= middle <= tip["x"] + tip["width"] + 1
+
+        # и они не налезают друг на друга: это два разных столбца
+        assert strike["x"] + strike["width"] <= guard["x"] + 0.5
+        await browser.close()
+
+
+async def test_the_tips_wear_their_own_colour(server):
+    """Совет выделен цветом: иначе он тонет в разборе и кнопках."""
+    ring = ring_with_duel()
+    ring["duel"]["scout"] = {
+        "title": "Разбор соперника: 10 боёв, 70 ходов.",
+        "attack": "После таких он обычно закрывает Ноги и Голову (34%).",
+        "block": "После таких он обычно бьёт в Ноги (44%).",
+        "attack_tip": {"move": "Бей в Корпус", "why": "закроет 25%"},
+        "block_tip": {"move": "Закрывай Ноги+Голова", "why": "отобьёшь 56%"},
+    }
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-tip")
+
+        def ink(selector):
+            return page.locator(selector).first.evaluate(
+                "node => getComputedStyle(node).color"
+            )
+
+        tip = await ink("#club-fights .zone-tip")
+        line = await ink("#club-fights .scout-line")
+        head = await ink("#club-fights .zone-head")
+
+        assert tip != line, "совет того же цвета, что и разбор"
+        assert tip != head, "совет того же цвета, что и кнопки"
+        await browser.close()
+
+
+async def test_without_a_tip_the_columns_stand_as_before(server):
+    """Нечего советовать — и клеток совета нет: пустых мест не оставляем."""
+    ring = ring_with_duel()
+    ring["duel"]["scout"] = {
+        "title": "Соперник новичок: разбирать пока нечего.",
+        "attack": "", "block": "",
+        "attack_tip": {"move": "", "why": ""},
+        "block_tip": {"move": "", "why": ""},
+    }
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        assert await page.locator("#club-fights .zone-tip").count() == 0
         await browser.close()
 
 
@@ -3685,10 +3815,10 @@ async def test_the_repair_button_left_the_bag(server):
         await browser.close()
 
 
-async def test_the_rival_sees_the_dot_on_a_modified_thing(server):
-    """Точка ступени горит на надетой вещи — и в чужой карточке тоже.
+async def test_the_rival_sees_the_ring_on_a_modified_thing(server):
+    """Обводка ступени горит на надетой вещи — и в чужой карточке тоже.
 
-    В этом и смысл переноса точки с прилавка на вещь: соперник, открывший
+    В этом и смысл переноса метки с прилавка на вещь: соперник, открывший
     карточку перед боем, должен видеть, что оружие не простое, а какое —
     сказать по цвету.
     """
@@ -3700,16 +3830,19 @@ async def test_the_rival_sees_the_dot_on_a_modified_thing(server):
         browser, page = await open_page(pw, server, card, query="?user_id=42")
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        # кукла на странице нарисована дважды — в шапке и ниже; точка на
-        # вещи стоит в обеих
-        star = page.locator("#hero-slots-left .slot-star")
-        assert await star.count() == 1
-        assert await star.inner_text() == "🟣"
-        assert await page.locator(".slot .slot-star").count() == 2
+        # кукла на странице нарисована дважды — в шапке и ниже; обводка
+        # ступени стоит в обеих
+        marked = page.locator("#hero-slots-left .slot.tier")
+        assert await marked.count() == 1
+        assert "lvl4" in await marked.get_attribute("class"), "цвет не той ступени"
+        assert await page.locator(".slot.tier").count() == 2
+        # обводка нарисована поверх картинки и внутри рамки клетки
+        ring = await marked.evaluate(
+            "box => getComputedStyle(box, '::after').borderTopColor"
+        )
+        assert ring == "rgb(164, 77, 214)", ring
         # и подсказка клетки говорит, что именно дала модификация
-        hint = await page.locator("#hero-slots-left .slot").filter(
-            has=page.locator(".slot-star")
-        ).get_attribute("title")
+        hint = await marked.get_attribute("title")
         assert "Мастерская заточка оружия" in hint and "урон +12" in hint
         await browser.close()
 
@@ -3855,10 +3988,13 @@ async def test_the_master_burns_and_leaves_a_star(server):
         await page.wait_for_selector(".master.boom")
         await page.wait_for_selector(".master:not(.going)")
 
-        # на вещи осталась звёздочка своей ступени
+        # на вещи осталась метка своей ступени: точка у названия и
+        # обводка того же цвета вокруг картинки
         await page.locator("#workshop-tabs .chip").first.click()
         star = page.locator("#repair-list .thing-star").first
         assert await star.inner_text() == "🟡"
+        pic = page.locator("#repair-list .thing-pic").first
+        assert "lvl2" in await pic.get_attribute("class")
         await browser.close()
 
 
@@ -3978,4 +4114,848 @@ async def test_leaving_the_casino_leaves_the_raid_behind(server):
         await page.wait_for_selector("#club-fights:not(.hidden)")
         assert await page.locator("#club-raid").is_hidden(), "рейд уехал следом"
         assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
+        await browser.close()
+
+
+# ---------- приёмы ----------
+
+
+def tricks_state(energy: int = 9, count: int = 4, left: int = 3) -> dict:
+    """Шкала и приёмы так, как их отдаёт сервер."""
+    return {
+        "energy": energy,
+        "max": 20,
+        "source": "+3 за точный удар",
+        "left": left,
+        "per_turn": 3,
+        "tricks": [
+            {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+             "image": "https://example.test/items/strong_hit.jpeg",
+             "note": "+15 урона.", "cost": 3, "ready": energy >= 3, "armed": False},
+            {"code": "power_hit", "title": "Мощный удар", "icon": "👊",
+             "image": "https://example.test/items/power_hit.jpeg",
+             "note": "+30 урона.", "cost": 6, "ready": energy >= 6, "armed": False},
+            {"code": "crushing_hit", "title": "Сокрушительный удар", "icon": "👊",
+             "image": "https://example.test/items/crushing_hit.jpeg",
+             "note": "+45 урона.", "cost": 9, "ready": energy >= 9, "armed": True},
+            {"code": "mass_hit", "title": "Массовый удар", "icon": "💢",
+             "image": "https://example.test/items/mass_hit.jpeg",
+             "note": "+60 урона.", "cost": 12, "ready": energy >= 12, "armed": False},
+        ][:count],
+    }
+
+
+async def test_the_tricks_stand_above_the_turn_buttons(server):
+    """Приёмы жмут до удара и блока — и стоят на экране выше их."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state()
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".zone-columns")
+
+        tricks = page.locator(".tricks")
+        assert await tricks.count() == 1
+        assert await tricks.locator(".trick").count() == 4
+
+        panel = await tricks.bounding_box()
+        columns = await page.locator(".zone-columns").bounding_box()
+        assert panel["y"] + panel["height"] <= columns["y"] + 0.5
+        await browser.close()
+
+
+async def test_a_trick_is_grey_until_the_bar_fills(server):
+    """Не хватает энергии — приём чёрно-белый и не нажимается."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=4)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        tricks = page.locator(".trick")
+        # первый по карману, остальные — нет
+        assert "cold" not in await tricks.nth(0).get_attribute("class")
+        assert await tricks.nth(0).is_enabled()
+        assert "cold" in await tricks.nth(1).get_attribute("class")
+        assert await tricks.nth(1).is_disabled()
+
+        # серым приём делает именно фильтр, а не просто прозрачность
+        grey = await tricks.nth(1).locator(".trick-pic").evaluate(
+            "box => getComputedStyle(box).filter"
+        )
+        assert "grayscale" in grey
+        colour = await tricks.nth(0).locator(".trick-pic").evaluate(
+            "box => getComputedStyle(box).filter"
+        )
+        assert colour == "none", "доступный приём должен быть цветным"
+        await browser.close()
+
+
+async def test_a_pressed_trick_shows_it_is_waiting(server):
+    """Нажатая заготовка светится: она ждёт своего момента, а не пропала."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state()
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        armed = page.locator(".trick.armed")
+        assert await armed.count() == 1
+        assert "наготове" in await armed.inner_text()
+        assert await armed.is_disabled(), "дважды одну заготовку не кладут"
+        await browser.close()
+
+
+async def test_the_energy_bar_shows_what_it_counts(server):
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=9)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".energy")
+
+        assert "9 / 20" in await page.locator(".energy-label").inner_text()
+        said = await page.locator(".energy-note").inner_text()
+        assert "+3 за точный удар" in said, "ставка должна стоять числом"
+        assert "осталось приёмов: 3" in said
+        # полоса налита ровно на долю накопленного
+        width = await page.locator(".energy-fill").evaluate(
+            "fill => fill.style.width"
+        )
+        assert width == "45%"
+        await browser.close()
+
+
+async def test_the_card_lists_what_the_fighter_knows(server):
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = {
+        "known": [
+            {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+             "image": "https://example.test/items/strong_hit.jpeg",
+             "note": "+15 урона.", "tier": 1, "cost": 3},
+        ],
+        "slots": 4, "choice": None, "next_tier": 3,
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        box = page.locator("#skills-box")
+        assert await box.locator(".skill").count() == 1
+        assert "1 из 4" in await page.locator("#skills-count").inner_text()
+        assert "на 3 уровне" in await page.locator("#skills-note").inner_text()
+        await browser.close()
+
+
+async def test_the_fork_is_impossible_to_miss(server):
+    """Дорос до ступени — развилка стоит в карточке и предупреждает."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = {
+        "known": [], "slots": 4, "next_tier": 6,
+        "choice": {
+            "tier": 3,
+            "options": [
+                {"code": "power_hit", "title": "Мощный удар", "icon": "👊",
+                 "image": "https://example.test/items/power_hit.jpeg",
+                 "note": "+30 урона.", "cost": 6, "own": True},
+                {"code": "nimble", "title": "Проворность", "icon": "🌀",
+                 "image": "https://example.test/items/nimble.jpeg",
+                 "note": "Уворот наверняка.", "cost": 6, "own": False},
+                {"code": "crit_hit", "title": "Критический удар", "icon": "💥",
+                 "image": "https://example.test/items/crit_hit.jpeg",
+                 "note": "Крит без проверки.", "cost": 6, "own": False},
+            ],
+        },
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        fork = page.locator(".fork")
+        assert await fork.count() == 1
+        said = await fork.inner_text()
+        assert "3 уровень" in said and "навсегда" in said
+        assert await fork.locator(".skill").count() == 3
+        # классовый приём помечен
+        assert await fork.locator(".fork-own").inner_text() == "свой"
+        await browser.close()
+
+
+# ---------- награда за вход ----------
+
+
+def daily_state(days=3, waiting=True, fresh=True, month="2026-09") -> dict:
+    """Окно входа так, как его отдаёт сервер.
+
+    Собираем настоящим `daily_payload`, а не руками: календарь считается
+    по месяцу, и выдуманная лестница из трёх строк молча разошлась бы с
+    тем, что видит игрок.
+    """
+    from bot.content.daily import next_milestone, unclaimed
+    from bot.daily_service import VisitState
+    from bot.webapp.server import daily_payload
+
+    return daily_payload(
+        VisitState(
+            days=days,
+            month=month,
+            fresh=fresh,
+            waiting=unclaimed(days, 0 if waiting else days, month),
+            next_day=next_milestone(days, month),
+            resets_at=0,
+        )
+    )
+
+
+async def test_the_daily_window_pops_up_on_the_first_look(server):
+    """Первый за сутки вход — и окно само встаёт поверх карточки."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        veil = page.locator("#daily-veil")
+        assert await veil.is_visible()
+        said = await veil.inner_text()
+        assert "день 3" in said and "Забирайте" in said
+        # клетка на каждый день сентября, и ни одной лишней
+        assert await veil.locator(".gift").count() == 30
+        await browser.close()
+
+
+async def test_the_calendar_stands_seven_cells_to_a_row(server):
+    """Семь в ряд — и ряды не наползают друг на друга.
+
+    Проверяем геометрией, а не классами: имя `.step` однажды уже было
+    занято кнопками прокачки, клетки унаследовали чужой размер и вёрстка
+    рассыпалась — на классах такое не видно.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cells = page.locator("#daily-ladder .gift")
+        boxes = [await cells.nth(i).bounding_box() for i in range(await cells.count())]
+
+        # первый ряд — ровно семь клеток на одной высоте
+        top = boxes[0]["y"]
+        first_row = [one for one in boxes if abs(one["y"] - top) < 1]
+        assert len(first_row) == 7, "в ряду должно стоять семь клеток"
+        # восьмая ушла на следующую строку и не налезла на первую
+        assert boxes[7]["y"] >= top + boxes[0]["height"] - 0.5
+
+        # клетка квадратная и не схлопнулась
+        assert boxes[0]["width"] > 20
+        assert abs(boxes[0]["width"] - boxes[0]["height"]) < 3
+        # и в строку клетки не вылезают за окно
+        box = await page.locator("#daily-box").bounding_box()
+        assert first_row[-1]["x"] + first_row[-1]["width"] <= box["x"] + box["width"] + 1
+        await browser.close()
+
+
+async def test_a_short_month_gets_a_short_calendar(server):
+    """В феврале клеток двадцать восемь — календарь считает по месяцу."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(month="2026-02")
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        assert await page.locator("#daily-ladder .gift").count() == 28
+        await browser.close()
+
+
+async def test_the_border_says_what_to_do_with_the_day(server):
+    """Кромка отвечает на один вопрос: что с этим днём делать.
+
+    Зелёная — забрано. Синяя — вот оно, забирайте. Серая — ещё расти. И
+    больше кромку не красит ничто: веха, до которой не дошли, обязана
+    оставаться серой, иначе она обещает то, чего не даёт.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # первые два дня забраны, третий — сегодняшний, ждёт в руках
+    card["daily"] = daily_state(days=3, waiting=True)
+    card["daily"]["ladder"][0].update(done=True, ready=False)
+    card["daily"]["ladder"][1].update(done=True, ready=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cells = page.locator("#daily-ladder .gift")
+
+        def edge(index):
+            return cells.nth(index).evaluate(
+                "node => getComputedStyle(node).borderTopColor"
+            )
+
+        def hue(colour):
+            return [int(one) for one in re.findall(r"\d+", colour)[:3]]
+
+        taken = hue(await edge(0))
+        assert taken[1] > taken[0] and taken[1] > taken[2], f"забранное не зелёное: {taken}"
+
+        ours = hue(await edge(2))
+        assert ours[2] > ours[0] and ours[2] > ours[1], f"сегодняшнее не синее: {ours}"
+
+        # веха двадцать первого дня — впереди, и кромка у неё та же, что у
+        # соседнего рейд-пасса: серая
+        assert "big" in await cells.nth(20).get_attribute("class")
+        assert await edge(20) == await edge(9), "веха впереди красится не как будни"
+        grey = hue(await edge(20))
+        assert max(grey) - min(grey) < 30, f"предстоящее не серое: {grey}"
+
+        # галочка стоит только на забранном и остаётся зелёной
+        assert await cells.nth(0).locator(".gift-mark").inner_text() == "✔"
+        assert await cells.nth(2).locator(".gift-mark").count() == 0
+        mark = hue(
+            await cells.nth(0).locator(".gift-mark").evaluate(
+                "node => getComputedStyle(node).backgroundColor"
+            )
+        )
+        assert mark[1] > mark[0] and mark[1] > mark[2], f"галочка не зелёная: {mark}"
+        await browser.close()
+
+
+async def test_the_day_taken_today_turns_green_too(server):
+    """Сегодняшняя забранная — такая же зелёная, как вчерашние.
+
+    Пока награда в руках, клетка синяя; забрали — и она встаёт в общий
+    зелёный ряд, а не остаётся выделенной до завтра.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=3, waiting=False)  # всё забрано, включая сегодня
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cells = page.locator("#daily-ladder .gift")
+        today = cells.nth(2)
+        assert "done" in await today.get_attribute("class")
+        assert "ready" not in await today.get_attribute("class")
+
+        colour = await today.evaluate("node => getComputedStyle(node).borderTopColor")
+        red, green, blue = [int(one) for one in re.findall(r"\d+", colour)[:3]]
+        assert green > red and green > blue, f"сегодняшняя забранная не зелёная: {colour}"
+        # и ни одна клетка не осталась синей: забирать нечего
+        assert await page.locator("#daily-ladder .gift.ready").count() == 0
+        await browser.close()
+
+
+async def test_a_cell_tells_what_lies_in_it(server):
+    """Тридцать значков сами за себя не скажут — клетка отвечает на нажатие."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        # второй день — будни: там лежит рейд-пасс
+        await page.locator("#daily-ladder .gift").nth(1).click()
+        said = await page.locator("#daily-pick").inner_text()
+        assert "2-й день" in said and "Рейд-пасс" in said
+
+        # последний день месяца — заточка
+        await page.locator("#daily-ladder .gift").nth(29).click()
+        said = await page.locator("#daily-pick").inner_text()
+        assert "30-й день" in said and "заточка" in said.lower()
+        await browser.close()
+
+
+async def test_the_bag_shows_the_pass_wear_and_not_undefined(server):
+    """У пропуска в рюкзаке стоит «Износ: 0/1», а у склянки строки нет.
+
+    Пропуск рисует та же карточка, что и оружие, и она печатает износ
+    всему, что не пьётся. Ключей износа у склянок не было вовсе — и в
+    рюкзаке у талона стояло «Износ: undefined».
+    """
+    from bot.game.potions import RAID_PASS
+
+    player = make_player()
+    player.potions = {RAID_PASS: 2, "heal_small": 1}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+
+        shelf = page.locator("#potion-list .thing")
+        said = await shelf.first.inner_text()
+        assert "Износ: 0/1" in said
+        assert "undefined" not in (await page.locator("#potion-list").inner_text())
+        assert "один рейд" in said, "не сказано, на сколько талона хватает"
+        # и сколько талонов на руках: износ «0/1» иначе говорил бы, что он один
+        assert "В рюкзаке: 2 шт." in said
+        # и талон не грозит рассыпаться: он отрабатывает своё, а не ветшает
+        assert "рассыплется" not in said
+
+        # у склянки полосы износа нет вовсе
+        assert await shelf.nth(1).locator(".thing-wear").count() == 0
+        await browser.close()
+
+
+async def test_a_gift_cell_shows_the_thing_itself(server):
+    """Где лежит вещь — там её картинка, а где кредиты — значок.
+
+    «🧪» на все склянки разом не говорит, какая именно ждёт. Картинка
+    берётся от кода вещи — та же, что потом окажется в рюкзаке.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cells = page.locator("#daily-ladder .gift")
+        # первый день — кредиты: вещи нет, стоит значок
+        assert await cells.nth(0).locator(".gift-pic").count() == 0
+        assert await cells.nth(0).locator(".gift-icon").inner_text() == "💰"
+
+        # третий — эликсир восстановления: тут картинка вместо значка
+        potion = cells.nth(2)
+        assert "has-pic" in await potion.get_attribute("class")
+        assert "potions/heal_small" in await potion.locator(".gift-pic").get_attribute(
+            "src"
+        )
+        assert await potion.locator(".gift-icon").is_hidden(), "значок под картинкой"
+
+        # последний день — заточка, и она из другой папки
+        stone = cells.nth(29)
+        assert "items/sharpen_weapon_1" in await stone.locator(
+            ".gift-pic"
+        ).get_attribute("src")
+        await browser.close()
+
+
+async def test_every_cell_looks_the_same_whatever_lies_in_it(server):
+    """Клетка с мешком денег и клетка с вещью — одной масти.
+
+    Фон у картинок инвентаря залит одним цветом, и клетка с кредитами
+    красится им же. Номер дня у всех в левом верхнем углу: иначе в ряду
+    мешок сидел бы по центру, а склянка — в углу, и ряд разъезжался бы.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cells = page.locator("#daily-ladder .gift")
+        money = cells.nth(0)  # первый день — кредиты
+        thing = cells.nth(2)  # третий — склянка
+        assert await money.locator(".gift-pic").count() == 0
+        assert await thing.locator(".gift-pic").count() == 1
+
+        # Фон — тот самый, что залит в картинках инвентаря
+        back = await money.evaluate("node => getComputedStyle(node).backgroundColor")
+        assert back == "rgb(96, 101, 107)", f"фон клетки с кредитами чужой: {back}"
+        assert back == await thing.evaluate(
+            "node => getComputedStyle(node).backgroundColor"
+        )
+
+        # Номер дня у обеих — в левом верхнем углу, на одной высоте от края
+        def corner(cell):
+            return cell.evaluate(
+                "node => {"
+                "  const box = node.getBoundingClientRect();"
+                "  const day = node.querySelector('.gift-day').getBoundingClientRect();"
+                "  return [Math.round(day.x - box.x), Math.round(day.y - box.y)];"
+                "}"
+            )
+
+        assert await corner(money) == await corner(thing)
+        # и это действительно угол, а не середина
+        left, top = await corner(money)
+        box = await money.bounding_box()
+        assert left < box["width"] / 3 and top < box["height"] / 3
+        await browser.close()
+
+
+async def test_the_picture_fills_the_cell_and_leaves_the_marks_visible(server):
+    """Картинка занимает клетку целиком, но день и галочку не прячет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=3, waiting=True)
+    card["daily"]["ladder"][2].update(done=True, ready=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cell = page.locator("#daily-ladder .gift").nth(2)
+        box = await cell.bounding_box()
+        pic = await cell.locator(".gift-pic").bounding_box()
+
+        # картинка кроет клетку, а не жмётся значком в середине
+        assert pic["width"] >= box["width"] - 3
+        assert pic["height"] >= box["height"] - 3
+
+        # номер дня читается поверх неё, а не спрятан под ней
+        assert await cell.locator(".gift-day").is_visible()
+        day = await cell.locator(".gift-day").bounding_box()
+        assert day["x"] >= box["x"] - 1 and day["y"] >= box["y"] - 1
+
+        # и зелёная галочка забранного дня не срезана краем клетки
+        mark = cell.locator(".gift-mark")
+        assert await mark.is_visible(), "галочку съела клетка с картинкой"
+        spot = await mark.bounding_box()
+        assert spot["width"] > 5 and spot["height"] > 5
+        await browser.close()
+
+
+async def test_a_missing_picture_falls_back_to_the_icon(server):
+    """Не доехал файл — в клетке остаётся значок, а не дыра."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+    for step in card["daily"]["ladder"]:
+        if step["image"]:
+            step["image"] = "https://example.invalid/нет-такого.jpeg"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        cell = page.locator("#daily-ladder .gift").nth(2)
+        # ждём, пока картинка сдастся и клетка вернётся к значку
+        await page.wait_for_selector("#daily-ladder .gift:nth-child(3):not(.has-pic)")
+
+        assert await cell.locator(".gift-pic").count() == 0
+        assert await cell.locator(".gift-icon").is_visible()
+        assert await cell.locator(".gift-icon").inner_text() == "🧪"
+        await browser.close()
+
+
+async def test_the_calendar_button_is_dressed_like_the_panel(server):
+    """Кнопка одета как таблица под ней: тот же фон, кромка и цвет текста.
+
+    Синяя кнопка посреди спокойной карточки читается как чужая, поэтому
+    сверяем не класс, а посчитанные браузером цвета — они и решают.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        def looks(selector):
+            return page.locator(selector).evaluate(
+                "node => {"
+                "  const style = getComputedStyle(node);"
+                "  return {"
+                "    back: style.backgroundColor,"
+                "    ink: style.color,"
+                "    edge: style.borderTopColor,"
+                "    width: style.borderTopWidth,"
+                "    round: style.borderTopLeftRadius,"
+                "  };"
+                "}"
+            )
+
+        gate = await looks("#hero-daily")
+        panel = await looks("#hero .panel")
+
+        assert gate == panel, f"кнопка выбивается из карточки: {gate} против {panel}"
+        await browser.close()
+
+
+async def test_the_hero_tab_opens_the_calendar_on_demand(server):
+    """Кнопка «Ежедневные награды» открывает окно, когда игрок сам захочет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # окно само не всплывает: день засчитан, забирать нечего
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        assert await page.locator("#daily-veil").is_hidden()
+
+        gate = page.locator("#hero-daily")
+        assert await gate.is_visible()
+        assert "Ежедневные награды" in await gate.inner_text()
+
+        await gate.click()
+
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        assert await page.locator("#daily-ladder .gift").count() == 30
+        await browser.close()
+
+
+async def test_nothing_to_take_means_no_claim_button(server):
+    """Пустой день окно показывает, но забирать не предлагает."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        buttons = await page.locator("#daily-buttons button").all_inner_texts()
+        assert [one.strip() for one in buttons] == ["Закрыть"]
+        assert "Сегодня награда получена. Приходите завтра." in await page.locator(
+            "#daily-note"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_an_unclaimed_gift_keeps_the_window_coming_back(server):
+    """Не забрал — окно всплывёт снова: невзятое не прячут."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # день уже засчитан раньше (fresh=False), но награда так и ждёт
+    card["daily"] = daily_state(fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#daily-veil").is_visible()
+        await browser.close()
+
+
+async def test_a_quiet_day_does_not_nag(server):
+    """День засчитан, забирать нечего — окно больше не лезет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#daily-veil").is_hidden()
+        await browser.close()
+
+
+async def test_taking_the_gift_closes_the_window(server):
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+    done = json.loads(json.dumps(card))
+    done["daily"] = daily_state(waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        await page.route("**/api/daily", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "card": done,
+                "done": {
+                    "credits": 0, "potions": ["heal_small"],
+                    "rewards": [{"title": "Эликсир восстановления",
+                                 "icon": "🧪", "day": 3}],
+                },
+            }),
+        ))
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+
+        await page.locator("#daily-buttons button").first.click()
+
+        # Ждём именно скрытия: `wait_for_selector` по умолчанию ждёт
+        # видимый элемент и скрытого не дождётся никогда
+        await page.wait_for_selector("#daily-veil", state="hidden")
+        assert "hidden" in await page.locator("#daily-veil").get_attribute("class")
+        await browser.close()
+
+
+async def test_the_energy_bar_stays_while_the_squad_finishes(server):
+    """Ход сделан — шкала остаётся на виду, но нажимать нечего.
+
+    В рейде между нажатием приёма и разменом проходит вся волна. Раньше
+    панель после «Вперёд» пропадала целиком, и боец так и не видел, куда
+    делась энергия и сработала ли заготовка.
+    """
+    state = raid_with_wave({"acted": True})
+    state["raid"]["abilities"] = tricks_state(energy=9)
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, state)
+
+        said = await page.locator("#raid-body").inner_text()
+        assert "Ждём остальных" in said
+
+        panel = page.locator("#raid-body .tricks")
+        assert await panel.count() == 1, "шкала пропала вместе с кнопками"
+        assert "watching" in await panel.get_attribute("class")
+        assert "9 / 20" in await panel.inner_text()
+        # заготовка видна: по ней и понятно, за что ушла энергия
+        assert await panel.locator(".trick.armed").count() == 1
+
+        # но нажать ничего нельзя: приём жмут перед ударом, а не после
+        cards = panel.locator(".trick")
+        for index in range(await cards.count()):
+            assert await cards.nth(index).is_disabled()
+        # и обещания «осталось приёмов» тут нет — оно было бы неправдой
+        assert "осталось приёмов" not in await panel.inner_text()
+        await browser.close()
+
+
+async def test_the_bar_is_there_between_the_waves_too(server):
+    """Отряд переводит дух — шкала всё равно на виду."""
+    state = raid_with_wave({"resting": True})
+    state["raid"]["abilities"] = tricks_state(energy=12)
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, state)
+
+        assert "переводит дух" in await page.locator("#raid-body").inner_text()
+        assert await page.locator("#raid-body .tricks").count() == 1
+        assert "12 / 20" in await page.locator("#raid-body .tricks").inner_text()
+        await browser.close()
+
+
+async def test_all_four_tricks_fit_in_one_row(server):
+    """Четыре приёма обязаны поместиться в строку, не перенесясь."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=20)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        tiles = page.locator(".trick")
+        assert await tiles.count() == 4
+        boxes = [await tiles.nth(i).bounding_box() for i in range(4)]
+        # все на одной строке: верхние края совпадают
+        assert len({round(box["y"]) for box in boxes}) == 1, "плашки перенеслись"
+        # и строка не вылезла за экран
+        row = await page.locator(".trick-row").bounding_box()
+        assert row["x"] >= -0.5 and row["x"] + row["width"] <= 420.5
+        await browser.close()
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+async def test_fewer_tricks_stand_in_the_middle(server, count):
+    """Меньше четырёх — строка собирается по центру, а не липнет к краю."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=20, count=count)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        tiles = page.locator(".trick")
+        assert await tiles.count() == count
+        row = await page.locator(".trick-row").bounding_box()
+        first = await tiles.first.bounding_box()
+        last = await tiles.nth(count - 1).bounding_box()
+        left = first["x"] - row["x"]
+        right = row["x"] + row["width"] - (last["x"] + last["width"])
+        assert abs(left - right) <= 1.5, f"поля разъехались: {left} и {right}"
+        # и плашки не растянулись на всю ширину
+        assert first["width"] <= 92.5
+        await browser.close()
+
+
+async def test_a_pressed_trick_wears_a_green_ring(server):
+    """Нажал — плашка в зелёной обводке, и энергия уже списана."""
+    ring = ring_with_duel()
+    state = tricks_state(energy=20)
+    state["tricks"][2]["armed"] = True
+    ring["duel"]["abilities"] = state
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        armed = page.locator(".trick.armed")
+        assert await armed.count() == 1
+        ring_colour = await armed.evaluate("box => getComputedStyle(box).boxShadow")
+        border = await armed.evaluate("box => getComputedStyle(box).borderTopColor")
+        # зелёный — тот же, каким горит здоровье
+        green = await page.evaluate(
+            "getComputedStyle(document.documentElement).getPropertyValue('--hp-green')"
+        )
+        assert "rgb" in ring_colour and border.startswith("rgb")
+        assert green.strip(), "токен зелёного должен существовать"
+        # соседняя плашка обводки не носит
+        plain = page.locator(".trick:not(.armed)").first
+        assert "none" in await plain.evaluate("b => getComputedStyle(b).boxShadow")
+        await browser.close()
+
+
+async def test_when_the_turn_norm_is_spent_the_panel_says_so(server):
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=20, left=0)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".energy-note")
+
+        assert "кончились" in await page.locator(".energy-note").inner_text()
         await browser.close()

@@ -288,7 +288,7 @@ async def test_the_boss_card_comes_with_the_section(cellar):
     assert idle["live"] is False
     assert idle["title"] == CELLAR_BOSS.title
     assert idle["level"] > 0 and idle["max_hp"] > 0
-    assert idle["weapon"] == "Кувалда"
+    assert idle["weapon"] == "Кувалда Босса"
     assert len(idle["kit"]) == 9  # девять слотов, включая вторую руку
     assert idle["combat"]["resist"] > 0
 
@@ -314,7 +314,7 @@ async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
     assert all(row["item"] for row in left + right)
     assert all(row["placeholder_image"] for row in left + right)
     assert next(row for row in left if row["slot"] == "weapon")["item"]["title"] == (
-        "Кувалда"
+        "Кувалда Босса"
     )
 
 

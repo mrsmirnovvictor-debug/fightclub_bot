@@ -121,7 +121,7 @@ def test_card_has_everything_the_screen_needs():
     assert card["is_self"] is True
     assert card["city"] == "Vegas City"
     assert card["birthplace"] == "Vegas City"  # по умолчанию, пока не дрался в группе
-    assert card["birthday"] == "26.10.13 22:31"
+    assert card["birthday"] == "27.10.13 01:31"  # метка в UTC, показ московский
     assert card["record"] == {
         "wins": 136,
         "losses": 54,
@@ -209,7 +209,10 @@ def test_the_chosen_look_shows_up_in_the_frame():
 
 
 def test_birthday_formats_and_survives_junk():
-    assert format_birthday("2013-10-26 22:31:00") == "26.10.13 22:31"
+    # В базе метка в UTC, а показываем московское время: 22:31 UTC — это
+    # уже полвторого следующего дня
+    assert format_birthday("2013-10-26 22:31:00") == "27.10.13 01:31"
+    assert format_birthday("2013-10-26 09:31:00") == "26.10.13 12:31"
     assert format_birthday(None) == "—"
     assert format_birthday("непонятно") == "непонятно"
 

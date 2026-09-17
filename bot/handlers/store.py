@@ -19,6 +19,7 @@ from aiogram.types import (
 )
 
 from bot.database import Database
+from bot.game.clock import club_date
 from bot.game.equipment import describe_requirements, get_item
 from bot.game import pro
 from bot.game.potions import spell_duration
@@ -301,7 +302,7 @@ async def cmd_purchases(message: Message, store: StoreService) -> None:
             title, what = row["code"], f"{row['credits']} 💰"
         mark = " (возвращено)" if row["refunded_at"] else ""
         lines.append(
-            f"{row['created_at'][:10]} · {title} · {what} "
+            f"{club_date(row['created_at'])} · {title} · {what} "
             f"за {row['stars']} ⭐{mark}\n<code>{row['charge_id']}</code>"
         )
     lines += ["", f"Всего занесено: <b>{spent_stars(rows)}</b> ⭐"]

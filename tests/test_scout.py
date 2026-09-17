@@ -10,6 +10,7 @@ import pytest
 
 from bot.game.scout import (
     MIN_CASES,
+    zone_title,
     SCOUT_FIGHTS,
     advise,
     moves_of,
@@ -197,3 +198,135 @@ async def test_the_depth_is_respected(db, limit):
         )
 
     assert len(await db.recent_duel_logs(RIVAL, limit)) == min(limit, 3)
+
+
+# ---------- совет ----------
+
+
+def test_the_tip_names_one_move_and_one_number():
+    """Совет — это действие и число: разбор читать между ходами некогда."""
+    habits = read_habits([HABITUAL] * MIN_CASES, RIVAL)
+    last = moves_of(HABITUAL, RIVAL)[1]  # удачный удар по ногам
+
+    advice = trend(habits, last)
+
+    assert advice.attack_tip.move.startswith("Бей в ")
+    assert "с вероятностью" in advice.attack_tip.why
+    assert advice.block_tip.move.startswith("Закрывай ")
+    assert "отбить удар" in advice.block_tip.why
+
+
+def test_the_guard_tip_covers_where_he_actually_strikes():
+    """Совет по блоку закрывает те зоны, куда соперник бьёт чаще всего."""
+    habits = read_habits([HABITUAL] * MIN_CASES, RIVAL)
+    last = moves_of(HABITUAL, RIVAL)[1]
+
+    advice = trend(habits, last)
+
+    # после удачного удара по ногам он бьёт в ноги — их и закрываем
+    assert "Ноги" in advice.block_tip.move
+    assert "После таких он обычно бьёт в Ноги" in advice.block
+
+
+def test_the_guard_tip_is_a_button_the_fighter_can_press():
+    """Совет по блоку — настоящий блок: закрыть можно только смежные зоны."""
+    from bot.game.classes import BLOCK_WIDTH, block_combos
+
+    habits = read_habits([HABITUAL] * MIN_CASES, RIVAL)
+    last = moves_of(HABITUAL, RIVAL)[1]
+
+    move = trend(habits, last).block_tip.move
+
+    allowed = {
+        "Закрывай " + "+".join(zone_title(zone.value) for zone in combo)
+        for combo in block_combos(BLOCK_WIDTH)
+    }
+    assert move in allowed, f"так блок не поставить: {move}"
+
+
+def test_a_shield_gets_a_wider_tip():
+    """Со щитом блок держит три зоны — совет обязан советовать все три."""
+    from bot.game.classes import SHIELD_BLOCK_WIDTH
+
+    habits = read_habits([HABITUAL] * MIN_CASES, RIVAL)
+    last = moves_of(HABITUAL, RIVAL)[1]
+
+    bare = trend(habits, last).block_tip
+    shielded = trend(habits, last, SHIELD_BLOCK_WIDTH).block_tip
+
+    assert len(shielded.move.split("+")) == SHIELD_BLOCK_WIDTH
+    assert len(bare.move.split("+")) == 2
+    # шире блок — больше ударов отобьёшь, и обещание не должно быть меньше
+    assert share_of(shielded.why) >= share_of(bare.why)
+
+
+def share_of(why: str) -> int:
+    import re
+
+    found = re.search(r"(\d+)%", why)
+    return int(found.group(1)) if found else -1
+
+
+def test_the_strike_tip_aims_at_the_zone_he_guards_least():
+    """Бить советуем туда, где он реже всего держит защиту."""
+    habits = read_habits([HABITUAL] * MIN_CASES, RIVAL)
+    last = moves_of(HABITUAL, RIVAL)[1]
+
+    advice = trend(habits, last)
+
+    # после «головы и корпуса» он всегда закрывает пояс с ногами — значит,
+    # верх открыт, и бить советуем именно туда
+    assert "После таких он обычно закрывает Пояс и Ноги" in advice.attack
+    assert advice.attack_tip.move in ("Бей в Голову", "Бей в Корпус", "Бей в Живот")
+    assert share_of(advice.attack_tip.why) == 0
+    assert advice.attack_tip.move not in ("Бей в Пояс", "Бей в Ноги")
+
+
+def test_the_strike_tip_is_the_same_every_time():
+    """Одни и те же числа — один и тот же совет, а не гадание.
+
+    Нулём закрыты сразу три зоны, и без твёрдого порядка совет прыгал бы
+    между ними от отрисовки к отрисовке.
+    """
+    habits = read_habits([HABITUAL] * MIN_CASES, RIVAL)
+    last = moves_of(HABITUAL, RIVAL)[1]
+
+    said = {trend(habits, last).attack_tip.move for _ in range(5)}
+
+    assert len(said) == 1
+
+
+def test_the_tip_does_not_argue_with_the_line_above_it():
+    """Мало похожих случаев — и строка, и совет разом идут на общий счёт.
+
+    Совет, посчитанный по другому распределению, спорил бы с разбором над
+    ним, а это хуже, чем совета не иметь вовсе.
+    """
+    thin = read_habits([HABITUAL], RIVAL)
+    last = moves_of(HABITUAL, RIVAL)[1]
+
+    advice = trend(thin, last)
+
+    assert "Вообще он чаще бьёт" in advice.block
+    # общий счёт: чаще всего он бьёт в ноги, туда же смотрит и совет
+    assert "Ноги" in advice.block_tip.move
+
+
+def test_the_opening_advises_too():
+    """До первого удара совет тоже есть: на старте он и нужнее всего."""
+    habits = read_habits([HABITUAL] * 3, RIVAL)
+
+    advice = opening(habits)
+
+    assert advice.attack_tip.move and advice.block_tip.move
+    # первым ходом он всегда бьёт в голову и закрывает пояс с ногами
+    assert "Голов" in advice.block_tip.move
+    assert share_of(advice.block_tip.why) == 100
+    assert advice.attack_tip.move != "Бей в Пояс"
+
+
+def test_a_stranger_gets_no_tip():
+    """О новичке сказать нечего — и советовать тоже нечего."""
+    advice = advise(read_habits([], RIVAL), [], RIVAL)
+
+    assert advice.attack_tip.empty and advice.block_tip.empty

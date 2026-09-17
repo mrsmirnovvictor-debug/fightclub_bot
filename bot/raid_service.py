@@ -30,9 +30,16 @@ from bot.board_service import RAID, Board, Pin
 from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
-from bot.game.combat import Action, Fighter, resolve_round
+from bot.game.combat import (
+    Action,
+    Fighter,
+    group_aftermath,
+    resolve_round,
+    spread_heal,
+)
 from bot.game.fightlog import turn_payload
 from bot.game.narrator import (
+    echo_lines,
     board_raid,
     board_raid_over,
     board_window_open,
@@ -72,6 +79,10 @@ from bot.inventory_service import wear_after_fight
 from bot.keyboards import raid_lobby_keyboard
 from bot.messaging import Announcer
 from bot.models import Player
+
+# Стороны в рейде: отряд заодно, босс сам по себе. Нужны приёмам десятой
+# ступени — по ним они отличают своих от чужих
+SQUAD_SIDE, BOSS_SIDE = 0, 1
 
 logger = logging.getLogger(__name__)
 
@@ -644,12 +655,67 @@ class RaidService:
             limit=FATIGUE_WAVES,
         )
         # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
-        said = strike_lines(result, {user_id: fighter, BOSS_ID: session.enemy}, self.rng)
+        said = strike_lines(
+            result, {user_id: fighter, BOSS_ID: session.enemy}, self.rng
+        )
+        # Вторая половина приёмов десятой ступени. Отряд в рейде стоит
+        # против одного босса, поэтому «Массовый удар» второй половиной
+        # молчит — доставать больше некого, — а вот заготовки союзникам
+        # ложатся на весь отряд, включая тех, кто в этой волне не ходил
+        everyone = self._cast(session)
+        said.extend(
+            echo_lines(
+                group_aftermath(result.strikes, everyone, self._sides(session)),
+                everyone,
+            )
+        )
         session.said.extend(said)
         session.rounds.append(turn_payload(result, said))
         session.strikes += 1
         if not fighter.alive:
             session.fallen.append(user_id)
+
+    def _cast(self, session: RaidSession) -> dict[int, Fighter]:
+        """Все, кто на поле: отряд и босс. Босс ходит под своим номером."""
+        return {**session.fighters, BOSS_ID: session.enemy}
+
+    def _sides(self, session: RaidSession) -> dict[int, int]:
+        """Отряд заодно, босс сам по себе."""
+        sides = dict.fromkeys(session.fighters, SQUAD_SIDE)
+        sides[BOSS_ID] = BOSS_SIDE
+        return sides
+
+    async def use_ability(self, raid_id: int, user_id: int, code: str) -> str:
+        """Нажать приём в рейде. Жмут до выбора удара и блока."""
+        session = self._raids.get(raid_id)
+        if session is None:
+            raise RaidError("Этого рейда уже нет.")
+        if user_id not in session.fighters:
+            raise RaidError("Ты не в этом отряде.")
+        fighter = session.fighters[user_id]
+        if code not in fighter.loadout:
+            raise RaidError("Этот приём не выучен.")
+        # Причину отказа называет движок: он один знает, что именно не
+        # сложилось — норма хода, уже лежащая заготовка или кошелёк. Своя
+        # проверка здесь когда-то всё сводила к энергии, и боец с полной
+        # шкалой читал «не хватает энергии»
+        try:
+            ability = fighter.use(code).ability
+        except ValueError as error:
+            raise RaidError(str(error)) from error
+        if not ability.heal:
+            return f"{ability.icon} {ability.title} наготове."
+
+        gained = fighter.heal_by(ability.heal)
+        fighter.charges.pop()
+        allies = [
+            one for other_id, one in session.fighters.items() if other_id != user_id
+        ]
+        healed = spread_heal(ability, fighter, allies)
+        line = f"{ability.icon} {ability.title}: +{gained} ❤️"
+        if healed:
+            line += f", и ещё {len(healed)} бойцам отряда"
+        return line
 
     def _judge(self, session: RaidSession) -> RaidOutcome | None:
         return judge_raid(session.enemy, session.fighters)

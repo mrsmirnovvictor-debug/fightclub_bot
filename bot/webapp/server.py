@@ -11,6 +11,9 @@ from pathlib import Path
 from aiohttp import web
 
 from bot.config import Config
+from bot.abilities_service import AbilityError, ensure_starter
+from bot.daily_service import DailyError, check_in, claim, ladder_view
+from bot.abilities_service import learn as learn_ability
 from bot.database import Database
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError
@@ -258,7 +261,18 @@ async def api_card(request: web.Request) -> web.Response:
             },
             status=404,
         )
-    return web.json_response(build_card(player, config.bot_token, viewer.user_id))
+    # Классовый приём выдаётся при первом же взгляде на карточку. Так он
+    # доходит и до тех, кто завёл бойца до появления приёмов: догонять их
+    # отдельной разовой раздачей пришлось бы ровно один раз, а забыть о
+    # ней — навсегда
+    visit = None
+    if player.user_id == viewer.user_id:
+        await ensure_starter(db, player)
+        visit = await check_in(db, player)
+    card = build_card(player, config.bot_token, viewer.user_id)
+    if visit is not None:
+        card["daily"] = daily_payload(visit)
+    return web.json_response(card)
 
 
 async def _own_player(request: web.Request):
@@ -420,6 +434,87 @@ async def api_mod(request: web.Request) -> web.Response:
             "card": build_card(player, config.bot_token, player.user_id),
             "workshop": build_workshop(player, mine),
             "done": done,
+        }
+    )
+
+
+def daily_payload(visit) -> dict:
+    """Окно входа: лестница месяца и то, что ждёт в руках."""
+    return {
+        "days": visit.days,
+        "month": visit.month,
+        "fresh": visit.fresh,
+        "next_day": visit.next_day,
+        "resets_at": int(visit.resets_at),
+        "ladder": ladder_view(visit),
+        "waiting": [
+            {
+                "day": reward.day,
+                "title": reward.title,
+                "icon": reward.icon,
+                "note": reward.note,
+            }
+            for reward in visit.waiting
+        ],
+    }
+
+
+async def api_daily(request: web.Request) -> web.Response:
+    """Забрать награду за вход. Место ни при чём — это не услуга города."""
+    player = await _own_player(request)
+    db = request.app[DB_KEY]
+    try:
+        taken = await claim(db, player)
+    except DailyError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    visit = await check_in(db, player)
+    card = build_card(player, config.bot_token, player.user_id)
+    card["daily"] = daily_payload(visit)
+    return web.json_response(
+        {
+            "card": card,
+            "done": {
+                "credits": taken.credits,
+                "potions": taken.potions,
+                "mods": taken.mods,
+                "rewards": [
+                    {"title": one.title, "icon": one.icon, "day": one.day}
+                    for one in taken.rewards
+                ],
+            },
+        }
+    )
+
+
+async def api_ability(request: web.Request) -> web.Response:
+    """Выбрать приём на своей ступени.
+
+    Место тут ни при чём: приём выбирают где угодно, хоть в дороге. Это
+    не услуга города, а рост бойца, и запирать его в локацию значило бы
+    держать игрока с невыбранной развилкой до ближайшего клуба.
+    """
+    data = await _payload(request)
+    player = await _own_player(request)
+    try:
+        ability = await learn_ability(
+            request.app[DB_KEY], player, str(data.get("code") or ""),
+            forget=str(data.get("forget") or ""),
+        )
+    except AbilityError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "done": {
+                "code": ability.code,
+                "title": ability.title,
+                "icon": ability.icon,
+                "note": ability.note,
+            },
         }
     )
 
@@ -700,6 +795,13 @@ async def api_fight(request: web.Request) -> web.Response:
                     duel.id, player.user_id, "attack", zone, hand
                 )
             await duels.handle_choice(duel.id, player.user_id, "block", block)
+        elif action == "ability":
+            duel = duels.duel_of_user(player.user_id)
+            if duel is None:
+                raise DuelError("Ты сейчас не на ринге.")
+            await duels.use_ability(
+                duel.id, player.user_id, str(data.get("code", ""))
+            )
         elif action in {"attack", "block"}:
             duel = duels.duel_of_user(player.user_id)
             if duel is None:
@@ -819,6 +921,13 @@ async def api_raid_action(request: web.Request) -> web.Response:
                     session.id, player.user_id, "attack", zone, hand
                 )
             await raids.handle_choice(session.id, player.user_id, "block", block)
+        elif action == "ability":
+            session = raids.raid_of_user(player.user_id)
+            if session is None:
+                raise RaidError("Ты сейчас не в рейде.")
+            await raids.use_ability(
+                session.id, player.user_id, str(data.get("code") or "")
+            )
         elif action == "done":
             raids.forget_result(player.user_id)
         else:
@@ -883,6 +992,13 @@ async def api_battle_action(request: web.Request) -> web.Response:
                     session.id, player.user_id, "attack", zone, hand
                 )
             await battles.handle_choice(session.id, player.user_id, "block", block)
+        elif action == "ability":
+            session = battles.battle_of_user(player.user_id)
+            if session is None:
+                raise BattleError("Ты сейчас не в бою.")
+            await battles.use_ability(
+                session.id, player.user_id, str(data.get("code") or "")
+            )
         elif action == "done":
             battles.forget_result(player.user_id)
         else:
@@ -1104,6 +1220,8 @@ def create_app(
             web.post("/api/equip", api_equip),
             web.post("/api/unequip", api_unequip),
             web.post("/api/repair", api_repair),
+            web.post("/api/ability", api_ability),
+            web.post("/api/daily", api_daily),
             web.get("/api/workshop", api_workshop),
             web.post("/api/mod", api_mod),
             web.post("/api/handin", api_handin),

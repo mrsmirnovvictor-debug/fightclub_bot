@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
 
+from bot.game.clock import club_time
 from bot.game.classes import ALL_STATS, ALL_ZONES, FighterClass, Stats, get_class
 from bot.game.combat import (
     MAX_ACCURACY_TOTAL,
@@ -35,6 +35,7 @@ from bot.game.equipment import (
     get_item,
     shop_sections,
 )
+from bot.game.abilities import MAX_ABILITIES, TIER_COST
 from bot.game.gear import ModKind
 from bot.game.market import FEE as MARKET_FEE, buyback
 from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
@@ -69,15 +70,12 @@ STATE_COLORS = {
 
 
 def format_birthday(created_at: str | None) -> str:
-    """«2013-10-26 22:31:00» → «26.10.13 22:31»."""
+    """«2013-10-26 22:31:00» → «27.10.13 01:31»: час рождения московский."""
     if not created_at:
         return "—"
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M"):
-        try:
-            return datetime.strptime(created_at[:19], fmt).strftime("%d.%m.%y %H:%M")
-        except ValueError:
-            continue
-    return created_at  # pragma: no cover - формат из будущей версии
+    # Метку из будущей версии показываем как есть: лучше непонятная
+    # строка, чем прочерк на месте дня рождения
+    return club_time(created_at) or created_at
 
 
 # Как клетка называется на кукле. Верхняя одежда и футболка делят одну
@@ -224,6 +222,53 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         # Модификация: звёздочка ступени и что она дала
         "mod": mod_mark(owned),
     }
+
+
+def abilities_payload(player: Player) -> dict:
+    """Приёмы бойца в карточке: что выучено и что предстоит выбрать."""
+    from bot.abilities_service import known, next_tier_after, pending_choice
+
+    choice = pending_choice(player)
+    return {
+        "known": [
+            {
+                "code": ability.code,
+                "title": ability.title,
+                "icon": ability.icon,
+                "image": ability.picture,
+                "note": ability.note,
+                "tier": tier,
+                "cost": TIER_COST[tier],
+            }
+            for ability, tier in known(player)
+        ],
+        "slots": MAX_ABILITIES,
+        # Развилка, если боец дорос и ещё не выбрал
+        "choice": None if choice is None else {
+            "tier": choice.tier,
+            "options": [
+                {
+                    "code": one.code,
+                    "title": one.title,
+                    "icon": one.icon,
+                    "image": one.picture,
+                    "note": one.note,
+                    "cost": TIER_COST[choice.tier],
+                    "own": index == 0,  # классовый приём стоит первым
+                }
+                for index, one in enumerate(choice.options)
+            ],
+        },
+        # До какой ступени расти дальше. Ноль — учиться больше нечему
+        "next_tier": next_tier_after(player.level),
+    }
+
+
+def public_abilities(player: Player) -> dict:
+    """То же, но для чужих глаз: приёмы видно, развилку — нет."""
+    rows = abilities_payload(player)
+    return {"known": rows["known"], "slots": rows["slots"],
+            "choice": None, "next_tier": 0}
 
 
 def weapon_in_hands(item: Item, fclass: FighterClass | None) -> str:
@@ -401,6 +446,12 @@ def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
         "boost": potion.is_boost,
         "slot": SECTION_CODE,
         "slot_title": SECTION_TITLE,
+        # Полоса износа: у пропуска она есть, у склянок её нет. Без этих
+        # ключей карточка вещи рисовала пропуску «Износ: undefined» —
+        # рисует её одна и та же карточка, а ключей у склянки не было
+        "wear": 0,
+        "max_wear": potion.max_wear,
+        "wear_text": potion.describe_wear(),
         "note": potion.note,
         "price": potion.price,
         "level_required": potion.level_required,
@@ -839,6 +890,10 @@ def build_card(
             "left": [slot_payload(equipment, slot, fclass) for slot in LEFT_SLOTS],
             "right": [slot_payload(equipment, slot, fclass) for slot in RIGHT_SLOTS],
         },
+        # Приёмы видны всем: соперник должен знать, чего от бойца ждать, —
+        # как и надетые вещи. Развилку и цены прячем от чужих: это уже не
+        # про соперника, а про то, чего у него ещё нет
+        "abilities": abilities_payload(player) if is_self else public_abilities(player),
         # Рюкзак показываем только хозяину карточки
         "inventory": [item_payload(player, owned) for owned in player.backpack]
         if is_self

@@ -29,6 +29,16 @@ from bot.game.classes import (
     block_combos,
     get_class,
 )
+from bot.game.abilities import (
+    MAX_ENERGY,
+    MAX_PER_TURN,
+    Ability,
+    Charge,
+    Effect,
+    Loadout,
+    Source,
+    energy_gain,
+)
 from bot.game.equipment import BARE_HANDS, BARE_HANDS_ICON, Equipment
 from bot.game.stats import (
     NO_LIMITS,
@@ -93,6 +103,17 @@ class Outcome(str, Enum):
     COUNTER = "counter"  # ушёл и ответил
     HIT = "hit"
     CRIT = "crit"
+
+
+# Какой приём сильнее внутри своей ветки. Нажатых за ход может быть
+# несколько, и тогда решает сильнейший — слабые не пропадают даром, они
+# просто уступают место
+_CRIT_RANK: dict[Effect, int] = {Effect.CRIT: 0, Effect.BREAK: 1, Effect.DOUBLE: 2}
+
+
+def _DODGE_RANK(ability: Ability) -> int:
+    """Уворот с критическим ответом сильнее ответа, ответ — простого ухода."""
+    return (1 if ability.counter else 0) + (1 if ability.crit_counter else 0)
 
 
 class DuelEnd(str, Enum):
@@ -183,6 +204,14 @@ class Fighter:
     extra_hp: int = 0
     # Подписчик: значок у имени судья ставит по этому полю
     pro: bool = False
+    # Приёмы: что выучено, сколько энергии накоплено и что уже нажато.
+    # Энергия живёт только внутри боя — в базу она не уходит
+    loadout: Loadout = field(default_factory=Loadout)
+    # Шкала одна, а кормится тем, в чём силён класс — см. ENERGY_SOURCES
+    energy: int = 0
+    charges: list[Charge] = field(default_factory=list)
+    # Сколько приёмов пущено в дело в этом ходу: больше трёх не дают
+    pressed: int = 0
     derived: DerivedStats = field(init=False)
 
     def __post_init__(self) -> None:
@@ -309,6 +338,88 @@ class Fighter:
         """Значки рук — по столбцу ударов на каждую."""
         return self.equipment.weapon_icons or (BARE_HANDS_ICON,)
 
+    # ---------- приёмы ----------
+
+    def gain_energy(self, amount: int) -> None:
+        """Накопить энергию. Выше потолка шкала не растёт."""
+        self.energy = min(MAX_ENERGY, self.energy + amount)
+
+    def earn(self, source: Source) -> None:
+        """Начислить за событие по рецепту своего класса."""
+        self.gain_energy(energy_gain(self.fclass.code, source, self.has_shield))
+
+    @property
+    def out_of_turns(self) -> bool:
+        """Норма приёмов на ход выбрана."""
+        return self.pressed >= MAX_PER_TURN
+
+    def can_use(self, code: str) -> bool:
+        """Хватает ли энергии и выучен ли приём. Мёртвый не может ничего."""
+        if not self.alive or code not in self.loadout or self.out_of_turns:
+            return False
+        if any(charge.ability.code == code for charge in self.charges):
+            return False  # эта заготовка уже лежит и ждёт своего момента
+        return self.energy >= self.loadout.cost_of(code)
+
+    def use(self, code: str) -> Charge:
+        """Нажать приём: списать энергию и положить заготовку.
+
+        Мгновенные приёмы (лечение) заготовкой тоже становятся — их
+        разбирает тот, кто знает про союзников: в дуэли это раунд, в
+        групповом бою служба боя.
+        """
+        if code not in self.loadout:
+            raise ValueError(f"Приём {code} не выучен")
+        # Порядок проверок — от общего к частному: норма на ход и смерть
+        # отменяют приём целиком, и говорить про энергию тогда незачем
+        if not self.alive:
+            raise ValueError("Мёртвый боец приёмов не применяет.")
+        if self.out_of_turns:
+            raise ValueError(
+                f"Приёмы на этот ход кончились: их пускают в дело "
+                f"не больше {MAX_PER_TURN} за ход."
+            )
+        if any(charge.ability.code == code for charge in self.charges):
+            raise ValueError("Этот приём уже наготове и ждёт своего момента.")
+        cost = self.loadout.cost_of(code)
+        if self.energy < cost:
+            raise ValueError(
+                f"Не хватает энергии: нужно {cost}, а накоплено {self.energy}."
+            )
+        from bot.content.abilities import CATALOGUE
+
+        self.energy -= cost
+        self.pressed += 1
+        charge = Charge(ability=CATALOGUE[code], tier=self.loadout.tier_of(code))
+        self.charges.append(charge)
+        return charge
+
+    def charged(self, *effects: Effect) -> Charge | None:
+        """Есть ли нажатая заготовка с одним из этих эффектов."""
+        for charge in self.charges:
+            if charge.ability.effect in effects:
+                return charge
+        return None
+
+    def charged_all(self, *effects: Effect) -> list[Charge]:
+        """Все заготовки этих видов — их эффекты складываются."""
+        return [
+            charge for charge in self.charges if charge.ability.effect in effects
+        ]
+
+    def spend_charge(self, charge: Charge) -> Ability:
+        """Снять заготовку: она сработала и больше не ждёт."""
+        self.charges.remove(charge)
+        return charge.ability
+
+    def heal_by(self, share: float) -> int:
+        """Вернуть себе долю запаса. Отдаёт, на сколько поднялось здоровье."""
+        if not self.alive:
+            return 0
+        before = self.hp
+        self.hp = min(self.max_hp, self.hp + int(round(self.max_hp * share)))
+        return self.hp - before
+
     @classmethod
     def from_player(cls, player, armed: bool = True) -> "Fighter":
         """Собрать бойца из записи игрока: здоровье — то, что успело затянуться.
@@ -334,6 +445,11 @@ class Fighter:
             pro=bool(getattr(player, "is_pro", bool)()),
         )
         fighter.hp = max(1, min(player.current_hp(), fighter.max_hp))
+        # Приёмы боец приносит с собой, а энергию — нет: она копится с нуля
+        # в каждом бою. Слоты копируем, чтобы бой не менял запись игрока
+        learned = getattr(player, "loadout", None)
+        if learned is not None:
+            fighter.loadout = Loadout(slots=dict(learned.slots))
         return fighter
 
 
@@ -355,6 +471,10 @@ class Strike:
     armor: int = 0  # сколько сняла броня зоны
     absorbed: int = 0  # сколько всего съели выносливость и броня
     missed_turn: bool = False  # боец не нажал вообще ничего
+    # Приёмы, сработавшие на этом ударе: свой у атакующего, чужой у
+    # защищающегося. По ним судья и рассказывает, что произошло
+    ability: str = ""  # приём атакующего
+    defence_ability: str = ""  # приём защищающегося
     defender_hp_after: int = 0
     attacker_hp_after: int = 0
 
@@ -473,13 +593,34 @@ def strike_of(
     if zone is None:
         return strike
 
+    # Порядок, в котором приёмы вмешиваются в удар, важен, и потому он
+    # здесь один на всех и написан явно:
+    #
+    #   1. блок — «Пролом» ломает его наверняка;
+    #   2. уворот — «Проворность» уводит с линии удара наверняка;
+    #   3. крит — «Критический удар» и родня делают его без броска;
+    #   4. урон — «Сильный удар» и родня добавляют своё;
+    #   5. «Парирование» обнуляет то, что всё-таки дошло.
+    #
+    # Заготовка, чей момент не настал, остаётся висеть: ушедший в блок удар
+    # не тратит «Проворность», а непрошедший — «Сильный удар».
+    # За ход можно пустить в дело до трёх приёмов, и работают они вместе:
+    # прибавки к урону складываются, а из приёмов одной ветки срабатывает
+    # сильнейший — и снимаются все, за них уже заплачено
+    breaker = attacker.charged(Effect.BREAK)
+
     if zone in defender_action.block:
         strike.outcome = Outcome.BLOCK
         # Классический порядок: сначала блок, потом крит, потом пробитие.
         # Удар, который должен был стать критическим, упирается в блок не
         # насмерть — с какой-то вероятностью он этот блок проламывает.
         crit = rng.random() < attacker.crit_against(defender)
-        if crit and rng.random() < defender.block_break_against(attacker):
+        broke = crit and rng.random() < defender.block_break_against(attacker)
+        if breaker is not None:
+            # «Пролом» на то и придуман, чтобы не спрашивать бросок
+            strike.ability = attacker.spend_charge(breaker).code
+            broke = True
+        if broke:
             strike.outcome = Outcome.BREAK
             # Проходит ровно половина потолка — и всё. Ни выносливость, ни
             # броня зоны её больше не режут: свою долю защита уже отработала
@@ -490,15 +631,35 @@ def strike_of(
                 * BLOCK_BREAK_DAMAGE_SHARE
             )
             strike.damage = max(1, int(round(broken)))
+            _apply_parry(strike, defender)
         return strike
 
-    if rng.random() < defender.dodge_against(attacker):
+    # Уворот: та же логика, что у крита. «Коварство» сильнее «Хитрости»,
+    # «Хитрость» сильнее «Проворности» — работает лучшее, снимается всё
+    evasions = defender.charged_all(Effect.DODGE, Effect.COUNTER)
+    evasion = (
+        max(evasions, key=lambda one: _DODGE_RANK(one.ability)) if evasions else None
+    )
+    dodged = rng.random() < defender.dodge_against(attacker)
+    if evasion is not None:
+        for charge in evasions:
+            defender.spend_charge(charge)
+        strike.defence_ability = evasion.ability.code
+        dodged = True
+    if dodged:
         strike.outcome = Outcome.DODGE
-        if rng.random() < defender.counter:
+        # Контрудар: своим броском или обещанный приёмом
+        promised = evasion.ability if evasion is not None else None
+        answers = (promised is not None and promised.counter) or (
+            rng.random() < defender.counter
+        )
+        if answers:
             counter = (
                 _roll_damage(defender, round_number, rng, hand=0, limit=limit)
                 * COUNTER_DAMAGE_MULT
             )
+            if promised is not None and promised.crit_counter:
+                counter *= defender.derived.crit_power
             # Контрудар прилетает не в выбранную зону, поэтому броню не трогает —
             # только сопротивление от выносливости.
             counter *= 1.0 - attacker.resist_against(defender)
@@ -507,14 +668,63 @@ def strike_of(
         return strike
 
     damage = _roll_damage(attacker, round_number, rng, hand, limit)
-    if rng.random() < attacker.crit_against(defender):
+
+    # Крит: свой бросок или обещанный приёмом. «Пролом» дожил сюда, если
+    # соперник эту зону не закрывал, — тогда он работает как крит.
+    # Нажатых приёмов этой ветки может быть несколько: снимаем все, а
+    # работает сильнейший — удвоение сильнее пролома, пролом сильнее крита
+    sharp = attacker.charged_all(Effect.CRIT, Effect.DOUBLE)
+    if breaker is not None and breaker not in sharp:
+        sharp.append(breaker)
+    if sharp:
+        best = max(sharp, key=lambda one: _CRIT_RANK[one.ability.effect])
+        for charge in sharp:
+            attacker.spend_charge(charge)
+        strike.ability = best.ability.code
+        strike.outcome = Outcome.CRIT
+        damage *= attacker.derived.crit_power
+        if best.ability.effect is Effect.DOUBLE:
+            damage *= 2
+    elif rng.random() < attacker.crit_against(defender):
         strike.outcome = Outcome.CRIT
         damage *= attacker.derived.crit_power
     else:
         strike.outcome = Outcome.HIT
 
+    # Прибавки складываются: три удара по нарастающей дадут сумму, а не
+    # самый крупный из них. Ложатся они до брони и выносливости — как
+    # обычный урон, а не поверх защиты: иначе «плюс пятнадцать» доходил бы
+    # до тела целее, чем сам удар
+    bonuses = attacker.charged_all(Effect.DAMAGE)
+    for charge in bonuses:
+        damage += attacker.spend_charge(charge).damage
+    if bonuses:
+        # Приём в строке удара один, и крит её уже занял: тогда называем
+        # самую крупную прибавку — она заметнее
+        strike.ability = strike.ability or max(
+            bonuses, key=lambda one: one.ability.damage
+        ).ability.code
+
     _land_damage(strike, damage, attacker, defender, zone, rng)
+    _apply_parry(strike, defender)
     return strike
+
+
+def _apply_parry(strike: Strike, defender: Fighter) -> None:
+    """«Парирование»: дошедший удар не наносит урона вовсе.
+
+    Стоит последним и после брони не случайно: приём обещает ноль урона
+    независимо от того, крит это или пробитый блок, — значит и снимать он
+    должен уже посчитанное, а не влезать в середину расчёта.
+    """
+    if not strike.damage:
+        return
+    shield = defender.charged(Effect.PARRY)
+    if shield is None:
+        return
+    strike.defence_ability = defender.spend_charge(shield).code
+    strike.absorbed += strike.damage
+    strike.damage = 0
 
 
 def _land_damage(
@@ -615,6 +825,10 @@ def resolve_round(
     second.damage_dealt += damage_taken[first.user_id]
 
     _fill_running_hp(strikes, fighters)
+    _fill_energy(strikes, fighters)
+    # Норма приёмов на ход выбирается заново каждый раунд. Заготовки при
+    # этом остаются: они ждут своего момента, а не конца раунда
+    first.pressed = second.pressed = 0
 
     result = RoundResult(
         number=round_number,
@@ -623,6 +837,174 @@ def resolve_round(
     )
     _apply_ending(result, first, second, limit)
     return result
+
+
+@dataclass
+class GroupEcho:
+    """Вторая половина приёма десятой ступени: то, что летит мимо пары.
+
+    Приём этой ступени бьёт не только по сопернику: «Массовый удар»
+    достаёт остальных противников, «Бог обмана» и «Призыв к крови» кладут
+    заготовку союзникам, «Мастер жизни» их лечит. Сам движок про состав
+    отряда не знает — стороны ему приносит служба боя, а он отвечает, кого
+    и на сколько задело.
+    """
+
+    owner_id: int
+    ability: Ability
+    splashed: dict[int, int] = field(default_factory=dict)  # id → урон
+    healed: dict[int, int] = field(default_factory=dict)  # id → сколько вернулось
+    blessed: tuple[int, ...] = ()  # кому легла заготовка
+    fallen: tuple[int, ...] = ()  # кто от этого упал
+
+    @property
+    def empty(self) -> bool:
+        return not (self.splashed or self.healed or self.blessed)
+
+
+def lay_charge(fighter: Fighter, code: str) -> bool:
+    """Положить бойцу чужую заготовку даром. False — она у него уже есть.
+
+    Даром — потому что платит за неё тот, кто нажал приём. Дважды одна и
+    та же заготовка не кладётся: две «Проворности» уводят от одного удара
+    ровно так же, как одна, и вторая просто сгорела бы.
+    """
+    from bot.content.abilities import CATALOGUE
+
+    ability = CATALOGUE.get(code)
+    if ability is None or not fighter.alive:
+        return False
+    if any(charge.ability.code == code for charge in fighter.charges):
+        return False
+    fighter.charges.append(Charge(ability=ability, tier=ability.tier))
+    return True
+
+
+def spread_heal(
+    ability: Ability, owner: Fighter, allies: list[Fighter]
+) -> dict[int, int]:
+    """Лечение союзников — та часть приёма, что срабатывает сразу.
+
+    Мёртвого не поднимают: приём лечит, а не воскрешает.
+    """
+    if not ability.ally_heal:
+        return {}
+    healed: dict[int, int] = {}
+    for mate in allies:
+        if mate.user_id == owner.user_id or not mate.alive:
+            continue
+        gained = mate.heal_by(ability.ally_heal)
+        if gained:
+            healed[mate.user_id] = gained
+    return healed
+
+
+def group_aftermath(
+    strikes: list[Strike],
+    fighters: dict[int, Fighter],
+    sides: dict[int, int],
+) -> list[GroupEcho]:
+    """Разнести по отряду то, что приёмы этого раунда сделали сверх удара.
+
+    `sides` — кто с кем: одинаковое число значит союзники. Босс рейда
+    стоит своей стороной, в мясорубке каждый сам себе сторона, и тогда
+    союзников нет ни у кого — приём срабатывает своей первой половиной и
+    молчит второй.
+
+    Считается после раунда, а не внутри удара, и намеренно: удар знает
+    только двоих, а эта половина приёма — про всех остальных.
+    """
+    echoes: list[GroupEcho] = []
+    for strike in strikes:
+        for owner_id, code in (
+            (strike.attacker_id, strike.ability),
+            (strike.defender_id, strike.defence_ability),
+        ):
+            if not code:
+                continue
+            from bot.content.abilities import CATALOGUE
+
+            ability = CATALOGUE.get(code)
+            if ability is None or not ability.group:
+                continue
+            owner = fighters.get(owner_id)
+            if owner is None:
+                continue
+            echo = GroupEcho(owner_id=owner_id, ability=ability)
+            mine = sides.get(owner_id)
+
+            if ability.splash:
+                # «Остальные противники» — все чужие, кроме того, кто уже
+                # получил этим ударом: ему досталось и так
+                struck = strike.defender_id if owner_id == strike.attacker_id else None
+                fallen = []
+                for other_id, other in fighters.items():
+                    if (
+                        other_id in (owner_id, struck)
+                        or not other.alive
+                        or sides.get(other_id) == mine
+                    ):
+                        continue
+                    other.hp = max(0, other.hp - ability.splash)
+                    owner.damage_dealt += ability.splash
+                    echo.splashed[other_id] = ability.splash
+                    if not other.alive:
+                        fallen.append(other_id)
+                echo.fallen = tuple(fallen)
+
+            allies = [
+                one
+                for other_id, one in fighters.items()
+                if other_id != owner_id and sides.get(other_id) == mine
+            ]
+            if ability.aura:
+                echo.blessed = tuple(
+                    one.user_id for one in allies if lay_charge(one, ability.aura)
+                )
+            if ability.ally_heal:
+                echo.healed = spread_heal(ability, owner, allies)
+
+            if not echo.empty:
+                echoes.append(echo)
+    return echoes
+
+
+def _fill_energy(strikes: list[Strike], fighters: dict[int, Fighter]) -> None:
+    """Начислить энергию за раунд: за точные удары и удержанные блоки.
+
+    Считается по каждому удару отдельно, поэтому боец с двумя оружиями
+    копит вдвое быстрее, а щит вдвое ускоряет шкалу блоков — та же плата
+    за слот второй руки, что и везде.
+
+    Шкала одна, а цена события — своя у каждого класса: воин копит ударами,
+    танк блоками, ассасин критами, трикстер уворотами. Событие, которое
+    классу не свойственно, приносит ему ноль, и это не забывчивость, а
+    рычаг — см. `ENERGY_SOURCES`.
+
+    Пробитый блок (`BREAK`) атакующему засчитывается как удар, защитнику —
+    никак: он не удержался.
+
+    **Приём себя не кормит.** Исход, устроенный приёмом, энергии не
+    приносит — ни уворот от «Проворности», ни крит от «Пролома». Без
+    этого правила система идёт вразнос: гарантированный уворот начисляет
+    за уворот, этого хватает на следующую «Проворность», и трикстер
+    уворачивается вечно. Ровно так круг и переворачивался, и никакая цена
+    события этого не лечила — петлю не закрыть, её можно только разорвать.
+    """
+    for strike in strikes:
+        if strike.outcome in (Outcome.HIT, Outcome.CRIT, Outcome.BREAK):
+            if strike.ability:
+                continue  # удар устроил приём — платить за него не за что
+            attacker = fighters[strike.attacker_id]
+            attacker.earn(Source.HIT)
+            if strike.outcome is Outcome.CRIT:
+                attacker.earn(Source.CRIT)
+        elif strike.outcome is Outcome.BLOCK:
+            fighters[strike.defender_id].earn(Source.BLOCK)
+        elif strike.outcome in (Outcome.DODGE, Outcome.COUNTER):
+            if strike.defence_ability:
+                continue  # ушёл не сам, а приёмом
+            fighters[strike.defender_id].earn(Source.DODGE)
 
 
 def _fill_running_hp(strikes: list[Strike], fighters: dict[int, Fighter]) -> None:

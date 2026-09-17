@@ -647,6 +647,42 @@ class DuelService:
             session.resolving = True
         await self._resolve(session)
 
+    async def use_ability(self, duel_id: int, user_id: int, code: str) -> str:
+        """Нажать приём. Отдаёт строку о том, что произошло.
+
+        Приём жмут до выбора удара и блока — и это не прихоть интерфейса:
+        заготовка обязана лечь раньше, чем считается раунд, иначе боец
+        выбирал бы приём, уже зная чужой ход.
+        """
+        session = self._duels.get(duel_id)
+        if session is None:
+            raise DuelError("Этот бой уже закончился.")
+        if user_id not in session.fighters:
+            raise DuelError("Ты не участвуешь в этом бою.")
+        if not session.started:
+            raise DuelError("Гонга ещё не было.")
+
+        async with session.lock:
+            if session.resolving:
+                raise DuelError("Раунд уже считается, поздно.")
+            fighter = session.fighters[user_id]
+            if code not in fighter.loadout:
+                raise DuelError("Этот приём не выучен.")
+            # Причину отказа называет движок: он один знает, что именно
+            # не сложилось — норма хода, уже лежащая заготовка или
+            # кошелёк. Своя проверка здесь когда-то всё сводила к энергии,
+            # и боец с полной шкалой читал «не хватает энергии»
+            try:
+                ability = fighter.use(code).ability
+            except ValueError as error:
+                raise DuelError(str(error)) from error
+            # Лечение не ждёт удара: оно и есть весь приём
+            if ability.heal:
+                gained = fighter.heal_by(ability.heal)
+                fighter.charges.pop()
+                return f"{ability.icon} {ability.title}: +{gained} ❤️"
+            return f"{ability.icon} {ability.title} наготове."
+
     async def handle_choice(
         self, duel_id: int, user_id: int, action: str, zone_value: str, hand: int = 0
     ) -> str:

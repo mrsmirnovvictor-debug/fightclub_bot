@@ -294,7 +294,35 @@ def damage_tail(
     return f", {body}{shield} [{hp}/{maximum}]"
 
 
+def ability_marks(strike: Strike) -> str:
+    """Чем этот удар отметили приёмы: свой у бьющего, чужой у защиты.
+
+    Без этой пометки приём срабатывал молча. Боец жал заготовку, у него
+    уходила энергия — и дальше судья говорил про удар ровно то же, что
+    сказал бы без приёма. В рейде это особенно заметно: там ходят по
+    очереди, и между нажатием и разменом успевает пройти вся волна.
+    """
+    from bot.content.abilities import get_ability
+
+    marks = []
+    for code in (strike.ability, strike.defence_ability):
+        ability = get_ability(code) if code else None
+        if ability is not None:
+            marks.append(f"{ability.icon} <b>{ability.title}</b>")
+    return (" · " + " · ".join(marks)) if marks else ""
+
+
 def describe_strike(
+    strike: Strike,
+    attacker: Fighter,
+    defender: Fighter,
+    rng: random.Random | None = None,
+) -> str:
+    """Слова судьи об одном ударе — и чем его отметили приёмы."""
+    return _strike_line(strike, attacker, defender, rng) + ability_marks(strike)
+
+
+def _strike_line(
     strike: Strike,
     attacker: Fighter,
     defender: Fighter,
@@ -380,6 +408,43 @@ def rest_phrase(seconds: int) -> str:
         minutes = seconds // 60
         return f"{minutes} минуты" if 2 <= minutes <= 4 else f"{minutes} минут"
     return f"{seconds} секунд"
+
+
+def echo_lines(echoes, fighters: dict[int, Fighter]) -> list[str]:
+    """Слова судьи о второй половине приёмов десятой ступени.
+
+    Первую половину — сам удар — судья уже рассказал обычной строкой. Здесь
+    только то, что прилетело мимо пары, и молчать об этом нельзя: боец
+    видит, что здоровье просело, а удара по нему не было.
+    """
+    lines: list[str] = []
+    for echo in echoes:
+        who = fighters.get(echo.owner_id)
+        name = who.name if who else "Боец"
+        mark = f"{echo.ability.icon} <b>{echo.ability.title}</b>"
+        if echo.splashed:
+            hurt = ", ".join(
+                f"{fighters[user_id].name} −{damage}"
+                for user_id, damage in echo.splashed.items()
+                if user_id in fighters
+            )
+            lines.append(f"{mark}: {name} достаёт и остальных — {hurt}.")
+        if echo.healed:
+            saved = ", ".join(
+                f"{fighters[user_id].name} +{gained}"
+                for user_id, gained in echo.healed.items()
+                if user_id in fighters
+            )
+            lines.append(f"{mark}: {name} поднимает своих — {saved}.")
+        if echo.blessed:
+            mates = ", ".join(
+                fighters[user_id].name for user_id in echo.blessed if user_id in fighters
+            )
+            lines.append(f"{mark}: {name} делится приёмом — {mates} наготове.")
+        for user_id in echo.fallen:
+            if user_id in fighters:
+                lines.append(f"💀 {fighters[user_id].name} падает от этого.")
+    return lines
 
 
 def strike_lines(

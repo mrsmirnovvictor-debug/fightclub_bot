@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from bot.game.clock import club_date
 from bot.game.classes import ALL_ZONES, BLOCK_WIDTH
 from bot.game.combat import (
     Fighter,
@@ -36,6 +37,7 @@ from bot.game.raid import (
 )
 from bot.game.potions import RAID_PASS, get_potion
 from bot.models import Player
+from bot.webapp.fight import abilities_payload
 from bot.raid_service import RaidLobby, RaidService, RaidSession
 from bot.webapp.card import slot_payload
 from bot.webapp.fight import ATTACK_BUTTONS, BLOCK_BUTTONS, block_buttons, hands_payload
@@ -216,6 +218,9 @@ def raid_payload(session: RaidSession, viewer_id: int) -> dict[str, Any]:
             "attack": mine.attack.value if mine and mine.attack else None,
             "block": mine.block[0].value if mine and mine.block else None,
         },
+        # Приёмы и шкала — только свои: чужие заготовки соперник видеть не
+        # должен, иначе приём перестаёт быть неожиданностью
+        "abilities": abilities_payload(fighter),
         "log": session.rounds,
     }
 
@@ -373,7 +378,9 @@ def raid_row(row: dict[str, Any]) -> dict[str, Any]:
         "alive": bool(row["alive"]),
         "prize": prize.title if prize else None,
         "created_at": row["created_at"],
-        "date": (row["created_at"] or "")[:10],
+        # День московский: бой в час ночи — это уже новые сутки, а метка в
+        # базе лежит в UTC и сама по себе указала бы на вчера
+        "date": club_date(row["created_at"]),
     }
 
 

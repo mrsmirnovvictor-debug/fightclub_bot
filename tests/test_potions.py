@@ -7,6 +7,7 @@ from bot.config import Config
 from bot.game.classes import Stats, get_class
 from bot.game.health import now_ts
 from bot.game.locations import Service
+from bot.game.raid import CELLAR_BOSS
 from bot.game.potions import (
     EFFECT_SECONDS,
     POTIONS,
@@ -19,7 +20,7 @@ from bot.game.potions import (
 from bot.game.stats import derive
 from bot.models import Player
 from bot.potions_service import PotionError, buy_potion, use_potion
-from bot.webapp.card import build_card, build_shop
+from bot.webapp.card import build_card, build_shop, potion_payload
 from bot.webapp.server import create_app
 from tests.test_inventory import FakeBot, headers
 from tests.test_webapp import TOKEN
@@ -557,3 +558,44 @@ async def test_an_elixir_shows_up_in_the_stat_it_boosts(client, db):
     assert now["total"] == was["total"] + gain
     assert now["bonus"] == was["bonus"] + gain
     assert now["base"] == was["base"], "своё не трогаем — прибавка временная"
+
+
+def test_the_pass_wears_out_in_one_raid():
+    """У пропуска шкала износа 0/1 — как у оружия, только на один рейд.
+
+    Рисует пропуск та же карточка, что и вещь, а полосы износа у склянок
+    не было вовсе: пропуск получал «Износ: undefined». Теперь шкала есть
+    у того, кто снашивается, и только у него.
+    """
+    ticket = get_potion(RAID_PASS)
+
+    # Что износ действительно тратится на входе в подвал, проверяет
+    # `test_the_pass_is_taken_once_per_window` в tests/test_raid.py — там же,
+    # где живут остальные правила подвала
+    assert ticket.max_wear == 1 and ticket.describe_wear() == "0/1"
+    # склянки не снашиваются: их выпивают
+    assert all(one.max_wear == 0 for one in POTIONS if not one.is_pass)
+    assert all(one.describe_wear() == "" for one in POTIONS if not one.is_pass)
+
+
+def test_the_bag_shows_the_pass_with_its_wear():
+    """В рюкзаке у пропуска стоит износ, а у склянки этой строки нет."""
+    player = make_player()
+    rows = {
+        one.code: potion_payload(player, one, 1)
+        for one in POTIONS
+    }
+
+    assert rows[RAID_PASS]["wear"] == 0
+    assert rows[RAID_PASS]["max_wear"] == 1
+    assert rows[RAID_PASS]["wear_text"] == "0/1"
+    # у склянки шкалы нет — по нулю карточка полосу и не рисует
+    assert rows["heal_small"]["max_wear"] == 0
+
+
+def test_the_pass_says_what_it_is_for():
+    """Описание называет вещь своими словами: чья печать и на что талон."""
+    note = get_potion(RAID_PASS).note
+
+    assert "казино Vegas City" in note
+    assert CELLAR_BOSS.raid_title in note, "названия рейда и талона разошлись"
