@@ -587,12 +587,14 @@ class BattleService:
         fighter = session.fighters[user_id]
         if code not in fighter.loadout:
             raise BattleError("Этот приём не выучен.")
-        if not fighter.can_use(code):
-            cost = fighter.loadout.cost_of(code)
-            raise BattleError(
-                f"Не хватает энергии: нужно {cost}, а накоплено {fighter.energy}."
-            )
-        ability = fighter.use(code).ability
+        # Причину отказа называет движок: он один знает, что именно не
+        # сложилось — норма хода, уже лежащая заготовка или кошелёк. Своя
+        # проверка здесь когда-то всё сводила к энергии, и боец с полной
+        # шкалой читал «не хватает энергии»
+        try:
+            ability = fighter.use(code).ability
+        except ValueError as error:
+            raise BattleError(str(error)) from error
         if not ability.heal:
             return f"{ability.icon} {ability.title} наготове."
 

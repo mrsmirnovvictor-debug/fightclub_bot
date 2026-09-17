@@ -804,3 +804,87 @@ async def test_the_fatigue_keeps_growing_past_its_own_scale(bot, db):
     beyond = fatigue_multiplier(FATIGUE_WAVES * 2, limit=FATIGUE_WAVES)
 
     assert beyond > on_scale > 1.0
+
+
+# ---------- приёмы в рейде ----------
+
+
+async def test_the_trick_is_paid_for_at_the_press_and_spent_at_the_wave(bot, db):
+    """Четыре шага: нажал — обвелось — энергия ушла — сработало в размене.
+
+    В рейде между нажатием и разменом проходит вся волна, и каждый шаг
+    должен быть виден по отдельности: иначе не понять, куда делась энергия.
+    """
+    from bot.webapp.fight import abilities_payload
+
+    service = make_service(bot, db)
+    players, session = await gather(service, db, count=2)
+    me = players[0].user_id
+    fighter = session.fighters[me]
+    fighter.loadout.learn("strong_hit", 1)
+    fighter.energy = 20
+
+    def panel():
+        row = abilities_payload(fighter)
+        return row, next(t for t in row["tricks"] if t["code"] == "strong_hit")
+
+    row, trick = panel()
+    assert row["energy"] == 20 and trick["ready"] and not trick["armed"]
+
+    # 1–3: нажал, обвелось зелёным, энергия ушла сразу
+    await service.use_ability(session.id, me, "strong_hit")
+    row, trick = panel()
+    assert trick["armed"], "нажатый приём не помечен"
+    assert row["energy"] == 20 - fighter.loadout.cost_of("strong_hit")
+    assert len(fighter.charges) == 1, "заготовка не легла"
+
+    # 4: приём уходит в дело вместе с ударом
+    await punch(service, session, me)
+    assert not fighter.charges, "заготовка осталась висеть после размена"
+    assert panel()[1]["armed"] is False
+    # и энергия обратно не возвращается
+    assert fighter.energy <= 20 - fighter.loadout.cost_of("strong_hit")
+
+
+async def test_the_raid_says_why_the_trick_did_not_go(bot, db):
+    """Отказ называет настоящую причину, а не сводит всё к энергии."""
+    service = make_service(bot, db)
+    players, session = await gather(service, db, count=2)
+    me = players[0].user_id
+    fighter = session.fighters[me]
+    for code, tier in (("strong_hit", 1), ("nimble", 3), ("crit_hit", 6),
+                       ("guile", 10)):
+        fighter.loadout.learn(code, tier)
+    fighter.energy = 20
+
+    await service.use_ability(session.id, me, "strong_hit")
+    with pytest.raises(RaidError, match="уже наготове"):
+        await service.use_ability(session.id, me, "strong_hit")
+
+    await service.use_ability(session.id, me, "nimble")
+    await service.use_ability(session.id, me, "crit_hit")
+    with pytest.raises(RaidError, match="кончились"):
+        await service.use_ability(session.id, me, "guile")
+
+    # а когда дело и правда в шкале — говорим числами
+    fighter.pressed = 0
+    fighter.charges.clear()
+    fighter.energy = 1
+    with pytest.raises(RaidError, match="нужно 12, а накоплено 1"):
+        await service.use_ability(session.id, me, "guile")
+
+
+async def test_the_judge_names_the_trick_in_the_raid_log(bot, db):
+    """Сработавший приём назван в логе рейда: иначе он работает молча."""
+    service = make_service(bot, db)
+    players, session = await gather(service, db, count=2)
+    me = players[0].user_id
+    fighter = session.fighters[me]
+    fighter.loadout.learn("strong_hit", 1)
+    fighter.energy = 20
+
+    await service.use_ability(session.id, me, "strong_hit")
+    await punch(service, session, me)
+
+    said = "\n".join(session.said)
+    assert "Сильный удар" in said, f"приём сработал молча:\n{said}"

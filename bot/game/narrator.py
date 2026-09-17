@@ -294,7 +294,35 @@ def damage_tail(
     return f", {body}{shield} [{hp}/{maximum}]"
 
 
+def ability_marks(strike: Strike) -> str:
+    """Чем этот удар отметили приёмы: свой у бьющего, чужой у защиты.
+
+    Без этой пометки приём срабатывал молча. Боец жал заготовку, у него
+    уходила энергия — и дальше судья говорил про удар ровно то же, что
+    сказал бы без приёма. В рейде это особенно заметно: там ходят по
+    очереди, и между нажатием и разменом успевает пройти вся волна.
+    """
+    from bot.content.abilities import get_ability
+
+    marks = []
+    for code in (strike.ability, strike.defence_ability):
+        ability = get_ability(code) if code else None
+        if ability is not None:
+            marks.append(f"{ability.icon} <b>{ability.title}</b>")
+    return (" · " + " · ".join(marks)) if marks else ""
+
+
 def describe_strike(
+    strike: Strike,
+    attacker: Fighter,
+    defender: Fighter,
+    rng: random.Random | None = None,
+) -> str:
+    """Слова судьи об одном ударе — и чем его отметили приёмы."""
+    return _strike_line(strike, attacker, defender, rng) + ability_marks(strike)
+
+
+def _strike_line(
     strike: Strike,
     attacker: Fighter,
     defender: Fighter,

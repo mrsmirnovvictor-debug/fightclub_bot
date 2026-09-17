@@ -3303,11 +3303,16 @@ function raidPanel(data) {
     rest.className = "fight-line";
     rest.textContent = "Отряд переводит дух. Следующая волна вот-вот.";
     box.appendChild(rest);
+    box.appendChild(restingTricks(raid));
   } else if (raid.acted) {
     const wait = document.createElement("p");
     wait.className = "fight-line";
     wait.textContent = "Удар засчитан. Ждём остальных.";
     box.appendChild(wait);
+    // Шкала остаётся на виду: в рейде между ходом и разменом проходит вся
+    // волна, и если панель убрать, боец так и не увидит, куда делась
+    // энергия и сработала ли заготовка
+    box.appendChild(restingTricks(raid));
   } else {
     box.appendChild(raidTurnForm(data));
   }
@@ -3366,6 +3371,23 @@ function partyBoard(party) {
     box.appendChild(row);
   });
   return box;
+}
+
+// Шкала и заготовки, пока ход уже сделан: смотреть можно, нажимать
+// нечего. Приём жмут перед ударом, и разрешать это после «Вперёд» значило
+// бы заряжать вслепую в следующую волну
+function restingTricks(state) {
+  const panel = abilityPanel(state && state.abilities, () => {});
+  if (!panel) return document.createDocumentFragment();
+  panel.classList.add("watching");
+  panel.querySelectorAll(".trick").forEach((card) => {
+    card.disabled = true;
+  });
+  // «За ход осталось приёмов: 3» над кнопками, которые не нажимаются, —
+  // обещание, которого панель сейчас не держит. Говорим, как есть
+  const note = panel.querySelector(".energy-note");
+  if (note) note.textContent = "Ход уже сделан — заготовки ждут размена.";
+  return panel;
 }
 
 function raidHands(data) {
@@ -3642,6 +3664,7 @@ function battlePanel(data) {
     wait.className = "fight-line";
     wait.textContent = "Ход засчитан. Ждём остальных.";
     box.appendChild(wait);
+    box.appendChild(restingTricks(battle));
   } else {
     box.appendChild(battleTurnForm(data));
   }

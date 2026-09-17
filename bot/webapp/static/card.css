@@ -1095,6 +1095,12 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .scout-line:last-child { margin-bottom: 0; }
 .scout-mark { flex: none; }
 
+/* Панель приёмов, когда ход уже сделан: её показывают, чтобы боец видел
+   шкалу и заготовки, а не чтобы жал. Приглушаем — так видно, что она
+   сейчас не про нажатия */
+.tricks.watching { opacity: 0.75; }
+.tricks.watching .trick { cursor: default; }
+
 /* ---------- пузыри фильтров ---------- */
 
 .bubbles {

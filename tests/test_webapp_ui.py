@@ -4813,6 +4813,52 @@ async def test_taking_the_gift_closes_the_window(server):
         await browser.close()
 
 
+async def test_the_energy_bar_stays_while_the_squad_finishes(server):
+    """Ход сделан — шкала остаётся на виду, но нажимать нечего.
+
+    В рейде между нажатием приёма и разменом проходит вся волна. Раньше
+    панель после «Вперёд» пропадала целиком, и боец так и не видел, куда
+    делась энергия и сработала ли заготовка.
+    """
+    state = raid_with_wave({"acted": True})
+    state["raid"]["abilities"] = tricks_state(energy=9)
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, state)
+
+        said = await page.locator("#raid-body").inner_text()
+        assert "Ждём остальных" in said
+
+        panel = page.locator("#raid-body .tricks")
+        assert await panel.count() == 1, "шкала пропала вместе с кнопками"
+        assert "watching" in await panel.get_attribute("class")
+        assert "9 / 20" in await panel.inner_text()
+        # заготовка видна: по ней и понятно, за что ушла энергия
+        assert await panel.locator(".trick.armed").count() == 1
+
+        # но нажать ничего нельзя: приём жмут перед ударом, а не после
+        cards = panel.locator(".trick")
+        for index in range(await cards.count()):
+            assert await cards.nth(index).is_disabled()
+        # и обещания «осталось приёмов» тут нет — оно было бы неправдой
+        assert "осталось приёмов" not in await panel.inner_text()
+        await browser.close()
+
+
+async def test_the_bar_is_there_between_the_waves_too(server):
+    """Отряд переводит дух — шкала всё равно на виду."""
+    state = raid_with_wave({"resting": True})
+    state["raid"]["abilities"] = tricks_state(energy=12)
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, state)
+
+        assert "переводит дух" in await page.locator("#raid-body").inner_text()
+        assert await page.locator("#raid-body .tricks").count() == 1
+        assert "12 / 20" in await page.locator("#raid-body .tricks").inner_text()
+        await browser.close()
+
+
 async def test_all_four_tricks_fit_in_one_row(server):
     """Четыре приёма обязаны поместиться в строку, не перенесясь."""
     ring = ring_with_duel()

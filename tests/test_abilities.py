@@ -30,7 +30,14 @@ from bot.game.abilities import (
     energy_gain,
 )
 from bot.game.classes import ASSASSIN, FIGHTER_CLASSES, ROGUE, TANK, WARRIOR, Zone
-from bot.game.combat import Action, Fighter, Outcome, resolve_round, strike_of
+from bot.game.combat import (
+    Action,
+    Fighter,
+    Outcome,
+    Strike,
+    resolve_round,
+    strike_of,
+)
 from bot.game.equipment import CATALOGUE as GEAR, Equipment, OwnedItem, Slot
 
 HEAD, CHEST, BELT, LEGS = Zone.HEAD, Zone.CHEST, Zone.BELT, Zone.LEGS
@@ -829,3 +836,58 @@ def test_a_strike_and_a_dodge_work_in_the_same_turn():
     assert [charge.ability.code for charge in rogue.charges] == ["strong_hit"]
     mine = hit(rogue, make(user_id=1), seed=17)
     assert mine.ability == "strong_hit"
+
+
+# ---------- почему приём не пошёл ----------
+
+
+def test_the_refusal_names_the_real_reason():
+    """Отказ обязан называть то, что не сложилось, а не всё сводить к энергии.
+
+    Боец с полной шкалой читал «не хватает энергии» и справедливо не
+    понимал, куда та энергия делась.
+    """
+    fighter = make()
+    fighter.loadout = Loadout(slots={"strong_hit": 1, "nimble": 3, "crit_hit": 6,
+                                     "guile": 10})
+    fighter.energy = MAX_ENERGY
+
+    fighter.use("strong_hit")
+    with pytest.raises(ValueError, match="уже наготове"):
+        fighter.use("strong_hit")
+
+    fighter.use("nimble")
+    fighter.use("crit_hit")
+    with pytest.raises(ValueError, match="кончились"):
+        fighter.use("guile")
+
+    # а когда дело и правда в кошельке — говорим числами
+    fighter.pressed = 0
+    fighter.charges.clear()
+    fighter.energy = 1
+    with pytest.raises(ValueError, match="нужно 12, а накоплено 1"):
+        fighter.use("guile")
+
+
+def test_the_judge_names_the_ability_that_worked():
+    """Приём, сработавший на ударе, судья называет вслух.
+
+    Без этого заготовка срабатывала молча: энергия ушла, а строка боя
+    ровно та же, что была бы без приёма. В рейде между нажатием и разменом
+    проходит вся волна, и связать одно с другим было нечем.
+    """
+    from bot.game.narrator import ability_marks
+
+    assert "Сильный удар" in ability_marks(
+        Strike(1, 2, None, Outcome.HIT, ability="strong_hit")
+    )
+    assert "Проворность" in ability_marks(
+        Strike(1, 2, None, Outcome.DODGE, defence_ability="nimble")
+    )
+    # обычный удар судья ничем не метит
+    assert ability_marks(Strike(1, 2, None, Outcome.HIT)) == ""
+    # сработали оба — назовём обоих
+    both = ability_marks(
+        Strike(1, 2, None, Outcome.HIT, ability="strong_hit", defence_ability="nimble")
+    )
+    assert "Сильный удар" in both and "Проворность" in both

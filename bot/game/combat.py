@@ -373,14 +373,19 @@ class Fighter:
         # Порядок проверок — от общего к частному: норма на ход и смерть
         # отменяют приём целиком, и говорить про энергию тогда незачем
         if not self.alive:
-            raise ValueError("Мёртвый боец приёмов не применяет")
+            raise ValueError("Мёртвый боец приёмов не применяет.")
         if self.out_of_turns:
-            raise ValueError(f"За ход пускают в дело не больше {MAX_PER_TURN} приёмов")
+            raise ValueError(
+                f"Приёмы на этот ход кончились: их пускают в дело "
+                f"не больше {MAX_PER_TURN} за ход."
+            )
         if any(charge.ability.code == code for charge in self.charges):
-            raise ValueError("Этот приём уже наготове")
+            raise ValueError("Этот приём уже наготове и ждёт своего момента.")
         cost = self.loadout.cost_of(code)
         if self.energy < cost:
-            raise ValueError("Не хватает энергии")
+            raise ValueError(
+                f"Не хватает энергии: нужно {cost}, а накоплено {self.energy}."
+            )
         from bot.content.abilities import CATALOGUE
 
         self.energy -= cost
