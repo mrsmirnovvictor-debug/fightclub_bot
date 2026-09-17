@@ -1,7 +1,7 @@
 # Промты на снаряжение Босса Казино
 
-Девять позиций — весь его комплект. Босс танк: в правой руке кувалда, в левой
-штурмовой щит.
+Девять позиций — весь его комплект, от шлема до берцев. Босс танк: в правой
+руке кувалда, в левой щит. Все девять нарисованы и загружены.
 
 Стиль тот же, что у остального инвентаря: квадрат 1:1, ровная заливка фона
 **`#60656b`** до краёв, студийный свет, 3D-рендер, вещь занимает около 70%
@@ -65,29 +65,29 @@
 
 ## Оружие
 
-### `boss_sledge` — Кувалда Босса (6–34 урона, точность 0.12)
+### `boss_sledge` — Кувалда Босса (10–40 урона, точность 0.50)
 
-Числа у неё нарочно не прилавочные: редко доходит и почти сносит, когда
-доходит. Это должно быть видно — тяжёлая голова, длинная рукоять, замах,
+Средний урон — десятой ступени, как у прилавочной биты, а вот разброс вчетверо
+шире: бьёт неровно, а не слабо. Это должно быть видно — тяжёлая голова, длинная рукоять, замах,
 который не остановить на полпути.
 
 > Square 1:1 game inventory icon for “VEGAS Fight Club”. Massive two-handed sledgehammer laid diagonally across the frame, head down-left, grip up-right, oversized blackened steel head with a brass-inlaid face, deep dents and chipped edges on the striking face, long hardwood shaft wrapped in worn burgundy leather cord, brass collar and a heavy brass pommel cap, dried grime in the seams. Fictional “VEGAS” casino branding stamped into the brass collar, original playing-card and chip motifs, tarnished brass and deep burgundy, dents and notches from other people’s blows over well-kept gear. Underground casino boss, not a street fighter. Clearly fictional design, no real-world logos, no real casino names. Single object only, no body inside it, centered, occupying about 70% of the frame height with equal margins. Background fills the square edge to edge — no frame, no border, no panel, no vignette. Solid cool medium-gray background #60656b, soft studio lighting, subtle contact shadow, semi-realistic stylized 3D game render, 1:1 square.
 
 ## Щит
 
-### `boss_shield` — Щит Босса (вместо штурмового щита)
+### `boss_shield` — Щит Босса
 
 > Square 1:1 game inventory icon for “VEGAS Fight Club”. Heavy riot shield seen face on, very slightly three-quarter, straps hidden behind, dark polycarbonate face over a brass-edged frame, a broad burgundy diagonal band across it, scuffed viewport, rows of hammer dents and knife scratches across the surface, brass rivets along the rim. Fictional “VEGAS” casino branding across the band, original playing-card and chip motifs, tarnished brass and deep burgundy, dents and notches from other people’s blows over well-kept gear. Underground casino boss, not a street fighter. Clearly fictional design, no real-world logos, no real casino names. Single object only, no body inside it, centered, occupying about 70% of the frame height with equal margins. Background fills the square edge to edge — no frame, no border, no panel, no vignette. Solid cool medium-gray background #60656b, soft studio lighting, subtle contact shadow, semi-realistic stylized 3D game render, 1:1 square.
 
 ## Голова
 
-### `boss_helmet` — Шлем Босса (вместо мотошлема)
+### `boss_helmet` — Шлем Босса
 
 > Square 1:1 game inventory icon for “VEGAS Fight Club”. Open-face motorcycle helmet seen from the front and slightly above, empty — no head inside it, deep burgundy lacquered shell with a brass trim line, smoked visor flipped up, brass-buckled chin strap, quilted dark lining, a cluster of shallow dents across the crown. Fictional “VEGAS” casino branding on the brow, original playing-card and chip motifs, tarnished brass and deep burgundy, dents and notches from other people’s blows over well-kept gear. Underground casino boss, not a street fighter. Clearly fictional design, no real-world logos, no real casino names. Single object only, no body inside it, centered, occupying about 70% of the frame height with equal margins. Background fills the square edge to edge — no frame, no border, no panel, no vignette. Solid cool medium-gray background #60656b, soft studio lighting, subtle contact shadow, semi-realistic stylized 3D game render, 1:1 square.
 
 ## Куртка
 
-### `boss_jacket` — Бронекуртка Босса (вместо бронекуртки вышибалы)
+### `boss_jacket` — Бронекуртка Босса
 
 > Square 1:1 game inventory icon for “VEGAS Fight Club”. Heavy armoured bouncer jacket laid flat and face up, sleeves straight down, shoulders level, deep burgundy leather over segmented dark armour panels at the chest and shoulders, brass zip and brass shoulder studs, quilted collar, scored and gouged panels with the leather intact around them. Fictional “VEGAS” casino back print showing at the collar, original playing-card and chip motifs, tarnished brass and deep burgundy, dents and notches from other people’s blows over well-kept gear. Underground casino boss, not a street fighter. Clearly fictional design, no real-world logos, no real casino names. Single object only, no body inside it, centered, occupying about 70% of the frame height with equal margins. Background fills the square edge to edge — no frame, no border, no panel, no vignette. Solid cool medium-gray background #60656b, soft studio lighting, subtle contact shadow, semi-realistic stylized 3D game render, 1:1 square.
 
@@ -105,7 +105,7 @@
 
 ## Перчатки
 
-### `boss_gloves` — Перчатки Босса (вместо битых перчаток)
+### `boss_gloves` — Перчатки Босса
 
 > Square 1:1 game inventory icon for “VEGAS Fight Club”. Pair of heavy fighting gloves side by side, one slightly overlapping the other, empty — no hands inside them, burgundy leather with brass knuckle plates across the backs, reinforced padded palms, brass wrist buckles, scraped plates and scuffed knuckles, stitching pulled at one seam. Fictional “VEGAS” casino stamping on the cuff, original playing-card and chip motifs, tarnished brass and deep burgundy, dents and notches from other people’s blows over well-kept gear. Underground casino boss, not a street fighter. Clearly fictional design, no real-world logos, no real casino names. Single object only, no body inside it, centered, occupying about 70% of the frame height with equal margins. Background fills the square edge to edge — no frame, no border, no panel, no vignette. Solid cool medium-gray background #60656b, soft studio lighting, subtle contact shadow, semi-realistic stylized 3D game render, 1:1 square.
 
