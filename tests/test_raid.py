@@ -923,42 +923,97 @@ def test_the_boss_carries_his_own_hammer():
     assert hammer is not None and hammer.code == "boss_sledge"
     assert hammer not in SHOWCASE, "оружие босса попало на прилавок"
     assert not hammer.on_sale, "оружие босса продаётся"
-    # медленная, но сокрушительная: разброс шире и потолок выше прилавочного
+    # Медленная и сокрушительная — это про разброс, а не про слабую
+    # строку: потолок выше прилавочного, пол ниже, а средний урон тот же
+    bat = get_item("fan_boss_bat")  # прилавочная вершина той же ступени
     assert hammer.damage_max - hammer.damage_min >= 20
-    assert hammer.damage_max > get_item("splitting_axe").damage_max
-    assert hammer.accuracy < get_item("splitting_axe").accuracy, "не медленная"
+    assert hammer.damage_max > bat.damage_max and hammer.damage_min < bat.damage_min
+    middle = (hammer.damage_min + hammer.damage_max) / 2
+    assert abs(middle - (bat.damage_min + bat.damage_max) / 2) <= 1
+
+
+def test_the_hammer_sits_on_the_tenth_rung_of_the_ladder():
+    """Числа кувалды — десятой ступени, а не выдуманные.
+
+    У танкового оружия лестница ровная: точность и антикрит растут по 0.07
+    за ступень. Кувалда, выпавшая из неё, читалась бы как чужая вещь —
+    и первая её редакция с точностью 0.12 стояла на четвёртой ступени.
+    """
+    from bot.game.equipment import get_item
+
+    hammer = get_item(CELLAR_BOSS.weapon)
+    ninth = get_item("splitting_axe")
+    tenth = get_item("fan_boss_bat")
+
+    assert hammer.level_required == MAX_LEVEL
+    assert hammer.accuracy == tenth.accuracy == round(ninth.accuracy + 0.07, 2)
+    assert hammer.anticrit == tenth.anticrit
+    assert hammer.requires.endurance == tenth.requires.endurance
+
+
+def test_the_whole_boss_kit_is_his_own():
+    """Каждый слот босса — его вещь, и картинка у неё своя.
+
+    Общий код означал бы общую картинку: арт босса перекрасил бы мотошлем
+    и берцы половине клуба.
+    """
+    from bot.content.items import SHOWCASE
+    from bot.game.raid import boss_kit
+
+    kit = boss_kit(CELLAR_BOSS)
+
+    assert len(kit.items) == 9, "у босса не все слоты заняты"
+    for slot, owned in kit.items.items():
+        item = owned.item
+        assert item.code.startswith("boss_"), f"{slot.value} не его: {item.code}"
+        assert item not in SHOWCASE, f"{item.code} попал на прилавок"
+        assert item.picture.endswith(f"/{item.code}.jpeg"), "картинка не от кода"
+
+
+def test_the_boss_kit_is_as_strong_as_the_shop_one_it_replaced():
+    """Менялся вид, а не сила: числа скопированы с прилавочных вещей.
+
+    Иначе новый комплект тихо поменял бы сложность рейда вместе с
+    картинками, и не понять было бы, от чего именно.
+    """
+    from bot.game.classes import get_class
+    from bot.game.equipment import Slot
+    from bot.game.raid import boss_kit
+    from bot.game.reference import best_kit
+
+    mine = boss_kit(CELLAR_BOSS)
+    shop = dict(best_kit(get_class(CELLAR_BOSS.class_code), MAX_LEVEL))
+    for slot, item in shop.items():
+        if slot is Slot.WEAPON:
+            continue  # оружие у босса своё, в том и смысл
+        was, now = item, mine.items[slot].item
+        assert (now.hp, now.armor_min, now.armor_max) == (
+            was.hp, was.armor_min, was.armor_max
+        ), f"{slot.value}: броня разъехалась"
+        assert (now.strength, now.agility, now.intuition) == (
+            was.strength, was.agility, was.intuition
+        ), f"{slot.value}: характеристики разъехались"
 
 
 def test_the_boss_is_dressed_by_his_own_step_not_the_partys():
-    """Босс одет по десятому уровню, кто бы к нему ни пришёл.
+    """Босс одет одинаково, кто бы к нему ни пришёл.
 
     Уровень босса считается от отряда, и раньше по нему же собирался
     комплект: трое третьего уровня встречали босса в вещах седьмого.
     """
-    from bot.game.equipment import Slot
-    from bot.game.raid import BOSS_GEAR_LEVEL, boss_kit
-    from bot.game.reference import best_kit
-    from bot.game.classes import get_class
+    from bot.game.raid import BOSS_GEAR_LEVEL
 
     assert BOSS_GEAR_LEVEL == MAX_LEVEL
 
     rookies = boss_fighter(CELLAR_BOSS, [3, 3, 3])
     veterans = boss_fighter(CELLAR_BOSS, [10, 10, 10])
+
     # уровень по-прежнему растёт от отряда — а вещи одни и те же
     assert rookies.level < veterans.level
     worn = lambda one: {  # noqa: E731
         slot: owned.item.code for slot, owned in one.equipment.items.items()
     }
     assert worn(rookies) == worn(veterans)
-
-    # и это ровно верхняя ступень прилавка, плюс своя кувалда
-    shop = dict(best_kit(get_class(CELLAR_BOSS.class_code), MAX_LEVEL))
-    mine = boss_kit(CELLAR_BOSS)
-    for slot, item in shop.items():
-        if slot is Slot.WEAPON:
-            continue
-        assert mine.items[slot].item.code == item.code
-    assert mine.items[Slot.WEAPON].item.code == "boss_sledge"
 
 
 def test_the_hammer_makes_the_boss_hit_harder_than_a_dressed_player():

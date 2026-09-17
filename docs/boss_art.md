@@ -47,13 +47,15 @@
 
 > frame, border, panel, vignette, rounded corners, text overlay, watermark, real brand logo, real casino name, mannequin, human body, hands, model, multiple copies, collage, glowing magic effects, neon
 
-**Имена файлов** — по кодам вещей. Кувалда лежит в `items/`, остальные восемь
-заменяют собой картинки прилавочных вещей, поэтому **им нужны свои коды**: без
-отдельных кодов новая картинка перекрасит вещь и в магазине. Пока заведён
-только код кувалды — `boss_sledge.jpeg`. Остальные восемь файлов назовите
-`boss_helmet.jpeg`, `boss_shield.jpeg`, `boss_tee.jpeg`, `boss_belt.jpeg`,
-`boss_gloves.jpeg`, `boss_jacket.jpeg`, `boss_pants.jpeg`, `boss_boots.jpeg` —
-под эти имена я заведу вещи, когда картинки будут готовы.
+**Имена файлов** — по кодам вещей, папка `items/`. Все девять заведены и
+загружены: `boss_sledge`, `boss_shield`, `boss_helmet`, `boss_jacket`,
+`boss_tee`, `boss_belt`, `boss_gloves`, `boss_pants`, `boss_boots`. Адрес
+картинки вычисляется от кода, поле `image=` у них не задано.
+
+Коды у вещей босса свои не ради красоты: общий код означал бы общую картинку,
+и арт босса перекрасил бы мотошлем и берцы половине клуба. Числа при этом
+скопированы с прилавочных вещей, которые он носил раньше, — менялся вид, а не
+сила. Исключение одно, кувалда: она у него своя и по числам тоже.
 
 **Общий хвост** — одинаковый у всех девяти:
 
