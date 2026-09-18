@@ -92,6 +92,21 @@ function statValue(stat) {
   return box;
 }
 
+// Вибрация — украшение, и вести себя она должна как украшение.
+//
+// Телефон её умеет, настольный клиент — не всегда. Объект `HapticFeedback` в
+// SDK есть всегда, поэтому проверка «а есть ли он» проходила, а сам вызов на
+// старом клиенте бросал WebAppMethodUnsupported. Бросок случался до `try`, и
+// флаг «занято» у хода оставался поднятым навсегда: удары после этого
+// переставали нажиматься молча, без единого слова на экране.
+function haptic(run) {
+  try {
+    if (tg && tg.HapticFeedback) run(tg.HapticFeedback);
+  } catch (error) {
+    // Не завибрировало — и ладно. Ход от этого срываться не должен
+  }
+}
+
 function popup(title, message) {
   if (tg && tg.showPopup) {
     tg.showPopup({ title, message, buttons: [{ type: "close" }] });
@@ -207,7 +222,7 @@ function renderSlots(container, slots, own) {
       box.classList.add("tier", "lvl" + shown.mod.level);
     }
     box.addEventListener("click", () => {
-      if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+      haptic((feedback) => feedback.selectionChanged());
       if (!slot.item && slot.under) {
         // В клетке только нижняя вещь — снимаем её
         if (own) {
@@ -849,7 +864,7 @@ function statStep(stat) {
   plus.addEventListener("click", () => {
     if (draftLeft() <= 0) return;
     draft[stat.code] = (draft[stat.code] || 0) + 1;
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    haptic((feedback) => feedback.selectionChanged());
     paintUpgrade();
   });
 
@@ -923,7 +938,7 @@ async function applyUpgrade() {
     const data = await post("api/upgrade", draft);
     draft = {};
     render(data.card, true);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     popup(
       "✨ Характеристики выросли",
       "Вложено очков: " + spent + "."
@@ -996,7 +1011,7 @@ function chip(label, active, onClick, extraClass) {
   btn.className = "chip" + (active ? " on" : "") + (extraClass ? " " + extraClass : "");
   btn.textContent = label;
   btn.addEventListener("click", () => {
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    haptic((feedback) => feedback.selectionChanged());
     onClick();
   });
   return btn;
@@ -1178,8 +1193,10 @@ async function buyLot(lot) {
 async function marketAction(payload) {
   if (marketBusy) return;
   marketBusy = true;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  // Всё, что между поднятым флагом и `finally`, обязано лежать внутри `try`:
+  // иначе любой бросок оставляет флаг поднятым, и кнопки замолкают навсегда
   try {
+    haptic((feedback) => feedback.impactOccurred("light"));
     const response = await fetch("api/market", {
       method: "POST",
       headers: {
@@ -1937,7 +1954,7 @@ async function takePro(pro) {
     const data = await post("api/pro", {});
     render(data.card, true);
     renderMagic(data.magic);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     const got = data.pro;
     const extras = [];
     if (got.blade) extras.push("клинок ассасина — в инвентаре");
@@ -2326,8 +2343,10 @@ async function loadFights() {
 async function fightAction(payload) {
   if (fightBusy) return;
   fightBusy = true;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  // Всё, что между поднятым флагом и `finally`, обязано лежать внутри `try`:
+  // иначе любой бросок оставляет флаг поднятым, и кнопки замолкают навсегда
   try {
+    haptic((feedback) => feedback.impactOccurred("light"));
     const response = await fetch("api/fight", {
       method: "POST",
       headers: {
@@ -2707,7 +2726,7 @@ async function useAbility(where, trick, repaint) {
   try {
     const data = await post(where, { action: "ability", code: trick.code });
     repaint(data);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
+    haptic((feedback) => feedback.impactOccurred("medium"));
   } catch (error) {
     popup("Не вышло", error.message);
   } finally {
@@ -2977,8 +2996,10 @@ async function loadRaid() {
 async function raidAction(payload) {
   if (raidBusy) return;
   raidBusy = true;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  // Всё, что между поднятым флагом и `finally`, обязано лежать внутри `try`:
+  // иначе любой бросок оставляет флаг поднятым, и кнопки замолкают навсегда
   try {
+    haptic((feedback) => feedback.impactOccurred("light"));
     const response = await fetch("api/raid", {
       method: "POST",
       headers: {
@@ -3513,8 +3534,10 @@ async function loadBattle() {
 async function battleAction(payload) {
   if (battleBusy) return;
   battleBusy = true;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  // Всё, что между поднятым флагом и `finally`, обязано лежать внутри `try`:
+  // иначе любой бросок оставляет флаг поднятым, и кнопки замолкают навсегда
   try {
+    haptic((feedback) => feedback.impactOccurred("light"));
     const response = await fetch("api/battle", {
       method: "POST",
       headers: {
@@ -4110,7 +4133,7 @@ async function buyPack(pack) {
     const data = await post("api/invoice", { code: pack.code });
     tg.openInvoice(data.link, async (status) => {
       if (status === "paid") {
-        if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        haptic((feedback) => feedback.notificationOccurred("success"));
         shopData = null;  // кредитов стало больше
         await refresh();
         await loadTopUp();
@@ -4185,7 +4208,7 @@ async function purchase(item) {
     const data = await post("api/buy", { code: item.code });
     render(data.card, true);
     renderShop(data.shop);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     popup("🛍 " + data.bought.title, boughtNote(data.bought));
   } catch (error) {
     popup("Не вышло", error.message);
@@ -4207,7 +4230,7 @@ async function handIn(item) {
     const data = await post("api/handin", { item_id: item.id });
     render(data.card, true);
     renderShop(data.shop);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     popup(
       "🏪 " + data.handin.title,
       "Сдано в лавку за " + data.handin.paid + " 💰. На счету " +
@@ -4256,7 +4279,7 @@ async function usePotion(potion) {
     const data = await post("api/use", { code: potion.code });
     render(data.card, true);
     shopData = null;  // «уже есть» на витрине изменилось
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     const used = data.used;
     const left = used.left
       ? "\nОсталось таких: " + used.left + " шт."
@@ -4304,7 +4327,7 @@ async function act(url, body) {
     const card = await post(url, body);
     render(card, true);
     shopData = null;  // «уже есть» на витрине могло измениться
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+    haptic((feedback) => feedback.impactOccurred("light"));
     // Вещи держатся друг за друга: сняли меч — ушёл и нож, который стоял
     // на его прибавке. Молчать об этом нельзя, слот пустеет сам собой.
     if (card.undressed && card.undressed.length) {
@@ -4776,7 +4799,7 @@ async function pickLook(look) {
     render(data.card, true);
     renderLooks(data.looks);
     shopData = null;  // кредитов могло стать меньше
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     if (data.chosen.bought) {
       popup(
         "Образ куплен",
@@ -5083,7 +5106,7 @@ async function load() {
 
 el("hero-avatar").addEventListener("click", () => {
   if (!el("hero-avatar").classList.contains("clickable")) return;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+  haptic((feedback) => feedback.selectionChanged());
   openLooks();
 });
 el("sheet-close").addEventListener("click", closeSheet);

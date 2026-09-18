@@ -231,7 +231,7 @@ def city_map(
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
-    battle=None, city=None, workshop=None, images=False,
+    battle=None, city=None, workshop=None, images=False, telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -258,8 +258,10 @@ async def open_page(
     await page.route("**/api/workshop*", canned(workshop or EMPTY_WORKSHOP))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
+    # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
+    # Тесту про старый клиент нужен свой: он подсовывается сюда же
     await page.route("https://telegram.org/**", lambda route: route.fulfill(
-        status=200, content_type="application/javascript", body=""
+        status=200, content_type="application/javascript", body=telegram
     ))
     # Картинки по умолчанию не грузим: до бакета из тестов не дотянуться,
     # и каждая была бы секундой ожидания. Кому нужна настоящая — просит
@@ -2307,7 +2309,7 @@ def raid_with_wave(over=None) -> dict:
     return {**EMPTY_RAID, "raid": raid, "boss": {**BOSS_CARD, "live": True}}
 
 
-async def open_raid(pw, server, raid=None):
+async def open_raid(pw, server, raid=None, telegram=""):
     """Открыть подвал.
 
     Пузыря «Рейд» среди разделов клуба больше нет: в подвал спускаются из
@@ -2318,7 +2320,7 @@ async def open_raid(pw, server, raid=None):
     # где бы боец ни стоял. Потому и идём сюда через карту
     browser, page = await open_page(
         pw, server, build_card(make_player("casino"), TOKEN, viewer_id=42),
-        raid=raid, city=city_map("casino"),
+        raid=raid, city=city_map("casino"), telegram=telegram,
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await page.locator("#tab-map").click()
@@ -2650,6 +2652,67 @@ async def test_the_wave_shows_the_boss_and_the_whole_party(server):
         assert "✅" in members[1]  # Марла отработала волну
         assert "💀" in members[2]  # Зеваку вынесли
         assert await page.locator(".raid-member.down").count() == 1
+        await browser.close()
+
+
+# Старый настольный клиент: объект вибрации в SDK есть, а вызов бросает.
+# Так ведёт себя Telegram, когда версия клиента ниже той, в которой метод
+# появился, — проверка «а есть ли HapticFeedback» такой клиент проходит
+OLD_CLIENT = """
+window.Telegram = {
+  WebApp: {
+    initData: "",
+    ready() {},
+    expand() {},
+    HapticFeedback: {
+      impactOccurred() { throw new Error("WebAppMethodUnsupported"); },
+      selectionChanged() { throw new Error("WebAppMethodUnsupported"); },
+      notificationOccurred() { throw new Error("WebAppMethodUnsupported"); },
+    },
+  },
+};
+"""
+
+
+async def test_a_client_without_vibration_still_fights(server):
+    """Клиент без вибрации не должен терять удары.
+
+    Вибрация вызывалась до `try`, и на старом настольном клиенте бросок
+    оставлял флаг «занято» поднятым навсегда: первый удар уходил или не
+    уходил, а дальше кнопки молчали — без единого слова на экране.
+    """
+    sent = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(
+            pw, server, raid_with_wave(), telegram=OLD_CLIENT
+        )
+
+        async def catch(route):
+            sent.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(raid_with_wave()),  # волна идёт, ход снова доступен
+            )
+
+        await page.route("**/api/raid", catch)
+
+        async def swing():
+            await page.locator("#club-raid .zone-list").nth(0).get_by_text(
+                "Голова"
+            ).click()
+            await page.locator("#club-raid .zone-list").nth(1).get_by_text(
+                "Корпус + Живот"
+            ).click()
+            await page.locator("#raid-go").click()
+
+        await swing()
+        assert len(sent) == 1, "первый удар не ушёл"
+
+        # И второй тоже: флаг «занято» обязан опуститься
+        await page.wait_for_selector("#raid-go")
+        await swing()
+        assert len(sent) == 2, "после первого удара кнопки замолчали"
         await browser.close()
 
 
