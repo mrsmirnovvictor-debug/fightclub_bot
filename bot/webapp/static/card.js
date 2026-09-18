@@ -2708,9 +2708,12 @@ function abilityPanel(state, send) {
     name.textContent = trick.title;
     card.appendChild(name);
 
+    // Цена стоит всегда, в том числе у заряженного: что приём в деле,
+    // говорит зелёная обводка, а подпись под ней только дублировала бы её
+    // словом — и заодно прыгала бы шириной, дёргая ряд
     const price = document.createElement("span");
     price.className = "trick-cost";
-    price.textContent = trick.armed ? "наготове" : trick.cost + " ⚡";
+    price.textContent = trick.cost + " ⚡";
     card.appendChild(price);
 
     card.addEventListener("click", () => send(trick));

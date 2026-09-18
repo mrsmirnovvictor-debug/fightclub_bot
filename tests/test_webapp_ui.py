@@ -4321,7 +4321,9 @@ async def test_a_pressed_trick_shows_it_is_waiting(server):
 
         armed = page.locator(".trick.armed")
         assert await armed.count() == 1
-        assert "наготове" in await armed.inner_text()
+        # Про заготовку говорит обводка, а не подпись: цена остаётся ценой
+        assert "наготове" not in await armed.inner_text()
+        assert "9 ⚡" in await armed.inner_text()
         assert await armed.is_disabled(), "дважды одну заготовку не кладут"
         await browser.close()
 
