@@ -3036,6 +3036,15 @@ function raidShape(data) {
       raid.id, raid.wave, raid.resting, raid.finished, raid.acted, raid.alive,
       raid.boss.hp, raid.log.length,
       raid.party.map((one) => [one.user_id, one.hp, one.alive, one.acted]),
+      // Шкала и заготовки. Без них нажатый приём не доезжал до экрана:
+      // сервер честно списывал энергию и клал заготовку, а раздел не
+      // перерисовывался — ничего из перечисленного выше от нажатия не
+      // меняется, и подпись оставалась прежней до следующей волны
+      raid.abilities && [
+        raid.abilities.energy,
+        raid.abilities.left,
+        raid.abilities.tricks.map((one) => [one.code, one.armed, one.ready]),
+      ],
     ],
     lobby && [lobby.id, lobby.total, lobby.size, lobby.can_start],
     data.lobbies.map((one) => [one.id, one.total, one.size]),

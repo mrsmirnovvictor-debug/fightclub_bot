@@ -2716,6 +2716,46 @@ async def test_a_client_without_vibration_still_fights(server):
         await browser.close()
 
 
+async def test_a_pressed_trick_shows_up_in_the_raid_at_once(server):
+    """Нажал приём — обводка зелёная, энергия меньше. Сразу, а не потом.
+
+    Раздел перерисовывается только когда что-то поменялось, и в список
+    «что-то» приёмы не входили. Сервер честно списывал энергию и клал
+    заготовку, а на экране не менялось ничего: ни волна, ни здоровье, ни
+    длина лога от нажатия не двигаются. Игрок видел прежнюю шкалу и
+    несветящуюся плитку до самой следующей волны.
+    """
+    before = raid_with_wave()
+    before["raid"]["abilities"] = tricks_state(energy=9)
+    for trick in before["raid"]["abilities"]["tricks"]:
+        trick["armed"] = False  # начинаем с чистого стола
+    # Ответ на нажатие: энергия ушла, заготовка легла. Всё остальное — то же
+    after = json.loads(json.dumps(before))
+    armed = after["raid"]["abilities"]
+    armed["energy"] = 6
+    armed["left"] = 2
+    armed["tricks"][0]["armed"] = True
+
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, before)
+
+        panel = page.locator("#club-raid .tricks")
+        assert "9 / 20" in await panel.inner_text()
+        assert await panel.locator(".trick.armed").count() == 0
+
+        await page.route("**/api/raid", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(after)
+        ))
+        await panel.locator(".trick").first.click()
+
+        # Плитка светится зелёным, и энергии стало меньше
+        await page.wait_for_selector("#club-raid .trick.armed")
+        said = await page.locator("#club-raid .tricks").inner_text()
+        assert "6 / 20" in said, f"шкала не обновилась: {said}"
+        assert "осталось приёмов: 2" in said
+        await browser.close()
+
+
 async def test_the_raid_turn_goes_in_one_press(server):
     sent = []
 
