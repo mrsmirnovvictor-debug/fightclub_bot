@@ -49,6 +49,15 @@ def next_midnight(moment: float) -> float:
     return midnight.timestamp()
 
 
+def club_moment(moment: float, fmt: str = "%d.%m.%y %H:%M") -> str:
+    """Момент времени для показа игроку — по московским часам.
+
+    То же, что `club_time`, но для секунд, а не для метки из базы: сроки
+    вроде подписки лежат числом, а не строкой.
+    """
+    return datetime.fromtimestamp(moment, MOSCOW).strftime(fmt)
+
+
 def read_stamp(stamp: str | None) -> datetime | None:
     """Метка из базы как момент времени. None — прочитать не удалось.
 
@@ -93,6 +102,7 @@ __all__ = [
     "STAMP_FORMATS",
     "club_date",
     "club_day",
+    "club_moment",
     "club_time",
     "next_midnight",
     "read_stamp",
