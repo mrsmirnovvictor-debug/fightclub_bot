@@ -73,6 +73,61 @@ async def test_houses_without_a_trade_say_so(client, db):
     assert houses["northern_wall_shop"]["services"] == ["fan"]
 
 
+# ---------- вид изнутри ----------
+
+
+# Как назвали файл с видом изнутри там, где имя не совпало с кодом дома.
+# Эти три картинки рисовали под своими названиями, и переименовывать их в
+# бакете не стали
+RENAMED = {
+    "weapon_shop": "weapons_shop_interior",
+    "clothes_shop": "clothing_shop_interior",
+    "casino": "underground_casino_interior",
+}
+
+
+def test_every_house_has_a_view_from_within():
+    """Все четырнадцать домов, и ни одного без картинки."""
+    from bot.game.locations import LOCATIONS
+
+    assert len(LOCATIONS) == 14
+    seen = {place.indoors for place in LOCATIONS}
+    assert len(seen) == 14, "две локации не могут делить один вид изнутри"
+    for place in LOCATIONS:
+        name = RENAMED.get(place.code, place.code + "_interior")
+        assert place.indoors.endswith(f"/locations/interiors/{name}.jpeg")
+
+
+def test_the_view_is_named_after_the_house():
+    """Имя файла считается от кода дома — как у вещей и склянок."""
+    from bot.game.locations import get_location
+
+    assert get_location("pharmacy").indoors.endswith("pharmacy_interior.jpeg")
+    # А там, где художник назвал файл иначе, имя задано явно
+    assert get_location("casino").indoors.endswith(
+        "underground_casino_interior.jpeg"
+    )
+
+
+async def test_the_card_carries_the_view_of_the_house_you_stand_in(client, db):
+    """Картинку вешает локация: экран один на несколько домов."""
+    await db.save_player(make_player(location="pharmacy"))
+
+    body = await (await client.get("/api/card", headers=headers())).json()
+
+    assert body["place"]["code"] == "pharmacy"
+    assert body["place"]["interior"].endswith("pharmacy_interior.jpeg")
+
+
+async def test_a_house_without_a_trade_still_carries_its_view(client, db):
+    """В банк пока ходят просто посмотреть — но посмотреть есть на что."""
+    await db.save_player(make_player(location="bank"))
+
+    body = await (await client.get("/api/card", headers=headers())).json()
+
+    assert body["place"]["interior"].endswith("bank_interior.jpeg")
+
+
 # ---------- дорога ----------
 
 

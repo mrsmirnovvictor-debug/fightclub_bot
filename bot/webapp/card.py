@@ -635,6 +635,10 @@ def place_payload(player: Player, now: int | None = None) -> dict:
         "code": place.code if place else "",
         "title": place.title if place else "—",
         "district": place.district if place else "",
+        # Вид изнутри: его вешают сверху экрана того дома, в котором
+        # боец стоит. С карты видно только дверь, а внутри он проводит
+        # всё время — без картинки лавка от аптеки отличается заголовком
+        "interior": place.indoors if place else "",
         # Пока идёт, показываем, куда именно: иначе на карточке пусто
         "going_to": (get_location(player.travel_to).title
                      if road and player.travel_to else ""),

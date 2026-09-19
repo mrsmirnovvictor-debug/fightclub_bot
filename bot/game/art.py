@@ -23,6 +23,8 @@ MAGIC = f"{BUCKET}/magic"
 POTIONS = f"{BUCKET}/potions"
 # Карты районов города: по карте на район
 LOCATIONS = f"{BUCKET}/locations"
+# Виды изнутри: по картинке на дом
+INTERIORS = f"{LOCATIONS}/interiors"
 
 
 def avatar(code: str) -> str:
@@ -66,6 +68,16 @@ def location(code: str) -> str:
     return f"{LOCATIONS}/{code}.jpeg"
 
 
+def interior(code: str) -> str:
+    """Вид изнутри дома: locations/interiors/pharmacy_interior.jpeg.
+
+    Снаружи дом — кусочек нарисованного района, и с карты видно только
+    дверь. Внутри же боец проводит всё время, и без картинки лавка от
+    аптеки отличается одним заголовком.
+    """
+    return f"{INTERIORS}/{code}.jpeg"
+
+
 def boss(code: str) -> str:
     """Портрет рейд-босса: bosses/cellar_boss.png."""
     return f"{BOSSES}/{code}.png"
@@ -81,6 +93,7 @@ __all__ = [
     "AVATARS",
     "BOSSES",
     "BUCKET",
+    "INTERIORS",
     "ITEMS",
     "LOCATIONS",
     "MAGIC",
@@ -90,6 +103,7 @@ __all__ = [
     "WEAPONS",
     "avatar",
     "boss",
+    "interior",
     "item",
     "location",
     "potion",

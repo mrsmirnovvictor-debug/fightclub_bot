@@ -132,6 +132,11 @@ class Location:
     soon: str = ""
     # Родительный падеж для фраз «дойти до мастерской»
     genitive: str = ""
+    # Имя файла с видом изнутри, если оно не совпадает с кодом дома.
+    # Обычно не задаётся: картинка зовётся по дому — `pharmacy` →
+    # `pharmacy_interior`. Три дома рисовали под другими именами, и
+    # переименовывать файлы в бакете — не наше дело
+    interior: str = ""
 
     def allows(self, service: Service) -> bool:
         return service in self.services
@@ -176,6 +181,18 @@ class Location:
     def image(self) -> str:
         """Картинка района, на которой стоит это здание."""
         return art.location(self.district)
+
+    @property
+    def indoors(self) -> str:
+        """Вид изнутри: его вешают сверху экрана, когда боец вошёл.
+
+        Адрес считается от кода дома — как у вещей и склянок. Своё имя
+        файла задаётся только там, где художник назвал его иначе.
+
+        Зовётся не `inside`: так называется проверка попадания в силуэт,
+        и два разных `inside` в одном файле читались бы как одно.
+        """
+        return art.interior(self.interior or f"{self.code}_interior")
 
 
 @dataclass(frozen=True)
@@ -293,6 +310,7 @@ LOCATIONS: tuple[Location, ...] = (
         ),
         services=(Service.WEAPONS,),
         genitive="оружейного магазина",
+        interior="weapons_shop_interior",
     ),
     Location(
         "workshop",
@@ -318,6 +336,7 @@ LOCATIONS: tuple[Location, ...] = (
         ),
         services=(Service.CLOTHES,),
         genitive="магазина одежды",
+        interior="clothing_shop_interior",
     ),
     Location(
         "pharmacy",
@@ -343,6 +362,7 @@ LOCATIONS: tuple[Location, ...] = (
         ),
         services=(Service.RAID,),
         genitive="казино",
+        interior="underground_casino_interior",
     ),
     Location(
         "pawnshop",

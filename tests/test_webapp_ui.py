@@ -3274,12 +3274,12 @@ async def test_a_link_from_the_chat_opens_the_screen_it_promised(
 # ---------- карта города ----------
 
 
-async def open_map(pw, server, city=None, card=None):
+async def open_map(pw, server, city=None, card=None, images=False):
     """Открыть вкладку карты."""
     player = make_player()
     browser, page = await open_page(
         pw, server, card or build_card(player, TOKEN, viewer_id=player.user_id),
-        build_shop(player, Service.CLOTHES), city=city,
+        build_shop(player, Service.CLOTHES), city=city, images=images,
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await page.locator("#tab-map").click()
@@ -3494,17 +3494,134 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
 
 
 async def test_a_house_without_a_trade_says_when_it_opens(server):
-    """Банк на карте есть, зайти можно, а услуги пока нет."""
+    """Банк на карте есть, зайти можно, а услуги пока нет.
+
+    Раньше банк отвечал всплывашкой, и боец оставался на карте — то есть
+    внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
+    записка о том, чего тут ждать.
+    """
+    walker = make_player(location="bank")
+    card = build_card(walker, TOKEN, viewer_id=walker.user_id)
     async with async_playwright() as pw:
-        browser, page = await open_map(pw, server, city_map("bank"))
+        browser, page = await open_map(
+            pw, server, city_map("bank"), card, images=True
+        )
 
-        said = []
-        page.on("dialog", lambda dialog: said.append(dialog.message) or
-                asyncio.ensure_future(dialog.dismiss()))
         await page.locator(".zone-house").filter(has_text="Банк").click()
-        await page.wait_for_timeout(300)
+        await page.wait_for_selector("#house:not(.hidden)")
 
-        assert said and "Скоро" in said[0] and "хранение денег" in said[0]
+        assert await page.locator("#house-title").inner_text() == "Банк"
+        note = await page.locator("#house-soon").inner_text()
+        assert "Скоро" in note and "хранение денег" in note
+        # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
+        assert "active" in (await page.locator("#tab-map").get_attribute("class"))
+        # Обратно — на карту, кнопкой в углу
+        await page.locator("#house-back").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await browser.close()
+
+
+# ---------- вид изнутри ----------
+
+
+async def open_inside(pw, server, where: str, service=Service.CLOTHES):
+    """Открыть мини-апп бойцом, который стоит в этом доме."""
+    player = make_player(location=where)
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player, service), city=city_map(where), images=True,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    return browser, page
+
+
+async def interior_src(page, screen: str) -> str:
+    return await page.locator(f"#{screen}-pic").get_attribute("src")
+
+
+async def test_the_shop_hangs_the_view_of_the_house_you_stand_in(server):
+    """Прилавков пять, экран один: картинку вешает локация, а не вёрстка."""
+    async with async_playwright() as pw:
+        browser, page = await open_inside(pw, server, "pharmacy", Service.POTIONS)
+        await open_screen(page, "shop")
+
+        assert await page.locator("#shop-interior:not(.hidden)").count() == 1
+        assert (await interior_src(page, "shop")).endswith(
+            "locations/interiors/pharmacy_interior.jpeg"
+        )
+        await browser.close()
+
+
+async def test_the_view_hangs_above_everything_on_the_screen(server):
+    """Картинка закреплена сверху: заголовок и прилавок идут под ней."""
+    async with async_playwright() as pw:
+        browser, page = await open_inside(pw, server, "weapon_shop", Service.WEAPONS)
+        await open_screen(page, "shop")
+        await page.wait_for_selector("#shop-interior:not(.hidden)")
+
+        view = await page.locator("#shop-interior").bounding_box()
+        head = await page.locator("#shop .screen-head").bounding_box()
+
+        assert view["y"] + view["height"] <= head["y"] + 1
+        # И от края до края: поля карточки картинке не мешают
+        width = await page.evaluate("document.documentElement.clientWidth")
+        assert view["x"] <= 0 and view["width"] >= width
+        await browser.close()
+
+
+async def test_the_casino_and_the_club_share_a_screen_but_not_a_view(server):
+    """Один экран на два дома — и у каждого своя картинка."""
+    async with async_playwright() as pw:
+        browser, page = await open_inside(pw, server, "casino")
+        await page.evaluate("openCasino()")
+
+        assert (await interior_src(page, "club")).endswith(
+            "locations/interiors/underground_casino_interior.jpeg"
+        )
+
+        # Вышли в клуб — и вид сменился вместе с домом
+        fighter = make_player(location="fight_club")
+        await page.evaluate(
+            "card => render(card, true)",
+            build_card(fighter, TOKEN, viewer_id=fighter.user_id),
+        )
+        await page.wait_for_function(
+            "document.getElementById('club-pic').src.includes('fight_club')"
+        )
+        await browser.close()
+
+
+async def test_on_the_road_there_is_no_view_at_all(server):
+    """В пути боец ни в старом доме, ни в новом — показывать нечего."""
+    async with async_playwright() as pw:
+        browser, page = await open_inside(pw, server, "pharmacy", Service.POTIONS)
+        await open_screen(page, "shop")
+        await page.wait_for_selector("#shop-interior:not(.hidden)")
+
+        walker = make_player(location="pharmacy")
+        walker.set_out("clothes_shop", 20)
+        await page.evaluate(
+            "card => render(card, true)",
+            build_card(walker, TOKEN, viewer_id=walker.user_id),
+        )
+
+        await page.wait_for_selector("#shop-interior", state="hidden")
+        await browser.close()
+
+
+async def test_a_view_that_never_arrived_leaves_no_empty_strip(server):
+    """Файл не доехал — рамка убирается целиком, а не зияет полосой."""
+    async with async_playwright() as pw:
+        # `images=False`: бакет из теста недоступен, все картинки падают
+        player = make_player(location="workshop")
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player, Service.CLOTHES), city=city_map("workshop"),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "workshop")
+
+        await page.wait_for_selector("#workshop-interior", state="hidden")
         await browser.close()
 
 

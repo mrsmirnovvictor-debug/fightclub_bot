@@ -1410,11 +1410,13 @@ function lotCard(lot) {
   return box;
 }
 
-const SCREENS = ["club", "map", "shop", "magic", "workshop", "bag", "hero"];
+const SCREENS = [
+  "club", "map", "shop", "magic", "workshop", "house", "bag", "hero",
+];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
-const OPENED_FROM = { shop: "map", magic: "map", workshop: "map" };
+const OPENED_FROM = { shop: "map", magic: "map", workshop: "map", house: "map" };
 let lastTab = "hero";
 
 function showTab(name) {
@@ -1753,10 +1755,22 @@ const HOUSE_SCREENS = {
   repair: () => openWorkshop(),
 };
 
+// Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
+// оставался на карте — то есть внутрь не попадал вовсе, и вид изнутри
+// показать было негде. Теперь у него свой экран: картинка сверху и
+// записка о том, чего тут ждать.
+function openHouse(place) {
+  el("house-title").textContent = place.title;
+  el("house-soon").textContent = place.soon
+    ? "Скоро здесь появится новая услуга: " + place.soon + "."
+    : "Дом пока пустует. Загляни позже.";
+  showTab("house");
+}
+
 async function enterHouse(place) {
   if (place.here) {
     if (!place.works) {
-      popup(place.title, "Скоро здесь появится новая услуга: " + place.soon + ".");
+      openHouse(place);
       return;
     }
     const open = HOUSE_SCREENS[place.services[0]];
@@ -5032,8 +5046,58 @@ function render(card, keepTab) {
 // показывать экран клуба и что на нём можно
 let myPlace = null;
 
+// ---------- вид изнутри ----------
+//
+// С карты у дома видно одну дверь, а всё остальное время боец проводит
+// внутри. Картинку вешает не вёрстка, а локация: один экран обслуживает
+// по несколько домов — клуб и казино, пять разных прилавков, — и что
+// показывать, знает только то место, где боец сейчас стоит.
+const INTERIOR_SCREENS = ["club", "shop", "magic", "workshop", "house"];
+
+// Виды, которые не доехали. Помнить их приходится: карточка
+// перерисовывается сама по себе — по сердцебиению, после боя, при
+// возврате из чата, — а браузер второй раз за упавшую картинку не
+// возьмётся. Без этого списка рамка после первой же перерисовки
+// возвращалась бы пустой полосой и висела так до конца сеанса
+const brokenInteriors = new Set();
+
+function paintInterior() {
+  const place = myPlace || {};
+  // В пути боец ни в старом доме, ни в новом: вида изнутри у него нет.
+  // Оставить картинку прежнего дома значило бы показать его там, где
+  // его уже нет
+  const src = place.seconds_left ? "" : place.interior || "";
+  const show = Boolean(src) && !brokenInteriors.has(src);
+  INTERIOR_SCREENS.forEach((screen) => {
+    const box = el(screen + "-interior");
+    const pic = el(screen + "-pic");
+    if (!box || !pic) return;
+    box.classList.toggle("hidden", !show);
+    if (!show) return;
+    pic.alt = place.title || "";
+    // Тот же адрес заново не грузим: перерисовка идёт на каждой карточке,
+    // а картинка тяжёлая
+    if (pic.getAttribute("src") !== src) pic.src = src;
+  });
+}
+
+// Файл не доехал — убираем рамку целиком: пустая полоса под заголовком
+// хуже, чем её отсутствие. Дом со своей картинкой при этом не страдает:
+// в списке павших лежат адреса, а не экраны
+function watchInteriors() {
+  INTERIOR_SCREENS.forEach((screen) => {
+    const pic = el(screen + "-pic");
+    if (!pic) return;
+    pic.addEventListener("error", () => {
+      brokenInteriors.add(pic.getAttribute("src"));
+      paintInterior();
+    });
+  });
+}
+
 function paintCity(card) {
   if (card.is_self) myPlace = card.place || null;
+  paintInterior();
   // Вышли из казино — подвал закрывается сам: держать его открытым
   // значит показывать рейд, в который с улицы всё равно не пустят
   if (!inCasino() && clubHouse === "casino") {
@@ -5124,6 +5188,8 @@ el("hero-avatar").addEventListener("click", () => {
 el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
 el("hero-daily").addEventListener("click", openDaily);
+el("house-back").addEventListener("click", () => showTab("map"));
+watchInteriors();
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты
 TABS.forEach((tab) => {

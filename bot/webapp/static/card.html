@@ -17,6 +17,12 @@
 
   <!-- ---------- 1. Бойцовский клуб ---------- -->
   <main id="club" class="screen club hidden">
+    <!-- Вид изнутри: один экран обслуживает и клуб, и казино, поэтому картинку
+         ставит не вёрстка, а та локация, в которой боец стоит -->
+    <figure class="interior hidden" id="club-interior">
+      <img class="interior-pic" id="club-pic" alt="">
+    </figure>
+
     <header class="screen-head">
       <h1 class="screen-title" id="club-title">🥊 Бойцовский клуб</h1>
       <span class="screen-count" id="club-count"></span>
@@ -78,6 +84,10 @@
   </main>
 
   <main id="shop" class="screen shop hidden">
+    <figure class="interior hidden" id="shop-interior">
+      <img class="interior-pic" id="shop-pic" alt="">
+    </figure>
+
     <header class="screen-head">
       <h1 class="screen-title" id="shop-title">🏪 Лавка клуба</h1>
       <span class="shop-purse" id="shop-purse"></span>
@@ -102,6 +112,10 @@
 
   <!-- ---------- 3. Магазин «Элита» ---------- -->
   <main id="magic" class="screen magic hidden">
+    <figure class="interior hidden" id="magic-interior">
+      <img class="interior-pic" id="magic-pic" alt="">
+    </figure>
+
     <header class="screen-head">
       <h1 class="screen-title">💎 Магазин «Элита»</h1>
     </header>
@@ -117,6 +131,10 @@
 
   <!-- ---------- 3a. Мастерская: починка, прилавок и мастер ---------- -->
   <main id="workshop" class="screen hidden">
+    <figure class="interior hidden" id="workshop-interior">
+      <img class="interior-pic" id="workshop-pic" alt="">
+    </figure>
+
     <header class="screen-head">
       <h1 class="screen-title">🔧 Мастерская</h1>
       <span class="shop-purse" id="shop-purse-workshop"></span>
@@ -153,6 +171,27 @@
       </button>
       <div id="master-picker"></div>
     </section>
+  </main>
+
+  <!-- ---------- 3b. Дом без услуги ---------- -->
+  <!-- Банк, рынок, почта, стадион и бар пока ничего не умеют. Раньше они
+       отвечали всплывашкой, и боец оставался на карте — то есть внутрь не
+       заходил вовсе. Теперь дом открывается своим экраном: вид изнутри
+       сверху, записка о том, чего ждать, — и обратно на карту. -->
+  <main id="house" class="screen hidden">
+    <figure class="interior hidden" id="house-interior">
+      <img class="interior-pic" id="house-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="house-back">← На карту</button>
+    </header>
+    <h1 class="screen-title" id="house-title"></h1>
+    <div class="soon">
+      <div class="soon-emoji">🔒</div>
+      <h2 class="soon-title">Здесь ещё не открылись</h2>
+      <p class="soon-text muted" id="house-soon"></p>
+    </div>
   </main>
 
   <!-- ---------- 4. Инвентарь ---------- -->
