@@ -3957,14 +3957,14 @@ async def test_without_a_subscription_the_analyst_is_silent(server):
 # ---------- мастерская ----------
 
 
-def workshop_state() -> dict:
+def workshop_state(credits: int = 9000) -> dict:
     """Мастерская, как её отдаёт сервер: и чинить есть что, и точить."""
     from bot.content.mods import MODS
     from bot.webapp.card import item_payload
     from bot.webapp.workshop import mod_payload, target_payload
 
     player = make_player("workshop")
-    player.credits = 9000
+    player.credits = credits
     worn = OwnedItem(item=CATALOGUE["bat"], id=7, wear=4, slot=None)
     player.gear = [worn]
     mine = {"sharpen_weapon_2": 1}
@@ -4088,6 +4088,33 @@ async def test_the_counter_sells_five_steps(server):
         assert [
             await row.get_attribute("class") for row in await rows.all()
         ] == ["mod lvl1", "mod lvl2", "mod lvl3", "mod lvl4", "mod lvl5"]
+        await browser.close()
+
+
+async def test_the_counter_keeps_the_price_on_the_button_when_money_is_short(
+    server,
+):
+    """Кнопка называет цену всегда, а пустой кошелёк показывает серым.
+
+    Раньше вместо цены на ней стояло «Не хватает кредитов», и прилавок
+    переставал отвечать на единственный вопрос, ради которого на него
+    смотрят: сколько это стоит.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_workshop(pw, server, workshop_state(credits=1))
+        await page.locator("#workshop-tabs .chip").nth(1).click()
+
+        buy = page.locator("#mods-list .mod").first.locator(".btn")
+
+        assert await buy.inner_text() == "Купить · 500 💰"
+        assert await buy.is_disabled()
+        assert "Не хватает" not in await page.locator("#mods-list").inner_text()
+        # Серая — та же кромка, что у всех недоступных кнопок клуба
+        grey = await buy.evaluate("box => getComputedStyle(box).backgroundColor")
+        lit = await page.locator("#workshop-tabs .chip").first.evaluate(
+            "box => getComputedStyle(box).backgroundColor"
+        )
+        assert grey != lit
         await browser.close()
 
 

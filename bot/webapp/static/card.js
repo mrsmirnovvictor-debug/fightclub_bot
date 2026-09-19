@@ -4497,11 +4497,15 @@ function modCard(mod, buyable) {
   if (buyable) {
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
+    // Цена стоит на кнопке всегда, даже когда денег не хватает: на
+    // прилавке смотрят, сколько это стоит, а не сколько у тебя в
+    // кошельке. Что кредитов мало, видно по серой кнопке — и по счёту
+    // в шапке, который стоит рядом
     buttons.appendChild(
-      button(
-        mod.can_afford ? "Купить · " + mod.price + " 💰" : "Не хватает кредитов",
-        { disabled: !mod.can_afford, onClick: () => buyMod(mod) }
-      )
+      button("Купить · " + mod.price + " 💰", {
+        disabled: !mod.can_afford,
+        onClick: () => buyMod(mod),
+      })
     );
     body.appendChild(buttons);
   }
