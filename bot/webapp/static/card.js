@@ -3062,6 +3062,17 @@ function raidShape(data) {
         raid.abilities.left,
         raid.abilities.tricks.map((one) => [one.code, one.armed, one.ready]),
       ],
+      // Слова аналитика. Они меняются от размена к размену — он читает
+      // прошлый ход босса, — а из перечисленного выше от этого не
+      // меняется ничего: в чужой размен ни своя шкала, ни свои кнопки
+      // не двигаются. Без этой строки подписчик до конца волны смотрел
+      // бы на совет по позапрошлому ходу
+      raid.scout && [
+        raid.scout.attack,
+        raid.scout.block,
+        raid.scout.attack_tip.move,
+        raid.scout.block_tip.move,
+      ],
     ],
     lobby && [lobby.id, lobby.total, lobby.size, lobby.can_start],
     data.lobbies.map((one) => [one.id, one.total, one.size]),
@@ -3456,9 +3467,15 @@ function raidTurnForm(data) {
   );
   if (tricks) box.appendChild(tricks);
 
+  // Повадки босса — над кнопками, как разбор соперника в дуэли. Видит их
+  // только тот, кому они пришли: аналитик — умение подписки
+  const scout = scoutPanel(data.raid && data.raid.scout);
+  if (scout) box.appendChild(scout);
+
   box.appendChild(
     zoneColumns(
-      hands, data.attacks, blocks, () => raidDraft, "raid", paintRaidDraft
+      hands, data.attacks, blocks, () => raidDraft, "raid", paintRaidDraft,
+      data.raid && data.raid.scout
     )
   );
 

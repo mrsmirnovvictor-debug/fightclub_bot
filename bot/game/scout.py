@@ -459,6 +459,42 @@ def _in_general(counts: Counter, turns: int, verb: str) -> str:
     return f"Вообще он чаще {verb} {named(rows, 2)}."
 
 
+# ---------- босс ----------
+
+
+def habits_of_temper(
+    swings: dict[str, float], covers: dict[str, float], scale: int = 100
+) -> Habits:
+    """Привычки соперника, у которого их знают наперёд.
+
+    У живого бойца привычки считают по его прошлым боям; у рейд-босса
+    считать нечего — он не игрок, и боёв за ним не записано. Зато у него
+    есть характер, заданный весами, и эти веса и есть его привычки, без
+    погрешности выборки.
+
+    `swings` — доли зон удара в сумме на сотню. `covers` — как часто
+    каждая зона оказывается закрытой; сумма тут больше сотни, потому что
+    блок держит несколько зон разом. `scale` — сколько «ходов» они
+    описывают: знаменатель, от которого аналитик считает проценты.
+
+    Первый ход у босса ничем не отличается от прочих: ритуалов у него
+    нет, и разбор до первого удара идёт по тем же числам.
+    """
+    attacks = Counter({code: share for code, share in swings.items() if share})
+    blocks = Counter({code: share for code, share in covers.items() if share})
+    return Habits(
+        fights=0,
+        turns=scale,
+        first_turns=scale,
+        block_turns=scale,
+        first_block_turns=scale,
+        attacks=attacks,
+        blocks=blocks,
+        first_attacks=Counter(attacks),
+        first_blocks=Counter(blocks),
+    )
+
+
 def advise(
     habits: Habits,
     turns: list[dict[str, Any]],
@@ -490,6 +526,7 @@ __all__ = [
     "advise",
     "best_block",
     "guard_tip",
+    "habits_of_temper",
     "moves_of",
     "opening",
     "read_habits",

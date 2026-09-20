@@ -24,7 +24,13 @@ from enum import Enum
 
 from bot.game import art
 from bot.game.clock import MOSCOW, club_day as _day_of
-from bot.game.classes import FIGHTER_CLASSES, ALL_ZONES, BLOCK_WIDTH, block_combo
+from bot.game.classes import (
+    FIGHTER_CLASSES,
+    ALL_ZONES,
+    BLOCK_WIDTH,
+    Zone,
+    block_combo,
+)
 from bot.game.combat import Action, Fighter
 from bot.game.economy import MAX_LEVEL
 from bot.game.equipment import Equipment, OwnedItem, get_item
@@ -253,6 +259,127 @@ RAID_END_TITLES = {
 RAID_END_EMOJI = {RaidEnd.WIN: "🏆", RaidEnd.DRAW: "🤝", RaidEnd.LOSS: "💀"}
 
 
+# ---------- повадки босса ----------
+#
+# Босс не игрок: у него нет прошлых боёв, по которым аналитик читает
+# живого соперника. Зато у него есть характер, и он записан здесь —
+# весами по зонам. Кувалда ходит сверху, щит прикрывает голову, и по
+# ногам такой боец бьёт редко.
+#
+# Один и тот же объект читают и кости, и аналитик подписчика. Разойтись
+# им нельзя: подсказка, посчитанная не по тем числам, по которым босс
+# бьёт, — это не аналитика, а враньё. Поэтому весов ровно одна копия, и
+# лежит она у самого босса.
+#
+# Веса — не проценты: их приводят к сотне сами. Так правку можно вносить
+# на глаз («по ногам пусть бьёт вдвое реже»), не пересчитывая остальные.
+
+# К какой сумме приводим веса. Сто — чтобы доли читались процентами
+TEMPER_SCALE = 100
+
+
+@dataclass(frozen=True)
+class Temper:
+    """Характер босса: куда он бьёт и где держит блок.
+
+    `attacks` — веса зон удара. `guards` — веса зоны, с которой босс
+    начинает блок; сколько зон он этим закроет, решает его снаряжение,
+    а не характер: со щитом блок шире, и это правило боя, а не повадка.
+    """
+
+    attacks: tuple[tuple[str, int], ...] = ()
+    guards: tuple[tuple[str, int], ...] = ()
+
+    @staticmethod
+    def _spread(rows: tuple[tuple[str, int], ...]) -> dict[str, float]:
+        """Веса зон, приведённые к сотне. Пусто — все зоны поровну."""
+        weights = {zone.value: 0.0 for zone in ALL_ZONES}
+        for code, weight in rows:
+            if code in weights:
+                weights[code] = float(max(0, weight))
+        total = sum(weights.values())
+        if total <= 0:
+            even = TEMPER_SCALE / len(weights)
+            return dict.fromkeys(weights, even)
+        return {
+            code: weight * TEMPER_SCALE / total for code, weight in weights.items()
+        }
+
+    @property
+    def swings(self) -> dict[str, float]:
+        """Куда он бьёт: доли по зонам в сумме на сотню."""
+        return self._spread(self.attacks)
+
+    @property
+    def stances(self) -> dict[str, float]:
+        """С какой зоны он начинает блок."""
+        return self._spread(self.guards)
+
+    def covers(self, width: int = BLOCK_WIDTH) -> dict[str, float]:
+        """Как часто каждая зона оказывается закрытой.
+
+        Блок держит несколько смежных зон разом, поэтому сумма здесь
+        больше сотни — это не ошибка счёта, а несколько зон на один блок.
+        По отдельной зоне число по-прежнему читается вероятностью.
+        """
+        covered = {zone.value: 0.0 for zone in ALL_ZONES}
+        for code, weight in self.stances.items():
+            for zone in block_combo(Zone(code), width):
+                covered[zone.value] += weight
+        return covered
+
+    def turned(self, step: int) -> "Temper":
+        """Тот же характер, повёрнутый по кольцу зон.
+
+        Боец не стоит в одной стойке весь бой: между волнами босс
+        перекладывает щит и меняет замах. Повадка при этом та же — та же
+        форма перекоса, просто на других зонах.
+
+        Поворот, а не новые числа: так за целый круг каждая зона бывает
+        и любимой, и брошенной поровну. Отряд, который жмёт одну и ту же
+        кнопку, в среднем получает ровно столько же, сколько получал от
+        босса без характера, — а выигрывает тот, кто читает стойку
+        каждую волну.
+        """
+        codes = [zone.value for zone in ALL_ZONES]
+        count = len(codes)
+        step %= count
+
+        def rolled(rows: tuple[tuple[str, int], ...]) -> tuple[tuple[str, int], ...]:
+            weights = dict(rows)
+            return tuple(
+                (codes[(index + step) % count], weights.get(code, 0))
+                for index, code in enumerate(codes)
+            )
+
+        return Temper(attacks=rolled(self.attacks), guards=rolled(self.guards))
+
+    def _pick(self, weights: dict[str, float], rng) -> Zone:
+        codes = list(weights)
+        return Zone(rng.choices(codes, weights=[weights[c] for c in codes])[0])
+
+    def swing(self, rng) -> Zone:
+        """Куда он ударит в этот раз."""
+        return self._pick(self.swings, rng)
+
+    def stance(self, rng) -> Zone:
+        """С какой зоны он закроется в этот раз."""
+        return self._pick(self.stances, rng)
+
+
+# Босс без характера: бьёт и закрывается как придётся. Таким он и был,
+# пока повадок не завели, — и таким останется тот, кому их не прописали
+EVEN_TEMPER = Temper()
+
+# Сколько разных стоек у босса — по одной на зону кольца
+STANCES = len(ALL_ZONES)
+
+
+def boss_stance(rng: random.Random | None = None) -> int:
+    """Какую стойку босс примет на эту волну."""
+    return (rng or random).randrange(STANCES)
+
+
 @dataclass(frozen=True)
 class Boss:
     """NPC, против которого идёт рейд.
@@ -275,6 +402,12 @@ class Boss:
     tagline: str = ""
     # Как называется сам рейд на этого босса. Пусто — «Рейд против кого-то»
     raid_title: str = ""
+    # Повадки: по ним он бьёт, по ним же его читает аналитик подписчика.
+    # Не задали — дерётся как придётся, и аналитик честно скажет, что
+    # зоны у него все поровну
+    temper: Temper = EVEN_TEMPER
+    # Чем его повадка объясняется — одной строкой, для разбора аналитика
+    manner: str = ""
 
     @property
     def image(self) -> str:
@@ -312,6 +445,29 @@ BOSSES: tuple[Boss, ...] = (
         genitive="Босса Казино",
         tagline="Он тут всё построил и всех похоронил.",
         raid_title="Ограбление Босса Казино",
+        # Кувалда ходит сверху, щит стоит у лица: в своей стойке он
+        # бьёт выше и закрывается выше. Перекос нарочно небольшой —
+        # четверть разницы между самой частой зоной и самой редкой.
+        # Сильнее делать нельзя: уже при половине отряд, читающий
+        # стойку, перестаёт проигрывать вовсе, а подвал должен остаться
+        # боем, а не чтением таблички.
+        #
+        # На отряд без подписки это не влияет никак: стойку босс
+        # поворачивает каждую волну, и за круг каждая зона бывает и
+        # любимой, и брошенной поровну. Тот, кто жмёт одну и ту же
+        # кнопку, получает ровно те же проценты, что и от босса без
+        # характера, — это посчитано, а не на глаз
+        temper=Temper(
+            attacks=(
+                ("head", 23), ("chest", 23), ("belly", 20),
+                ("belt", 18), ("legs", 16),
+            ),
+            guards=(
+                ("head", 25), ("chest", 22), ("belly", 18),
+                ("belt", 18), ("legs", 17),
+            ),
+        ),
+        manner="Бьёт кувалдой сверху и держит щит у лица.",
     ),
 )
 
@@ -399,18 +555,27 @@ def boss_fighter(
     )
 
 
-def boss_action(enemy: Fighter | None = None, rng: random.Random | None = None) -> Action:
-    """Босс бьёт наугад: ни зону, ни блок он не выбирает с умыслом.
+def boss_action(
+    enemy: Fighter | None = None,
+    rng: random.Random | None = None,
+    temper: Temper | None = None,
+) -> Action:
+    """Чем босс отвечает на этот размен.
+
+    Зону он не выбирает с умыслом — кидает кости, — но кости у него
+    кривые: веса лежат в `temper`, и по ним же его читает аналитик
+    подписчика. Без характера босс бьёт равномерно, как раньше.
 
     Рук у него столько же, сколько у любого бойца: со щитом одна, со вторым
     оружием две. Блок он держит той же ширины, что и его снаряжение.
     """
     rng = rng or random
+    temper = temper or EVEN_TEMPER
     hands = enemy.attacks_per_round if enemy else 1
     width = enemy.block_width if enemy else BLOCK_WIDTH
     return Action(
-        attacks=tuple(rng.choice(ALL_ZONES) for _ in range(hands)),
-        block=block_combo(rng.choice(ALL_ZONES), width),
+        attacks=tuple(temper.swing(rng) for _ in range(hands)),
+        block=block_combo(temper.stance(rng), width),
     )
 
 
@@ -490,6 +655,8 @@ __all__ = [
     "BOSS_GEAR_LEVEL",
     "BOSS_HP_SHARE",
     "BOSS_ID",
+    "EVEN_TEMPER",
+    "STANCES",
     "CELLAR_BOSS",
     "LEVELS_ABOVE",
     "MAX_PARTY",
@@ -507,7 +674,9 @@ __all__ = [
     "Boss",
     "RaidEnd",
     "RaidOutcome",
+    "Temper",
     "boss_action",
+    "boss_stance",
     "boss_fighter",
     "boss_kit",
     "boss_level",

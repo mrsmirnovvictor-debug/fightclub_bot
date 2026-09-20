@@ -2834,6 +2834,103 @@ async def test_the_end_of_the_raid_shows_the_result(server):
         await browser.close()
 
 
+# ---------- аналитик в подвале ----------
+
+
+BOSS_SCOUT = {
+    "title": "Волна 2: стойка Босса Казино. Бьёт кувалдой сверху.",
+    "attack": "Вообще он чаще закрывает Живот — 66% и Корпус — 63%.",
+    "block": "Вообще он чаще бьёт Корпус — 23% и Голову — 23%.",
+    "attack_tip": {"move": "Бей в Ноги",
+                   "why": "он закроет его с вероятностью 52%"},
+    "block_tip": {"move": "Закрывай Голову+Корпус",
+                  "why": "вероятность отбить удар 46%"},
+}
+
+
+async def test_the_analyst_speaks_in_the_cellar_too(server):
+    """Подписчик видит в подвале тот же разбор, что и в дуэли."""
+    async with async_playwright() as pw:
+        browser, page = await open_raid(
+            pw, server, raid_with_wave({"scout": BOSS_SCOUT})
+        )
+        await page.wait_for_selector(".zone-columns")
+
+        said = await page.locator("#raid-body .scout").inner_text()
+        assert "Босса Казино" in said
+        assert "Живот" in said and "Корпус" in said
+        await browser.close()
+
+
+async def test_the_cellar_tips_stand_over_their_own_buttons(server):
+    """Совет по удару — над ударами, совет по блоку — над блоком."""
+    async with async_playwright() as pw:
+        browser, page = await open_raid(
+            pw, server, raid_with_wave({"scout": BOSS_SCOUT})
+        )
+        await page.wait_for_selector(".zone-columns")
+
+        tips = page.locator("#raid-body .zone-tip")
+        assert await tips.count() == 2
+        assert "Бей в Ноги" in await tips.nth(0).inner_text()
+        assert "Закрывай Голову+Корпус" in await tips.nth(1).inner_text()
+
+        strike = await tips.nth(0).bounding_box()
+        guard = await tips.nth(1).bounding_box()
+        heads = page.locator("#raid-body .zone-head")
+        for tip, head in (
+            (strike, await heads.nth(0).bounding_box()),
+            (guard, await heads.last.bounding_box()),
+        ):
+            assert tip["y"] + tip["height"] <= head["y"] + 0.5, "совет не над кнопками"
+        assert strike["x"] + strike["width"] <= guard["x"] + 0.5
+        await browser.close()
+
+
+async def test_without_a_subscription_the_cellar_says_nothing(server):
+    """Аналитик — умение подписки: без неё панели в подвале нет."""
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave({"scout": None}))
+        await page.wait_for_selector(".zone-columns")
+
+        assert await page.locator("#raid-body .scout").count() == 0
+        assert await page.locator("#raid-body .zone-tip").count() == 0
+        await browser.close()
+
+
+async def test_a_new_stance_repaints_the_advice(server):
+    """Стойка сменилась — совет обязан смениться на экране.
+
+    Тот самый случай, на котором уже обжигались: подпись экрана рейда не
+    видела заготовок, и нажатый приём не доезжал до глаз. Здесь то же
+    место: кроме слов аналитика, от смены стойки не меняется ничего, и
+    без них в подписи подписчик до конца волны читал бы прошлый совет.
+    """
+    first = raid_with_wave({"scout": BOSS_SCOUT})
+    second = raid_with_wave({
+        "scout": {
+            **BOSS_SCOUT,
+            "attack_tip": {"move": "Бей в Голову", "why": "он закроет его с 48%"},
+        }
+    })
+    answers = [first, second]
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, first)
+        await page.wait_for_selector(".zone-columns")
+        assert "Бей в Ноги" in await page.locator("#raid-body .zone-tip").first.inner_text()
+
+        await page.route("**/api/raid*", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(answers.pop() if len(answers) > 1 else second),
+        ))
+        await page.wait_for_function(
+            "document.querySelector('#raid-body .zone-tip')"
+            ".textContent.includes('Бей в Голову')",
+            timeout=8000,
+        )
+        await browser.close()
+
+
 async def test_the_raid_log_speaks_the_words_of_the_judge(server):
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
