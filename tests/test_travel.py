@@ -296,6 +296,43 @@ def test_every_house_stands_on_a_drawn_district():
         assert place.district in DISTRICT_BY_CODE, f"{place.code}: район не нарисован"
 
 
+def test_every_district_map_is_named_as_the_bucket_named_it():
+    """Имена карт списаны с хранилища, а не придуманы по правилу.
+
+    Стройной привычки в них нет: где-то на конце «_district», где-то
+    нет, и первая очередь вдобавок в jpeg, а вторая в png. Угадать такое
+    нельзя, поэтому список сверяется с выгрузкой целиком — иначе район
+    открывается пустой картинкой, а заметит это игрок, а не тест.
+    """
+    from bot.game.locations import DISTRICTS
+
+    in_bucket = {
+        "main_hub.jpeg", "clothes_pharmacy.jpeg", "pawnshop_casino.jpeg",
+        "northern_wall_premium.jpeg", "bank_market_post.jpeg",
+        "stadium_bar.jpeg",
+        "vcpd_hospital_district.png", "driving_school_insurance_district.png",
+        "car_dealership.png", "gym_office_district.png",
+        "police_school_medical_college.png", "military_base_training_ground.png",
+        "cadet_corps_dormitory.png", "fight_tournament_stadium.png",
+        "residential_district.png", "mafia_mansion.png",
+    }
+    ours = {district.image.rsplit("/", 1)[-1] for district in DISTRICTS}
+
+    assert ours == in_bucket
+
+
+def test_a_house_takes_the_picture_of_its_own_district():
+    """Дом не считает адрес карты заново, а спрашивает у района.
+
+    Формат у карт разный, и второе место, где адрес выводится, однажды
+    разошлось бы с первым.
+    """
+    from bot.game.locations import DISTRICT_BY_CODE, LOCATIONS
+
+    for place in LOCATIONS:
+        assert place.image == DISTRICT_BY_CODE[place.district].image
+
+
 def test_every_door_is_four_points_on_the_picture():
     """Вход — ровно четыре точки, и все они внутри картинки."""
     from bot.game.locations import LOCATIONS

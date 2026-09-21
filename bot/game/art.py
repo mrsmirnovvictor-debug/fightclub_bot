@@ -68,9 +68,14 @@ def item(code: str) -> str:
     return f"{ITEMS}/{code}.jpeg"
 
 
-def location(code: str) -> str:
-    """Карта района: locations/main_hub.jpeg."""
-    return f"{LOCATIONS}/{code}.jpeg"
+def location(code: str, ext: str = "jpeg") -> str:
+    """Карта района: locations/main_hub.jpeg.
+
+    Формат приходится называть: первую очередь города отдали в jpeg,
+    вторую — в png. Перегонять её в другой формат незачем, поэтому
+    формат написан у района, а имя файла всё так же считается от кода.
+    """
+    return f"{LOCATIONS}/{code}.{ext}"
 
 
 def interior(code: str, folder: str = INTERIORS) -> str:

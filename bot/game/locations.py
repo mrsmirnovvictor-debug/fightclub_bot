@@ -183,8 +183,14 @@ class Location:
 
     @property
     def image(self) -> str:
-        """Картинка района, на которой стоит это здание."""
-        return art.location(self.district)
+        """Картинка района, на которой стоит это здание.
+
+        Спрашиваем у самого района, а не считаем адрес заново: формат у
+        карт разный, и второе место, где он выводится, однажды разошлось
+        бы с первым.
+        """
+        district = DISTRICT_BY_CODE.get(self.district)
+        return district.image if district else ""
 
     @property
     def indoors(self) -> str:
@@ -212,10 +218,13 @@ class District:
     # на карте не видно целиком, и это единственное, что связывает шесть
     # картинок в один город
     around: dict[str, str] = field(default_factory=dict)
+    # Чем нарисована карта. Первую очередь отдали в jpeg, вторую — в
+    # png, и это единственное, чем они отличаются
+    picture_ext: str = "jpeg"
 
     @property
     def image(self) -> str:
-        return art.location(self.code)
+        return art.location(self.code, self.picture_ext)
 
     @property
     def places(self) -> tuple[Location, ...]:
@@ -267,20 +276,28 @@ UP, DOWN, LEFT, RIGHT = "up", "down", "left", "right"
 # Десять новых районов пристроены к шести старым по свободным сторонам.
 # Соседство взаимное, как и у первых: это стережёт тест.
 #
-# Коды — имена файлов карт в бакете, и придуманы по той же привычке, что
-# и у первой очереди: район зовут по домам, которые на нём стоят. Назвал
-# художник файл иначе — правится одна строка здесь, больше код района
-# нигде не написан.
-VCPD = "vcpd_hospital"
-DRIVING = "driving_school_insurance"
-CARS = "car_dealership_quarter"
-GYM = "gym_office"
-SCHOOLS = "police_school_medical"
-BARRACKS = "military_base_range"
+# Коды — имена файлов карт в бакете, как их назвали при выгрузке.
+# Стройной привычки в них нет: где-то на конце «_district», где-то нет,
+# — и придумывать её задним числом значило бы разойтись с хранилищем.
+# Поэтому имена списаны с бакета как есть, одним списком.
+#
+# Заодно: три кода совпадают с кодами домов, которые на этих картах
+# стоят (особняк, автосалон, арена). Это не путаница — районы и дома
+# живут в разных справочниках, и адрес карты считается только от кода
+# района.
+VCPD = "vcpd_hospital_district"
+DRIVING = "driving_school_insurance_district"
+CARS = "car_dealership"
+GYM = "gym_office_district"
+SCHOOLS = "police_school_medical_college"
+BARRACKS = "military_base_training_ground"
 CADETS = "cadet_corps_dormitory"
-ARENA = "tournament_arena"
-HOUSES = "residential_block"
-MAFIA = "mafia_mansion_quarter"
+ARENA = "fight_tournament_stadium"
+HOUSES = "residential_district"
+MAFIA = "mafia_mansion"
+
+# Вторую очередь нарисовали в png, первую — в jpeg
+PNG = "png"
 
 DISTRICTS: tuple[District, ...] = (
     District("main_hub", "Центр", {
@@ -320,16 +337,16 @@ DISTRICTS: tuple[District, ...] = (
         LEFT: DRIVING,
         RIGHT: GYM,
         DOWN: SCHOOLS,
-    }),
-    District(DRIVING, "Автошкола и страховая", {RIGHT: VCPD, DOWN: CARS}),
-    District(CARS, "Автосалон", {UP: DRIVING}),
-    District(GYM, "Деловой угол", {LEFT: VCPD}),
-    District(SCHOOLS, "Учебный квартал", {UP: VCPD}),
-    District(BARRACKS, "Армейская часть", {LEFT: "stadium_bar", DOWN: CADETS}),
-    District(CADETS, "Кадетский городок", {UP: BARRACKS}),
-    District(ARENA, "Турнирная арена", {DOWN: "stadium_bar"}),
-    District(HOUSES, "Жилой квартал", {LEFT: "clothes_pharmacy"}),
-    District(MAFIA, "Особняк мафии", {RIGHT: "pawnshop_casino"}),
+    }, PNG),
+    District(DRIVING, "Автошкола и страховая", {RIGHT: VCPD, DOWN: CARS}, PNG),
+    District(CARS, "Автосалон", {UP: DRIVING}, PNG),
+    District(GYM, "Деловой угол", {LEFT: VCPD}, PNG),
+    District(SCHOOLS, "Учебный квартал", {UP: VCPD}, PNG),
+    District(BARRACKS, "Армейская часть", {LEFT: "stadium_bar", DOWN: CADETS}, PNG),
+    District(CADETS, "Кадетский городок", {UP: BARRACKS}, PNG),
+    District(ARENA, "Турнирная арена", {DOWN: "stadium_bar"}, PNG),
+    District(HOUSES, "Жилой квартал", {LEFT: "clothes_pharmacy"}, PNG),
+    District(MAFIA, "Особняк мафии", {RIGHT: "pawnshop_casino"}, PNG),
 )
 
 # Какая сторона какой противоположна: по этому и проверяется взаимность

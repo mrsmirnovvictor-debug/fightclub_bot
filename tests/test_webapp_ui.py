@@ -3609,7 +3609,7 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
         )
         assert sorted(sides) == sorted([
             "up:northern_wall_premium", "right:clothes_pharmacy",
-            "left:pawnshop_casino", "down:vcpd_hospital",
+            "left:pawnshop_casino", "down:vcpd_hospital_district",
         ])
 
         # шагнули вверх — сменилась картинка и дома под ней

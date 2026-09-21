@@ -64,20 +64,26 @@
 
 ## Вторая очередь: десять районов, шестнадцать домов
 
-Второй заход дорисовал город втрое: к шести районам добавились десять. Картинки в том же формате — PNG `941 × 1672`, вертикальные 9:16, ракурс и масштаб `main_hub`.
+Второй заход дорисовал город втрое: к шести районам добавились десять. Размер и ракурс те же — `941 × 1672`, вертикальные 9:16, ракурс и масштаб `main_hub`.
 
-| Район | Код карты | Дома |
+Форматы разные: первая очередь лежит в JPEG, вторая — в PNG. Формат записан у района (`District.picture_ext`), а дом адрес карты не считает заново — спрашивает у своего района.
+
+Имена файлов списаны с выгрузки как есть: стройной привычки в них нет, где-то на конце `_district`, где-то нет. Угадать такое нельзя, поэтому список целиком сверяется с хранилищем в `tests/test_travel.py::test_every_district_map_is_named_as_the_bucket_named_it`.
+
+| Район | Файл карты | Дома |
 | --- | --- | --- |
-| Управление и больница | `vcpd_hospital` | `vcpd`, `hospital` |
-| Автошкола и страховая | `driving_school_insurance` | `driving_school`, `insurance_office` |
-| Автосалон | `car_dealership_quarter` | `car_dealership` |
-| Деловой угол | `gym_office` | `strength_gym`, `office_building` |
-| Учебный квартал | `police_school_medical` | `police_school`, `medical_college` |
-| Армейская часть | `military_base_range` | `military_base`, `indoor_training_ground` |
-| Кадетский городок | `cadet_corps_dormitory` | `cadet_corps`, `dormitory` |
-| Турнирная арена | `tournament_arena` | `fight_tournament_stadium` |
-| Жилой квартал | `residential_block` | `residential_apartment` |
-| Особняк мафии | `mafia_mansion_quarter` | `mafia_mansion` |
+| Управление и больница | `vcpd_hospital_district.png` | `vcpd`, `hospital` |
+| Автошкола и страховая | `driving_school_insurance_district.png` | `driving_school`, `insurance_office` |
+| Автосалон | `car_dealership.png` | `car_dealership` |
+| Деловой угол | `gym_office_district.png` | `strength_gym`, `office_building` |
+| Учебный квартал | `police_school_medical_college.png` | `police_school`, `medical_college` |
+| Армейская часть | `military_base_training_ground.png` | `military_base`, `indoor_training_ground` |
+| Кадетский городок | `cadet_corps_dormitory.png` | `cadet_corps`, `dormitory` |
+| Турнирная арена | `fight_tournament_stadium.png` | `fight_tournament_stadium` |
+| Жилой квартал | `residential_district.png` | `residential_apartment` |
+| Особняк мафии | `mafia_mansion.png` | `mafia_mansion` |
+
+У трёх районов код совпадает с кодом дома, который на них стоит (особняк, автосалон, арена). Это не путаница: районы и дома лежат в разных справочниках, адрес карты считается только от кода района, а адрес вида изнутри — только от кода дома.
 
 Услуг за этими домами пока нет ни одной: город вырос картинками раньше, чем правилами. Зайти можно в любой — внутри вид изнутри и записка о том, чего ждать, — как это сделано у банка и почты.
 
