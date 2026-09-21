@@ -3558,6 +3558,40 @@ async def test_walking_starts_at_once_and_charges_like_a_battery(server):
         await browser.close()
 
 
+async def test_a_map_that_never_arrived_still_lets_you_walk(server):
+    """Картинка района не доехала — по городу всё равно ходят.
+
+    Двери лежат поверх рамки и считаются от неё, а не от картинки, так
+    что нажимаются они и без карты. Показывать при этом битую картинку
+    без единого слова нельзя: боец решит, что сломалось приложение.
+    """
+    async with async_playwright() as pw:
+        # `images=False`: до бакета из теста не дотянуться, карта падает
+        browser, page = await open_map(pw, server, city_map("pharmacy"))
+
+        await page.wait_for_selector("#map-blank:not(.hidden)")
+
+        said = await page.locator("#map-blank").inner_text()
+        assert "Торговый квартал" in said and "не загрузилась" in said
+        assert await page.locator("#map-pic.blank").count() == 1
+        # А дома на месте и нажимаются
+        assert await page.locator(".zone-house").count() == 2
+        await browser.close()
+
+
+async def test_a_map_that_arrived_says_nothing(server):
+    """Карта на месте — записки нет, и картинку она не закрывает."""
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("pharmacy"), images=True
+        )
+        await page.wait_for_selector(".zone-house")
+
+        assert await page.locator("#map-blank.hidden").count() == 1
+        assert await page.locator("#map-pic:not(.blank)").count() == 1
+        await browser.close()
+
+
 async def test_the_arrows_lead_to_the_neighbouring_districts(server):
     """По городу ходят стрелками: вверх, вниз, влево, вправо.
 

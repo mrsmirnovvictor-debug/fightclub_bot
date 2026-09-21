@@ -828,6 +828,27 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .map-zones { position: absolute; inset: 0; }
 
+/* Не доехавшая карта: место она занимает по-прежнему — по нему ложится
+   холст с домами, — но значка битой картинки на ней не видно */
+.map-pic.blank { visibility: hidden; }
+
+/* Карта не загрузилась: вместо битой картинки — имя района словами.
+   Двери при этом на месте и нажимаются, поэтому записка стоит по центру
+   и ничего не перехватывает */
+.map-blank {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
 /* Холст с домами лежит поверх картинки и вписывается тем же правилом,
    что и она: координаты силуэтов совпадают с рисунком на любом экране */
 .map-svg { position: absolute; inset: 0; width: 100%; height: 100%; }

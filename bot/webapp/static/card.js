@@ -1512,15 +1512,39 @@ function shownDistrict() {
   return mapData.districts.find((one) => one.code === mapShown);
 }
 
+// Карты, которые не доехали. Помнить их приходится по той же причине,
+// что и виды изнутри: за упавшую картинку браузер второй раз не
+// возьмётся, а район перерисовывается на каждом шаге по городу
+const brokenMaps = new Set();
+
 function paintDistrict() {
   const district = shownDistrict();
   if (!district) return;
   const pic = el("map-pic");
   if (pic.getAttribute("src") !== district.image) pic.src = district.image;
   pic.alt = "Район: " + district.title;
+  showBlankMap(district);
   placeZones();
   placeArrows();
 }
+
+// Вместо битой картинки — имя района словами. Ходить это не мешает:
+// двери лежат поверх рамки и считаются от неё, а не от картинки
+function showBlankMap(district) {
+  const gone = brokenMaps.has(district.image);
+  // Не `hidden`: холст с домами ложится по рамке самой картинки, и
+  // убери её из вёрстки — двери поедут следом. Поэтому картинка
+  // остаётся на месте, её просто не видно
+  el("map-pic").classList.toggle("blank", gone);
+  const note = el("map-blank");
+  note.classList.toggle("hidden", !gone);
+  if (gone) note.textContent = district.title + ": карта не загрузилась";
+}
+
+el("map-pic").addEventListener("error", () => {
+  brokenMaps.add(el("map-pic").getAttribute("src"));
+  if (mapData) paintDistrict();
+});
 
 // Стрелки в соседние районы. Города целиком не видно, и без них шесть
 // карт остаются шестью картинками: по ним и понятно, что это один город.
