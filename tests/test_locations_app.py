@@ -46,7 +46,7 @@ async def test_the_map_shows_the_city_and_where_you_stand(client, db):
     body = await (await client.get("/api/map", headers=headers())).json()
 
     assert body["here"] == FIGHT_CLUB
-    assert len(body["districts"]) == 6
+    assert len(body["districts"]) == 16
     centre = next(one for one in body["districts"] if one["code"] == "main_hub")
     assert centre["here"] is True
     assert centre["image"].endswith("locations/main_hub.jpeg")
@@ -66,7 +66,7 @@ async def test_houses_without_a_trade_say_so(client, db):
         for place in district["places"]
     }
 
-    assert len(houses) == 14
+    assert len(houses) == 30
     assert houses["bank"]["works"] is False
     assert houses["bank"]["soon"] and houses["bank"]["services"] == []
     assert houses["workshop"]["services"] == ["repair"]
@@ -90,12 +90,28 @@ def test_every_house_has_a_view_from_within():
     """Все четырнадцать домов, и ни одного без картинки."""
     from bot.game.locations import LOCATIONS
 
-    assert len(LOCATIONS) == 14
+    assert len(LOCATIONS) == 30
     seen = {place.indoors for place in LOCATIONS}
-    assert len(seen) == 14, "две локации не могут делить один вид изнутри"
+    assert len(seen) == 30, "две локации не могут делить один вид изнутри"
     for place in LOCATIONS:
         name = RENAMED.get(place.code, place.code + "_interior")
-        assert place.indoors.endswith(f"/locations/interiors/{name}.jpeg")
+        # Папок две: первые четырнадцать домов выгрузили в одну, вторую
+        # очередь — в другую. Имя файла при этом всё так же считается от
+        # кода дома, и это здесь главное
+        folder = "/interiors" if place.interior_folder else "/locations/interiors"
+        assert place.indoors.endswith(f"{folder}/{name}.jpeg")
+
+
+def test_the_second_city_took_its_own_folder():
+    """Вторая очередь лежит в своей папке, первая осталась в своей."""
+    from bot.game.locations import get_location
+
+    assert get_location("pharmacy").indoors.endswith(
+        "/locations/interiors/pharmacy_interior.jpeg"
+    )
+    assert get_location("vcpd").indoors.endswith("/interiors/vcpd_interior.jpeg")
+    # И «старый» адрес не должен случайно совпасть с новым
+    assert "/locations/interiors/" not in get_location("vcpd").indoors
 
 
 def test_the_view_is_named_after_the_house():

@@ -3561,19 +3561,21 @@ async def test_walking_starts_at_once_and_charges_like_a_battery(server):
 async def test_the_arrows_lead_to_the_neighbouring_districts(server):
     """По городу ходят стрелками: вверх, вниз, влево, вправо.
 
-    Города целиком не видно, и без стрелок шесть карт остаются шестью
-    картинками. Стрелка показывает только туда, куда из района есть ход.
+    Города целиком не видно, и без стрелок шестнадцать карт остаются
+    шестнадцатью картинками. Стрелка показывает только туда, куда из
+    района есть ход.
     """
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server)
 
-        # центр: вверх Северный Вал, вправо Торговый квартал, влево Старый город
+        # центр: вверх Северный Вал, вправо Торговый квартал, влево Старый
+        # город, а со второй очередью города — ещё и вниз, в управление
         sides = await page.locator(".map-arrow").evaluate_all(
             "nodes => nodes.map(one => one.dataset.side + ':' + one.dataset.to)"
         )
         assert sorted(sides) == sorted([
             "up:northern_wall_premium", "right:clothes_pharmacy",
-            "left:pawnshop_casino",
+            "left:pawnshop_casino", "down:vcpd_hospital",
         ])
 
         # шагнули вверх — сменилась картинка и дома под ней

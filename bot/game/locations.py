@@ -137,6 +137,10 @@ class Location:
     # `pharmacy_interior`. Три дома рисовали под другими именами, и
     # переименовывать файлы в бакете — не наше дело
     interior: str = ""
+    # В какой папке бакета лежит его вид изнутри. Пусто — в той, куда
+    # легли первые четырнадцать домов. Районы второй очереди выгрузили
+    # в другую, и это единственное, чем они отличаются
+    interior_folder: str = ""
 
     def allows(self, service: Service) -> bool:
         return service in self.services
@@ -192,7 +196,10 @@ class Location:
         Зовётся не `inside`: так называется проверка попадания в силуэт,
         и два разных `inside` в одном файле читались бы как одно.
         """
-        return art.interior(self.interior or f"{self.code}_interior")
+        return art.interior(
+            self.interior or f"{self.code}_interior",
+            self.interior_folder or art.INTERIORS,
+        )
 
 
 @dataclass(frozen=True)
@@ -249,23 +256,48 @@ TOUCH_PAD_X = 0.025
 TOUCH_PAD_Y = 0.015
 
 # Куда можно шагнуть с каждой карты. Соседство взаимное: если из центра
-# вверх Северный Вал, то из Вала вниз — центр. Это стережёт тест, иначе
-# однажды из района можно будет выйти, но не вернуться.
+# вверх Северный Вал, то из Вала вниз — центр. Иначе однажды из района
+# можно будет выйти, но не вернуться, — это стережёт
+# tests/test_travel.py::test_every_road_leads_back. С шестнадцатью
+# районами в голове такое уже не держится.
 UP, DOWN, LEFT, RIGHT = "up", "down", "left", "right"
+
+# ---------- вторая очередь города ----------
+#
+# Десять новых районов пристроены к шести старым по свободным сторонам.
+# Соседство взаимное, как и у первых: это стережёт тест.
+#
+# Коды — имена файлов карт в бакете, и придуманы по той же привычке, что
+# и у первой очереди: район зовут по домам, которые на нём стоят. Назвал
+# художник файл иначе — правится одна строка здесь, больше код района
+# нигде не написан.
+VCPD = "vcpd_hospital"
+DRIVING = "driving_school_insurance"
+CARS = "car_dealership_quarter"
+GYM = "gym_office"
+SCHOOLS = "police_school_medical"
+BARRACKS = "military_base_range"
+CADETS = "cadet_corps_dormitory"
+ARENA = "tournament_arena"
+HOUSES = "residential_block"
+MAFIA = "mafia_mansion_quarter"
 
 DISTRICTS: tuple[District, ...] = (
     District("main_hub", "Центр", {
         UP: "northern_wall_premium",
         RIGHT: "clothes_pharmacy",
         LEFT: "pawnshop_casino",
+        DOWN: VCPD,
     }),
     District("clothes_pharmacy", "Торговый квартал", {
         LEFT: "main_hub",
         UP: "stadium_bar",
+        RIGHT: HOUSES,
     }),
     District("pawnshop_casino", "Старый город", {
         RIGHT: "main_hub",
         UP: "bank_market_post",
+        LEFT: MAFIA,
     }),
     District("northern_wall_premium", "Северный Вал", {
         DOWN: "main_hub",
@@ -279,11 +311,45 @@ DISTRICTS: tuple[District, ...] = (
     District("stadium_bar", "Стадион", {
         DOWN: "clothes_pharmacy",
         LEFT: "northern_wall_premium",
+        RIGHT: BARRACKS,
+        UP: ARENA,
     }),
+    # ---------- вторая очередь ----------
+    District(VCPD, "Управление и больница", {
+        UP: "main_hub",
+        LEFT: DRIVING,
+        RIGHT: GYM,
+        DOWN: SCHOOLS,
+    }),
+    District(DRIVING, "Автошкола и страховая", {RIGHT: VCPD, DOWN: CARS}),
+    District(CARS, "Автосалон", {UP: DRIVING}),
+    District(GYM, "Деловой угол", {LEFT: VCPD}),
+    District(SCHOOLS, "Учебный квартал", {UP: VCPD}),
+    District(BARRACKS, "Армейская часть", {LEFT: "stadium_bar", DOWN: CADETS}),
+    District(CADETS, "Кадетский городок", {UP: BARRACKS}),
+    District(ARENA, "Турнирная арена", {DOWN: "stadium_bar"}),
+    District(HOUSES, "Жилой квартал", {LEFT: "clothes_pharmacy"}),
+    District(MAFIA, "Особняк мафии", {RIGHT: "pawnshop_casino"}),
 )
 
 # Какая сторона какой противоположна: по этому и проверяется взаимность
 OPPOSITE: dict[str, str] = {UP: DOWN, DOWN: UP, LEFT: RIGHT, RIGHT: LEFT}
+
+# Двери второй очереди: один шаблон на верхний дом карты и один на
+# нижний. Районы рисовали в том же ракурсе и масштабе, что и центр,
+# поэтому дверь у них приходится примерно туда же, куда у клуба и
+# аптеки, — эти два четырёхугольника оттуда и взяты. Выверять каждую
+# дверь по своей картинке будем, когда дойдут руки до манифеста; пока
+# подсветка может не сесть на косяк ровно, но палец в дверь попадает:
+# область касания шире самой двери
+TOP_DOOR: tuple[Point, Point, Point, Point] = (
+    (0.436769, 0.212919), (0.636557, 0.228469),
+    (0.633369, 0.314593), (0.445271, 0.300837),
+)
+BOTTOM_DOOR: tuple[Point, Point, Point, Point] = (
+    (0.387885, 0.615431), (0.620616, 0.648325),
+    (0.619554, 0.724282), (0.393199, 0.689593),
+)
 
 LOCATIONS: tuple[Location, ...] = (
     # ---------- Центр: клуб, оружие, мастерская ----------
@@ -465,6 +531,163 @@ LOCATIONS: tuple[Location, ...] = (
         ),
         soon="задания и угощения",
         genitive="бара",
+    ),
+
+    # ---------- вторая очередь: десять районов, шестнадцать домов ----------
+    #
+    # Услуг за ними пока нет ни одной: город вырос картинками, а правила
+    # к ним будут писаться по одному дому. Зайти при этом можно в любой —
+    # внутри вид изнутри и записка о том, чего ждать.
+    #
+    # Двери размечены по шаблону, а не по каждой картинке: районы
+    # рисовали в ракурсе и масштабе центра, и дверь у них стоит там же,
+    # где у клуба с аптекой. Выверить по каждому дому — отдельная работа
+    # с пиксельным манифестом; до неё подсветка может не сесть на косяк
+    # ровно, но попасть в дверь пальцем это не мешает.
+
+    Location(
+        "vcpd",
+        "VCPD",
+        district=VCPD,
+        entrance=TOP_DOOR,
+        soon="участок и розыск",
+        genitive="управления",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "hospital",
+        "Больница",
+        district=VCPD,
+        entrance=BOTTOM_DOOR,
+        soon="лечение ран без склянок",
+        genitive="больницы",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "driving_school",
+        "Автошкола",
+        district=DRIVING,
+        entrance=TOP_DOOR,
+        soon="права и первая машина",
+        genitive="автошколы",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "insurance_office",
+        "Страховая компания",
+        district=DRIVING,
+        entrance=BOTTOM_DOOR,
+        soon="страховка вещей от износа",
+        genitive="страховой",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "strength_gym",
+        "Тренажёрный зал",
+        district=GYM,
+        entrance=TOP_DOOR,
+        soon="тренировки на характеристики",
+        genitive="зала",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "office_building",
+        "Офисное здание",
+        district=GYM,
+        entrance=BOTTOM_DOOR,
+        soon="работа и жалованье",
+        genitive="офиса",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "military_base",
+        "Армейская часть",
+        district=BARRACKS,
+        entrance=TOP_DOOR,
+        soon="служба и звания",
+        genitive="части",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "indoor_training_ground",
+        "Крытый полигон",
+        district=BARRACKS,
+        entrance=BOTTOM_DOOR,
+        soon="стрельба и спарринги",
+        genitive="полигона",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "cadet_corps",
+        "Кадетский корпус",
+        district=CADETS,
+        entrance=TOP_DOOR,
+        soon="школа для новичков",
+        genitive="корпуса",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "dormitory",
+        "Общежитие",
+        district=CADETS,
+        entrance=BOTTOM_DOOR,
+        soon="отдых и восстановление",
+        genitive="общежития",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "police_school",
+        "Школа полиции",
+        district=SCHOOLS,
+        entrance=TOP_DOOR,
+        soon="путь в VCPD",
+        genitive="школы полиции",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "medical_college",
+        "Медицинский колледж",
+        district=SCHOOLS,
+        entrance=BOTTOM_DOOR,
+        soon="ремесло лекаря",
+        genitive="колледжа",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "residential_apartment",
+        "Жилой дом",
+        district=HOUSES,
+        entrance=TOP_DOOR,
+        soon="своё жильё",
+        genitive="жилого дома",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "mafia_mansion",
+        "Особняк мафии",
+        district=MAFIA,
+        entrance=TOP_DOOR,
+        soon="дела, о которых не пишут",
+        genitive="особняка",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "fight_tournament_stadium",
+        "Турнирная арена",
+        district=ARENA,
+        entrance=TOP_DOOR,
+        soon="турниры на выбывание",
+        genitive="арены",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "car_dealership",
+        "Автосалон",
+        district=CARS,
+        entrance=TOP_DOOR,
+        soon="машины и гаражи",
+        genitive="автосалона",
+        interior_folder=art.NEW_INTERIORS,
     ),
 )
 

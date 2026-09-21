@@ -240,6 +240,72 @@ PHONE_SCALE = 362 / 941
 FINGER = 44
 
 
+# ---------- город как целое ----------
+
+
+def test_every_road_leads_back():
+    """Соседство взаимное: вышел из района — сможешь вернуться.
+
+    В коде это записано словами («стережёт тест»), а теста до второй
+    очереди не было вовсе. С шестью районами связи держались в голове,
+    с шестнадцатью — уже нет: одна опечатка в стороне света, и район
+    становится ловушкой, из которой не выйти.
+    """
+    from bot.game.locations import DISTRICTS, DISTRICT_BY_CODE, OPPOSITE
+
+    for district in DISTRICTS:
+        for side, to in district.around.items():
+            neighbour = DISTRICT_BY_CODE.get(to)
+            assert neighbour is not None, f"{district.code} → {to}: такого района нет"
+            back = neighbour.around.get(OPPOSITE[side])
+            assert back == district.code, (
+                f"{district.code} → {to} ({side}), а обратно — {back}"
+            )
+
+
+def test_the_whole_city_is_walkable_from_the_centre():
+    """Из центра можно дойти до любого района, не проваливаясь в дыру."""
+    from bot.game.locations import DISTRICTS, DISTRICT_BY_CODE
+
+    seen = {"main_hub"}
+    edge = ["main_hub"]
+    while edge:
+        district = DISTRICT_BY_CODE[edge.pop()]
+        for to in district.around.values():
+            if to not in seen:
+                seen.add(to)
+                edge.append(to)
+
+    missing = {district.code for district in DISTRICTS} - seen
+    assert not missing, f"до этих районов не дойти: {sorted(missing)}"
+
+
+def test_no_district_is_drawn_empty():
+    """На каждой карте стоит хотя бы один дом."""
+    from bot.game.locations import DISTRICTS
+
+    empty = [district.code for district in DISTRICTS if not district.places]
+    assert not empty, f"районы без домов: {empty}"
+
+
+def test_every_house_stands_on_a_drawn_district():
+    """Дом не может стоять на карте, которой нет."""
+    from bot.game.locations import DISTRICT_BY_CODE, LOCATIONS
+
+    for place in LOCATIONS:
+        assert place.district in DISTRICT_BY_CODE, f"{place.code}: район не нарисован"
+
+
+def test_every_door_is_four_points_on_the_picture():
+    """Вход — ровно четыре точки, и все они внутри картинки."""
+    from bot.game.locations import LOCATIONS
+
+    for place in LOCATIONS:
+        assert len(place.entrance) == 4, f"{place.code}: не четырёхугольник"
+        for x, y in place.entrance:
+            assert 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0, f"{place.code}: точка за краем"
+
+
 def test_every_door_is_big_enough_for_a_finger():
     """В дверь должно попадать пальцем, а не прицеливаясь.
 
@@ -292,9 +358,13 @@ def test_houses_without_a_trade_are_still_on_the_map():
     from bot.game.locations import LOCATIONS
 
     coming = [place for place in LOCATIONS if not place.works]
-    assert {place.code for place in coming} == {
-        "bank", "market", "post_office", "stadium", "bar"
+    # Пять домов первой очереди и все шестнадцать второй: город вырос
+    # картинками раньше, чем правилами, и это нормально — лишь бы в
+    # каждом было сказано, чего в нём ждать
+    assert {"bank", "market", "post_office", "stadium", "bar"} <= {
+        place.code for place in coming
     }
+    assert len(coming) == 21
     for place in coming:
         assert place.soon, f"{place.code}: не сказано, что здесь будет"
         assert place.services == ()
