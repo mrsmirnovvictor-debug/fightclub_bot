@@ -196,6 +196,23 @@ body {
 body:not(.dark) .slot.empty img { opacity: 0.6; }
 .slot:active { transform: scale(0.95); }
 
+/* Вещь на исходе прямо в кукле: обводка по цвету беды и ключ в углу.
+   Обводка сделана тенью, а не рамкой, — рамку уже занимает ступень
+   модификации, и две границы на одной клетке спорили бы между собой */
+.slot.aging { box-shadow: inset 0 0 0 2px var(--hp-yellow); }
+.slot.dying { box-shadow: inset 0 0 0 2px var(--hp-red); }
+.slot-wear {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--slot);
+}
+.slot-wear.dying { filter: drop-shadow(0 0 2px var(--hp-red)); }
+
 .avatar {
   /* Рамка тянется по колонке слотов, поэтому она заметно выше, чем широкая:
      боец в полный рост смотрится лучше квадрата. Высота — запасной пол на
@@ -522,7 +539,12 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .thing-kind { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
 .thing-wear { font-size: 12.5px; margin-top: 4px; }
 .thing-wear.worn { color: var(--hp-yellow); }
+/* Последние три пункта запаса вещь просится в починку, последний —
+   кричит. Разница в цвете, а не только в словах: строку читают не
+   всегда, а цвет виден на пролистывании */
+.thing-wear.aging { color: var(--hp-yellow); font-weight: 700; }
 .thing-wear.dying { color: var(--hp-red); font-weight: 700; }
+.thing-note.muted { color: var(--muted); }
 .thing-have { color: var(--hp-green); font-size: 12.5px; font-weight: 600; margin-top: 4px; }
 .thing-note { color: var(--muted); font-size: 12.5px; margin-top: 4px; line-height: 1.35; }
 /* Этот эликсир погасит нынешний — предупреждаем прямо на склянке */
@@ -1131,13 +1153,17 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
 }
+/* Свёрнутый разбор — одна строка: развёрнутый выталкивал шкалы здоровья
+   за край экрана, а на них в бою смотрят непрерывно */
 .scout-head {
-  margin: 0 0 4px;
+  margin: 0;
   font-size: 11.5px;
   font-weight: 700;
   color: var(--muted);
   text-transform: none;
+  cursor: pointer;
 }
+.scout[open] .scout-head { margin-bottom: 4px; }
 .scout-line {
   display: flex;
   gap: 6px;

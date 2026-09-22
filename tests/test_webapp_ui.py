@@ -1082,10 +1082,111 @@ async def test_only_the_shirt_still_fills_the_body_cell(server):
         assert "empty" not in (await body.get_attribute("class"))
         assert "Клубная футболка — футболка" in await body.get_attribute("title")
 
-        await body.click()
+        # Снимают в инвентаре: на экране персонажа клетка только рассказывает
+        await page.locator("#tab-bag").click()
+        await page.locator("#slots-left .slot").nth(2).click()
         await page.wait_for_timeout(200)
 
         assert asked and "Клубная футболка" in asked[0]
+        await browser.close()
+
+
+async def test_the_character_doll_tells_about_a_thing_instead_of_undressing(server):
+    """На экране персонажа клетка рассказывает о вещи, а не снимает её.
+
+    Снять вещь нажатием там, куда заходят посмотреть характеристики, —
+    из тех потерь, за которые игра получает своё «опять слетело».
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    asked, calls = [], []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.route("**/api/unequip", lambda route: calls.append(route.request.url))
+        page.on("dialog", lambda dialog: asked.append(dialog.message))
+
+        await page.locator("#hero-slots-left .slot:not(.empty)").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        said = await page.locator("#sheet").inner_text()
+        assert "Деревянная бита" in said
+        assert "Даёт надетой" in said and "Урон" in said, "свойств не показали"
+        assert "Снять — в инвентаре" in said, "не сказали, где снимают"
+        assert not asked, "экран персонажа спросил про снятие"
+        assert not calls, "вещь сняли с экрана персонажа"
+        await browser.close()
+
+
+async def test_a_thing_on_its_last_legs_is_visible_in_the_doll(server):
+    """Запаса осталось на три боя — клетка светится и носит ключ.
+
+    Вещь рассыпается надетой и посреди боя, а рюкзак открывают не каждый
+    день. Поэтому предупреждение живёт там, куда боец и так смотрит.
+    """
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, wear=17, slot=Slot.WEAPON)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        cell = page.locator("#hero-slots-left .slot:not(.empty)").first
+        assert "aging" in (await cell.get_attribute("class"))
+        assert await cell.locator(".slot-wear").count() == 1
+        assert "Износ: 17/20" in await cell.get_attribute("title")
+        await browser.close()
+
+
+async def test_the_last_fight_of_a_thing_is_said_out_loud(server):
+    """Последний пункт запаса — красная клетка и прямые слова."""
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, wear=19, slot=Slot.WEAPON)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        cell = page.locator("#hero-slots-left .slot:not(.empty)").first
+        assert "dying" in (await cell.get_attribute("class"))
+        assert "ещё один бой" in await cell.get_attribute("title")
+        await browser.close()
+
+
+async def test_a_thing_with_a_long_life_ahead_says_nothing(server):
+    """Целая вещь не кричит: предупреждение стоит только под конец."""
+    player = make_player()  # обрезок трубы с износом 3 из 20
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        cell = page.locator("#hero-slots-left .slot:not(.empty)").first
+        classes = await cell.get_attribute("class")
+        assert "aging" not in classes and "dying" not in classes
+        assert await cell.locator(".slot-wear").count() == 0
+        await browser.close()
+
+
+async def test_the_bag_counts_the_fights_a_thing_has_left(server):
+    """В рюкзаке у доживающей вещи написано, сколько ей осталось."""
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, wear=18)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+
+        wear = page.locator("#bag-list .thing-wear").first
+        said = await wear.inner_text()
+        assert "18/20" in said and "в запасе 2 боя" in said
+        assert "aging" in (await wear.get_attribute("class"))
         await browser.close()
 
 
@@ -2856,7 +2957,12 @@ async def test_the_analyst_speaks_in_the_cellar_too(server):
         )
         await page.wait_for_selector(".zone-columns")
 
-        said = await page.locator("#raid-body .scout").inner_text()
+        # Разбор свёрнут: заголовок виден, строки — по нажатию
+        scout = page.locator("#raid-body .scout")
+        assert "Босса Казино" in await scout.inner_text()
+        await scout.locator("summary").click()
+
+        said = await scout.inner_text()
         assert "Босса Казино" in said
         assert "Живот" in said and "Корпус" in said
         await browser.close()
@@ -2884,6 +2990,57 @@ async def test_the_cellar_tips_stand_over_their_own_buttons(server):
         ):
             assert tip["y"] + tip["height"] <= head["y"] + 0.5, "совет не над кнопками"
         assert strike["x"] + strike["width"] <= guard["x"] + 0.5
+        await browser.close()
+
+
+async def test_the_analyst_starts_folded_and_leaves_the_bars_in_view(server):
+    """Разбор свёрнут: развёрнутый он выталкивает шкалы здоровья с экрана.
+
+    Совет при этом остаётся на виду — он в клетках над кнопками, а не в
+    разборе: подписчику должно хватать одного взгляда, а не чтения.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(
+            pw, server, raid_with_wave({"scout": BOSS_SCOUT})
+        )
+        await page.wait_for_selector(".zone-columns")
+
+        scout = page.locator("#raid-body .scout")
+        assert await scout.get_attribute("open") is None, "разбор развёрнут"
+        # Строки разбора спрятаны, заголовок и советы — нет
+        assert "чаще закрывает" not in await scout.inner_text()
+        tips = page.locator("#raid-body .zone-tip")
+        assert "Бей в Ноги" in await tips.nth(0).inner_text()
+        assert await tips.nth(1).is_visible()
+        await browser.close()
+
+
+async def test_an_unfolded_analyst_stays_unfolded_through_a_repaint(server):
+    """Развернул — читает: экран подвала перерисовывается каждые две секунды.
+
+    Без памяти о нажатии разбор захлопывался бы на глазах, и прочесть его
+    до конца было бы нельзя.
+    """
+    first = raid_with_wave({"scout": BOSS_SCOUT})
+    second = raid_with_wave({
+        "scout": {**BOSS_SCOUT, "attack": "Теперь он чаще закрывает Голову — 71%."}
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, first)
+        await page.wait_for_selector(".zone-columns")
+        await page.locator("#raid-body .scout summary").click()
+        assert "чаще закрывает" in await page.locator("#raid-body .scout").inner_text()
+
+        await page.route("**/api/raid*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(second),
+        ))
+        await page.wait_for_function(
+            "() => {"
+            "  const box = document.querySelector('#raid-body .scout');"
+            "  return box && box.open && box.innerText.includes('Голову — 71%');"
+            "}",
+            timeout=8000,
+        )
         await browser.close()
 
 
@@ -3950,6 +4107,7 @@ async def test_the_analyst_speaks_above_the_buttons(server):
 
         scout = page.locator(".scout")
         assert await scout.count() == 1
+        await scout.locator("summary").click()
         said = await scout.inner_text()
         assert "Аналитик" in said and "10 боёв" in said
         assert "реже всего блокирует" in said and "первый удар в Голову" in said
@@ -4627,6 +4785,32 @@ async def test_the_energy_bar_shows_what_it_counts(server):
             "fill => fill.style.width"
         )
         assert width == "45%"
+        await browser.close()
+
+
+async def test_the_tricks_live_on_the_character_screen(server):
+    """Приёмы — про бойца, а не про поклажу: их место в персонаже.
+
+    В инвентаре их видел только хозяин карточки — чужой рюкзак не
+    показывают вовсе, — а приёмы соперника стоит знать до боя.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = {
+        "known": [
+            {"code": "strong_hit", "title": "Сильный удар", "icon": "👊",
+             "image": "", "note": "+15 урона.", "tier": 1, "cost": 3},
+        ],
+        "slots": 4, "choice": None, "next_tier": 3,
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#hero #skills-box").count() == 1
+        assert await page.locator("#bag #skills-box").count() == 0
+        # И видно их на самом экране персонажа, а не только в разметке
+        assert await page.locator("#skills-box").is_visible()
         await browser.close()
 
 

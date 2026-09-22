@@ -164,6 +164,63 @@ function picture(src, alt, fallback, onFail) {
   return img;
 }
 
+// ---------- износ ----------
+//
+// Вещь рассыпается молча: запас прочности кончился — и её нет. Чтобы это
+// не случалось «вдруг», последние пункты запаса вещь говорит о себе сама,
+// и одинаково везде: в рюкзаке, в кукле и в мастерской.
+//
+// Три — не круглое число, а расстояние: столько боёв у бойца есть, чтобы
+// дойти до мастерской и не остаться без вещи.
+const WEAR_WARN = 3;
+
+function wearLeft(item) {
+  // Сколько пунктов запаса осталось. Ноль — вещи уже нет
+  return (item.max_wear || 0) - (item.wear || 0);
+}
+
+function wearState(item) {
+  // "" — беспокоиться не о чем, "worn" — вещь потрёпана, "aging" —
+  // просится в починку, "dying" — последний бой
+  if (!item || !item.max_wear) return "";
+  if (item.kind === "pass") return "";  // пропуск не ветшает, а отрабатывает
+  const left = wearLeft(item);
+  if (left <= 1) return "dying";
+  if (left <= WEAR_WARN) return "aging";
+  return item.wear ? "worn" : "";
+}
+
+function fightWord(count) {
+  // 1 бой, 2–4 боя, 5 и больше — боёв
+  const last = count % 10;
+  const pair = count % 100;
+  if (pair >= 11 && pair <= 14) return "боёв";
+  if (last === 1) return "бой";
+  if (last >= 2 && last <= 4) return "боя";
+  return "боёв";
+}
+
+function wearNote(item) {
+  // Что приписать к «Износ: 18/20». Пусто — ничего, запас велик
+  const state = wearState(item);
+  const left = wearLeft(item);
+  if (state === "dying") return " — ещё один бой, и рассыплется";
+  if (state === "aging") return " — в запасе " + left + " " + fightWord(left);
+  return "";
+}
+
+function wearRow(item) {
+  // Строка износа: одна на весь клуб, чтобы «ещё один бой» и цвет не
+  // разошлись между рюкзаком, мастерской и куклой
+  const box = document.createElement("div");
+  const state = wearState(item);
+  box.className = "thing-wear" + (state ? " " + state : "");
+  box.textContent = "🔧 Износ: " + item.wear_text;
+  if (item.kind === "pass") box.textContent += " — хватает на один рейд";
+  else box.textContent += wearNote(item);
+  return box;
+}
+
 function slotPicture(item, placeholder) {
   if (item && item.image) {
     return picture(item.image, item.title, item.icon);
@@ -190,6 +247,11 @@ function wornLine(item, slotTitle) {
   }
   if (item.bonus) parts.push(item.bonus);
   if (item.in_hands) parts.push(item.in_hands);
+  // Вещь на исходе — в подсказке клетки, а не только в рюкзаке: на куклу
+  // смотрят чаще, и рассыпается вещь именно надетой
+  if (wearState(item) === "dying" || wearState(item) === "aging") {
+    parts.push("🔧 Износ: " + item.wear_text + wearNote(item));
+  }
   return parts.join("\n");
 }
 
@@ -204,7 +266,14 @@ function slotHint(slot) {
   return lines.join("\n\n");
 }
 
-function renderSlots(container, slots, own) {
+// Кукла бывает двух родов. В инвентаре она про сборы: нажатие снимает
+// вещь. В персонаже — про самого бойца: нажатие рассказывает, что вещь
+// даёт, и ничего с ней не делает. Снять надетое случайным нажатием на
+// экране, куда заходят посмотреть характеристики, — из тех потерь, за
+// которые игра и получает своё «опять слетело».
+//
+// `own` — своя ли это карточка, `info` — кукла только для показа.
+function renderSlots(container, slots, own, info) {
   container.textContent = "";
   slots.forEach((slot) => {
     // Картинкой показываем верхнюю вещь; если её нет, а нижняя есть — нижнюю.
@@ -221,37 +290,123 @@ function renderSlots(container, slots, own) {
     if (shown && shown.mod && shown.mod.level) {
       box.classList.add("tier", "lvl" + shown.mod.level);
     }
+    // Вещь на исходе видно прямо в клетке: рюкзак открывают не каждый
+    // день, а рассыпается вещь надетой и посреди боя
+    const dying = worstWear(slot);
+    if (dying) {
+      box.classList.add(dying);
+      box.appendChild(wearBadge(dying));
+    }
     box.addEventListener("click", () => {
       haptic((feedback) => feedback.selectionChanged());
-      if (!slot.item && slot.under) {
-        // В клетке только нижняя вещь — снимаем её
-        if (own) {
-          confirmAction(
-            "Вы уверены, что хотите снять предмет?\n" + slot.under.title
-          ).then((ok) => {
-            if (ok) act("api/unequip", { slot: slot.under.slot });
-          });
-        } else {
-          popup(slot.under.title, slotHint(slot));
-        }
+      // В клетке тела вещей две: разбираем ту, что видно
+      const item = slot.item || slot.under;
+      const title = slot.item ? slot.title : slot.under_title;
+      if (!item) {
+        popup("Слот пуст", "Сюда надевается: " + slot.cell_title + ".");
         return;
       }
-      if (slot.item && own) {
-        // Клик по надетой вещи возвращает её в инвентарь, но не молча:
-        // промахнуться по слоту легко, а вещь при этом слетает.
-        confirmAction(
-          "Вы уверены, что хотите снять предмет?\n" + slot.item.title
-        ).then((ok) => {
-          if (ok) act("api/unequip", { slot: slot.slot });
-        });
-      } else if (slot.item) {
-        popup(slot.item.title, slotHint(slot));
-      } else {
-        popup("Слот пуст", "Сюда надевается: " + slot.cell_title + ".");
+      if (info) {
+        openWorn(item, title, slot);
+        return;
       }
+      if (!own) {
+        // Чужая кукла внутри всплывающей карточки: открывать над ней
+        // вторую створку некуда, и вещь рассказывает о себе запиской
+        popup(item.title, slotHint(slot));
+        return;
+      }
+      // Клик по надетой вещи возвращает её в инвентарь, но не молча:
+      // промахнуться по слоту легко, а вещь при этом слетает.
+      confirmAction(
+        "Вы уверены, что хотите снять предмет?\n" + item.title
+      ).then((ok) => {
+        if (ok) act("api/unequip", { slot: item.slot || slot.slot });
+      });
     });
     container.appendChild(box);
   });
+}
+
+function worstWear(slot) {
+  // Самая изношенная вещь клетки: под курткой может доживать футболка
+  const states = [slot.item, slot.under].filter(Boolean).map(wearState);
+  if (states.includes("dying")) return "dying";
+  if (states.includes("aging")) return "aging";
+  return "";
+}
+
+function wearBadge(state) {
+  const mark = document.createElement("span");
+  mark.className = "slot-wear " + state;
+  mark.textContent = "🔧";
+  return mark;
+}
+
+// Что надето: картинка, свойства и износ. Открывается с куклы персонажа
+// и с чужой карточки — там, где вещь показывают, а не снимают
+function openWorn(item, slotTitle, slot) {
+  openSheet(item.title, slotTitle);
+  el("sheet-list").appendChild(wornCard(item));
+  // Под курткой бывает футболка, и её свойства тоже чьи-то: показываем
+  // обе, иначе половина брони так и останется незамеченной
+  const other = item === slot.item ? slot.under : null;
+  if (other) {
+    const head = document.createElement("p");
+    head.className = "sheet-note";
+    head.textContent = "Под ней: " + slot.under_title;
+    el("sheet-list").append(head, wornCard(other));
+  }
+}
+
+function wornCard(item) {
+  const box = document.createElement("div");
+  box.className = "thing";
+
+  const pic = document.createElement("div");
+  pic.className = "thing-pic";
+  if (item.mod && item.mod.level) pic.classList.add("tier", "lvl" + item.mod.level);
+  pic.appendChild(slotPicture(item, item.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "thing-body";
+
+  const title = document.createElement("div");
+  title.className = "thing-title";
+  title.textContent = item.title;
+  if (item.mod && item.mod.star) {
+    const star = document.createElement("span");
+    star.className = "thing-star lvl" + item.mod.level;
+    star.textContent = item.mod.star;
+    star.title = item.mod.title + ": " + item.mod.gain;
+    title.appendChild(star);
+  }
+  body.appendChild(title);
+
+  if (item.max_wear) body.appendChild(wearRow(item));
+
+  if (item.bonuses && item.bonuses.length) {
+    const label = document.createElement("div");
+    label.className = "thing-label";
+    label.textContent = "Даёт надетой";
+    body.append(label, bonusList(item));
+  }
+  if (item.in_hands) {
+    const hands = document.createElement("div");
+    hands.className = "thing-note";
+    hands.textContent = item.in_hands;
+    body.appendChild(hands);
+  }
+  // Снять вещь можно в инвентаре, и сказать об этом стоит здесь: иначе
+  // игрок ищет кнопку на экране, где её нарочно нет
+  const where = document.createElement("div");
+  where.className = "thing-note muted";
+  where.textContent = "Снять — в инвентаре, нажатием на эту же клетку.";
+  body.appendChild(where);
+
+  box.appendChild(body);
+  return box;
 }
 
 // ---------- инвентарь ----------
@@ -371,17 +526,7 @@ function thingCard(item, credits, shop, bare) {
   // Полосу износа рисуем только тому, у кого есть шкала: у склянки её нет,
   // и без этой проверки пропуск получал «Износ: undefined»
   if (!shop && !item.consumable && item.max_wear) {
-    const wear = document.createElement("div");
-    const left = item.max_wear - item.wear;
-    const ticket = item.kind === "pass";
-    wear.className =
-      "thing-wear" + (left <= 1 && !ticket ? " dying" : item.wear ? " worn" : "");
-    wear.textContent = "🔧 Износ: " + item.wear_text;
-    // Пропуск не рассыпается, а отрабатывает своё: предупреждать о его
-    // последнем бое незачем — других у него и не бывает
-    if (ticket) wear.textContent += " — хватает на один рейд";
-    else if (left <= 1) wear.textContent += " — ещё один бой, и рассыплется";
-    body.appendChild(wear);
+    body.appendChild(wearRow(item));
   }
 
   if (shop) {
@@ -1285,9 +1430,9 @@ function sellCard(row) {
   const kind = document.createElement("div");
   kind.className = "thing-kind";
   kind.textContent = row.slot_title;
-  const wear = document.createElement("div");
-  wear.className = "thing-wear" + (row.wear ? " worn" : "");
-  wear.textContent = "🔧 Износ: " + row.wear_text;
+  // Износ — той же строкой, что и в рюкзаке: вещь на грани здесь видно
+  // особенно кстати, за такую на комиссионке не дадут ничего
+  const wear = wearRow(row);
   const hint = document.createElement("div");
   hint.className = "thing-note";
   hint.textContent = row.hint;
@@ -1359,9 +1504,8 @@ function lotCard(lot) {
   const seller = document.createElement("div");
   seller.className = "thing-seller";
   seller.textContent = lot.mine ? "Твой лот" : "Продаёт: " + lot.seller;
-  const wear = document.createElement("div");
-  wear.className = "thing-wear" + (lot.wear ? " worn" : "");
-  wear.textContent = "🔧 Износ: " + lot.wear_text;
+  // Чужую вещь на грани покупатель обязан видеть до, а не после покупки
+  const wear = wearRow(lot);
   const price = document.createElement("div");
   price.className = "thing-price";
   price.textContent = lot.price + " 💰";
@@ -2658,12 +2802,26 @@ function paintDraft() {
 // выбрать удар, другая — блок, и у каждой свой значок. Столбцы на
 // телефоне узкие, предложение в них не помещается, поэтому панель стоит
 // над ними целиком — но выше кнопок, как ей и положено.
+//
+// Разбор при этом свёрнут. Развёрнутый он занимает четыре строки и
+// выталкивает с экрана шкалы здоровья — то самое, на что в бою смотрят
+// непрерывно. Совет из разбора («бей в ноги») остаётся на виду всегда:
+// он в клетках над кнопками, а не здесь.
+
+// Развернул один раз — остаётся развёрнутым: экран рейда перерисовывается
+// каждые две секунды, и без этого разбор захлопывался бы на глазах
+let scoutOpen = false;
+
 function scoutPanel(scout) {
   if (!scout || (!scout.attack && !scout.block)) return null;
-  const box = document.createElement("section");
+  const box = document.createElement("details");
   box.className = "scout";
+  box.open = scoutOpen;
+  box.addEventListener("toggle", () => {
+    scoutOpen = box.open;
+  });
 
-  const head = document.createElement("p");
+  const head = document.createElement("summary");
   head.className = "scout-head";
   head.textContent = "🔍 Аналитик" + (scout.title ? " · " + scout.title : "");
   box.appendChild(head);
@@ -4985,8 +5143,10 @@ function render(card, keepTab) {
   renderAvatar(card);
   renderSlots(el("slots-left"), card.slots.left, card.is_self);
   renderSlots(el("slots-right"), card.slots.right, card.is_self);
-  renderSlots(el("hero-slots-left"), card.slots.left, card.is_self);
-  renderSlots(el("hero-slots-right"), card.slots.right, card.is_self);
+  // Кукла персонажа — для показа: нажатие рассказывает о вещи, а снимают
+  // её в инвентаре
+  renderSlots(el("hero-slots-left"), card.slots.left, card.is_self, true);
+  renderSlots(el("hero-slots-right"), card.slots.right, card.is_self, true);
   renderSkills(card);
   renderDaily(card);
   renderBag(card);
