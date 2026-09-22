@@ -405,3 +405,36 @@ def test_houses_without_a_trade_are_still_on_the_map():
     for place in coming:
         assert place.soon, f"{place.code}: не сказано, что здесь будет"
         assert place.services == ()
+
+
+# ---------- бланк разметки ----------
+
+
+def test_the_blank_counts_pixels_the_way_the_manifest_does():
+    """Пиксель с картинки и доля в коде — одно и то же число.
+
+    Правки дверей приходят пикселями исходника и переводятся в доли
+    скриптом. Ошибись он в размере картинки — все двери уехали бы разом
+    и ровно настолько, чтобы это было незаметно на глаз.
+    """
+    from bot.game.locations import get_location
+    from scripts.doors import HEIGHT, WIDTH, pixels, shares
+
+    assert (WIDTH, HEIGHT) == (941, 1672), "размер исходника карт"
+    door = get_location("clothes_shop").entrance
+    # Контрольные пиксели этой двери записаны в docs/locations.md
+    assert [pixels(corner) for corner in door] == [
+        (411, 356), (599, 382), (596, 526), (419, 503),
+    ]
+    # И обратно: из тех же пикселей выходит та же дверь
+    assert tuple(shares(*pixels(corner)) for corner in door) == door
+
+
+def test_the_blank_knows_which_doors_are_still_a_template():
+    """Шаблонную дверь видно в бланке — иначе её забудут выверить."""
+    from bot.game.locations import get_location
+    from scripts.doors import templated
+
+    assert templated(get_location("vcpd")) == "шаблон, верхний дом"
+    assert templated(get_location("hospital")) == "шаблон, нижний дом"
+    assert templated(get_location("fight_club")) == ""
