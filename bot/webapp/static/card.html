@@ -70,6 +70,9 @@
   <main id="map" class="screen map hidden">
     <div class="map-frame" id="map-frame">
       <img class="map-pic" id="map-pic" alt="Карта района">
+      <!-- Улица, по которой ходят ногами. Лежит под дверями намеренно:
+           нажатие на дверь должно доставаться двери, а не асфальту -->
+      <div class="map-walk" id="map-walk"></div>
       <!-- Картинка района не доехала: рисовать нечего, но ходить можно —
            двери лежат поверх рамки и работают без неё -->
       <p class="map-blank hidden" id="map-blank"></p>

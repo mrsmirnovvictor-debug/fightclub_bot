@@ -1604,6 +1604,213 @@ function pointsOf(polygon) {
   return polygon.map(([x, y]) => x * MAP_W + "," + y * MAP_H).join(" ");
 }
 
+// ---------- режим разметки ----------
+//
+// Обвод улицы и четырёхугольники дверей снимаются с картинки глазами, а
+// не считаются. Делать это на глаз в редакторе неудобно и неточно,
+// поэтому разметка снимается прямо на телефоне: `?tune=1` — и каждое
+// нажатие по картинке кладёт в список свою долю. Список копируется и
+// вставляется в `bot/game/locations.py` как есть.
+//
+// Это не игровая возможность, а инструмент: ни кнопки, ни упоминания в
+// интерфейсе у него нет, и без явного `?tune=1` он не существует.
+const tuning = new URLSearchParams(location.search).get("tune") === "1";
+const tunePoints = [];
+
+function tunePoint(x, y) {
+  tunePoints.push([Number(x.toFixed(6)), Number(y.toFixed(6))]);
+  paintTune();
+}
+
+function paintTune() {
+  let box = el("tune");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "tune";
+    box.className = "tune";
+    document.body.appendChild(box);
+  }
+  const rows = tunePoints
+    .map(([x, y]) => "    (" + x.toFixed(6) + ", " + y.toFixed(6) + "),")
+    .join("\n");
+  box.textContent = "";
+  const text = document.createElement("pre");
+  text.textContent = rows || "Тыкай по картинке — точки лягут сюда.";
+  box.appendChild(text);
+  const drop = button("Убрать последнюю", {
+    secondary: true,
+    onClick: () => {
+      tunePoints.pop();
+      paintTune();
+    },
+  });
+  const copy = button("Скопировать " + tunePoints.length, {
+    onClick: () => {
+      const all = tunePoints
+        .map(([x, y]) => "    (" + x.toFixed(6) + ", " + y.toFixed(6) + "),")
+        .join("\n");
+      if (navigator.clipboard) navigator.clipboard.writeText(all);
+      popup("Разметка", all || "Пока пусто.");
+    },
+  });
+  const row = document.createElement("div");
+  row.className = "tune-buttons";
+  row.append(drop, copy);
+  box.appendChild(row);
+}
+
+// ---------- улица, по которой ходят ногами ----------
+//
+// Срез на одном районе: Центр размечен, остальные открываются по
+// старому — нажал на дверь, и ты внутри. Задача среза — ответить на
+// один вопрос: приятно ли ходить по нашему рисованному городу. Поэтому
+// здесь нет ни сети, ни чужих бойцов, ни сервера: позиция живёт только
+// в этой вкладке и никуда не уходит.
+//
+// Когда ответ будет «да», с этого места начнётся настоящая работа:
+// позицию придётся считать на сервере — иначе в казино можно будет
+// попасть запросом, не пройдя ни шагу, — и раздавать её вебсокетом.
+
+// Сколько единиц холста боец проходит за секунду. Холст высотой 1672,
+// улица занимает чуть больше половины, — то есть район пересекается
+// шагом секунд за пять
+const WALK_SPEED = 210;
+// Насколько близко надо подойти к двери, чтобы в неё войти
+const DOOR_REACH = 130;
+// Настолько близко подходят к завсегдатаю, чтобы он заговорил
+const TALK_REACH = 150;
+
+let walk = null;      // где боец стоит и куда идёт
+let walkFrame = null; // кадр анимации: он один на всё приложение
+// Какая дверь подсвечена сейчас. Подсказка сверяется с этим, чтобы не
+// трогать разметку на каждом кадре; при пересборке дверей сбрасывается
+let walkDoor = "";
+
+function walkableHere(district) {
+  // Ходить можно только там, где боец стоит на самом деле. Чужой район
+  // листают глазами: ноги за картинкой не ходят
+  return Boolean(district && district.here && district.floor.length >= 3);
+}
+
+function toCanvas(point) {
+  return { x: point[0] * MAP_W, y: point[1] * MAP_H };
+}
+
+// Тот же луч вправо, что и на сервере: точка внутри, если пересечений
+// нечётное число. Два счёта одной вещи — но иначе каждый шаг пришлось
+// бы отправлять на сервер, а он в этом срезе не участвует вовсе
+function onFloor(shape, x, y) {
+  let hit = false;
+  for (let i = 0; i < shape.length; i += 1) {
+    const one = shape[i];
+    const two = shape[(i + 1) % shape.length];
+    if ((one.y > y) !== (two.y > y)) {
+      const edge = one.x + ((y - one.y) * (two.x - one.x)) / (two.y - one.y);
+      if (x < edge) hit = !hit;
+    }
+  }
+  return hit;
+}
+
+function middleOf(shape) {
+  const sum = shape.reduce(
+    (acc, one) => ({ x: acc.x + one.x, y: acc.y + one.y }), { x: 0, y: 0 }
+  );
+  return { x: sum.x / shape.length, y: sum.y / shape.length };
+}
+
+// Откуда боец выходит на улицу: от двери того дома, в котором он стоит.
+// Иначе он появлялся бы посреди площади, как будто его туда уронили
+function startPoint(district, shape) {
+  const here = district.places.find((place) => place.here);
+  if (here) {
+    const door = {
+      x: (here.zone.x + here.zone.w / 2) * MAP_W,
+      y: (here.zone.y + here.zone.h) * MAP_H + 40,
+    };
+    if (onFloor(shape, door.x, door.y)) return door;
+    // Дверь оказалась выше асфальта — спускаемся по ней вниз, пока не
+    // упрёмся в улицу. Так боец выходит из своей двери, а не из чужой
+    for (let step = 40; step < 600; step += 20) {
+      if (onFloor(shape, door.x, door.y + step)) {
+        return { x: door.x, y: door.y + step };
+      }
+    }
+  }
+  return middleOf(shape);
+}
+
+function startWalking(district) {
+  const shape = district.floor.map(toCanvas);
+  const at = startPoint(district, shape);
+  walk = {
+    code: district.code,
+    shape,
+    x: at.x,
+    y: at.y,
+    to: null,
+    doors: district.places.map((place) => ({
+      code: place.code,
+      title: place.title,
+      x: (place.zone.x + place.zone.w / 2) * MAP_W,
+      y: (place.zone.y + place.zone.h) * MAP_H,
+    })),
+    crowd: district.crowd || [],
+  };
+}
+
+// Шаг за кадр. Упёрлись в край асфальта — останавливаемся: обвод улицы
+// здесь и есть все препятствия разом, и дом обходить не нужно, потому
+// что по дому и так не пройти
+function stepWalk(seconds) {
+  if (!walk || !walk.to) return false;
+  const dx = walk.to.x - walk.x;
+  const dy = walk.to.y - walk.y;
+  const left = Math.hypot(dx, dy);
+  const step = WALK_SPEED * seconds;
+  if (left <= step) {
+    walk.x = walk.to.x;
+    walk.y = walk.to.y;
+    walk.to = null;
+    return true;
+  }
+  const nx = walk.x + (dx / left) * step;
+  const ny = walk.y + (dy / left) * step;
+  if (onFloor(walk.shape, nx, ny)) {
+    walk.x = nx;
+    walk.y = ny;
+    return true;
+  }
+  // Уткнулись в стену — скользим вдоль неё: пробуем шаг только вбок, а
+  // потом только вперёд. Без этого угол улицы не обходится: боец идёт
+  // по прямой, упирается в дом и встаёт, и до соседнего рукава его
+  // приходится вести двумя нажатиями вместо одного
+  if (onFloor(walk.shape, nx, walk.y)) {
+    walk.x = nx;
+    return true;
+  }
+  if (onFloor(walk.shape, walk.x, ny)) {
+    walk.y = ny;
+    return true;
+  }
+  walk.to = null;
+  return true;
+}
+
+function nearestDoor() {
+  if (!walk) return null;
+  let best = null;
+  let range = DOOR_REACH;
+  walk.doors.forEach((door) => {
+    const away = Math.hypot(door.x - walk.x, door.y - walk.y);
+    if (away < range) {
+      best = door;
+      range = away;
+    }
+  });
+  return best;
+}
+
 function placeZones() {
   const district = shownDistrict();
   const box = el("map-zones");
@@ -1617,6 +1824,154 @@ function placeZones() {
   });
   district.places.forEach((place) => canvas.appendChild(houseShape(place)));
   box.appendChild(canvas);
+  paintWalk();
+  // Двери здесь только что собраны заново, и класса подсветки на них
+  // нет. Память подсказки об этом не знает и, если её не сбросить,
+  // промолчит: код двери тот же, а подсвечивать уже некого
+  walkDoor = "";
+  paintDoorPrompt();
+}
+
+// Слой ходьбы собирается один раз на район, а дальше каждый кадр
+// двигается только он — переставить `transform` у пары узлов дёшево,
+// а перерисовывать холст заново шестьдесят раз в секунду нельзя
+function paintWalk() {
+  const box = el("map-walk");
+  const district = shownDistrict();
+  if (!walkableHere(district)) {
+    box.textContent = "";
+    walk = null;
+    stopWalkLoop();
+    return;
+  }
+  if (!walk || walk.code !== district.code) startWalking(district);
+  if (tuning) paintTune();
+
+  const canvas = svgNode("svg", {
+    viewBox: "0 0 " + MAP_W + " " + MAP_H,
+    preserveAspectRatio: "xMidYMid meet",
+    class: "walk-svg",
+  });
+
+  // Асфальт. Он же ловит нажатие: ткнул — пошёл
+  const floor = svgNode("polygon", {
+    points: district.floor.map(([x, y]) => x * MAP_W + "," + y * MAP_H).join(" "),
+    class: "walk-floor",
+  });
+  floor.addEventListener("click", (event) => walkTo(canvas, event));
+  canvas.appendChild(floor);
+
+  walk.crowd.forEach((local) => {
+    canvas.appendChild(figure(local.emoji, local.name, {
+      x: local.x * MAP_W,
+      y: local.y * MAP_H,
+      local,
+    }));
+  });
+
+  const me = figure("🚶", "Ты", { x: walk.x, y: walk.y, mine: true });
+  me.id = "walk-me";
+  canvas.appendChild(me);
+
+  box.textContent = "";
+  box.appendChild(canvas);
+  startWalkLoop();
+}
+
+// Фигурка: тень под ногами, значок над ней и подпись. Ноги стоят ровно
+// в точке — по ней же считается и расстояние до двери
+function figure(emoji, name, options) {
+  const group = svgNode("g", {
+    class: "walk-figure" + (options.mine ? " walk-me" : " walk-local"),
+    transform: "translate(" + options.x + "," + options.y + ")",
+  });
+  group.appendChild(svgNode("ellipse", {
+    cx: 0, cy: 0, rx: 34, ry: 13, class: "walk-shadow",
+  }));
+  const body = svgNode("text", { x: 0, y: -10, class: "walk-body" });
+  body.textContent = emoji;
+  group.appendChild(body);
+  const sign = svgNode("text", { x: 0, y: 40, class: "walk-name" });
+  sign.textContent = name;
+  group.appendChild(sign);
+  if (options.local) {
+    group.addEventListener("click", (event) => {
+      event.stopPropagation();
+      greet(options.local);
+    });
+  }
+  return group;
+}
+
+// Завсегдатай отвечает, только если к нему подошли. Кричать через всю
+// улицу нельзя: тогда с ним можно поговорить, не сходя с места
+function greet(local) {
+  const away = Math.hypot(local.x * MAP_W - walk.x, local.y * MAP_H - walk.y);
+  if (away > TALK_REACH) {
+    walkPoint(local.x * MAP_W, local.y * MAP_H + 60);
+    return;
+  }
+  haptic((feedback) => feedback.selectionChanged());
+  popup(local.name, local.line);
+}
+
+function walkTo(canvas, event) {
+  const spot = canvas.createSVGPoint();
+  spot.x = event.clientX;
+  spot.y = event.clientY;
+  // Пересчёт делает сам холст: он уже вписан в картинку правилом
+  // `contain`, и считать поля по краям руками значило бы повторить
+  // за ним — с ошибкой на телефоне другого соотношения сторон
+  const at = spot.matrixTransform(canvas.getScreenCTM().inverse());
+  if (tuning) {
+    tunePoint(at.x / MAP_W, at.y / MAP_H);
+    return;
+  }
+  walkPoint(at.x, at.y);
+}
+
+function walkPoint(x, y) {
+  if (!walk) return;
+  if (!onFloor(walk.shape, x, y)) return;
+  walk.to = { x, y };
+  startWalkLoop();
+}
+
+let walkLast = 0;
+
+function startWalkLoop() {
+  if (walkFrame !== null) return;
+  walkLast = performance.now();
+  walkFrame = requestAnimationFrame(walkTick);
+}
+
+function stopWalkLoop() {
+  if (walkFrame === null) return;
+  cancelAnimationFrame(walkFrame);
+  walkFrame = null;
+}
+
+function walkTick(now) {
+  walkFrame = null;
+  // Больше десятой секунды за кадр не считаем: свернули приложение и
+  // вернулись — иначе боец прыгнул бы через полкарты одним шагом
+  const seconds = Math.min((now - walkLast) / 1000, 0.1);
+  walkLast = now;
+  const moved = stepWalk(seconds);
+  const me = el("walk-me");
+  if (me) me.setAttribute("transform", "translate(" + walk.x + "," + walk.y + ")");
+  paintDoorPrompt();
+  if (moved && walk && walk.to) startWalkLoop();
+}
+
+function paintDoorPrompt() {
+  const door = nearestDoor();
+  const code = door ? door.code : "";
+  if (code === walkDoor) return;
+  walkDoor = code;
+  document.querySelectorAll(".zone-house").forEach((node) => {
+    node.classList.toggle("reached", node.dataset.code === code);
+  });
 }
 
 function houseShape(place) {

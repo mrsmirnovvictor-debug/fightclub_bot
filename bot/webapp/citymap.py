@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from bot.content.crowd import crowd_of
 from bot.game.health import format_duration
 from bot.game.locations import (
     DISTRICTS,
@@ -49,6 +50,22 @@ def district_row(district, here: str) -> dict:
         "title": district.title,
         "image": district.image,
         "here": any(place.code == here for place in district.places),
+        # Где по району ходят ногами. Пусто — район не размечен, и он
+        # открывается по старому: нажал на дверь, и ты внутри
+        "floor": [[x, y] for x, y in district.floor],
+        # Завсегдатаи улицы. Они ничего не умеют — стоят и отвечают
+        # словом; без них размеченный район выглядит вымершим
+        "crowd": [
+            {
+                "code": local.code,
+                "name": local.name,
+                "emoji": local.emoji,
+                "x": local.x,
+                "y": local.y,
+                "line": local.line,
+            }
+            for local in crowd_of(district.code)
+        ],
         # Куда ведут стрелки. Города целиком не видно — это единственное,
         # что связывает шесть картинок в один город
         "around": dict(district.around),
