@@ -19,7 +19,6 @@ from bot.game.equipment import (
     REPAIR_DEGRADE_CHANCE,
     REPAIR_PRICE_PER_POINT,
     WEAR_CHANCE_LOSS,
-    WEAR_CHANCE_WIN,
 )
 from bot.game.modes import FightMode
 from bot.game.health import FULL_REGEN_SECONDS, HURT_THRESHOLD, READY_THRESHOLD
@@ -195,7 +194,8 @@ def help_text(turn_timeout: int = 30, round_break: int = 30) -> str:
         "Выпитое в требованиях не считается: эффект уходит по часам, и вещь на "
         "нём слетала бы посреди боя.\n"
         f"У каждой вещи запас прочности — {MAX_WEAR} пунктов износа. После поражения "
-        f"надетая вещь с шансом {WEAR_CHANCE_LOSS:.0%} снашивается на пункт, после победы — {WEAR_CHANCE_WIN:.0%}.\n"
+        f"каждая надетая вещь с шансом {WEAR_CHANCE_LOSS:.0%} снашивается на пункт. "
+        "Победа и ничья вещей не трогают.\n"
         f"Починка стоит {REPAIR_PRICE_PER_POINT} 💰 за пункт, но каждая починка "
         f"с шансом {REPAIR_DEGRADE_CHANCE:.0%} отнимает у вещи пункт запаса — чинить "
         "выгоднее сразу целиком, а не по одному.\n"

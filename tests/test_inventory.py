@@ -72,12 +72,24 @@ def test_new_item_is_pristine():
     assert not owned.is_worn_out
 
 
-def test_loser_wears_gear_far_more_often_than_winner():
+def test_only_a_lost_fight_wears_the_gear():
+    """Платит проигравший: победа и ничья вещей не трогают вовсе.
+
+    Ничья — отдельный исход, а не поражение: раньше она шла по строке
+    поражения, и двое равных уходили с ринга с потрёпанной экипировкой
+    за бой, в котором никто никому не уступил.
+    """
     rng = random.Random(7)
-    losses = sum(apply_fight_wear([OwnedItem(item=SNEAKERS)], False, rng)[0] != [] for _ in range(2000))
-    wins = sum(apply_fight_wear([OwnedItem(item=SNEAKERS)], True, rng)[0] != [] for _ in range(2000))
-    assert 0.70 < losses / 2000 < 0.80
-    assert 0.06 < wins / 2000 < 0.14
+
+    def wears(won, times=2000):
+        return sum(
+            apply_fight_wear([OwnedItem(item=SNEAKERS)], won, rng)[0] != []
+            for _ in range(times)
+        )
+
+    assert 0.45 < wears(False) / 2000 < 0.55, "поражение — половина боёв"
+    assert wears(True) == 0, "победа сносила вещи"
+    assert wears(None) == 0, "ничья сносила вещи"
 
 
 def test_the_last_point_of_wear_turns_the_item_into_dust():

@@ -168,9 +168,13 @@ async def hand_in(db: Database, player: Player, item_id: int) -> tuple[str, int]
 
 
 async def wear_after_fight(
-    db: Database, player: Player, won: bool, rng: random.Random | None = None
+    db: Database, player: Player, won: bool | None, rng: random.Random | None = None
 ) -> list[OwnedItem]:
-    """Пройтись износом по надетому. Вернуть то, что рассыпалось в труху."""
+    """Пройтись износом по надетому. Вернуть то, что рассыпалось в труху.
+
+    `won` — исход боя, как в рейтинге: `None` означает ничью, а не
+    поражение. Снашивает вещи только поражение.
+    """
     damaged, broken = apply_fight_wear(player.equipped, won, rng)
     for owned in damaged:
         if owned.is_worn_out:

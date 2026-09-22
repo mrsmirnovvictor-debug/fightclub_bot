@@ -249,6 +249,84 @@ async def test_silent_fighter_loses_by_technical_decision(bot, db):
     assert (await db.get_player(2)).losses == 1
 
 
+class AlwaysWears(random.Random):
+    """Кости, на которых срабатывает любой шанс.
+
+    Износ — дело случая, и проверять его настоящими костями значит
+    проверять удачу: у четырёх вещей при шансе в половину все четыре
+    уцелеют в одном бою из шестнадцати. Здесь исход задан, и тест
+    отвечает за правило, а не за везение.
+    """
+
+    def random(self) -> float:
+        return 0.0
+
+
+async def dress(db, user_id: int, *codes: str) -> list[int]:
+    """Надеть на бойца вещи и вернуть их номера в инвентаре."""
+    ids = []
+    for code in codes:
+        owned = await db.add_gear(user_id, code)
+        owned.slot = owned.item.slot
+        await db.save_gear(owned)
+        ids.append(owned.id)
+    return ids
+
+
+async def wear_of(db, user_id: int) -> list[int]:
+    player = await db.get_player(user_id)
+    return sorted(owned.wear for owned in player.equipped)
+
+
+async def test_a_draw_leaves_the_gear_alone(bot, db):
+    """Ничья вещей не трогает: никто не уступил — платить не за что.
+
+    Правило износа знает про ничью, но знать про неё должен и ринг:
+    сюда исход приходил победой или поражением, ничья считалась
+    поражением обоим, и двое равных уходили с потрёпанной экипировкой.
+    """
+    service = make_service(bot, db)
+    service.rng = AlwaysWears()  # если износ и случится, то со всеми вещами
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "warrior"))
+    await dress(db, 1, "wife_beater", "wraps")
+    await dress(db, 2, "wife_beater", "wraps")
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2),
+        mode=FightMode.ARMED,
+    )
+
+    for _ in range(MAX_MISSED_TURNS):  # оба молчат — техническая ничья
+        await force_round(service, session)
+
+    assert (await db.get_player(1)).draws == 1
+    assert await wear_of(db, 1) == [0, 0], "ничья сносила вещи"
+    assert await wear_of(db, 2) == [0, 0], "ничья сносила вещи"
+
+
+async def test_the_loser_pays_with_his_gear_and_the_winner_does_not(bot, db):
+    """Износ снимает поражение — и только с проигравшего."""
+    service = make_service(bot, db)
+    service.rng = AlwaysWears()
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "warrior"))
+    await dress(db, 1, "wife_beater", "wraps")
+    await dress(db, 2, "wife_beater", "wraps")
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2),
+        mode=FightMode.ARMED,
+    )
+
+    for _ in range(MAX_MISSED_TURNS):  # второй молчит — техпоражение молчуну
+        await service.handle_choice(session.id, 1, "attack", "head")
+        await service.handle_choice(session.id, 1, "block", "chest")
+        await force_round(service, session)
+
+    assert (await db.get_player(1)).wins == 1
+    assert await wear_of(db, 1) == [0, 0], "победа сносила вещи"
+    assert await wear_of(db, 2) == [1, 1], "поражение вещей не тронуло"
+
+
 async def test_missed_turn_counter_resets_after_any_press(bot, db):
     service = make_service(bot, db)
     await db.save_player(make_player(1, "Тайлер", "warrior"))

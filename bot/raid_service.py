@@ -877,7 +877,11 @@ class RaidService:
             if outcome.won:
                 player.raid_wins += 1
                 player.credits += session.shares.get(user_id, 0)
-            ruined = await wear_after_fight(self.db, player, outcome.won, self.rng)
+            # Ничья в подвале бывает: отряд и босс легли в один ход. Она
+            # идёт ничьёй и по износу — None вместо False, как в рейтинге
+            ruined = await wear_after_fight(
+                self.db, player, None if outcome.draw else outcome.won, self.rng
+            )
             if ruined:  # pragma: no cover - износ считается своим тестом
                 logger.info("Рейд износил вещи бойца %s: %s", user_id, len(ruined))
             if player.birthplace is None and session.chat_title:
