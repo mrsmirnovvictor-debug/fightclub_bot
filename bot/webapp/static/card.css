@@ -826,74 +826,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   object-fit: contain;
   display: block;
 }
-/* Слой дверей накрывает картинку целиком, но ловить нажатия ему незачем:
-   палец ловят рамки самих дверей, у них `pointer-events: all`. Тот же
-   приём, что у слоя стрелок ниже. Без него слой перехватывал всё подряд
-   — и лежащая под ним улица не получала ни одного нажатия */
-.map-zones { position: absolute; inset: 0; pointer-events: none; }
-
-/* ---------- улица, по которой ходят ---------- */
-
-/* Слой ходьбы лежит ровно так же, как холст с домами, и тем же правилом
-   вписан в картинку. Под дверями, а не над: нажатие на дверь должно
-   доставаться двери */
-.map-walk { position: absolute; inset: 0; }
-.walk-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-
-/* Асфальт подсвечен едва-едва: по рисунку не всегда понятно, где улица,
-   а где нарисованный газон, и промах пальцем не должен молчать */
-.walk-floor {
-  fill: rgba(255, 255, 255, 0.05);
-  stroke: rgba(255, 255, 255, 0.16);
-  stroke-width: 3;
-  stroke-dasharray: 18 14;
-  pointer-events: all;
-}
-
-/* Боец и завсегдатаи: кружок тени и фигурка над ним. Рисуем значком, а
-   не спрайтом, — до ответа на вопрос «ходить по нашему арту приятно?»
-   рисовать человечка в трёх ракурсах рано */
-.walk-shadow { fill: rgba(0, 0, 0, 0.42); }
-.walk-body { font-size: 76px; text-anchor: middle; }
-.walk-name {
-  font-family: inherit;
-  font-size: 30px;
-  font-weight: 700;
-  text-anchor: middle;
-  fill: #fff;
-  paint-order: stroke;
-  stroke: rgba(0, 0, 0, 0.75);
-  stroke-width: 7;
-}
-.walk-local { cursor: pointer; }
-/* Себя нажимать незачем, а вот перекрыть собой собеседника легко:
-   подошёл вплотную — и фигурка бойца накрыла того, к кому он шёл */
-.walk-me { pointer-events: none; }
-.walk-me .walk-name { fill: var(--accent); }
-
-/* Режим разметки: панель поверх всего. Не игровая возможность, а
-   инструмент — без `?tune=1` этого блока на странице нет вовсе */
-.tune {
-  position: fixed;
-  left: 8px;
-  right: 8px;
-  bottom: calc(86px + env(safe-area-inset-bottom));
-  z-index: 40;
-  max-height: 42vh;
-  overflow: auto;
-  padding: 10px 12px;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  background: var(--panel);
-}
-.tune pre {
-  margin: 0 0 8px;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  color: var(--ink);
-}
-.tune-buttons { display: flex; gap: 8px; }
+.map-zones { position: absolute; inset: 0; }
 
 /* Не доехавшая карта: место она занимает по-прежнему — по нему ложится
    холст с домами, — но значка битой картинки на ней не видно */
@@ -943,16 +876,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   fill: rgba(58, 134, 255, 0.14);
 }
 .zone-house.soon .zone-line { stroke-dasharray: 14 10; opacity: 0.7; }
-
-/* Подошёл вплотную — дверь загорается: видно, что в неё уже можно
-   войти. Нажатие при этом работает и издали, ходьба добавляет способ,
-   а не отнимает прежний */
-.zone-house.reached .zone-line {
-  stroke: var(--hp-green);
-  stroke-width: 9;
-  fill: rgba(62, 168, 66, 0.18);
-}
-.zone-house.reached .zone-sign { fill: var(--hp-green); }
 .zone-house:active .zone-line,
 .zone-house:focus-visible .zone-line { fill: rgba(255, 255, 255, 0.2); }
 

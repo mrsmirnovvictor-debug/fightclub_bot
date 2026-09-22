@@ -221,28 +221,10 @@ class District:
     # Чем нарисована карта. Первую очередь отдали в jpeg, вторую — в
     # png, и это единственное, чем они отличаются
     picture_ext: str = "jpeg"
-    # Где по этому району можно ходить ногами — многоугольник в долях от
-    # картинки. Пусто — район ещё не размечен, и он открывается по
-    # старому: нажал на дверь, и ты внутри.
-    #
-    # Проходимость задана белым списком, а не списком препятствий. Так
-    # честнее для рисованного города: нарисовано на картинке много, а
-    # улица — это ровно та полоса, по которой художник дал пройти. И
-    # размечается она одним обводом, а не двадцатью прямоугольниками.
-    floor: tuple[Point, ...] = ()
 
     @property
     def image(self) -> str:
         return art.location(self.code, self.picture_ext)
-
-    @property
-    def walkable(self) -> bool:
-        """Размечен ли район под ходьбу. Иначе он открывается по старому."""
-        return len(self.floor) >= 3
-
-    def holds(self, x: float, y: float) -> bool:
-        """Можно ли стоять в этой точке. Доли — от самой картинки."""
-        return inside(self.floor, x, y) if self.walkable else False
 
     @property
     def places(self) -> tuple[Location, ...]:
@@ -259,21 +241,13 @@ STEP_BETWEEN = 20
 
 
 def travel_seconds(source: str, target: str) -> int:
-    """Сколько идти от одного места до другого. Ноль — уже на месте.
-
-    В размеченном под ходьбу районе дорога внутри бесплатна: боец и так
-    прошёл её ногами по улице, и брать с него сверху ещё десять секунд
-    ожидания значило бы взять дважды за одно и то же.
-    """
+    """Сколько идти от одного места до другого. Ноль — уже на месте."""
     if source == target:
         return 0
     here, there = get_location(source), get_location(target)
     if here is None or there is None:
         return STEP_BETWEEN
-    if here.district != there.district:
-        return STEP_BETWEEN
-    district = get_district(here.district)
-    return 0 if district is not None and district.walkable else STEP_INSIDE
+    return STEP_INSIDE if here.district == there.district else STEP_BETWEEN
 
 
 # ---------- сама карта ----------
@@ -325,29 +299,13 @@ MAFIA = "mafia_mansion"
 # Вторую очередь нарисовали в png, первую — в jpeg
 PNG = "png"
 
-# Улица Центра: по чему ходят ногами. Обвод снят не с картинки, а
-# рассчитан от дверей — до сверки с артом он приблизительный, и править
-# его нужно по-настоящему увиденной улице. Форма — крест: площадь под
-# клубом, полоса вниз между лавками и два рукава к их дверям.
-#
-# Размечается это режимом `?tune=1` на экране карты: тыкаешь по асфальту,
-# получаешь готовый список долей.
-MAIN_HUB_FLOOR: tuple[Point, ...] = (
-    (0.34, 0.38), (0.66, 0.38),          # площадь под клубом
-    (0.66, 0.58), (0.92, 0.58),          # рукав вправо, к мастерской
-    (0.92, 0.74), (0.66, 0.74),
-    (0.66, 0.95), (0.34, 0.95),          # полоса вниз, к нижнему краю
-    (0.34, 0.74), (0.08, 0.74),          # рукав влево, к оружейнику
-    (0.08, 0.58), (0.34, 0.58),
-)
-
 DISTRICTS: tuple[District, ...] = (
     District("main_hub", "Центр", {
         UP: "northern_wall_premium",
         RIGHT: "clothes_pharmacy",
         LEFT: "pawnshop_casino",
         DOWN: VCPD,
-    }, floor=MAIN_HUB_FLOOR),
+    }),
     District("clothes_pharmacy", "Торговый квартал", {
         LEFT: "main_hub",
         UP: "stadium_bar",
@@ -811,7 +769,6 @@ __all__ = [
     "BY_CODE",
     "DISTRICTS",
     "District",
-    "MAIN_HUB_FLOOR",
     "DOWN",
     "LEFT",
     "OPPOSITE",

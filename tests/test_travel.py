@@ -45,40 +45,9 @@ def test_a_fresh_fighter_stands_in_the_club():
 
 def test_the_road_takes_longer_between_districts():
     """Соседнее здание ближе, чем другой конец города."""
-    # Считаем по неразмеченному району: там дорога внутри по-прежнему
-    # идёт по таймеру
-    assert travel_seconds("bank", "market") == STEP_INSIDE
+    assert travel_seconds(FIGHT_CLUB, "weapon_shop") == STEP_INSIDE
     assert travel_seconds(FIGHT_CLUB, "pharmacy") == STEP_BETWEEN
     assert travel_seconds(FIGHT_CLUB, FIGHT_CLUB) == 0
-
-
-def test_inside_a_walkable_district_the_walk_is_the_road():
-    """По размеченной улице боец идёт ногами, а не ждёт таймер.
-
-    Брать десять секунд сверху значило бы взять дважды за одно и то же:
-    он уже прошёл эту улицу своими шагами.
-    """
-    from bot.game.locations import get_district
-
-    assert get_district("main_hub").walkable
-    assert travel_seconds(FIGHT_CLUB, "weapon_shop") == 0
-    assert travel_seconds("weapon_shop", "workshop") == 0
-    # А между районами дорога осталась: ногами её не проходят
-    assert travel_seconds(FIGHT_CLUB, "pharmacy") == STEP_BETWEEN
-
-
-async def test_a_step_inside_a_walkable_district_arrives_at_once(db):
-    """Нулевая дорога не оставляет бойца висеть «в пути»."""
-    player = make_player()
-    await db.save_player(player)
-    travel = Travel(db)
-
-    await travel.go(player, "weapon_shop", now=1000)
-
-    fresh = await db.get_player(1)
-    assert fresh.location == "weapon_shop"
-    assert fresh.travel_to is None and fresh.arrives_at == 0
-    assert not fresh.in_transit(1000)
 
 
 def test_on_the_road_a_fighter_is_neither_here_nor_there(db):
@@ -103,16 +72,15 @@ async def test_arrival_is_written_down_when_somebody_looks(db):
     await db.save_player(player)
     travel = Travel(db)
 
-    # Дорога между районами: внутри размеченного её больше нет
-    await travel.go(player, "pharmacy", now=1000)
-    assert (await db.get_player(1)).travel_to == "pharmacy"
+    await travel.go(player, "weapon_shop", now=1000)
+    assert (await db.get_player(1)).travel_to == "weapon_shop"
 
     # бот «перезапустили»: задачи нет, а срок вышел сам собой
     fresh = await db.get_player(1)
-    assert fresh.where(1030) == "pharmacy"
-    assert fresh.arrive(1030) is True
+    assert fresh.where(1010) == "weapon_shop"
+    assert fresh.arrive(1010) is True
     await db.save_player(fresh)
-    assert (await db.get_player(1)).location == "pharmacy"
+    assert (await db.get_player(1)).location == "weapon_shop"
 
 
 # ---------- что где можно ----------
@@ -174,10 +142,10 @@ async def test_a_free_fighter_walks_out(db):
     travel.watch(keeper)
 
     keeper.busy = False
-    place = await travel.go(player, "pharmacy")
+    place = await travel.go(player, "weapon_shop")
 
-    assert place.code == "pharmacy"
-    assert (await db.get_player(1)).travel_to == "pharmacy"
+    assert place.code == "weapon_shop"
+    assert (await db.get_player(1)).travel_to == "weapon_shop"
 
 
 async def test_the_road_cannot_be_interrupted_by_another_road(db):
@@ -363,50 +331,6 @@ def test_a_house_takes_the_picture_of_its_own_district():
 
     for place in LOCATIONS:
         assert place.image == DISTRICT_BY_CODE[place.district].image
-
-
-def test_every_local_stands_on_the_street():
-    """Завсегдатай не может стоять в стене.
-
-    Место ему выбирают на глаз по картинке, и промахнуться легко — а
-    промах виден только тому, кто дошёл до этого района ногами.
-    """
-    from bot.content.crowd import CROWD
-    from bot.game.locations import get_district
-
-    for code, locals_here in CROWD.items():
-        district = get_district(code)
-        assert district is not None, f"{code}: такого района нет"
-        assert district.walkable, f"{code}: район не размечен, ходить негде"
-        for local in locals_here:
-            assert district.holds(local.x, local.y), (
-                f"{code}/{local.code}: стоит не на улице"
-            )
-
-
-def test_the_marked_street_reaches_every_door():
-    """С улицы можно подойти к каждой двери района.
-
-    Иначе дом виден, а войти в него ногами нельзя — и это заметит игрок,
-    а не разметчик.
-    """
-    from bot.game.locations import DISTRICTS
-
-    # Настолько близко подходят к двери, чтобы в неё войти. То же число,
-    # что в мини-аппе: DOOR_REACH в долях высоты картинки
-    reach = 130 / 1672
-
-    for district in DISTRICTS:
-        if not district.walkable:
-            continue
-        for place in district.places:
-            door = place.bounds
-            x = door.x + door.w / 2
-            close = any(
-                district.holds(x, door.y + door.h + step / 1672)
-                for step in range(0, int(reach * 1672), 10)
-            )
-            assert close, f"{district.code}/{place.code}: к двери не подойти"
 
 
 def test_every_door_is_four_points_on_the_picture():
