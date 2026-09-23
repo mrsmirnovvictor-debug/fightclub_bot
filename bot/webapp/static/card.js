@@ -1761,6 +1761,27 @@ function placeZones() {
   });
   district.places.forEach((place) => canvas.appendChild(houseShape(place)));
   box.appendChild(canvas);
+  // Подписи двигаем, когда холст уже в странице: до этого их нечем мерить
+  canvas.querySelectorAll(".zone-sign").forEach(fitSign);
+}
+
+// Подпись стоит под серединой двери и шире её. У двери с краю карты она
+// уезжает за рамку: в жилом квартале четыре дома по углам, и два из них
+// стоят почти у самого края. Поэтому подпись поджимаем внутрь картинки.
+//
+// Ширину спрашиваем у браузера. Когда карта ещё не на экране, холст
+// ничего не меряет и отвечает нулём — тогда прикидываем по числу букв.
+const SIGN_EDGE = 16;   // поле от края картинки
+const SIGN_CHAR = 21;   // ширина буквы на глаз: 38 пикселей жирным
+
+function fitSign(sign) {
+  const measured = sign.getComputedTextLength ? sign.getComputedTextLength() : 0;
+  const half = (measured || sign.textContent.length * SIGN_CHAR) / 2;
+  const left = SIGN_EDGE + half;
+  const right = MAP_W - SIGN_EDGE - half;
+  if (left > right) return;  // подпись шире карты — двигать её некуда
+  const x = Number(sign.getAttribute("x"));
+  sign.setAttribute("x", Math.min(Math.max(x, left), right));
 }
 
 function houseShape(place) {

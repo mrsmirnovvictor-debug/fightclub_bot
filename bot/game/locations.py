@@ -352,22 +352,6 @@ DISTRICTS: tuple[District, ...] = (
 # Какая сторона какой противоположна: по этому и проверяется взаимность
 OPPOSITE: dict[str, str] = {UP: DOWN, DOWN: UP, LEFT: RIGHT, RIGHT: LEFT}
 
-# Двери второй очереди: один шаблон на верхний дом карты и один на
-# нижний. Районы рисовали в том же ракурсе и масштабе, что и центр,
-# поэтому дверь у них приходится примерно туда же, куда у клуба и
-# аптеки, — эти два четырёхугольника оттуда и взяты. Выверять каждую
-# дверь по своей картинке будем, когда дойдут руки до манифеста; пока
-# подсветка может не сесть на косяк ровно, но палец в дверь попадает:
-# область касания шире самой двери
-TOP_DOOR: tuple[Point, Point, Point, Point] = (
-    (0.436769, 0.212919), (0.636557, 0.228469),
-    (0.633369, 0.314593), (0.445271, 0.300837),
-)
-BOTTOM_DOOR: tuple[Point, Point, Point, Point] = (
-    (0.387885, 0.615431), (0.620616, 0.648325),
-    (0.619554, 0.724282), (0.393199, 0.689593),
-)
-
 LOCATIONS: tuple[Location, ...] = (
     # ---------- Центр: клуб, оружие, мастерская ----------
     Location(
@@ -550,23 +534,26 @@ LOCATIONS: tuple[Location, ...] = (
         genitive="бара",
     ),
 
-    # ---------- вторая очередь: десять районов, шестнадцать домов ----------
+    # ---------- вторая очередь: десять районов, девятнадцать домов ----------
     #
     # Услуг за ними пока нет ни одной: город вырос картинками, а правила
     # к ним будут писаться по одному дому. Зайти при этом можно в любой —
     # внутри вид изнутри и записка о том, чего ждать.
     #
-    # Двери размечены по шаблону, а не по каждой картинке: районы
-    # рисовали в ракурсе и масштабе центра, и дверь у них стоит там же,
-    # где у клуба с аптекой. Выверить по каждому дому — отдельная работа
-    # с пиксельным манифестом; до неё подсветка может не сесть на косяк
-    # ровно, но попасть в дверь пальцем это не мешает.
+    # Двери сняты с самих картинок, по четырём углам видимого проёма.
+    # Сначала они стояли по шаблону — верхнему дому карты доставалась
+    # дверь магазина одежды, нижнему дверь аптеки, — и подсветка садилась
+    # на косяк как придётся. Бланк для новой разметки лежит в
+    # docs/doors.md, пересчёт пикселей в доли делает scripts/doors.py.
 
     Location(
         "vcpd",
         "VCPD",
         district=VCPD,
-        entrance=TOP_DOOR,
+        entrance=(
+            (0.431456, 0.248804), (0.536663, 0.243421),
+            (0.536663, 0.302033), (0.432519, 0.307416),
+        ),
         soon="участок и розыск",
         genitive="управления",
         interior_folder=art.NEW_INTERIORS,
@@ -575,7 +562,10 @@ LOCATIONS: tuple[Location, ...] = (
         "hospital",
         "Больница",
         district=VCPD,
-        entrance=BOTTOM_DOOR,
+        entrance=(
+            (0.4644, 0.646531), (0.61424, 0.654306),
+            (0.612115, 0.703947), (0.463337, 0.694378),
+        ),
         soon="лечение ран без склянок",
         genitive="больницы",
         interior_folder=art.NEW_INTERIORS,
@@ -584,7 +574,10 @@ LOCATIONS: tuple[Location, ...] = (
         "driving_school",
         "Автошкола",
         district=DRIVING,
-        entrance=TOP_DOOR,
+        entrance=(
+            (0.302869, 0.226077), (0.431456, 0.212919),
+            (0.42508, 0.271531), (0.30712, 0.285287),
+        ),
         soon="права и первая машина",
         genitive="автошколы",
         interior_folder=art.NEW_INTERIORS,
@@ -593,7 +586,10 @@ LOCATIONS: tuple[Location, ...] = (
         "insurance_office",
         "Страховая компания",
         district=DRIVING,
-        entrance=BOTTOM_DOOR,
+        entrance=(
+            (0.548353, 0.568182), (0.679065, 0.588517),
+            (0.676939, 0.650718), (0.548353, 0.62799),
+        ),
         soon="страховка вещей от износа",
         genitive="страховой",
         interior_folder=art.NEW_INTERIORS,
@@ -602,7 +598,10 @@ LOCATIONS: tuple[Location, ...] = (
         "strength_gym",
         "Тренажёрный зал",
         district=GYM,
-        entrance=TOP_DOOR,
+        entrance=(
+            (0.560043, 0.272727), (0.701382, 0.26256),
+            (0.699256, 0.324163), (0.561105, 0.333134),
+        ),
         soon="тренировки на характеристики",
         genitive="зала",
         interior_folder=art.NEW_INTERIORS,
@@ -611,7 +610,10 @@ LOCATIONS: tuple[Location, ...] = (
         "office_building",
         "Офисное здание",
         district=GYM,
-        entrance=BOTTOM_DOOR,
+        entrance=(
+            (0.592986, 0.678828), (0.712009, 0.66866),
+            (0.714134, 0.723684), (0.591923, 0.736842),
+        ),
         soon="работа и жалованье",
         genitive="офиса",
         interior_folder=art.NEW_INTERIORS,
@@ -620,7 +622,10 @@ LOCATIONS: tuple[Location, ...] = (
         "military_base",
         "Армейская часть",
         district=BARRACKS,
-        entrance=TOP_DOOR,
+        entrance=(
+            (0.418704, 0.217105), (0.561105, 0.221292),
+            (0.556854, 0.276914), (0.419766, 0.268541),
+        ),
         soon="служба и звания",
         genitive="части",
         interior_folder=art.NEW_INTERIORS,
@@ -629,7 +634,10 @@ LOCATIONS: tuple[Location, ...] = (
         "indoor_training_ground",
         "Крытый полигон",
         district=BARRACKS,
-        entrance=BOTTOM_DOOR,
+        entrance=(
+            (0.378321, 0.858852), (0.5356, 0.87201),
+            (0.5356, 0.915072), (0.377258, 0.898923),
+        ),
         soon="стрельба и спарринги",
         genitive="полигона",
         interior_folder=art.NEW_INTERIORS,
@@ -638,7 +646,10 @@ LOCATIONS: tuple[Location, ...] = (
         "cadet_corps",
         "Кадетский корпус",
         district=CADETS,
-        entrance=TOP_DOOR,
+        entrance=(
+            (0.454835, 0.226675), (0.582359, 0.226077),
+            (0.582359, 0.279306), (0.453773, 0.278708),
+        ),
         soon="школа для новичков",
         genitive="корпуса",
         interior_folder=art.NEW_INTERIORS,
@@ -647,7 +658,10 @@ LOCATIONS: tuple[Location, ...] = (
         "dormitory",
         "Общежитие",
         district=CADETS,
-        entrance=BOTTOM_DOOR,
+        entrance=(
+            (0.432519, 0.67823), (0.561105, 0.680622),
+            (0.55898, 0.721292), (0.42933, 0.721292),
+        ),
         soon="отдых и восстановление",
         genitive="общежития",
         interior_folder=art.NEW_INTERIORS,
@@ -656,7 +670,10 @@ LOCATIONS: tuple[Location, ...] = (
         "police_school",
         "Школа полиции",
         district=SCHOOLS,
-        entrance=TOP_DOOR,
+        entrance=(
+            (0.412327, 0.241029), (0.5983, 0.244019),
+            (0.5983, 0.308612), (0.41339, 0.305024),
+        ),
         soon="путь в VCPD",
         genitive="школы полиции",
         interior_folder=art.NEW_INTERIORS,
@@ -665,25 +682,83 @@ LOCATIONS: tuple[Location, ...] = (
         "medical_college",
         "Медицинский колледж",
         district=SCHOOLS,
-        entrance=BOTTOM_DOOR,
+        entrance=(
+            (0.339001, 0.669258), (0.579171, 0.708732),
+            (0.580234, 0.757775), (0.340064, 0.720694),
+        ),
         soon="ремесло лекаря",
         genitive="колледжа",
         interior_folder=art.NEW_INTERIORS,
     ),
+
+    # На карте жилого квартала нарисованы четыре дома, и дверь у каждого
+    # своя. Домов четыре, а вид изнутри один на всех: внутри они
+    # одинаковые, и заводить четыре одинаковые картинки незачем. Работать
+    # они тоже будут одинаково — когда своё жильё вообще появится.
     Location(
         "residential_apartment",
-        "Жилой дом",
+        "Жилой дом №1",
         district=HOUSES,
-        entrance=TOP_DOOR,
+        # слева сверху
+        entrance=(
+            (0.332625, 0.242225), (0.418704, 0.227871),
+            (0.418704, 0.274522), (0.331562, 0.288278),
+        ),
         soon="своё жильё",
         genitive="жилого дома",
         interior_folder=art.NEW_INTERIORS,
     ),
     Location(
+        "residential_apartment_2",
+        "Жилой дом №2",
+        district=HOUSES,
+        # справа сверху
+        entrance=(
+            (0.723698, 0.276914), (0.807651, 0.293062),
+            (0.802338, 0.339115), (0.724761, 0.322368),
+        ),
+        soon="своё жильё",
+        genitive="жилого дома",
+        interior="residential_apartment_interior",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "residential_apartment_3",
+        "Жилой дом №3",
+        district=HOUSES,
+        # слева снизу
+        entrance=(
+            (0.11796, 0.551435), (0.215728, 0.532297),
+            (0.215728, 0.589115), (0.11796, 0.608852),
+        ),
+        soon="своё жильё",
+        genitive="жилого дома",
+        interior="residential_apartment_interior",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "residential_apartment_4",
+        "Жилой дом №4",
+        district=HOUSES,
+        # справа снизу
+        entrance=(
+            (0.785335, 0.57177), (0.873539, 0.601675),
+            (0.872476, 0.656699), (0.785335, 0.626794),
+        ),
+        soon="своё жильё",
+        genitive="жилого дома",
+        interior="residential_apartment_interior",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+
+    Location(
         "mafia_mansion",
         "Особняк мафии",
         district=MAFIA,
-        entrance=TOP_DOOR,
+        entrance=(
+            (0.477152, 0.272129), (0.561105, 0.276316),
+            (0.562168, 0.33134), (0.476089, 0.325359),
+        ),
         soon="дела, о которых не пишут",
         genitive="особняка",
         interior_folder=art.NEW_INTERIORS,
@@ -692,7 +767,10 @@ LOCATIONS: tuple[Location, ...] = (
         "fight_tournament_stadium",
         "Турнирная арена",
         district=ARENA,
-        entrance=TOP_DOOR,
+        entrance=(
+            (0.430393, 0.360646), (0.57492, 0.363636),
+            (0.572795, 0.420455), (0.431456, 0.413876),
+        ),
         soon="турниры на выбывание",
         genitive="арены",
         interior_folder=art.NEW_INTERIORS,
@@ -701,7 +779,10 @@ LOCATIONS: tuple[Location, ...] = (
         "car_dealership",
         "Автосалон",
         district=CARS,
-        entrance=TOP_DOOR,
+        entrance=(
+            (0.345377, 0.354067), (0.454835, 0.354067),
+            (0.45271, 0.409091), (0.34644, 0.409091),
+        ),
         soon="машины и гаражи",
         genitive="автосалона",
         interior_folder=art.NEW_INTERIORS,

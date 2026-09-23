@@ -66,7 +66,7 @@ async def test_houses_without_a_trade_say_so(client, db):
         for place in district["places"]
     }
 
-    assert len(houses) == 30
+    assert len(houses) == 33
     assert houses["bank"]["works"] is False
     assert houses["bank"]["soon"] and houses["bank"]["services"] == []
     assert houses["workshop"]["services"] == ["repair"]
@@ -86,20 +86,44 @@ RENAMED = {
 }
 
 
+# Четыре дома жилого квартала внутри одинаковые, и вид изнутри у них
+# один на всех: заводить четыре одинаковые картинки незачем
+TWINS = {
+    "residential_apartment_2",
+    "residential_apartment_3",
+    "residential_apartment_4",
+}
+
+
 def test_every_house_has_a_view_from_within():
-    """Все четырнадцать домов, и ни одного без картинки."""
+    """Все тридцать три дома, и ни одного без картинки."""
     from bot.game.locations import LOCATIONS
 
-    assert len(LOCATIONS) == 30
+    assert len(LOCATIONS) == 33
     seen = {place.indoors for place in LOCATIONS}
-    assert len(seen) == 30, "две локации не могут делить один вид изнутри"
+    # Своя картинка у каждого дома, кроме жилых близнецов: они делят одну
+    assert len(seen) == 33 - len(TWINS)
     for place in LOCATIONS:
+        if place.code in TWINS:
+            continue
         name = RENAMED.get(place.code, place.code + "_interior")
         # Папок две: первые четырнадцать домов выгрузили в одну, вторую
         # очередь — в другую. Имя файла при этом всё так же считается от
         # кода дома, и это здесь главное
         folder = "/interiors" if place.interior_folder else "/locations/interiors"
         assert place.indoors.endswith(f"{folder}/{name}.jpeg")
+
+
+def test_the_four_identical_houses_share_one_view():
+    """Жилой квартал: четыре двери, один вид изнутри — и это нарочно."""
+    from bot.game.locations import get_location
+
+    first = get_location("residential_apartment")
+    assert first.indoors.endswith("/interiors/residential_apartment_interior.jpeg")
+    for code in TWINS:
+        assert get_location(code).indoors == first.indoors
+        # Дверь при этом у каждого своя: дома стоят в разных углах карты
+        assert get_location(code).entrance != first.entrance
 
 
 def test_the_second_city_took_its_own_folder():

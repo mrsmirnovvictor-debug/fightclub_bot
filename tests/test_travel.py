@@ -395,13 +395,13 @@ def test_houses_without_a_trade_are_still_on_the_map():
     from bot.game.locations import LOCATIONS
 
     coming = [place for place in LOCATIONS if not place.works]
-    # Пять домов первой очереди и все шестнадцать второй: город вырос
+    # Пять домов первой очереди и все девятнадцать второй: город вырос
     # картинками раньше, чем правилами, и это нормально — лишь бы в
     # каждом было сказано, чего в нём ждать
     assert {"bank", "market", "post_office", "stadium", "bar"} <= {
         place.code for place in coming
     }
-    assert len(coming) == 21
+    assert len(coming) == 24
     for place in coming:
         assert place.soon, f"{place.code}: не сказано, что здесь будет"
         assert place.services == ()
@@ -430,11 +430,18 @@ def test_the_blank_counts_pixels_the_way_the_manifest_does():
     assert tuple(shares(*pixels(corner)) for corner in door) == door
 
 
-def test_the_blank_knows_which_doors_are_still_a_template():
-    """Шаблонную дверь видно в бланке — иначе её забудут выверить."""
-    from bot.game.locations import get_location
-    from scripts.doors import templated
+def test_no_two_houses_share_one_door():
+    """Одна дверь на два дома — след разметки по шаблону, а не по картинке.
 
-    assert templated(get_location("vcpd")) == "шаблон, верхний дом"
-    assert templated(get_location("hospital")) == "шаблон, нижний дом"
-    assert templated(get_location("fight_club")) == ""
+    Вторая очередь города какое-то время стояла с дверьми, переписанными
+    с магазина одежды и аптеки: палец в них попадал, а подсветка садилась
+    мимо косяка. Теперь каждая дверь снята со своей картинки, и повтор
+    означал бы, что чью-то разметку потеряли по дороге.
+    """
+    from bot.game.locations import DISTRICTS, LOCATIONS
+    from scripts.doors import shared
+
+    for place in LOCATIONS:
+        assert shared(place, DISTRICTS) == "", place.code
+    doors = {place.entrance for place in LOCATIONS}
+    assert len(doors) == len(LOCATIONS)

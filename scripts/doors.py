@@ -21,9 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bot.game.locations import (  # noqa: E402
-    BOTTOM_DOOR,
     DISTRICTS,
-    TOP_DOOR,
     District,
     Location,
     Point,
@@ -50,13 +48,23 @@ def shares(px: float, py: float) -> Point:
     return round(px / WIDTH, 6), round(py / HEIGHT, 6)
 
 
-def templated(place: Location) -> str:
-    """Дверь взята с чужой картинки — значит, выверена не по своей."""
-    if place.entrance is TOP_DOOR:
-        return "шаблон, верхний дом"
-    if place.entrance is BOTTOM_DOOR:
-        return "шаблон, нижний дом"
-    return ""
+def shared(place: Location, districts: tuple[District, ...]) -> str:
+    """Чужая ли это дверь: точь-в-точь такая же есть у другого дома.
+
+    Так ловится разметка по шаблону. Вторая очередь города какое-то
+    время стояла с дверьми, переписанными с магазина одежды и аптеки:
+    палец в них попадал, а подсветка садилась мимо косяка. Одинаковых
+    дверей у двух разных домов быть не должно — кроме случая, когда
+    художник и правда нарисовал два одинаковых дома, но и тогда они
+    стоят в разных местах карты, а значит и углы у них разные.
+    """
+    twins = [
+        one.code
+        for district in districts
+        for one in district.places
+        if one.code != place.code and one.entrance == place.entrance
+    ]
+    return "та же дверь, что у " + ", ".join(twins) if twins else ""
 
 
 def complaints(place: Location) -> list[str]:
@@ -73,10 +81,10 @@ def complaints(place: Location) -> list[str]:
     return said
 
 
-def tell(place: Location) -> None:
+def tell(place: Location, districts: tuple[District, ...]) -> None:
     corners = " ".join(f"({x},{y})" for x, y in map(pixels, place.entrance))
     box = place.bounds
-    note = templated(place)
+    note = shared(place, districts)
     print(f"  {place.code} — {place.title}{' · ' + note if note else ''}")
     print(f"    углы:  {corners}")
     print(
@@ -92,7 +100,7 @@ def show(districts: tuple[District, ...]) -> None:
         print(f"\n{one.title} — {one.code}.{one.picture_ext}")
         print(f"  {one.image}")
         for place in one.places:
-            tell(place)
+            tell(place, districts)
 
 
 def check(districts: tuple[District, ...]) -> int:
@@ -103,15 +111,16 @@ def check(districts: tuple[District, ...]) -> int:
             for said in complaints(place):
                 print(f"{one.code}/{place.code}: {said}")
                 found += 1
-    templates = [
+    twins = [
         place.code
         for one in districts
         for place in one.places
-        if templated(place)
+        if shared(place, districts)
     ]
-    if templates:
-        print(f"\nПо шаблону, не выверено по своей картинке: {len(templates)}")
-        print("  " + ", ".join(templates))
+    if twins:
+        found += len(twins)
+        print(f"\nДверь в двух домах сразу: {len(twins)}")
+        print("  " + ", ".join(twins))
     print(f"\nОшибок: {found}")
     return found
 

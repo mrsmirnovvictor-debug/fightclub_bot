@@ -3542,6 +3542,49 @@ async def open_map(pw, server, city=None, card=None, images=False):
     return browser, page
 
 
+async def test_four_doors_stand_on_the_quarter_and_their_signs_fit(server):
+    """Жилой квартал: четыре дома, четыре двери, и ни одной подписи за рамкой.
+
+    Дома в квартале стоят по углам карты — на прежних картах все двери
+    были посередине. Подпись шире двери и висит под её серединой, так
+    что у края она подпирает рамку: дому слева снизу её пришлось
+    подвинуть внутрь. Проверяем и то, что все четыре целиком на
+    картинке, и то, что подвинутая действительно сдвинута.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("residential_apartment"))
+
+        houses = page.locator(".zone-house")
+        assert await houses.count() == 4
+        titles = await page.locator(".zone-sign").evaluate_all(
+            "nodes => nodes.map(node => node.textContent)"
+        )
+        assert [name.replace("📍 ", "") for name in titles] == [
+            "Жилой дом №1", "Жилой дом №2", "Жилой дом №3", "Жилой дом №4",
+        ]
+
+        # Каждая подпись целиком внутри картинки: меряем в долях самой
+        # карты, а не экрана, — холст растянут по ней
+        boxes = await page.locator(".zone-sign").evaluate_all(
+            "nodes => nodes.map(node => {"
+            "  const box = node.getBBox();"
+            "  return [box.x, box.x + box.width];"
+            "})"
+        )
+        for left, right in boxes:
+            assert left >= 0 and right <= 941, f"подпись за рамкой: {left}–{right}"
+
+        # Дом слева снизу: подпись стоит правее середины своей двери,
+        # иначе она подпирала бы край картинки
+        from bot.game.locations import get_location
+
+        third = get_location("residential_apartment_3").bounds
+        middle = (third.x + third.w / 2) * 941
+        anchor = await page.locator(".zone-sign").nth(2).get_attribute("x")
+        assert float(anchor) > middle, "подпись у края не подвинули"
+        await browser.close()
+
+
 async def test_the_map_opens_on_the_district_you_stand_in(server):
     """Карта открывается там, где боец: искать себя по городу не надо."""
     async with async_playwright() as pw:
