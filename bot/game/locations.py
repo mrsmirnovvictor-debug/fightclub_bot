@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -235,11 +236,53 @@ class District:
 
 # ---------- дорога ----------
 
-# Секунды пути. По городу ходят пешком: соседнее здание в своём районе
-# ближе, чем другой конец города, и это единственное, что отличает
-# переход внутри района от перехода между районами.
-STEP_INSIDE = 10
-STEP_BETWEEN = 20
+# По городу ходят пешком, и дорога считается переходами. Переход один и
+# тот же, откуда бы он ни был: шаг в соседний район или вход в дверь —
+# десять секунд.
+#
+# Отсюда всё остальное само: соседний дом в своём районе — это одна
+# дверь, десять секунд. Дом в соседнем районе — шаг и дверь, двадцать.
+# Каждый лишний район по дороге добавляет свои десять.
+#
+# Из казино в бар: Старый город → Центр → Северный Вал (или Торговый
+# квартал — дорога та же) → Стадион. Три шага да дверь бара — сорок
+# секунд.
+STEP = 10
+
+# Дорога между районами, которые ничем не связаны. Такого на карте нет —
+# связность стережёт тест, — но считать бесконечность в секундах нечем,
+# а город и по диагонали проходится за шесть шагов
+FAR_AWAY = 6
+
+
+def _walk_from(start: str) -> dict[str, int]:
+    """Обход в ширину: сколько шагов отсюда до каждого района."""
+    steps = {start: 0}
+    queue = deque([start])
+    while queue:
+        code = queue.popleft()
+        district = DISTRICT_BY_CODE.get(code)
+        if district is None:  # pragma: no cover - район без карты
+            continue
+        for neighbour in district.around.values():
+            if neighbour not in steps:
+                steps[neighbour] = steps[code] + 1
+                queue.append(neighbour)
+    return steps
+
+
+# Расстояния между районами. Считаются один раз и лениво: справочник
+# районов лежит ниже по файлу, а шестнадцать обходов в ширину — работа
+# на глазок, но повторять её на каждый шаг игрока незачем
+_DISTANCES: dict[str, dict[str, int]] | None = None
+
+
+def district_hops(source: str, target: str) -> int:
+    """Сколько шагов между районами. Ноль — это один и тот же район."""
+    global _DISTANCES
+    if _DISTANCES is None:
+        _DISTANCES = {one.code: _walk_from(one.code) for one in DISTRICTS}
+    return _DISTANCES.get(source, {}).get(target, FAR_AWAY)
 
 
 def travel_seconds(source: str, target: str) -> int:
@@ -247,9 +290,9 @@ def travel_seconds(source: str, target: str) -> int:
     if source == target:
         return 0
     here, there = get_location(source), get_location(target)
-    if here is None or there is None:
-        return STEP_BETWEEN
-    return STEP_INSIDE if here.district == there.district else STEP_BETWEEN
+    if here is None or there is None:  # pragma: no cover - дом не с карты
+        return STEP
+    return STEP * (district_hops(here.district, there.district) + 1)
 
 
 # ---------- сама карта ----------
@@ -301,54 +344,104 @@ MAFIA = "mafia_mansion"
 # Вторую очередь нарисовали в png, первую — в jpeg
 PNG = "png"
 
+# Город — сетка четыре на четыре, и это не украшение, а правило: по
+# сетке считается дорога. Каждый район связан со всеми своими соседями
+# по стороне, связи взаимные, а диагоналей нет — ходят по улицам.
+#
+#            ⬅️ запад                          восток ➡️
+#   север ⬆️  Деловой  Северный Вал  Стадион    Армейская часть
+#             Старый   Центр         Торговый   Кадетский городок
+#             Автошкола Участок      Деловой    Жилой квартал
+#   юг    ⬇️  Автосалон Учебный      Арена      Особняк мафии
+#
+# Сетку стережёт tests/test_travel.py: он раскладывает районы по
+# координатам от центра и проверяет, что каждая связь ведёт туда, куда
+# показывает, и что обратная ей есть.
 DISTRICTS: tuple[District, ...] = (
-    District("main_hub", "Центр", {
-        UP: "northern_wall_premium",
-        RIGHT: "clothes_pharmacy",
-        LEFT: "pawnshop_casino",
-        DOWN: VCPD,
-    }),
-    District("clothes_pharmacy", "Торговый квартал", {
-        LEFT: "main_hub",
-        UP: "stadium_bar",
-        RIGHT: HOUSES,
-    }),
-    District("pawnshop_casino", "Старый город", {
-        RIGHT: "main_hub",
-        UP: "bank_market_post",
-        LEFT: MAFIA,
-    }),
-    District("northern_wall_premium", "Северный Вал", {
-        DOWN: "main_hub",
-        RIGHT: "stadium_bar",
-        LEFT: "bank_market_post",
-    }),
+    # ---------- верхний ряд ----------
     District("bank_market_post", "Деловой квартал", {
         DOWN: "pawnshop_casino",
         RIGHT: "northern_wall_premium",
+    }),
+    District("northern_wall_premium", "Северный Вал", {
+        DOWN: "main_hub",
+        LEFT: "bank_market_post",
+        RIGHT: "stadium_bar",
     }),
     District("stadium_bar", "Стадион", {
         DOWN: "clothes_pharmacy",
         LEFT: "northern_wall_premium",
         RIGHT: BARRACKS,
-        UP: ARENA,
     }),
-    # ---------- вторая очередь ----------
+    District(BARRACKS, "Армейская часть", {
+        LEFT: "stadium_bar",
+        DOWN: CADETS,
+    }, PNG),
+    # ---------- ряд центра ----------
+    District("pawnshop_casino", "Старый город", {
+        UP: "bank_market_post",
+        RIGHT: "main_hub",
+        DOWN: DRIVING,
+    }),
+    District("main_hub", "Центр", {
+        UP: "northern_wall_premium",
+        LEFT: "pawnshop_casino",
+        RIGHT: "clothes_pharmacy",
+        DOWN: VCPD,
+    }),
+    District("clothes_pharmacy", "Торговый квартал", {
+        UP: "stadium_bar",
+        LEFT: "main_hub",
+        RIGHT: CADETS,
+        DOWN: GYM,
+    }),
+    District(CADETS, "Кадетский городок", {
+        UP: BARRACKS,
+        LEFT: "clothes_pharmacy",
+        DOWN: HOUSES,
+    }, PNG),
+    # ---------- ряд участка ----------
+    District(DRIVING, "Автошкола и страховая", {
+        UP: "pawnshop_casino",
+        RIGHT: VCPD,
+        DOWN: CARS,
+    }, PNG),
     District(VCPD, "Участок и больница", {
         UP: "main_hub",
         LEFT: DRIVING,
         RIGHT: GYM,
         DOWN: SCHOOLS,
     }, PNG),
-    District(DRIVING, "Автошкола и страховая", {RIGHT: VCPD, DOWN: CARS}, PNG),
-    District(CARS, "Автосалон", {UP: DRIVING}, PNG),
-    District(GYM, "Деловой угол", {LEFT: VCPD}, PNG),
-    District(SCHOOLS, "Учебный квартал", {UP: VCPD}, PNG),
-    District(BARRACKS, "Армейская часть", {LEFT: "stadium_bar", DOWN: CADETS}, PNG),
-    District(CADETS, "Кадетский городок", {UP: BARRACKS}, PNG),
-    District(ARENA, "Турнирная арена", {DOWN: "stadium_bar"}, PNG),
-    District(HOUSES, "Жилой квартал", {LEFT: "clothes_pharmacy"}, PNG),
-    District(MAFIA, "Особняк мафии", {RIGHT: "pawnshop_casino"}, PNG),
+    District(GYM, "Деловой угол", {
+        UP: "clothes_pharmacy",
+        LEFT: VCPD,
+        RIGHT: HOUSES,
+        DOWN: ARENA,
+    }, PNG),
+    District(HOUSES, "Жилой квартал", {
+        UP: CADETS,
+        LEFT: GYM,
+        DOWN: MAFIA,
+    }, PNG),
+    # ---------- нижний ряд ----------
+    District(CARS, "Автосалон", {
+        UP: DRIVING,
+        RIGHT: SCHOOLS,
+    }, PNG),
+    District(SCHOOLS, "Учебный квартал", {
+        UP: VCPD,
+        LEFT: CARS,
+        RIGHT: ARENA,
+    }, PNG),
+    District(ARENA, "Турнирная арена", {
+        UP: GYM,
+        LEFT: SCHOOLS,
+        RIGHT: MAFIA,
+    }, PNG),
+    District(MAFIA, "Особняк мафии", {
+        UP: HOUSES,
+        LEFT: ARENA,
+    }, PNG),
 )
 
 # Какая сторона какой противоположна: по этому и проверяется взаимность
@@ -672,15 +765,17 @@ LOCATIONS: tuple[Location, ...] = (
         interior_folder=art.NEW_INTERIORS,
     ),
     Location(
+        # Код остался от прежнего имени — так назван файл в хранилище,
+        # и он же стоит в коде района
         "police_school",
-        "Школа полиции",
+        "Полицейская академия",
         district=SCHOOLS,
         entrance=(
             (0.412327, 0.241029), (0.5983, 0.244019),
             (0.5983, 0.308612), (0.41339, 0.305024),
         ),
         soon="путь в полицию",
-        genitive="школы полиции",
+        genitive="полицейской академии",
         interior_folder=art.NEW_INTERIORS,
     ),
     Location(
@@ -864,11 +959,11 @@ __all__ = [
     "LOCATIONS",
     "Location",
     "Rect",
-    "STEP_BETWEEN",
-    "STEP_INSIDE",
+    "STEP",
     "SHOP_SERVICES",
     "Service",
     "service_for",
+    "district_hops",
     "get_district",
     "get_location",
     "travel_seconds",

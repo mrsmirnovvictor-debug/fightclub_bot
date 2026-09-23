@@ -10,11 +10,16 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.game.classes import get_class
 from bot.game.equipment import Slot
-from bot.game.locations import FIGHT_CLUB, STEP_BETWEEN
+from bot.game.locations import FIGHT_CLUB, travel_seconds
 from bot.models import Player
 from bot.webapp.server import create_app
 from tests.test_inventory import FakeBot
 from tests.test_webapp import TOKEN, make_init_data
+
+
+# Сколько идти от клуба до аптеки: число спрашиваем у правил, а не
+# пишем руками — дорога считается переходами и меняется вместе с картой
+TO_PHARMACY = travel_seconds(FIGHT_CLUB, "pharmacy")
 
 
 def headers(user_id: int = 42) -> dict:
@@ -181,7 +186,7 @@ async def test_walking_takes_time_and_the_card_says_how_much(client, db):
 
     assert body["map"]["road"]["going"] is True
     assert body["map"]["road"]["to"] == "pharmacy"
-    assert 0 < body["map"]["road"]["seconds_left"] <= STEP_BETWEEN
+    assert 0 < body["map"]["road"]["seconds_left"] <= TO_PHARMACY
     assert body["card"]["place"]["going_to"] == "Аптека"
     # пока идёт — он ещё в клубе, и это честно
     assert body["card"]["place"]["code"] == FIGHT_CLUB
@@ -190,7 +195,7 @@ async def test_walking_takes_time_and_the_card_says_how_much(client, db):
 async def test_a_fighter_on_the_road_cannot_trade(client, db):
     """В дороге не торгуют: боец ещё не дошёл."""
     player = make_player(location="weapon_shop")
-    player.set_out("pharmacy", STEP_BETWEEN)
+    player.set_out("pharmacy", TO_PHARMACY)
     await db.save_player(player)
 
     response = await client.get("/api/shop", headers=headers())
@@ -202,7 +207,7 @@ async def test_a_fighter_on_the_road_cannot_trade(client, db):
 async def test_the_road_ends_by_itself(client, db):
     """Срок вышел — боец на месте, и никакой таймер для этого не нужен."""
     player = make_player()
-    player.set_out("pharmacy", STEP_BETWEEN, now=1000)
+    player.set_out("pharmacy", TO_PHARMACY, now=1000)
     player.arrives_at = 1  # как будто дорога кончилась давным-давно
     await db.save_player(player)
 
