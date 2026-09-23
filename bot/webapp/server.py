@@ -40,8 +40,10 @@ from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
+from bot.webapp.hospital import build_hospital
 from bot.webapp.workshop import build_workshop
 from bot.content.mods import star_of
+from bot.hospital_service import HospitalError, heal
 from bot.mods_service import ModError, apply_mod, buy_mod
 from bot.game.health import format_duration, now_ts
 from bot.game.locations import (
@@ -390,6 +392,44 @@ async def api_unequip(request: web.Request) -> web.Response:
     except InventoryError as error:
         return web.json_response({"error": str(error)}, status=409)
     return _card_response(request, player)
+
+
+async def api_hospital(request: web.Request) -> web.Response:
+    """Приёмный покой: здоровье бойца, его счёт и прайс."""
+    player = await _at(request, Service.HEAL)
+    return web.json_response(build_hospital(player))
+
+
+async def api_heal(request: web.Request) -> web.Response:
+    """Подлатать бойца за кредиты."""
+    data = await _payload(request)
+    try:
+        player = await _at(request, Service.HEAL)
+        result = await heal(
+            request.app[DB_KEY],
+            player,
+            str(data.get("cure") or ""),
+            # Дорога в больницу заперта, пока боец занят, но втянуть его в
+            # бой могут и здесь, из группы. Здоровье боя живёт в самом бою
+            # и в конце ложится в карточку поверх всего: без этой проверки
+            # боец платил бы полста и получал бы ту же рану обратно
+            busy=request.app[TRAVEL_KEY].locked_by(player.user_id),
+        )
+    except HospitalError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "hospital": build_hospital(player),
+            "done": {
+                "title": result.cure.title,
+                "healed": result.healed,
+                "price": result.price,
+            },
+        }
+    )
 
 
 async def api_workshop(request: web.Request) -> web.Response:
@@ -1223,6 +1263,8 @@ def create_app(
             web.post("/api/ability", api_ability),
             web.post("/api/daily", api_daily),
             web.get("/api/workshop", api_workshop),
+            web.get("/api/hospital", api_hospital),
+            web.post("/api/heal", api_heal),
             web.post("/api/mod", api_mod),
             web.post("/api/handin", api_handin),
             web.get("/api/shop", api_shop),

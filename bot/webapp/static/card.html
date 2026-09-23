@@ -176,7 +176,32 @@
     </section>
   </main>
 
-  <!-- ---------- 3b. Дом без услуги ---------- -->
+  <!-- ---------- 3b. Больница ---------- -->
+  <!-- Здоровье затягивается само и бесплатно; больница продаёт не
+       здоровье, а время. Поэтому на экране прежде всего полоса: видно,
+       сколько не хватает, и уже потом — почём это долить. -->
+  <main id="hospital" class="screen hidden">
+    <figure class="interior hidden" id="hospital-interior">
+      <img class="interior-pic" id="hospital-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="hospital-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-hospital"></span>
+    </header>
+    <h1 class="screen-title">🏥 Больница</h1>
+    <p class="screen-note" id="hospital-note"></p>
+
+    <div class="hp" id="hospital-hp">
+      <div class="hp-fill" id="hospital-hp-fill"></div>
+      <div class="hp-text" id="hospital-hp-text"></div>
+    </div>
+    <div class="hp-note" id="hospital-hp-note"></div>
+
+    <div class="cures" id="hospital-list"></div>
+  </main>
+
+  <!-- ---------- 3c. Дом без услуги ---------- -->
   <!-- Банк, рынок, почта, стадион и бар пока ничего не умеют. Раньше они
        отвечали всплывашкой, и боец оставался на карте — то есть внутрь не
        заходил вовсе. Теперь дом открывается своим экраном: вид изнутри

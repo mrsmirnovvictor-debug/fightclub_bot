@@ -601,6 +601,27 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   transform: none;
 }
 
+/* ---------- больница ---------- */
+
+/* Две карточки прайса под полосой здоровья. Картинки у них нет — лечение
+   не вещь, и показывать нечего, — поэтому карточка простая: название,
+   строчка о том, что сделают, и цена на кнопке */
+.cures { display: grid; gap: 10px; margin-top: 12px; }
+.cure {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+.cure-title { font-weight: 700; }
+.cure-note { color: var(--muted); font-size: 12.5px; line-height: 1.35; }
+.cure-gain { font-size: 13px; font-weight: 600; color: var(--hp-green); }
+/* За то же самое рядом просят меньше — говорим об этом прямо на карточке */
+.cure-cheaper { font-size: 12.5px; color: var(--hp-yellow); }
+.cure .btn { margin-top: 6px; }
+
 .foot {
   margin-top: 12px;
   text-align: center;

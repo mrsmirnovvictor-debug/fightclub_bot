@@ -22,6 +22,7 @@ from bot.game.equipment import (
 )
 from bot.game.modes import FightMode
 from bot.game.health import FULL_REGEN_SECONDS, HURT_THRESHOLD, READY_THRESHOLD
+from bot.game.hospital import FULL_PRICE, PATCH_HEAL, PATCH_PRICE
 from bot.game.economy import (
     LEVEL_CREDITS,
     MAX_LEVEL,
@@ -175,7 +176,10 @@ def help_text(turn_timeout: int = 30, round_break: int = 30) -> str:
         f"🟢 от {READY_THRESHOLD:.0%} — можно на ринг.\n"
         "В красной и жёлтой зоне драться нельзя. В зелёной — можно, "
         "даже если здоровье неполное: это уже твой риск.\n"
-        "Сколько осталось ждать, видно в /profile.\n\n"
+        "Сколько осталось ждать, видно в /profile.\n"
+        f"Ждать не обязательно: в больнице подлатают за кредиты — "
+        f"{PATCH_PRICE} 💰 за {PATCH_HEAL} единиц здоровья или {FULL_PRICE} 💰 "
+        "за полное выздоровление.\n\n"
         "<b>Лавка, экипировка и инвентарь</b>\n"
         "Лавка живёт в мини-аппе, на вкладке «Магазины» (/buy откроет её "
         "кнопкой). Товар разложен по типам вещей и открывается уровнем: "

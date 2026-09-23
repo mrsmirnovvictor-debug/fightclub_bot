@@ -1555,12 +1555,14 @@ function lotCard(lot) {
 }
 
 const SCREENS = [
-  "club", "map", "shop", "magic", "workshop", "house", "bag", "hero",
+  "club", "map", "shop", "magic", "workshop", "hospital", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
-const OPENED_FROM = { shop: "map", magic: "map", workshop: "map", house: "map" };
+const OPENED_FROM = {
+  shop: "map", magic: "map", workshop: "map", hospital: "map", house: "map",
+};
 let lastTab = "hero";
 
 function showTab(name) {
@@ -1584,6 +1586,7 @@ function showTab(name) {
     else loadShop();
   }
   if (name === "workshop") loadWorkshop();
+  if (name === "hospital") loadHospital();
   if (name === "map") loadMap();
   // Часы рейда идут, только пока на карту смотрят
   if (name === "map") startRaidClock();
@@ -1942,6 +1945,7 @@ const HOUSE_SCREENS = {
     showTab("shop");
   },
   repair: () => openWorkshop(),
+  heal: () => showTab("hospital"),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -4427,6 +4431,10 @@ function cardIsBusy() {
 async function catchUp() {
   if (document.hidden || cardIsBusy()) return;
   await refresh();
+  // Здоровье затягивается само, и прайс больницы с ним стареет: пока
+  // боец читает, ему уже нужно долить меньше. Полоса тикает сама, а
+  // числа в прайсе приходят с сервера — обновляем их тем же ударом
+  if (lastTab === "hospital") await loadHospital();
 }
 
 async function loadShop() {
@@ -4606,6 +4614,111 @@ const WORKSHOP_TABS = [
   ["shop", "🛒 Модификаторы"],
   ["master", "✨ Мастер"],
 ];
+
+// ---------- больница ----------
+//
+// Здоровье затягивается само, и это бесплатно: десять минут с нуля до
+// полного. Больница продаёт не здоровье, а время — тому, кого только
+// что избили, до ринга ещё восемь минут, и он либо ждёт, либо платит.
+//
+// Поэтому на экране сначала полоса здоровья, а уже под ней прайс. И
+// цена стоит на кнопке всегда, даже когда кредитов не хватает: «у вас
+// недостаточно» вместо цены не говорит, сколько нужно накопить.
+let hospitalData = null;
+
+async function loadHospital() {
+  try {
+    const response = await fetch("api/hospital", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Приём закончен.");
+    renderHospital(await response.json());
+  } catch (error) {
+    popup("Больница", error.message);
+  }
+}
+
+function renderHospital(data) {
+  hospitalData = data;
+  el("shop-purse-hospital").textContent = "";
+  el("shop-purse-hospital").appendChild(purse(data.credits));
+
+  const whole = data.hp.missing <= 0;
+  el("hospital-note").textContent = whole
+    ? "Врач осматривает тебя и разводит руками: лечить нечего."
+    : "Здоровье затягивается и само — больница просто не даёт ждать.";
+
+  const list = el("hospital-list");
+  list.textContent = "";
+  // Дешёвое лечение, которого хватает целиком, делает дорогое бессмысленным
+  const enough = data.cures.filter((cure) => cure.healed >= data.hp.missing);
+  const cheapest = enough.length
+    ? Math.min(...enough.map((cure) => cure.price))
+    : 0;
+  data.cures.forEach((cure) => list.appendChild(cureCard(cure, cheapest)));
+}
+
+function cureCard(cure, cheapest) {
+  const box = document.createElement("div");
+  box.className = "cure";
+
+  const title = document.createElement("div");
+  title.className = "cure-title";
+  title.textContent = cure.title;
+  box.appendChild(title);
+
+  const note = document.createElement("div");
+  note.className = "cure-note";
+  note.textContent = cure.note;
+  box.appendChild(note);
+
+  // Сколько дольют именно этому бойцу: у полного выздоровления число
+  // своё на каждый раз, да и сотня перевязки упирается в потолок
+  const gain = document.createElement("div");
+  gain.className = "cure-gain";
+  gain.textContent = cure.useful
+    ? "❤️ Дольют " + num(cure.healed)
+    : "❤️ Доливать нечего";
+  box.appendChild(gain);
+
+  // Переплату называем вслух: за то же самое рядом просят меньше
+  if (cure.useful && cheapest && cure.price > cheapest) {
+    const cheaper = document.createElement("div");
+    cheaper.className = "cure-cheaper";
+    cheaper.textContent = "Столько же дольют за " + num(cheapest) + " 💰";
+    box.appendChild(cheaper);
+  }
+
+  // Цена на кнопке стоит всегда, даже когда её нечем заплатить: «не
+  // хватает кредитов» вместо числа не говорит, сколько копить. Почему
+  // кнопка серая, видно тут же — по счёту сверху и по строке «дольют»
+  box.appendChild(
+    button("Лечиться · " + num(cure.price) + " 💰", {
+      disabled: !cure.useful || !cure.affordable,
+      onClick: () => takeCure(cure),
+    })
+  );
+  return box;
+}
+
+async function takeCure(cure) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/heal", { cure: cure.code });
+    render(data.card, true);
+    renderHospital(data.hospital);
+    popup(
+      "🏥 " + data.done.title,
+      "Здоровья прибавилось на " + num(data.done.healed) +
+        ". Списано " + num(data.done.price) + " 💰."
+    );
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
 
 async function loadWorkshop() {
   try {
@@ -5123,10 +5236,12 @@ function paintOneBar(prefix) {
 }
 
 function paintHealth() {
-  // Полоска стоит и в инвентаре, и на карточке персонажа: тикают обе
+  // Полоска стоит в инвентаре, на карточке персонажа и в больнице:
+  // тикают все три. В больнице она главная — за ней туда и приходят
   if (!health) return;
   paintOneBar("");
   paintOneBar("hero-");
+  paintOneBar("hospital-");
 }
 
 function startHealthTicker(hp) {
@@ -5278,7 +5393,9 @@ let myPlace = null;
 // внутри. Картинку вешает не вёрстка, а локация: один экран обслуживает
 // по несколько домов — клуб и казино, пять разных прилавков, — и что
 // показывать, знает только то место, где боец сейчас стоит.
-const INTERIOR_SCREENS = ["club", "shop", "magic", "workshop", "house"];
+const INTERIOR_SCREENS = [
+  "club", "shop", "magic", "workshop", "hospital", "house",
+];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
 // перерисовывается сама по себе — по сердцебиению, после боя, при
@@ -5415,6 +5532,7 @@ el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
 el("hero-daily").addEventListener("click", openDaily);
 el("house-back").addEventListener("click", () => showTab("map"));
+el("hospital-back").addEventListener("click", () => showTab("map"));
 watchInteriors();
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты

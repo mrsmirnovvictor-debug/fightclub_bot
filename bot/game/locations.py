@@ -37,6 +37,7 @@ class Service(str, Enum):
     WEAPONS = "weapons"  # оружие и щиты: купить и сдать
     CLOTHES = "clothes"  # одежда и всё прочее носимое
     POTIONS = "potions"  # аптека: эликсиры
+    HEAL = "heal"  # больница: здоровье за кредиты
     PREMIUM = "premium"  # элитный магазин, за звёзды
     FAN = "fan"  # фанатский магазин: экипировка своей команды
     MARKET = "market"  # комиссионка: торговля между бойцами
@@ -53,6 +54,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.WEAPONS: "торговать оружием",
     Service.CLOTHES: "торговать одеждой",
     Service.POTIONS: "покупать эликсиры",
+    Service.HEAL: "лечиться",
     Service.PREMIUM: "покупать за звёзды",
     Service.FAN: "покупать фанатскую экипировку",
     Service.MARKET: "торговать с бойцами",
@@ -569,7 +571,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.4644, 0.646531), (0.61424, 0.654306),
             (0.612115, 0.703947), (0.463337, 0.694378),
         ),
-        soon="лечение ран без склянок",
+        services=(Service.HEAL,),
         genitive="больницы",
         interior_folder=art.NEW_INTERIORS,
     ),

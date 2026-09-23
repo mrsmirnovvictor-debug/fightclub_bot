@@ -90,6 +90,35 @@ EMPTY_WORKSHOP = {
 }
 
 
+def hospital_state(hp: int = 40, max_hp: int = 300, credits: int = 200) -> dict:
+    """Приёмный покой, как его отдаёт сервер."""
+    from bot.game.hospital import CURES
+
+    # Потолок здоровья задаём числом: экран его не считает, а берёт из
+    # ответа, и привязывать тест к формуле здоровья незачем
+    missing = max(0, max_hp - hp)
+    return {
+        "credits": credits,
+        "hp": {
+            "current": hp, "max": max_hp, "percent": round(hp / max_hp * 100),
+            "regen_seconds": 600, "missing": missing,
+        },
+        "cures": [
+            {
+                "code": cure.code, "title": cure.title, "price": cure.price,
+                "note": cure.note,
+                "healed": cure.healed(hp, max_hp),
+                "affordable": credits >= cure.price,
+                "useful": cure.healed(hp, max_hp) > 0,
+            }
+            for cure in CURES
+        ],
+    }
+
+
+EMPTY_HOSPITAL = hospital_state()
+
+
 # Никто ещё не дрался
 EMPTY_HISTORY = {
     "user_id": 42, "name": "Растафарайчик", "days": [], "total": 0,
@@ -231,7 +260,8 @@ def city_map(
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
-    battle=None, city=None, workshop=None, images=False, telegram="",
+    battle=None, city=None, workshop=None, hospital=None, images=False,
+    telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -256,6 +286,7 @@ async def open_page(
     await page.route("**/api/battle*", canned(battle or EMPTY_BATTLE))
     await page.route("**/api/map*", canned(city or city_map()))
     await page.route("**/api/workshop*", canned(workshop or EMPTY_WORKSHOP))
+    await page.route("**/api/hospital*", canned(hospital or EMPTY_HOSPITAL))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
@@ -3528,12 +3559,13 @@ async def test_a_link_from_the_chat_opens_the_screen_it_promised(
 # ---------- карта города ----------
 
 
-async def open_map(pw, server, city=None, card=None, images=False):
+async def open_map(pw, server, city=None, card=None, images=False, hospital=None):
     """Открыть вкладку карты."""
     player = make_player()
     browser, page = await open_page(
         pw, server, card or build_card(player, TOKEN, viewer_id=player.user_id),
         build_shop(player, Service.CLOTHES), city=city, images=images,
+        hospital=hospital,
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await page.locator("#tab-map").click()
@@ -3851,6 +3883,179 @@ async def test_a_house_without_a_trade_says_when_it_opens(server):
         # Обратно — на карту, кнопкой в углу
         await page.locator("#house-back").click()
         await page.wait_for_selector("#map:not(.hidden)")
+        await browser.close()
+
+
+# ---------- больница ----------
+
+
+async def test_the_hospital_opens_from_the_map_with_its_price_list(server):
+    """Дверь больницы ведёт на свой экран: полоса здоровья и две цены."""
+    walker = make_player(location="hospital")
+    card = build_card(walker, TOKEN, viewer_id=walker.user_id)
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("hospital"), card)
+
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        # Прайс приходит своей ручкой: экран открывается раньше, чем ответ
+        await page.wait_for_selector(".cure")
+
+        cures = page.locator(".cure")
+        assert await cures.count() == 2
+        first = await cures.nth(0).inner_text()
+        assert "Полное выздоровление" in first and "Лечиться · 50 💰" in first
+        second = await cures.nth(1).inner_text()
+        assert "Перевязка" in second and "Лечиться · 25 💰" in second
+        # Сколько дольют именно этому бойцу — числом на карточке
+        assert "Дольют 260" in first and "Дольют 100" in second
+        # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
+        assert "active" in (await page.locator("#tab-map").get_attribute("class"))
+        await page.locator("#hospital-back").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await browser.close()
+
+
+async def test_the_hospital_shows_the_price_even_without_the_money(server):
+    """Кредитов мало — кнопка серая, но цена на ней стоит.
+
+    «У вас недостаточно кредитов» вместо числа не говорит, сколько
+    копить, — то же правило, что и в мастерской.
+    """
+    walker = make_player(location="hospital")
+    card = build_card(walker, TOKEN, viewer_id=walker.user_id)
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("hospital"), card,
+            hospital=hospital_state(credits=30),
+        )
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        # Прайс приходит своей ручкой: экран открывается раньше, чем ответ
+        await page.wait_for_selector(".cure")
+
+        buttons = page.locator(".cure .btn")
+        assert "Лечиться · 50 💰" in await buttons.nth(0).inner_text()
+        assert await buttons.nth(0).is_disabled(), "лечение не по карману"
+        assert not await buttons.nth(1).is_disabled(), "на перевязку хватает"
+        await browser.close()
+
+
+async def test_a_whole_fighter_is_told_there_is_nothing_to_treat(server):
+    """Целому здесь делать нечего — и обе кнопки серые."""
+    walker = make_player(location="hospital")
+    card = build_card(walker, TOKEN, viewer_id=walker.user_id)
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("hospital"), card,
+            hospital=hospital_state(hp=300),
+        )
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        # Прайс приходит своей ручкой: экран открывается раньше, чем ответ
+        await page.wait_for_selector(".cure")
+
+        assert "лечить нечего" in await page.locator("#hospital-note").inner_text()
+        buttons = page.locator(".cure .btn")
+        assert await buttons.nth(0).is_disabled()
+        assert await buttons.nth(1).is_disabled()
+        assert "Доливать нечего" in await page.locator(".cure").first.inner_text()
+        await browser.close()
+
+
+async def test_the_cheaper_cure_is_named_when_it_pours_the_same(server):
+    """Царапина: полное выздоровление дольёт столько же, а стоит вдвое.
+
+    Молча брать за то же самое вдвое — способ потерять доверие к лавке.
+    """
+    walker = make_player(location="hospital")
+    card = build_card(walker, TOKEN, viewer_id=walker.user_id)
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("hospital"), card,
+            hospital=hospital_state(hp=260),  # не хватает сорока из трёхсот
+        )
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        # Прайс приходит своей ручкой: экран открывается раньше, чем ответ
+        await page.wait_for_selector(".cure")
+
+        first = await page.locator(".cure").nth(0).inner_text()
+        assert "Столько же дольют за 25 💰" in first
+        second = await page.locator(".cure").nth(1).inner_text()
+        assert "Столько же" not in second, "дешёвое не должно ссылаться само на себя"
+        await browser.close()
+
+
+async def test_healing_pays_and_repaints_without_a_second_question(server):
+    """Нажал — списали, долили и перерисовали: и карточку, и прайс."""
+    walker = make_player(location="hospital")
+    card = build_card(walker, TOKEN, viewer_id=walker.user_id)
+    asked = []
+
+    async def cure(route):
+        asked.append(route.request.post_data)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "card": build_card(walker, TOKEN, viewer_id=42),
+                "hospital": hospital_state(hp=140, credits=175),
+                "done": {"title": "Перевязка", "healed": 100, "price": 25},
+            }),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("hospital"), card)
+        await page.route("**/api/heal", cure)
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        # Прайс приходит своей ручкой: экран открывается раньше, чем ответ
+        await page.wait_for_selector(".cure")
+        await page.locator(".cure .btn").nth(1).click()
+        await page.wait_for_function(
+            "() => document.querySelector('#shop-purse-hospital')"
+            ".textContent.includes('175')",
+            timeout=5000,
+        )
+
+        assert json.loads(asked[0]) == {"cure": "patch"}
+        await browser.close()
+
+
+async def test_the_price_list_keeps_up_with_the_healing_bar(server):
+    """Здоровье затягивается само — прайс не должен от него отставать.
+
+    Полоса тикает в самой странице, а «дольют столько-то» приходит с
+    сервера. Без обновления боец через минуту читал бы вчерашнее число.
+    """
+    walker = make_player(location="hospital")
+    card = build_card(walker, TOKEN, viewer_id=walker.user_id)
+    answers = [hospital_state(hp=40), hospital_state(hp=200)]
+
+    async def desk(route):
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(answers[0] if len(answers) == 1 else answers.pop(0)),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_map(pw, server, city_map("hospital"), card)
+        await page.route("**/api/hospital*", desk)
+
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        # Прайс приходит своей ручкой: экран открывается раньше, чем ответ
+        await page.wait_for_selector(".cure")
+        assert "Дольют 260" in await page.locator(".cure").first.inner_text()
+
+        # Сердцебиение карточки — тем же ударом обновляется и прайс
+        await page.evaluate("() => catchUp()")
+        await page.wait_for_function(
+            "() => document.querySelector('.cure').innerText.includes('Дольют 100')",
+            timeout=5000,
+        )
         await browser.close()
 
 
