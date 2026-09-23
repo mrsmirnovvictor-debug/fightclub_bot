@@ -2738,21 +2738,11 @@ function zoneList(column, repaint) {
   return box;
 }
 
-function zoneColumns(hands, attacks, blocks, draft, prefix, repaint, scout) {
+function zoneColumns(hands, attacks, blocks, draft, prefix, repaint) {
   // Столбцы выбора хода: по столбцу на руку с оружием и один на защиту.
   const box = document.createElement("div");
   box.className = "zone-columns" + (hands.length > 1 ? " three" : "");
 
-  // Советы аналитика — прямо над теми кнопками, которых они касаются:
-  // совет по удару над ударами, по блоку над блоком. Разбор читать
-  // между ходами успевает не каждый, а совет — это одно действие и одно
-  // число. Совет по удару один на обе руки и растянут на их столбцы:
-  // бить в слабое место стоит и левой, и правой
-  const tips = scout && (scout.attack_tip || scout.block_tip);
-  if (tips && (scout.attack_tip.move || scout.block_tip.move)) {
-    box.appendChild(tipCell(scout.attack_tip, hands.length));
-    box.appendChild(tipCell(scout.block_tip, 1));
-  }
   // Заголовок короткий — «Удар 1», — а чем именно бьёт эта рука, говорит
   // подсказка: столбцов бывает три, и название оружия в них не помещается
   const columns = hands.map((hand, index) => ({
@@ -2791,11 +2781,27 @@ function zoneColumns(hands, attacks, blocks, draft, prefix, repaint, scout) {
   return box;
 }
 
-function tipCell(tip, span) {
+// Советы подписчика — строкой над кнопками хода: слева про удар, справа
+// про блок, по половине ширины на каждый. Раньше они стояли столбец в
+// столбец с кнопками, и совет по удару растягивался на две руки — при
+// трёх столбцах от этого разъезжалась вся сетка, а места совет занимал
+// вдвое больше, чем нужно. Стоять ровно над своей кнопкой ему незачем:
+// значок и так говорит, о чём он.
+function tipsRow(scout) {
+  const attack = scout && scout.attack_tip;
+  const block = scout && scout.block_tip;
+  if (!(attack && attack.move) && !(block && block.move)) return null;
+  const box = document.createElement("div");
+  box.className = "tips";
+  box.appendChild(tipCell(attack));
+  box.appendChild(tipCell(block));
+  return box;
+}
+
+function tipCell(tip) {
   const box = document.createElement("div");
   box.className = "zone-tip";
-  if (span > 1) box.style.gridColumn = "span " + span;
-  if (!tip || !tip.move) return box;  // советовать нечего — клетка пустая
+  if (!tip || !tip.move) return box;  // советовать нечего — половина пустая
   const move = document.createElement("span");
   move.className = "zone-tip-move";
   move.textContent = "💡 " + tip.move;
@@ -2879,6 +2885,40 @@ function abilityPanel(state, send) {
   const box = document.createElement("section");
   box.className = "tricks";
 
+  // Сначала сами приёмы, шкала под ними. Приём выбирают по картинке, а
+  // на шкалу смотрят уже потом — «хватит ли», — и подпись под шкалой
+  // заодно перестала разрывать ряд и кнопки хода
+  const row = document.createElement("div");
+  row.className = "trick-row";
+  state.tricks.forEach((trick) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    // Готов — цветной, не по карману или норма выбрана — серый, нажатый —
+    // в зелёной обводке. Три состояния, и все видны с одного взгляда
+    card.className =
+      "trick" + (trick.ready ? "" : " cold") + (trick.armed ? " armed" : "");
+    card.disabled = !trick.ready || trick.armed;
+    card.title = trick.title + " · " + trick.cost + " ⚡\n" + trick.note;
+
+    const pic = document.createElement("div");
+    pic.className = "trick-pic";
+    pic.appendChild(slotPicture(trick, trick.icon));
+
+    // Цена лежит на самой картинке, на подложке. Подпись с названием
+    // ушла: на телефоне она занимала столько же места, сколько картинка,
+    // а прочесть её всё равно не выходило — приём узнают по рисунку.
+    // Название осталось в подсказке по долгому нажатию
+    const price = document.createElement("span");
+    price.className = "trick-cost";
+    price.textContent = trick.cost + " ⚡";
+    pic.appendChild(price);
+    card.appendChild(pic);
+
+    card.addEventListener("click", () => send(trick));
+    row.appendChild(card);
+  });
+  box.appendChild(row);
+
   const bar = document.createElement("div");
   bar.className = "energy";
   const fill = document.createElement("div");
@@ -2906,41 +2946,6 @@ function abilityPanel(state, send) {
   }
   note.textContent = parts.join(" · ");
   if (parts.length) box.appendChild(note);
-
-  const row = document.createElement("div");
-  row.className = "trick-row";
-  state.tricks.forEach((trick) => {
-    const card = document.createElement("button");
-    card.type = "button";
-    // Готов — цветной, не по карману или норма выбрана — серый, нажатый —
-    // в зелёной обводке. Три состояния, и все видны с одного взгляда
-    card.className =
-      "trick" + (trick.ready ? "" : " cold") + (trick.armed ? " armed" : "");
-    card.disabled = !trick.ready || trick.armed;
-    card.title = trick.title + " · " + trick.cost + " ⚡\n" + trick.note;
-
-    const pic = document.createElement("div");
-    pic.className = "trick-pic";
-    pic.appendChild(slotPicture(trick, trick.icon));
-    card.appendChild(pic);
-
-    const name = document.createElement("span");
-    name.className = "trick-name";
-    name.textContent = trick.title;
-    card.appendChild(name);
-
-    // Цена стоит всегда, в том числе у заряженного: что приём в деле,
-    // говорит зелёная обводка, а подпись под ней только дублировала бы её
-    // словом — и заодно прыгала бы шириной, дёргая ряд
-    const price = document.createElement("span");
-    price.className = "trick-cost";
-    price.textContent = trick.cost + " ⚡";
-    card.appendChild(price);
-
-    card.addEventListener("click", () => send(trick));
-    row.appendChild(card);
-  });
-  box.appendChild(row);
   return box;
 }
 
@@ -2975,11 +2980,10 @@ function turnForm(data) {
   const hands = data.duel.hands || [{ hand: 0, icon: "👊", title: "Кулаки" }];
   const blocks = data.duel.blocks || data.blocks;
 
+  const tips = tipsRow(data.duel.scout);
+  if (tips) box.appendChild(tips);
   box.appendChild(
-    zoneColumns(
-      hands, data.attacks, blocks, () => turnDraft, "turn", paintDraft,
-      data.duel.scout
-    )
+    zoneColumns(hands, data.attacks, blocks, () => turnDraft, "turn", paintDraft)
   );
 
   const go = document.createElement("button");
@@ -3120,10 +3124,13 @@ function judgeLine(text, strike) {
   return line;
 }
 
-function judgeLines(turn, into) {
-  (turn.lines || []).forEach((said, index) => {
-    into.appendChild(judgeLine(said, (turn.strikes || [])[index]));
-  });
+function judgeLines(turn, into, newestFirst) {
+  const lines = (turn.lines || []).map((said, index) => [
+    said,
+    (turn.strikes || [])[index],
+  ]);
+  if (newestFirst) lines.reverse();
+  lines.forEach(([said, strike]) => into.appendChild(judgeLine(said, strike)));
   return into;
 }
 
@@ -3541,20 +3548,22 @@ function raidPanel(data) {
   const box = document.createElement("div");
   box.className = "fight-panel";
 
-  const head = document.createElement("p");
-  head.className = "fight-round";
-  head.textContent = raid.finished
+  // Номер волны с экрана убран: он ни на что не влияет, а стоял над
+  // шкалами здоровья — тем единственным, на что в бою смотрят не
+  // отрываясь. Передышку и конец рейда говорим по-прежнему: это не
+  // счёт, а состояние, и от него зависит, чего ждать
+  const said = raid.finished
     ? "🔔 Рейд окончен"
     : raid.resting
       ? "😮‍💨 Передышка"
-      : "🔔 Волна " + raid.wave;
-  box.appendChild(head);
-  box.appendChild(bossCard(raid.boss));
-  const versus = document.createElement("p");
-  versus.className = "versus";
-  versus.textContent = "VS";
-  box.appendChild(versus);
-  box.appendChild(partyBoard(raid.party));
+      : "";
+  if (said) {
+    const head = document.createElement("p");
+    head.className = "fight-round";
+    head.textContent = said;
+    box.appendChild(head);
+  }
+  box.appendChild(raidBoard(raid));
 
   if (raid.finished) {
     box.appendChild(raidFinish(raid));
@@ -3586,9 +3595,35 @@ function raidPanel(data) {
   return box;
 }
 
+// Доска боя: отряд слева, босс справа, мечи между ними. Раньше босс
+// стоял сверху во всю ширину, а отряд списком под ним, и на телефоне
+// половина отряда уезжала за край. Бок о бок видно обе стороны разом —
+// а это и есть то, ради чего на экран смотрят.
+function raidBoard(raid) {
+  const box = document.createElement("div");
+  box.className = "raid-board";
+  box.appendChild(partyBoard(raid.party));
+  const swords = document.createElement("p");
+  swords.className = "versus";
+  swords.textContent = "⚔️";
+  box.appendChild(swords);
+  box.appendChild(bossCard(raid.boss));
+  return box;
+}
+
 function bossCard(boss) {
   const box = document.createElement("div");
   box.className = "boss-card";
+  const name = document.createElement("p");
+  name.className = "fight-name";
+  name.textContent = boss.emoji + " " + boss.title + " [" + boss.level + "]";
+  const hp = document.createElement("p");
+  hp.className = "fight-hp";
+  hp.textContent = boss.hp + "/" + boss.max_hp;
+  box.appendChild(name);
+  box.appendChild(hp);
+  box.appendChild(fightBar(boss));
+  // Портрет под шкалой: смотрят на здоровье, а не на лицо
   if (boss.image) {
     const img = document.createElement("img");
     img.className = "boss-face";
@@ -3599,42 +3634,64 @@ function bossCard(boss) {
     img.addEventListener("error", () => img.remove());
     box.appendChild(img);
   }
-  const side = document.createElement("div");
-  side.className = "boss-side";
+  return box;
+}
+
+// Сколько бойцов отряда видно без нажатия. Остальные — под «ещё N»:
+// в отряде их до десяти, и списком они выдавливают с экрана кнопки хода
+const PARTY_SHOWN = 3;
+
+// Развёрнут ли хвост отряда. Живёт снаружи разметки: экран рейда
+// перерисовывается каждые две секунды, и без этого список захлопывался
+// бы под пальцем
+let partyOpen = false;
+
+function memberCard(member) {
+  const row = document.createElement("div");
+  row.className = "raid-member" + (member.alive ? "" : " down");
   const name = document.createElement("p");
   name.className = "fight-name";
-  name.textContent = boss.emoji + " " + boss.title + " [" + boss.level + "]";
+  name.textContent =
+    (member.alive ? (member.acted ? "✅ " : "⏳ ") : "💀 ") +
+    member.emoji + " " + member.name + " [" + member.level + "]" +
+    (member.you ? " — ты" : "");
   const hp = document.createElement("p");
   hp.className = "fight-hp";
-  hp.textContent = boss.hp + "/" + boss.max_hp;
-  side.appendChild(name);
-  side.appendChild(hp);
-  side.appendChild(fightBar(boss));
-  box.appendChild(side);
-  return box;
+  hp.textContent = member.hp + "/" + member.max_hp + " · урона " +
+    member.damage_dealt;
+  row.appendChild(name);
+  row.appendChild(hp);
+  row.appendChild(fightBar(member));
+  return row;
 }
 
 function partyBoard(party) {
   const box = document.createElement("div");
   box.className = "raid-party";
-  party.forEach((member) => {
-    const row = document.createElement("div");
-    row.className = "raid-member" + (member.alive ? "" : " down");
-    const name = document.createElement("p");
-    name.className = "fight-name";
-    name.textContent =
-      (member.alive ? (member.acted ? "✅ " : "⏳ ") : "💀 ") +
-      member.emoji + " " + member.name + " [" + member.level + "]" +
-      (member.you ? " — ты" : "");
-    const hp = document.createElement("p");
-    hp.className = "fight-hp";
-    hp.textContent = member.hp + "/" + member.max_hp + " · урона " +
-      member.damage_dealt;
-    row.appendChild(name);
-    row.appendChild(hp);
-    row.appendChild(fightBar(member));
-    box.appendChild(row);
+  // Живые сверху, павшие внизу: помочь можно только тем, кто ещё дерётся.
+  // Порядок внутри каждой половины прежний — сортировка устойчивая
+  const order = party
+    .slice()
+    .sort((one, other) => Number(other.alive) - Number(one.alive));
+  order.slice(0, PARTY_SHOWN).forEach((member) => {
+    box.appendChild(memberCard(member));
   });
+
+  const rest = order.slice(PARTY_SHOWN);
+  if (rest.length) {
+    const more = document.createElement("details");
+    more.className = "party-more";
+    more.open = partyOpen;
+    more.addEventListener("toggle", () => {
+      partyOpen = more.open;
+    });
+    const head = document.createElement("summary");
+    head.className = "party-more-head";
+    head.textContent = "ещё " + rest.length;
+    more.appendChild(head);
+    rest.forEach((member) => more.appendChild(memberCard(member)));
+    box.appendChild(more);
+  }
   return box;
 }
 
@@ -3674,16 +3731,13 @@ function raidTurnForm(data) {
   );
   if (tricks) box.appendChild(tricks);
 
-  // Повадки босса — над кнопками, как разбор соперника в дуэли. Видит их
-  // только тот, кому они пришли: аналитик — умение подписки
-  const scout = scoutPanel(data.raid && data.raid.scout);
-  if (scout) box.appendChild(scout);
+  // Совет — строкой над кнопками: одно действие и одно число, его
+  // читают перед самым нажатием
+  const tips = tipsRow(data.raid && data.raid.scout);
+  if (tips) box.appendChild(tips);
 
   box.appendChild(
-    zoneColumns(
-      hands, data.attacks, blocks, () => raidDraft, "raid", paintRaidDraft,
-      data.raid && data.raid.scout
-    )
+    zoneColumns(hands, data.attacks, blocks, () => raidDraft, "raid", paintRaidDraft)
   );
 
   const go = document.createElement("button");
@@ -3698,6 +3752,12 @@ function raidTurnForm(data) {
     raidAction(move);
   });
   box.appendChild(go);
+
+  // Разбор повадок — под кнопками и свёрнутый. Он длинный, а место над
+  // кнопками занято тем, ради чего сюда смотрят: шкалами и советом.
+  // Кому нужен весь разбор — развернёт, и он таким и останется
+  const scout = scoutPanel(data.raid && data.raid.scout);
+  if (scout) box.appendChild(scout);
   return box;
 }
 
@@ -3736,7 +3796,11 @@ function raidLog(raid) {
   head.className = "shelf-head";
   head.textContent = "Ход рейда";
   box.appendChild(head);
-  raid.log.slice().reverse().forEach((turn) => judgeLines(turn, box));
+  // Свежее сверху — и между разменами, и внутри размена. Размены и
+  // раньше шли от нового к старому, а вот строки внутри одного
+  // оставались в прямом порядке: лента читалась то вниз, то вверх, и в
+  // волне на десять бойцов понять, что было позже, не получалось
+  raid.log.slice().reverse().forEach((turn) => judgeLines(turn, box, true));
   return box;
 }
 

@@ -2441,7 +2441,7 @@ def raid_with_wave(over=None) -> dict:
     return {**EMPTY_RAID, "raid": raid, "boss": {**BOSS_CARD, "live": True}}
 
 
-async def open_raid(pw, server, raid=None, telegram=""):
+async def open_raid(pw, server, raid=None, telegram="", images=False):
     """Открыть подвал.
 
     Пузыря «Рейд» среди разделов клуба больше нет: в подвал спускаются из
@@ -2452,7 +2452,7 @@ async def open_raid(pw, server, raid=None, telegram=""):
     # где бы боец ни стоял. Потому и идём сюда через карту
     browser, page = await open_page(
         pw, server, build_card(make_player("casino"), TOKEN, viewer_id=42),
-        raid=raid, city=city_map("casino"), telegram=telegram,
+        raid=raid, city=city_map("casino"), telegram=telegram, images=images,
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await page.locator("#tab-map").click()
@@ -2575,19 +2575,32 @@ async def test_an_empty_pocket_offers_to_buy_a_pass(server):
         await browser.close()
 
 
-async def test_the_wave_puts_a_vs_between_the_boss_and_the_party(server):
-    """Кто против кого: карточка босса, «VS», отряд."""
+async def test_the_board_puts_the_party_and_the_boss_side_by_side(server):
+    """Отряд слева, мечи посередине, босс справа — и всё это в один ряд.
+
+    Раньше босс стоял сверху во всю ширину, а отряд списком под ним, и на
+    телефоне половина отряда уезжала за край экрана.
+    """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
 
         body = page.locator("#raid-body")
-        assert await body.locator(".versus").inner_text() == "VS"
-        # порядок на экране: сперва босс, потом «VS», потом отряд
+        assert await body.locator(".versus").inner_text() == "⚔️"
         order = await body.evaluate(
             "node => Array.from(node.querySelectorAll("
-            "'.boss-card, .versus, .raid-party')).map(one => one.className)"
+            "'.raid-party, .versus, .boss-card')).map(one => one.className)"
         )
-        assert order == ["boss-card", "versus", "raid-party"]
+        assert order == ["raid-party", "versus", "boss-card"]
+
+        # Три столбца на одной высоте, и ширины 45 / 10 / 45
+        board = await body.locator(".raid-board").bounding_box()
+        party = await body.locator(".raid-party").bounding_box()
+        swords = await body.locator(".versus").bounding_box()
+        boss = await body.locator(".boss-card").bounding_box()
+        assert abs(round(party["y"]) - round(boss["y"])) <= 1, "столбцы разъехались"
+        assert party["x"] < swords["x"] < boss["x"]
+        for box, share in ((party, 0.45), (swords, 0.10), (boss, 0.45)):
+            assert abs(box["width"] / board["width"] - share) < 0.04, box["width"]
         await browser.close()
 
 
@@ -2775,7 +2788,9 @@ async def test_the_wave_shows_the_boss_and_the_whole_party(server):
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
 
-        assert "Волна 2" in await page.locator(".fight-round").inner_text()
+        # Номера волны на экране больше нет: он ничего не решал, а стоял
+        # над шкалами здоровья
+        assert await page.locator(".fight-round").count() == 0
         boss = await page.locator(".boss-card").inner_text()
         assert "Босс Подвала [9]" in boss and "180/300" in boss
 
@@ -2784,6 +2799,63 @@ async def test_the_wave_shows_the_boss_and_the_whole_party(server):
         assert "✅" in members[1]  # Марла отработала волну
         assert "💀" in members[2]  # Зеваку вынесли
         assert await page.locator(".raid-member.down").count() == 1
+        await browser.close()
+
+
+async def test_the_fallen_sink_to_the_bottom_of_the_party(server):
+    """Живые сверху, павшие внизу: помочь можно только тем, кто дерётся."""
+    party = raid_with_wave()["raid"]["party"]
+    # Зеваку вынесли, и в ответе сервера он идёт первым
+    raid = raid_with_wave({"party": [party[2], party[0], party[1]]})
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid)
+
+        members = await page.locator(".raid-member").all_inner_texts()
+        assert "Растафарайчик" in members[0] and "Марла" in members[1]
+        assert "Зевака" in members[2] and "💀" in members[2]
+        await browser.close()
+
+
+def crowd(size: int) -> list[dict]:
+    """Отряд на `size` бойцов: первый — ты, остальные живые и безымянные."""
+    return [
+        {
+            "user_id": 42 + i, "name": "Боец " + str(i), "level": 5, "emoji": "⚔️",
+            "hp": 70, "max_hp": 100, "percent": 70, "damage_dealt": 10,
+            "alive": True, "acted": False, "you": i == 0,
+        }
+        for i in range(size)
+    ]
+
+
+async def test_a_big_party_hides_all_but_three(server):
+    """В подвал ходят вдесятером: трое на виду, остальные по нажатию.
+
+    Десять карточек списком выдавливают с экрана кнопки хода — то, ради
+    чего в рейд и заходят.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave({"party": crowd(10)}))
+
+        shown = page.locator(".raid-party > .raid-member")
+        assert await shown.count() == 3
+        more = page.locator(".party-more")
+        assert "ещё 7" in await more.locator("summary").inner_text()
+        assert await more.locator(".raid-member").count() == 7
+        # Хвост свёрнут, пока его не открыли
+        assert await more.get_attribute("open") is None
+        await more.locator("summary").click()
+        assert await more.locator(".raid-member").first.is_visible()
+        await browser.close()
+
+
+async def test_a_small_party_has_no_tail_at_all(server):
+    """Троих и меньше показываем целиком: сворачивать нечего."""
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave())
+
+        assert await page.locator(".raid-member").count() == 3
+        assert await page.locator(".party-more").count() == 0
         await browser.close()
 
 
@@ -3072,6 +3144,75 @@ async def test_an_unfolded_analyst_stays_unfolded_through_a_repaint(server):
             "}",
             timeout=8000,
         )
+        await browser.close()
+
+
+async def test_the_tips_take_half_the_width_each(server):
+    """Совет по удару слева, по блоку справа, по половине экрана на брата.
+
+    Раньше они стояли столбец в столбец с кнопками: совет по удару
+    растягивался на обе руки, и при трёх столбцах вся сетка разъезжалась.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(
+            pw, server, raid_with_wave({"scout": BOSS_SCOUT})
+        )
+        await page.wait_for_selector(".zone-columns")
+
+        row = await page.locator("#raid-body .tips").bounding_box()
+        tips = page.locator("#raid-body .zone-tip")
+        assert await tips.count() == 2
+        strike = await tips.nth(0).bounding_box()
+        guard = await tips.nth(1).bounding_box()
+        for box in (strike, guard):
+            assert abs(box["width"] / row["width"] - 0.5) < 0.05, box["width"]
+        assert strike["x"] < guard["x"]
+        # и вся строка — над кнопками хода
+        columns = await page.locator("#raid-body .zone-columns").bounding_box()
+        assert row["y"] + row["height"] <= columns["y"] + 0.5
+        await browser.close()
+
+
+async def test_the_analyst_sits_under_the_buttons_in_the_cellar(server):
+    """Разбор — под кнопками хода и свёрнутый: место над ними занято.
+
+    Наверху стоят шкалы здоровья и совет, ради которых на экран и
+    смотрят. Разбор длинный, и его читают, когда есть время.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(
+            pw, server, raid_with_wave({"scout": BOSS_SCOUT})
+        )
+        await page.wait_for_selector(".zone-columns")
+
+        scout = page.locator("#raid-body .scout")
+        assert await scout.get_attribute("open") is None
+        panel = await scout.bounding_box()
+        go = await page.locator("#raid-go").bounding_box()
+        assert panel["y"] >= go["y"] + go["height"] - 0.5, "разбор не под кнопкой"
+        await browser.close()
+
+
+async def test_the_cellar_log_reads_from_the_newest_line_down(server):
+    """Свежее сверху — и между разменами, и внутри размена."""
+    def turn(number, who):
+        return {
+            "number": number, "round": 1, "turn": number, "finished": False,
+            "winner_id": None, "hp_after": {"42": 70, "-1": 180},
+            "lines": [who + ": удар", who + ": ответ босса"],
+            "strikes": [],
+        }
+
+    raid = raid_with_wave({"log": [turn(1, "первый"), turn(2, "второй")]})
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid)
+        await page.wait_for_selector(".fight-log")
+
+        said = await page.locator(".fight-log .log-line").all_text_contents()
+        assert said == [
+            "второй: ответ босса", "второй: удар",
+            "первый: ответ босса", "первый: удар",
+        ]
         await browser.close()
 
 
@@ -5723,6 +5864,61 @@ async def test_fewer_tricks_stand_in_the_middle(server, count):
         assert abs(left - right) <= 1.5, f"поля разъехались: {left} и {right}"
         # и плашки не растянулись на всю ширину
         assert first["width"] <= 92.5
+        await browser.close()
+
+
+async def test_a_trick_tile_is_a_picture_with_a_price_on_it(server):
+    """Плашка приёма — картинка и цена на ней, без подписи снизу.
+
+    Подпись занимала столько же места, сколько сам рисунок, а прочесть
+    её на телефоне всё равно не выходило: приём узнают по картинке.
+    Название осталось в подсказке по долгому нажатию.
+    """
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=20)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        tile = page.locator(".trick").first
+        assert await tile.locator(".trick-name").count() == 0, "подпись вернулась"
+        price = tile.locator(".trick-pic .trick-cost")
+        assert await price.count() == 1, "цена не на картинке"
+        assert "⚡" in await price.inner_text()
+        # У цены своя подложка: на пёстром рисунке цифры иначе тонут
+        painted = await price.evaluate(
+            "node => getComputedStyle(node).backgroundColor"
+        )
+        assert painted not in ("rgba(0, 0, 0, 0)", "transparent")
+        # А название приёма по-прежнему можно узнать, не нажимая
+        hint = await tile.get_attribute("title")
+        assert hint.startswith("Сильный удар") and "3 ⚡" in hint
+        await browser.close()
+
+
+async def test_the_energy_bar_stands_under_the_tricks(server):
+    """Сначала приёмы, шкала под ними: выбирают по картинке, а не по числу."""
+    ring = ring_with_duel()
+    ring["duel"]["abilities"] = tricks_state(energy=9)
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), fights=ring,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.wait_for_selector(".trick")
+
+        row = await page.locator(".trick-row").bounding_box()
+        bar = await page.locator(".energy").bounding_box()
+        assert bar["y"] >= row["y"] + row["height"] - 0.5
         await browser.close()
 
 
