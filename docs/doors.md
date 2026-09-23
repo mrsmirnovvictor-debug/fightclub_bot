@@ -50,8 +50,8 @@ https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/driving_school_ins
 
 https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/vcpd_hospital_district.png
 
-- **vcpd** — Полицейский участок: `406,416  505,407  505,505  407,514`
-- **hospital** — Больница: `437,1081  578,1094  576,1177  436,1161`
+- **vcpd** — Полицейский участок: `388,403  563,408  563,516  389,510`
+- **hospital** — Больница: `319,1119  545,1185  546,1267  320,1205`
 
 
 ## Деловой угол — `gym_office_district.png`
@@ -83,8 +83,8 @@ https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/car_dealership.png
 
 https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/police_school_medical_college.png
 
-- **police_school** — Полицейская академия: `388,403  563,408  563,516  389,510`
-- **medical_college** — Медицинский колледж: `319,1119  545,1185  546,1267  320,1205`
+- **police_school** — Полицейская академия: `406,416  505,407  505,505  407,514`
+- **medical_college** — Медицинский колледж: `437,1081  578,1094  576,1177  436,1161`
 
 
 ## Турнирная арена — `fight_tournament_stadium.png`
