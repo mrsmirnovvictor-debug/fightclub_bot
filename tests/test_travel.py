@@ -321,6 +321,25 @@ def test_every_district_map_is_named_as_the_bucket_named_it():
     assert ours == in_bucket
 
 
+def test_the_station_is_named_on_the_sign_but_not_in_the_bucket():
+    """Вывеску переименовали, код — нет, и это нарочно.
+
+    Файлы в хранилище названы `vcpd`: и карта района, и вид изнутри.
+    Переименовать код вслед за вывеской значило бы разойтись с
+    хранилищем — район открылся бы пустой картинкой, а заметил бы это
+    игрок, а не тест.
+    """
+    from bot.game.locations import get_district, get_location
+
+    station = get_location("vcpd")
+    assert station.title == "Полицейский участок"
+    assert station.whither == "полицейского участка"
+    assert station.indoors.endswith("/interiors/vcpd_interior.jpeg")
+    assert get_district(station.district).image.endswith(
+        "/vcpd_hospital_district.png"
+    )
+
+
 def test_a_house_takes_the_picture_of_its_own_district():
     """Дом не считает адрес карты заново, а спрашивает у района.
 

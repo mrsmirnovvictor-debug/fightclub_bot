@@ -332,7 +332,7 @@ DISTRICTS: tuple[District, ...] = (
         UP: ARENA,
     }),
     # ---------- вторая очередь ----------
-    District(VCPD, "Управление и больница", {
+    District(VCPD, "Участок и больница", {
         UP: "main_hub",
         LEFT: DRIVING,
         RIGHT: GYM,
@@ -547,15 +547,18 @@ LOCATIONS: tuple[Location, ...] = (
     # docs/doors.md, пересчёт пикселей в доли делает scripts/doors.py.
 
     Location(
+        # Код дома и код района остались от VCPD: так названы файлы в
+        # хранилище, и переименовать их значило бы разойтись с ним. На
+        # вывеске при этом то, что понятно без расшифровки
         "vcpd",
-        "VCPD",
+        "Полицейский участок",
         district=VCPD,
         entrance=(
             (0.431456, 0.248804), (0.536663, 0.243421),
             (0.536663, 0.302033), (0.432519, 0.307416),
         ),
-        soon="участок и розыск",
-        genitive="управления",
+        soon="дежурная часть и розыск",
+        genitive="полицейского участка",
         interior_folder=art.NEW_INTERIORS,
     ),
     Location(
@@ -674,7 +677,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.412327, 0.241029), (0.5983, 0.244019),
             (0.5983, 0.308612), (0.41339, 0.305024),
         ),
-        soon="путь в VCPD",
+        soon="путь в полицию",
         genitive="школы полиции",
         interior_folder=art.NEW_INTERIORS,
     ),
