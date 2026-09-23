@@ -679,6 +679,26 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border-radius: 14px 14px 0 0;
   padding: 14px 14px 24px;
 }
+/* Окно посередине экрана — для вещи, которую разглядывают или снимают.
+   Кнопки «Оставить» и «Снять» в листе снизу оказывались бы у самого
+   края, где их задевают ладонью при прокрутке, а половина экрана уходила
+   бы в пустоту */
+.sheet.middle .sheet-body {
+  top: 50%;
+  bottom: auto;
+  left: 12px;
+  right: 12px;
+  transform: translateY(-50%);
+  width: auto;
+  max-width: 400px;
+  margin: 0 auto;
+  max-height: 84vh;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
 .sheet-head {
   display: flex;
   align-items: center;
