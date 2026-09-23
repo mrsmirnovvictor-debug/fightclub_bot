@@ -348,8 +348,8 @@ function wearBadge(state) {
 // `takeOff` — что сделать по кнопке «Снять». Не задан, значит вещь
 // только показывают: так открывается створка с куклы персонажа.
 function openWorn(item, slotTitle, slot, takeOff) {
-  openSheet(item.title, slotTitle);
-  el("sheet-list").appendChild(wornCard(item, !takeOff));
+  openSheet(item.title, slotTitle, true);
+  el("sheet-list").appendChild(wornCard(item));
   // Под курткой бывает футболка, и её свойства тоже чьи-то: показываем
   // обе, иначе половина брони так и останется незамеченной
   const other = item === slot.item ? slot.under : null;
@@ -357,9 +357,20 @@ function openWorn(item, slotTitle, slot, takeOff) {
     const head = document.createElement("p");
     head.className = "sheet-note";
     head.textContent = "Под ней: " + slot.under_title;
-    el("sheet-list").append(head, wornCard(other, !takeOff));
+    el("sheet-list").append(head, wornCard(other));
   }
-  if (takeOff) el("sheet-list").appendChild(undressButtons(takeOff));
+  if (takeOff) {
+    el("sheet-list").appendChild(undressButtons(takeOff));
+    return;
+  }
+  // Снять вещь можно в инвентаре, и сказать об этом стоит здесь: иначе
+  // игрок ищет кнопку на экране, где её нарочно нет. Одной строкой на
+  // всё окно, а не на каждой карточке: вещей в клетке бывает две, и
+  // дважды повторённая подсказка читается как две разные
+  const where = document.createElement("p");
+  where.className = "sheet-note";
+  where.textContent = "Снять — в инвентаре, нажатием на эту же клетку.";
+  el("sheet-list").appendChild(where);
 }
 
 // Две кнопки под свойствами вещи. «Оставить» стоит первой и просто
@@ -385,10 +396,7 @@ function undressButtons(takeOff) {
   return row;
 }
 
-// `showWhere` — приписать ли, что снимают в инвентаре. На экране
-// персонажа это подсказка, а в самом инвентаре под карточкой уже стоит
-// кнопка «Снять», и та же фраза рядом с ней читалась бы как отказ
-function wornCard(item, showWhere) {
+function wornCard(item) {
   const box = document.createElement("div");
   box.className = "thing";
 
@@ -426,14 +434,6 @@ function wornCard(item, showWhere) {
     hands.className = "thing-note";
     hands.textContent = item.in_hands;
     body.appendChild(hands);
-  }
-  // Снять вещь можно в инвентаре, и сказать об этом стоит здесь: иначе
-  // игрок ищет кнопку на экране, где её нарочно нет
-  if (showWhere) {
-    const where = document.createElement("div");
-    where.className = "thing-note muted";
-    where.textContent = "Снять — в инвентаре, нажатием на эту же клетку.";
-    body.appendChild(where);
   }
 
   box.appendChild(body);
@@ -5157,10 +5157,15 @@ function closeSheet() {
   el("sheet").classList.add("hidden");
 }
 
-function openSheet(title, note) {
+// `middle` — показать не листом снизу, а окном посередине экрана. Лист
+// хорош для длинного списка: гардероб и чужая карточка листаются, и
+// начинать их от нижнего края правильно. Вещь же — это одна карточка и
+// две кнопки, и ради них лист уезжал бы на пол-экрана
+function openSheet(title, note, middle) {
   el("sheet-title").textContent = title;
   el("sheet-note").textContent = note || "";
   el("sheet-list").textContent = "";
+  el("sheet").classList.toggle("middle", Boolean(middle));
   el("sheet").classList.remove("hidden");
 }
 

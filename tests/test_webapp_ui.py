@@ -1067,6 +1067,56 @@ async def test_taking_a_worn_item_off_shows_what_is_being_lost(server):
         await browser.close()
 
 
+async def test_the_item_opens_as_a_window_in_the_middle(server):
+    """Вещь показывают окном посередине, а не листом от нижнего края.
+
+    Лист хорош для длинного списка — гардероб листают, — а у вещи одна
+    карточка и две кнопки: в листе они оказывались бы у самого края, где
+    их задевают ладонью, а половина экрана уходила бы в пустоту.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.locator("#slots-left .slot:not(.empty)").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        window = await page.locator(".sheet-body").bounding_box()
+        screen = page.viewport_size
+        # Не прижато ни к низу, ни к краям: между окном и краями есть поля
+        assert window["y"] > 1, "окно начинается от верхнего края"
+        assert screen["height"] - (window["y"] + window["height"]) > 1
+        assert window["x"] > 1 and window["x"] + window["width"] < screen["width"] - 1
+        # И стоит по середине: поля сверху и снизу равны
+        below = screen["height"] - (window["y"] + window["height"])
+        assert abs(window["y"] - below) <= 2, f"{window['y']} и {below}"
+        await browser.close()
+
+
+async def test_the_wardrobe_stays_a_sheet_from_the_bottom(server):
+    """Гардероб остаётся листом снизу: его листают, а не читают целиком."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    looks = {"credits": 100, "looks": [], "note": ""}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), looks=looks
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#hero-avatar").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        window = await page.locator(".sheet-body").bounding_box()
+        screen = page.viewport_size
+        assert abs(window["y"] + window["height"] - screen["height"]) <= 1
+        assert "middle" not in (await page.locator("#sheet").get_attribute("class"))
+        await browser.close()
+
+
 async def test_keeping_the_item_closes_the_window_and_changes_nothing(server):
     """«Оставить» — это выход без последствий."""
     player = make_player()
