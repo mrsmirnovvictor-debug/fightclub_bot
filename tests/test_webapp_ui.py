@@ -1034,8 +1034,41 @@ async def test_a_stranger_cannot_change_your_look(server):
         await browser.close()
 
 
-async def test_taking_a_worn_item_off_asks_first(server):
-    """Промахнуться по слоту легко, поэтому вещь снимается только с ответом «да»."""
+async def test_taking_a_worn_item_off_shows_what_is_being_lost(server):
+    """Перед снятием — створка со свойствами вещи и две кнопки.
+
+    Промахнуться по слоту легко, а голое «вы уверены?» не говорит, что
+    именно уходит с бойца: брони на двух зонах или прибавки, на которой
+    держится соседняя вещь.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+
+        calls = []
+        await page.route("**/api/unequip", lambda route: calls.append(route.request.url))
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+
+        await page.locator("#slots-left .slot:not(.empty)").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        said = await page.locator("#sheet").inner_text()
+        assert "Деревянная бита" in said
+        assert "Даёт надетой" in said and "Урон" in said, "свойств не показали"
+        buttons = page.locator("#sheet .thing-buttons .btn")
+        assert await buttons.count() == 2
+        assert await buttons.nth(0).inner_text() == "Оставить"
+        assert await buttons.nth(1).inner_text() == "Снять"
+        assert not calls, "вещь сняли, ничего не спросив"
+        await browser.close()
+
+
+async def test_keeping_the_item_closes_the_window_and_changes_nothing(server):
+    """«Оставить» — это выход без последствий."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
@@ -1047,19 +1080,62 @@ async def test_taking_a_worn_item_off_asks_first(server):
         calls = []
         await page.route("**/api/unequip", lambda route: calls.append(route.request.url))
 
-        asked = []
-
-        def on_dialog(dialog):
-            asked.append(dialog.message)
-            asyncio.ensure_future(dialog.dismiss())
-
-        page.on("dialog", on_dialog)
         await page.locator("#slots-left .slot:not(.empty)").first.click()
-        await page.wait_for_timeout(200)
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.locator("#sheet .thing-buttons .btn").first.click()
 
-        assert asked and "снять предмет" in asked[0]
-        assert "Обрезок трубы" in asked[0] or "бита" in asked[0].lower()
-        assert not calls, "вещь сняли, хотя ответили «нет»"
+        await page.wait_for_selector("#sheet", state="hidden")
+        assert not calls, "вещь сняли, хотя её оставили"
+        await browser.close()
+
+
+async def test_pressing_take_off_undresses_and_closes(server):
+    """«Снять» уносит вещь в рюкзак и закрывает створку.
+
+    Закрывать нужно до запроса: карточка после снятия перерисовывается
+    целиком, и оставленная поверх створка показывала бы вещь, которой на
+    бойце уже нет.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    asked = []
+
+    async def undress(route):
+        asked.append(route.request.post_data)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(build_card(player, TOKEN, viewer_id=42)),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.route("**/api/unequip", undress)
+
+        await page.locator("#slots-left .slot:not(.empty)").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.locator("#sheet .thing-buttons .btn").nth(1).click()
+
+        await page.wait_for_selector("#sheet", state="hidden")
+        assert json.loads(asked[0]) == {"slot": "weapon"}
+        await browser.close()
+
+
+async def test_the_character_screen_has_no_take_off_button(server):
+    """На экране персонажа створка только рассказывает — снимают в инвентаре."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        await page.locator("#hero-slots-left .slot:not(.empty)").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert await page.locator("#sheet .thing-buttons").count() == 0
+        assert "Снять — в инвентаре" in await page.locator("#sheet").inner_text()
         await browser.close()
 
 
@@ -1116,9 +1192,11 @@ async def test_only_the_shirt_still_fills_the_body_cell(server):
         # Снимают в инвентаре: на экране персонажа клетка только рассказывает
         await page.locator("#tab-bag").click()
         await page.locator("#slots-left .slot").nth(2).click()
-        await page.wait_for_timeout(200)
+        await page.wait_for_selector("#sheet:not(.hidden)")
 
-        assert asked and "Клубная футболка" in asked[0]
+        assert "Клубная футболка" in await page.locator("#sheet-title").inner_text()
+        assert await page.locator("#sheet .thing-buttons .btn").count() == 2
+        assert not asked, "спросили окном вместо створки"
         await browser.close()
 
 

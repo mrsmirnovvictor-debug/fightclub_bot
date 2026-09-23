@@ -317,12 +317,12 @@ function renderSlots(container, slots, own, info) {
         return;
       }
       // Клик по надетой вещи возвращает её в инвентарь, но не молча:
-      // промахнуться по слоту легко, а вещь при этом слетает.
-      confirmAction(
-        "Вы уверены, что хотите снять предмет?\n" + item.title
-      ).then((ok) => {
-        if (ok) act("api/unequip", { slot: item.slot || slot.slot });
-      });
+      // промахнуться по слоту легко, а вещь при этом слетает. Спрашиваем
+      // не голым «вы уверены?», а той же створкой со свойствами: перед
+      // тем как снять, полезно увидеть, что именно теряешь
+      openWorn(item, title, slot, () =>
+        act("api/unequip", { slot: item.slot || slot.slot })
+      );
     });
     container.appendChild(box);
   });
@@ -345,9 +345,11 @@ function wearBadge(state) {
 
 // Что надето: картинка, свойства и износ. Открывается с куклы персонажа
 // и с чужой карточки — там, где вещь показывают, а не снимают
-function openWorn(item, slotTitle, slot) {
+// `takeOff` — что сделать по кнопке «Снять». Не задан, значит вещь
+// только показывают: так открывается створка с куклы персонажа.
+function openWorn(item, slotTitle, slot, takeOff) {
   openSheet(item.title, slotTitle);
-  el("sheet-list").appendChild(wornCard(item));
+  el("sheet-list").appendChild(wornCard(item, !takeOff));
   // Под курткой бывает футболка, и её свойства тоже чьи-то: показываем
   // обе, иначе половина брони так и останется незамеченной
   const other = item === slot.item ? slot.under : null;
@@ -355,11 +357,38 @@ function openWorn(item, slotTitle, slot) {
     const head = document.createElement("p");
     head.className = "sheet-note";
     head.textContent = "Под ней: " + slot.under_title;
-    el("sheet-list").append(head, wornCard(other));
+    el("sheet-list").append(head, wornCard(other, !takeOff));
   }
+  if (takeOff) el("sheet-list").appendChild(undressButtons(takeOff));
 }
 
-function wornCard(item) {
+// Две кнопки под свойствами вещи. «Оставить» стоит первой и просто
+// закрывает створку: промахнуться по слоту легко, и уход отсюда без
+// последствий должен быть ближе, чем снятие
+function undressButtons(takeOff) {
+  const row = document.createElement("div");
+  row.className = "thing-buttons";
+  row.appendChild(
+    button("Оставить", { secondary: true, onClick: closeSheet })
+  );
+  row.appendChild(
+    button("Снять", {
+      onClick: () => {
+        // Створку закрываем до запроса: карточка после снятия
+        // перерисовывается целиком, и оставленная поверх неё створка
+        // показывала бы вещь, которой на бойце уже нет
+        closeSheet();
+        takeOff();
+      },
+    })
+  );
+  return row;
+}
+
+// `showWhere` — приписать ли, что снимают в инвентаре. На экране
+// персонажа это подсказка, а в самом инвентаре под карточкой уже стоит
+// кнопка «Снять», и та же фраза рядом с ней читалась бы как отказ
+function wornCard(item, showWhere) {
   const box = document.createElement("div");
   box.className = "thing";
 
@@ -400,10 +429,12 @@ function wornCard(item) {
   }
   // Снять вещь можно в инвентаре, и сказать об этом стоит здесь: иначе
   // игрок ищет кнопку на экране, где её нарочно нет
-  const where = document.createElement("div");
-  where.className = "thing-note muted";
-  where.textContent = "Снять — в инвентаре, нажатием на эту же клетку.";
-  body.appendChild(where);
+  if (showWhere) {
+    const where = document.createElement("div");
+    where.className = "thing-note muted";
+    where.textContent = "Снять — в инвентаре, нажатием на эту же клетку.";
+    body.appendChild(where);
+  }
 
   box.appendChild(body);
   return box;
