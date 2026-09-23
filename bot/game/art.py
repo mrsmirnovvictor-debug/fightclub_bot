@@ -23,6 +23,13 @@ MAGIC = f"{BUCKET}/magic"
 POTIONS = f"{BUCKET}/potions"
 # Карты районов города: по карте на район
 LOCATIONS = f"{BUCKET}/locations"
+# Виды изнутри: по картинке на дом. Папки две, и это не наша прихоть —
+# первые четырнадцать домов выгрузили в locations/interiors, следующие
+# шестнадцать легли рядом с корнем. Переименовывать чужой бакет не наше
+# дело, поэтому у дома написано, в какой он папке
+INTERIORS = f"{LOCATIONS}/interiors"
+# Районы второй очереди: участок, больница, казармы и всё остальное
+NEW_INTERIORS = f"{BUCKET}/interiors"
 
 
 def avatar(code: str) -> str:
@@ -61,9 +68,27 @@ def item(code: str) -> str:
     return f"{ITEMS}/{code}.jpeg"
 
 
-def location(code: str) -> str:
-    """Карта района: locations/main_hub.jpeg."""
-    return f"{LOCATIONS}/{code}.jpeg"
+def location(code: str, ext: str = "jpeg") -> str:
+    """Карта района: locations/main_hub.jpeg.
+
+    Формат приходится называть: первую очередь города отдали в jpeg,
+    вторую — в png. Перегонять её в другой формат незачем, поэтому
+    формат написан у района, а имя файла всё так же считается от кода.
+    """
+    return f"{LOCATIONS}/{code}.{ext}"
+
+
+def interior(code: str, folder: str = INTERIORS) -> str:
+    """Вид изнутри дома: locations/interiors/pharmacy_interior.jpeg.
+
+    Снаружи дом — кусочек нарисованного района, и с карты видно только
+    дверь. Внутри же боец проводит всё время, и без картинки лавка от
+    аптеки отличается одним заголовком.
+
+    Папку приходится называть: интерьеры выгружали двумя заходами и в
+    разные места. Имя файла при этом всё так же считается от кода дома.
+    """
+    return f"{folder}/{code}.jpeg"
 
 
 def boss(code: str) -> str:
@@ -81,15 +106,18 @@ __all__ = [
     "AVATARS",
     "BOSSES",
     "BUCKET",
+    "INTERIORS",
     "ITEMS",
     "LOCATIONS",
     "MAGIC",
+    "NEW_INTERIORS",
     "POTIONS",
     "SHIRTS",
     "SLOTS",
     "WEAPONS",
     "avatar",
     "boss",
+    "interior",
     "item",
     "location",
     "potion",

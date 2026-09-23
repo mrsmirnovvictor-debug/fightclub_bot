@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -37,6 +38,7 @@ class Service(str, Enum):
     WEAPONS = "weapons"  # оружие и щиты: купить и сдать
     CLOTHES = "clothes"  # одежда и всё прочее носимое
     POTIONS = "potions"  # аптека: эликсиры
+    HEAL = "heal"  # больница: здоровье за кредиты
     PREMIUM = "premium"  # элитный магазин, за звёзды
     FAN = "fan"  # фанатский магазин: экипировка своей команды
     MARKET = "market"  # комиссионка: торговля между бойцами
@@ -53,6 +55,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.WEAPONS: "торговать оружием",
     Service.CLOTHES: "торговать одеждой",
     Service.POTIONS: "покупать эликсиры",
+    Service.HEAL: "лечиться",
     Service.PREMIUM: "покупать за звёзды",
     Service.FAN: "покупать фанатскую экипировку",
     Service.MARKET: "торговать с бойцами",
@@ -132,6 +135,15 @@ class Location:
     soon: str = ""
     # Родительный падеж для фраз «дойти до мастерской»
     genitive: str = ""
+    # Имя файла с видом изнутри, если оно не совпадает с кодом дома.
+    # Обычно не задаётся: картинка зовётся по дому — `pharmacy` →
+    # `pharmacy_interior`. Три дома рисовали под другими именами, и
+    # переименовывать файлы в бакете — не наше дело
+    interior: str = ""
+    # В какой папке бакета лежит его вид изнутри. Пусто — в той, куда
+    # легли первые четырнадцать домов. Районы второй очереди выгрузили
+    # в другую, и это единственное, чем они отличаются
+    interior_folder: str = ""
 
     def allows(self, service: Service) -> bool:
         return service in self.services
@@ -174,8 +186,29 @@ class Location:
 
     @property
     def image(self) -> str:
-        """Картинка района, на которой стоит это здание."""
-        return art.location(self.district)
+        """Картинка района, на которой стоит это здание.
+
+        Спрашиваем у самого района, а не считаем адрес заново: формат у
+        карт разный, и второе место, где он выводится, однажды разошлось
+        бы с первым.
+        """
+        district = DISTRICT_BY_CODE.get(self.district)
+        return district.image if district else ""
+
+    @property
+    def indoors(self) -> str:
+        """Вид изнутри: его вешают сверху экрана, когда боец вошёл.
+
+        Адрес считается от кода дома — как у вещей и склянок. Своё имя
+        файла задаётся только там, где художник назвал его иначе.
+
+        Зовётся не `inside`: так называется проверка попадания в силуэт,
+        и два разных `inside` в одном файле читались бы как одно.
+        """
+        return art.interior(
+            self.interior or f"{self.code}_interior",
+            self.interior_folder or art.INTERIORS,
+        )
 
 
 @dataclass(frozen=True)
@@ -188,10 +221,13 @@ class District:
     # на карте не видно целиком, и это единственное, что связывает шесть
     # картинок в один город
     around: dict[str, str] = field(default_factory=dict)
+    # Чем нарисована карта. Первую очередь отдали в jpeg, вторую — в
+    # png, и это единственное, чем они отличаются
+    picture_ext: str = "jpeg"
 
     @property
     def image(self) -> str:
-        return art.location(self.code)
+        return art.location(self.code, self.picture_ext)
 
     @property
     def places(self) -> tuple[Location, ...]:
@@ -200,11 +236,53 @@ class District:
 
 # ---------- дорога ----------
 
-# Секунды пути. По городу ходят пешком: соседнее здание в своём районе
-# ближе, чем другой конец города, и это единственное, что отличает
-# переход внутри района от перехода между районами.
-STEP_INSIDE = 10
-STEP_BETWEEN = 20
+# По городу ходят пешком, и дорога считается переходами. Переход один и
+# тот же, откуда бы он ни был: шаг в соседний район или вход в дверь —
+# десять секунд.
+#
+# Отсюда всё остальное само: соседний дом в своём районе — это одна
+# дверь, десять секунд. Дом в соседнем районе — шаг и дверь, двадцать.
+# Каждый лишний район по дороге добавляет свои десять.
+#
+# Из казино в бар: Старый город → Центр → Северный Вал (или Торговый
+# квартал — дорога та же) → Стадион. Три шага да дверь бара — сорок
+# секунд.
+STEP = 10
+
+# Дорога между районами, которые ничем не связаны. Такого на карте нет —
+# связность стережёт тест, — но считать бесконечность в секундах нечем,
+# а город и по диагонали проходится за шесть шагов
+FAR_AWAY = 6
+
+
+def _walk_from(start: str) -> dict[str, int]:
+    """Обход в ширину: сколько шагов отсюда до каждого района."""
+    steps = {start: 0}
+    queue = deque([start])
+    while queue:
+        code = queue.popleft()
+        district = DISTRICT_BY_CODE.get(code)
+        if district is None:  # pragma: no cover - район без карты
+            continue
+        for neighbour in district.around.values():
+            if neighbour not in steps:
+                steps[neighbour] = steps[code] + 1
+                queue.append(neighbour)
+    return steps
+
+
+# Расстояния между районами. Считаются один раз и лениво: справочник
+# районов лежит ниже по файлу, а шестнадцать обходов в ширину — работа
+# на глазок, но повторять её на каждый шаг игрока незачем
+_DISTANCES: dict[str, dict[str, int]] | None = None
+
+
+def district_hops(source: str, target: str) -> int:
+    """Сколько шагов между районами. Ноль — это один и тот же район."""
+    global _DISTANCES
+    if _DISTANCES is None:
+        _DISTANCES = {one.code: _walk_from(one.code) for one in DISTRICTS}
+    return _DISTANCES.get(source, {}).get(target, FAR_AWAY)
 
 
 def travel_seconds(source: str, target: str) -> int:
@@ -212,9 +290,9 @@ def travel_seconds(source: str, target: str) -> int:
     if source == target:
         return 0
     here, there = get_location(source), get_location(target)
-    if here is None or there is None:
-        return STEP_BETWEEN
-    return STEP_INSIDE if here.district == there.district else STEP_BETWEEN
+    if here is None or there is None:  # pragma: no cover - дом не с карты
+        return STEP
+    return STEP * (district_hops(here.district, there.district) + 1)
 
 
 # ---------- сама карта ----------
@@ -232,37 +310,138 @@ TOUCH_PAD_X = 0.025
 TOUCH_PAD_Y = 0.015
 
 # Куда можно шагнуть с каждой карты. Соседство взаимное: если из центра
-# вверх Северный Вал, то из Вала вниз — центр. Это стережёт тест, иначе
-# однажды из района можно будет выйти, но не вернуться.
+# вверх Северный Вал, то из Вала вниз — центр. Иначе однажды из района
+# можно будет выйти, но не вернуться, — это стережёт
+# tests/test_travel.py::test_every_road_leads_back. С шестнадцатью
+# районами в голове такое уже не держится.
 UP, DOWN, LEFT, RIGHT = "up", "down", "left", "right"
 
+# ---------- вторая очередь города ----------
+#
+# Десять новых районов пристроены к шести старым по свободным сторонам.
+# Соседство взаимное, как и у первых: это стережёт тест.
+#
+# Коды — имена файлов карт в бакете, как их назвали при выгрузке.
+# Стройной привычки в них нет: где-то на конце «_district», где-то нет,
+# — и придумывать её задним числом значило бы разойтись с хранилищем.
+# Поэтому имена списаны с бакета как есть, одним списком.
+#
+# Заодно: три кода совпадают с кодами домов, которые на этих картах
+# стоят (особняк, автосалон, арена). Это не путаница — районы и дома
+# живут в разных справочниках, и адрес карты считается только от кода
+# района.
+VCPD = "vcpd_hospital_district"
+DRIVING = "driving_school_insurance_district"
+CARS = "car_dealership"
+GYM = "gym_office_district"
+SCHOOLS = "police_school_medical_college"
+BARRACKS = "military_base_training_ground"
+CADETS = "cadet_corps_dormitory"
+ARENA = "fight_tournament_stadium"
+HOUSES = "residential_district"
+MAFIA = "mafia_mansion"
+
+# Вторую очередь нарисовали в png, первую — в jpeg
+PNG = "png"
+
+# Город — сетка четыре на четыре, и это не украшение, а правило: по
+# сетке считается дорога. Каждый район связан со всеми своими соседями
+# по стороне, связи взаимные, а диагоналей нет — ходят по улицам.
+#
+#            ⬅️ запад                          восток ➡️
+#   север ⬆️  Деловой  Северный Вал  Стадион    Армейская часть
+#             Старый   Центр         Торговый   Кадетский городок
+#             Автошкола Участок      Деловой    Жилой квартал
+#   юг    ⬇️  Автосалон Учебный      Арена      Особняк мафии
+#
+# Сетку стережёт tests/test_travel.py: он раскладывает районы по
+# координатам от центра и проверяет, что каждая связь ведёт туда, куда
+# показывает, и что обратная ей есть.
 DISTRICTS: tuple[District, ...] = (
-    District("main_hub", "Центр", {
-        UP: "northern_wall_premium",
-        RIGHT: "clothes_pharmacy",
-        LEFT: "pawnshop_casino",
-    }),
-    District("clothes_pharmacy", "Торговый квартал", {
-        LEFT: "main_hub",
-        UP: "stadium_bar",
-    }),
-    District("pawnshop_casino", "Старый город", {
-        RIGHT: "main_hub",
-        UP: "bank_market_post",
-    }),
-    District("northern_wall_premium", "Северный Вал", {
-        DOWN: "main_hub",
-        RIGHT: "stadium_bar",
-        LEFT: "bank_market_post",
-    }),
+    # ---------- верхний ряд ----------
     District("bank_market_post", "Деловой квартал", {
         DOWN: "pawnshop_casino",
         RIGHT: "northern_wall_premium",
     }),
+    District("northern_wall_premium", "Северный Вал", {
+        DOWN: "main_hub",
+        LEFT: "bank_market_post",
+        RIGHT: "stadium_bar",
+    }),
     District("stadium_bar", "Стадион", {
         DOWN: "clothes_pharmacy",
         LEFT: "northern_wall_premium",
+        RIGHT: BARRACKS,
     }),
+    District(BARRACKS, "Армейская часть", {
+        LEFT: "stadium_bar",
+        DOWN: CADETS,
+    }, PNG),
+    # ---------- ряд центра ----------
+    District("pawnshop_casino", "Старый город", {
+        UP: "bank_market_post",
+        RIGHT: "main_hub",
+        DOWN: DRIVING,
+    }),
+    District("main_hub", "Центр", {
+        UP: "northern_wall_premium",
+        LEFT: "pawnshop_casino",
+        RIGHT: "clothes_pharmacy",
+        DOWN: VCPD,
+    }),
+    District("clothes_pharmacy", "Торговый квартал", {
+        UP: "stadium_bar",
+        LEFT: "main_hub",
+        RIGHT: CADETS,
+        DOWN: GYM,
+    }),
+    District(CADETS, "Кадетский городок", {
+        UP: BARRACKS,
+        LEFT: "clothes_pharmacy",
+        DOWN: HOUSES,
+    }, PNG),
+    # ---------- ряд участка ----------
+    District(DRIVING, "Автошкола и страховая", {
+        UP: "pawnshop_casino",
+        RIGHT: VCPD,
+        DOWN: CARS,
+    }, PNG),
+    District(VCPD, "Участок и больница", {
+        UP: "main_hub",
+        LEFT: DRIVING,
+        RIGHT: GYM,
+        DOWN: SCHOOLS,
+    }, PNG),
+    District(GYM, "Деловой угол", {
+        UP: "clothes_pharmacy",
+        LEFT: VCPD,
+        RIGHT: HOUSES,
+        DOWN: ARENA,
+    }, PNG),
+    District(HOUSES, "Жилой квартал", {
+        UP: CADETS,
+        LEFT: GYM,
+        DOWN: MAFIA,
+    }, PNG),
+    # ---------- нижний ряд ----------
+    District(CARS, "Автосалон", {
+        UP: DRIVING,
+        RIGHT: SCHOOLS,
+    }, PNG),
+    District(SCHOOLS, "Учебный квартал", {
+        UP: VCPD,
+        LEFT: CARS,
+        RIGHT: ARENA,
+    }, PNG),
+    District(ARENA, "Турнирная арена", {
+        UP: GYM,
+        LEFT: SCHOOLS,
+        RIGHT: MAFIA,
+    }, PNG),
+    District(MAFIA, "Особняк мафии", {
+        UP: HOUSES,
+        LEFT: ARENA,
+    }, PNG),
 )
 
 # Какая сторона какой противоположна: по этому и проверяется взаимность
@@ -293,6 +472,7 @@ LOCATIONS: tuple[Location, ...] = (
         ),
         services=(Service.WEAPONS,),
         genitive="оружейного магазина",
+        interior="weapons_shop_interior",
     ),
     Location(
         "workshop",
@@ -318,6 +498,7 @@ LOCATIONS: tuple[Location, ...] = (
         ),
         services=(Service.CLOTHES,),
         genitive="магазина одежды",
+        interior="clothing_shop_interior",
     ),
     Location(
         "pharmacy",
@@ -343,6 +524,7 @@ LOCATIONS: tuple[Location, ...] = (
         ),
         services=(Service.RAID,),
         genitive="казино",
+        interior="underground_casino_interior",
     ),
     Location(
         "pawnshop",
@@ -446,6 +628,265 @@ LOCATIONS: tuple[Location, ...] = (
         soon="задания и угощения",
         genitive="бара",
     ),
+
+    # ---------- вторая очередь: десять районов, девятнадцать домов ----------
+    #
+    # Услуг за ними пока нет ни одной: город вырос картинками, а правила
+    # к ним будут писаться по одному дому. Зайти при этом можно в любой —
+    # внутри вид изнутри и записка о том, чего ждать.
+    #
+    # Двери сняты с самих картинок, по четырём углам видимого проёма.
+    # Сначала они стояли по шаблону — верхнему дому карты доставалась
+    # дверь магазина одежды, нижнему дверь аптеки, — и подсветка садилась
+    # на косяк как придётся. Бланк для новой разметки лежит в
+    # docs/doors.md, пересчёт пикселей в доли делает scripts/doors.py.
+
+    Location(
+        # Код дома и код района остались от VCPD: так названы файлы в
+        # хранилище, и переименовать их значило бы разойтись с ним. На
+        # вывеске при этом то, что понятно без расшифровки
+        "vcpd",
+        "Полицейский участок",
+        district=VCPD,
+        entrance=(
+            (0.412327, 0.241029), (0.5983, 0.244019),
+            (0.5983, 0.308612), (0.41339, 0.305024),
+        ),
+        soon="дежурная часть и розыск",
+        genitive="полицейского участка",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "hospital",
+        "Больница",
+        district=VCPD,
+        entrance=(
+            (0.339001, 0.669258), (0.579171, 0.708732),
+            (0.580234, 0.757775), (0.340064, 0.720694),
+        ),
+        services=(Service.HEAL,),
+        genitive="больницы",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "driving_school",
+        "Автошкола",
+        district=DRIVING,
+        entrance=(
+            (0.302869, 0.226077), (0.431456, 0.212919),
+            (0.42508, 0.271531), (0.30712, 0.285287),
+        ),
+        soon="права и первая машина",
+        genitive="автошколы",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "insurance_office",
+        "Страховая компания",
+        district=DRIVING,
+        entrance=(
+            (0.548353, 0.568182), (0.679065, 0.588517),
+            (0.676939, 0.650718), (0.548353, 0.62799),
+        ),
+        soon="страховка вещей от износа",
+        genitive="страховой",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "strength_gym",
+        "Тренажёрный зал",
+        district=GYM,
+        entrance=(
+            (0.560043, 0.272727), (0.701382, 0.26256),
+            (0.699256, 0.324163), (0.561105, 0.333134),
+        ),
+        soon="тренировки на характеристики",
+        genitive="зала",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "office_building",
+        "Офисное здание",
+        district=GYM,
+        entrance=(
+            (0.592986, 0.678828), (0.712009, 0.66866),
+            (0.714134, 0.723684), (0.591923, 0.736842),
+        ),
+        soon="работа и жалованье",
+        genitive="офиса",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "military_base",
+        "Армейская часть",
+        district=BARRACKS,
+        entrance=(
+            (0.418704, 0.217105), (0.561105, 0.221292),
+            (0.556854, 0.276914), (0.419766, 0.268541),
+        ),
+        soon="служба и звания",
+        genitive="части",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "indoor_training_ground",
+        "Крытый полигон",
+        district=BARRACKS,
+        entrance=(
+            (0.378321, 0.858852), (0.5356, 0.87201),
+            (0.5356, 0.915072), (0.377258, 0.898923),
+        ),
+        soon="стрельба и спарринги",
+        genitive="полигона",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "cadet_corps",
+        "Кадетский корпус",
+        district=CADETS,
+        entrance=(
+            (0.454835, 0.226675), (0.582359, 0.226077),
+            (0.582359, 0.279306), (0.453773, 0.278708),
+        ),
+        soon="школа для новичков",
+        genitive="корпуса",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "dormitory",
+        "Общежитие",
+        district=CADETS,
+        entrance=(
+            (0.432519, 0.67823), (0.561105, 0.680622),
+            (0.55898, 0.721292), (0.42933, 0.721292),
+        ),
+        soon="отдых и восстановление",
+        genitive="общежития",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        # Код остался от прежнего имени — так назван файл в хранилище,
+        # и он же стоит в коде района
+        "police_school",
+        "Полицейская академия",
+        district=SCHOOLS,
+        entrance=(
+            (0.431456, 0.248804), (0.536663, 0.243421),
+            (0.536663, 0.302033), (0.432519, 0.307416),
+        ),
+        soon="путь в полицию",
+        genitive="полицейской академии",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "medical_college",
+        "Медицинский колледж",
+        district=SCHOOLS,
+        entrance=(
+            (0.4644, 0.646531), (0.61424, 0.654306),
+            (0.612115, 0.703947), (0.463337, 0.694378),
+        ),
+        soon="ремесло лекаря",
+        genitive="колледжа",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+
+    # На карте жилого квартала нарисованы четыре дома, и дверь у каждого
+    # своя. Домов четыре, а вид изнутри один на всех: внутри они
+    # одинаковые, и заводить четыре одинаковые картинки незачем. Работать
+    # они тоже будут одинаково — когда своё жильё вообще появится.
+    Location(
+        "residential_apartment",
+        "Жилой дом №1",
+        district=HOUSES,
+        # слева сверху
+        entrance=(
+            (0.332625, 0.242225), (0.418704, 0.227871),
+            (0.418704, 0.274522), (0.331562, 0.288278),
+        ),
+        soon="своё жильё",
+        genitive="жилого дома",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "residential_apartment_2",
+        "Жилой дом №2",
+        district=HOUSES,
+        # справа сверху
+        entrance=(
+            (0.723698, 0.276914), (0.807651, 0.293062),
+            (0.802338, 0.339115), (0.724761, 0.322368),
+        ),
+        soon="своё жильё",
+        genitive="жилого дома",
+        interior="residential_apartment_interior",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "residential_apartment_3",
+        "Жилой дом №3",
+        district=HOUSES,
+        # слева снизу
+        entrance=(
+            (0.11796, 0.551435), (0.215728, 0.532297),
+            (0.215728, 0.589115), (0.11796, 0.608852),
+        ),
+        soon="своё жильё",
+        genitive="жилого дома",
+        interior="residential_apartment_interior",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "residential_apartment_4",
+        "Жилой дом №4",
+        district=HOUSES,
+        # справа снизу
+        entrance=(
+            (0.785335, 0.57177), (0.873539, 0.601675),
+            (0.872476, 0.656699), (0.785335, 0.626794),
+        ),
+        soon="своё жильё",
+        genitive="жилого дома",
+        interior="residential_apartment_interior",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+
+    Location(
+        "mafia_mansion",
+        "Особняк мафии",
+        district=MAFIA,
+        entrance=(
+            (0.477152, 0.272129), (0.561105, 0.276316),
+            (0.562168, 0.33134), (0.476089, 0.325359),
+        ),
+        soon="дела, о которых не пишут",
+        genitive="особняка",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "fight_tournament_stadium",
+        "Турнирная арена",
+        district=ARENA,
+        entrance=(
+            (0.430393, 0.360646), (0.57492, 0.363636),
+            (0.572795, 0.420455), (0.431456, 0.413876),
+        ),
+        soon="турниры на выбывание",
+        genitive="арены",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "car_dealership",
+        "Автосалон",
+        district=CARS,
+        entrance=(
+            (0.345377, 0.354067), (0.454835, 0.354067),
+            (0.45271, 0.409091), (0.34644, 0.409091),
+        ),
+        soon="машины и гаражи",
+        genitive="автосалона",
+        interior_folder=art.NEW_INTERIORS,
+    ),
 )
 
 BY_CODE: dict[str, Location] = {place.code: place for place in LOCATIONS}
@@ -518,11 +959,11 @@ __all__ = [
     "LOCATIONS",
     "Location",
     "Rect",
-    "STEP_BETWEEN",
-    "STEP_INSIDE",
+    "STEP",
     "SHOP_SERVICES",
     "Service",
     "service_for",
+    "district_hops",
     "get_district",
     "get_location",
     "travel_seconds",

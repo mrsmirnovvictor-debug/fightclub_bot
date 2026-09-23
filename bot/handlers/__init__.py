@@ -2,11 +2,14 @@
 
 from aiogram import Router
 
-from bot.handlers import creation, group, profile, shop, store
+from bot.handlers import admin, creation, group, profile, shop, store
 
 
 def build_router() -> Router:
     router = Router(name="root")
+    # Владелец идёт первым: его команды не должны попасть под чужой
+    # обработчик, и их всего одна
+    router.include_router(admin.router)
     router.include_router(creation.router)
     router.include_router(shop.router)
     router.include_router(store.router)

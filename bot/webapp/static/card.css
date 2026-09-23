@@ -196,6 +196,23 @@ body {
 body:not(.dark) .slot.empty img { opacity: 0.6; }
 .slot:active { transform: scale(0.95); }
 
+/* Вещь на исходе прямо в кукле: обводка по цвету беды и ключ в углу.
+   Обводка сделана тенью, а не рамкой, — рамку уже занимает ступень
+   модификации, и две границы на одной клетке спорили бы между собой */
+.slot.aging { box-shadow: inset 0 0 0 2px var(--hp-yellow); }
+.slot.dying { box-shadow: inset 0 0 0 2px var(--hp-red); }
+.slot-wear {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--slot);
+}
+.slot-wear.dying { filter: drop-shadow(0 0 2px var(--hp-red)); }
+
 .avatar {
   /* Рамка тянется по колонке слотов, поэтому она заметно выше, чем широкая:
      боец в полный рост смотрится лучше квадрата. Высота — запасной пол на
@@ -522,7 +539,12 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .thing-kind { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
 .thing-wear { font-size: 12.5px; margin-top: 4px; }
 .thing-wear.worn { color: var(--hp-yellow); }
+/* Последние три пункта запаса вещь просится в починку, последний —
+   кричит. Разница в цвете, а не только в словах: строку читают не
+   всегда, а цвет виден на пролистывании */
+.thing-wear.aging { color: var(--hp-yellow); font-weight: 700; }
 .thing-wear.dying { color: var(--hp-red); font-weight: 700; }
+.thing-note.muted { color: var(--muted); }
 .thing-have { color: var(--hp-green); font-size: 12.5px; font-weight: 600; margin-top: 4px; }
 .thing-note { color: var(--muted); font-size: 12.5px; margin-top: 4px; line-height: 1.35; }
 /* Этот эликсир погасит нынешний — предупреждаем прямо на склянке */
@@ -578,6 +600,27 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   cursor: not-allowed;
   transform: none;
 }
+
+/* ---------- больница ---------- */
+
+/* Две карточки прайса под полосой здоровья. Картинки у них нет — лечение
+   не вещь, и показывать нечего, — поэтому карточка простая: название,
+   строчка о том, что сделают, и цена на кнопке */
+.cures { display: grid; gap: 10px; margin-top: 12px; }
+.cure {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+.cure-title { font-weight: 700; }
+.cure-note { color: var(--muted); font-size: 12.5px; line-height: 1.35; }
+.cure-gain { font-size: 13px; font-weight: 600; color: var(--hp-green); }
+/* За то же самое рядом просят меньше — говорим об этом прямо на карточке */
+.cure-cheaper { font-size: 12.5px; color: var(--hp-yellow); }
+.cure .btn { margin-top: 6px; }
 
 .foot {
   margin-top: 12px;
@@ -710,6 +753,38 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .screen-count { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
 .screen-note { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
 
+/* ---------- вид изнутри ---------- */
+
+/* С карты у дома видно одну дверь, а всё остальное время боец проводит
+   внутри — и до сих пор аптека отличалась от оружейного магазина только
+   заголовком. Поэтому каждый дом открывается своим видом изнутри,
+   закреплённым сверху экрана. */
+.interior {
+  /* От края до края: у body поля в четырнадцать пикселей, и в них
+     картинка смотрелась бы вклеенной карточкой, а не видом из дверей */
+  margin: -14px -14px 12px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  /* Пока картинка не доехала, на её месте стоит подложка карточки, а не
+     дыра в цвет фона */
+  background: var(--panel);
+}
+
+.interior-pic {
+  display: block;
+  width: 100%;
+  /* Виды нарисованы 1536×864 — это ровно 16:9. Высоту всё же подрезаем:
+     полным кадром баннер съедает треть телефона, и до прилавка каждый
+     раз пришлось бы прокручивать */
+  aspect-ratio: 16 / 9;
+  max-height: 27vh;
+  object-fit: cover;
+}
+
+/* Имя дома без услуги стоит отдельной строкой под кнопкой возврата:
+   в шапку его не ужимали — смотреть на этом экране больше не на что */
+#house-title { margin-bottom: 12px; }
+
 /* ---------- бойцовский клуб ---------- */
 
 /* Список бойцов держим плотным: в клубе их сотни, и каждая лишняя
@@ -795,6 +870,27 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   display: block;
 }
 .map-zones { position: absolute; inset: 0; }
+
+/* Не доехавшая карта: место она занимает по-прежнему — по нему ложится
+   холст с домами, — но значка битой картинки на ней не видно */
+.map-pic.blank { visibility: hidden; }
+
+/* Карта не загрузилась: вместо битой картинки — имя района словами.
+   Двери при этом на месте и нажимаются, поэтому записка стоит по центру
+   и ничего не перехватывает */
+.map-blank {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--muted);
+  pointer-events: none;
+}
 
 /* Холст с домами лежит поверх картинки и вписывается тем же правилом,
    что и она: координаты силуэтов совпадают с рисунком на любом экране */
@@ -1078,13 +1174,17 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
 }
+/* Свёрнутый разбор — одна строка: развёрнутый выталкивал шкалы здоровья
+   за край экрана, а на них в бою смотрят непрерывно */
 .scout-head {
-  margin: 0 0 4px;
+  margin: 0;
   font-size: 11.5px;
   font-weight: 700;
   color: var(--muted);
   text-transform: none;
+  cursor: pointer;
 }
+.scout[open] .scout-head { margin-bottom: 4px; }
 .scout-line {
   display: flex;
   gap: 6px;
@@ -1231,15 +1331,23 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .zone-list > *,
 .zone > * { min-width: 0; }
 
-/* Совет аналитика стоит первой строкой сетки — прямо над теми кнопками,
-   которых касается. Цвет свой, золотой: рядом синим отмечено выбранное, а
-   зелёным — здоровье, и совет обязан не смешаться ни с тем, ни с другим.
-   Переносить его можно: это не надпись на кнопке, а фраза */
+/* Советы аналитика — строкой над кнопками хода: слева про удар, справа
+   про блок, ровно по половине ширины. Стоять столбец в столбец с
+   кнопками им незачем — значок и так говорит, о чём совет, — а места
+   так уходит вдвое меньше.
+
+   Цвет свой, золотой: рядом синим отмечено выбранное, а зелёным —
+   здоровье, и совет обязан не смешаться ни с тем, ни с другим */
+.tips {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
 .zone-tip {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin: 0 0 8px;
+  margin: 0;
   font-size: var(--zone-font);
   line-height: 1.3;
   color: var(--gold);
@@ -1326,42 +1434,66 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin: 0;
   font-size: 13px;
 }
-/* Босс сверху крупно, под ним отряд списком: в рейде важно видеть, у кого
-   осталось здоровье и кто уже отработал волну. */
+/* Отряд слева, босс справа, мечи между ними: обе стороны видно разом.
+   Сорок пять на десять и сорок пять — так просили; в долях, а не в
+   пикселях, чтобы держалось на любом телефоне */
+.raid-board {
+  display: grid;
+  grid-template-columns: 45fr 10fr 45fr;
+  align-items: start;
+  gap: 4px;
+}
 .boss-card {
-  display: flex;
-  gap: 10px;
-  align-items: center;
+  display: grid;
+  gap: 2px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--slot);
-  padding: 10px;
+  padding: 8px;
+  min-width: 0;
 }
+/* Портрет под шкалой и во всю ширину столбца: смотрят на здоровье, а
+   лицо здесь для того, чтобы босс не был строкой текста */
 .boss-face {
-  width: 72px;
-  height: 72px;
+  width: 100%;
+  aspect-ratio: 1;
   object-fit: cover;
-  border-radius: 8px;
+  border-radius: 6px;
   border: 1px solid var(--slot-line);
+  margin-top: 4px;
 }
-.boss-side { flex: 1; min-width: 0; }
-.raid-party { display: grid; gap: 6px; }
+.raid-party { display: grid; gap: 6px; min-width: 0; }
 .raid-member {
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 6px 8px;
+  min-width: 0;
 }
 .raid-member.down { opacity: 0.55; }
+/* Хвост отряда: в подвал ходят вдесятером, и списком они выдавливают с
+   экрана кнопки хода. Трое на виду, остальные — по нажатию */
+.party-more { display: grid; gap: 6px; }
+.party-more-head {
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 0;
+}
+/* Имя и счёт в узком столбце: переносить их некуда, поэтому мельче */
+.raid-board .fight-name, .raid-board .fight-hp { font-size: 12px; }
+.raid-board .fight-hp { font-size: 11px; }
 .raid-sizes { display: grid; gap: 8px; }
 /* Кнопка, которой нужен воздух: иначе она липнет к соседней снизу */
 .btn.spaced { margin-bottom: 10px; }
-/* «VS» между карточкой босса и отрядом: кто против кого */
+/* Мечи между отрядом и боссом: кто против кого. Стоят по верху, вровень
+   с первой карточкой отряда, а не посередине столбца — столбцы разной
+   высоты, и середина у них гуляет */
 .versus {
-  margin: 10px 0 6px;
+  margin: 0;
+  padding-top: 14px;
   text-align: center;
-  font-weight: 700;
-  letter-spacing: 2px;
-  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
 }
 
 /* Поле с подписью: подпись сверху, само поле под ней во всю ширину.
@@ -1459,6 +1591,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .energy {
   position: relative;
   height: 18px;
+  margin-top: 6px;
   border-radius: 9px;
   background: var(--hp-track);
   overflow: hidden;
@@ -1480,7 +1613,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
 }
 .energy-note {
-  margin: 3px 0 8px;
+  margin: 3px 0 0;
   font-size: 11.5px;
   color: var(--muted);
   text-align: center;
@@ -1496,11 +1629,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   width: 23.5%;
   max-width: 92px;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 5px 3px 6px;
+  display: block;
+  padding: 3px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--panel);
@@ -1508,7 +1638,11 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   cursor: pointer;
   font: inherit;
 }
+/* Плашка — это картинка и цена на ней. Подписи под картинкой больше нет:
+   на телефоне она занимала столько же места, сколько сам рисунок, а
+   прочесть её всё равно не выходило. Приём узнают по картинке */
 .trick-pic {
+  position: relative;
   width: 100%;
   aspect-ratio: 16 / 9;
   border-radius: 5px;
@@ -1520,13 +1654,20 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   overflow: hidden;
 }
 .trick-pic img { width: 100%; height: 100%; object-fit: cover; }
-.trick-name {
-  font-size: 10.5px;
+/* Цена лежит поверх рисунка, на своей подложке: без неё цифры тонут в
+   картинке — она у каждого приёма своя и какого угодно цвета */
+.trick-cost {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 10px;
   font-weight: 700;
-  line-height: 1.15;
-  text-align: center;
+  line-height: 1.25;
 }
-.trick-cost { font-size: 10px; color: var(--muted); font-weight: 600; }
 
 /* Энергии не хватает — приём гаснет. Ровно так и просили: чёрно-белый,
    пока нажать нельзя, цветной, когда можно */
@@ -1543,7 +1684,7 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   box-shadow: 0 0 0 2px var(--hp-green);
   cursor: default;
 }
-.trick.armed .trick-cost { color: var(--hp-green); font-weight: 700; }
+.trick.armed .trick-cost { background: var(--hp-green); color: #fff; }
 .trick.armed .trick-pic { outline: 1px solid var(--hp-green); }
 .trick:active:not(:disabled) { transform: scale(0.97); }
 
@@ -1607,7 +1748,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 
 @media (max-width: 380px) {
   .skill-pic { width: 88px; }
-  .trick-name { font-size: 9px; }
   .trick { max-width: 80px; }
 }
 

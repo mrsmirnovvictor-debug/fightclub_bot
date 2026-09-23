@@ -92,6 +92,21 @@ function statValue(stat) {
   return box;
 }
 
+// Вибрация — украшение, и вести себя она должна как украшение.
+//
+// Телефон её умеет, настольный клиент — не всегда. Объект `HapticFeedback` в
+// SDK есть всегда, поэтому проверка «а есть ли он» проходила, а сам вызов на
+// старом клиенте бросал WebAppMethodUnsupported. Бросок случался до `try`, и
+// флаг «занято» у хода оставался поднятым навсегда: удары после этого
+// переставали нажиматься молча, без единого слова на экране.
+function haptic(run) {
+  try {
+    if (tg && tg.HapticFeedback) run(tg.HapticFeedback);
+  } catch (error) {
+    // Не завибрировало — и ладно. Ход от этого срываться не должен
+  }
+}
+
 function popup(title, message) {
   if (tg && tg.showPopup) {
     tg.showPopup({ title, message, buttons: [{ type: "close" }] });
@@ -149,6 +164,63 @@ function picture(src, alt, fallback, onFail) {
   return img;
 }
 
+// ---------- износ ----------
+//
+// Вещь рассыпается молча: запас прочности кончился — и её нет. Чтобы это
+// не случалось «вдруг», последние пункты запаса вещь говорит о себе сама,
+// и одинаково везде: в рюкзаке, в кукле и в мастерской.
+//
+// Три — не круглое число, а расстояние: столько боёв у бойца есть, чтобы
+// дойти до мастерской и не остаться без вещи.
+const WEAR_WARN = 3;
+
+function wearLeft(item) {
+  // Сколько пунктов запаса осталось. Ноль — вещи уже нет
+  return (item.max_wear || 0) - (item.wear || 0);
+}
+
+function wearState(item) {
+  // "" — беспокоиться не о чем, "worn" — вещь потрёпана, "aging" —
+  // просится в починку, "dying" — последний бой
+  if (!item || !item.max_wear) return "";
+  if (item.kind === "pass") return "";  // пропуск не ветшает, а отрабатывает
+  const left = wearLeft(item);
+  if (left <= 1) return "dying";
+  if (left <= WEAR_WARN) return "aging";
+  return item.wear ? "worn" : "";
+}
+
+function fightWord(count) {
+  // 1 бой, 2–4 боя, 5 и больше — боёв
+  const last = count % 10;
+  const pair = count % 100;
+  if (pair >= 11 && pair <= 14) return "боёв";
+  if (last === 1) return "бой";
+  if (last >= 2 && last <= 4) return "боя";
+  return "боёв";
+}
+
+function wearNote(item) {
+  // Что приписать к «Износ: 18/20». Пусто — ничего, запас велик
+  const state = wearState(item);
+  const left = wearLeft(item);
+  if (state === "dying") return " — ещё один бой, и рассыплется";
+  if (state === "aging") return " — в запасе " + left + " " + fightWord(left);
+  return "";
+}
+
+function wearRow(item) {
+  // Строка износа: одна на весь клуб, чтобы «ещё один бой» и цвет не
+  // разошлись между рюкзаком, мастерской и куклой
+  const box = document.createElement("div");
+  const state = wearState(item);
+  box.className = "thing-wear" + (state ? " " + state : "");
+  box.textContent = "🔧 Износ: " + item.wear_text;
+  if (item.kind === "pass") box.textContent += " — хватает на один рейд";
+  else box.textContent += wearNote(item);
+  return box;
+}
+
 function slotPicture(item, placeholder) {
   if (item && item.image) {
     return picture(item.image, item.title, item.icon);
@@ -175,6 +247,11 @@ function wornLine(item, slotTitle) {
   }
   if (item.bonus) parts.push(item.bonus);
   if (item.in_hands) parts.push(item.in_hands);
+  // Вещь на исходе — в подсказке клетки, а не только в рюкзаке: на куклу
+  // смотрят чаще, и рассыпается вещь именно надетой
+  if (wearState(item) === "dying" || wearState(item) === "aging") {
+    parts.push("🔧 Износ: " + item.wear_text + wearNote(item));
+  }
   return parts.join("\n");
 }
 
@@ -189,7 +266,14 @@ function slotHint(slot) {
   return lines.join("\n\n");
 }
 
-function renderSlots(container, slots, own) {
+// Кукла бывает двух родов. В инвентаре она про сборы: нажатие снимает
+// вещь. В персонаже — про самого бойца: нажатие рассказывает, что вещь
+// даёт, и ничего с ней не делает. Снять надетое случайным нажатием на
+// экране, куда заходят посмотреть характеристики, — из тех потерь, за
+// которые игра и получает своё «опять слетело».
+//
+// `own` — своя ли это карточка, `info` — кукла только для показа.
+function renderSlots(container, slots, own, info) {
   container.textContent = "";
   slots.forEach((slot) => {
     // Картинкой показываем верхнюю вещь; если её нет, а нижняя есть — нижнюю.
@@ -206,37 +290,154 @@ function renderSlots(container, slots, own) {
     if (shown && shown.mod && shown.mod.level) {
       box.classList.add("tier", "lvl" + shown.mod.level);
     }
+    // Вещь на исходе видно прямо в клетке: рюкзак открывают не каждый
+    // день, а рассыпается вещь надетой и посреди боя
+    const dying = worstWear(slot);
+    if (dying) {
+      box.classList.add(dying);
+      box.appendChild(wearBadge(dying));
+    }
     box.addEventListener("click", () => {
-      if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-      if (!slot.item && slot.under) {
-        // В клетке только нижняя вещь — снимаем её
-        if (own) {
-          confirmAction(
-            "Вы уверены, что хотите снять предмет?\n" + slot.under.title
-          ).then((ok) => {
-            if (ok) act("api/unequip", { slot: slot.under.slot });
-          });
-        } else {
-          popup(slot.under.title, slotHint(slot));
-        }
+      haptic((feedback) => feedback.selectionChanged());
+      // В клетке тела вещей две: разбираем ту, что видно
+      const item = slot.item || slot.under;
+      const title = slot.item ? slot.title : slot.under_title;
+      if (!item) {
+        popup("Слот пуст", "Сюда надевается: " + slot.cell_title + ".");
         return;
       }
-      if (slot.item && own) {
-        // Клик по надетой вещи возвращает её в инвентарь, но не молча:
-        // промахнуться по слоту легко, а вещь при этом слетает.
-        confirmAction(
-          "Вы уверены, что хотите снять предмет?\n" + slot.item.title
-        ).then((ok) => {
-          if (ok) act("api/unequip", { slot: slot.slot });
-        });
-      } else if (slot.item) {
-        popup(slot.item.title, slotHint(slot));
-      } else {
-        popup("Слот пуст", "Сюда надевается: " + slot.cell_title + ".");
+      if (info) {
+        openWorn(item, title, slot);
+        return;
       }
+      if (!own) {
+        // Чужая кукла внутри всплывающей карточки: открывать над ней
+        // вторую створку некуда, и вещь рассказывает о себе запиской
+        popup(item.title, slotHint(slot));
+        return;
+      }
+      // Клик по надетой вещи возвращает её в инвентарь, но не молча:
+      // промахнуться по слоту легко, а вещь при этом слетает. Спрашиваем
+      // не голым «вы уверены?», а той же створкой со свойствами: перед
+      // тем как снять, полезно увидеть, что именно теряешь
+      openWorn(item, title, slot, () =>
+        act("api/unequip", { slot: item.slot || slot.slot })
+      );
     });
     container.appendChild(box);
   });
+}
+
+function worstWear(slot) {
+  // Самая изношенная вещь клетки: под курткой может доживать футболка
+  const states = [slot.item, slot.under].filter(Boolean).map(wearState);
+  if (states.includes("dying")) return "dying";
+  if (states.includes("aging")) return "aging";
+  return "";
+}
+
+function wearBadge(state) {
+  const mark = document.createElement("span");
+  mark.className = "slot-wear " + state;
+  mark.textContent = "🔧";
+  return mark;
+}
+
+// Что надето: картинка, свойства и износ. Открывается с куклы персонажа
+// и с чужой карточки — там, где вещь показывают, а не снимают
+// `takeOff` — что сделать по кнопке «Снять». Не задан, значит вещь
+// только показывают: так открывается створка с куклы персонажа.
+function openWorn(item, slotTitle, slot, takeOff) {
+  openSheet(item.title, slotTitle);
+  el("sheet-list").appendChild(wornCard(item, !takeOff));
+  // Под курткой бывает футболка, и её свойства тоже чьи-то: показываем
+  // обе, иначе половина брони так и останется незамеченной
+  const other = item === slot.item ? slot.under : null;
+  if (other) {
+    const head = document.createElement("p");
+    head.className = "sheet-note";
+    head.textContent = "Под ней: " + slot.under_title;
+    el("sheet-list").append(head, wornCard(other, !takeOff));
+  }
+  if (takeOff) el("sheet-list").appendChild(undressButtons(takeOff));
+}
+
+// Две кнопки под свойствами вещи. «Оставить» стоит первой и просто
+// закрывает створку: промахнуться по слоту легко, и уход отсюда без
+// последствий должен быть ближе, чем снятие
+function undressButtons(takeOff) {
+  const row = document.createElement("div");
+  row.className = "thing-buttons";
+  row.appendChild(
+    button("Оставить", { secondary: true, onClick: closeSheet })
+  );
+  row.appendChild(
+    button("Снять", {
+      onClick: () => {
+        // Створку закрываем до запроса: карточка после снятия
+        // перерисовывается целиком, и оставленная поверх неё створка
+        // показывала бы вещь, которой на бойце уже нет
+        closeSheet();
+        takeOff();
+      },
+    })
+  );
+  return row;
+}
+
+// `showWhere` — приписать ли, что снимают в инвентаре. На экране
+// персонажа это подсказка, а в самом инвентаре под карточкой уже стоит
+// кнопка «Снять», и та же фраза рядом с ней читалась бы как отказ
+function wornCard(item, showWhere) {
+  const box = document.createElement("div");
+  box.className = "thing";
+
+  const pic = document.createElement("div");
+  pic.className = "thing-pic";
+  if (item.mod && item.mod.level) pic.classList.add("tier", "lvl" + item.mod.level);
+  pic.appendChild(slotPicture(item, item.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "thing-body";
+
+  const title = document.createElement("div");
+  title.className = "thing-title";
+  title.textContent = item.title;
+  if (item.mod && item.mod.star) {
+    const star = document.createElement("span");
+    star.className = "thing-star lvl" + item.mod.level;
+    star.textContent = item.mod.star;
+    star.title = item.mod.title + ": " + item.mod.gain;
+    title.appendChild(star);
+  }
+  body.appendChild(title);
+
+  if (item.max_wear) body.appendChild(wearRow(item));
+
+  if (item.bonuses && item.bonuses.length) {
+    const label = document.createElement("div");
+    label.className = "thing-label";
+    label.textContent = "Даёт надетой";
+    body.append(label, bonusList(item));
+  }
+  if (item.in_hands) {
+    const hands = document.createElement("div");
+    hands.className = "thing-note";
+    hands.textContent = item.in_hands;
+    body.appendChild(hands);
+  }
+  // Снять вещь можно в инвентаре, и сказать об этом стоит здесь: иначе
+  // игрок ищет кнопку на экране, где её нарочно нет
+  if (showWhere) {
+    const where = document.createElement("div");
+    where.className = "thing-note muted";
+    where.textContent = "Снять — в инвентаре, нажатием на эту же клетку.";
+    body.appendChild(where);
+  }
+
+  box.appendChild(body);
+  return box;
 }
 
 // ---------- инвентарь ----------
@@ -356,17 +557,7 @@ function thingCard(item, credits, shop, bare) {
   // Полосу износа рисуем только тому, у кого есть шкала: у склянки её нет,
   // и без этой проверки пропуск получал «Износ: undefined»
   if (!shop && !item.consumable && item.max_wear) {
-    const wear = document.createElement("div");
-    const left = item.max_wear - item.wear;
-    const ticket = item.kind === "pass";
-    wear.className =
-      "thing-wear" + (left <= 1 && !ticket ? " dying" : item.wear ? " worn" : "");
-    wear.textContent = "🔧 Износ: " + item.wear_text;
-    // Пропуск не рассыпается, а отрабатывает своё: предупреждать о его
-    // последнем бое незачем — других у него и не бывает
-    if (ticket) wear.textContent += " — хватает на один рейд";
-    else if (left <= 1) wear.textContent += " — ещё один бой, и рассыплется";
-    body.appendChild(wear);
+    body.appendChild(wearRow(item));
   }
 
   if (shop) {
@@ -849,7 +1040,7 @@ function statStep(stat) {
   plus.addEventListener("click", () => {
     if (draftLeft() <= 0) return;
     draft[stat.code] = (draft[stat.code] || 0) + 1;
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    haptic((feedback) => feedback.selectionChanged());
     paintUpgrade();
   });
 
@@ -923,7 +1114,7 @@ async function applyUpgrade() {
     const data = await post("api/upgrade", draft);
     draft = {};
     render(data.card, true);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     popup(
       "✨ Характеристики выросли",
       "Вложено очков: " + spent + "."
@@ -996,7 +1187,7 @@ function chip(label, active, onClick, extraClass) {
   btn.className = "chip" + (active ? " on" : "") + (extraClass ? " " + extraClass : "");
   btn.textContent = label;
   btn.addEventListener("click", () => {
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    haptic((feedback) => feedback.selectionChanged());
     onClick();
   });
   return btn;
@@ -1178,8 +1369,10 @@ async function buyLot(lot) {
 async function marketAction(payload) {
   if (marketBusy) return;
   marketBusy = true;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  // Всё, что между поднятым флагом и `finally`, обязано лежать внутри `try`:
+  // иначе любой бросок оставляет флаг поднятым, и кнопки замолкают навсегда
   try {
+    haptic((feedback) => feedback.impactOccurred("light"));
     const response = await fetch("api/market", {
       method: "POST",
       headers: {
@@ -1268,9 +1461,9 @@ function sellCard(row) {
   const kind = document.createElement("div");
   kind.className = "thing-kind";
   kind.textContent = row.slot_title;
-  const wear = document.createElement("div");
-  wear.className = "thing-wear" + (row.wear ? " worn" : "");
-  wear.textContent = "🔧 Износ: " + row.wear_text;
+  // Износ — той же строкой, что и в рюкзаке: вещь на грани здесь видно
+  // особенно кстати, за такую на комиссионке не дадут ничего
+  const wear = wearRow(row);
   const hint = document.createElement("div");
   hint.className = "thing-note";
   hint.textContent = row.hint;
@@ -1342,9 +1535,8 @@ function lotCard(lot) {
   const seller = document.createElement("div");
   seller.className = "thing-seller";
   seller.textContent = lot.mine ? "Твой лот" : "Продаёт: " + lot.seller;
-  const wear = document.createElement("div");
-  wear.className = "thing-wear" + (lot.wear ? " worn" : "");
-  wear.textContent = "🔧 Износ: " + lot.wear_text;
+  // Чужую вещь на грани покупатель обязан видеть до, а не после покупки
+  const wear = wearRow(lot);
   const price = document.createElement("div");
   price.className = "thing-price";
   price.textContent = lot.price + " 💰";
@@ -1393,11 +1585,15 @@ function lotCard(lot) {
   return box;
 }
 
-const SCREENS = ["club", "map", "shop", "magic", "workshop", "bag", "hero"];
+const SCREENS = [
+  "club", "map", "shop", "magic", "workshop", "hospital", "house", "bag", "hero",
+];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
-const OPENED_FROM = { shop: "map", magic: "map", workshop: "map" };
+const OPENED_FROM = {
+  shop: "map", magic: "map", workshop: "map", hospital: "map", house: "map",
+};
 let lastTab = "hero";
 
 function showTab(name) {
@@ -1421,6 +1617,7 @@ function showTab(name) {
     else loadShop();
   }
   if (name === "workshop") loadWorkshop();
+  if (name === "hospital") loadHospital();
   if (name === "map") loadMap();
   // Часы рейда идут, только пока на карту смотрят
   if (name === "map") startRaidClock();
@@ -1493,15 +1690,39 @@ function shownDistrict() {
   return mapData.districts.find((one) => one.code === mapShown);
 }
 
+// Карты, которые не доехали. Помнить их приходится по той же причине,
+// что и виды изнутри: за упавшую картинку браузер второй раз не
+// возьмётся, а район перерисовывается на каждом шаге по городу
+const brokenMaps = new Set();
+
 function paintDistrict() {
   const district = shownDistrict();
   if (!district) return;
   const pic = el("map-pic");
   if (pic.getAttribute("src") !== district.image) pic.src = district.image;
   pic.alt = "Район: " + district.title;
+  showBlankMap(district);
   placeZones();
   placeArrows();
 }
+
+// Вместо битой картинки — имя района словами. Ходить это не мешает:
+// двери лежат поверх рамки и считаются от неё, а не от картинки
+function showBlankMap(district) {
+  const gone = brokenMaps.has(district.image);
+  // Не `hidden`: холст с домами ложится по рамке самой картинки, и
+  // убери её из вёрстки — двери поедут следом. Поэтому картинка
+  // остаётся на месте, её просто не видно
+  el("map-pic").classList.toggle("blank", gone);
+  const note = el("map-blank");
+  note.classList.toggle("hidden", !gone);
+  if (gone) note.textContent = district.title + ": карта не загрузилась";
+}
+
+el("map-pic").addEventListener("error", () => {
+  brokenMaps.add(el("map-pic").getAttribute("src"));
+  if (mapData) paintDistrict();
+});
 
 // Стрелки в соседние районы. Города целиком не видно, и без них шесть
 // карт остаются шестью картинками: по ним и понятно, что это один город.
@@ -1574,6 +1795,27 @@ function placeZones() {
   });
   district.places.forEach((place) => canvas.appendChild(houseShape(place)));
   box.appendChild(canvas);
+  // Подписи двигаем, когда холст уже в странице: до этого их нечем мерить
+  canvas.querySelectorAll(".zone-sign").forEach(fitSign);
+}
+
+// Подпись стоит под серединой двери и шире её. У двери с краю карты она
+// уезжает за рамку: в жилом квартале четыре дома по углам, и два из них
+// стоят почти у самого края. Поэтому подпись поджимаем внутрь картинки.
+//
+// Ширину спрашиваем у браузера. Когда карта ещё не на экране, холст
+// ничего не меряет и отвечает нулём — тогда прикидываем по числу букв.
+const SIGN_EDGE = 16;   // поле от края картинки
+const SIGN_CHAR = 21;   // ширина буквы на глаз: 38 пикселей жирным
+
+function fitSign(sign) {
+  const measured = sign.getComputedTextLength ? sign.getComputedTextLength() : 0;
+  const half = (measured || sign.textContent.length * SIGN_CHAR) / 2;
+  const left = SIGN_EDGE + half;
+  const right = MAP_W - SIGN_EDGE - half;
+  if (left > right) return;  // подпись шире карты — двигать её некуда
+  const x = Number(sign.getAttribute("x"));
+  sign.setAttribute("x", Math.min(Math.max(x, left), right));
 }
 
 function houseShape(place) {
@@ -1734,12 +1976,25 @@ const HOUSE_SCREENS = {
     showTab("shop");
   },
   repair: () => openWorkshop(),
+  heal: () => showTab("hospital"),
 };
+
+// Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
+// оставался на карте — то есть внутрь не попадал вовсе, и вид изнутри
+// показать было негде. Теперь у него свой экран: картинка сверху и
+// записка о том, чего тут ждать.
+function openHouse(place) {
+  el("house-title").textContent = place.title;
+  el("house-soon").textContent = place.soon
+    ? "Скоро здесь появится новая услуга: " + place.soon + "."
+    : "Дом пока пустует. Загляни позже.";
+  showTab("house");
+}
 
 async function enterHouse(place) {
   if (place.here) {
     if (!place.works) {
-      popup(place.title, "Скоро здесь появится новая услуга: " + place.soon + ".");
+      openHouse(place);
       return;
     }
     const open = HOUSE_SCREENS[place.services[0]];
@@ -1937,7 +2192,7 @@ async function takePro(pro) {
     const data = await post("api/pro", {});
     render(data.card, true);
     renderMagic(data.magic);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     const got = data.pro;
     const extras = [];
     if (got.blade) extras.push("клинок ассасина — в инвентаре");
@@ -2326,8 +2581,10 @@ async function loadFights() {
 async function fightAction(payload) {
   if (fightBusy) return;
   fightBusy = true;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  // Всё, что между поднятым флагом и `finally`, обязано лежать внутри `try`:
+  // иначе любой бросок оставляет флаг поднятым, и кнопки замолкают навсегда
   try {
+    haptic((feedback) => feedback.impactOccurred("light"));
     const response = await fetch("api/fight", {
       method: "POST",
       headers: {
@@ -2512,21 +2769,11 @@ function zoneList(column, repaint) {
   return box;
 }
 
-function zoneColumns(hands, attacks, blocks, draft, prefix, repaint, scout) {
+function zoneColumns(hands, attacks, blocks, draft, prefix, repaint) {
   // Столбцы выбора хода: по столбцу на руку с оружием и один на защиту.
   const box = document.createElement("div");
   box.className = "zone-columns" + (hands.length > 1 ? " three" : "");
 
-  // Советы аналитика — прямо над теми кнопками, которых они касаются:
-  // совет по удару над ударами, по блоку над блоком. Разбор читать
-  // между ходами успевает не каждый, а совет — это одно действие и одно
-  // число. Совет по удару один на обе руки и растянут на их столбцы:
-  // бить в слабое место стоит и левой, и правой
-  const tips = scout && (scout.attack_tip || scout.block_tip);
-  if (tips && (scout.attack_tip.move || scout.block_tip.move)) {
-    box.appendChild(tipCell(scout.attack_tip, hands.length));
-    box.appendChild(tipCell(scout.block_tip, 1));
-  }
   // Заголовок короткий — «Удар 1», — а чем именно бьёт эта рука, говорит
   // подсказка: столбцов бывает три, и название оружия в них не помещается
   const columns = hands.map((hand, index) => ({
@@ -2565,11 +2812,27 @@ function zoneColumns(hands, attacks, blocks, draft, prefix, repaint, scout) {
   return box;
 }
 
-function tipCell(tip, span) {
+// Советы подписчика — строкой над кнопками хода: слева про удар, справа
+// про блок, по половине ширины на каждый. Раньше они стояли столбец в
+// столбец с кнопками, и совет по удару растягивался на две руки — при
+// трёх столбцах от этого разъезжалась вся сетка, а места совет занимал
+// вдвое больше, чем нужно. Стоять ровно над своей кнопкой ему незачем:
+// значок и так говорит, о чём он.
+function tipsRow(scout) {
+  const attack = scout && scout.attack_tip;
+  const block = scout && scout.block_tip;
+  if (!(attack && attack.move) && !(block && block.move)) return null;
+  const box = document.createElement("div");
+  box.className = "tips";
+  box.appendChild(tipCell(attack));
+  box.appendChild(tipCell(block));
+  return box;
+}
+
+function tipCell(tip) {
   const box = document.createElement("div");
   box.className = "zone-tip";
-  if (span > 1) box.style.gridColumn = "span " + span;
-  if (!tip || !tip.move) return box;  // советовать нечего — клетка пустая
+  if (!tip || !tip.move) return box;  // советовать нечего — половина пустая
   const move = document.createElement("span");
   move.className = "zone-tip-move";
   move.textContent = "💡 " + tip.move;
@@ -2601,12 +2864,26 @@ function paintDraft() {
 // выбрать удар, другая — блок, и у каждой свой значок. Столбцы на
 // телефоне узкие, предложение в них не помещается, поэтому панель стоит
 // над ними целиком — но выше кнопок, как ей и положено.
+//
+// Разбор при этом свёрнут. Развёрнутый он занимает четыре строки и
+// выталкивает с экрана шкалы здоровья — то самое, на что в бою смотрят
+// непрерывно. Совет из разбора («бей в ноги») остаётся на виду всегда:
+// он в клетках над кнопками, а не здесь.
+
+// Развернул один раз — остаётся развёрнутым: экран рейда перерисовывается
+// каждые две секунды, и без этого разбор захлопывался бы на глазах
+let scoutOpen = false;
+
 function scoutPanel(scout) {
   if (!scout || (!scout.attack && !scout.block)) return null;
-  const box = document.createElement("section");
+  const box = document.createElement("details");
   box.className = "scout";
+  box.open = scoutOpen;
+  box.addEventListener("toggle", () => {
+    scoutOpen = box.open;
+  });
 
-  const head = document.createElement("p");
+  const head = document.createElement("summary");
   head.className = "scout-head";
   head.textContent = "🔍 Аналитик" + (scout.title ? " · " + scout.title : "");
   box.appendChild(head);
@@ -2639,6 +2916,40 @@ function abilityPanel(state, send) {
   const box = document.createElement("section");
   box.className = "tricks";
 
+  // Сначала сами приёмы, шкала под ними. Приём выбирают по картинке, а
+  // на шкалу смотрят уже потом — «хватит ли», — и подпись под шкалой
+  // заодно перестала разрывать ряд и кнопки хода
+  const row = document.createElement("div");
+  row.className = "trick-row";
+  state.tricks.forEach((trick) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    // Готов — цветной, не по карману или норма выбрана — серый, нажатый —
+    // в зелёной обводке. Три состояния, и все видны с одного взгляда
+    card.className =
+      "trick" + (trick.ready ? "" : " cold") + (trick.armed ? " armed" : "");
+    card.disabled = !trick.ready || trick.armed;
+    card.title = trick.title + " · " + trick.cost + " ⚡\n" + trick.note;
+
+    const pic = document.createElement("div");
+    pic.className = "trick-pic";
+    pic.appendChild(slotPicture(trick, trick.icon));
+
+    // Цена лежит на самой картинке, на подложке. Подпись с названием
+    // ушла: на телефоне она занимала столько же места, сколько картинка,
+    // а прочесть её всё равно не выходило — приём узнают по рисунку.
+    // Название осталось в подсказке по долгому нажатию
+    const price = document.createElement("span");
+    price.className = "trick-cost";
+    price.textContent = trick.cost + " ⚡";
+    pic.appendChild(price);
+    card.appendChild(pic);
+
+    card.addEventListener("click", () => send(trick));
+    row.appendChild(card);
+  });
+  box.appendChild(row);
+
   const bar = document.createElement("div");
   bar.className = "energy";
   const fill = document.createElement("div");
@@ -2666,38 +2977,6 @@ function abilityPanel(state, send) {
   }
   note.textContent = parts.join(" · ");
   if (parts.length) box.appendChild(note);
-
-  const row = document.createElement("div");
-  row.className = "trick-row";
-  state.tricks.forEach((trick) => {
-    const card = document.createElement("button");
-    card.type = "button";
-    // Готов — цветной, не по карману или норма выбрана — серый, нажатый —
-    // в зелёной обводке. Три состояния, и все видны с одного взгляда
-    card.className =
-      "trick" + (trick.ready ? "" : " cold") + (trick.armed ? " armed" : "");
-    card.disabled = !trick.ready || trick.armed;
-    card.title = trick.title + " · " + trick.cost + " ⚡\n" + trick.note;
-
-    const pic = document.createElement("div");
-    pic.className = "trick-pic";
-    pic.appendChild(slotPicture(trick, trick.icon));
-    card.appendChild(pic);
-
-    const name = document.createElement("span");
-    name.className = "trick-name";
-    name.textContent = trick.title;
-    card.appendChild(name);
-
-    const price = document.createElement("span");
-    price.className = "trick-cost";
-    price.textContent = trick.armed ? "наготове" : trick.cost + " ⚡";
-    card.appendChild(price);
-
-    card.addEventListener("click", () => send(trick));
-    row.appendChild(card);
-  });
-  box.appendChild(row);
   return box;
 }
 
@@ -2707,7 +2986,7 @@ async function useAbility(where, trick, repaint) {
   try {
     const data = await post(where, { action: "ability", code: trick.code });
     repaint(data);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
+    haptic((feedback) => feedback.impactOccurred("medium"));
   } catch (error) {
     popup("Не вышло", error.message);
   } finally {
@@ -2732,11 +3011,10 @@ function turnForm(data) {
   const hands = data.duel.hands || [{ hand: 0, icon: "👊", title: "Кулаки" }];
   const blocks = data.duel.blocks || data.blocks;
 
+  const tips = tipsRow(data.duel.scout);
+  if (tips) box.appendChild(tips);
   box.appendChild(
-    zoneColumns(
-      hands, data.attacks, blocks, () => turnDraft, "turn", paintDraft,
-      data.duel.scout
-    )
+    zoneColumns(hands, data.attacks, blocks, () => turnDraft, "turn", paintDraft)
   );
 
   const go = document.createElement("button");
@@ -2877,10 +3155,13 @@ function judgeLine(text, strike) {
   return line;
 }
 
-function judgeLines(turn, into) {
-  (turn.lines || []).forEach((said, index) => {
-    into.appendChild(judgeLine(said, (turn.strikes || [])[index]));
-  });
+function judgeLines(turn, into, newestFirst) {
+  const lines = (turn.lines || []).map((said, index) => [
+    said,
+    (turn.strikes || [])[index],
+  ]);
+  if (newestFirst) lines.reverse();
+  lines.forEach(([said, strike]) => into.appendChild(judgeLine(said, strike)));
   return into;
 }
 
@@ -2977,8 +3258,10 @@ async function loadRaid() {
 async function raidAction(payload) {
   if (raidBusy) return;
   raidBusy = true;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  // Всё, что между поднятым флагом и `finally`, обязано лежать внутри `try`:
+  // иначе любой бросок оставляет флаг поднятым, и кнопки замолкают навсегда
   try {
+    haptic((feedback) => feedback.impactOccurred("light"));
     const response = await fetch("api/raid", {
       method: "POST",
       headers: {
@@ -3015,6 +3298,26 @@ function raidShape(data) {
       raid.id, raid.wave, raid.resting, raid.finished, raid.acted, raid.alive,
       raid.boss.hp, raid.log.length,
       raid.party.map((one) => [one.user_id, one.hp, one.alive, one.acted]),
+      // Шкала и заготовки. Без них нажатый приём не доезжал до экрана:
+      // сервер честно списывал энергию и клал заготовку, а раздел не
+      // перерисовывался — ничего из перечисленного выше от нажатия не
+      // меняется, и подпись оставалась прежней до следующей волны
+      raid.abilities && [
+        raid.abilities.energy,
+        raid.abilities.left,
+        raid.abilities.tricks.map((one) => [one.code, one.armed, one.ready]),
+      ],
+      // Слова аналитика. Они меняются от размена к размену — он читает
+      // прошлый ход босса, — а из перечисленного выше от этого не
+      // меняется ничего: в чужой размен ни своя шкала, ни свои кнопки
+      // не двигаются. Без этой строки подписчик до конца волны смотрел
+      // бы на совет по позапрошлому ходу
+      raid.scout && [
+        raid.scout.attack,
+        raid.scout.block,
+        raid.scout.attack_tip.move,
+        raid.scout.block_tip.move,
+      ],
     ],
     lobby && [lobby.id, lobby.total, lobby.size, lobby.can_start],
     data.lobbies.map((one) => [one.id, one.total, one.size]),
@@ -3276,20 +3579,22 @@ function raidPanel(data) {
   const box = document.createElement("div");
   box.className = "fight-panel";
 
-  const head = document.createElement("p");
-  head.className = "fight-round";
-  head.textContent = raid.finished
+  // Номер волны с экрана убран: он ни на что не влияет, а стоял над
+  // шкалами здоровья — тем единственным, на что в бою смотрят не
+  // отрываясь. Передышку и конец рейда говорим по-прежнему: это не
+  // счёт, а состояние, и от него зависит, чего ждать
+  const said = raid.finished
     ? "🔔 Рейд окончен"
     : raid.resting
       ? "😮‍💨 Передышка"
-      : "🔔 Волна " + raid.wave;
-  box.appendChild(head);
-  box.appendChild(bossCard(raid.boss));
-  const versus = document.createElement("p");
-  versus.className = "versus";
-  versus.textContent = "VS";
-  box.appendChild(versus);
-  box.appendChild(partyBoard(raid.party));
+      : "";
+  if (said) {
+    const head = document.createElement("p");
+    head.className = "fight-round";
+    head.textContent = said;
+    box.appendChild(head);
+  }
+  box.appendChild(raidBoard(raid));
 
   if (raid.finished) {
     box.appendChild(raidFinish(raid));
@@ -3321,9 +3626,35 @@ function raidPanel(data) {
   return box;
 }
 
+// Доска боя: отряд слева, босс справа, мечи между ними. Раньше босс
+// стоял сверху во всю ширину, а отряд списком под ним, и на телефоне
+// половина отряда уезжала за край. Бок о бок видно обе стороны разом —
+// а это и есть то, ради чего на экран смотрят.
+function raidBoard(raid) {
+  const box = document.createElement("div");
+  box.className = "raid-board";
+  box.appendChild(partyBoard(raid.party));
+  const swords = document.createElement("p");
+  swords.className = "versus";
+  swords.textContent = "⚔️";
+  box.appendChild(swords);
+  box.appendChild(bossCard(raid.boss));
+  return box;
+}
+
 function bossCard(boss) {
   const box = document.createElement("div");
   box.className = "boss-card";
+  const name = document.createElement("p");
+  name.className = "fight-name";
+  name.textContent = boss.emoji + " " + boss.title + " [" + boss.level + "]";
+  const hp = document.createElement("p");
+  hp.className = "fight-hp";
+  hp.textContent = boss.hp + "/" + boss.max_hp;
+  box.appendChild(name);
+  box.appendChild(hp);
+  box.appendChild(fightBar(boss));
+  // Портрет под шкалой: смотрят на здоровье, а не на лицо
   if (boss.image) {
     const img = document.createElement("img");
     img.className = "boss-face";
@@ -3334,42 +3665,64 @@ function bossCard(boss) {
     img.addEventListener("error", () => img.remove());
     box.appendChild(img);
   }
-  const side = document.createElement("div");
-  side.className = "boss-side";
+  return box;
+}
+
+// Сколько бойцов отряда видно без нажатия. Остальные — под «ещё N»:
+// в отряде их до десяти, и списком они выдавливают с экрана кнопки хода
+const PARTY_SHOWN = 3;
+
+// Развёрнут ли хвост отряда. Живёт снаружи разметки: экран рейда
+// перерисовывается каждые две секунды, и без этого список захлопывался
+// бы под пальцем
+let partyOpen = false;
+
+function memberCard(member) {
+  const row = document.createElement("div");
+  row.className = "raid-member" + (member.alive ? "" : " down");
   const name = document.createElement("p");
   name.className = "fight-name";
-  name.textContent = boss.emoji + " " + boss.title + " [" + boss.level + "]";
+  name.textContent =
+    (member.alive ? (member.acted ? "✅ " : "⏳ ") : "💀 ") +
+    member.emoji + " " + member.name + " [" + member.level + "]" +
+    (member.you ? " — ты" : "");
   const hp = document.createElement("p");
   hp.className = "fight-hp";
-  hp.textContent = boss.hp + "/" + boss.max_hp;
-  side.appendChild(name);
-  side.appendChild(hp);
-  side.appendChild(fightBar(boss));
-  box.appendChild(side);
-  return box;
+  hp.textContent = member.hp + "/" + member.max_hp + " · урона " +
+    member.damage_dealt;
+  row.appendChild(name);
+  row.appendChild(hp);
+  row.appendChild(fightBar(member));
+  return row;
 }
 
 function partyBoard(party) {
   const box = document.createElement("div");
   box.className = "raid-party";
-  party.forEach((member) => {
-    const row = document.createElement("div");
-    row.className = "raid-member" + (member.alive ? "" : " down");
-    const name = document.createElement("p");
-    name.className = "fight-name";
-    name.textContent =
-      (member.alive ? (member.acted ? "✅ " : "⏳ ") : "💀 ") +
-      member.emoji + " " + member.name + " [" + member.level + "]" +
-      (member.you ? " — ты" : "");
-    const hp = document.createElement("p");
-    hp.className = "fight-hp";
-    hp.textContent = member.hp + "/" + member.max_hp + " · урона " +
-      member.damage_dealt;
-    row.appendChild(name);
-    row.appendChild(hp);
-    row.appendChild(fightBar(member));
-    box.appendChild(row);
+  // Живые сверху, павшие внизу: помочь можно только тем, кто ещё дерётся.
+  // Порядок внутри каждой половины прежний — сортировка устойчивая
+  const order = party
+    .slice()
+    .sort((one, other) => Number(other.alive) - Number(one.alive));
+  order.slice(0, PARTY_SHOWN).forEach((member) => {
+    box.appendChild(memberCard(member));
   });
+
+  const rest = order.slice(PARTY_SHOWN);
+  if (rest.length) {
+    const more = document.createElement("details");
+    more.className = "party-more";
+    more.open = partyOpen;
+    more.addEventListener("toggle", () => {
+      partyOpen = more.open;
+    });
+    const head = document.createElement("summary");
+    head.className = "party-more-head";
+    head.textContent = "ещё " + rest.length;
+    more.appendChild(head);
+    rest.forEach((member) => more.appendChild(memberCard(member)));
+    box.appendChild(more);
+  }
   return box;
 }
 
@@ -3409,10 +3762,13 @@ function raidTurnForm(data) {
   );
   if (tricks) box.appendChild(tricks);
 
+  // Совет — строкой над кнопками: одно действие и одно число, его
+  // читают перед самым нажатием
+  const tips = tipsRow(data.raid && data.raid.scout);
+  if (tips) box.appendChild(tips);
+
   box.appendChild(
-    zoneColumns(
-      hands, data.attacks, blocks, () => raidDraft, "raid", paintRaidDraft
-    )
+    zoneColumns(hands, data.attacks, blocks, () => raidDraft, "raid", paintRaidDraft)
   );
 
   const go = document.createElement("button");
@@ -3427,6 +3783,12 @@ function raidTurnForm(data) {
     raidAction(move);
   });
   box.appendChild(go);
+
+  // Разбор повадок — под кнопками и свёрнутый. Он длинный, а место над
+  // кнопками занято тем, ради чего сюда смотрят: шкалами и советом.
+  // Кому нужен весь разбор — развернёт, и он таким и останется
+  const scout = scoutPanel(data.raid && data.raid.scout);
+  if (scout) box.appendChild(scout);
   return box;
 }
 
@@ -3465,7 +3827,11 @@ function raidLog(raid) {
   head.className = "shelf-head";
   head.textContent = "Ход рейда";
   box.appendChild(head);
-  raid.log.slice().reverse().forEach((turn) => judgeLines(turn, box));
+  // Свежее сверху — и между разменами, и внутри размена. Размены и
+  // раньше шли от нового к старому, а вот строки внутри одного
+  // оставались в прямом порядке: лента читалась то вниз, то вверх, и в
+  // волне на десять бойцов понять, что было позже, не получалось
+  raid.log.slice().reverse().forEach((turn) => judgeLines(turn, box, true));
   return box;
 }
 
@@ -3513,8 +3879,10 @@ async function loadBattle() {
 async function battleAction(payload) {
   if (battleBusy) return;
   battleBusy = true;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  // Всё, что между поднятым флагом и `finally`, обязано лежать внутри `try`:
+  // иначе любой бросок оставляет флаг поднятым, и кнопки замолкают навсегда
   try {
+    haptic((feedback) => feedback.impactOccurred("light"));
     const response = await fetch("api/battle", {
       method: "POST",
       headers: {
@@ -4110,7 +4478,7 @@ async function buyPack(pack) {
     const data = await post("api/invoice", { code: pack.code });
     tg.openInvoice(data.link, async (status) => {
       if (status === "paid") {
-        if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        haptic((feedback) => feedback.notificationOccurred("success"));
         shopData = null;  // кредитов стало больше
         await refresh();
         await loadTopUp();
@@ -4158,6 +4526,10 @@ function cardIsBusy() {
 async function catchUp() {
   if (document.hidden || cardIsBusy()) return;
   await refresh();
+  // Здоровье затягивается само, и прайс больницы с ним стареет: пока
+  // боец читает, ему уже нужно долить меньше. Полоса тикает сама, а
+  // числа в прайсе приходят с сервера — обновляем их тем же ударом
+  if (lastTab === "hospital") await loadHospital();
 }
 
 async function loadShop() {
@@ -4185,7 +4557,7 @@ async function purchase(item) {
     const data = await post("api/buy", { code: item.code });
     render(data.card, true);
     renderShop(data.shop);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     popup("🛍 " + data.bought.title, boughtNote(data.bought));
   } catch (error) {
     popup("Не вышло", error.message);
@@ -4207,7 +4579,7 @@ async function handIn(item) {
     const data = await post("api/handin", { item_id: item.id });
     render(data.card, true);
     renderShop(data.shop);
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     popup(
       "🏪 " + data.handin.title,
       "Сдано в лавку за " + data.handin.paid + " 💰. На счету " +
@@ -4256,7 +4628,7 @@ async function usePotion(potion) {
     const data = await post("api/use", { code: potion.code });
     render(data.card, true);
     shopData = null;  // «уже есть» на витрине изменилось
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     const used = data.used;
     const left = used.left
       ? "\nОсталось таких: " + used.left + " шт."
@@ -4304,7 +4676,7 @@ async function act(url, body) {
     const card = await post(url, body);
     render(card, true);
     shopData = null;  // «уже есть» на витрине могло измениться
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+    haptic((feedback) => feedback.impactOccurred("light"));
     // Вещи держатся друг за друга: сняли меч — ушёл и нож, который стоял
     // на его прибавке. Молчать об этом нельзя, слот пустеет сам собой.
     if (card.undressed && card.undressed.length) {
@@ -4337,6 +4709,111 @@ const WORKSHOP_TABS = [
   ["shop", "🛒 Модификаторы"],
   ["master", "✨ Мастер"],
 ];
+
+// ---------- больница ----------
+//
+// Здоровье затягивается само, и это бесплатно: десять минут с нуля до
+// полного. Больница продаёт не здоровье, а время — тому, кого только
+// что избили, до ринга ещё восемь минут, и он либо ждёт, либо платит.
+//
+// Поэтому на экране сначала полоса здоровья, а уже под ней прайс. И
+// цена стоит на кнопке всегда, даже когда кредитов не хватает: «у вас
+// недостаточно» вместо цены не говорит, сколько нужно накопить.
+let hospitalData = null;
+
+async function loadHospital() {
+  try {
+    const response = await fetch("api/hospital", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Приём закончен.");
+    renderHospital(await response.json());
+  } catch (error) {
+    popup("Больница", error.message);
+  }
+}
+
+function renderHospital(data) {
+  hospitalData = data;
+  el("shop-purse-hospital").textContent = "";
+  el("shop-purse-hospital").appendChild(purse(data.credits));
+
+  const whole = data.hp.missing <= 0;
+  el("hospital-note").textContent = whole
+    ? "Врач осматривает тебя и разводит руками: лечить нечего."
+    : "Здоровье затягивается и само — больница просто не даёт ждать.";
+
+  const list = el("hospital-list");
+  list.textContent = "";
+  // Дешёвое лечение, которого хватает целиком, делает дорогое бессмысленным
+  const enough = data.cures.filter((cure) => cure.healed >= data.hp.missing);
+  const cheapest = enough.length
+    ? Math.min(...enough.map((cure) => cure.price))
+    : 0;
+  data.cures.forEach((cure) => list.appendChild(cureCard(cure, cheapest)));
+}
+
+function cureCard(cure, cheapest) {
+  const box = document.createElement("div");
+  box.className = "cure";
+
+  const title = document.createElement("div");
+  title.className = "cure-title";
+  title.textContent = cure.title;
+  box.appendChild(title);
+
+  const note = document.createElement("div");
+  note.className = "cure-note";
+  note.textContent = cure.note;
+  box.appendChild(note);
+
+  // Сколько дольют именно этому бойцу: у полного выздоровления число
+  // своё на каждый раз, да и сотня перевязки упирается в потолок
+  const gain = document.createElement("div");
+  gain.className = "cure-gain";
+  gain.textContent = cure.useful
+    ? "❤️ Дольют " + num(cure.healed)
+    : "❤️ Доливать нечего";
+  box.appendChild(gain);
+
+  // Переплату называем вслух: за то же самое рядом просят меньше
+  if (cure.useful && cheapest && cure.price > cheapest) {
+    const cheaper = document.createElement("div");
+    cheaper.className = "cure-cheaper";
+    cheaper.textContent = "Столько же дольют за " + num(cheapest) + " 💰";
+    box.appendChild(cheaper);
+  }
+
+  // Цена на кнопке стоит всегда, даже когда её нечем заплатить: «не
+  // хватает кредитов» вместо числа не говорит, сколько копить. Почему
+  // кнопка серая, видно тут же — по счёту сверху и по строке «дольют»
+  box.appendChild(
+    button("Лечиться · " + num(cure.price) + " 💰", {
+      disabled: !cure.useful || !cure.affordable,
+      onClick: () => takeCure(cure),
+    })
+  );
+  return box;
+}
+
+async function takeCure(cure) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/heal", { cure: cure.code });
+    render(data.card, true);
+    renderHospital(data.hospital);
+    popup(
+      "🏥 " + data.done.title,
+      "Здоровья прибавилось на " + num(data.done.healed) +
+        ". Списано " + num(data.done.price) + " 💰."
+    );
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
+}
 
 async function loadWorkshop() {
   try {
@@ -4448,11 +4925,15 @@ function modCard(mod, buyable) {
   if (buyable) {
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
+    // Цена стоит на кнопке всегда, даже когда денег не хватает: на
+    // прилавке смотрят, сколько это стоит, а не сколько у тебя в
+    // кошельке. Что кредитов мало, видно по серой кнопке — и по счёту
+    // в шапке, который стоит рядом
     buttons.appendChild(
-      button(
-        mod.can_afford ? "Купить · " + mod.price + " 💰" : "Не хватает кредитов",
-        { disabled: !mod.can_afford, onClick: () => buyMod(mod) }
-      )
+      button("Купить · " + mod.price + " 💰", {
+        disabled: !mod.can_afford,
+        onClick: () => buyMod(mod),
+      })
     );
     body.appendChild(buttons);
   }
@@ -4776,7 +5257,7 @@ async function pickLook(look) {
     render(data.card, true);
     renderLooks(data.looks);
     shopData = null;  // кредитов могло стать меньше
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+    haptic((feedback) => feedback.notificationOccurred("success"));
     if (data.chosen.bought) {
       popup(
         "Образ куплен",
@@ -4850,10 +5331,12 @@ function paintOneBar(prefix) {
 }
 
 function paintHealth() {
-  // Полоска стоит и в инвентаре, и на карточке персонажа: тикают обе
+  // Полоска стоит в инвентаре, на карточке персонажа и в больнице:
+  // тикают все три. В больнице она главная — за ней туда и приходят
   if (!health) return;
   paintOneBar("");
   paintOneBar("hero-");
+  paintOneBar("hospital-");
 }
 
 function startHealthTicker(hp) {
@@ -4891,8 +5374,10 @@ function render(card, keepTab) {
   renderAvatar(card);
   renderSlots(el("slots-left"), card.slots.left, card.is_self);
   renderSlots(el("slots-right"), card.slots.right, card.is_self);
-  renderSlots(el("hero-slots-left"), card.slots.left, card.is_self);
-  renderSlots(el("hero-slots-right"), card.slots.right, card.is_self);
+  // Кукла персонажа — для показа: нажатие рассказывает о вещи, а снимают
+  // её в инвентаре
+  renderSlots(el("hero-slots-left"), card.slots.left, card.is_self, true);
+  renderSlots(el("hero-slots-right"), card.slots.right, card.is_self, true);
   renderSkills(card);
   renderDaily(card);
   renderBag(card);
@@ -4997,8 +5482,60 @@ function render(card, keepTab) {
 // показывать экран клуба и что на нём можно
 let myPlace = null;
 
+// ---------- вид изнутри ----------
+//
+// С карты у дома видно одну дверь, а всё остальное время боец проводит
+// внутри. Картинку вешает не вёрстка, а локация: один экран обслуживает
+// по несколько домов — клуб и казино, пять разных прилавков, — и что
+// показывать, знает только то место, где боец сейчас стоит.
+const INTERIOR_SCREENS = [
+  "club", "shop", "magic", "workshop", "hospital", "house",
+];
+
+// Виды, которые не доехали. Помнить их приходится: карточка
+// перерисовывается сама по себе — по сердцебиению, после боя, при
+// возврате из чата, — а браузер второй раз за упавшую картинку не
+// возьмётся. Без этого списка рамка после первой же перерисовки
+// возвращалась бы пустой полосой и висела так до конца сеанса
+const brokenInteriors = new Set();
+
+function paintInterior() {
+  const place = myPlace || {};
+  // В пути боец ни в старом доме, ни в новом: вида изнутри у него нет.
+  // Оставить картинку прежнего дома значило бы показать его там, где
+  // его уже нет
+  const src = place.seconds_left ? "" : place.interior || "";
+  const show = Boolean(src) && !brokenInteriors.has(src);
+  INTERIOR_SCREENS.forEach((screen) => {
+    const box = el(screen + "-interior");
+    const pic = el(screen + "-pic");
+    if (!box || !pic) return;
+    box.classList.toggle("hidden", !show);
+    if (!show) return;
+    pic.alt = place.title || "";
+    // Тот же адрес заново не грузим: перерисовка идёт на каждой карточке,
+    // а картинка тяжёлая
+    if (pic.getAttribute("src") !== src) pic.src = src;
+  });
+}
+
+// Файл не доехал — убираем рамку целиком: пустая полоса под заголовком
+// хуже, чем её отсутствие. Дом со своей картинкой при этом не страдает:
+// в списке павших лежат адреса, а не экраны
+function watchInteriors() {
+  INTERIOR_SCREENS.forEach((screen) => {
+    const pic = el(screen + "-pic");
+    if (!pic) return;
+    pic.addEventListener("error", () => {
+      brokenInteriors.add(pic.getAttribute("src"));
+      paintInterior();
+    });
+  });
+}
+
 function paintCity(card) {
   if (card.is_self) myPlace = card.place || null;
+  paintInterior();
   // Вышли из казино — подвал закрывается сам: держать его открытым
   // значит показывать рейд, в который с улицы всё равно не пустят
   if (!inCasino() && clubHouse === "casino") {
@@ -5083,12 +5620,15 @@ async function load() {
 
 el("hero-avatar").addEventListener("click", () => {
   if (!el("hero-avatar").classList.contains("clickable")) return;
-  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+  haptic((feedback) => feedback.selectionChanged());
   openLooks();
 });
 el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
 el("hero-daily").addEventListener("click", openDaily);
+el("house-back").addEventListener("click", () => showTab("map"));
+el("hospital-back").addEventListener("click", () => showTab("map"));
+watchInteriors();
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты
 TABS.forEach((tab) => {

@@ -5,8 +5,7 @@ import pytest
 from bot.game.classes import get_class
 from bot.game.locations import (
     FIGHT_CLUB,
-    STEP_BETWEEN,
-    STEP_INSIDE,
+    STEP,
     Service,
     get_location,
     travel_seconds,
@@ -43,17 +42,27 @@ def test_a_fresh_fighter_stands_in_the_club():
     require(player, Service.FIGHT)  # не бросает
 
 
-def test_the_road_takes_longer_between_districts():
-    """Соседнее здание ближе, чем другой конец города."""
-    assert travel_seconds(FIGHT_CLUB, "weapon_shop") == STEP_INSIDE
-    assert travel_seconds(FIGHT_CLUB, "pharmacy") == STEP_BETWEEN
+def test_the_road_is_counted_in_steps():
+    """Переход один и тот же: шаг в соседний район или вход в дверь.
+
+    Соседний дом в своём районе — одна дверь. Дом в соседнем районе —
+    шаг и дверь. Дальний конец города — столько шагов, сколько до него
+    районов, и ещё один на дверь.
+    """
     assert travel_seconds(FIGHT_CLUB, FIGHT_CLUB) == 0
+    assert travel_seconds(FIGHT_CLUB, "weapon_shop") == STEP
+    assert travel_seconds(FIGHT_CLUB, "pharmacy") == 2 * STEP
+    # Пример из уговора: Старый город → Центр → Северный Вал (или
+    # Торговый квартал, дорога та же) → Стадион, и дверь бара
+    assert travel_seconds("casino", "bar") == 4 * STEP
+    # Дорога одинакова в обе стороны: город не имеет уклона
+    assert travel_seconds("bar", "casino") == 4 * STEP
 
 
 def test_on_the_road_a_fighter_is_neither_here_nor_there(db):
     """Пока идёшь — старое место уже недоступно, а новое ещё нет."""
     player = make_player()
-    player.set_out("pharmacy", STEP_BETWEEN, now=1000)
+    player.set_out("pharmacy", 2 * STEP, now=1000)
 
     assert player.in_transit(1005) and player.road_left(1005) == 15
     with pytest.raises(TravelError, match="в дороге"):
@@ -240,6 +249,214 @@ PHONE_SCALE = 362 / 941
 FINGER = 44
 
 
+# ---------- город как целое ----------
+
+
+def test_every_road_leads_back():
+    """Соседство взаимное: вышел из района — сможешь вернуться.
+
+    В коде это записано словами («стережёт тест»), а теста до второй
+    очереди не было вовсе. С шестью районами связи держались в голове,
+    с шестнадцатью — уже нет: одна опечатка в стороне света, и район
+    становится ловушкой, из которой не выйти.
+    """
+    from bot.game.locations import DISTRICTS, DISTRICT_BY_CODE, OPPOSITE
+
+    for district in DISTRICTS:
+        for side, to in district.around.items():
+            neighbour = DISTRICT_BY_CODE.get(to)
+            assert neighbour is not None, f"{district.code} → {to}: такого района нет"
+            back = neighbour.around.get(OPPOSITE[side])
+            assert back == district.code, (
+                f"{district.code} → {to} ({side}), а обратно — {back}"
+            )
+
+
+def test_the_whole_city_is_walkable_from_the_centre():
+    """Из центра можно дойти до любого района, не проваливаясь в дыру."""
+    from bot.game.locations import DISTRICTS, DISTRICT_BY_CODE
+
+    seen = {"main_hub"}
+    edge = ["main_hub"]
+    while edge:
+        district = DISTRICT_BY_CODE[edge.pop()]
+        for to in district.around.values():
+            if to not in seen:
+                seen.add(to)
+                edge.append(to)
+
+    missing = {district.code for district in DISTRICTS} - seen
+    assert not missing, f"до этих районов не дойти: {sorted(missing)}"
+
+
+def city_grid() -> dict[str, tuple[int, int]]:
+    """Разложить районы по клеткам, идя от центра по сторонам света.
+
+    Заодно это и проверка: если две дороги приводят в одну клетку разные
+    районы или один район в разные клетки, карта сложена сама на себя —
+    такое читается как «вправо, вниз, влево, вверх и ты в другом месте».
+    """
+    from collections import deque
+
+    from bot.game.locations import DISTRICT_BY_CODE, DOWN, LEFT, RIGHT, UP
+
+    shift = {UP: (0, -1), DOWN: (0, 1), LEFT: (-1, 0), RIGHT: (1, 0)}
+    at = {"main_hub": (0, 0)}
+    queue = deque(["main_hub"])
+    while queue:
+        code = queue.popleft()
+        x, y = at[code]
+        for side, other in DISTRICT_BY_CODE[code].around.items():
+            spot = (x + shift[side][0], y + shift[side][1])
+            if other in at:
+                assert at[other] == spot, (
+                    f"{code} — {side} → {other}: район уже стоит в {at[other]}, "
+                    f"а эта дорога ведёт в {spot}"
+                )
+            else:
+                at[other] = spot
+                queue.append(other)
+    return at
+
+
+def test_the_city_is_a_grid_four_by_four():
+    """Город — сетка, и по ней же считается дорога.
+
+    Раньше связи писались от руки и расходились с рисунком: жилой
+    квартал и кадетский городок стояли в одной клетке, справа от
+    торгового квартала, — то есть один и тот же шаг вёл в два разных
+    места.
+    """
+    from bot.game.locations import DISTRICTS
+
+    at = city_grid()
+
+    assert len(at) == len(DISTRICTS), "до какого-то района не дошли от центра"
+    xs = {x for x, _ in at.values()}
+    ys = {y for _, y in at.values()}
+    assert (len(xs), len(ys)) == (4, 4)
+    assert len(set(at.values())) == len(at), "два района в одной клетке"
+
+
+def test_neighbours_on_the_grid_are_always_connected():
+    """Соседние клетки связаны дорогой: дыр внутри сетки нет."""
+    from bot.game.locations import DISTRICT_BY_CODE
+
+    at = city_grid()
+    where = {spot: code for code, spot in at.items()}
+    for (x, y), code in where.items():
+        for step in ((1, 0), (0, 1)):
+            other = where.get((x + step[0], y + step[1]))
+            if other is None:
+                continue
+            assert other in DISTRICT_BY_CODE[code].around.values(), (
+                f"{code} и {other} стоят рядом, а дороги между ними нет"
+            )
+
+
+def test_the_far_corner_is_six_steps_away():
+    """Дорога считается шагами по сетке, а не «свой район — чужой район».
+
+    Из угла в угол сетки четыре на четыре — шесть шагов, и дорога стоит
+    ровно столько же, сколько шагов, плюс дверь.
+    """
+    from bot.game.locations import STEP, district_hops, travel_seconds
+
+    # Деловой квартал в левом верхнем углу, особняк мафии в правом нижнем
+    assert district_hops("bank_market_post", "mafia_mansion") == 6
+    assert travel_seconds("bank", "mafia_mansion") == 7 * STEP
+    # Внутри одного района шагов нет вовсе — только дверь
+    assert district_hops("main_hub", "main_hub") == 0
+    assert travel_seconds("fight_club", "workshop") == STEP
+
+
+def test_no_district_is_drawn_empty():
+    """На каждой карте стоит хотя бы один дом."""
+    from bot.game.locations import DISTRICTS
+
+    empty = [district.code for district in DISTRICTS if not district.places]
+    assert not empty, f"районы без домов: {empty}"
+
+
+def test_every_house_stands_on_a_drawn_district():
+    """Дом не может стоять на карте, которой нет."""
+    from bot.game.locations import DISTRICT_BY_CODE, LOCATIONS
+
+    for place in LOCATIONS:
+        assert place.district in DISTRICT_BY_CODE, f"{place.code}: район не нарисован"
+
+
+def test_every_district_map_is_named_as_the_bucket_named_it():
+    """Имена карт списаны с хранилища, а не придуманы по правилу.
+
+    Стройной привычки в них нет: где-то на конце «_district», где-то
+    нет, и первая очередь вдобавок в jpeg, а вторая в png. Угадать такое
+    нельзя, поэтому список сверяется с выгрузкой целиком — иначе район
+    открывается пустой картинкой, а заметит это игрок, а не тест.
+    """
+    from bot.game.locations import DISTRICTS
+
+    in_bucket = {
+        "main_hub.jpeg", "clothes_pharmacy.jpeg", "pawnshop_casino.jpeg",
+        "northern_wall_premium.jpeg", "bank_market_post.jpeg",
+        "stadium_bar.jpeg",
+        "vcpd_hospital_district.png", "driving_school_insurance_district.png",
+        "car_dealership.png", "gym_office_district.png",
+        "police_school_medical_college.png", "military_base_training_ground.png",
+        "cadet_corps_dormitory.png", "fight_tournament_stadium.png",
+        "residential_district.png", "mafia_mansion.png",
+    }
+    ours = {district.image.rsplit("/", 1)[-1] for district in DISTRICTS}
+
+    assert ours == in_bucket
+
+
+def test_the_station_is_named_on_the_sign_but_not_in_the_bucket():
+    """Вывеску переименовали, код — нет, и это нарочно.
+
+    Файлы в хранилище названы `vcpd`: и карта района, и вид изнутри.
+    Переименовать код вслед за вывеской значило бы разойтись с
+    хранилищем — район открылся бы пустой картинкой, а заметил бы это
+    игрок, а не тест.
+    """
+    from bot.game.locations import get_district, get_location
+
+    station = get_location("vcpd")
+    assert station.title == "Полицейский участок"
+    assert station.whither == "полицейского участка"
+    assert station.indoors.endswith("/interiors/vcpd_interior.jpeg")
+    assert get_district(station.district).image.endswith(
+        "/vcpd_hospital_district.png"
+    )
+
+    # То же самое и с академией: вывеску поменяли, код оставили
+    academy = get_location("police_school")
+    assert academy.title == "Полицейская академия"
+    assert academy.indoors.endswith("/interiors/police_school_interior.jpeg")
+
+
+def test_a_house_takes_the_picture_of_its_own_district():
+    """Дом не считает адрес карты заново, а спрашивает у района.
+
+    Формат у карт разный, и второе место, где адрес выводится, однажды
+    разошлось бы с первым.
+    """
+    from bot.game.locations import DISTRICT_BY_CODE, LOCATIONS
+
+    for place in LOCATIONS:
+        assert place.image == DISTRICT_BY_CODE[place.district].image
+
+
+def test_every_door_is_four_points_on_the_picture():
+    """Вход — ровно четыре точки, и все они внутри картинки."""
+    from bot.game.locations import LOCATIONS
+
+    for place in LOCATIONS:
+        assert len(place.entrance) == 4, f"{place.code}: не четырёхугольник"
+        for x, y in place.entrance:
+            assert 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0, f"{place.code}: точка за краем"
+
+
 def test_every_door_is_big_enough_for_a_finger():
     """В дверь должно попадать пальцем, а не прицеливаясь.
 
@@ -292,9 +509,55 @@ def test_houses_without_a_trade_are_still_on_the_map():
     from bot.game.locations import LOCATIONS
 
     coming = [place for place in LOCATIONS if not place.works]
-    assert {place.code for place in coming} == {
-        "bank", "market", "post_office", "stadium", "bar"
+    # Пять домов первой очереди и восемнадцать второй: город вырос
+    # картинками раньше, чем правилами, и это нормально — лишь бы в
+    # каждом было сказано, чего в нём ждать. Больница из этого списка
+    # уже вышла: в ней лечат за кредиты
+    assert {"bank", "market", "post_office", "stadium", "bar"} <= {
+        place.code for place in coming
     }
+    assert "hospital" not in {place.code for place in coming}
+    assert len(coming) == 23
     for place in coming:
         assert place.soon, f"{place.code}: не сказано, что здесь будет"
         assert place.services == ()
+
+
+# ---------- бланк разметки ----------
+
+
+def test_the_blank_counts_pixels_the_way_the_manifest_does():
+    """Пиксель с картинки и доля в коде — одно и то же число.
+
+    Правки дверей приходят пикселями исходника и переводятся в доли
+    скриптом. Ошибись он в размере картинки — все двери уехали бы разом
+    и ровно настолько, чтобы это было незаметно на глаз.
+    """
+    from bot.game.locations import get_location
+    from scripts.doors import HEIGHT, WIDTH, pixels, shares
+
+    assert (WIDTH, HEIGHT) == (941, 1672), "размер исходника карт"
+    door = get_location("clothes_shop").entrance
+    # Контрольные пиксели этой двери записаны в docs/locations.md
+    assert [pixels(corner) for corner in door] == [
+        (411, 356), (599, 382), (596, 526), (419, 503),
+    ]
+    # И обратно: из тех же пикселей выходит та же дверь
+    assert tuple(shares(*pixels(corner)) for corner in door) == door
+
+
+def test_no_two_houses_share_one_door():
+    """Одна дверь на два дома — след разметки по шаблону, а не по картинке.
+
+    Вторая очередь города какое-то время стояла с дверьми, переписанными
+    с магазина одежды и аптеки: палец в них попадал, а подсветка садилась
+    мимо косяка. Теперь каждая дверь снята со своей картинки, и повтор
+    означал бы, что чью-то разметку потеряли по дороге.
+    """
+    from bot.game.locations import DISTRICTS, LOCATIONS
+    from scripts.doors import shared
+
+    for place in LOCATIONS:
+        assert shared(place, DISTRICTS) == "", place.code
+    doors = {place.entrance for place in LOCATIONS}
+    assert len(doors) == len(LOCATIONS)

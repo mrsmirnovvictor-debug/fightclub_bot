@@ -10,11 +10,16 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.game.classes import get_class
 from bot.game.equipment import Slot
-from bot.game.locations import FIGHT_CLUB, STEP_BETWEEN
+from bot.game.locations import FIGHT_CLUB, travel_seconds
 from bot.models import Player
 from bot.webapp.server import create_app
 from tests.test_inventory import FakeBot
 from tests.test_webapp import TOKEN, make_init_data
+
+
+# Сколько идти от клуба до аптеки: число спрашиваем у правил, а не
+# пишем руками — дорога считается переходами и меняется вместе с картой
+TO_PHARMACY = travel_seconds(FIGHT_CLUB, "pharmacy")
 
 
 def headers(user_id: int = 42) -> dict:
@@ -46,7 +51,7 @@ async def test_the_map_shows_the_city_and_where_you_stand(client, db):
     body = await (await client.get("/api/map", headers=headers())).json()
 
     assert body["here"] == FIGHT_CLUB
-    assert len(body["districts"]) == 6
+    assert len(body["districts"]) == 16
     centre = next(one for one in body["districts"] if one["code"] == "main_hub")
     assert centre["here"] is True
     assert centre["image"].endswith("locations/main_hub.jpeg")
@@ -66,11 +71,106 @@ async def test_houses_without_a_trade_say_so(client, db):
         for place in district["places"]
     }
 
-    assert len(houses) == 14
+    assert len(houses) == 33
     assert houses["bank"]["works"] is False
     assert houses["bank"]["soon"] and houses["bank"]["services"] == []
     assert houses["workshop"]["services"] == ["repair"]
     assert houses["northern_wall_shop"]["services"] == ["fan"]
+
+
+# ---------- вид изнутри ----------
+
+
+# Как назвали файл с видом изнутри там, где имя не совпало с кодом дома.
+# Эти три картинки рисовали под своими названиями, и переименовывать их в
+# бакете не стали
+RENAMED = {
+    "weapon_shop": "weapons_shop_interior",
+    "clothes_shop": "clothing_shop_interior",
+    "casino": "underground_casino_interior",
+}
+
+
+# Четыре дома жилого квартала внутри одинаковые, и вид изнутри у них
+# один на всех: заводить четыре одинаковые картинки незачем
+TWINS = {
+    "residential_apartment_2",
+    "residential_apartment_3",
+    "residential_apartment_4",
+}
+
+
+def test_every_house_has_a_view_from_within():
+    """Все тридцать три дома, и ни одного без картинки."""
+    from bot.game.locations import LOCATIONS
+
+    assert len(LOCATIONS) == 33
+    seen = {place.indoors for place in LOCATIONS}
+    # Своя картинка у каждого дома, кроме жилых близнецов: они делят одну
+    assert len(seen) == 33 - len(TWINS)
+    for place in LOCATIONS:
+        if place.code in TWINS:
+            continue
+        name = RENAMED.get(place.code, place.code + "_interior")
+        # Папок две: первые четырнадцать домов выгрузили в одну, вторую
+        # очередь — в другую. Имя файла при этом всё так же считается от
+        # кода дома, и это здесь главное
+        folder = "/interiors" if place.interior_folder else "/locations/interiors"
+        assert place.indoors.endswith(f"{folder}/{name}.jpeg")
+
+
+def test_the_four_identical_houses_share_one_view():
+    """Жилой квартал: четыре двери, один вид изнутри — и это нарочно."""
+    from bot.game.locations import get_location
+
+    first = get_location("residential_apartment")
+    assert first.indoors.endswith("/interiors/residential_apartment_interior.jpeg")
+    for code in TWINS:
+        assert get_location(code).indoors == first.indoors
+        # Дверь при этом у каждого своя: дома стоят в разных углах карты
+        assert get_location(code).entrance != first.entrance
+
+
+def test_the_second_city_took_its_own_folder():
+    """Вторая очередь лежит в своей папке, первая осталась в своей."""
+    from bot.game.locations import get_location
+
+    assert get_location("pharmacy").indoors.endswith(
+        "/locations/interiors/pharmacy_interior.jpeg"
+    )
+    assert get_location("vcpd").indoors.endswith("/interiors/vcpd_interior.jpeg")
+    # И «старый» адрес не должен случайно совпасть с новым
+    assert "/locations/interiors/" not in get_location("vcpd").indoors
+
+
+def test_the_view_is_named_after_the_house():
+    """Имя файла считается от кода дома — как у вещей и склянок."""
+    from bot.game.locations import get_location
+
+    assert get_location("pharmacy").indoors.endswith("pharmacy_interior.jpeg")
+    # А там, где художник назвал файл иначе, имя задано явно
+    assert get_location("casino").indoors.endswith(
+        "underground_casino_interior.jpeg"
+    )
+
+
+async def test_the_card_carries_the_view_of_the_house_you_stand_in(client, db):
+    """Картинку вешает локация: экран один на несколько домов."""
+    await db.save_player(make_player(location="pharmacy"))
+
+    body = await (await client.get("/api/card", headers=headers())).json()
+
+    assert body["place"]["code"] == "pharmacy"
+    assert body["place"]["interior"].endswith("pharmacy_interior.jpeg")
+
+
+async def test_a_house_without_a_trade_still_carries_its_view(client, db):
+    """В банк пока ходят просто посмотреть — но посмотреть есть на что."""
+    await db.save_player(make_player(location="bank"))
+
+    body = await (await client.get("/api/card", headers=headers())).json()
+
+    assert body["place"]["interior"].endswith("bank_interior.jpeg")
 
 
 # ---------- дорога ----------
@@ -86,7 +186,7 @@ async def test_walking_takes_time_and_the_card_says_how_much(client, db):
 
     assert body["map"]["road"]["going"] is True
     assert body["map"]["road"]["to"] == "pharmacy"
-    assert 0 < body["map"]["road"]["seconds_left"] <= STEP_BETWEEN
+    assert 0 < body["map"]["road"]["seconds_left"] <= TO_PHARMACY
     assert body["card"]["place"]["going_to"] == "Аптека"
     # пока идёт — он ещё в клубе, и это честно
     assert body["card"]["place"]["code"] == FIGHT_CLUB
@@ -95,7 +195,7 @@ async def test_walking_takes_time_and_the_card_says_how_much(client, db):
 async def test_a_fighter_on_the_road_cannot_trade(client, db):
     """В дороге не торгуют: боец ещё не дошёл."""
     player = make_player(location="weapon_shop")
-    player.set_out("pharmacy", STEP_BETWEEN)
+    player.set_out("pharmacy", TO_PHARMACY)
     await db.save_player(player)
 
     response = await client.get("/api/shop", headers=headers())
@@ -107,7 +207,7 @@ async def test_a_fighter_on_the_road_cannot_trade(client, db):
 async def test_the_road_ends_by_itself(client, db):
     """Срок вышел — боец на месте, и никакой таймер для этого не нужен."""
     player = make_player()
-    player.set_out("pharmacy", STEP_BETWEEN, now=1000)
+    player.set_out("pharmacy", TO_PHARMACY, now=1000)
     player.arrives_at = 1  # как будто дорога кончилась давным-давно
     await db.save_player(player)
 

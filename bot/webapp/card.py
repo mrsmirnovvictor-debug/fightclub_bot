@@ -84,7 +84,12 @@ CELL_TITLES: dict[Slot, str] = {Slot.JACKET: "тело"}
 
 
 def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
-    """Надетая вещь так, как её показывает клетка куклы."""
+    """Надетая вещь так, как её показывает клетка куклы.
+
+    Свойства вещи идут сюда целиком, а не одной строкой: по нажатию на
+    клетку куклы их показывают списком, как в рюкзаке. Строка `bonus`
+    при этом остаётся — она короткая и годится для подсказки.
+    """
     in_hands = weapon_in_hands(owned.real, fclass)
     return {
         "id": owned.id,
@@ -94,12 +99,14 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
         "icon": owned.emoji,
         "image": owned.image,
         "bonus": owned.describe_bonus(),
+        "bonuses": bonuses_payload(owned.real, fclass, owned),
         # Класс меняет урон оружия — говорим об этом там же, где число
         "in_hands": f"У {fclass.title.lower()}а в руках: {in_hands}"
         if in_hands
         else "",
         "wear": owned.wear,
         "max_wear": owned.max_wear,
+        "wear_text": owned.describe_wear(),
         "mod": mod_mark(owned),
     }
 
@@ -111,7 +118,9 @@ def slot_payload(
     # Что надето под этой вещью: футболка под верхней одеждой
     under_slot = UNDER_SLOTS.get(slot)
     under = equipment.get(under_slot) if under_slot else None
-    in_hands = weapon_in_hands(owned.real, fclass) if owned else ""
+    # Верхняя вещь и нижняя описываются одинаково: раньше верхнюю
+    # собирали здесь руками, и стоило добавить вещи свойство, как оно
+    # доезжало до футболки и не доезжало до куртки над ней
     return {
         "slot": slot.value,
         "title": slot.title,
@@ -121,23 +130,7 @@ def slot_payload(
         "under": worn_payload(under, fclass) if under else None,
         "placeholder": slot.emoji,
         "placeholder_image": slot.placeholder,
-        "item": None
-        if owned is None
-        else {
-            "id": owned.id,
-            "code": owned.code,
-            "title": owned.title,
-            "icon": owned.emoji,
-            "image": owned.image,
-            "bonus": owned.describe_bonus(),
-            # Класс меняет урон оружия — говорим об этом там же, где число
-            "in_hands": f"У {fclass.title.lower()}а в руках: {in_hands}"
-            if in_hands
-            else "",
-            "wear": owned.wear,
-            "max_wear": owned.max_wear,
-            "mod": mod_mark(owned),
-        },
+        "item": worn_payload(owned, fclass) if owned else None,
     }
 
 
@@ -635,6 +628,10 @@ def place_payload(player: Player, now: int | None = None) -> dict:
         "code": place.code if place else "",
         "title": place.title if place else "—",
         "district": place.district if place else "",
+        # Вид изнутри: его вешают сверху экрана того дома, в котором
+        # боец стоит. С карты видно только дверь, а внутри он проводит
+        # всё время — без картинки лавка от аптеки отличается заголовком
+        "interior": place.indoors if place else "",
         # Пока идёт, показываем, куда именно: иначе на карточке пусто
         "going_to": (get_location(player.travel_to).title
                      if road and player.travel_to else ""),

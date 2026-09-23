@@ -743,7 +743,10 @@ class BattleService:
             if player.birthplace is None and session.chat_title:
                 player.birthplace = session.chat_title
             ruined = (
-                await wear_after_fight(self.db, player, won, self.rng)
+                # Ничья — не поражение: None вместо False, как в рейтинге
+                await wear_after_fight(
+                    self.db, player, None if outcome.draw else won, self.rng
+                )
                 if session.mode.armed
                 else []
             )

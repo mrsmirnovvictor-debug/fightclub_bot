@@ -19,10 +19,10 @@ from bot.game.equipment import (
     REPAIR_DEGRADE_CHANCE,
     REPAIR_PRICE_PER_POINT,
     WEAR_CHANCE_LOSS,
-    WEAR_CHANCE_WIN,
 )
 from bot.game.modes import FightMode
 from bot.game.health import FULL_REGEN_SECONDS, HURT_THRESHOLD, READY_THRESHOLD
+from bot.game.hospital import FULL_PRICE, PATCH_HEAL, PATCH_PRICE
 from bot.game.economy import (
     LEVEL_CREDITS,
     MAX_LEVEL,
@@ -176,7 +176,10 @@ def help_text(turn_timeout: int = 30, round_break: int = 30) -> str:
         f"🟢 от {READY_THRESHOLD:.0%} — можно на ринг.\n"
         "В красной и жёлтой зоне драться нельзя. В зелёной — можно, "
         "даже если здоровье неполное: это уже твой риск.\n"
-        "Сколько осталось ждать, видно в /profile.\n\n"
+        "Сколько осталось ждать, видно в /profile.\n"
+        f"Ждать не обязательно: в больнице подлатают за кредиты — "
+        f"{PATCH_PRICE} 💰 за {PATCH_HEAL} единиц здоровья или {FULL_PRICE} 💰 "
+        "за полное выздоровление.\n\n"
         "<b>Лавка, экипировка и инвентарь</b>\n"
         "Лавка живёт в мини-аппе, на вкладке «Магазины» (/buy откроет её "
         "кнопкой). Товар разложен по типам вещей и открывается уровнем: "
@@ -195,7 +198,8 @@ def help_text(turn_timeout: int = 30, round_break: int = 30) -> str:
         "Выпитое в требованиях не считается: эффект уходит по часам, и вещь на "
         "нём слетала бы посреди боя.\n"
         f"У каждой вещи запас прочности — {MAX_WEAR} пунктов износа. После поражения "
-        f"надетая вещь с шансом {WEAR_CHANCE_LOSS:.0%} снашивается на пункт, после победы — {WEAR_CHANCE_WIN:.0%}.\n"
+        f"каждая надетая вещь с шансом {WEAR_CHANCE_LOSS:.0%} снашивается на пункт. "
+        "Победа и ничья вещей не трогают.\n"
         f"Починка стоит {REPAIR_PRICE_PER_POINT} 💰 за пункт, но каждая починка "
         f"с шансом {REPAIR_DEGRADE_CHANCE:.0%} отнимает у вещи пункт запаса — чинить "
         "выгоднее сразу целиком, а не по одному.\n"

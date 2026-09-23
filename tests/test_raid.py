@@ -19,7 +19,10 @@ from bot.game.raid import (
     MAX_PARTY,
     CELLAR_BOSS,
     RaidEnd,
+    EVEN_TEMPER,
+    STANCES,
     boss_action,
+    boss_stance,
     boss_fighter,
     boss_level,
     judge_raid,
@@ -57,8 +60,14 @@ def make_service(bot, db, **over) -> RaidService:
         raid_any_time=True,
     )
     settings.update(over)
+    # Зерно — деталь стенда, а не правило: по нему бросает кости и босс,
+    # и стойка волны, и от него зависит, кто в каком размене устоял.
+    # Стоит поменять то, как босс тянет кости, — и прежнее зерно уводит
+    # сценарии в другую сторону. Тесты при этом проверяют механику рейда,
+    # а не конкретный бросок, поэтому зерно здесь переставляют, а не
+    # подгоняют под него правила
     return RaidService(
-        bot=bot, db=db, config=Config(**settings), rng=random.Random(7)
+        bot=bot, db=db, config=Config(**settings), rng=random.Random(22)
     )
 
 
@@ -166,14 +175,98 @@ def test_the_boss_grows_with_the_crowd():
     assert boss_fighter(CELLAR_BOSS, [5] * 10, hp_share=0).max_hp == alone.max_hp
 
 
-def test_the_boss_swings_at_random():
-    """Босс не выбирает зону с умыслом — и удар, и блок у него случайные."""
+def test_the_boss_swings_by_his_own_dice():
+    """Зону босс не выбирает с умыслом, но кости у него кривые.
+
+    Без характера он бьёт равномерно — таким он и был, пока повадок не
+    завели.
+    """
     rng = random.Random(1)
     moves = {
         (action.attacks[0].value, action.block[0].value)
         for action in (boss_action(rng=rng) for _ in range(50))
     }
     assert len(moves) > 5
+
+
+def test_the_temper_is_the_same_numbers_the_dice_roll():
+    """Веса, по которым босс бьёт, — те же, что читает аналитик.
+
+    Разойтись им нельзя: подсказка, посчитанная не по тем числам, — это
+    не аналитика, а враньё. Поэтому копия весов в клубе ровно одна.
+    """
+    from collections import Counter
+
+    rng = random.Random(4)
+    temper = CELLAR_BOSS.temper
+    rolls = Counter(temper.swing(rng).value for _ in range(6000))
+
+    for code, share in temper.swings.items():
+        got = rolls[code] / 6000 * 100
+        assert abs(got - share) < 3, f"{code}: кости дают {got:.0f}, ждали {share}"
+
+
+def test_the_boss_guards_the_same_amount_as_before():
+    """Характер не делает босса крепче — только предсказуемее.
+
+    Блок в три зоны закрывает три пятых кольца, как ни кидай кости.
+    Сумма закрытого у него та же, что была при случайном блоке; поменялось
+    лишь то, что зоны закрыты неровно, и самую редкую теперь видно.
+    """
+    even = EVEN_TEMPER.covers(3)
+    his = CELLAR_BOSS.temper.covers(3)
+
+    assert round(sum(his.values())) == round(sum(even.values())) == 300
+    assert set(even.values()) == {60.0}, "раньше все зоны были закрыты поровну"
+    assert min(his.values()) < 60 < max(his.values()), "должна быть слабая зона"
+
+
+def test_a_full_circle_of_stances_evens_out():
+    """Тот, кто жмёт одну кнопку, от характера не теряет и не выигрывает.
+
+    Это главное свойство всей затеи. Перекос, стоящий на месте,
+    разгадывается с одного раза и дальше достаётся даром всем; перекос,
+    который поворачивается каждую волну, за круг даёт каждой зоне побывать
+    и любимой, и брошенной. Выигрывает не угадавший, а читающий.
+    """
+    from collections import Counter
+
+    swings: Counter = Counter()
+    covers: Counter = Counter()
+    for step in range(STANCES):
+        turned = CELLAR_BOSS.temper.turned(step)
+        swings.update(turned.swings)
+        covers.update(turned.covers(3))
+
+    for code in swings:
+        assert abs(swings[code] / STANCES - 20) < 0.01, f"{code}: удары не ровные"
+        assert abs(covers[code] / STANCES - 60) < 0.01, f"{code}: блок не ровный"
+
+
+def test_a_stance_is_the_same_temper_on_other_zones():
+    """Поворот не меняет характер, а переносит его на другие зоны."""
+    base = CELLAR_BOSS.temper
+    turned = base.turned(2)
+
+    assert sorted(turned.swings.values()) == sorted(base.swings.values())
+    assert turned.swings != base.swings, "стойка обязана отличаться"
+    assert base.turned(STANCES).swings == base.swings, "круг возвращает на место"
+
+
+def test_the_stance_changes_from_wave_to_wave():
+    """Заучить стойку нельзя: каждая волна своя."""
+    seen = {boss_stance(random.Random(seed)) for seed in range(40)}
+
+    assert len(seen) == STANCES, "босс должен бывать во всех стойках"
+
+
+def test_the_boss_swings_high_and_guards_his_face():
+    """Кувалда ходит сверху, щит стоит у лица — и это читается числами."""
+    swings = CELLAR_BOSS.temper.swings
+    covers = CELLAR_BOSS.temper.covers(3)
+
+    assert swings["head"] > swings["legs"], "кувалдой по ногам не машут"
+    assert min(covers, key=covers.get) == "legs", "реже всего он закрывает ноги"
 
 
 def make_fighter(user_id: int, hp: int = 50) -> Fighter:

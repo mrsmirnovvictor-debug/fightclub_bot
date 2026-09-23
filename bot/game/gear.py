@@ -144,9 +144,9 @@ ALL_SLOTS: tuple[Slot, ...] = (
 
 # Запас прочности новой вещи: 20 пунктов износа до трухи
 MAX_WEAR = 20
-# Шанс схватить пункт износа за бой — проигравший снашивает вещи вчетверо чаще
-WEAR_CHANCE_LOSS = 0.75
-WEAR_CHANCE_WIN = 0.10
+# Шанс схватить пункт износа за проигранный бой. Победа и ничья вещей не
+# трогают вовсе: за износ платит тот, кто проиграл, и только он
+WEAR_CHANCE_LOSS = 0.5
 # Починка: один пункт износа — один кредит
 REPAIR_PRICE_PER_POINT = 1
 # Каждая починка с этим шансом отнимает у вещи один пункт запаса прочности,
@@ -595,17 +595,25 @@ def describe_requirements(item: Item) -> str:
     return ", ".join(parts)
 
 
-def roll_fight_wear(won: bool, rng: random.Random | None = None) -> bool:
+def roll_fight_wear(won: bool | None, rng: random.Random | None = None) -> bool:
     """Схватила ли надетая вещь пункт износа за этот бой.
 
-    Ничья идёт по строке поражения — как и в рейтинге.
+    Исход называется так же, как в рейтинге: `True` — победа, `False` —
+    поражение, `None` — ничья. Снашивается только проигранный бой:
+    победа и ничья вещей не трогают.
+
+    Ничья раньше шла по строке поражения, и двое равных бойцов уходили с
+    ринга не только без рейтинга, но и с потрёпанной экипировкой — за
+    бой, в котором никто никому не уступил.
     """
+    if won is not False:
+        return False
     rng = rng or random
-    return rng.random() < (WEAR_CHANCE_WIN if won else WEAR_CHANCE_LOSS)
+    return rng.random() < WEAR_CHANCE_LOSS
 
 
 def apply_fight_wear(
-    items: Iterable[OwnedItem], won: bool, rng: random.Random | None = None
+    items: Iterable[OwnedItem], won: bool | None, rng: random.Random | None = None
 ) -> tuple[list[OwnedItem], list[OwnedItem]]:
     """Пройтись износом по надетому. Вернуть (потрёпанные, рассыпавшиеся)."""
     damaged: list[OwnedItem] = []

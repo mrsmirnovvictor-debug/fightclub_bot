@@ -913,7 +913,9 @@ class DuelService:
             # экипировка уменьшает запас, и HP надо обрезать по новому потолку.
             # На кулаках вещи остались в раздевалке — снашивать нечего.
             ruined = (
-                await wear_after_fight(self.db, player, won, self.rng)
+                # Ничья идёт ничьёй и здесь: None вместо False, как в
+                # рейтинге. Бой, в котором никто не уступил, вещей не трогает
+                await wear_after_fight(self.db, player, None if drawn else won, self.rng)
                 if session.mode.armed
                 else []
             )

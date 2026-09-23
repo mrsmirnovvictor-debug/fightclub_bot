@@ -36,6 +36,16 @@ async def cellar(db):
     await raids.shutdown()
 
 
+# Как аналитик называет зоны в совете: «Бей в Ноги», «Закрывай Голову+Корпус»
+ZONE_WORDS = {
+    "head": "Голову",
+    "chest": "Корпус",
+    "belly": "Живот",
+    "belt": "Пояс",
+    "legs": "Ноги",
+}
+
+
 async def state(client, user_id: int) -> dict:
     response = await client.get("/api/raid", headers=headers(user_id))
     assert response.status == 200
@@ -368,10 +378,91 @@ async def test_the_plate_lights_up_an_hour_before_and_goes_out_after(db):
     assert done == {"state": "done", "text": "Рейд завершён", "seconds_left": 0}
 
 
-async def test_the_raid_has_no_analyst(cellar):
-    """В рейде аналитика нет: разбирают живого соперника, а не босса."""
+# ---------- аналитик в подвале ----------
+
+
+async def make_pro(db, user_id: int = 42) -> None:
+    """Выдать бойцу подписку: аналитик — её умение, а не общее."""
+    from bot.game.health import now_ts
+
+    player = await db.get_player(user_id)
+    player.pro_until = now_ts() + 30 * 24 * 3600
+    await db.save_player(player)
+
+
+async def test_the_analyst_reads_the_boss_for_a_subscriber(cellar):
+    """Подписчику аналитик говорит, куда бить и что закрывать."""
     client, raids, db = cellar
+    await make_pro(db)
+    await start(client, raids)
+
+    scout = (await state(client, 42))["raid"]["scout"]
+
+    assert CELLAR_BOSS.whom in scout["title"]
+    assert CELLAR_BOSS.manner in scout["title"]
+    # Совет — одно действие и одно число, а не два абзаца с процентами
+    assert scout["attack_tip"]["move"] and scout["attack_tip"]["why"]
+    assert scout["block_tip"]["move"] and scout["block_tip"]["why"]
+    # Разбор при этом остаётся: по нему видно, откуда совет взялся
+    assert scout["attack"] and scout["block"]
+
+
+async def test_the_advice_points_where_the_dice_actually_go(cellar):
+    """Совет посчитан по тем же числам, по которым босс кидает кости.
+
+    Это и есть всё умение: аналитик не угадывает, он читает характер.
+    Поэтому сверяемся не со словами, а с самими костями — гоняем их и
+    смотрим, туда ли зовёт совет.
+    """
+    import random
+    from collections import Counter
+
+    from bot.game.raid import boss_action
+
+    client, raids, db = cellar
+    await make_pro(db)
+    await start(client, raids)
+    scout = (await state(client, 42))["raid"]["scout"]
+
+    rng = random.Random(9)
+    session = raids.raid_of_user(42)
+    enemy = session.enemy
+    guarded: Counter = Counter()
+    swung: Counter = Counter()
+    rolls = 4000
+    for _ in range(rolls):
+        # Тот же характер, что у волны: стойку босс меняет каждую волну,
+        # и аналитик читает здешнюю, а не «вообще»
+        action = boss_action(enemy, rng, session.temper)
+        guarded.update(zone.value for zone in action.block)
+        swung.update(zone.value for zone in action.attacks if zone)
+
+    # Бить советуют туда, где он реже всего держит защиту
+    loosest = min(guarded, key=lambda code: guarded[code])
+    assert ZONE_WORDS[loosest] in scout["attack_tip"]["move"], scout["attack_tip"]
+
+    # Закрывать — то, куда он бьёт чаще всего
+    top = [code for code, _ in swung.most_common(2)]
+    covered = [code for code in ZONE_WORDS if ZONE_WORDS[code] in scout["block_tip"]["move"]]
+    assert set(top) <= set(covered), (scout["block_tip"], swung)
+
+
+async def test_without_a_subscription_the_boss_keeps_his_habits(cellar):
+    """Без подписки аналитика нет — ни в рейде, ни где-либо ещё."""
+    client, raids, db = cellar
+    await start(client, raids)
+
+    body = await state(client, 42)
+
+    assert body["raid"]["scout"] is None
+
+
+async def test_the_analyst_waits_for_the_gong(cellar):
+    """В лобби разбирать нечего: босс ещё не вышел."""
+    client, raids, db = cellar
+    await make_pro(db)
     await act(client, 42, action="open")
+
     body = await state(client, 42)
 
     assert "scout" not in body

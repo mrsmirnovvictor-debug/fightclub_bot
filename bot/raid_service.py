@@ -71,7 +71,9 @@ from bot.game.raid import (
     Boss,
     CELLAR_BOSS,
     RaidOutcome,
+    Temper,
     boss_action,
+    boss_stance,
     boss_fighter,
     judge_raid,
 )
@@ -194,10 +196,24 @@ class RaidSession:
     timer: asyncio.Task | None = None
     resting: bool = False
     finished: bool = False
+    # В какой стойке босс стоит эту волну. Меняется каждую волну, и
+    # поэтому её нельзя заучить: кто читает аналитика — держится за ней,
+    # кто жмёт одну кнопку — за круг получает ровно столько же, сколько
+    # получал от босса без характера
+    stance: int = 0
     summary: list[str] = field(default_factory=list)
     # Кому сколько досталось из кошелька: считается один раз на итоге
     shares: dict[int, int] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @property
+    def temper(self) -> Temper:
+        """Характер босса в этой волне — повёрнутый на здешнюю стойку.
+
+        Одно свойство на весь клуб: по нему босс кидает кости, по нему же
+        его читает аналитик подписчика. Разойтись им нельзя.
+        """
+        return self.boss.temper.turned(self.stance)
 
     @property
     def key(self) -> ChatKey | None:
@@ -554,6 +570,9 @@ class RaidService:
 
     async def _start_wave(self, session: RaidSession) -> None:
         session.wave += 1
+        # Новая волна — новая стойка: между волнами босс перекладывает
+        # щит и меняет замах
+        session.stance = boss_stance(self.rng)
         session.choices = {}
         session.acted = set()
         session.said = []
@@ -648,7 +667,7 @@ class RaidService:
             fighter,
             action,
             session.enemy,
-            boss_action(session.enemy, self.rng),
+            boss_action(session.enemy, self.rng, session.temper),
             session.wave,
             self.rng,
             # Усталость растянута на длину рейда, а не дуэли
@@ -858,7 +877,11 @@ class RaidService:
             if outcome.won:
                 player.raid_wins += 1
                 player.credits += session.shares.get(user_id, 0)
-            ruined = await wear_after_fight(self.db, player, outcome.won, self.rng)
+            # Ничья в подвале бывает: отряд и босс легли в один ход. Она
+            # идёт ничьёй и по износу — None вместо False, как в рейтинге
+            ruined = await wear_after_fight(
+                self.db, player, None if outcome.draw else outcome.won, self.rng
+            )
             if ruined:  # pragma: no cover - износ считается своим тестом
                 logger.info("Рейд износил вещи бойца %s: %s", user_id, len(ruined))
             if player.birthplace is None and session.chat_title:

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from bot.game.clock import club_date
@@ -24,6 +25,7 @@ from bot.game.combat import (
 from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS, get_item
 from bot.game.health import now_ts
 from bot.game.raid import (
+    BOSS_ID,
     BOSS_HP_SHARE,
     RAID_SOON,
     LEVELS_ABOVE,
@@ -36,11 +38,57 @@ from bot.game.raid import (
     boss_fighter,
 )
 from bot.game.potions import RAID_PASS, get_potion
+from bot.game.scout import Move, habits_of_temper, moves_of, trend
 from bot.models import Player
 from bot.webapp.fight import abilities_payload
 from bot.raid_service import RaidLobby, RaidService, RaidSession
 from bot.webapp.card import slot_payload
 from bot.webapp.fight import ATTACK_BUTTONS, BLOCK_BUTTONS, block_buttons, hands_payload
+
+
+def boss_scout(
+    session: RaidSession, viewer_id: int, pro: bool
+) -> dict[str, Any] | None:
+    """Что аналитик говорит подписчику про босса. None — молчит.
+
+    У живого соперника привычки считают по его прошлым боям. У босса
+    считать нечего — он не игрок, боёв за ним не записано, — зато у него
+    есть характер, заданный весами, и аналитик читает ровно те числа, по
+    которым босс кидает кости. Ни в одну сторону разойтись они не могут:
+    веса лежат в одном месте, у самого босса.
+
+    Про прошлый ход берётся то же, что в дуэли: законченные размены и
+    ничего сверх. Что босс нажал прямо сейчас, сюда не попадает.
+
+    Разбор до первого размена идёт через `trend` с пустым ходом, а не
+    через `opening`: у босса нет ритуала на первый удар, и говорить «в
+    первом ходу он блокирует так-то» значило бы обещать особенность,
+    которой нет.
+
+    Стойку босс меняет каждую волну, поэтому и разбор каждую волну свой.
+    В этом всё умение: заучить его нельзя, за ним можно только следить.
+    """
+    fighter = session.fighters.get(viewer_id)
+    if not pro or fighter is None or session.finished:
+        return None
+    temper = session.temper
+    habits = habits_of_temper(
+        temper.swings,
+        # Сколько зон он закрывает разом, решает его снаряжение: со щитом
+        # блок шире, и доли «закрыта ли эта зона» считаются от него
+        temper.covers(session.enemy.block_width),
+    )
+    moves = moves_of(session.rounds, BOSS_ID)
+    # Ширина блока — того, кто читает: со щитом он держит три зоны, и
+    # советовать ему пару значило бы советовать меньше, чем он нажмёт
+    advice = trend(habits, moves[-1] if moves else Move(number=0), fighter.block_width)
+    return replace(
+        advice,
+        title=(
+            f"Волна {session.wave}: стойка {session.boss.whom}. "
+            f"{session.boss.manner}"
+        ).strip(),
+    ).as_dict()
 
 
 def boss_payload(session: RaidSession) -> dict[str, Any]:
@@ -187,7 +235,9 @@ def lobby_payload(
     }
 
 
-def raid_payload(session: RaidSession, viewer_id: int) -> dict[str, Any]:
+def raid_payload(
+    session: RaidSession, viewer_id: int, pro: bool = False
+) -> dict[str, Any]:
     """Панель рейда: босс, отряд, что уже нажато и чем всё кончилось."""
     mine = session.choices.get(viewer_id)
     fighter = session.fighters.get(viewer_id)
@@ -221,6 +271,9 @@ def raid_payload(session: RaidSession, viewer_id: int) -> dict[str, Any]:
         # Приёмы и шкала — только свои: чужие заготовки соперник видеть не
         # должен, иначе приём перестаёт быть неожиданностью
         "abilities": abilities_payload(fighter),
+        # Аналитик — только подписчику и только про босса. Ответ у
+        # каждого свой: панель мини-апп собирает под зрителя
+        "scout": boss_scout(session, viewer_id, pro),
         "log": session.rounds,
     }
 
@@ -330,7 +383,7 @@ def build_raid(
         player.user_id
     )
     if session is not None:
-        body["raid"] = raid_payload(session, player.user_id)
+        body["raid"] = raid_payload(session, player.user_id, player.is_pro())
         body["boss"] = boss_card(session.enemy, session.boss, live=True)
         return body
 
@@ -389,6 +442,7 @@ __all__ = [
     "gate_payload",
     "lobby_payload",
     "plate_payload",
+    "boss_scout",
     "raid_payload",
     "raid_row",
 ]

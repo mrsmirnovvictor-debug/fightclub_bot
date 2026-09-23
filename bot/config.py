@@ -66,6 +66,11 @@ class Config:
     # Мини-апп включён главным (BotFather → Configure Mini App): тогда карточка
     # открывается по t.me/бот?startapp=id и короткое имя не нужно
     miniapp_main: bool = False
+    # Телеграм-id владельца клуба: только ему отвечают команды из
+    # bot/handlers/admin.py. Ноль — владельца нет, и команд нет ни у кого,
+    # включая того, кто их писал: незаданная переменная не должна
+    # открывать дверь всем подряд
+    owner_id: int = 0
 
     @property
     def webapp_enabled(self) -> bool:
@@ -93,6 +98,12 @@ def _webapp_port() -> int:
         if value.isdigit():
             return int(value)
     return 8080
+
+
+def _owner_id() -> int:
+    """Кто владелец клуба. Ноль — никто: мусор в переменной не пускаем."""
+    value = os.getenv("OWNER_ID", "").strip()
+    return int(value) if value.isdigit() else 0
 
 
 def _flag(name: str) -> bool:
@@ -137,4 +148,5 @@ def load_config() -> Config:
         club_title=os.getenv("CLUB_TITLE", "").strip() or Config.club_title,
         miniapp_name=os.getenv("MINIAPP_NAME", "").strip(),
         miniapp_main=_flag("MINIAPP_MAIN"),
+        owner_id=_owner_id(),
     )
