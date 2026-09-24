@@ -3301,6 +3301,30 @@ async def test_the_tips_take_half_the_width_each(server):
         await browser.close()
 
 
+async def test_the_tips_are_written_no_bigger_than_the_buttons(server):
+    """Совет набран той же меркой, что и кнопки удара и блока.
+
+    Мерка живёт на всей форме хода. Пока она стояла на одних столбцах,
+    совет — он лежит отдельной строкой над ними — оставался без неё и
+    вылезал буквами вдвое больше тех кнопок, о которых говорит.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(
+            pw, server, raid_with_wave({"scout": BOSS_SCOUT})
+        )
+        await page.wait_for_selector(".zone-columns")
+
+        async def ink(selector):
+            return await page.locator(selector).first.evaluate(
+                "node => parseFloat(getComputedStyle(node).fontSize)"
+            )
+
+        tip = await ink("#raid-body .zone-tip-move")
+        zone = await ink("#raid-body .zone")
+        assert abs(tip - zone) < 0.5, f"совет {tip}px, кнопка {zone}px"
+        await browser.close()
+
+
 async def test_the_analyst_sits_under_the_buttons_in_the_cellar(server):
     """Разбор — под кнопками хода и свёрнутый: место над ними занято.
 
