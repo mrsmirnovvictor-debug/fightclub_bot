@@ -1405,19 +1405,101 @@ function marketFollowsBag() {
   else marketData = null;
 }
 
+// Комиссионка живёт двумя делами, и они не смешиваются: за одним сюда
+// приходят купить, за другим — сдать. Раньше они лежали одним свитком,
+// и покупателю приходилось пролистывать собственный рюкзак, чтобы
+// добраться до чужих лотов.
+const MARKET_TABS = [
+  ["shelf", "🛒 Прилавок"],
+  ["mine", "🤝 Продать своё"],
+];
+let marketTab = "shelf";
+
+function pickMarketTab(name) {
+  marketTab = name;
+  if (marketData) renderMarket(marketData);
+}
+
+// Прилавок — это чужое. Свои лоты стоят на второй вкладке, рядом с
+// рюкзаком: снять с продажи — дело продавца, а не покупателя
+function othersShelves(data) {
+  return data.sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((lot) => !lot.mine),
+    }))
+    .filter((section) => section.items.length);
+}
+
 function renderMarket(data) {
   marketData = data;
   el("shop-purse").textContent = "";
   el("shop-purse").appendChild(purse(data.credits));
-  const count = data.sections.reduce((all, row) => all + row.items.length, 0);
-  el("market-note").textContent = count
-    ? "Вещи игроков клуба. Клуб берёт " + data.fee + "% с каждой продажи."
-    : "На комиссии пусто. Выставь своё — заберут.";
+
+  const shelves = othersShelves(data);
+  const strangers = shelves.reduce((all, row) => all + row.items.length, 0);
+  const mine = data.mine || [];
+  el("market-note").textContent = marketTab === "shelf"
+    ? strangers
+      ? "Вещи игроков клуба. Клуб берёт " + data.fee + "% с каждой продажи."
+      : "На прилавке пусто: чужого никто не выставил."
+    : "Выставленное ждёт покупателя. Клуб берёт " + data.fee + "% с продажи.";
 
   const body = el("market-body");
   body.textContent = "";
+
+  const tabs = document.createElement("div");
+  tabs.className = "bubbles";
+  tabs.id = "market-tabs";
+  MARKET_TABS.forEach(([code, label]) => {
+    const count = code === "shelf" ? strangers : mine.length + data.sellable.length;
+    tabs.appendChild(
+      chip(
+        count ? label + " · " + count : label,
+        marketTab === code,
+        () => pickMarketTab(code)
+      )
+    );
+  });
+  body.appendChild(tabs);
+
+  if (marketTab === "shelf") {
+    if (!shelves.length) body.appendChild(emptyShelf("Чужих вещей сейчас нет."));
+    shelves.forEach((section) => body.appendChild(marketShelf(section)));
+    return;
+  }
+  if (mine.length) body.appendChild(mineBox(mine));
   body.appendChild(sellBox(data));
-  data.sections.forEach((section) => body.appendChild(marketShelf(section)));
+}
+
+function emptyShelf(said) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const empty = document.createElement("p");
+  empty.className = "shelf-empty";
+  empty.textContent = said;
+  box.appendChild(empty);
+  return box;
+}
+
+function mineBox(mine) {
+  // Что уже стоит на прилавке от тебя: отсюда же и снимается
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "📤 На продаже";
+  const count = document.createElement("span");
+  count.className = "shelf-count";
+  count.textContent = "лотов " + mine.length;
+  head.appendChild(count);
+  box.appendChild(head);
+
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  mine.forEach((lot) => list.appendChild(lotCard(lot)));
+  box.appendChild(list);
+  return box;
 }
 
 function sellBox(data) {
@@ -1426,7 +1508,7 @@ function sellBox(data) {
   box.className = "shelf";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = "🤝 Выставить своё";
+  head.textContent = "🎒 В рюкзаке";
   box.appendChild(head);
 
   if (!data.sellable.length) {

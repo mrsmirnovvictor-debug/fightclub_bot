@@ -585,7 +585,19 @@ MARKET = {
             ],
         }
     ],
-    "mine": [],
+    # Сервер кладёт свои лоты и в раздел, и отдельным списком: на
+    # прилавке их больше нет, а на своей вкладке они и живут
+    "mine": [
+        {
+            "id": 12, "code": "pipe", "title": "Деревянная бита",
+            "icon": "🏏", "image": "", "slot": "weapon",
+            "slot_title": "Оружие", "price": 400, "payout": 380,
+            "fee": 20, "seller_id": 42, "seller": "Растафарайчик",
+            "mine": True, "wear": 0, "max_wear": 20, "wear_text": "новая",
+            "affordable": False, "can_equip": True, "requirements": [],
+            "bonuses": [], "shop_price": 150,
+        }
+    ],
     "sellable": [
         {
             "id": 21, "code": "bandana", "title": "Бандана", "icon": "🧢",
@@ -641,25 +653,47 @@ async def test_a_shop_screen_says_whose_counter_it_is(server):
         await browser.close()
 
 
-async def test_the_market_shows_lots_on_shelves_by_type(server):
-    """Чужие вещи лежат по полкам, и видно, кто их выставил."""
+async def test_the_counter_holds_what_others_put_up(server):
+    """На прилавке чужие вещи по полкам, и видно, кто их выставил.
+
+    Своё на прилавок не попадает: комиссионка открывается покупателем, и
+    листать собственный рюкзак ради чужого лота он не должен.
+    """
     async with async_playwright() as pw:
         browser, page = await open_market(pw, server)
 
         assert "Клуб берёт 5%" in await page.locator("#market-note").inner_text()
         shelves = await page.locator("#market-body .shelf-head").all_inner_texts()
-        assert "Выставить своё" in shelves[0]
-        assert "Оружие" in shelves[1] and "лотов 2" in shelves[1]
+        assert len(shelves) == 1
+        assert "Оружие" in shelves[0] and "лотов 1" in shelves[0]
 
-        lots = await page.locator("#market-body .shelf").nth(1).locator(
-            ".thing"
-        ).all_inner_texts()
+        lots = await page.locator("#market-body .thing").all_inner_texts()
+        assert len(lots) == 1, "на прилавке оказалось своё"
         assert "Продаёт: Марла" in lots[0]
         assert "🔧 Износ: 6 из 20" in lots[0]
         assert "200 💰 · в лавке 110 💰" in lots[0]
-        # свой лот подписан по-своему и снимается, а не покупается
-        assert "Твой лот" in lots[1]
-        assert "придёт 380 💰" in lots[1]
+        await browser.close()
+
+
+async def test_the_two_tabs_split_buying_from_selling(server):
+    """Две вкладки: на прилавке чужое, на второй — своё и рюкзак."""
+    async with async_playwright() as pw:
+        browser, page = await open_market(pw, server)
+
+        tabs = await page.locator("#market-tabs .chip").all_inner_texts()
+        assert tabs == ["🛒 Прилавок · 1", "🤝 Продать своё · 2"]
+        assert "on" in (await page.locator("#market-tabs .chip").first
+                        .get_attribute("class"))
+
+        await page.get_by_role("button", name="🤝 Продать своё · 2").click()
+        said = await page.locator("#market-body").inner_text()
+        assert "На продаже" in said and "В рюкзаке" in said
+        # свой лот здесь, и его снимают, а не покупают
+        assert "Твой лот" in said and "придёт 380 💰" in said
+        assert "Бандана" in said
+        # а чужого на этой вкладке нет
+        assert "Продаёт: Марла" not in said
+        assert "Клуб берёт 5%" in await page.locator("#market-note").inner_text()
         await browser.close()
 
 
@@ -717,6 +751,7 @@ async def test_your_own_lot_is_taken_back_not_bought(server):
             )
 
         await page.route("**/api/market", catch)
+        await page.get_by_role("button", name="🤝 Продать своё · 2").click()
         await page.get_by_role("button", name="Снять с продажи").click()
         await page.wait_for_timeout(200)
 
@@ -730,8 +765,10 @@ async def test_your_gear_goes_on_sale_with_a_price(server):
 
     async with async_playwright() as pw:
         browser, page = await open_market(pw, server)
+        # Рюкзак — на второй вкладке: сдают своё там же, где снимают с продажи
+        await page.get_by_role("button", name="🤝 Продать своё · 2").click()
 
-        card = page.locator("#market-body .shelf").first
+        card = page.locator("#market-body .shelf").last
         assert "От 20 до 120 💰" in await card.inner_text()
         price = card.locator(".sell-price")
         assert await price.get_attribute("min") == "20"
@@ -784,6 +821,8 @@ async def test_the_market_rereads_the_backpack_when_you_come_back(server):
         await page.evaluate("showTab('shop'); pickShopSection('market')")
         await page.wait_for_selector("#shop-market:not(.hidden)")
 
+        # Рюкзак живёт на второй вкладке комиссионки
+        await page.get_by_role("button", name="🤝 Продать своё · 2").click()
         assert "Бандана" in await page.locator("#market-body").inner_text()
 
         # ушли на другую вкладку и вернулись — список перечитан
@@ -804,7 +843,11 @@ async def test_an_empty_market_says_so(server):
             pw, server, {**EMPTY_MARKET, "credits": 100}
         )
 
-        assert "На комиссии пусто" in await page.locator("#market-note").inner_text()
+        assert "На прилавке пусто" in await page.locator("#market-note").inner_text()
+        assert "Чужих вещей сейчас нет" in await page.locator("#market-body").inner_text()
+
+        # А в рюкзаке пусто — это уже про вторую вкладку
+        await page.get_by_role("button", name="🤝 Продать своё").click()
         assert "В рюкзаке пусто" in await page.locator("#market-body").inner_text()
         await browser.close()
 
