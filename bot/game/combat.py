@@ -818,13 +818,17 @@ def resolve_round(
         damage_taken[strike.attacker_id] += strike.counter_damage
 
     fighters = {first.user_id: first, second.user_id: second}
+    # Здоровье на начало раунда запоминаем до того, как применим урон:
+    # по нему судья и рассказывает ход. Обратно из остатка его не
+    # восстановить — остаток обрезан нулём
+    before = {user_id: fighter.hp for user_id, fighter in fighters.items()}
     for user_id, damage in damage_taken.items():
         fighter = fighters[user_id]
         fighter.hp = max(0, fighter.hp - damage)
     first.damage_dealt += damage_taken[second.user_id]
     second.damage_dealt += damage_taken[first.user_id]
 
-    _fill_running_hp(strikes, fighters)
+    _fill_running_hp(strikes, before)
     _fill_energy(strikes, fighters)
     # Норма приёмов на ход выбирается заново каждый раунд. Заготовки при
     # этом остаются: они ждут своего момента, а не конца раунда
@@ -1007,20 +1011,21 @@ def _fill_energy(strikes: list[Strike], fighters: dict[int, Fighter]) -> None:
             fighters[strike.defender_id].earn(Source.DODGE)
 
 
-def _fill_running_hp(strikes: list[Strike], fighters: dict[int, Fighter]) -> None:
-    """Проставить остаток здоровья на момент каждого удара — для рассказа судьи."""
-    running = {
-        user_id: fighter.hp + sum(
-            strike.damage
-            for strike in strikes
-            if strike.defender_id == user_id
-        ) + sum(
-            strike.counter_damage
-            for strike in strikes
-            if strike.attacker_id == user_id
-        )
-        for user_id, fighter in fighters.items()
-    }
+def _fill_running_hp(strikes: list[Strike], before: dict[int, int]) -> None:
+    """Проставить остаток здоровья на момент каждого удара — для рассказа судьи.
+
+    `before` — здоровье на начало раунда. Раньше его считали обратно: к
+    остатку прибавляли весь урон раунда. На добитом бойце это врало, и
+    тем сильнее, чем крепче его добили: остаток обрезан нулём, и лишний
+    урон возвращался ему как здоровье, которого не было. Босс с 33
+    здоровья, получивший 70 и 13, начинал в логе раунд с 83 — и первый
+    удар, тот самый крит, оставлял его живым с 13.
+
+    Удар по уже упавшему при этом остаётся в логе как есть: в раунде
+    бьют одновременно, и второе оружие не знает, что первое уже решило
+    дело.
+    """
+    running = dict(before)
     for strike in strikes:
         running[strike.defender_id] = max(0, running[strike.defender_id] - strike.damage)
         running[strike.attacker_id] = max(

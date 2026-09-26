@@ -166,6 +166,77 @@ def test_block_absorbs_damage_completely():
     assert result.strikes[1].outcome is not Outcome.BLOCK
 
 
+def log_walks_down(result, defender, started_with: int) -> None:
+    """Пройти лог глазами игрока: остаток обязан только убывать.
+
+    Каждая строка судьи называет, сколько осталось у соперника после
+    этого удара. Идём по ним подряд от здоровья на начало раунда — и
+    сходиться обязано до единицы. Начало берём мерянное до раунда, а не
+    восстановленное из остатка: восстановление и есть то, на чём код
+    ошибался.
+    """
+    left = started_with
+    for strike in result.strikes:
+        if strike.defender_id != defender.user_id:
+            continue
+        left = max(0, left - strike.damage)
+        assert strike.defender_hp_after == left, (
+            f"удар на {strike.damage}: в логе {strike.defender_hp_after}, "
+            f"а должно остаться {left}"
+        )
+
+
+def test_the_log_does_not_give_a_finished_fighter_health_he_never_had():
+    """Двумя руками добили — и лог не должен выдумывать сопернику запас.
+
+    Остаток на каждом ударе восстанавливался обратно: к тому, что
+    осталось, прибавляли весь урон раунда. Пока боец выживал, это
+    сходилось; добитому — врало, и тем сильнее, чем крепче добили.
+    Остаток обрезан нулём, и лишний урон возвращался ему как здоровье:
+    босс с 33 здоровья, получив 70 и 13, начинал в логе раунд с 83, а
+    крит, который его и уложил, оставлял живым с 13.
+    """
+    both = Equipment.from_codes({"weapon": "knuckles", "offhand": "knife"})
+    attacker = make(ASSASSIN, user_id=1, equipment=both)
+    defender = make(TANK, user_id=2)
+    defender.hp = 33
+
+    result = resolve_round(
+        attacker,
+        Action(attacks=(Zone.BELT, Zone.BELT)),
+        defender,
+        Action(block=guard(Zone.HEAD)),
+        round_number=1,
+        rng=random.Random(0),
+    )
+
+    landed = [one for one in result.strikes if one.defender_id == defender.user_id]
+    assert len(landed) == 2 and sum(one.damage for one in landed) > 33, "добить не вышло"
+    # Первый удар уносит своё от тридцати трёх, второй добивает лежачего
+    assert [one.defender_hp_after for one in landed] == [33 - landed[0].damage, 0]
+    assert defender.hp == 0 and not defender.alive
+
+
+def test_the_log_adds_up_whether_the_fighter_survives_or_not():
+    """Строки судьи сходятся в обе стороны: и когда выжил, и когда нет."""
+    both = Equipment.from_codes({"weapon": "knuckles", "offhand": "knife"})
+    for seed in range(12):
+        for hp in (33, 200):
+            attacker = make(ASSASSIN, user_id=1, equipment=both)
+            defender = make(TANK, user_id=2)
+            defender.hp = min(hp, defender.max_hp)
+            started_with = defender.hp
+            result = resolve_round(
+                attacker,
+                Action(attacks=(Zone.BELT, Zone.BELT)),
+                defender,
+                Action(block=guard(Zone.HEAD)),
+                round_number=1,
+                rng=random.Random(seed),
+            )
+            log_walks_down(result, defender, started_with)
+
+
 # ---------- пробитие блока критом ----------
 
 
