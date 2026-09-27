@@ -619,12 +619,13 @@ function thingCard(item, credits, shop, bare) {
           ? button("Купить · " + item.stars + " ⭐", {
               onClick: () => buyRelic(item),
             })
-          : button(
-              item.affordable
-                ? "Купить · " + item.price + " 💰"
-                : "Не хватает кредитов",
-              { disabled: !item.affordable, onClick: () => purchase(item) }
-            )
+          // Цена стоит на кнопке всегда, даже когда её нечем заплатить:
+          // «не хватает кредитов» вместо числа не говорит, сколько
+          // копить, — а счёт лежит тут же, сверху экрана
+          : button("Купить · " + item.price + " 💰", {
+              disabled: !item.affordable,
+              onClick: () => purchase(item),
+            })
       );
       body.appendChild(buy);
     }
@@ -1653,13 +1654,11 @@ function lotCard(lot) {
           secondary: true,
           onClick: () => marketAction({ action: "withdraw", lot_id: lot.id }),
         })
-      : button(
-          lot.affordable ? "Купить · " + lot.price + " 💰" : "Не хватает кредитов",
-          {
-            disabled: !lot.affordable,
-            onClick: () => buyLot(lot),
-          }
-        )
+      // Цена на кнопке стоит всегда — и когда кредитов не хватает тоже
+      : button("Купить · " + lot.price + " 💰", {
+          disabled: !lot.affordable,
+          onClick: () => buyLot(lot),
+        })
   );
   body.appendChild(buttons);
 

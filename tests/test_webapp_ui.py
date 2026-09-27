@@ -675,6 +675,30 @@ async def test_the_counter_holds_what_others_put_up(server):
         await browser.close()
 
 
+async def test_the_market_keeps_the_price_on_the_button_when_money_is_short(server):
+    """И в комиссионке цена остаётся на кнопке, когда платить нечем."""
+    poor = {
+        **MARKET,
+        "credits": 5,
+        "sections": [
+            {
+                **MARKET["sections"][0],
+                "items": [
+                    {**MARKET["sections"][0]["items"][0], "affordable": False},
+                ],
+            }
+        ],
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_market(pw, server, poor)
+
+        buy = page.locator("#market-body .thing .btn").first
+        assert await buy.inner_text() == "Купить · 200 💰"
+        assert await buy.is_disabled()
+        assert "Не хватает" not in await page.locator("#market-body").inner_text()
+        await browser.close()
+
+
 async def test_the_two_tabs_split_buying_from_selling(server):
     """Две вкладки: на прилавке чужое, на второй — своё и рюкзак."""
     async with async_playwright() as pw:
@@ -849,6 +873,34 @@ async def test_an_empty_market_says_so(server):
         # А в рюкзаке пусто — это уже про вторую вкладку
         await page.get_by_role("button", name="🤝 Продать своё").click()
         assert "В рюкзаке пусто" in await page.locator("#market-body").inner_text()
+        await browser.close()
+
+
+async def test_the_club_counter_keeps_the_price_when_money_is_short(server):
+    """Пустой кошелёк не стирает цену с кнопки лавки.
+
+    Вместо числа на ней стояло «Не хватает кредитов», и прилавок
+    переставал отвечать на единственный вопрос, ради которого на него
+    смотрят: сколько это стоит. Мастерская и больница так не делают —
+    теперь и лавка тоже.
+    """
+    poor = make_player()
+    poor.credits = 0
+    card = build_card(poor, TOKEN, viewer_id=poor.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(poor, Service.CLOTHES)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.evaluate("showTab('shop')")
+        await page.wait_for_selector("#shop-list .thing .btn")
+
+        buy = page.locator("#shop-list .thing .btn").first
+        said = await buy.inner_text()
+        assert said.startswith("Купить · ") and said.endswith("💰"), said
+        assert await buy.is_disabled()
+        assert "Не хватает" not in await page.locator("#shop-list").inner_text()
         await browser.close()
 
 
