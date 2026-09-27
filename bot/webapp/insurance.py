@@ -2,10 +2,13 @@
 
 Правил здесь нет: цену и срок держит `bot.game.insurance`, отказы —
 `bot.insurance_service`. Здесь перевод в json и одна забота сверх
-перевода — **на экране всегда две цены**: обычная и та, по которой полис
-достанется этому бойцу. Подписчику он бесплатен, и цифра «300», рядом с
-которой написано «бесплатно», объясняет, за что заплачена подписка,
-лучше любой подсказки.
+перевода — **сказать, по какому праву полис на руках**. Подписчику он
+выписан подпиской и живёт ровно её срок; всем остальным — оплачен и живёт
+месяц. На экране это две разные строки, а не одна с оговоркой.
+
+Цена одна и та же для всех, включая подписчика: месяц он покупает не
+вместо подписки, а после неё. Бесплатного месяца нет вовсе — он
+складывался бы сам с собой сколько угодно раз.
 
 Кнопка называется по делу: полиса нет — «Оформить», полис жив —
 «Продлить на месяц». Одно слово на оба случая пришлось бы выбирать между
@@ -25,7 +28,7 @@ from bot.game.insurance import (
     INSURER,
     NOTE,
     POLICY_DAYS,
-    POLICY_PRICE,
+    PRO_BENEFITS,
     TITLE,
     discounted,
 )
@@ -61,27 +64,36 @@ def build_insurance(player: Player, now: int | None = None) -> dict[str, Any]:
     moment = now_ts() if now is None else now
     price = price_for(player)
     live = player.insured(moment)
+    paper = policy_document(player, moment)
+    by_pro = bool(paper.get("by_pro"))
     return {
         "credits": player.credits,
         "emoji": EMOJI,
         "title": TITLE,
         "issuer": INSURER,
         "covers": COVERS,
-        "gives": list(BENEFITS),
+        "gives": list(PRO_BENEFITS if by_pro else BENEFITS),
         "note": NOTE,
         "days": POLICY_DAYS,
         "discount": round(HEAL_DISCOUNT * 100),
-        # Полная цена и цена для этого бойца: подписчику вторая нулевая
-        "full_price": POLICY_PRICE,
         "price": price,
-        "free": price == 0,
-        "pro": player.is_pro(),
+        "pro": player.is_pro(moment),
+        # Полис держит подписка: покупать нечего, пока она жива
+        "by_pro": by_pro,
         "affordable": player.can_afford(price),
         "insured": live,
         # Документ целиком — тот же, что лежит в «Документах»: страница
         # рисует его одной и той же вёрсткой в двух местах
-        "policy": policy_document(player, moment),
+        "policy": paper,
         "action": "Продлить на месяц" if live else "Оформить полис",
+        # Зачем подписчику покупать месяц, если полис у него и так есть:
+        # без этой строки кнопка с ценой выглядит ошибкой
+        "why": (
+            "Полис держит подписка — до её последнего часа. Купленный месяц "
+            "ляжет сверху и останется, когда подписка кончится."
+            if by_pro
+            else ""
+        ),
         "prices": price_rows(),
         # Что сказать о продлении: строку сводит служба, но повод — здесь
         "auto_renew": bool(player.policy and player.policy.auto_renew),

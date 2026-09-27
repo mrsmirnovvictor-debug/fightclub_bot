@@ -135,10 +135,10 @@ def empty_insurance() -> dict:
         "credits": 500, "emoji": EMOJI, "title": TITLE, "issuer": INSURER,
         "covers": "Лечение любых травм в больнице города",
         "gives": list(BENEFITS), "note": NOTE, "days": 30, "discount": 80,
-        "full_price": 300, "price": 300, "free": False, "pro": False,
+        "price": 300, "pro": False, "by_pro": False,
         "affordable": True, "insured": False, "policy": {},
         "action": "Оформить полис", "prices": price_rows(),
-        "auto_renew": False, "said": "",
+        "auto_renew": False, "said": "", "why": "",
     }
 
 
@@ -6730,9 +6730,16 @@ async def test_the_market_screen_is_left_by_the_map_button(server):
 # видеть не должен — как и рюкзак.
 
 
-def make_policy(active: bool = True, auto_renew: bool = True) -> dict:
+def make_policy(
+    active: bool = True, auto_renew: bool = True, by_pro: bool = False
+) -> dict:
+    """Бланк полиса, как его отдаёт сервер.
+
+    `by_pro` — полис, который держит подписка: у него другой срок, другие
+    обещания и нет переключателя автопродления.
+    """
     from bot.game.health import now_ts
-    from bot.game.insurance import BENEFITS, NOTE, POLICY_SECONDS, Policy
+    from bot.game.insurance import NOTE, POLICY_SECONDS, Policy
     from bot.webapp.documents import policy_document
 
     moment = now_ts()
@@ -6746,8 +6753,11 @@ def make_policy(active: bool = True, auto_renew: bool = True) -> dict:
             auto_renew=auto_renew,
         )
     )
+    if by_pro:
+        # Подписка держит полис ровно до своего конца: срок один и тот же
+        player.pro_until = player.policy.until
     paper = policy_document(player, moment)
-    assert paper["gives"] == list(BENEFITS) and paper["note"] == NOTE
+    assert paper["note"] == NOTE and paper["by_pro"] is by_pro
     return paper
 
 
@@ -6923,14 +6933,47 @@ async def test_the_office_shows_the_hospital_price_list_both_ways(server):
         await browser.close()
 
 
-async def test_a_subscriber_sees_the_crossed_out_price_next_to_the_zero(server):
-    state = dict(empty_insurance(), price=0, free=True, pro=True, credits=0)
+async def test_a_subscriber_is_told_the_subscription_holds_his_policy(server):
+    """Иначе кнопка с ценой у человека, у которого полис уже есть, — ошибка."""
+    from bot.game.insurance import PRO_BENEFITS
+
+    state = dict(
+        empty_insurance(),
+        pro=True,
+        by_pro=True,
+        insured=True,
+        policy=make_policy(by_pro=True),
+        gives=list(PRO_BENEFITS),
+        action="Продлить на месяц",
+        why="Полис держит подписка — до её последнего часа. Купленный месяц "
+            "ляжет сверху и останется, когда подписка кончится.",
+    )
     async with async_playwright() as pw:
         browser, page = await open_insurance(pw, server, state)
 
-        said = await page.locator(".policy-buy-price").inner_text()
-        assert "300 💰" in said and "бесплатно по подписке" in said
-        assert await page.locator(".policy-buy .btn").is_enabled()
+        assert "держит подписка" in await page.locator("#insurance-note").inner_text()
+        assert "держит подписка" in await page.locator(".policy-buy-why").inner_text()
+        # Цена та же, что у всех: платят за время после подписки
+        assert "300 💰" in await page.locator(".policy-buy-price").inner_text()
+        # У бланка подписки переключателя нет — есть строка о том, чем он жив
+        assert await page.locator(".paper-renew").count() == 0
+        assert "Полис держит подписка PRO" in await page.locator(
+            ".paper-held"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_a_paid_policy_keeps_its_renewal_switch(server):
+    state = dict(
+        empty_insurance(), insured=True, policy=make_policy(),
+        action="Продлить на месяц",
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server, state)
+
+        assert await page.locator(".paper-renew").count() == 1
+        assert await page.locator(".paper-held").count() == 0
+        assert "Оплачен" in await page.locator(".paper-issuer").inner_text()
         await browser.close()
 
 

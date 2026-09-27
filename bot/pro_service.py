@@ -1,8 +1,14 @@
 """Выдача подписки PRO.
 
 Одна дверь на все входы: и оплата звёздами, и бесплатная акция приходят
-сюда. Внутри всегда одно и то же — продлить срок и открыть образ. Образ
-выдаётся один раз: продлевать его незачем, он и так навсегда.
+сюда. Внутри всегда одно и то же — продлить срок, открыть образ и дотянуть
+до нового срока страховой полис. Образ выдаётся один раз: продлевать его
+незачем, он и так навсегда.
+
+Полис подписка не выдаёт месяцами, а держит: его срок выравнивается по
+концу подписки, и не дальше. Поэтому продление подписки продлевает и
+полис, а вот нажать «продлить полис» бесплатно нельзя ни разу —
+прибавлять нечего.
 
 Снаряжения подписка больше не даёт. Клинок ассасина из неё убран: вещь в
 подписке — это сила за деньги. У тех, кому его уже выдали, он остаётся —
@@ -22,6 +28,7 @@ from bot.game.pro import (
     promo_is_on,
     promo_offer,
 )
+from bot.insurance_service import cover_by_pro
 from bot.models import Player
 
 logger = logging.getLogger(__name__)
@@ -38,6 +45,7 @@ class ProGrant:
     offer: ProOffer
     until: int
     look: bool = False  # образ открыли прямо сейчас
+    policy: bool = False  # полис выписали или дотянули прямо сейчас
     renewed: bool = False  # подписка была жива, мы её продлили
 
     def seconds_left(self, now: int | None = None) -> int:
@@ -57,6 +65,9 @@ async def grant_pro(
         await db.add_look(player.user_id, PRO_LOOK)
 
     await db.save_player(player)
+    # Полис — после сохранения срока: `cover_by_pro` смотрит на `pro_until`,
+    # и до сохранения он увидел бы прежний конец подписки
+    policy = bool(await cover_by_pro(db, player, moment))
     logger.info(
         "PRO: боец %s до %s (%s дней, %s ⭐)",
         player.user_id,
@@ -68,6 +79,7 @@ async def grant_pro(
         offer=offer,
         until=player.pro_until,
         look=look,
+        policy=policy,
         renewed=renewed,
     )
 

@@ -10,9 +10,11 @@
 продлеваем; кредитов не хватило — выключаем продление и говорим об этом
 один раз, а не отказом на каждом шаге.
 
-Подписчику полис бесплатен, и это не скидка: цена нулевая. Поэтому и
-автопродление у него бесплатное — иначе подписка давала бы первый месяц,
-а второй брала бы за кредиты.
+**Подписка держит полис сама, и тем же `settle`.** Пока PRO жива, срок
+полиса дотянут до её последнего часа — даром и без нажатий. Прибавить
+подписка ничего не может: она выравнивает срок по своему концу, а не
+кладёт месяц сверху. Отсюда и цена — триста всегда, подписчику тоже:
+он платит не за полис, который у него есть, а за время после подписки.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from dataclasses import dataclass
 
 from bot.database import Database
 from bot.game.health import now_ts
-from bot.game.insurance import POLICY_PRICE, Policy, extended
+from bot.game.insurance import POLICY_PRICE, Policy, extended, pro_cover
 from bot.models import Player
 
 logger = logging.getLogger(__name__)
@@ -39,18 +41,28 @@ class PolicyDeal:
     policy: Policy
     price: int
     renewed: bool = False  # продлили живой, а не выписали новый
-    free: bool = False  # подписчику — даром
 
 
 def price_for(player: Player) -> int:
-    """Сколько полис стоит этому бойцу. Подписчику — нисколько."""
-    return 0 if player.is_pro() else POLICY_PRICE
+    """Сколько месяц полиса стоит этому бойцу.
+
+    Одна цена на всех, и подписка её не меняет — ровно потому, что
+    подписка даёт не месяц, а срок. Бесплатный месяц подписчик мог бы
+    взять сколько угодно раз, и эти месяцы жили бы после самой подписки.
+    Платит он здесь за время после её конца, а не за то, что уже имеет.
+    """
+    return POLICY_PRICE
 
 
 async def buy_policy(
     db: Database, player: Player, now: int | None = None
 ) -> PolicyDeal:
-    """Оформить полис или продлить его ещё на месяц."""
+    """Оформить полис или продлить его ещё на месяц.
+
+    Месяц всегда ложится поверх того срока, что есть, — в том числе
+    поверх срока подписки. Подписчик, купивший месяц, получает месяц
+    после подписки, а не вместо неё.
+    """
     moment = now_ts() if now is None else now
     price = price_for(player)
     if not player.can_afford(price):
@@ -59,13 +71,17 @@ async def buy_policy(
             f"а на счету {player.credits} 💰."
         )
 
+    # Сначала выравниваем срок по подписке, и только потом кладём месяц
+    # сверху: иначе купленный месяц считался бы от старого конца и часть
+    # его уходила бы под то время, которое и так держит подписка
+    await cover_by_pro(db, player, moment)
+
     was = player.policy
     policy = extended(was, moment)
     renewed = was is not None and was.is_active(moment)
 
-    if price:
-        player.pay(price)
-        await db.save_player(player)
+    player.pay(price)
+    await db.save_player(player)
     await db.set_policy(player.user_id, policy)
     player.policy = policy
     logger.info(
@@ -75,7 +91,7 @@ async def buy_policy(
         price,
         "продление" if renewed else "новый",
     )
-    return PolicyDeal(policy=policy, price=price, renewed=renewed, free=not price)
+    return PolicyDeal(policy=policy, price=price, renewed=renewed)
 
 
 async def set_renew(
@@ -103,17 +119,27 @@ async def set_renew(
 async def settle(
     db: Database, player: Player, now: int | None = None
 ) -> str:
-    """Свести автопродление. Возвращает, что сказать бойцу, или пусто.
+    """Свести полис с часами. Возвращает, что сказать бойцу, или пусто.
+
+    Двух дел: дотянуть срок по живой подписке и продлить кончившийся полис
+    за кредиты. Первое бесплатно и всегда, второе — только если
+    автопродление включено.
 
     Зовётся оттуда, где полис смотрят или предъявляют, — и ровно поэтому
-    молчит, когда продлевать нечего: это не действие игрока, а сверка
-    часов, и говорить о ней стоит только когда что-то случилось.
+    молчит, когда делать нечего: это не действие игрока, а сверка часов, и
+    говорить о ней стоит только когда что-то случилось.
     """
+    moment = now_ts() if now is None else now
+
+    # Подписка идёт первой: пока она жива, платить не за что
+    by_pro = await cover_by_pro(db, player, moment)
+    if by_pro:
+        return by_pro
+
     policy = player.policy
-    if policy is None or not policy.due(now_ts() if now is None else now):
+    if policy is None or not policy.due(moment):
         return ""
 
-    moment = now_ts() if now is None else now
     price = price_for(player)
     if not player.can_afford(price):
         # Выключаем, а не пробуем каждый раз: иначе боец, которому не
@@ -126,20 +152,47 @@ async def settle(
         )
 
     renewed = policy.renewed(moment)
-    if price:
-        player.pay(price)
-        await db.save_player(player)
+    player.pay(price)
+    await db.save_player(player)
     await db.set_policy(player.user_id, renewed)
     player.policy = renewed
     logger.info("Полис бойца %s продлён сам до %s", player.user_id, renewed.until)
-    tail = "" if price else " (по подписке — даром)"
-    return f"Полис продлён автоматически: списано {price} 💰{tail}."
+    return f"Полис продлён автоматически: списано {price} 💰."
+
+
+async def cover_by_pro(
+    db: Database, player: Player, now: int | None = None
+) -> str:
+    """Дотянуть срок полиса до конца подписки. Пусто — тянуть нечего.
+
+    Это и есть «с PRO полис даётся автоматически»: не выдача месяца, а
+    выравнивание срока по концу подписки. Зовётся и при выдаче самой
+    подписки, и здесь — второе догоняет тех, у кого подписка началась
+    раньше этого правила, и тех, кому её продлили мимо магазина.
+    """
+    moment = now_ts() if now is None else now
+    cover = pro_cover(player.policy, player.pro_until, moment)
+    if cover is None:
+        return ""
+
+    was = player.policy
+    await db.set_policy(player.user_id, cover)
+    player.policy = cover
+    logger.info(
+        "Полис бойца %s держится подпиской до %s", player.user_id, cover.until
+    )
+    return (
+        "Полис продлён по подписке — до её конца."
+        if was is not None
+        else "Полис выписан по подписке — на весь её срок."
+    )
 
 
 __all__ = [
     "InsuranceError",
     "PolicyDeal",
     "buy_policy",
+    "cover_by_pro",
     "price_for",
     "set_renew",
     "settle",

@@ -5770,7 +5770,9 @@ function paperCard(paper, bare) {
 
   const issuer = document.createElement("p");
   issuer.className = "paper-issuer";
-  issuer.textContent = paper.issuer + " · № " + paper.number;
+  // По какому праву полис на руках: оплачен или держится подпиской
+  issuer.textContent =
+    paper.issuer + " · № " + paper.number + " · " + paper.ground;
   box.appendChild(issuer);
 
   box.appendChild(
@@ -5809,9 +5811,21 @@ function paperCard(paper, bare) {
 
   // На экране страховой бланк показывают вместе с кнопками; в документах
   // он сам по себе, и переключатель продления — единственное, что с ним
-  // делают, не выходя из карточки
-  if (!bare) box.appendChild(renewSwitch(paper));
+  // делают, не выходя из карточки. У полиса подписки переключать нечего:
+  // им распоряжается не боец, а срок его PRO
+  if (!bare && paper.switchable) box.appendChild(renewSwitch(paper));
+  if (!bare && !paper.switchable) box.appendChild(proHeldNote(paper));
   return box;
+}
+
+/** Полис держит подписка: сказать это словами вместо переключателя. */
+function proHeldNote(paper) {
+  const said = document.createElement("p");
+  said.className = "paper-held";
+  said.textContent =
+    "💎 Полис держит подписка PRO — до " + paper.until
+    + ". Оформлять и продлевать его не нужно.";
+  return said;
 }
 
 function paperRows(pairs) {
@@ -5895,9 +5909,11 @@ function renderInsurance(data) {
   el("shop-purse-insurance").appendChild(purse(data.credits));
   el("insurance-note").textContent =
     data.said
-    || (data.insured
-      ? "Полис на руках. Продлить можно в любой момент — месяц ляжет сверху."
-      : "Первая услуга конторы: лечение травм по полису дешевле впятеро.");
+    || (data.by_pro
+      ? "Полис держит подписка — оформлять ничего не нужно."
+      : data.insured
+        ? "Полис на руках. Продлить можно в любой момент — месяц ляжет сверху."
+        : "Первая услуга конторы: лечение травм по полису дешевле впятеро.");
 
   const body = el("insurance-body");
   body.textContent = "";
@@ -5973,18 +5989,16 @@ function buyPolicyRow(data) {
 
   const price = document.createElement("div");
   price.className = "policy-buy-price";
-  if (data.free) {
-    const was = document.createElement("span");
-    was.className = "policy-price-was";
-    was.textContent = num(data.full_price) + " 💰";
-    const free = document.createElement("span");
-    free.className = "policy-buy-free";
-    free.textContent = "бесплатно по подписке 💎";
-    price.append(was, free);
-  } else {
-    price.textContent = num(data.price) + " 💰 за " + data.days + " дней";
-  }
+  price.textContent = num(data.price) + " 💰 за " + data.days + " дней";
   box.appendChild(price);
+
+  // Полис держит подписка — объясняем, за что тогда кнопка берёт деньги
+  if (data.why) {
+    const why = document.createElement("p");
+    why.className = "policy-buy-why";
+    why.textContent = data.why;
+    box.appendChild(why);
+  }
 
   box.appendChild(
     button(data.action, {

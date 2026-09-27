@@ -7,6 +7,11 @@
 
 У каждого документа набор полей один и тот же: название, на чьё имя, срок,
 что даёт. Этого хватает и полису, и любому будущему бланку.
+
+У полиса есть два состояния сверх «действует» и «просрочен»: он бывает
+оплачен и бывает выписан подпиской. Обещания у них разные — «месяц с часа
+оформления» против «пока жива подписка», — и переключатель автопродления
+есть только у первого: вторым распоряжается не боец, а срок его PRO.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from bot.game.clock import club_moment
 from bot.game.health import now_ts
 from bot.game.insurance import (
     BENEFITS,
+    PRO_BENEFITS,
     CODE,
     COVERS,
     EMOJI,
@@ -36,12 +42,17 @@ def policy_document(player: Player, moment: int) -> dict[str, Any]:
     if policy is None:
         return {}
     live = policy.is_active(moment)
+    # Полис держит подписка, когда его срок и есть её срок. Тогда и
+    # обещания у него другие: не «месяц с часа оформления», а «пока жива
+    # подписка», и продлевать его незачем
+    by_pro = player.is_pro(moment) and policy.until <= player.pro_until
     return {
         "code": CODE,
         "kind": "insurance",
         "emoji": EMOJI,
         "title": TITLE,
         "issuer": INSURER,
+        "by_pro": by_pro,
         "number": policy_number(player.user_id, policy.issued),
         # Имя застрахованного — прозвище бойца: другого имени у него нет
         "holder": player.nickname,
@@ -51,14 +62,19 @@ def policy_document(player: Player, moment: int) -> dict[str, Any]:
         "active": live,
         "seconds_left": policy.seconds_left(moment),
         "covers": COVERS,
-        "gives": list(BENEFITS),
+        "gives": list(PRO_BENEFITS if by_pro else BENEFITS),
         "discount": round(HEAL_DISCOUNT * 100),
+        # Полисом подписки управляет подписка: переключать ему нечего, и
+        # переключатель на таком бланке обещал бы власть, которой нет
         "auto_renew": policy.auto_renew,
+        "switchable": not by_pro,
         "price": POLICY_PRICE,
         "note": NOTE,
         # Просроченный полис остаётся документом, и по нему видно, что
         # именно кончилось: срок, а не сам документ
         "state": "Действует" if live else "Срок вышел",
+        # По какому праву он на руках: по оплате или по подписке
+        "ground": "По подписке PRO" if by_pro else "Оплачен",
     }
 
 

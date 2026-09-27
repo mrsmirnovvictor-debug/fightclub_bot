@@ -978,12 +978,6 @@ async def api_policy(request: web.Request) -> web.Response:
                 if deal.renewed
                 else f"Полис оформлен. Списано {deal.price} 💰."
             )
-            if deal.free:
-                said = (
-                    "Полис продлён по подписке — даром."
-                    if deal.renewed
-                    else "Полис оформлен по подписке — даром."
-                )
         elif action == "renew":
             on = bool(data.get("on"))
             await set_renew(request.app[DB_KEY], player, on)
