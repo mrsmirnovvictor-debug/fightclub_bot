@@ -18,6 +18,7 @@ import random
 from dataclasses import dataclass, field
 from enum import Enum
 
+from bot.game.injuries import Injury, roll_injury
 from bot.game.classes import (
     ALL_ZONES,
     BLOCK_WIDTH,
@@ -487,6 +488,10 @@ class RoundResult:
     finished: bool = False
     winner_id: int | None = None
     end_reason: DuelEnd | None = None
+    # Кого и как покалечило этим раундом: боец → травма. Бросок делает
+    # сам движок — у него и кости, и добивающий удар, — а хранит травму
+    # уже служба боя
+    injuries: dict[int, Injury] = field(default_factory=dict)
 
 
 def boxing_round(turn: int) -> int:
@@ -838,6 +843,7 @@ def resolve_round(
         number=round_number,
         strikes=strikes,
         hp_after={first.user_id: first.hp, second.user_id: second.hp},
+        injuries=_fill_injuries(strikes, fighters, rng),
     )
     _apply_ending(result, first, second, limit)
     return result
@@ -1033,6 +1039,39 @@ def _fill_running_hp(strikes: list[Strike], before: dict[int, int]) -> None:
         )
         strike.defender_hp_after = running[strike.defender_id]
         strike.attacker_hp_after = running[strike.attacker_id]
+
+
+def _final_blow(strikes: list[Strike], victim_id: int) -> Strike | None:
+    """Удар, от которого боец лёг: последний дошедший до него в этом раунде."""
+    landed = [
+        strike
+        for strike in strikes
+        if strike.defender_id == victim_id and strike.damage > 0
+    ]
+    return landed[-1] if landed else None
+
+
+def _fill_injuries(
+    strikes: list[Strike],
+    fighters: dict[int, Fighter],
+    rng: random.Random | None = None,
+) -> dict[int, Injury]:
+    """Кого покалечило. Травму даёт только добивающий крит.
+
+    Крит, проломивший блок, считается наравне с обычным: блок его не
+    удержал, и до бойца он дошёл тем же критом.
+    """
+    hurt: dict[int, Injury] = {}
+    for user_id, fighter in fighters.items():
+        if fighter.alive:
+            continue
+        blow = _final_blow(strikes, user_id)
+        if blow is None or blow.outcome not in (Outcome.CRIT, Outcome.BREAK):
+            continue
+        injury = roll_injury(blow.zone, rng)
+        if injury is not None:
+            hurt[user_id] = injury
+    return hurt
 
 
 def _apply_ending(

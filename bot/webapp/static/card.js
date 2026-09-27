@@ -89,6 +89,16 @@ function statValue(stat) {
     bonus.textContent = ` (${stat.base} + ${stat.bonus})`;
     box.appendChild(bonus);
   }
+  // Потеря от травмы — красным и отдельным числом: «Ловкость -5 (-10)».
+  // В общую прибавку её не складываем, иначе видно только итог, а он и
+  // сам по себе бывает отрицательным
+  if (stat.loss) {
+    box.classList.add("hurt");
+    const loss = document.createElement("span");
+    loss.className = "loss";
+    loss.textContent = ` (${stat.loss})`;
+    box.appendChild(loss);
+  }
   return box;
 }
 
@@ -1148,10 +1158,15 @@ function spell(seconds) {
 function paintEffects() {
   const passed = (Date.now() - effectsAt) / 1000;
   const live = effects.filter((effect) => effect.seconds_left - passed > 0);
+  // Травма живёт в той же строке, что и эликсиры: и то и другое висит на
+  // бойце по часам. Только эликсир даёт, а травма отнимает — отсюда и
+  // красная плашка, и место в начале строки
+  const hurt = injuryChip(passed);
   ["effects", "hero-effects"].forEach((id) => {
     const box = el(id);
     box.textContent = "";
-    box.classList.toggle("hidden", live.length === 0);
+    box.classList.toggle("hidden", live.length === 0 && !hurt);
+    if (hurt) box.appendChild(hurt.cloneNode(true));
     live.forEach((effect) => {
       const chip = document.createElement("span");
       chip.className = "effect";
@@ -1168,10 +1183,58 @@ function paintEffects() {
     effects = live;
     refresh();
   }
+  // То же и с травмой: отлежала своё — характеристика вернулась, и
+  // карточку надо перечитать. Забываем её сразу, чтобы не звать сервер
+  // на каждой секунде
+  if (injury && !hurt) {
+    injury = null;
+    refresh();
+  }
 }
 
-function startEffects(list) {
+// Травма бойца по последней карточке: код, слова и сколько осталось
+let injury = null;
+
+function injuryChip(passed) {
+  if (!injury || !injury.text) return null;
+  const left = Math.max(0, (injury.seconds_left || 0) - passed);
+  if (left <= 0) return null;
+  const chip = document.createElement("span");
+  chip.className = "effect hurt";
+  // Слова приходят с сервера целиком, а тикающий остаток дописываем на
+  // месте: перечитывать карточку каждую секунду ради минуты незачем
+  chip.textContent =
+    "🤕 " + injury.hurt_title[0].toUpperCase() + injury.hurt_title.slice(1) +
+    ": " + injury.title + ". Ещё " + longSpell(left) + ".";
+  if (injury.crippled) chip.textContent += " Драться нельзя.";
+  return chip;
+}
+
+// «10 часов 15 минут» — словами, как это написано в карточке
+function longSpell(seconds) {
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const parts = [];
+  if (hours) parts.push(hours + " " + plural(hours, "час", "часа", "часов"));
+  if (minutes) {
+    parts.push(minutes + " " + plural(minutes, "минута", "минуты", "минут"));
+  }
+  return parts.length ? parts.join(" ") : "меньше минуты";
+}
+
+function plural(count, one, few, many) {
+  const last = count % 10;
+  const pair = count % 100;
+  if (pair >= 11 && pair <= 14) return many;
+  if (last === 1) return one;
+  if (last >= 2 && last <= 4) return few;
+  return many;
+}
+
+function startEffects(list, hurt) {
   effects = list || [];
+  injury = hurt && hurt.text ? hurt : null;
   effectsAt = Date.now();
   paintEffects();
 }
@@ -4819,19 +4882,70 @@ function renderHospital(data) {
   el("shop-purse-hospital").textContent = "";
   el("shop-purse-hospital").appendChild(purse(data.credits));
 
-  const whole = data.hp.missing <= 0;
+  const whole = data.hp.missing <= 0 && !(data.injury && data.injury.code);
   el("hospital-note").textContent = whole
     ? "Врач осматривает тебя и разводит руками: лечить нечего."
     : "Здоровье затягивается и само — больница просто не даёт ждать.";
 
   const list = el("hospital-list");
   list.textContent = "";
+  // Травма лечится отдельно от здоровья: другая беда, другая цена — и
+  // стоит она первой, потому что с ней в клуб не пускают вовсе
+  if (data.injury && data.injury.code) list.appendChild(injuryCure(data.injury));
   // Дешёвое лечение, которого хватает целиком, делает дорогое бессмысленным
   const enough = data.cures.filter((cure) => cure.healed >= data.hp.missing);
   const cheapest = enough.length
     ? Math.min(...enough.map((cure) => cure.price))
     : 0;
   data.cures.forEach((cure) => list.appendChild(cureCard(cure, cheapest)));
+}
+
+function injuryCure(hurt) {
+  const box = document.createElement("div");
+  box.className = "cure hurt";
+
+  const title = document.createElement("div");
+  title.className = "cure-title";
+  title.textContent = "🤕 " + hurt.title;
+  box.appendChild(title);
+
+  const note = document.createElement("div");
+  note.className = "cure-note";
+  note.textContent = hurt.text;
+  box.appendChild(note);
+
+  const gain = document.createElement("div");
+  gain.className = "cure-gain";
+  gain.textContent = hurt.crippled
+    ? "После лечения — " + hurt.cure_minutes + " мин, и снова на ринг"
+    : "После лечения — " + hurt.cure_minutes + " мин, и как новый";
+  box.appendChild(gain);
+
+  box.appendChild(
+    button("Лечить · " + num(hurt.price) + " 💰", {
+      disabled: !hurt.affordable,
+      onClick: () => takeInjuryCure(hurt),
+    })
+  );
+  return box;
+}
+
+async function takeInjuryCure(hurt) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/injury", {});
+    render(data.card, true);
+    renderHospital(data.hospital);
+    popup(
+      "🤕 " + data.done.title,
+      "Вылечили. Отлежаться — ещё " + data.done.minutes + " мин."
+    );
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
 }
 
 function cureCard(cure, cheapest) {
@@ -5456,7 +5570,7 @@ function render(card, keepTab) {
   document.title = card.name + " [" + card.level + "]";
 
   startHealthTicker(card.hp);
-  startEffects(card.effects);
+  startEffects(card.effects, card.injury);
   renderAvatar(card);
   renderSlots(el("slots-left"), card.slots.left, card.is_self);
   renderSlots(el("slots-right"), card.slots.right, card.is_self);

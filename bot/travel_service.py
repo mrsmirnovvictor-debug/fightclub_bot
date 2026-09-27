@@ -70,7 +70,12 @@ class Travel:
                 "этого нечестно."
             )
 
-        player.set_out(place.code, travel_seconds(player.location, place.code), moment)
+        # Травмированный идёт вдвое дольше: с переломом не побегаешь
+        player.set_out(
+            place.code,
+            travel_seconds(player.location, place.code, player.limping),
+            moment,
+        )
         await self.db.save_player(player)
         return place
 

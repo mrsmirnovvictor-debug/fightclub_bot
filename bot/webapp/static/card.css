@@ -616,11 +616,33 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   gap: 4px;
 }
 .cure-title { font-weight: 700; }
+/* Травма на приёме: та же карточка, но красная — её лечат первой */
+.cure.hurt { border-color: var(--hp-red); }
+.cure.hurt .cure-title { color: var(--hp-red); }
 .cure-note { color: var(--muted); font-size: 12.5px; line-height: 1.35; }
 .cure-gain { font-size: 13px; font-weight: 600; color: var(--hp-green); }
 /* За то же самое рядом просят меньше — говорим об этом прямо на карточке */
 .cure-cheaper { font-size: 12.5px; color: var(--hp-yellow); }
 .cure .btn { margin-top: 6px; }
+
+/* ---------- травма ---------- */
+
+/* Травма стоит в той же строке, что и эликсиры, но читается наоборот:
+   эликсир прибавляет, травма отнимает. Поэтому красная рамка — чтобы её
+   не приняли за очередную склянку */
+.effect.hurt {
+  border-color: var(--hp-red);
+  color: var(--hp-red);
+  font-weight: 600;
+  /* Единственная плашка, которой разрешено переноситься: в ней целое
+     предложение, а не два слова с часами */
+  white-space: normal;
+}
+/* Просевшая характеристика — красная целиком, вместе с числом: она
+   бывает и отрицательной, и «-5» без цвета читается как опечатка */
+.rows .hurt { color: var(--hp-red); font-weight: 700; }
+.rows .hurt .loss { font-weight: 600; }
+.rows .hurt .bonus { color: var(--hp-red); opacity: 0.8; }
 
 .foot {
   margin-top: 12px;

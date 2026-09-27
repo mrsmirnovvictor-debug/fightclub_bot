@@ -802,7 +802,31 @@ def build_topup(player: Player, open_for_business: bool = True) -> dict:
     }
 
 
-def stats_payload(base: Stats, bonus: Stats) -> list[dict]:
+def injury_payload(player: Player, now: int) -> dict:
+    """Травма бойца для карточки. Пустой словарь — боец цел."""
+    active = player.injury
+    injury = active.injury if active else None
+    if active is None or injury is None or not active.is_active(now):
+        return {}
+    left = active.seconds_left(now)
+    return {
+        "code": injury.code,
+        "title": injury.title,
+        "hurt": injury.hurt.value,
+        "hurt_title": injury.hurt.title,
+        "stat": injury.stat.value,
+        "penalty": injury.penalty,
+        "seconds_left": left,
+        # «Тяжёлая травма: перелом руки. Ещё 10 часов 15 минут.»
+        "text": active.describe(now),
+        # Драться с минусовой характеристикой нельзя — говорим об этом
+        # там же, где о самой травме
+        "crippled": player.crippled,
+        "price": injury.hurt.price,
+    }
+
+
+def stats_payload(base: Stats, bonus: Stats, loss: Stats | None = None) -> list[dict]:
     return [
         {
             "code": stat.value,
@@ -812,7 +836,11 @@ def stats_payload(base: Stats, bonus: Stats) -> list[dict]:
             "emoji": stat.emoji,
             "base": base.get(stat),
             "bonus": bonus.get(stat),
-            "total": base.get(stat) + bonus.get(stat),
+            # Потеря от травмы идёт отдельным числом, а не в общей
+            # прибавке: на экране она красная, и складывать её с
+            # прибавкой от вещей значило бы прятать травму внутри плюса
+            "loss": (loss or Stats()).get(stat),
+            "total": base.get(stat) + bonus.get(stat) + (loss or Stats()).get(stat),
         }
         for stat in ALL_STATS
     ]
@@ -882,7 +910,11 @@ def build_card(
         "stats": stats_payload(
             player.base_stats,
             equipment.bonus.merge(effects_bonus(player.effects, moment)),
+            player.injury_loss,
         ),
+        # Травма: что сломано, надолго ли и что она отнимает. Пусто —
+        # боец цел
+        "injury": injury_payload(player, moment),
         "slots": {
             "left": [slot_payload(equipment, slot, fclass) for slot in LEFT_SLOTS],
             "right": [slot_payload(equipment, slot, fclass) for slot in RIGHT_SLOTS],

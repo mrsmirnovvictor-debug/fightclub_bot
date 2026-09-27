@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from bot.game import art
+from bot.game.injuries import LIMP_TIMES
 
 
 class Service(str, Enum):
@@ -285,14 +286,20 @@ def district_hops(source: str, target: str) -> int:
     return _DISTANCES.get(source, {}).get(target, FAR_AWAY)
 
 
-def travel_seconds(source: str, target: str) -> int:
-    """Сколько идти от одного места до другого. Ноль — уже на месте."""
+def travel_seconds(source: str, target: str, limping: bool = False) -> int:
+    """Сколько идти от одного места до другого. Ноль — уже на месте.
+
+    `limping` — боец травмирован. Со сломанной ногой дорога вдвое
+    длиннее, и это единственное, что травма делает с городом: ходить
+    она не запрещает, только замедляет.
+    """
     if source == target:
         return 0
     here, there = get_location(source), get_location(target)
     if here is None or there is None:  # pragma: no cover - дом не с карты
         return STEP
-    return STEP * (district_hops(here.district, there.district) + 1)
+    seconds = STEP * (district_hops(here.district, there.district) + 1)
+    return seconds * LIMP_TIMES if limping else seconds
 
 
 # ---------- сама карта ----------

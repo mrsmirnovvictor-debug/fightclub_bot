@@ -15,6 +15,7 @@ from bot.game.locations import FIGHT_CLUB
 from bot.game.abilities import Loadout
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
 from bot.game.health import now_ts
+from bot.game.injuries import ActiveInjury, get_injury
 from bot.game.modes import FightMode, mode_of
 from bot.game.potions import ActiveEffect, get_potion
 from bot.game.world import DEFAULT_CITY
@@ -137,6 +138,14 @@ CREATE TABLE IF NOT EXISTS effects (
     code    TEXT    NOT NULL,
     until   INTEGER NOT NULL,
     PRIMARY KEY (user_id, code)
+);
+
+-- Травма у бойца одна: сломанная рука не отменяет сломанную ногу, но
+-- показывать и лечить две разом — это уже лазарет, а не клуб
+CREATE TABLE IF NOT EXISTS injuries (
+    user_id INTEGER PRIMARY KEY,
+    code    TEXT    NOT NULL,
+    until   INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS rings (
@@ -601,6 +610,7 @@ class Database:
         player.gear = await self.list_gear(player.user_id)
         player.potions = await self.list_potions(player.user_id)
         player.effects = await self.list_effects(player.user_id)
+        player.injury = await self.injury_of(player.user_id)
         player.loadout = await self.list_abilities(player.user_id)
         return player
 
@@ -700,6 +710,7 @@ class Database:
         await self.conn.execute("DELETE FROM inventory WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM potions WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM effects WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM injuries WHERE user_id = ?", (user_id,))
         await self.conn.commit()
 
     async def find_by_nickname(self, nickname: str) -> Player | None:
@@ -997,6 +1008,42 @@ class Database:
             for row in rows
             if get_potion(row["code"]) is not None
         ]
+
+    # ---------- травмы ----------
+
+    async def injury_of(self, user_id: int) -> ActiveInjury | None:
+        """Травма бойца. Отлежавшую своё стираем тут же — как и эффекты."""
+        await self.conn.execute(
+            "DELETE FROM injuries WHERE user_id = ? AND until <= ?",
+            (user_id, now_ts()),
+        )
+        await self.conn.commit()
+        async with self.conn.execute(
+            "SELECT code, until FROM injuries WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None or get_injury(row["code"]) is None:
+            return None
+        return ActiveInjury(code=row["code"], until=int(row["until"]))
+
+    async def set_injury(self, user_id: int, code: str, until: int) -> None:
+        """Записать травму. Новая ложится поверх прежней."""
+        await self.conn.execute(
+            """
+            INSERT INTO injuries (user_id, code, until) VALUES (?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                code = excluded.code, until = excluded.until
+            """,
+            (user_id, code, until),
+        )
+        await self.conn.commit()
+
+    async def drop_injury(self, user_id: int) -> None:
+        """Снять травму досрочно: так её и лечат."""
+        await self.conn.execute(
+            "DELETE FROM injuries WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
 
     async def drop_effect(self, user_id: int, code: str) -> None:
         """Погасить эффект досрочно: так уходит вытесненный эликсир."""

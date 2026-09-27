@@ -4274,6 +4274,137 @@ async def test_a_house_without_a_trade_says_when_it_opens(server):
         await browser.close()
 
 
+# ---------- травмы ----------
+
+
+def hurt_card(player, hours: int = 10, minutes: int = 15):
+    """Карточка бойца с тяжёлой травмой ноги."""
+    from bot.game.injuries import ActiveInjury
+
+    player.injury = ActiveInjury("broken_leg", now_ts() + hours * 3600 + minutes * 60)
+    return build_card(player, TOKEN, viewer_id=player.user_id)
+
+
+async def test_an_injury_stands_in_the_card_like_an_elixir(server):
+    """Травма висит в той же строке, что и эликсиры, и называет свой срок."""
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, hurt_card(player), build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        chip = page.locator("#hero-effects .effect.hurt")
+        assert await chip.count() == 1
+        said = await chip.inner_text()
+        assert "Тяжёлая травма: перелом ноги" in said
+        assert "Ещё 10 часов 15 минут" in said
+        await browser.close()
+
+
+async def test_a_broken_stat_is_red_and_may_go_below_zero(server):
+    """«Ловкость -5 (-20)» — красным: минус в характеристике не опечатка."""
+    player = make_player()
+    player.agility = 15  # травма уводит ловкость в минус
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, hurt_card(player), build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        row = page.locator("#stats li").filter(has_text="Ловкость").first
+        said = await row.inner_text()
+        assert "-5" in said and "(-20)" in said
+
+        painted = await row.locator(".hurt").evaluate(
+            "node => getComputedStyle(node).color"
+        )
+        whole = await page.locator("#stats li").filter(
+            has_text="Выносливость"
+        ).first.evaluate("node => getComputedStyle(node).color")
+        assert painted != whole, "просевшая характеристика не отличается цветом"
+        await browser.close()
+
+
+async def test_a_whole_fighter_has_no_injury_chip(server):
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#hero-effects .effect.hurt").count() == 0
+        assert await page.locator("#stats .hurt").count() == 0
+        await browser.close()
+
+
+async def test_the_hospital_treats_the_injury_for_its_own_price(server):
+    """У травмы своя карточка в больнице, своя цена и свой срок."""
+    walker = make_player(location="hospital")
+    card = hurt_card(walker)
+    desk = {
+        **hospital_state(hp=300),
+        "injury": {
+            "code": "broken_leg", "title": "перелом ноги",
+            "hurt_title": "тяжёлая травма",
+            "text": "Тяжёлая травма: перелом ноги. Ещё 10 часов 15 минут.",
+            "price": 300, "affordable": True, "cure_minutes": 20,
+            "crippled": True,
+        },
+    }
+    asked = []
+
+    async def cure(route):
+        asked.append(route.request.post_data)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "card": build_card(walker, TOKEN, viewer_id=42),
+                "hospital": hospital_state(hp=300),
+                "done": {"title": "перелом ноги", "minutes": 20},
+            }),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("hospital"), card, hospital=desk
+        )
+        await page.route("**/api/injury", cure)
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        await page.wait_for_selector(".cure")
+
+        hurt = page.locator(".cure.hurt")
+        assert await hurt.count() == 1
+        said = await hurt.inner_text()
+        assert "перелом ноги" in said and "Ещё 10 часов 15 минут" in said
+        assert "20 мин" in said
+        button = hurt.locator(".btn")
+        assert await button.inner_text() == "Лечить · 300 💰"
+
+        await button.click()
+        await page.wait_for_function(
+            "() => !document.querySelector('.cure.hurt')", timeout=5000
+        )
+        assert asked, "лечение не ушло на сервер"
+        await browser.close()
+
+
+async def test_a_whole_fighter_sees_no_injury_in_the_hospital(server):
+    walker = make_player(location="hospital")
+    card = build_card(walker, TOKEN, viewer_id=walker.user_id)
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("hospital"), card, hospital=hospital_state(hp=40)
+        )
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        await page.wait_for_selector(".cure")
+
+        assert await page.locator(".cure.hurt").count() == 0
+        await browser.close()
+
+
 # ---------- больница ----------
 
 

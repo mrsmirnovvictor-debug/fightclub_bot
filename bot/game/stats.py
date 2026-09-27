@@ -117,6 +117,11 @@ class DerivedStats:
     block_hold: float = 0.0
 
 
+def share(ceiling: float, value: float) -> float:
+    """Доля в своих берегах: не выше потолка и не ниже нуля."""
+    return max(0.0, min(ceiling, value))
+
+
 def derive(
     fclass: FighterClass,
     stats: Stats,
@@ -137,19 +142,23 @@ def derive(
     damage_min = max(1, round(avg_damage * (1 - DAMAGE_SPREAD)))
     damage_max = max(damage_min + 1, round(avg_damage * (1 + DAMAGE_SPREAD)))
 
-    crit_chance = min(
+    # Доли не уходят ниже нуля. Обычно это и не грозит — характеристики
+    # растут, — но травма уводит характеристику в минус, и «уворот −3%»
+    # выглядел бы поломкой. В бою отрицательная доля и так не срабатывает
+    # ни разу, а на экране её видят
+    crit_chance = share(
         MAX_CRIT_CHANCE,
         BASE_CRIT_CHANCE
         + stats.intuition * CRIT_PER_INTUITION * fclass.crit_gain
         + fclass.crit_bonus,
     )
-    dodge_chance = min(
+    dodge_chance = share(
         MAX_DODGE_CHANCE,
         BASE_DODGE_CHANCE
         + stats.agility * DODGE_PER_AGILITY * fclass.dodge_gain
         + fclass.dodge_bonus,
     )
-    counter_chance = min(
+    counter_chance = share(
         MAX_COUNTER_CHANCE,
         BASE_COUNTER_CHANCE + stats.agility * COUNTER_PER_AGILITY + fclass.counter_bonus,
     )
@@ -166,7 +175,7 @@ def derive(
             3,
         ),
         anticrit=round(
-            min(
+            share(
                 MAX_ANTICRIT,
                 stats.endurance * ANTICRIT_PER_ENDURANCE + fclass.anticrit_bonus,
             ),
@@ -175,14 +184,14 @@ def derive(
         dodge_chance=round(dodge_chance, 4),
         counter_chance=round(counter_chance, 4),
         accuracy=round(
-            min(
+            share(
                 MAX_ACCURACY,
                 stats.intuition * ACCURACY_PER_INTUITION + fclass.accuracy_bonus,
             ),
             4,
         ),
         resist=round(
-            min(
+            share(
                 MAX_RESIST,
                 stats.endurance * RESIST_PER_ENDURANCE * fclass.resist_gain,
             ),
@@ -190,7 +199,7 @@ def derive(
         ),
         block_hold=round(min(MAX_BLOCK_HOLD, fclass.block_hold), 4),
         penetration=round(
-            min(
+            share(
                 MAX_PENETRATION,
                 stats.agility * PENETRATION_PER_AGILITY + fclass.penetration_bonus,
             ),

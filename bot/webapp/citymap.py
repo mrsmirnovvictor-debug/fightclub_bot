@@ -19,12 +19,13 @@ from bot.game.locations import (
 from bot.models import Player
 
 
-def place_row(place: Location, here: str) -> dict:
+def place_row(place: Location, here: str, limping: bool = False) -> dict:
     """Дом на карте: вход, чем занят и сколько до него идти.
 
     Секунды считает сервер, хотя правило простое. Стоит повторить его на
     клиенте — и однажды они разойдутся: человек согласится на десять
-    секунд, а прождёт двадцать.
+    секунд, а прождёт двадцать. Тем более с травмой: она удваивает
+    дорогу, и знает об этом только сервер.
     """
     return {
         "code": place.code,
@@ -39,11 +40,11 @@ def place_row(place: Location, here: str) -> dict:
         "soon": place.soon,
         "works": place.works,
         "here": place.code == here,
-        "walk": travel_seconds(here, place.code),
+        "walk": travel_seconds(here, place.code, limping),
     }
 
 
-def district_row(district, here: str) -> dict:
+def district_row(district, here: str, limping: bool = False) -> dict:
     return {
         "code": district.code,
         "title": district.title,
@@ -52,7 +53,7 @@ def district_row(district, here: str) -> dict:
         # Куда ведут стрелки. Города целиком не видно — это единственное,
         # что связывает шесть картинок в один город
         "around": dict(district.around),
-        "places": [place_row(place, here) for place in district.places],
+        "places": [place_row(place, here, limping) for place in district.places],
     }
 
 
@@ -68,6 +69,7 @@ def build_map(
     place = get_location(here)
     left = player.road_left(now)
     going = get_location(player.travel_to) if left else None
+    limping = player.limping
     return {
         "here": here,
         "here_title": place.title if place else "—",
@@ -81,14 +83,16 @@ def build_map(
             # насколько она пройдена, — а заряд батарейки считается
             # именно от этого. Заново открыв карту в пути, клиент
             # начала дороги уже не помнит
-            "seconds": travel_seconds(here, going.code) if going else 0,
+            "seconds": travel_seconds(here, going.code, limping) if going else 0,
             "text": f"В пути до {going.whither} — {format_duration(left)}"
             if going
             else "",
         },
         # Отсчёт рейда: пусто — плашки на карте нет
         "raid": raid or {"state": "", "text": "", "seconds_left": 0},
-        "districts": [district_row(district, here) for district in DISTRICTS],
+        "districts": [
+            district_row(district, here, limping) for district in DISTRICTS
+        ],
     }
 
 

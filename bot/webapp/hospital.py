@@ -33,12 +33,34 @@ def cure_payload(cure, player: Player, moment: int) -> dict[str, Any]:
     }
 
 
+def injury_row(player: Player, moment: int) -> dict[str, Any]:
+    """Травма на приёме: что лечим, почём и сколько после этого лежать."""
+    active = player.injury
+    injury = active.injury if active else None
+    if active is None or injury is None or not active.is_active(moment):
+        return {}
+    return {
+        "code": injury.code,
+        "title": injury.title,
+        "hurt_title": injury.hurt.title,
+        "text": active.describe(moment),
+        "price": injury.hurt.price,
+        "affordable": player.can_afford(injury.hurt.price),
+        # После капельницы боец лежит уже минуты, а не часы
+        "cure_minutes": injury.hurt.cure_seconds // 60,
+        "crippled": player.crippled,
+    }
+
+
 def build_hospital(player: Player, now: int | None = None) -> dict[str, Any]:
     """Приёмный покой: счёт бойца, его здоровье и прайс."""
     moment = now_ts() if now is None else now
     current = player.current_hp(moment)
     return {
         "credits": player.credits,
+        # Травма лечится отдельно от здоровья: это другая беда и другая
+        # цена. Пусто — лечить нечего
+        "injury": injury_row(player, moment),
         "hp": {
             "current": current,
             "max": player.max_hp,
@@ -50,4 +72,4 @@ def build_hospital(player: Player, now: int | None = None) -> dict[str, Any]:
     }
 
 
-__all__ = ["build_hospital", "cure_payload"]
+__all__ = ["build_hospital", "cure_payload", "injury_row"]

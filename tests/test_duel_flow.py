@@ -327,6 +327,90 @@ async def test_the_loser_pays_with_his_gear_and_the_winner_does_not(bot, db):
     assert await wear_of(db, 2) == [1, 1], "поражение вещей не тронуло"
 
 
+async def test_a_finishing_crit_can_break_something(bot, db, monkeypatch):
+    """Добивающий крит калечит: травма ложится в базу и звучит в логе.
+
+    Бросок на травму подменяем — иначе тест проверял бы везение. Всё
+    остальное настоящее: и то, что травма достаётся проигравшему, и то,
+    что вместе с ней слетает экипировка.
+    """
+    from bot.game.classes import Zone
+    from bot.game.injuries import Hurt, injury_for
+
+    broken = injury_for(Zone.CHEST, Hurt.HEAVY)  # перелом руки, сила −20
+    monkeypatch.setattr(
+        "bot.game.combat.roll_injury", lambda zone, rng=None: broken
+    )
+    # Каждый дошедший удар — крит: иначе добивание выходит обычным, и
+    # проверять было бы нечего. Сам бросок на крит настоящий
+    monkeypatch.setattr("bot.game.stats.MAX_CRIT_CHANCE", 1.0)
+    monkeypatch.setattr("bot.game.stats.BASE_CRIT_CHANCE", 1.0)
+
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "warrior"))
+    await dress(db, 2, "wraps")  # бинты держатся на четырёх силы
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2),
+        mode=FightMode.ARMED,
+    )
+    # На ринг выходят здоровыми, но Марле остаётся один удар: бой должен
+    # кончиться нокаутом, а не решением судьи
+    session.fighters[2].hp = 4
+    await fight_to_the_end(service, session)
+
+    hurt = [
+        user_id for user_id in (1, 2)
+        if (await db.get_player(user_id)).injury is not None
+    ]
+    assert len(hurt) == 1, "травму получили оба или никто"
+    loser = await db.get_player(hurt[0])
+    assert loser.injury.code == "broken_arm"
+    assert loser.injury.seconds_left() > 11 * 3600
+    # Судья сказал об этом вслух
+    assert any("перелом руки" in text for text in bot.log)
+    # А выигравший цел
+    winner = await db.get_player(3 - hurt[0])
+    assert winner.injury is None
+
+
+async def test_a_broken_fighter_loses_what_he_cannot_hold(bot, db, monkeypatch):
+    """Сломанная рука не держит вещь: она уходит в рюкзак сама."""
+    from bot.game.classes import Zone
+    from bot.game.injuries import Hurt, injury_for
+
+    monkeypatch.setattr(
+        "bot.game.combat.roll_injury",
+        lambda zone, rng=None: injury_for(Zone.CHEST, Hurt.HEAVY),
+    )
+    monkeypatch.setattr("bot.game.stats.MAX_CRIT_CHANCE", 1.0)
+    monkeypatch.setattr("bot.game.stats.BASE_CRIT_CHANCE", 1.0)
+
+    service = make_service(bot, db)
+    for user_id, name in ((1, "Тайлер"), (2, "Марла")):
+        player = make_player(user_id, name, "warrior")
+        player.strength = 14  # хватает на бинты, но не после перелома
+        await db.save_player(player)
+        await dress(db, user_id, "wraps")
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2),
+        mode=FightMode.ARMED,
+    )
+    session.fighters[2].hp = 4  # чтобы бой кончился нокаутом
+    await fight_to_the_end(service, session)
+
+    hurt = [
+        await db.get_player(user_id)
+        for user_id in (1, 2)
+        if (await db.get_player(user_id)).injury is not None
+    ]
+    assert len(hurt) == 1, "травму получили оба или никто"
+    for player in hurt:
+        assert player.stats.strength < 0
+        assert player.equipped == [], "бинты остались на сломанной руке"
+        assert not player.can_fight(), "с минусовой силой драться нельзя"
+
+
 async def test_missed_turn_counter_resets_after_any_press(bot, db):
     service = make_service(bot, db)
     await db.save_player(make_player(1, "Тайлер", "warrior"))

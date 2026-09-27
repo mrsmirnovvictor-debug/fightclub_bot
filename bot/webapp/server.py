@@ -44,6 +44,7 @@ from bot.webapp.hospital import build_hospital
 from bot.webapp.workshop import build_workshop
 from bot.content.mods import star_of
 from bot.hospital_service import HospitalError, heal
+from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
 from bot.game.health import format_duration, now_ts
 from bot.game.locations import (
@@ -398,6 +399,28 @@ async def api_hospital(request: web.Request) -> web.Response:
     """Приёмный покой: здоровье бойца, его счёт и прайс."""
     player = await _at(request, Service.HEAL)
     return web.json_response(build_hospital(player))
+
+
+async def api_injury(request: web.Request) -> web.Response:
+    """Вылечить травму за кредиты. Тоже только в больнице."""
+    try:
+        player = await _at(request, Service.HEAL)
+        healed = await heal_injury(request.app[DB_KEY], player)
+    except InjuryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    injury = healed.injury
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "hospital": build_hospital(player),
+            "done": {
+                "title": injury.title if injury else "",
+                "minutes": healed.seconds_left() // 60,
+            },
+        }
+    )
 
 
 async def api_heal(request: web.Request) -> web.Response:
@@ -1265,6 +1288,7 @@ def create_app(
             web.get("/api/workshop", api_workshop),
             web.get("/api/hospital", api_hospital),
             web.post("/api/heal", api_heal),
+            web.post("/api/injury", api_injury),
             web.post("/api/mod", api_mod),
             web.post("/api/handin", api_handin),
             web.get("/api/shop", api_shop),

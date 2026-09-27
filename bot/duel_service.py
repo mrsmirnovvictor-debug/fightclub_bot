@@ -61,6 +61,7 @@ from bot.game.narrator import (
     round_report,
     strike_lines,
 )
+from bot.injury_service import record_injuries
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import challenge_keyboard, fight_keyboard, standoff_keyboard
 from bot.messaging import Announcer
@@ -865,6 +866,11 @@ class DuelService:
                 players[user_id] = player
         if not players:  # pragma: no cover - персонажей удалили по ходу боя
             return ""
+
+        # Травмы этого боя записываем первым делом: снятая травмой
+        # экипировка меняет и запас здоровья, и то, что снашивается
+        # износом, — а и то и другое считается ниже
+        await record_injuries(self.db, result.injuries, players)
 
         previous_fights = await self.db.count_recent_duels_between(
             session.order[0], session.order[1], REPEAT_WINDOW_HOURS

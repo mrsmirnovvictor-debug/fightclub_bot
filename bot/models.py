@@ -26,6 +26,7 @@ from bot.game.economy import (
     exp_to_next_level,
     ups_earned,
 )
+from bot.game.injuries import ActiveInjury, injury_loss
 from bot.game.health import (
     HealthState,
     health_state,
@@ -118,6 +119,8 @@ class Player:
     potions: dict[str, int] = field(default_factory=dict)
     # Что сейчас действует. Просроченное сюда не попадает — база чистит сама
     effects: list[ActiveEffect] = field(default_factory=list)
+    # Травма. Одна или ни одной, и тоже по часам
+    injury: ActiveInjury | None = None
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
@@ -163,8 +166,13 @@ class Player:
         Выпитое сюда не входит намеренно. Эффект уходит сам, по часам, и
         вещь, надетая под эликсир, слетала бы посреди боя без единого
         нажатия — экипировка не должна зависеть от того, что тикает.
+
+        А вот травма входит, и это не противоречие: эликсир даёт, травма
+        отнимает. Вещь, надетая под эликсир, слетела бы ни за что; вещь,
+        которую сломанная рука больше не держит, обязана слететь — иначе
+        травма ничего не значит.
         """
-        return self.base_stats.merge(self.equipment.bonus)
+        return self.base_stats.merge(self.equipment.bonus).merge(self.injury_loss)
 
     def stats_without(self, owned: OwnedItem | None) -> Stats:
         """Характеристики, как если бы этой вещи на бойце не было."""
@@ -269,10 +277,21 @@ class Player:
         return max(0, self.potions.get(code, 0))
 
     @property
+    def injury_loss(self) -> Stats:
+        """Что отнимает травма. Пусто — травмы нет или она уже отлежала."""
+        return injury_loss(self.injury)
+
+    @property
     def stats(self) -> Stats:
-        """Характеристики с учётом надетого и выпитого — их видит боевой движок."""
-        return self.base_stats.merge(self.equipment.bonus).merge(
-            effects_bonus(self.effects)
+        """Характеристики с учётом надетого, выпитого и сломанного.
+
+        Их видит боевой движок. Травма может увести характеристику в
+        минус — тогда боец не дерётся вовсе, это решает `can_fight`.
+        """
+        return (
+            self.base_stats.merge(self.equipment.bonus)
+            .merge(effects_bonus(self.effects))
+            .merge(self.injury_loss)
         )
 
     @property
@@ -361,8 +380,25 @@ class Player:
     def health_state(self, now: int | None = None) -> HealthState:
         return health_state(self.current_hp(now), self.max_hp)
 
+    @property
+    def limping(self) -> bool:
+        """Есть ли травма. По городу такой боец идёт вдвое дольше."""
+        return self.injury is not None and self.injury.is_active()
+
+    @property
+    def crippled(self) -> bool:
+        """Травма увела характеристику в минус — драться нечем.
+
+        Не всякая травма выводит из строя: у крепкого бойца минус десять
+        к силе оставляют её положительной, и он дерётся дальше, просто
+        хуже. А вот когда характеристика ушла ниже нуля, драться уже
+        нечем — тут и ждёт больница.
+        """
+        stats = self.stats
+        return any(stats.get(stat) < 0 for stat in ALL_STATS)
+
     def can_fight(self, now: int | None = None) -> bool:
-        return self.health_state(now).can_fight
+        return self.health_state(now).can_fight and not self.crippled
 
     def seconds_until_ready(self, now: int | None = None) -> int:
         return seconds_until_ready(self.current_hp(now), self.max_hp)
