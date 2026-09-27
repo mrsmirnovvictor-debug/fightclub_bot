@@ -5710,8 +5710,8 @@ let myPlace = null;
 // про число документов она ничего не знает.
 
 const HERO_TABS = [
-  ["stats", "📊 Характеристики"],
-  ["papers", "📁 Документы"],
+  ["stats", "Характеристики"],
+  ["papers", "Документы"],
 ];
 let heroTab = "stats";
 
@@ -5723,8 +5723,13 @@ function pickHeroTab(name) {
   paintHeroTabs();
 }
 
-/** Кнопка в ряду под бойцом. Одна вёрстка на все три. */
-function heroAct(label, on, onClick, mark) {
+/** Кнопка в ряду под бойцом. Одна вёрстка на все три.
+ *
+ * `dot` — точка сбоку: есть что забрать. Больше на этих кнопках ничего
+ * не пишется: три слова в ряд читаются с одного взгляда, а значки и
+ * счётчики рядом с ними превращали ряд в три разные надписи.
+ */
+function heroAct(label, on, onClick, dot) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "hero-act" + (on ? " on" : "");
@@ -5732,12 +5737,9 @@ function heroAct(label, on, onClick, mark) {
   text.className = "hero-act-text";
   text.textContent = label;
   btn.appendChild(text);
-  // Метка сбоку: число документов или точка «есть что забрать». У кнопки
-  // раздела это счётчик, у награды — повод нажать
-  if (mark) {
+  if (dot) {
     const tag = document.createElement("span");
-    tag.className = "hero-act-mark" + (mark === true ? " dot" : "");
-    tag.textContent = mark === true ? "" : String(mark);
+    tag.className = "hero-act-mark dot";
     btn.appendChild(tag);
   }
   btn.addEventListener("click", () => {
@@ -5751,23 +5753,16 @@ function paintHeroTabs() {
   const tabs = el("hero-tabs");
   tabs.textContent = "";
   HERO_TABS.forEach(([code, label]) => {
-    tabs.appendChild(
-      heroAct(
-        label,
-        heroTab === code,
-        () => pickHeroTab(code),
-        code === "papers" && papers.length ? papers.length : 0
-      )
-    );
+    tabs.appendChild(heroAct(label, heroTab === code, () => pickHeroTab(code)));
   });
   // Награды — кнопка того же вида, но не раздел: она открывает окно и
   // потому никогда не горит выбранной. Нечего показывать — её нет вовсе
   if (!dailyState) return;
   const btn = heroAct(
-    "🎁 Награды",
+    "Награды",
     false,
     openDaily,
-    dailyState.fresh || dailyState.waiting.length ? true : 0
+    Boolean(dailyState.fresh || dailyState.waiting.length)
   );
   btn.id = "hero-daily";
   tabs.appendChild(btn);

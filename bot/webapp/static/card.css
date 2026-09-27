@@ -1978,15 +1978,11 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   white-space: nowrap;
   min-width: 0;
 }
-/* Метка сбоку: число документов или точка «есть что забрать» */
-.hero-act-mark {
-  flex: none;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--muted);
-}
-.hero-act.on .hero-act-mark { color: #fff; opacity: 0.85; }
+/* Точка сбоку: есть что забрать. Единственная метка на этих кнопках —
+   счётчики и значки рядом с тремя словами делали из ряда три разные
+   надписи вместо одного выбора */
 .hero-act-mark.dot {
+  flex: none;
   width: 7px;
   height: 7px;
   border-radius: 50%;

@@ -6870,12 +6870,25 @@ async def test_the_fighter_himself_stays_above_both_sections(server):
         await browser.close()
 
 
-async def test_the_documents_tab_counts_what_is_in_it(server):
-    async with async_playwright() as pw:
-        browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
+async def test_the_buttons_are_three_bare_words(server):
+    """Ни значков, ни счётчиков: три слова читаются с одного взгляда.
 
-        papers_tab = await page.locator("#hero-tabs .hero-act").nth(1).inner_text()
-        assert "1" in papers_tab
+    Число документов на кнопке и эмодзи перед каждым словом превращали ряд
+    в три разные надписи вместо одного выбора.
+    """
+    player = make_player()
+    card = card_with_papers([make_policy(), make_policy()])
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-tabs .hero-act")
+
+        said = await page.locator("#hero-tabs .hero-act").all_inner_texts()
+
+        assert said == ["Характеристики", "Документы", "Награды"]
+        # Двух документов на кнопке не видно: она про раздел, а не про счёт
+        assert not any(ch.isdigit() for ch in "".join(said))
         await browser.close()
 
 
