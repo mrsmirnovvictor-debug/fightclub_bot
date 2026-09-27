@@ -8,6 +8,10 @@
 Совсем мгновенно не лечат: у каждой тяжести свой срок под капельницей,
 и это единственное, что различает лечение лёгкой травмы и тяжёлой,
 кроме цены.
+
+Цену сбивает страховой полис — на восемьдесят процентов, и только её:
+срок под капельницей полисом не сокращается. Страховая платит за лечение,
+а не за время.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import logging
 from bot.database import Database
 from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, Hurt, Injury
+from bot.game.insurance import discounted
 from bot.inventory_service import settle_gear
 from bot.models import Player
 
@@ -28,6 +33,17 @@ HURT_ORDER: tuple[Hurt, ...] = (Hurt.LIGHT, Hurt.MEDIUM, Hurt.HEAVY)
 
 class InjuryError(Exception):
     """Отказ, который показывают игроку как есть."""
+
+
+def cure_price(player: Player, injury: Injury, now: int | None = None) -> int:
+    """Во сколько лечение обойдётся именно этому бойцу.
+
+    Одна функция и для прайса на экране, и для списания: цена со скидкой,
+    посчитанная в двух местах по-разному, — это счёт, который не сходится
+    с ценником.
+    """
+    price = injury.hurt.price
+    return discounted(price) if player.insured(now) else price
 
 
 def worse(new: Injury, old: ActiveInjury | None, now: int) -> bool:
@@ -79,7 +95,7 @@ async def heal_injury(
     injury = active.injury if active else None
     if active is None or injury is None or not active.is_active(moment):
         raise InjuryError("Лечить нечего — ты цел.")
-    price = injury.hurt.price
+    price = cure_price(player, injury, moment)
     if not player.can_afford(price):
         raise InjuryError(
             f"Не хватает кредитов: лечение стоит {price} 💰, "
@@ -129,6 +145,7 @@ async def record_injuries(
 __all__ = [
     "HURT_ORDER",
     "InjuryError",
+    "cure_price",
     "heal_injury",
     "hurt_player",
     "record_injuries",

@@ -27,6 +27,7 @@ from bot.game.economy import (
     ups_earned,
 )
 from bot.game.injuries import ActiveInjury, injury_loss
+from bot.game.insurance import Policy
 from bot.game.health import (
     HealthState,
     health_state,
@@ -121,6 +122,9 @@ class Player:
     effects: list[ActiveEffect] = field(default_factory=list)
     # Травма. Одна или ни одной, и тоже по часам
     injury: ActiveInjury | None = None
+    # Страховой полис — пока единственный документ бойца. Просроченный
+    # остаётся здесь же: документ не исчезает, у него кончается срок
+    policy: Policy | None = None
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
@@ -399,6 +403,11 @@ class Player:
 
     def can_fight(self, now: int | None = None) -> bool:
         return self.health_state(now).can_fight and not self.crippled
+
+    def insured(self, now: int | None = None) -> bool:
+        """Действует ли полис прямо сейчас."""
+        moment = now_ts() if now is None else now
+        return self.policy is not None and self.policy.is_active(moment)
 
     def seconds_until_ready(self, now: int | None = None) -> int:
         return seconds_until_ready(self.current_hp(now), self.max_hp)

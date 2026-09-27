@@ -201,6 +201,25 @@
     <div class="cures" id="hospital-list"></div>
   </main>
 
+  <!-- ---------- 3b2. Страховая компания ---------- -->
+  <!-- Страховая продаёт не услугу, а документ: на экране прежде всего сам
+       полис — как он будет выглядеть в «Документах», — и уже под ним цена
+       и прайс больницы с полисом и без. -->
+  <main id="insurance" class="screen hidden">
+    <figure class="interior hidden" id="insurance-interior">
+      <img class="interior-pic" id="insurance-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="insurance-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-insurance"></span>
+    </header>
+    <h1 class="screen-title">🏦 Страховая компания</h1>
+    <p class="screen-note" id="insurance-note"></p>
+
+    <div id="insurance-body"></div>
+  </main>
+
   <!-- ---------- 3c. Рынок: обмен между бойцами ---------- -->
   <!-- Стол общий, и это главное свойство экрана: страница здесь ничего
        не помнит и ничего не досчитывает. Всё, что видно, — последний
@@ -320,7 +339,14 @@
       </button>
     </div>
 
-    <section class="panel">
+    <!-- Нижняя половина карточки разделена на два: «Параметры» — то, что
+         тут было всегда, «Документы» — то, что боец получает в конторах
+         города. Наверху не делим ничего: имя, здоровье, кукла и приёмы
+         нужны в обоих разделах, и прятать их за вкладку значило бы
+         заставить переключаться туда-обратно, чтобы посмотреть на бойца -->
+    <div class="bubbles" id="hero-tabs"></div>
+
+    <section class="panel" id="hero-stats">
       <ul class="rows" id="stats"></ul>
       <div id="upgrade" class="upgrade hidden"></div>
       <hr class="rule">
@@ -329,6 +355,13 @@
       <ul class="rows" id="combat"></ul>
       <hr class="rule">
       <ul class="rows" id="record"></ul>
+    </section>
+
+    <!-- Документы: пока один полис, но раздел заведён под то, что будет
+         копиться — права, пропуска и всё прочее, что выдают конторы -->
+    <section id="hero-papers" class="hidden">
+      <div class="papers" id="papers-list"></div>
+      <p class="screen-note" id="papers-note"></p>
     </section>
 
     <footer class="foot" id="foot"></footer>

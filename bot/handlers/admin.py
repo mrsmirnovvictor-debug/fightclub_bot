@@ -130,8 +130,6 @@ async def cmd_give_pro(
     )
 
     extras = []
-    if grant.blade:
-        extras.append("🗡 Клинок ассасина — в инвентаре")
     if grant.look:
         extras.append("🥷 Образ ассасина — в гардеробе")
     await message.answer(

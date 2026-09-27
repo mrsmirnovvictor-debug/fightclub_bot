@@ -126,6 +126,22 @@ EMPTY_HISTORY = {
 }
 
 
+def empty_insurance() -> dict:
+    """Страховая, в которой у бойца полиса ещё нет."""
+    from bot.game.insurance import BENEFITS, EMOJI, INSURER, NOTE, TITLE
+    from bot.webapp.insurance import price_rows
+
+    return {
+        "credits": 500, "emoji": EMOJI, "title": TITLE, "issuer": INSURER,
+        "covers": "Лечение любых травм в больнице города",
+        "gives": list(BENEFITS), "note": NOTE, "days": 30, "discount": 80,
+        "full_price": 300, "price": 300, "free": False, "pro": False,
+        "affordable": True, "insured": False, "policy": {},
+        "action": "Оформить полис", "prices": price_rows(),
+        "auto_renew": False, "said": "",
+    }
+
+
 # Рынок без никого: страница на нём говорит, что обмен идёт из рук в руки
 EMPTY_TRADE = {
     "credits": 0, "where": "Рынок", "max_items": 4, "invite_seconds": 60,
@@ -266,8 +282,8 @@ def city_map(
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
-    battle=None, city=None, workshop=None, hospital=None, trade=None, images=False,
-    telegram="",
+    battle=None, city=None, workshop=None, hospital=None, trade=None,
+    insurance=None, images=False, telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -294,6 +310,7 @@ async def open_page(
     await page.route("**/api/workshop*", canned(workshop or EMPTY_WORKSHOP))
     await page.route("**/api/hospital*", canned(hospital or EMPTY_HOSPITAL))
     await page.route("**/api/trade*", canned(trade or EMPTY_TRADE))
+    await page.route("**/api/insurance*", canned(insurance or empty_insurance()))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
@@ -1947,7 +1964,10 @@ async def test_the_pro_card_always_leads_the_mage_counter(server):
         text = await pro.inner_text()
         assert "Подписка PRO" in text
         assert "Полуторный опыт за каждый бой" in text
-        assert "Клинок ассасина в инвентарь — навсегда" in text
+        # Первым делом — аналитик: ради него подписку и берут. Снаряжения
+        # в ней нет, и обещать его карточка не должна
+        assert "Аналитик в бою" in text
+        assert "Клинок" not in text
 
         # подписка идёт раньше любого товара прилавка
         first = page.locator("#magic .thing").first
@@ -6700,4 +6720,281 @@ async def test_the_market_screen_is_left_by_the_map_button(server):
         await page.wait_for_selector("#map:not(.hidden)")
 
         assert await page.locator("#trade").is_hidden()
+        await browser.close()
+
+
+# ---------- документы бойца и страховая ----------
+#
+# Раздел «Документы» проверяется на двух вещах: он рядом с «Параметрами», а
+# не вместо них, и он только свой. Полис с чужим именем и сроком соперник
+# видеть не должен — как и рюкзак.
+
+
+def make_policy(active: bool = True, auto_renew: bool = True) -> dict:
+    from bot.game.health import now_ts
+    from bot.game.insurance import BENEFITS, NOTE, POLICY_SECONDS, Policy
+    from bot.webapp.documents import policy_document
+
+    moment = now_ts()
+    player = make_player()
+    player.policy = (
+        Policy(issued=moment, until=moment + POLICY_SECONDS, auto_renew=auto_renew)
+        if active
+        else Policy(
+            issued=moment - 2 * POLICY_SECONDS,
+            until=moment - 60,
+            auto_renew=auto_renew,
+        )
+    )
+    paper = policy_document(player, moment)
+    assert paper["gives"] == list(BENEFITS) and paper["note"] == NOTE
+    return paper
+
+
+def card_with_papers(papers, is_self: bool = True) -> dict:
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=42 if is_self else 43)
+    card["documents"] = papers
+    card["is_self"] = is_self
+    return card
+
+
+async def open_hero(pw, server, card=None):
+    browser, page = await open_page(pw, server, card or card_with_papers([]))
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.wait_for_selector("#hero-tabs .chip")
+    return browser, page
+
+
+async def test_the_character_screen_has_two_sections_and_starts_on_stats(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server)
+
+        tabs = await page.locator("#hero-tabs .chip").all_inner_texts()
+        assert len(tabs) == 2
+        assert "Параметры" in tabs[0] and "Документы" in tabs[1]
+        # Параметры открыты, документы свёрнуты
+        assert await page.locator("#hero-stats").is_visible()
+        assert await page.locator("#hero-papers").is_hidden()
+        await browser.close()
+
+
+async def test_the_fighter_himself_stays_above_both_sections(server):
+    """Куклу и здоровье за вкладку не прячем: они нужны в обоих разделах."""
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
+        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.wait_for_selector("#hero-papers:not(.hidden)")
+
+        assert await page.locator("#hero-avatar").is_visible()
+        assert await page.locator("#hero-hp").is_visible()
+        assert await page.locator("#hero-stats").is_hidden()
+        await browser.close()
+
+
+async def test_the_documents_tab_counts_what_is_in_it(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
+
+        papers_tab = await page.locator("#hero-tabs .chip").nth(1).inner_text()
+        assert "· 1" in papers_tab
+        await browser.close()
+
+
+async def test_the_policy_names_the_holder_the_period_and_what_it_gives(server):
+    """Ровно то, что просили видеть в описании полиса."""
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
+        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.wait_for_selector(".paper")
+
+        assert "Полис страхования жизни и здоровья" in await page.locator(
+            ".paper-title"
+        ).inner_text()
+        rows = await page.locator(".paper-rows li").all_inner_texts()
+        joined = " | ".join(rows)
+        assert "Застрахован" in joined and "Растафарайчик" in joined
+        assert "Период страхования" in joined
+        gives = await page.locator(".paper-gives li").all_inner_texts()
+        assert any("80%" in line for line in gives)
+        assert "Действует" in await page.locator(".paper-state").inner_text()
+        await browser.close()
+
+
+async def test_an_expired_policy_says_so_in_words_not_only_in_grey(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(
+            pw, server, card_with_papers([make_policy(active=False)])
+        )
+        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.wait_for_selector(".paper")
+
+        assert await page.locator(".paper.stale").count() == 1
+        assert "Срок вышел" in await page.locator(".paper-state").inner_text()
+        assert "страховой компании" in await page.locator(".paper-dead").inner_text()
+        await browser.close()
+
+
+async def test_the_renewal_switch_says_which_way_it_is_set(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
+        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.wait_for_selector(".paper-renew")
+
+        said = await page.locator(".paper-renew-state").inner_text()
+        assert "Автопродление включено" in said
+        assert "Отключить" in await page.locator(".paper-renew .btn").inner_text()
+        await browser.close()
+
+
+async def test_the_switch_offers_to_turn_the_renewal_back_on(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(
+            pw, server, card_with_papers([make_policy(auto_renew=False)])
+        )
+        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.wait_for_selector(".paper-renew")
+
+        said = await page.locator(".paper-renew-state").inner_text()
+        assert "выключено" in said
+        assert "Включить" in await page.locator(".paper-renew .btn").inner_text()
+        await browser.close()
+
+
+async def test_an_empty_documents_section_says_where_papers_come_from(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server)
+        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.wait_for_selector("#hero-papers:not(.hidden)")
+
+        assert await page.locator(".paper").count() == 0
+        assert "страховой компании" in await page.locator("#papers-note").inner_text()
+        await browser.close()
+
+
+async def test_somebody_elses_card_has_no_documents_tab_at_all(server):
+    """Вкладка без содержимого — это обещание, которого не будет."""
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card_with_papers([], is_self=False)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#hero-tabs").is_hidden()
+        assert await page.locator("#hero-stats").is_visible()
+        await browser.close()
+
+
+async def open_insurance(pw, server, state=None):
+    player = make_player("insurance_office")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), insurance=state,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "insurance")
+    await page.wait_for_selector("#insurance-body .policy-buy")
+    return browser, page
+
+
+async def test_the_office_offers_the_policy_and_names_its_price(server):
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server)
+
+        assert "Полис страхования жизни и здоровья" in await page.locator(
+            ".paper.offer .paper-title"
+        ).inner_text()
+        assert "300 💰 за 30 дней" in await page.locator(
+            ".policy-buy-price"
+        ).inner_text()
+        assert "Оформить полис" in await page.locator(".policy-buy .btn").inner_text()
+        await browser.close()
+
+
+async def test_the_office_shows_the_hospital_price_list_both_ways(server):
+    """Проценты словами убеждают хуже, чем «300 → 60»."""
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server)
+
+        was = await page.locator(".policy-price-was").all_inner_texts()
+        now = await page.locator(".policy-price-now").all_inner_texts()
+        assert was == ["100 💰", "200 💰", "300 💰"]
+        assert now == ["20 💰", "40 💰", "60 💰"]
+        await browser.close()
+
+
+async def test_a_subscriber_sees_the_crossed_out_price_next_to_the_zero(server):
+    state = dict(empty_insurance(), price=0, free=True, pro=True, credits=0)
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server, state)
+
+        said = await page.locator(".policy-buy-price").inner_text()
+        assert "300 💰" in said and "бесплатно по подписке" in said
+        assert await page.locator(".policy-buy .btn").is_enabled()
+        await browser.close()
+
+
+async def test_the_price_stays_on_the_button_when_money_is_short(server):
+    state = dict(empty_insurance(), credits=100, affordable=False)
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server, state)
+
+        assert await page.locator(".policy-buy .btn").is_disabled()
+        assert "300 💰" in await page.locator(".policy-buy-price").inner_text()
+        await browser.close()
+
+
+async def test_the_office_shows_the_live_policy_as_the_document_itself(server):
+    state = dict(
+        empty_insurance(),
+        insured=True,
+        policy=make_policy(),
+        action="Продлить на месяц",
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server, state)
+
+        # Тот же бланк, что в документах, а не его пересказ
+        assert await page.locator(".paper:not(.offer)").count() == 1
+        assert "Растафарайчик" in await page.locator(".paper-rows").inner_text()
+        assert "Продлить на месяц" in await page.locator(
+            ".policy-buy .btn"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_the_office_screen_is_left_by_the_map_button(server):
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server)
+
+        await page.locator("#insurance-back").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+
+        assert await page.locator("#insurance").is_hidden()
+        await browser.close()
+
+
+async def test_the_hospital_names_the_policy_when_it_cuts_the_price(server):
+    """Одно дешёвое число выглядело бы просто дешёвым лечением."""
+    state = hospital_state(hp=40)
+    state["injury"] = {
+        "code": "broken_arm", "title": "перелом руки", "hurt_title": "Тяжёлая травма",
+        "text": "Тяжёлая травма: перелом руки. Ещё 10 часов.",
+        "price": 60, "full_price": 300, "insured": True, "saved": 240,
+        "discount": 80, "affordable": True, "cure_minutes": 20, "crippled": False,
+    }
+    player = make_player("hospital")
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), hospital=state,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "hospital")
+        await page.wait_for_selector(".cure.hurt")
+
+        said = await page.locator(".cure-insured").inner_text()
+        assert "По полису: −80%" in said
+        assert "вместо 300 💰" in said and "Экономия 240 💰" in said
+        assert "Лечить · 60 💰" in await page.locator(".cure.hurt .btn").inner_text()
         await browser.close()

@@ -1730,15 +1730,15 @@ function lotCard(lot) {
 }
 
 const SCREENS = [
-  "club", "map", "shop", "magic", "workshop", "hospital", "trade", "house",
-  "bag", "hero",
+  "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "trade",
+  "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
 const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
-  house: "map",
+  insurance: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1764,6 +1764,7 @@ function showTab(name) {
   }
   if (name === "workshop") loadWorkshop();
   if (name === "hospital") loadHospital();
+  if (name === "insurance") loadInsurance();
   // Стол на рынке общий: пока на него смотрят — опрашиваем, ушли — молчим
   if (name === "trade") startTradeWatch();
   else stopTradeWatch();
@@ -2127,6 +2128,7 @@ const HOUSE_SCREENS = {
   repair: () => openWorkshop(),
   heal: () => showTab("hospital"),
   trade: () => showTab("trade"),
+  insurance: () => showTab("insurance"),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -2345,7 +2347,6 @@ async function takePro(pro) {
     haptic((feedback) => feedback.notificationOccurred("success"));
     const got = data.pro;
     const extras = [];
-    if (got.blade) extras.push("клинок ассасина — в инвентаре");
     if (got.look) extras.push("образ ассасина — в гардеробе");
     popup(
       "💎 " + pro.title,
@@ -4927,6 +4928,18 @@ function injuryCure(hurt) {
     : "После лечения — " + hurt.cure_minutes + " мин, и как новый";
   box.appendChild(gain);
 
+  // По полису лечение дешевле впятеро, и сказать об этом надо здесь:
+  // одно дешёвое число выглядело бы просто дешёвым лечением, а не
+  // работой документа, за который заплачено
+  if (hurt.insured) {
+    const saved = document.createElement("div");
+    saved.className = "cure-insured";
+    saved.textContent =
+      "📄 По полису: −" + hurt.discount + "%, вместо " + num(hurt.full_price)
+      + " 💰. Экономия " + num(hurt.saved) + " 💰.";
+    box.appendChild(saved);
+  }
+
   box.appendChild(
     button("Лечить · " + num(hurt.price) + " 💰", {
       disabled: !hurt.affordable,
@@ -5586,6 +5599,7 @@ function render(card, keepTab) {
   renderSlots(el("hero-slots-right"), card.slots.right, card.is_self, true);
   renderSkills(card);
   renderDaily(card);
+  renderPapers(card);
   renderBag(card);
   // Рюкзак поменялся — значит поменялось и то, что можно выставить на
   // комиссию. Без этого экран комиссионки остаётся с прежним списком: он
@@ -5687,6 +5701,304 @@ function render(card, keepTab) {
 // Где боец стоит, по последней карточке: по этому и решается, чем
 // показывать экран клуба и что на нём можно
 let myPlace = null;
+
+// ---------- документы бойца ----------
+//
+// Раздел заведён под то, что будет копиться: полис первый, за ним пойдут
+// права из автошколы и всё прочее, что выдают конторы города. Поэтому
+// рисуется список, а не «полис в карточке»: вёрстка одна на все бланки, и
+// про число документов она ничего не знает.
+
+const HERO_TABS = [
+  ["stats", "📊 Параметры"],
+  ["papers", "📁 Документы"],
+];
+let heroTab = "stats";
+
+function pickHeroTab(name) {
+  heroTab = name;
+  HERO_TABS.forEach(([code]) => {
+    el("hero-" + code).classList.toggle("hidden", code !== name);
+  });
+  paintHeroTabs();
+}
+
+function paintHeroTabs() {
+  const tabs = el("hero-tabs");
+  tabs.textContent = "";
+  HERO_TABS.forEach(([code, label]) => {
+    const count = code === "papers" && papers.length ? " · " + papers.length : "";
+    tabs.appendChild(chip(label + count, heroTab === code, () => pickHeroTab(code)));
+  });
+}
+
+let papers = [];
+
+function renderPapers(card) {
+  // Документы приходят только на своей карточке: полис с чужим именем и
+  // сроком — не то, что показывают сопернику
+  papers = (card.is_self && card.documents) || [];
+  const list = el("papers-list");
+  list.textContent = "";
+  papers.forEach((paper) => list.appendChild(paperCard(paper)));
+  el("papers-note").textContent = papers.length
+    ? ""
+    : "Пока ни одного документа. Полис страхования жизни и здоровья "
+      + "оформляют в страховой компании.";
+  // Вкладки прячем на чужой карточке целиком: там второй раздел пустой
+  // всегда, и вкладка без содержимого — это обещание, которого не будет
+  el("hero-tabs").classList.toggle("hidden", !card.is_self);
+  if (!card.is_self) pickHeroTab("stats");
+  else paintHeroTabs();
+}
+
+/** Бланк документа: заголовок, поля и что он даёт. */
+function paperCard(paper, bare) {
+  const box = document.createElement("article");
+  box.className = "paper" + (paper.active ? "" : " stale");
+
+  const head = document.createElement("header");
+  head.className = "paper-head";
+  const title = document.createElement("h3");
+  title.className = "paper-title";
+  title.textContent = paper.emoji + " " + paper.title;
+  const state = document.createElement("span");
+  state.className = "paper-state";
+  state.textContent = paper.active ? "Действует" : "Срок вышел";
+  head.append(title, state);
+  box.appendChild(head);
+
+  const issuer = document.createElement("p");
+  issuer.className = "paper-issuer";
+  issuer.textContent = paper.issuer + " · № " + paper.number;
+  box.appendChild(issuer);
+
+  box.appendChild(
+    paperRows([
+      ["Застрахован", paper.holder],
+      ["Период страхования", paper.period],
+      ["Покрытие", paper.covers],
+    ])
+  );
+
+  const gives = document.createElement("ul");
+  gives.className = "paper-gives";
+  paper.gives.forEach((line) => {
+    const li = document.createElement("li");
+    li.textContent = line;
+    gives.appendChild(li);
+  });
+  box.appendChild(gives);
+
+  if (paper.note) {
+    const note = document.createElement("p");
+    note.className = "paper-note";
+    note.textContent = paper.note;
+    box.appendChild(note);
+  }
+
+  // Полис просрочен — на бланке об этом сказано словами, а не только
+  // серым цветом: цвет на светлой теме читается хуже, чем кажется
+  if (!paper.active) {
+    const dead = document.createElement("p");
+    dead.className = "paper-dead";
+    dead.textContent =
+      "Срок вышел " + paper.until + ". Продлить можно в страховой компании.";
+    box.appendChild(dead);
+  }
+
+  // На экране страховой бланк показывают вместе с кнопками; в документах
+  // он сам по себе, и переключатель продления — единственное, что с ним
+  // делают, не выходя из карточки
+  if (!bare) box.appendChild(renewSwitch(paper));
+  return box;
+}
+
+function paperRows(pairs) {
+  const list = document.createElement("ul");
+  list.className = "rows paper-rows";
+  pairs.forEach(([label, value]) => list.appendChild(row(label, value)));
+  return list;
+}
+
+/** Автопродление: одна кнопка, и она же говорит текущее состояние. */
+function renewSwitch(paper) {
+  const box = document.createElement("div");
+  box.className = "paper-renew";
+  const said = document.createElement("span");
+  said.className = "paper-renew-state";
+  said.textContent = paper.auto_renew
+    ? "🔄 Автопродление включено"
+    : "⏹ Автопродление выключено";
+  box.appendChild(said);
+  box.appendChild(
+    button(paper.auto_renew ? "Отключить" : "Включить", {
+      secondary: paper.auto_renew,
+      onClick: () => policyAction({ action: "renew", on: !paper.auto_renew }),
+    })
+  );
+  return box;
+}
+
+// ---------- страховая компания ----------
+
+let insuranceData = null;
+let insuranceBusy = false;
+
+async function loadInsurance() {
+  try {
+    const response = await fetch("api/insurance", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("insurance-note").textContent = "Страховая не открылась.";
+      return;
+    }
+    renderInsurance(await response.json());
+  } catch (error) {
+    el("insurance-note").textContent = error.message;
+  }
+}
+
+async function policyAction(payload) {
+  if (insuranceBusy) return;
+  insuranceBusy = true;
+  try {
+    const response = await fetch("api/insurance", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Страховая", data.error || "Не получилось.");
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    // Полис лежит в документах, а деньги — в карточке: перерисовываем и её
+    if (data.card) render(data.card, true);
+    if (data.insurance) renderInsurance(data.insurance);
+    if (data.said) popup("Страховая", data.said);
+  } catch (error) {
+    popup("Страховая", "Сервер не ответил.");
+  } finally {
+    insuranceBusy = false;
+  }
+}
+
+function renderInsurance(data) {
+  insuranceData = data;
+  el("shop-purse-insurance").textContent = "";
+  el("shop-purse-insurance").appendChild(purse(data.credits));
+  el("insurance-note").textContent =
+    data.said
+    || (data.insured
+      ? "Полис на руках. Продлить можно в любой момент — месяц ляжет сверху."
+      : "Первая услуга конторы: лечение травм по полису дешевле впятеро.");
+
+  const body = el("insurance-body");
+  body.textContent = "";
+  // Полис на руках — показываем сам бланк: он же лежит в документах, и
+  // это тот самый документ, а не его пересказ
+  if (data.policy && data.policy.title) {
+    body.appendChild(paperCard(data.policy));
+  } else {
+    body.appendChild(policyOffer(data));
+  }
+  body.appendChild(priceTable(data));
+  body.appendChild(buyPolicyRow(data));
+}
+
+/** Полиса нет: что он такое и что даёт. */
+function policyOffer(data) {
+  const box = document.createElement("article");
+  box.className = "paper offer";
+  const title = document.createElement("h3");
+  title.className = "paper-title";
+  title.textContent = data.emoji + " " + data.title;
+  const issuer = document.createElement("p");
+  issuer.className = "paper-issuer";
+  issuer.textContent = data.issuer;
+  box.append(title, issuer);
+
+  const gives = document.createElement("ul");
+  gives.className = "paper-gives";
+  data.gives.forEach((line) => {
+    const li = document.createElement("li");
+    li.textContent = line;
+    gives.appendChild(li);
+  });
+  box.appendChild(gives);
+
+  const note = document.createElement("p");
+  note.className = "paper-note";
+  note.textContent = data.note;
+  box.appendChild(note);
+  return box;
+}
+
+/** Прайс больницы с полисом и без: проценты словами убеждают хуже чисел. */
+function priceTable(data) {
+  const box = document.createElement("section");
+  box.className = "policy-prices";
+  const head = document.createElement("h3");
+  head.className = "policy-prices-head";
+  head.textContent = "Лечение травм: без полиса и с ним";
+  box.appendChild(head);
+  data.prices.forEach((line) => {
+    const item = document.createElement("div");
+    item.className = "policy-price";
+    const title = document.createElement("span");
+    title.className = "policy-price-title";
+    title.textContent = line.title.charAt(0).toUpperCase() + line.title.slice(1);
+    const was = document.createElement("span");
+    was.className = "policy-price-was";
+    was.textContent = num(line.full) + " 💰";
+    const now = document.createElement("span");
+    now.className = "policy-price-now";
+    now.textContent = num(line.price) + " 💰";
+    item.append(title, was, now);
+    box.appendChild(item);
+  });
+  return box;
+}
+
+/** Кнопка покупки. Подписчику рядом с нулём стоит зачёркнутая цена. */
+function buyPolicyRow(data) {
+  const box = document.createElement("div");
+  box.className = "policy-buy";
+
+  const price = document.createElement("div");
+  price.className = "policy-buy-price";
+  if (data.free) {
+    const was = document.createElement("span");
+    was.className = "policy-price-was";
+    was.textContent = num(data.full_price) + " 💰";
+    const free = document.createElement("span");
+    free.className = "policy-buy-free";
+    free.textContent = "бесплатно по подписке 💎";
+    price.append(was, free);
+  } else {
+    price.textContent = num(data.price) + " 💰 за " + data.days + " дней";
+  }
+  box.appendChild(price);
+
+  box.appendChild(
+    button(data.action, {
+      // Цену с кнопки не снимаем, даже когда платить нечем: по ней и видно,
+      // сколько не хватает
+      disabled: !data.affordable,
+      hint:
+        "Не хватает кредитов: полис стоит " + num(data.price)
+        + " 💰, а на счету " + num(data.credits) + " 💰.",
+      onClick: () => policyAction({ action: "buy" }),
+    })
+  );
+  return box;
+}
 
 // ---------- рынок: обмен между бойцами ----------
 //
@@ -6237,7 +6549,8 @@ function stopTradeWatch() {
 // по несколько домов — клуб и казино, пять разных прилавков, — и что
 // показывать, знает только то место, где боец сейчас стоит.
 const INTERIOR_SCREENS = [
-  "club", "shop", "magic", "workshop", "hospital", "trade", "house",
+  "club", "shop", "magic", "workshop", "hospital", "insurance", "trade",
+  "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -6377,6 +6690,7 @@ el("hero-daily").addEventListener("click", openDaily);
 el("house-back").addEventListener("click", () => showTab("map"));
 el("hospital-back").addEventListener("click", () => showTab("map"));
 el("trade-back").addEventListener("click", () => showTab("map"));
+el("insurance-back").addEventListener("click", () => showTab("map"));
 watchInteriors();
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты

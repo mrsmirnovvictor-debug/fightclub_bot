@@ -58,6 +58,7 @@ from bot.game.stats import derive
 from bot.game.store import PACKS
 from bot.models import Player
 from bot.webapp.auth import sign_avatar
+from bot.webapp.documents import build_documents
 
 # Ссылка на аватар живёт час — столько же, сколько открытая карточка
 AVATAR_TTL = 60 * 60
@@ -934,6 +935,9 @@ def build_card(
         ]
         if is_self
         else [],
+        # Документы — только хозяину: полис с его именем и сроком чужому
+        # знать незачем, это не снаряжение и на бой не влияет
+        "documents": build_documents(player, moment)["documents"] if is_self else [],
         # Что сейчас действует — видно всем: эффект уже учтён в характеристиках
         "effects": [
             effect_payload(effect, moment)

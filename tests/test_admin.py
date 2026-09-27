@@ -12,7 +12,7 @@ import pytest
 from bot.config import Config
 from bot.game.classes import get_class
 from bot.game.health import now_ts
-from bot.game.pro import DAY, PRO_DAYS, PRO_ITEM, PRO_LOOK
+from bot.game.pro import DAY, PRO_DAYS, PRO_LOOK
 from bot.handlers.admin import MAX_GIFT_DAYS, is_owner
 from bot.models import Player
 from tests.harness import DISPATCHER, Client
@@ -98,7 +98,11 @@ async def test_without_an_owner_even_the_owner_is_refused(club, caplog):
 
 
 async def test_the_owner_grants_a_month(club):
-    """Месяц подписки, клинок в рюкзак и образ в гардероб — как за звёзды."""
+    """Месяц подписки и образ в гардероб — как за звёзды.
+
+    Снаряжения подписка не выдаёт: клинок из неё убран, и выдача от руки
+    не должна оказаться единственной дверью, через которую он ещё ходит.
+    """
     db, owner, session = club
     before = now_ts()
 
@@ -107,7 +111,7 @@ async def test_the_owner_grants_a_month(club):
     until = await pro_of(db)
     assert PRO_DAYS * DAY - 60 <= until - before <= PRO_DAYS * DAY + 60
     player = await db.get_player(777)
-    assert any(owned.code == PRO_ITEM for owned in player.gear), "клинок не выдали"
+    assert player.gear == [], "подписка снаряжения не даёт"
     assert PRO_LOOK in await db.owned_looks(777)
     # Ответ называет бойца и до какого часа подписка
     said = session.texts[-1]

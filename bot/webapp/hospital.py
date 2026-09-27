@@ -6,6 +6,10 @@
 
 Кнопку гасит сервер, а не вёрстка: сколько именно дольют этому бойцу,
 считается по его потолку здоровья, и страница такого не знает.
+
+Цену лечения травмы сбивает полис, и на экран идут оба числа — со
+скидкой и без. Одно число выглядело бы просто дешёвым лечением: по нему
+не видно, что скидку дал документ, за который заплачено.
 """
 
 from __future__ import annotations
@@ -14,6 +18,8 @@ from typing import Any
 
 from bot.game.health import FULL_REGEN_SECONDS, now_ts
 from bot.game.hospital import CURES
+from bot.game.insurance import HEAL_DISCOUNT, saved
+from bot.injury_service import cure_price
 from bot.models import Player
 
 
@@ -39,13 +45,21 @@ def injury_row(player: Player, moment: int) -> dict[str, Any]:
     injury = active.injury if active else None
     if active is None or injury is None or not active.is_active(moment):
         return {}
+    full = injury.hurt.price
+    price = cure_price(player, injury, moment)
     return {
         "code": injury.code,
         "title": injury.title,
         "hurt_title": injury.hurt.title,
         "text": active.describe(moment),
-        "price": injury.hurt.price,
-        "affordable": player.can_afford(injury.hurt.price),
+        "price": price,
+        # Полная цена и сколько снял полис: без этих двух чисел скидка
+        # выглядит просто дешёвым лечением, и полис незаметен
+        "full_price": full,
+        "insured": player.insured(moment),
+        "saved": saved(full) if player.insured(moment) else 0,
+        "discount": round(HEAL_DISCOUNT * 100),
+        "affordable": player.can_afford(price),
         # После капельницы боец лежит уже минуты, а не часы
         "cure_minutes": injury.hurt.cure_seconds // 60,
         "crippled": player.crippled,

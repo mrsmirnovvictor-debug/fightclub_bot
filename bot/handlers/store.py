@@ -137,8 +137,6 @@ async def on_paid(message: Message, store: StoreService) -> None:
     if grant.is_pro:
         got = grant.pro
         extras = []
-        if got and got.blade:
-            extras.append("🗡 Клинок ассасина — в инвентаре")
         if got and got.look:
             extras.append("🥷 Образ ассасина — в гардеробе")
         await message.answer(
@@ -237,8 +235,6 @@ async def on_pro(
             await callback.answer(str(error), show_alert=True)
             return
         extras = []
-        if grant.blade:
-            extras.append("🗡 Клинок ассасина — в инвентаре")
         if grant.look:
             extras.append("🥷 Образ ассасина — в гардеробе")
         await callback.message.answer(

@@ -41,11 +41,13 @@ from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
 from bot.webapp.hospital import build_hospital
+from bot.webapp.insurance import build_insurance
 from bot.webapp.trade import build_trade
 from bot.webapp.workshop import build_workshop
 from bot.content.mods import star_of
 from bot.hospital_service import HospitalError, heal
 from bot.trade_service import TradeError, TradeService
+from bot.insurance_service import InsuranceError, buy_policy, set_renew, settle
 from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
 from bot.game.health import format_duration, now_ts
@@ -273,10 +275,18 @@ async def api_card(request: web.Request) -> web.Response:
     # отдельной разовой раздачей пришлось бы ровно один раз, а забыть о
     # ней — навсегда
     visit = None
+    said = ""
     if player.user_id == viewer.user_id:
         await ensure_starter(db, player)
         visit = await check_in(db, player)
+        # Документы боец видит здесь, значит здесь же и сводится
+        # автопродление полиса. Только своё: чужому полису нас не
+        # спрашивают, и тратить чужие кредиты, открыв чужую карточку, —
+        # именно та ошибка, от которой спасает это условие
+        said = await settle(db, player)
     card = build_card(player, config.bot_token, viewer.user_id)
+    if said:
+        card["said"] = said
     if visit is not None:
         card["daily"] = daily_payload(visit)
     return web.json_response(card)
@@ -400,15 +410,24 @@ async def api_unequip(request: web.Request) -> web.Response:
 
 
 async def api_hospital(request: web.Request) -> web.Response:
-    """Приёмный покой: здоровье бойца, его счёт и прайс."""
+    """Приёмный покой: здоровье бойца, его счёт и прайс.
+
+    Полис предъявляют здесь, поэтому здесь же сводится и его
+    автопродление: цена лечения зависит от того, жив ли полис, и узнать
+    это надо до того, как показан прайс.
+    """
     player = await _at(request, Service.HEAL)
-    return web.json_response(build_hospital(player))
+    said = await settle(request.app[DB_KEY], player)
+    body = build_hospital(player)
+    body["said"] = said
+    return web.json_response(body)
 
 
 async def api_injury(request: web.Request) -> web.Response:
     """Вылечить травму за кредиты. Тоже только в больнице."""
     try:
         player = await _at(request, Service.HEAL)
+        await settle(request.app[DB_KEY], player)
         healed = await heal_injury(request.app[DB_KEY], player)
     except InjuryError as error:
         return web.json_response({"error": str(error)}, status=409)
@@ -775,7 +794,6 @@ async def api_pro(request: web.Request) -> web.Response:
             "pro": {
                 "days": grant.offer.days,
                 "renewed": grant.renewed,
-                "blade": grant.blade,
                 "look": grant.look,
                 "seconds_left": grant.seconds_left(),
             },
@@ -920,6 +938,74 @@ async def api_market_action(request: web.Request) -> web.Response:
         return web.json_response({"error": str(error)}, status=409)
 
     return await _market(request, player)
+
+
+# ---------- страховая компания ----------
+
+
+async def _insured(request: web.Request) -> tuple:
+    """Боец в страховой, с уже сведённым автопродлением.
+
+    Продление сводится здесь и в больнице — в двух местах, где полис
+    смотрят или предъявляют. Часов, которые списывали бы кредиты по
+    будильнику, в клубе нет: срок вышел, и это выясняется в ту минуту,
+    когда за полисом пришли.
+    """
+    player = await _at(request, Service.INSURANCE)
+    said = await settle(request.app[DB_KEY], player)
+    return player, said
+
+
+async def api_insurance(request: web.Request) -> web.Response:
+    """Прилавок страховой: полис, его цена и что он даёт."""
+    player, said = await _insured(request)
+    body = build_insurance(player)
+    body["said"] = said
+    return web.json_response(body)
+
+
+async def api_policy(request: web.Request) -> web.Response:
+    """Оформить полис, продлить его или переключить автопродление."""
+    data = await _payload(request)
+    action = str(data.get("action") or "buy")
+    player, said = await _insured(request)
+    config = request.app[CONFIG_KEY]
+    try:
+        if action == "buy":
+            deal = await buy_policy(request.app[DB_KEY], player)
+            said = (
+                f"Полис продлён на месяц. Списано {deal.price} 💰."
+                if deal.renewed
+                else f"Полис оформлен. Списано {deal.price} 💰."
+            )
+            if deal.free:
+                said = (
+                    "Полис продлён по подписке — даром."
+                    if deal.renewed
+                    else "Полис оформлен по подписке — даром."
+                )
+        elif action == "renew":
+            on = bool(data.get("on"))
+            await set_renew(request.app[DB_KEY], player, on)
+            said = (
+                "Автопродление включено: месяц будет продлеваться сам."
+                if on
+                else "Автопродление выключено: полис кончится в свой срок."
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except InsuranceError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    body = build_insurance(player)
+    body["said"] = said
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "insurance": body,
+            "said": said,
+        }
+    )
 
 
 # ---------- рынок: обмен между бойцами ----------
@@ -1375,6 +1461,8 @@ def create_app(
             web.get("/api/history", api_history),
             web.get("/api/market", api_market),
             web.post("/api/market", api_market_action),
+            web.get("/api/insurance", api_insurance),
+            web.post("/api/insurance", api_policy),
             web.get("/api/trade", api_trade),
             web.post("/api/trade", api_trade_action),
             web.get("/api/raid", api_raid),

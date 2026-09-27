@@ -1,9 +1,12 @@
 """Выдача подписки PRO.
 
 Одна дверь на все входы: и оплата звёздами, и бесплатная акция приходят
-сюда. Внутри всегда одно и то же — продлить срок, положить клинок и открыть
-образ. Клинок с образом выдаются один раз: продлевать их незачем, они и так
-навсегда.
+сюда. Внутри всегда одно и то же — продлить срок и открыть образ. Образ
+выдаётся один раз: продлевать его незачем, он и так навсегда.
+
+Снаряжения подписка больше не даёт. Клинок ассасина из неё убран: вещь в
+подписке — это сила за деньги. У тех, кому его уже выдали, он остаётся —
+отбирать оплаченное было бы хуже, чем один раз выдать лишнее.
 """
 
 from __future__ import annotations
@@ -14,7 +17,6 @@ from dataclasses import dataclass
 from bot.database import Database
 from bot.game.health import now_ts
 from bot.game.pro import (
-    PRO_ITEM,
     PRO_LOOK,
     ProOffer,
     promo_is_on,
@@ -35,7 +37,6 @@ class ProGrant:
 
     offer: ProOffer
     until: int
-    blade: bool = False  # клинок выдали прямо сейчас
     look: bool = False  # образ открыли прямо сейчас
     renewed: bool = False  # подписка была жива, мы её продлили
 
@@ -50,12 +51,6 @@ async def grant_pro(
     moment = now_ts() if now is None else now
     renewed = player.is_pro(moment)
     player.extend_pro(offer.seconds, moment)
-
-    # Клинок кладём один раз: второй такой же был бы просто хламом в рюкзаке
-    blade = not any(owned.code == PRO_ITEM for owned in player.gear)
-    if blade:
-        owned = await db.add_gear(player.user_id, PRO_ITEM)
-        player.gear.append(owned)
 
     look = PRO_LOOK not in await db.owned_looks(player.user_id)
     if look:
@@ -72,7 +67,6 @@ async def grant_pro(
     return ProGrant(
         offer=offer,
         until=player.pro_until,
-        blade=blade,
         look=look,
         renewed=renewed,
     )

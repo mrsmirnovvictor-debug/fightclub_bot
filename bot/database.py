@@ -16,6 +16,7 @@ from bot.game.abilities import Loadout
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
 from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, get_injury
+from bot.game.insurance import Policy
 from bot.game.modes import FightMode, mode_of
 from bot.game.potions import ActiveEffect, get_potion
 from bot.game.world import DEFAULT_CITY
@@ -146,6 +147,16 @@ CREATE TABLE IF NOT EXISTS injuries (
     user_id INTEGER PRIMARY KEY,
     code    TEXT    NOT NULL,
     until   INTEGER NOT NULL
+);
+
+-- Документы бойца. Пока их вид один — полис страхования, — и у него своя
+-- таблица, а не столбец в players: документы будут копиться, и у каждого
+-- свои поля. Один полис на бойца: второй такой же не выдают, его продлевают
+CREATE TABLE IF NOT EXISTS policies (
+    user_id     INTEGER PRIMARY KEY,
+    issued      INTEGER NOT NULL,
+    until       INTEGER NOT NULL,
+    auto_renew  INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS rings (
@@ -611,6 +622,7 @@ class Database:
         player.potions = await self.list_potions(player.user_id)
         player.effects = await self.list_effects(player.user_id)
         player.injury = await self.injury_of(player.user_id)
+        player.policy = await self.policy_of(player.user_id)
         player.loadout = await self.list_abilities(player.user_id)
         return player
 
@@ -711,6 +723,7 @@ class Database:
         await self.conn.execute("DELETE FROM potions WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM effects WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM injuries WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM policies WHERE user_id = ?", (user_id,))
         await self.conn.commit()
 
     async def find_by_nickname(self, nickname: str) -> Player | None:
@@ -1096,6 +1109,58 @@ class Database:
         if row is None or get_injury(row["code"]) is None:
             return None
         return ActiveInjury(code=row["code"], until=int(row["until"]))
+
+    # ---------- документы: страховой полис ----------
+
+    async def policy_of(self, user_id: int) -> Policy | None:
+        """Полис бойца. Просроченный не стираем — он остаётся документом.
+
+        Тем и отличается от травмы: травма отболела и её нет, а полис с
+        вышедшим сроком по-прежнему лежит в документах. По нему видно, до
+        какого часа он действовал, и его продлевают, а не выписывают заново.
+        """
+        async with self.conn.execute(
+            "SELECT issued, until, auto_renew FROM policies WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return Policy(
+            issued=int(row["issued"]),
+            until=int(row["until"]),
+            auto_renew=bool(row["auto_renew"]),
+        )
+
+    async def set_policy(self, user_id: int, policy: Policy) -> None:
+        """Записать полис. Продление ложится поверх прежнего."""
+        await self.conn.execute(
+            """
+            INSERT INTO policies (user_id, issued, until, auto_renew)
+            VALUES (?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                issued = excluded.issued,
+                until = excluded.until,
+                auto_renew = excluded.auto_renew
+            """,
+            (user_id, policy.issued, policy.until, int(policy.auto_renew)),
+        )
+        await self.conn.commit()
+
+    async def set_policy_renew(self, user_id: int, auto_renew: bool) -> bool:
+        """Включить или выключить автопродление. False — полиса нет."""
+        cursor = await self.conn.execute(
+            "UPDATE policies SET auto_renew = ? WHERE user_id = ?",
+            (int(auto_renew), user_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def drop_policy(self, user_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM policies WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
 
     async def set_injury(self, user_id: int, code: str, until: int) -> None:
         """Записать травму. Новая ложится поверх прежней."""

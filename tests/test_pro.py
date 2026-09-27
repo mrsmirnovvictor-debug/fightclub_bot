@@ -19,7 +19,7 @@ from bot.game.pro import (
     PROMO_UNTIL,
     PRO_BADGE,
     PRO_DAYS,
-    PRO_ITEM,
+    LEGACY_ITEM,
     PRO_LOOK,
     PRO_STARS,
     current_offer,
@@ -41,7 +41,7 @@ from bot.webapp.server import create_app
 from tests.test_store import FakeBot, TOKEN
 from tests.test_webapp import FakeBot as AvatarBot, make_init_data
 
-BLADE = CATALOGUE[PRO_ITEM]
+BLADE = CATALOGUE[LEGACY_ITEM]
 AFTER_PROMO = PROMO_UNTIL + timedelta(days=1)
 DURING_PROMO = PROMO_UNTIL - timedelta(days=1)
 
@@ -113,22 +113,23 @@ def test_the_promo_ends_at_midnight_on_the_first_of_september_moscow_time():
 # ---------- что приходит с подпиской ----------
 
 
-async def test_the_subscription_brings_the_blade_and_the_look(db):
+async def test_the_subscription_brings_the_look_and_no_gear(db):
+    """Снаряжения подписка не даёт: вещь в подписке — это сила за деньги."""
     player = make_player()
     await db.save_player(player)
     now = now_ts()
 
     grant = await grant_pro(db, player, current_offer(DURING_PROMO), now)
 
-    assert grant.blade and grant.look and not grant.renewed
+    assert grant.look and not grant.renewed
     assert player.pro_until == now + PROMO_DAYS * 24 * 3600
     assert player.is_pro(now)
-    assert [owned.code for owned in await db.list_gear(42)] == [PRO_ITEM]
+    assert await db.list_gear(42) == []
     assert PRO_LOOK in await db.owned_looks(42)
 
 
-async def test_a_second_subscription_extends_the_term_but_not_the_loot(db):
-    """Клинок кладут один раз: второй такой же был бы просто хламом."""
+async def test_a_second_subscription_extends_the_term_but_not_the_look(db):
+    """Образ открывают один раз: продлевать его незачем, он и так навсегда."""
     player = make_player()
     await db.save_player(player)
     now = now_ts()
@@ -137,13 +138,13 @@ async def test_a_second_subscription_extends_the_term_but_not_the_loot(db):
     await grant_pro(db, player, offer, now)
     again = await grant_pro(db, player, offer, now)
 
-    assert again.renewed and not again.blade and not again.look
+    assert again.renewed and not again.look
     assert player.pro_until == now + 2 * PRO_DAYS * 24 * 3600
-    assert len(await db.list_gear(42)) == 1
+    assert await db.list_gear(42) == []
 
 
-async def test_the_blade_and_the_look_outlive_the_subscription(db):
-    """Срок вышел — значок и опыт кончились, а вещи остались."""
+async def test_the_look_outlives_the_subscription(db):
+    """Срок вышел — значок и опыт кончились, а образ остался."""
     player = make_player()
     await db.save_player(player)
     await grant_pro(db, player, current_offer(AFTER_PROMO))
@@ -153,8 +154,24 @@ async def test_the_blade_and_the_look_outlive_the_subscription(db):
     fresh = await db.get_player(42)
 
     assert not fresh.is_pro()
-    assert [owned.code for owned in fresh.gear] == [PRO_ITEM]
     assert PRO_LOOK in await db.owned_looks(42)
+
+
+def test_the_benefits_promise_no_gear_at_all(db):
+    """Описание не должно обещать того, чего подписка не даёт.
+
+    Проверяем не буквы, а обещание: ни одна строка списка не называет
+    вещь, которую можно надеть. Без этого теста строку про клинок
+    вернули бы в описание первым же редактированием текста.
+    """
+    from bot.game import pro
+
+    said = " ".join(pro.BENEFITS + (pro.NOTE,)).lower()
+    for word in ("клинок", "в инвентарь", "в рюкзак", "оружие"):
+        assert word not in said, f"описание обещает снаряжение: {word}"
+    # А то, ради чего подписку берут, названо
+    assert "аналитик" in said
+    assert "полис" in said
 
 
 def test_the_blade_is_a_reward_and_never_a_purchase():
@@ -290,7 +307,8 @@ def test_the_pro_card_leads_the_mage_counter():
     magic = build_magic(make_player())
 
     assert magic["pro"]["title"] == "Подписка PRO"
-    assert magic["pro"]["benefits"][0].startswith("Полуторный опыт")
+    # Первой строкой — то, ради чего подписку берут: аналитик
+    assert magic["pro"]["benefits"][0].startswith("Аналитик в бою")
     assert magic["pro"]["image"].endswith("/magic/pro.jpeg")
     assert not magic["pro"]["active"]
 
@@ -319,15 +337,15 @@ def test_stars_always_buy_the_normal_month_even_during_the_promo(store):
     assert not offer.promo
 
 
-async def test_paying_for_pro_starts_the_term_and_hands_over_the_loot(store, db):
+async def test_paying_for_pro_starts_the_term_and_opens_the_look(store, db):
     await db.save_player(make_player())
 
     grant = await store.grant(42, paid())
 
-    assert grant.is_pro and grant.pro.blade and grant.pro.look
+    assert grant.is_pro and grant.pro.look
     player = await db.get_player(42)
     assert player.is_pro()
-    assert [owned.code for owned in player.gear] == [PRO_ITEM]
+    assert player.gear == [], "за звёзды приходит срок, а не снаряжение"
 
 
 async def test_the_same_pro_payment_is_counted_once(store, db):
@@ -366,10 +384,11 @@ async def test_the_free_subscription_is_claimed_in_one_tap(client, db, promo_run
 
     assert response.status == 200
     assert body["pro"]["days"] == PROMO_DAYS
-    assert body["pro"]["blade"] and body["pro"]["look"]
+    assert body["pro"]["look"]
+    assert "blade" not in body["pro"]
     assert body["card"]["pro"]["active"]
     assert body["magic"]["pro"]["active"]
-    assert [owned.code for owned in await db.list_gear(42)] == [PRO_ITEM]
+    assert await db.list_gear(42) == []
 
 
 @pytest.fixture
