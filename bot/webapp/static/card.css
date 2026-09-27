@@ -1933,14 +1933,64 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    ничего не стоит, а половинная смотрелась бы обрубком. Одета как панель
    под ней: тот же фон, та же кромка, тот же цвет текста и тот же радиус.
    Синяя кнопка посреди спокойной карточки читается как чужая */
-.hero-acts { margin: 8px 0 2px; }
-.hero-acts .btn {
-  width: 100%;
-  padding: 10px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+/* Три входа в нижнюю половину карточки — «Характеристики», «Документы» и
+   «Награды» — одной кнопкой на всех. Раньше первые две были пузырями, а
+   третья широкой кнопкой во всю строку, и ряд читался как две разные
+   вещи: выбор раздела и действие. Теперь это один ряд равных кнопок.
+
+   Колонки растут сами: кнопок бывает две (календаря ещё нет) и три, и в
+   обоих случаях они делят строку ровно. */
+.hero-acts {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+.hero-act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px 8px;
+  border: 1px solid var(--slot-line);
+  border-radius: 999px;
+  background: var(--slot);
   color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+/* Выбранный раздел горит так же, как выбранный пузырь на других экранах:
+   один язык на весь апп, чтобы «выбрано» нигде не переучивалось */
+.hero-act.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.hero-act:active { transform: scale(0.97); }
+.hero-act-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* Метка сбоку: число документов или точка «есть что забрать» */
+.hero-act-mark {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.hero-act.on .hero-act-mark { color: #fff; opacity: 0.85; }
+.hero-act-mark.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--hp-green);
 }
 
 @media (max-width: 340px) {

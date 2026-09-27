@@ -6036,22 +6036,27 @@ async def test_a_missing_picture_falls_back_to_the_icon(server):
         await browser.close()
 
 
-async def test_the_calendar_button_is_dressed_like_the_panel(server):
-    """Кнопка одета как таблица под ней: тот же фон, кромка и цвет текста.
+async def test_the_three_profile_buttons_are_dressed_alike(server):
+    """«Характеристики», «Документы» и «Награды» — одна кнопка на всех.
 
-    Синяя кнопка посреди спокойной карточки читается как чужая, поэтому
-    сверяем не класс, а посчитанные браузером цвета — они и решают.
+    Сверяем не класс, а посчитанные браузером цвета и размеры: класс можно
+    поставить один, а перекрыть его тремя разными правилами. Кнопка
+    выбранного раздела горит, поэтому сравниваем невыбранные между собой.
     """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+    card["documents"] = [make_policy()]
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
-        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#hero-tabs .hero-act")
 
-        def looks(selector):
-            return page.locator(selector).evaluate(
+        acts = page.locator("#hero-tabs .hero-act")
+        assert await acts.count() == 3, "три кнопки в одном ряду"
+
+        def looks(one):
+            return one.evaluate(
                 "node => {"
                 "  const style = getComputedStyle(node);"
                 "  return {"
@@ -6060,19 +6065,82 @@ async def test_the_calendar_button_is_dressed_like_the_panel(server):
                 "    edge: style.borderTopColor,"
                 "    width: style.borderTopWidth,"
                 "    round: style.borderTopLeftRadius,"
+                "    size: style.fontSize,"
+                "    weight: style.fontWeight,"
+                "    padY: style.paddingTop,"
+                "    padX: style.paddingLeft,"
                 "  };"
                 "}"
             )
 
-        gate = await looks("#hero-daily")
-        panel = await looks("#hero .panel")
+        # Невыбранные две — «Документы» и «Награды»
+        papers = await looks(acts.nth(1))
+        daily = await looks(acts.nth(2))
+        assert papers == daily, f"кнопки разной одежды: {papers} против {daily}"
 
-        assert gate == panel, f"кнопка выбивается из карточки: {gate} против {panel}"
+        # И ширина одна: ряд делится ровно, а не по длине надписи
+        widths = await acts.evaluate_all(
+            "boxes => boxes.map(box => Math.round(box.getBoundingClientRect().width))"
+        )
+        assert max(widths) - min(widths) <= 1, f"кнопки разной ширины: {widths}"
+        await browser.close()
+
+
+async def test_the_chosen_section_is_the_only_lit_button(server):
+    """Выбранный раздел горит, а «Награды» — окно, и гореть ей нечем."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-tabs .hero-act")
+
+        lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
+        assert len(lit) == 1 and "Характеристики" in lit[0]
+
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
+        assert len(lit) == 1 and "Документы" in lit[0]
+
+        # Награды нажали — ряд не поменялся, открылось окно
+        await page.locator("#hero-daily").click()
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
+        assert len(lit) == 1 and "Документы" in lit[0]
+        await browser.close()
+
+
+async def test_a_waiting_reward_puts_a_dot_on_its_button(server):
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=True, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-daily")
+
+        assert await page.locator("#hero-daily .hero-act-mark.dot").count() == 1
+        await browser.close()
+
+
+async def test_without_a_calendar_the_row_holds_only_two_buttons(server):
+    """Кнопка без содержимого — обещание, которого не будет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card.pop("daily", None)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-tabs .hero-act")
+
+        assert await page.locator("#hero-tabs .hero-act").count() == 2
+        assert await page.locator("#hero-daily").count() == 0
         await browser.close()
 
 
 async def test_the_hero_tab_opens_the_calendar_on_demand(server):
-    """Кнопка «Ежедневные награды» открывает окно, когда игрок сам захочет."""
+    """Кнопка «Награды» открывает окно, когда игрок сам захочет."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     # окно само не всплывает: день засчитан, забирать нечего
@@ -6085,7 +6153,7 @@ async def test_the_hero_tab_opens_the_calendar_on_demand(server):
 
         gate = page.locator("#hero-daily")
         assert await gate.is_visible()
-        assert "Ежедневные награды" in await gate.inner_text()
+        assert "Награды" in await gate.inner_text()
 
         await gate.click()
 
@@ -6772,7 +6840,7 @@ def card_with_papers(papers, is_self: bool = True) -> dict:
 async def open_hero(pw, server, card=None):
     browser, page = await open_page(pw, server, card or card_with_papers([]))
     await page.wait_for_selector("#hero:not(.hidden)")
-    await page.wait_for_selector("#hero-tabs .chip")
+    await page.wait_for_selector("#hero-tabs .hero-act")
     return browser, page
 
 
@@ -6780,9 +6848,9 @@ async def test_the_character_screen_has_two_sections_and_starts_on_stats(server)
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server)
 
-        tabs = await page.locator("#hero-tabs .chip").all_inner_texts()
+        tabs = await page.locator("#hero-tabs .hero-act").all_inner_texts()
         assert len(tabs) == 2
-        assert "Параметры" in tabs[0] and "Документы" in tabs[1]
+        assert "Характеристики" in tabs[0] and "Документы" in tabs[1]
         # Параметры открыты, документы свёрнуты
         assert await page.locator("#hero-stats").is_visible()
         assert await page.locator("#hero-papers").is_hidden()
@@ -6793,7 +6861,7 @@ async def test_the_fighter_himself_stays_above_both_sections(server):
     """Куклу и здоровье за вкладку не прячем: они нужны в обоих разделах."""
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
-        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
         await page.wait_for_selector("#hero-papers:not(.hidden)")
 
         assert await page.locator("#hero-avatar").is_visible()
@@ -6806,8 +6874,8 @@ async def test_the_documents_tab_counts_what_is_in_it(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
 
-        papers_tab = await page.locator("#hero-tabs .chip").nth(1).inner_text()
-        assert "· 1" in papers_tab
+        papers_tab = await page.locator("#hero-tabs .hero-act").nth(1).inner_text()
+        assert "1" in papers_tab
         await browser.close()
 
 
@@ -6815,7 +6883,7 @@ async def test_the_policy_names_the_holder_the_period_and_what_it_gives(server):
     """Ровно то, что просили видеть в описании полиса."""
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
-        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
         await page.wait_for_selector(".paper")
 
         assert "Полис страхования жизни и здоровья" in await page.locator(
@@ -6836,7 +6904,7 @@ async def test_an_expired_policy_says_so_in_words_not_only_in_grey(server):
         browser, page = await open_hero(
             pw, server, card_with_papers([make_policy(active=False)])
         )
-        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
         await page.wait_for_selector(".paper")
 
         assert await page.locator(".paper.stale").count() == 1
@@ -6848,7 +6916,7 @@ async def test_an_expired_policy_says_so_in_words_not_only_in_grey(server):
 async def test_the_renewal_switch_says_which_way_it_is_set(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
-        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
         await page.wait_for_selector(".paper-renew")
 
         said = await page.locator(".paper-renew-state").inner_text()
@@ -6862,7 +6930,7 @@ async def test_the_switch_offers_to_turn_the_renewal_back_on(server):
         browser, page = await open_hero(
             pw, server, card_with_papers([make_policy(auto_renew=False)])
         )
-        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
         await page.wait_for_selector(".paper-renew")
 
         said = await page.locator(".paper-renew-state").inner_text()
@@ -6874,7 +6942,7 @@ async def test_the_switch_offers_to_turn_the_renewal_back_on(server):
 async def test_an_empty_documents_section_says_where_papers_come_from(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server)
-        await page.locator("#hero-tabs .chip").nth(1).click()
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
         await page.wait_for_selector("#hero-papers:not(.hidden)")
 
         assert await page.locator(".paper").count() == 0
@@ -7040,4 +7108,84 @@ async def test_the_hospital_names_the_policy_when_it_cuts_the_price(server):
         assert "По полису: −80%" in said
         assert "вместо 300 💰" in said and "Экономия 240 💰" in said
         assert "Лечить · 60 💰" in await page.locator(".cure.hurt .btn").inner_text()
+        await browser.close()
+
+
+# ---------- выход на карту ----------
+#
+# Боец приходит в дом ногами и уходит так же. Нижняя панель ведёт в клуб,
+# в рюкзак и в карточку — то есть куда угодно, кроме карты, с которой он в
+# этот дом зашёл. Поэтому кнопка «На карту» нужна в каждом доме, а не в
+# тех четырёх, до которых дошли руки.
+
+# Все экраны-дома: то, куда боец заходит с карты. Рюкзак и карточка сюда
+# не идут — это вкладки, а не места; касса — лист поверх экрана, и у неё
+# своя кнопка «Назад», ведущая туда, откуда её открыли
+HOUSE_SCREENS_UI = [
+    "club", "shop", "magic", "workshop", "hospital", "insurance", "trade",
+    "house",
+]
+
+
+async def test_every_house_has_a_way_back_to_the_map(server):
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        for screen in HOUSE_SCREENS_UI:
+            await open_screen(page, screen)
+            await page.wait_for_selector(f"#{screen}:not(.hidden)")
+            back = page.locator(f"#{screen}-back")
+            assert await back.count() == 1, f"{screen}: нет выхода на карту"
+            assert await back.is_visible(), f"{screen}: выход не виден"
+            assert "На карту" in await back.inner_text(), f"{screen}: чужая надпись"
+        await browser.close()
+
+
+async def test_the_way_back_really_opens_the_map(server):
+    """Кнопка есть — и она работает: в каждом доме, а не только в первом."""
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        for screen in HOUSE_SCREENS_UI:
+            await open_screen(page, screen)
+            await page.wait_for_selector(f"#{screen}:not(.hidden)")
+            await page.locator(f"#{screen}-back").click()
+            await page.wait_for_selector("#map:not(.hidden)")
+            assert await page.locator(f"#{screen}").is_hidden(), screen
+        await browser.close()
+
+
+async def test_the_title_stays_under_the_way_back_in_every_house(server):
+    """Заголовок стоит под кнопкой, а не рядом с ней.
+
+    Иначе в одних домах он оказывается на первой строке, в других на
+    второй, и шапки домов перестают быть одной шапкой.
+    """
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        for screen in HOUSE_SCREENS_UI:
+            await open_screen(page, screen)
+            await page.wait_for_selector(f"#{screen}:not(.hidden)")
+            # Заголовок — не внутри шапки: там живут выход и кошелёк
+            inside = await page.locator(f"#{screen} .screen-head .screen-title").count()
+            assert inside == 0, f"{screen}: заголовок в шапке"
+            head = await page.locator(f"#{screen} .screen-head").bounding_box()
+            title = await page.locator(f"#{screen} .screen-title").first.bounding_box()
+            assert title["y"] >= head["y"] + head["height"] - 1, screen
         await browser.close()

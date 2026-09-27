@@ -719,7 +719,7 @@ function renderDaily(card) {
   const state = card.daily;
   if (!state) return;
   dailyState = state;
-  el("hero-daily").classList.remove("hidden");
+  // Кнопку рисует `paintHeroTabs` — он идёт следом, уже зная про календарь
 
   const veil = el("daily-veil");
   if (dailyShown) {
@@ -5710,7 +5710,7 @@ let myPlace = null;
 // про число документов она ничего не знает.
 
 const HERO_TABS = [
-  ["stats", "📊 Параметры"],
+  ["stats", "📊 Характеристики"],
   ["papers", "📁 Документы"],
 ];
 let heroTab = "stats";
@@ -5723,13 +5723,54 @@ function pickHeroTab(name) {
   paintHeroTabs();
 }
 
+/** Кнопка в ряду под бойцом. Одна вёрстка на все три. */
+function heroAct(label, on, onClick, mark) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "hero-act" + (on ? " on" : "");
+  const text = document.createElement("span");
+  text.className = "hero-act-text";
+  text.textContent = label;
+  btn.appendChild(text);
+  // Метка сбоку: число документов или точка «есть что забрать». У кнопки
+  // раздела это счётчик, у награды — повод нажать
+  if (mark) {
+    const tag = document.createElement("span");
+    tag.className = "hero-act-mark" + (mark === true ? " dot" : "");
+    tag.textContent = mark === true ? "" : String(mark);
+    btn.appendChild(tag);
+  }
+  btn.addEventListener("click", () => {
+    haptic((feedback) => feedback.selectionChanged());
+    onClick();
+  });
+  return btn;
+}
+
 function paintHeroTabs() {
   const tabs = el("hero-tabs");
   tabs.textContent = "";
   HERO_TABS.forEach(([code, label]) => {
-    const count = code === "papers" && papers.length ? " · " + papers.length : "";
-    tabs.appendChild(chip(label + count, heroTab === code, () => pickHeroTab(code)));
+    tabs.appendChild(
+      heroAct(
+        label,
+        heroTab === code,
+        () => pickHeroTab(code),
+        code === "papers" && papers.length ? papers.length : 0
+      )
+    );
   });
+  // Награды — кнопка того же вида, но не раздел: она открывает окно и
+  // потому никогда не горит выбранной. Нечего показывать — её нет вовсе
+  if (!dailyState) return;
+  const btn = heroAct(
+    "🎁 Награды",
+    false,
+    openDaily,
+    dailyState.fresh || dailyState.waiting.length ? true : 0
+  );
+  btn.id = "hero-daily";
+  tabs.appendChild(btn);
 }
 
 let papers = [];
@@ -6700,11 +6741,15 @@ el("hero-avatar").addEventListener("click", () => {
 });
 el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
-el("hero-daily").addEventListener("click", openDaily);
-el("house-back").addEventListener("click", () => showTab("map"));
-el("hospital-back").addEventListener("click", () => showTab("map"));
-el("trade-back").addEventListener("click", () => showTab("map"));
-el("insurance-back").addEventListener("click", () => showTab("map"));
+// Выход на карту есть в каждом доме: боец пришёл сюда ногами и уходит
+// так же. Нижняя панель ведёт в клуб, в рюкзак и в карточку — то есть
+// куда угодно, кроме того места, откуда он в этот дом зашёл
+[
+  "house", "hospital", "trade", "insurance", "shop", "magic", "workshop",
+  "club",
+].forEach((screen) => {
+  el(screen + "-back").addEventListener("click", () => showTab("map"));
+});
 watchInteriors();
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты

@@ -24,9 +24,10 @@
     </figure>
 
     <header class="screen-head">
-      <h1 class="screen-title" id="club-title">🥊 Бойцовский клуб</h1>
+      <button type="button" class="back" id="club-back">← На карту</button>
       <span class="screen-count" id="club-count"></span>
     </header>
+    <h1 class="screen-title" id="club-title">🥊 Бойцовский клуб</h1>
 
     <!-- Разделы одной вкладки: бои, рейд, игроки и статистика -->
     <div class="bubbles" id="club-sections"></div>
@@ -92,9 +93,10 @@
     </figure>
 
     <header class="screen-head">
-      <h1 class="screen-title" id="shop-title">🏪 Лавка клуба</h1>
+      <button type="button" class="back" id="shop-back">← На карту</button>
       <span class="shop-purse" id="shop-purse"></span>
     </header>
+    <h1 class="screen-title" id="shop-title">🏪 Лавка клуба</h1>
 
     <!-- Лавка клуба: товар по типам вещей -->
     <section id="shop-club">
@@ -120,8 +122,9 @@
     </figure>
 
     <header class="screen-head">
-      <h1 class="screen-title">💎 Магазин «Элита»</h1>
+      <button type="button" class="back" id="magic-back">← На карту</button>
     </header>
+    <h1 class="screen-title">💎 Магазин «Элита»</h1>
     <p class="screen-note" id="magic-note"></p>
     <div id="pro-card"></div>
     <div id="magic-list"></div>
@@ -139,9 +142,10 @@
     </figure>
 
     <header class="screen-head">
-      <h1 class="screen-title">🔧 Мастерская</h1>
+      <button type="button" class="back" id="workshop-back">← На карту</button>
       <span class="shop-purse" id="shop-purse-workshop"></span>
     </header>
+    <h1 class="screen-title">🔧 Мастерская</h1>
 
     <!-- Три вкладки одной локации -->
     <div class="bubbles" id="workshop-tabs"></div>
@@ -331,20 +335,17 @@
       <p class="screen-note" id="skills-note"></p>
     </section>
 
-    <!-- Календарь входа открывается отсюда: окно всплывает само раз в день,
-         а посмотреть, что впереди, хочется когда угодно -->
-    <div class="hero-acts">
-      <button type="button" class="btn hidden" id="hero-daily">
-        🎁 Ежедневные награды
-      </button>
-    </div>
+    <!-- Три входа в нижнюю половину карточки, и все три одной кнопкой:
+         «Характеристики» — то, что тут было всегда, «Документы» — то, что
+         боец получает в конторах города, «Награды» — календарь входа.
+         Наверху не делим ничего: имя, здоровье, кукла и приёмы нужны при
+         любом выборе, и прятать их значило бы заставить переключаться
+         туда-обратно, чтобы посмотреть на бойца.
 
-    <!-- Нижняя половина карточки разделена на два: «Параметры» — то, что
-         тут было всегда, «Документы» — то, что боец получает в конторах
-         города. Наверху не делим ничего: имя, здоровье, кукла и приёмы
-         нужны в обоих разделах, и прятать их за вкладку значило бы
-         заставить переключаться туда-обратно, чтобы посмотреть на бойца -->
-    <div class="bubbles" id="hero-tabs"></div>
+         Собираются они на стороне страницы: третья кнопка появляется
+         только когда календарь есть что показать, а у второй на счётчике
+         число документов. -->
+    <div class="hero-acts" id="hero-tabs"></div>
 
     <section class="panel" id="hero-stats">
       <ul class="rows" id="stats"></ul>
