@@ -1730,13 +1730,15 @@ function lotCard(lot) {
 }
 
 const SCREENS = [
-  "club", "map", "shop", "magic", "workshop", "hospital", "house", "bag", "hero",
+  "club", "map", "shop", "magic", "workshop", "hospital", "trade", "house",
+  "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
 const OPENED_FROM = {
-  shop: "map", magic: "map", workshop: "map", hospital: "map", house: "map",
+  shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
+  house: "map",
 };
 let lastTab = "hero";
 
@@ -1762,6 +1764,9 @@ function showTab(name) {
   }
   if (name === "workshop") loadWorkshop();
   if (name === "hospital") loadHospital();
+  // Стол на рынке общий: пока на него смотрят — опрашиваем, ушли — молчим
+  if (name === "trade") startTradeWatch();
+  else stopTradeWatch();
   if (name === "map") loadMap();
   // Часы рейда идут, только пока на карту смотрят
   if (name === "map") startRaidClock();
@@ -2121,6 +2126,7 @@ const HOUSE_SCREENS = {
   },
   repair: () => openWorkshop(),
   heal: () => showTab("hospital"),
+  trade: () => showTab("trade"),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -5682,6 +5688,548 @@ function render(card, keepTab) {
 // показывать экран клуба и что на нём можно
 let myPlace = null;
 
+// ---------- рынок: обмен между бойцами ----------
+//
+// Стол один, а смотрят на него двое, и каждый со своей страницы. Отсюда
+// два правила, которым здесь подчинено всё остальное.
+//
+// Первое: страница ничего не решает сама. Что лежит на столе, сколько
+// там кредитов и нажаты ли кнопки — приходит с сервера целиком, и
+// перерисовывается тоже целиком. Догадка вида «я только что выложил
+// меч, значит он там» разошлась бы с чужой правкой в ту же секунду.
+//
+// Второе: перерисовываем только когда стол правда поменялся. У сервера
+// для этого есть `version`, и по нему собирается подпись состояния:
+// опрос идёт каждые две секунды, а в поле для кредитов в это время
+// набирают число. Перерисовка на каждый опрос сбрасывала бы набранное.
+
+let tradeData = null;
+let tradeTimer = null;
+let tradeBusy = false;
+let tradeShown = "";
+// Сколько секунд осталось приглашению — тикает на странице, а не
+// приходит с сервера двадцать раз: до конца минуты опрос успевает
+// пройти тридцать раз, и каждый его ответ перерисовывал бы экран
+let tradeClock = null;
+// Когда пришёл последний ответ: по нему и дотикивают секунды
+let tradeAt = 0;
+// Чем кончился прошлый обмен. Сервер говорит это один раз — второй
+// опрос через две секунды пришёл бы уже без записки, и человек успевал
+// прочитать полфразы. Поэтому держим её на странице до первого действия
+let tradeDone = "";
+
+/** Подпись состояния: по ней видно, надо ли перерисовывать. */
+function tradeShape(data) {
+  const table = data.trade || {};
+  const sides = table.id
+    ? [table.mine, table.his].map((side) => [
+        side.credits,
+        side.ready,
+        side.items.map((one) => one.kind + one.key + "x" + one.count).join(","),
+      ])
+    : [];
+  return JSON.stringify([
+    data.credits,
+    data.done,
+    table.id || 0,
+    table.version || 0,
+    sides,
+    // Секунды в подпись не идут: их дотикивает страница
+    (data.invite && data.invite.from_id) || 0,
+    (data.sent && data.sent.to_id) || 0,
+    (data.crowd || []).map((one) => [one.user_id, one.online, one.callable]),
+  ]);
+}
+
+async function loadTrade() {
+  try {
+    const response = await fetch("api/trade", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("trade-note").textContent = "Рынок не открылся.";
+      return;
+    }
+    showTrade(await response.json());
+  } catch (error) {
+    el("trade-note").textContent = error.message;
+  }
+}
+
+function showTrade(data) {
+  tradeData = data;
+  tradeAt = Date.now();
+  if (data.done) tradeDone = data.done;
+  // За новым столом прошлому обмену места нет
+  if (data.trade && data.trade.id) tradeDone = "";
+  el("shop-purse-trade").textContent = "";
+  el("shop-purse-trade").appendChild(purse(data.credits));
+  const shape = tradeShape(data);
+  if (shape === tradeShown) {
+    tickInvite();
+    return;
+  }
+  tradeShown = shape;
+  renderTrade(data);
+}
+
+/** Перерисовать, вернув палец туда, где он был. */
+function renderTrade(data) {
+  const was = document.activeElement;
+  const spot = was && el("trade-body").contains(was) ? was.id : "";
+  const body = el("trade-body");
+  body.textContent = "";
+
+  // Чем кончился прошлый обмен — первой строкой и один раз: сервер
+  // отдаёт эту фразу единожды, дальше её на странице уже нет
+  el("trade-note").textContent = tradeDone || tradeHint(data);
+  if (data.trade && data.trade.id) {
+    body.appendChild(tradeTable(data.trade));
+  } else {
+    if (data.invite && data.invite.from_id) body.appendChild(inviteBanner(data.invite));
+    if (data.sent && data.sent.to_id) body.appendChild(sentBanner(data.sent));
+    body.appendChild(tradeCrowd(data.crowd || []));
+  }
+
+  if (spot && el(spot)) {
+    const back = el(spot);
+    back.focus();
+    if (back.setSelectionRange) {
+      const end = String(back.value).length;
+      try {
+        back.setSelectionRange(end, end);
+      } catch (error) {
+        // Не всякое поле умеет каретку — и не всякому это нужно
+      }
+    }
+  }
+  tickInvite();
+}
+
+function tradeHint(data) {
+  if (data.trade && data.trade.id) return "";
+  if (data.invite && data.invite.from_id) return "Тебе предлагают обмен.";
+  if (data.sent && data.sent.to_id) return "Ждём ответа.";
+  if (!(data.crowd || []).length) {
+    return "На рынке пусто. Обмен идёт из рук в руки — нужен второй.";
+  }
+  return "Позови бойца к столу — и он ответит в течение минуты.";
+}
+
+async function tradeAction(payload) {
+  if (tradeBusy) return;
+  tradeBusy = true;
+  // Нажали — значит записку прочли
+  tradeDone = "";
+  tradeShown = "";
+  try {
+    const response = await fetch("api/trade", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Обмен", data.error || "Не получилось.");
+      // Отказ мог случиться потому, что стол уже другой: перечитываем
+      await loadTrade();
+      return;
+    }
+    haptic((feedback) => feedback.impactOccurred("light"));
+    showTrade(data);
+  } catch (error) {
+    popup("Обмен", "Сервер не ответил.");
+  } finally {
+    tradeBusy = false;
+  }
+}
+
+// ---------- кто на рынке ----------
+
+function tradeCrowd(crowd) {
+  const box = document.createElement("div");
+  box.className = "crowd";
+  const online = crowd.filter((one) => one.online);
+  const away = crowd.filter((one) => !one.online);
+  // В сети — выше: с этим обмен состоится сейчас. Ушедшего звать можно,
+  // но ответить он сможет, только пока приглашение живо
+  if (online.length) box.appendChild(crowdGroup("🟢 В сети", online));
+  if (away.length) box.appendChild(crowdGroup("Не в клубе", away));
+  return box;
+}
+
+function crowdGroup(title, rows) {
+  const box = document.createElement("section");
+  box.className = "crowd-group";
+  const head = document.createElement("h2");
+  head.className = "crowd-head";
+  head.textContent = title + " · " + rows.length;
+  box.appendChild(head);
+  rows.forEach((one) => box.appendChild(crowdRow(one)));
+  return box;
+}
+
+function crowdRow(one) {
+  const box = document.createElement("div");
+  box.className = "fighter" + (one.online ? "" : " away");
+
+  const face = document.createElement("span");
+  face.className = "fighter-class";
+  face.textContent = one.fclass.emoji;
+
+  const name = document.createElement("span");
+  name.className = "fighter-name";
+  name.textContent = one.pro ? one.nickname + " 💎" : one.nickname;
+
+  const level = document.createElement("span");
+  level.className = "fighter-level";
+  level.textContent = "[" + one.level + "]";
+
+  box.append(face, name, level);
+  if (one.callable) {
+    box.appendChild(
+      button("Позвать", {
+        onClick: () => tradeAction({ action: "invite", user_id: one.user_id }),
+      })
+    );
+  } else {
+    const why = document.createElement("span");
+    why.className = "crowd-busy";
+    why.textContent = one.trading ? "Уже меняется" : "Занят";
+    box.appendChild(why);
+  }
+  return box;
+}
+
+// ---------- приглашения ----------
+
+function inviteBanner(invite) {
+  const box = document.createElement("section");
+  box.className = "invite";
+  const text = document.createElement("p");
+  text.className = "invite-text";
+  text.textContent = invite.from_name + " предлагает обмен.";
+  const clock = document.createElement("p");
+  clock.className = "invite-clock";
+  clock.id = "invite-clock";
+  box.append(text, clock);
+
+  const row = document.createElement("div");
+  row.className = "invite-buttons";
+  row.appendChild(button("Согласиться", { onClick: () => tradeAction({ action: "accept" }) }));
+  row.appendChild(
+    button("Отказаться", {
+      secondary: true,
+      onClick: () => tradeAction({ action: "decline" }),
+    })
+  );
+  box.appendChild(row);
+  return box;
+}
+
+function sentBanner(sent) {
+  const box = document.createElement("section");
+  box.className = "invite sent";
+  const text = document.createElement("p");
+  text.className = "invite-text";
+  text.textContent = "Ждём ответа: " + sent.name + ".";
+  const clock = document.createElement("p");
+  clock.className = "invite-clock";
+  clock.id = "invite-clock";
+  box.append(text, clock);
+  box.appendChild(
+    button("Забрать приглашение", {
+      secondary: true,
+      onClick: () => tradeAction({ action: "withdraw" }),
+    })
+  );
+  return box;
+}
+
+/** Секунды приглашения дотикиваются на месте, без нового запроса. */
+function tickInvite() {
+  const shown = el("invite-clock");
+  if (!shown || !tradeData) return;
+  const invite = (tradeData.invite && tradeData.invite.from_id)
+    ? tradeData.invite
+    : tradeData.sent;
+  if (!invite) return;
+  const left = Math.max(0, invite.seconds_left - Math.round(tradeAge() / 1000));
+  shown.textContent = left
+    ? "Осталось " + left + " " + plural(left, "секунда", "секунды", "секунд")
+    : "Время вышло.";
+}
+
+function tradeAge() {
+  return tradeAt ? Date.now() - tradeAt : 0;
+}
+
+// ---------- стол ----------
+
+function tradeTable(table) {
+  const box = document.createElement("section");
+  box.className = "table";
+  box.appendChild(tradeHalf(table.his, false, table));
+  box.appendChild(tradeHalf(table.mine, true, table));
+  box.appendChild(tradeButtons(table));
+  return box;
+}
+
+function tradeHalf(side, own, table) {
+  const box = document.createElement("div");
+  box.className = "half" + (own ? " own" : "") + (side.ready ? " ready" : "");
+
+  const head = document.createElement("div");
+  head.className = "half-head";
+  const who = document.createElement("span");
+  who.className = "half-who";
+  who.textContent = own ? "Ты отдаёшь" : side.nickname + " отдаёт";
+  const mark = document.createElement("span");
+  mark.className = "half-mark";
+  mark.textContent = side.ready ? "✅ Готов" : "⏳ Думает";
+  head.append(who, mark);
+  box.appendChild(head);
+
+  box.appendChild(own ? ownCredits(side, table) : theirCredits(side));
+
+  const list = document.createElement("div");
+  list.className = "half-items";
+  if (!side.items.length) {
+    const empty = document.createElement("p");
+    empty.className = "half-empty";
+    empty.textContent = own ? "Пока ничего не выложено." : "Пока ничего не выложил.";
+    list.appendChild(empty);
+  }
+  side.items.forEach((one) => list.appendChild(tableItem(one, own)));
+  box.appendChild(list);
+
+  if (own) {
+    box.appendChild(
+      button("Выложить вещь", {
+        secondary: true,
+        onClick: () => openBasket(table),
+      })
+    );
+  }
+  return box;
+}
+
+function theirCredits(side) {
+  const row = document.createElement("p");
+  row.className = "half-credits";
+  row.textContent = side.credits
+    ? num(side.credits) + " 💰"
+    : "Без кредитов";
+  return row;
+}
+
+// Кредиты уходят на сервер по окончании набора, а не на каждую цифру:
+// иначе «1000» успело бы отправиться как 1, 10 и 100, и каждое из них
+// сбросило бы согласие соперника
+function ownCredits(side, table) {
+  const row = document.createElement("div");
+  row.className = "half-credits own";
+  const field = document.createElement("input");
+  field.type = "number";
+  field.id = "trade-credits";
+  field.inputMode = "numeric";
+  field.min = "0";
+  field.max = String(table.max_credits);
+  field.value = String(side.credits);
+  field.addEventListener("change", () => {
+    const amount = Math.max(0, Math.min(table.max_credits, Number(field.value) || 0));
+    field.value = String(amount);
+    if (amount !== side.credits) tradeAction({ action: "credits", credits: amount });
+  });
+  const tail = document.createElement("span");
+  tail.className = "half-max";
+  tail.textContent = "💰 из " + num(table.max_credits);
+  row.append(field, tail);
+  return row;
+}
+
+function tableItem(one, own) {
+  const box = document.createElement("div");
+  box.className = "lot";
+
+  const pic = document.createElement("div");
+  pic.className = "lot-pic";
+  pic.appendChild(slotPicture(one, one.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "lot-body";
+  const title = document.createElement("div");
+  title.className = "lot-title";
+  title.textContent = one.stack ? one.title + " ×" + one.count : one.title;
+  body.appendChild(title);
+  if (one.wear_text) {
+    const wear = document.createElement("div");
+    wear.className = "lot-wear";
+    wear.textContent = one.wear_text;
+    body.appendChild(wear);
+  }
+  box.appendChild(body);
+
+  if (own) {
+    const off = document.createElement("button");
+    off.type = "button";
+    off.className = "lot-off";
+    off.textContent = "✕";
+    off.title = "Убрать со стола";
+    off.setAttribute("aria-label", "Убрать «" + one.title + "» со стола");
+    off.addEventListener("click", () =>
+      tradeAction({ action: "item", kind: one.kind, key: one.key, count: 0 })
+    );
+    box.appendChild(off);
+  }
+  return box;
+}
+
+function tradeButtons(table) {
+  const row = document.createElement("div");
+  row.className = "table-buttons";
+  const mine = table.mine;
+  if (mine.ready) {
+    row.appendChild(
+      button("Передумать", {
+        secondary: true,
+        onClick: () => tradeAction({ action: "unconfirm" }),
+      })
+    );
+  } else {
+    row.appendChild(
+      button("Подтвердить", {
+        disabled: mine.empty && table.his.empty,
+        hint: "Пустой стол менять не на что.",
+        onClick: () => tradeAction({ action: "confirm" }),
+      })
+    );
+  }
+  row.appendChild(
+    button("Отказаться", {
+      secondary: true,
+      onClick: () => tradeAction({ action: "cancel" }),
+    })
+  );
+  const note = document.createElement("p");
+  note.className = "table-note";
+  note.textContent = table.waiting
+    ? "Ты готов. Ждём второго."
+    : "Любая правка стола снимает оба согласия.";
+  row.appendChild(note);
+  return row;
+}
+
+// ---------- рюкзак у стола ----------
+//
+// Чужой рюкзак сюда не приходит вовсе: соперник видит выложенное, а не
+// то, что у тебя есть.
+
+function openBasket(table) {
+  openSheet("Что выложить", "Не больше " + table.max_items + " предметов за раз");
+  const list = el("sheet-list");
+  if (!table.basket.length) {
+    const empty = document.createElement("p");
+    empty.className = "sheet-note";
+    empty.textContent = "Рюкзак пуст. Надетое сначала снимают.";
+    list.appendChild(empty);
+    return;
+  }
+  table.basket.forEach((one) => list.appendChild(basketRow(one)));
+}
+
+function basketRow(one) {
+  const box = document.createElement("div");
+  box.className = "lot" + (one.on_table ? " on" : "");
+
+  const pic = document.createElement("div");
+  pic.className = "lot-pic";
+  pic.appendChild(slotPicture(one, one.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "lot-body";
+  const title = document.createElement("div");
+  title.className = "lot-title";
+  title.textContent = one.title;
+  body.appendChild(title);
+  const under = document.createElement("div");
+  under.className = "lot-wear";
+  under.textContent = one.stack
+    ? "В рюкзаке: " + one.max_count + " шт."
+    : one.wear_text;
+  body.appendChild(under);
+  box.appendChild(body);
+
+  // У склянок вместо «выложить» — сколько штук: их передают числом, и
+  // четыре разных эликсира не должны стоить четырёх мест на столе
+  if (one.stack) {
+    box.appendChild(stackPicker(one));
+  } else {
+    box.appendChild(
+      button(one.on_table ? "Убрать" : "Выложить", {
+        secondary: one.on_table,
+        onClick: () => {
+          closeSheet();
+          tradeAction({
+            action: "item",
+            kind: one.kind,
+            key: one.key,
+            count: one.on_table ? 0 : 1,
+          });
+        },
+      })
+    );
+  }
+  return box;
+}
+
+function stackPicker(one) {
+  const box = document.createElement("div");
+  box.className = "stack";
+  const field = document.createElement("input");
+  field.type = "number";
+  field.inputMode = "numeric";
+  field.min = "0";
+  field.max = String(one.max_count);
+  field.value = String(one.count);
+  field.className = "stack-count";
+  box.appendChild(field);
+  box.appendChild(
+    button("На стол", {
+      onClick: () => {
+        const count = Math.max(0, Math.min(one.max_count, Number(field.value) || 0));
+        closeSheet();
+        tradeAction({ action: "item", kind: one.kind, key: one.key, count });
+      },
+    })
+  );
+  return box;
+}
+
+// ---------- опрос ----------
+//
+// Стол общий, и чужую правку видно только запросом: две секунды — то же
+// сердцебиение, что на ринге.
+
+function startTradeWatch() {
+  loadTrade();
+  if (tradeTimer) return;
+  tradeTimer = setInterval(loadTrade, 2000);
+  tradeClock = setInterval(tickInvite, 1000);
+}
+
+function stopTradeWatch() {
+  if (tradeTimer) clearInterval(tradeTimer);
+  if (tradeClock) clearInterval(tradeClock);
+  tradeTimer = null;
+  tradeClock = null;
+}
+
 // ---------- вид изнутри ----------
 //
 // С карты у дома видно одну дверь, а всё остальное время боец проводит
@@ -5689,7 +6237,7 @@ let myPlace = null;
 // по несколько домов — клуб и казино, пять разных прилавков, — и что
 // показывать, знает только то место, где боец сейчас стоит.
 const INTERIOR_SCREENS = [
-  "club", "shop", "magic", "workshop", "hospital", "house",
+  "club", "shop", "magic", "workshop", "hospital", "trade", "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -5828,6 +6376,7 @@ el("sheet-back").addEventListener("click", closeSheet);
 el("hero-daily").addEventListener("click", openDaily);
 el("house-back").addEventListener("click", () => showTab("map"));
 el("hospital-back").addEventListener("click", () => showTab("map"));
+el("trade-back").addEventListener("click", () => showTab("map"));
 watchInteriors();
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты

@@ -501,7 +501,7 @@ def test_a_touch_finds_the_door_under_it():
 
 
 def test_houses_without_a_trade_are_still_on_the_map():
-    """Банк, рынок, почта, бар и стадион пока только стоят.
+    """Банк, почта, бар и стадион пока только стоят.
 
     Зайти в них можно — иначе город выглядит нарисованным наполовину, —
     но никакой услуги за ними нет, и сервер её не знает.
@@ -509,15 +509,15 @@ def test_houses_without_a_trade_are_still_on_the_map():
     from bot.game.locations import LOCATIONS
 
     coming = [place for place in LOCATIONS if not place.works]
-    # Пять домов первой очереди и восемнадцать второй: город вырос
+    # Четыре дома первой очереди и восемнадцать второй: город вырос
     # картинками раньше, чем правилами, и это нормально — лишь бы в
-    # каждом было сказано, чего в нём ждать. Больница из этого списка
-    # уже вышла: в ней лечат за кредиты
-    assert {"bank", "market", "post_office", "stadium", "bar"} <= {
+    # каждом было сказано, чего в нём ждать. Больница и рынок из этого
+    # списка уже вышли: в одной лечат за кредиты, на другом меняются
+    assert {"bank", "post_office", "stadium", "bar"} <= {
         place.code for place in coming
     }
-    assert "hospital" not in {place.code for place in coming}
-    assert len(coming) == 23
+    assert not {"hospital", "market"} & {place.code for place in coming}
+    assert len(coming) == 22
     for place in coming:
         assert place.soon, f"{place.code}: не сказано, что здесь будет"
         assert place.services == ()

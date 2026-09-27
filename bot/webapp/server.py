@@ -41,9 +41,11 @@ from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
 from bot.webapp.hospital import build_hospital
+from bot.webapp.trade import build_trade
 from bot.webapp.workshop import build_workshop
 from bot.content.mods import star_of
 from bot.hospital_service import HospitalError, heal
+from bot.trade_service import TradeError, TradeService
 from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
 from bot.game.health import format_duration, now_ts
@@ -85,6 +87,8 @@ STORE_KEY: web.AppKey = web.AppKey("store")
 RAIDS_KEY: web.AppKey = web.AppKey("raids")
 # Групповые бои: состав собирают где угодно, а дерутся в карточке
 BATTLES_KEY: web.AppKey = web.AppKey("battles")
+# Столы на рынке: обмен идёт минуты и живёт в памяти, как и бои
+TRADE_KEY: web.AppKey[TradeService] = web.AppKey("trades", TradeService)
 # Кто водит бойцов по городу
 TRAVEL_KEY: web.AppKey[Travel] = web.AppKey("travel", Travel)
 # Кому недавно уже ставили отметку «был в клубе»: боец → время по часам
@@ -918,6 +922,67 @@ async def api_market_action(request: web.Request) -> web.Response:
     return await _market(request, player)
 
 
+# ---------- рынок: обмен между бойцами ----------
+
+
+async def _trade_state(request: web.Request, player) -> web.Response:
+    """Ответ рынка всегда один и тот же: состояние целиком.
+
+    Страница ничего не досчитывает сама — стол общий, и любая её догадка
+    о том, что там теперь лежит, разошлась бы с чужой правкой.
+    """
+    return web.json_response(await build_trade(player, request.app.get(TRADE_KEY)))
+
+
+async def api_trade(request: web.Request) -> web.Response:
+    """Кто на рынке, кто тебя позвал и что лежит на столе."""
+    player = await _at(request, Service.TRADE)
+    return await _trade_state(request, player)
+
+
+async def api_trade_action(request: web.Request) -> web.Response:
+    """Позвать, согласиться, выложить, подтвердить или отказаться."""
+    trades = request.app.get(TRADE_KEY)
+    if trades is None:  # pragma: no cover - бот без службы обмена не живёт
+        raise web.HTTPServiceUnavailable(text="Обмен сейчас не работает")
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    player = await _at(request, Service.TRADE)
+    try:
+        if action == "invite":
+            await trades.invite(player, _int_field(data, "user_id"))
+        elif action == "accept":
+            await trades.accept(player)
+        elif action == "decline":
+            trades.decline(player.user_id)
+        elif action == "withdraw":
+            trades.withdraw(player.user_id)
+        elif action == "credits":
+            trades.put_credits(player, _int_field(data, "credits"))
+        elif action == "item":
+            trades.put_item(
+                player,
+                str(data.get("kind", "")),
+                str(data.get("key", "")),
+                _int_field(data, "count"),
+            )
+        elif action == "confirm":
+            await trades.ready(player)
+        elif action == "unconfirm":
+            trades.unconfirm(player)
+        elif action == "cancel":
+            trades.cancel(player)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except TradeError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    # Кредиты и вещи могли только что переехать: перечитываем бойца, чтобы
+    # на столе и в рюкзаке было то же, что в базе
+    fresh = await request.app[DB_KEY].get_player(player.user_id)
+    return await _trade_state(request, fresh or player)
+
+
 # ---------- рейды ----------
 
 
@@ -1240,10 +1305,15 @@ async def travel_guard(request: web.Request, handler):
     Проверку места ставит `_at`, а мест этих десяток. Ловить её в каждой
     ручке значит написать один и тот же except двенадцать раз и однажды
     забыть — тогда «сходи в мастерскую» превратится в пятисотку.
+
+    Здесь же ловится «ты на ринге»: её поднимает тот же `_at`, ещё до
+    всякой услуги. Ручки, которые работают с вещами, ловят её и сами, а
+    ручки, которые только показывают прилавок, — нет, и до этой сети им
+    оставалась пятисотка на бойце, которого позвали в бой из группы.
     """
     try:
         return await handler(request)
-    except TravelError as error:
+    except (TravelError, InventoryError) as error:
         return web.json_response({"error": str(error)}, status=409)
 
 
@@ -1271,8 +1341,12 @@ def create_app(
         app[RAIDS_KEY] = raids
     if battles is not None:
         app[BATTLES_KEY] = battles
+    app[TRADE_KEY] = TradeService(db)
     # Кого дорога спрашивает, можно ли уходить: из недодранного боя нельзя
     app[TRAVEL_KEY].watch(duels, raids, battles)
+    # А обмен спрашивает то же самое про стол: позвать занятого бойцом
+    # нельзя, и согласиться, пока тебя ждут на ринге, — тоже
+    app[TRADE_KEY].watch(duels, raids, battles)
     app.add_routes(
         [
             web.get("/", index),
@@ -1301,6 +1375,8 @@ def create_app(
             web.get("/api/history", api_history),
             web.get("/api/market", api_market),
             web.post("/api/market", api_market_action),
+            web.get("/api/trade", api_trade),
+            web.post("/api/trade", api_trade_action),
             web.get("/api/raid", api_raid),
             web.post("/api/raid", api_raid_action),
             web.get("/api/raids", api_raids_history),

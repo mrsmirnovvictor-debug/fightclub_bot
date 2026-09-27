@@ -201,6 +201,26 @@
     <div class="cures" id="hospital-list"></div>
   </main>
 
+  <!-- ---------- 3c. Рынок: обмен между бойцами ---------- -->
+  <!-- Стол общий, и это главное свойство экрана: страница здесь ничего
+       не помнит и ничего не досчитывает. Всё, что видно, — последний
+       ответ сервера; своя половина приходит отдельно от чужой, чтобы
+       вёрстка не решала, что чьё. -->
+  <main id="trade" class="screen hidden">
+    <figure class="interior hidden" id="trade-interior">
+      <img class="interior-pic" id="trade-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="trade-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-trade"></span>
+    </header>
+    <h1 class="screen-title">🤝 Рынок</h1>
+    <p class="screen-note" id="trade-note"></p>
+
+    <div id="trade-body"></div>
+  </main>
+
   <!-- ---------- 3c. Дом без услуги ---------- -->
   <!-- Банк, рынок, почта, стадион и бар пока ничего не умеют. Раньше они
        отвечали всплывашкой, и боец оставался на карте — то есть внутрь не

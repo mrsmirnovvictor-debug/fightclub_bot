@@ -126,6 +126,12 @@ EMPTY_HISTORY = {
 }
 
 
+# Рынок без никого: страница на нём говорит, что обмен идёт из рук в руки
+EMPTY_TRADE = {
+    "credits": 0, "where": "Рынок", "max_items": 4, "invite_seconds": 60,
+    "crowd": [], "invite": {}, "sent": {}, "trade": {}, "done": "",
+}
+
 EMPTY_MARKET = {
     "credits": 0, "fee": 5, "sections": [], "mine": [], "sellable": [],
 }
@@ -260,7 +266,7 @@ def city_map(
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
-    battle=None, city=None, workshop=None, hospital=None, images=False,
+    battle=None, city=None, workshop=None, hospital=None, trade=None, images=False,
     telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
@@ -287,6 +293,7 @@ async def open_page(
     await page.route("**/api/map*", canned(city or city_map()))
     await page.route("**/api/workshop*", canned(workshop or EMPTY_WORKSHOP))
     await page.route("**/api/hospital*", canned(hospital or EMPTY_HOSPITAL))
+    await page.route("**/api/trade*", canned(trade or EMPTY_TRADE))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
@@ -6346,4 +6353,351 @@ async def test_when_the_turn_norm_is_spent_the_panel_says_so(server):
         await page.wait_for_selector(".energy-note")
 
         assert "кончились" in await page.locator(".energy-note").inner_text()
+        await browser.close()
+
+
+# ---------- рынок: обмен между бойцами ----------
+#
+# Стол общий, и глазами страницы это значит одно: своя половина
+# редактируется, чужая — нет, и всё, что на них лежит, приходит с
+# сервера. Тесты здесь проверяют именно это разделение, а не разметку.
+
+
+def market_crowd(*rows) -> dict:
+    """Рынок с людьми: каждая строка — кто и в сети ли он."""
+    return dict(
+        EMPTY_TRADE,
+        credits=500,
+        crowd=[
+            {
+                "user_id": user_id,
+                "nickname": nickname,
+                "level": 5,
+                "pro": False,
+                "fclass": {"code": "warrior", "title": "Воин", "emoji": "⚔️"},
+                "online": online,
+                "presence": "🟢 В клубе" if online else "Не был в клубе 20 минут",
+                "trading": trading,
+                "busy": False,
+                "callable": not trading,
+            }
+            for user_id, nickname, online, trading in rows
+        ],
+    )
+
+
+def trade_offer(key: str, title: str, count: int = 1, stack: bool = False) -> dict:
+    return {
+        "kind": "potion" if stack else "gear",
+        "key": key,
+        "title": title,
+        "icon": "🔪",
+        "image": "",
+        "slot_title": "Оружие",
+        "wear": 3,
+        "max_wear": 20,
+        "wear_text": "3 из 20",
+        "count": count,
+        "max_count": 5 if stack else 1,
+        "stack": stack,
+        "shop_price": 110,
+    }
+
+
+def trade_table(
+    mine_credits: int = 0,
+    his_credits: int = 0,
+    mine_items=(),
+    his_items=(),
+    mine_ready: bool = False,
+    his_ready: bool = False,
+    basket=(),
+    version: int = 1,
+) -> dict:
+    """Стол, как его отдаёт сервер: своя половина отдельно от чужой."""
+    return dict(
+        EMPTY_TRADE,
+        credits=500,
+        trade={
+            "id": 1,
+            "version": version,
+            "mine": {
+                "user_id": 42, "nickname": "Растафарайчик",
+                "credits": mine_credits, "ready": mine_ready,
+                "items": list(mine_items),
+                "empty": not mine_items and mine_credits <= 0,
+            },
+            "his": {
+                "user_id": 43, "nickname": "Марла",
+                "credits": his_credits, "ready": his_ready,
+                "items": list(his_items),
+                "empty": not his_items and his_credits <= 0,
+            },
+            "max_items": 4,
+            "max_credits": 500,
+            "basket": list(basket),
+            "waiting": mine_ready and not his_ready,
+        },
+    )
+
+
+async def open_trade(pw, server, trade=None):
+    """Открыть рынок. Обмен живёт на нём, и только на нём."""
+    player = make_player("market")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), trade=trade,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "trade")
+    await page.wait_for_selector("#trade:not(.hidden)")
+    return browser, page
+
+
+async def test_an_empty_market_says_the_swap_needs_a_second(server):
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server)
+
+        note = await page.locator("#trade-note").inner_text()
+        assert "нужен второй" in note
+        assert await page.locator(".fighter").count() == 0
+        await browser.close()
+
+
+async def test_those_in_the_club_stand_above_those_who_left(server):
+    """«Онлайн сверху и офлайн, если не в клубе» — двумя группами."""
+    crowd = market_crowd(
+        (43, "Марла", True, False),
+        (44, "Боб", False, False),
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=crowd)
+        await page.wait_for_selector(".fighter")
+
+        heads = await page.locator(".crowd-head").all_inner_texts()
+        assert heads[0].startswith("🟢 В сети")
+        assert "Не в клубе" in heads[1]
+        names = await page.locator(".fighter-name").all_inner_texts()
+        assert names == ["Марла", "Боб"]
+        # Ушедший бледнее, но позвать его всё равно можно
+        assert await page.locator(".fighter.away").count() == 1
+        assert await page.locator(".crowd .btn").count() == 2
+        await browser.close()
+
+
+async def test_a_fighter_already_swapping_has_no_button(server):
+    crowd = market_crowd((43, "Марла", True, True))
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=crowd)
+        await page.wait_for_selector(".fighter")
+
+        assert await page.locator(".crowd .btn").count() == 0
+        assert "Уже меняется" in await page.locator(".crowd-busy").inner_text()
+        await browser.close()
+
+
+async def test_the_invitation_shows_both_answers_and_a_countdown(server):
+    invited = dict(
+        EMPTY_TRADE,
+        invite={"from_id": 43, "from_name": "Марла", "to_id": 42, "name": "Марла",
+                "seconds_left": 45},
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=invited)
+        await page.wait_for_selector(".invite")
+
+        assert "Марла предлагает обмен." in await page.locator(".invite-text").inner_text()
+        assert "45" in await page.locator("#invite-clock").inner_text()
+        buttons = await page.locator(".invite-buttons .btn").all_inner_texts()
+        assert buttons == ["Согласиться", "Отказаться"]
+        await browser.close()
+
+
+async def test_the_sent_invitation_can_be_taken_back(server):
+    sent = dict(
+        EMPTY_TRADE,
+        sent={"from_id": 42, "from_name": "Растафарайчик", "to_id": 43,
+              "name": "Марла", "seconds_left": 12},
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=sent)
+        await page.wait_for_selector(".invite.sent")
+
+        assert "Ждём ответа: Марла." in await page.locator(".invite-text").inner_text()
+        assert "Забрать приглашение" in await page.locator(".invite .btn").inner_text()
+        await browser.close()
+
+
+async def test_only_your_own_half_of_the_table_can_be_edited(server):
+    """Чужую половину видно, но на ней нет ни поля, ни крестика."""
+    table = trade_table(
+        mine_credits=200,
+        his_credits=50,
+        mine_items=[trade_offer("11", "Нож")],
+        his_items=[trade_offer("12", "Бита")],
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table")
+
+        own = page.locator(".half.own")
+        theirs = page.locator(".half:not(.own)")
+        assert await own.locator("#trade-credits").count() == 1
+        assert await theirs.locator("input").count() == 0
+        assert await own.locator(".lot-off").count() == 1
+        assert await theirs.locator(".lot-off").count() == 0
+        # Своя половина — «Ты отдаёшь», чужая подписана именем
+        assert "Ты отдаёшь" in await own.locator(".half-who").inner_text()
+        assert "Марла отдаёт" in await theirs.locator(".half-who").inner_text()
+        await browser.close()
+
+
+async def test_the_other_half_stands_above_your_own(server):
+    """Правят своё — значит своё ближе к пальцу, а чужое сверху."""
+    table = trade_table(mine_credits=10, his_credits=20)
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table")
+
+        halves = await page.locator(".half").evaluate_all(
+            "boxes => boxes.map(box => box.className)"
+        )
+        assert "own" not in halves[0]
+        assert "own" in halves[1]
+        await browser.close()
+
+
+async def test_the_ready_half_is_marked_for_both_to_see(server):
+    table = trade_table(mine_credits=100, his_ready=True)
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table")
+
+        ready = page.locator(".half.ready")
+        assert await ready.count() == 1
+        assert "Готов" in await ready.locator(".half-mark").inner_text()
+        assert "Думает" in await page.locator(".half.own .half-mark").inner_text()
+        await browser.close()
+
+
+async def test_the_table_warns_that_an_edit_drops_both_confirmations(server):
+    table = trade_table(mine_credits=100)
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table-note")
+
+        assert "снимает оба согласия" in await page.locator(".table-note").inner_text()
+        buttons = await page.locator(".table-buttons .btn").all_inner_texts()
+        assert buttons == ["Подтвердить", "Отказаться"]
+        await browser.close()
+
+
+async def test_a_confirmed_half_offers_to_change_its_mind(server):
+    table = trade_table(mine_credits=100, mine_ready=True)
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table-buttons")
+
+        buttons = await page.locator(".table-buttons .btn").all_inner_texts()
+        assert buttons == ["Передумать", "Отказаться"]
+        assert "Ждём второго" in await page.locator(".table-note").inner_text()
+        await browser.close()
+
+
+async def test_an_empty_table_cannot_be_confirmed(server):
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=trade_table())
+        await page.wait_for_selector(".table-buttons")
+
+        confirm = page.locator(".table-buttons .btn").first
+        assert await confirm.inner_text() == "Подтвердить"
+        assert await confirm.is_disabled()
+        await browser.close()
+
+
+async def test_a_stack_on_the_table_shows_how_many(server):
+    """Склянки передают числом — и число видно прямо в строке."""
+    table = trade_table(
+        mine_items=[trade_offer("heal_small", "Малая аптечка", 3, stack=True)]
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".lot")
+
+        assert "Малая аптечка ×3" in await page.locator(".lot-title").inner_text()
+        await browser.close()
+
+
+async def test_the_basket_opens_in_a_window_over_the_table(server):
+    table = trade_table(
+        basket=[
+            trade_offer("11", "Нож"),
+            trade_offer("heal_small", "Малая аптечка", 2, stack=True),
+        ]
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".half.own .btn")
+        await page.locator(".half.own .btn").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert "Не больше 4" in await page.locator("#sheet-note").inner_text()
+        titles = await page.locator("#sheet-list .lot-title").all_inner_texts()
+        assert titles == ["Нож", "Малая аптечка"]
+        # У вещи одна кнопка, у склянок вместо неё поле со счётом
+        assert await page.locator("#sheet-list .stack-count").count() == 1
+        assert await page.locator("#sheet-list .lot .btn").count() == 2
+        await browser.close()
+
+
+async def test_the_basket_says_how_many_of_a_stack_are_left(server):
+    table = trade_table(
+        basket=[trade_offer("heal_small", "Малая аптечка", 2, stack=True)]
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".half.own .btn")
+        await page.locator(".half.own .btn").click()
+        await page.wait_for_selector("#sheet-list .lot")
+
+        assert "В рюкзаке: 5 шт." in await page.locator("#sheet-list .lot-wear").inner_text()
+        assert await page.locator(".stack-count").input_value() == "2"
+        await browser.close()
+
+
+async def test_what_the_last_swap_ended_with_stays_on_screen(server):
+    """Сервер говорит это один раз, а читать человеку — дольше двух секунд."""
+    done = dict(EMPTY_TRADE, done="Обмен прошёл.")
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=done)
+
+        assert "Обмен прошёл." in await page.locator("#trade-note").inner_text()
+        # Следующий опрос приходит уже без записки — она всё равно на месте
+        await page.evaluate(
+            "data => showTrade(data)", dict(EMPTY_TRADE, done="")
+        )
+        assert "Обмен прошёл." in await page.locator("#trade-note").inner_text()
+        await browser.close()
+
+
+async def test_a_new_table_wipes_the_last_swaps_note(server):
+    done = dict(EMPTY_TRADE, done="Обмен прошёл.")
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=done)
+
+        await page.evaluate("data => showTrade(data)", trade_table(mine_credits=5))
+        await page.wait_for_selector(".table")
+
+        assert "Обмен прошёл." not in await page.locator("#trade-note").inner_text()
+        await browser.close()
+
+
+async def test_the_market_screen_is_left_by_the_map_button(server):
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server)
+
+        await page.locator("#trade-back").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+
+        assert await page.locator("#trade").is_hidden()
         await browser.close()

@@ -737,6 +737,25 @@ class Database:
             player.gear = await self.list_gear(player.user_id)
         return players
 
+    async def players_at(self, location: str, limit: int = 50) -> list[Player]:
+        """Кто сейчас в этой локации. Недавние сверху — они и в сети.
+
+        Дорога считается по времени прибытия, и вышедший десять секунд
+        назад числится ещё там, откуда вышел. Поэтому список отдаётся
+        как есть, а кто где на самом деле, решает уже `Player.where`.
+        """
+        async with self.conn.execute(
+            f"""
+            SELECT {PLAYER_COLUMNS} FROM players
+            WHERE location = ? OR travel_to = ?
+            ORDER BY seen_at DESC
+            LIMIT ?
+            """,
+            (location, location, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_to_player(row) for row in rows]
+
     async def all_players(self, limit: int = 200) -> list[Player]:
         """Все бойцы клуба: сильные сверху. Экипировку не тянем — она не нужна."""
         async with self.conn.execute(
@@ -798,6 +817,58 @@ class Database:
             ),
         )
         await self.conn.commit()
+
+    async def hand_over_gear(self, item_id: int, giver_id: int, taker_id: int) -> bool:
+        """Передать вещь другому бойцу. False — вещь уже не у того хозяина.
+
+        Вещь не копируется и не пересоздаётся: у неё тот же номер, тот же
+        износ и та же модификация, меняется только хозяин. И слот сразу
+        пустой — чужая вещь попадает в рюкзак, а не сразу на плечи.
+
+        Хозяина проверяет сам запрос. Между «выложил на стол» и «оба
+        согласились» проходят минуты, и за это время вещь могли продать в
+        комиссионку; условие в `WHERE` — единственное место, где это
+        видно наверняка.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE inventory SET user_id = ?, slot = NULL WHERE id = ? AND user_id = ?",
+            (taker_id, item_id, giver_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def hand_over_potions(
+        self, code: str, giver_id: int, taker_id: int, count: int
+    ) -> bool:
+        """Передать склянки. False — столько их у хозяина уже нет.
+
+        Склянки не нумерованы, поэтому передаётся не вещь, а число: у
+        одного отнимается, другому прибавляется. Условие `count >= ?`
+        делает списание и проверку одним движением.
+        """
+        if count <= 0:
+            return False
+        cursor = await self.conn.execute(
+            "UPDATE potions SET count = count - ? "
+            "WHERE user_id = ? AND code = ? AND count >= ?",
+            (count, giver_id, code, count),
+        )
+        if cursor.rowcount <= 0:
+            await self.conn.commit()
+            return False
+        await self.conn.execute(
+            "DELETE FROM potions WHERE user_id = ? AND code = ? AND count <= 0",
+            (giver_id, code),
+        )
+        await self.conn.execute(
+            """
+            INSERT INTO potions (user_id, code, count) VALUES (?,?,?)
+            ON CONFLICT(user_id, code) DO UPDATE SET count = count + excluded.count
+            """,
+            (taker_id, code, count),
+        )
+        await self.conn.commit()
+        return True
 
     async def delete_gear(self, item_id: int) -> None:
         await self.conn.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
