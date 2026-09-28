@@ -11,6 +11,7 @@
   --hp-track: rgba(22, 32, 44, 0.25);
   --hp-green: #3ea842;
   --hp-yellow: #d8a417;
+  --hp-orange: #dd6f18;
   --hp-red: #cc3b30;
   --dmg: #1a63c4;
   --dmg-crit: #cc2f22;
@@ -30,6 +31,7 @@ body.dark {
   --hp-track: rgba(255, 255, 255, 0.14);
   --hp-green: #4cbf52;
   --hp-yellow: #e0b02a;
+  --hp-orange: #ef842f;
   --hp-red: #e04b3f;
   --dmg: #6cb6ff;
   --dmg-crit: #ff6a5c;
@@ -201,6 +203,13 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    модификации, и две границы на одной клетке спорили бы между собой */
 .slot.aging { box-shadow: inset 0 0 0 2px var(--hp-yellow); }
 .slot.dying { box-shadow: inset 0 0 0 2px var(--hp-red); }
+/* Ключ на клетке: вещь просится в починку. Фон — светофор по числу
+   оставшихся боёв: три жёлтый, два оранжевый, один красный. Раньше фон
+   был один на все три случая, и «почини когда-нибудь» выглядело так же
+   срочно, как «рассыплется в следующем бою».
+
+   Кольцо цвета клетки — чтобы значок не слипался с картинкой вещи под
+   ним: на тёмной куртке жёлтый кружок иначе читается как деталь вещи. */
 .slot-wear {
   position: absolute;
   right: -3px;
@@ -210,7 +219,13 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   padding: 2px;
   border-radius: 50%;
   background: var(--slot);
+  box-shadow: 0 0 0 1.5px var(--bg);
 }
+.slot-wear.left3 { background: var(--hp-yellow); }
+.slot-wear.left2 { background: var(--hp-orange); }
+.slot-wear.left1 { background: var(--hp-red); }
+/* Последний бой — ещё и свечение: красный кружок в четверть пальца легко
+   не заметить на пёстрой картинке */
 .slot-wear.dying { filter: drop-shadow(0 0 2px var(--hp-red)); }
 
 .avatar {

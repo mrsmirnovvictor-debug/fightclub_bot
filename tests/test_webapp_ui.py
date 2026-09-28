@@ -1434,6 +1434,82 @@ async def test_the_last_fight_of_a_thing_is_said_out_loud(server):
         await browser.close()
 
 
+async def test_the_wrench_is_a_traffic_light_of_three_colours(server):
+    """Фон ключа говорит, сколько боёв осталось: 3 жёлтый, 2 оранжевый, 1 красный.
+
+    Раньше фон был один на все три случая, и «почини когда-нибудь»
+    выглядело так же срочно, как «рассыплется в следующем бою». Сверяем
+    посчитанные браузером цвета, а не классы: класс можно поставить один,
+    а перекрыть его тремя разными правилами.
+    """
+    player = make_player()
+
+    async def paint(wear):
+        player.gear = [
+            OwnedItem(item=CATALOGUE["pipe"], id=1, wear=wear, slot=Slot.WEAPON)
+        ]
+        card = build_card(player, TOKEN, viewer_id=player.user_id)
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-slots-left .slot-wear")
+        mark = page.locator("#hero-slots-left .slot-wear").first
+        colour = await mark.evaluate(
+            "node => getComputedStyle(node).backgroundColor"
+        )
+        classes = await mark.get_attribute("class")
+        await browser.close()
+        return colour, classes
+
+    async with async_playwright() as pw:
+        # У трубы запас 20: износ 17 — три боя, 18 — два, 19 — один
+        three, three_class = await paint(17)
+        two, two_class = await paint(18)
+        one, one_class = await paint(19)
+
+    assert "left3" in three_class and "left2" in two_class and "left1" in one_class
+    # Три разных цвета, а не один на всех
+    assert len({three, two, one}) == 3, f"цвета повторяются: {three} {two} {one}"
+
+    def hue(said):
+        """Тон цвета в градусах: 60 — жёлтый, 30 — оранжевый, 0 — красный.
+
+        Меряем тон, а не каналы по отдельности: оранжевый ярче алого и по
+        красному каналу его обгоняет, хотя глазом он ближе к жёлтому.
+        """
+        import colorsys
+
+        red, green, blue = (
+            int(part) / 255 for part in said.strip("rgba() ").split(",")[:3]
+        )
+        return colorsys.rgb_to_hsv(red, green, blue)[0] * 360
+
+    yellow, orange, red = hue(three), hue(two), hue(one)
+    # Светофор: тон уходит от жёлтого к красному, шаг за шагом
+    assert 40 <= yellow <= 65, f"три боя — жёлтый, а не {yellow:.0f}°"
+    assert 15 <= orange <= 40, f"два боя — оранжевый, а не {orange:.0f}°"
+    assert red <= 15, f"один бой — красный, а не {red:.0f}°"
+    assert yellow > orange > red
+
+
+async def test_the_wrench_shows_up_only_in_the_last_three_fights(server):
+    """Четыре боя в запасе — ключа ещё нет, три — уже есть."""
+    player = make_player()
+
+    async def badges(wear):
+        player.gear = [
+            OwnedItem(item=CATALOGUE["pipe"], id=1, wear=wear, slot=Slot.WEAPON)
+        ]
+        card = build_card(player, TOKEN, viewer_id=player.user_id)
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        count = await page.locator("#hero-slots-left .slot-wear").count()
+        await browser.close()
+        return count
+
+    async with async_playwright() as pw:
+        assert await badges(16) == 0, "за четыре боя до конца ключа ещё нет"
+        assert await badges(17) == 1, "за три боя ключ уже нужен"
+
+
 async def test_a_thing_with_a_long_life_ahead_says_nothing(server):
     """Целая вещь не кричит: предупреждение стоит только под конец."""
     player = make_player()  # обрезок трубы с износом 3 из 20

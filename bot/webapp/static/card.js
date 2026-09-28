@@ -305,7 +305,7 @@ function renderSlots(container, slots, own, info) {
     const dying = worstWear(slot);
     if (dying) {
       box.classList.add(dying);
-      box.appendChild(wearBadge(dying));
+      box.appendChild(wearBadge(dying, worstLeft(slot)));
     }
     box.addEventListener("click", () => {
       haptic((feedback) => feedback.selectionChanged());
@@ -346,10 +346,27 @@ function worstWear(slot) {
   return "";
 }
 
-function wearBadge(state) {
+function worstLeft(slot) {
+  // Сколько боёв осталось у самой изношенной вещи клетки. По этому числу
+  // и красится ключ: три — жёлтый, два — оранжевый, один — красный
+  const lives = [slot.item, slot.under]
+    .filter((one) => one && wearState(one))
+    .map(wearLeft);
+  return lives.length ? Math.min(...lives) : 0;
+}
+
+/** Ключ на клетке. Фон говорит, сколько боёв вещи осталось. */
+function wearBadge(state, left) {
   const mark = document.createElement("span");
-  mark.className = "slot-wear " + state;
+  // Светофор по числу, а не по состоянию: «просится в починку» и «вот-вот
+  // рассыплется» — это три разных срочности, и глазом их различают по
+  // цвету быстрее, чем по подписи под клеткой
+  const steps = ["left1", "left1", "left2", "left3"];
+  mark.className = "slot-wear " + state + " " + (steps[left] || "left3");
   mark.textContent = "🔧";
+  mark.title = left
+    ? "Осталось " + left + " " + fightWord(left)
+    : "Вещь на исходе";
   return mark;
 }
 
