@@ -4827,9 +4827,23 @@ async def test_the_card_says_where_the_fighter_stands(server):
         )
 
         walker = make_player()
-        walker.set_out("pharmacy", 20)
+        # Дорога длинная нарочно: проверяется «боец в пути», а не сколько
+        # ему идти, и короткий путь зависел бы от скорости машины
+        walker.set_out("pharmacy", 600)
         moving = build_card(walker, TOKEN, viewer_id=walker.user_id)
+        # Подменяем и ответ сервера, а не только рисуем карточку руками.
+        # Карточка перечитывается сама — по сердцебиению и после боя, — и
+        # без подмены очередное обновление возвращало бы прежний дом
+        # поверх дороги. Этот тест из-за такой гонки мигал через раз
+        await page.route(
+            "**/api/card*",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(moving),
+            ),
+        )
         await page.evaluate("card => render(card)", moving)
+        await page.wait_for_selector("#hero-city.on-road")
 
         line = await page.locator("#hero-city").inner_text()
         assert "В пути до дома «Аптека»" in line
@@ -4842,7 +4856,9 @@ async def test_the_info_card_says_where_the_fighter_is_walking(server):
     rival = make_player()
     rival.user_id = 43
     rival.nickname = "Марла"
-    rival.set_out("pharmacy", 20)
+    # Дорога длинная нарочно — см. соседний тест: проверяется «в пути»,
+    # а не длина пути, и короткая дорога зависела бы от скорости машины
+    rival.set_out("pharmacy", 600)
     rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
 
     async with async_playwright() as pw:

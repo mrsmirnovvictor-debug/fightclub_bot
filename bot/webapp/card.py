@@ -90,11 +90,18 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
     Свойства вещи идут сюда целиком, а не одной строкой: по нажатию на
     клетку куклы их показывают списком, как в рюкзаке. Строка `bonus`
     при этом остаётся — она короткая и годится для подсказки.
+
+    **`slot` — куда вещь надета, а не куда она надевается.** Разница
+    видна на оружии во второй руке: сам предмет знает слот `weapon`,
+    а лежит он в `offhand`. Страница снимает вещь по этому полю, и пока
+    здесь стоял слот предмета, нажатие на вторую руку снимало оружие из
+    первой — а второе нажатие отвечало «слот и так пуст», хотя в клетке
+    оружие было видно.
     """
     in_hands = weapon_in_hands(owned.real, fclass)
     return {
         "id": owned.id,
-        "slot": owned.item.slot.value,
+        "slot": (owned.slot or owned.item.slot).value,
         "code": owned.code,
         "title": owned.title,
         "icon": owned.emoji,
