@@ -788,11 +788,14 @@ async def test_wardrobe_shows_what_is_worn_and_what_is_for_sale(db):
     await db.save_player(player)
 
     rows = await wardrobe(db, player)
-    # Образ подписки в гардеробе не висит, пока его не выдали
-    assert len(rows) == len([look for look in LOOKS if not look.pro])
-    assert sum(1 for row in rows if row["price"] == 0) == 6
-    assert sum(1 for row in rows if row["price"] == LOOK_PRICE) == 6
-    assert {row["gender"] for row in rows} == {"male", "female"}
+    # Гардероб своего пола: чужие образы на страницу не приходят вовсе, и
+    # старая выдача не висит, пока её не выдали
+    assert len(rows) == len(
+        [look for look in LOOKS if not look.pro and look.gender == player.sex]
+    )
+    assert sum(1 for row in rows if row["price"] == 0) == 3
+    assert sum(1 for row in rows if row["price"] == LOOK_PRICE) == 3
+    assert {row["gender"] for row in rows} == {player.sex}
 
     # бесплатные свои, платные — нет, и без кредитов они не по карману
     assert all(row["owned"] for row in rows if not row["price"])
@@ -814,10 +817,12 @@ async def test_a_free_look_is_just_put_on(db):
     player = make_player(credits=50)
     await db.save_player(player)
 
-    choice = await choose_look(db, player, "barmaid")
+    # Образ своего пола: боец без пола считается мужчиной, и гардероб у
+    # него мужской. Про сам пол — tests/test_gender.py
+    choice = await choose_look(db, player, "worker")
 
     assert not choice.bought and choice.credits == 50
-    assert (await db.get_player(player.user_id)).look == "barmaid"
+    assert (await db.get_player(player.user_id)).look == "worker"
     assert not await db.owned_looks(player.user_id)  # платить было не за что
 
 
@@ -828,13 +833,13 @@ async def test_a_paid_look_is_bought_once_and_stays_forever(db):
     player = make_player(credits=LOOK_PRICE + 200)
     await db.save_player(player)
 
-    bought = await choose_look(db, player, "queen")
+    bought = await choose_look(db, player, "veteran")
     assert bought.bought and bought.credits == 200
-    assert await db.owned_looks(player.user_id) == {"queen"}
+    assert await db.owned_looks(player.user_id) == {"veteran"}
 
     # ушёл на бесплатный и вернулся — второй раз не платит
     await choose_look(db, player, "rookie")
-    again = await choose_look(db, player, "queen")
+    again = await choose_look(db, player, "veteran")
     assert not again.bought
     assert (await db.get_player(player.user_id)).credits == 200
 
@@ -877,7 +882,8 @@ async def test_mini_app_serves_the_wardrobe_and_charges_for_a_look(client, db):
 
     listing = await client.get("/api/looks", headers=headers(1))
     body = await listing.json()
-    assert listing.status == 200 and len(body["looks"]) == 12
+    # Шесть своего пола: три открытых и три за кредиты
+    assert listing.status == 200 and len(body["looks"]) == 6
 
     response = await client.post(
         "/api/look", json={"code": "veteran"}, headers=headers(1)

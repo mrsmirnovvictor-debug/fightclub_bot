@@ -794,7 +794,6 @@ async def api_pro(request: web.Request) -> web.Response:
             "pro": {
                 "days": grant.offer.days,
                 "renewed": grant.renewed,
-                "look": grant.look,
                 "seconds_left": grant.seconds_left(),
             },
         }

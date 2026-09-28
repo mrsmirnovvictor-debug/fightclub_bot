@@ -45,6 +45,7 @@ from bot.game.potions import (
     get_potion,
 )
 from bot.game.locations import FIGHT_CLUB
+from bot.game.looks import MALE
 from bot.game.pro import PRO_BADGE
 from bot.game.stats import derive
 from bot.game.world import DEFAULT_BIRTHPLACE, DEFAULT_CITY
@@ -403,6 +404,16 @@ class Player:
 
     def can_fight(self, now: int | None = None) -> bool:
         return self.health_state(now).can_fight and not self.crippled
+
+    @property
+    def sex(self) -> str:
+        """Пол бойца. Пусто в базе — мужской, как у всех, кого завели до вопроса.
+
+        Запасной ответ нужен не ради старых записей — их правит миграция, —
+        а ради самой карточки: гардероб решает по этому полю, какие образы
+        показывать, и пустая строка оставила бы его без единого.
+        """
+        return self.gender or MALE
 
     def insured(self, now: int | None = None) -> bool:
         """Действует ли полис прямо сейчас."""

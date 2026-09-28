@@ -24,7 +24,7 @@ from aiogram.types import LabeledPrice, SuccessfulPayment
 from bot.config import Config
 from bot.database import Database
 from bot.game.equipment import MAGIC_ITEMS, Item, OwnedItem, get_item
-from bot.game.pro import BENEFITS, LEGACY_ITEM, PRO_LOOK
+from bot.game.pro import BENEFITS, LEGACY_ITEM, LEGACY_LOOK
 from bot.game.pro import EMOJI as PRO_EMOJI
 from bot.game.pro import TITLE as PRO_TITLE
 from bot.game.pro import ProOffer, paid_offer
@@ -259,17 +259,14 @@ class StoreService:
         return row
 
     async def _revoke_pro(self, player) -> None:
-        """Снять подписку целиком: срок, образ и старый клинок.
+        """Снять подписку целиком: срок и старую выдачу.
 
-        Образ называется вечным, но вечен он у того, кто за него заплатил.
-        Забрал звёзды — вернул и то, что они принесли.
-
-        Клинок подписка больше не выдаёт, а вот вернуть его при возврате
-        звёзд за старую покупку по-прежнему нужно: у кого его нет, строка
-        ничего не делает.
+        Клинка с образом подписка больше не выдаёт, а вот вернуть их при
+        возврате звёзд за старую покупку по-прежнему нужно: вечное вечно у
+        того, кто за него заплатил. У кого их нет, строки ничего не делают.
         """
         player.pro_until = 0
-        if player.look == PRO_LOOK:
+        if player.look == LEGACY_LOOK:
             player.look = ""
         blade = next(
             (owned for owned in player.gear if owned.code == LEGACY_ITEM), None
@@ -277,7 +274,7 @@ class StoreService:
         if blade is not None:
             await self.db.delete_gear(blade.id)
             player.drop_gear(blade)
-        await self.db.drop_look(player.user_id, PRO_LOOK)
+        await self.db.drop_look(player.user_id, LEGACY_LOOK)
         await self.db.save_player(player)
 
     @staticmethod

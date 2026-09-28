@@ -1,9 +1,13 @@
 """Выдача подписки PRO.
 
 Одна дверь на все входы: и оплата звёздами, и бесплатная акция приходят
-сюда. Внутри всегда одно и то же — продлить срок, открыть образ и дотянуть
-до нового срока страховой полис. Образ выдаётся один раз: продлевать его
-незачем, он и так навсегда.
+сюда. Внутри всегда одно и то же — продлить срок и дотянуть до нового
+срока страховой полис.
+
+Вещей подписка не выдаёт: ни клинка, ни образа. И то и другое оставалось
+у бойца навсегда, то есть подписка продавала вечное за месячную цену. У
+тех, кому их уже выдали, они остаются — отбирать выданное хуже, чем один
+раз выдать лишнее.
 
 Полис подписка не выдаёт месяцами, а держит: его срок выравнивается по
 концу подписки, и не дальше. Поэтому продление подписки продлевает и
@@ -22,12 +26,7 @@ from dataclasses import dataclass
 
 from bot.database import Database
 from bot.game.health import now_ts
-from bot.game.pro import (
-    PRO_LOOK,
-    ProOffer,
-    promo_is_on,
-    promo_offer,
-)
+from bot.game.pro import ProOffer, promo_is_on, promo_offer
 from bot.insurance_service import cover_by_pro
 from bot.models import Player
 
@@ -44,7 +43,6 @@ class ProGrant:
 
     offer: ProOffer
     until: int
-    look: bool = False  # образ открыли прямо сейчас
     policy: bool = False  # полис выписали или дотянули прямо сейчас
     renewed: bool = False  # подписка была жива, мы её продлили
 
@@ -60,10 +58,6 @@ async def grant_pro(
     renewed = player.is_pro(moment)
     player.extend_pro(offer.seconds, moment)
 
-    look = PRO_LOOK not in await db.owned_looks(player.user_id)
-    if look:
-        await db.add_look(player.user_id, PRO_LOOK)
-
     await db.save_player(player)
     # Полис — после сохранения срока: `cover_by_pro` смотрит на `pro_until`,
     # и до сохранения он увидел бы прежний конец подписки
@@ -78,7 +72,6 @@ async def grant_pro(
     return ProGrant(
         offer=offer,
         until=player.pro_until,
-        look=look,
         policy=policy,
         renewed=renewed,
     )

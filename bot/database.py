@@ -17,6 +17,7 @@ from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
 from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, get_injury
 from bot.game.insurance import Policy
+from bot.game.looks import MALE
 from bot.game.modes import FightMode, mode_of
 from bot.game.potions import ActiveEffect, get_potion
 from bot.game.world import DEFAULT_CITY
@@ -442,9 +443,28 @@ class Database:
                 logger.info("База обновлена: добавлена колонка players.%s", column)
         if "raid_fights" not in existing:
             await self._split_raids_from_record()
+        await self._settle_genders()
         await self._migrate_inventory()
         await self._migrate_duels()
         await self._migrate_arenas()
+
+    async def _settle_genders(self) -> None:
+        """Бойцам без пола поставить мужской.
+
+        Пол спрашивают при создании, но бойцы, заведённые до этого вопроса,
+        остались с пустой строкой — и гардероб не знал, какие образы им
+        показывать. Ставим мужской: все эти бойцы выбирали внешность из
+        мужского набора, другого тогда и не было.
+
+        Правка идёт на каждом запуске и ничего не стоит: если пустых нет,
+        `UPDATE` не трогает ни строки.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE players SET gender = ? WHERE gender = '' OR gender IS NULL",
+            (MALE,),
+        )
+        if cursor.rowcount > 0:
+            logger.info("База обновлена: пол проставлен %s бойцам", cursor.rowcount)
 
     async def _migrate_inventory(self) -> None:
         """Дописать колонки модификации в уже живой инвентарь."""

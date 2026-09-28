@@ -1089,7 +1089,8 @@ async def test_a_stranger_sees_no_plus(server):
 # ---------- образ и снятие вещей ----------
 
 
-def wardrobe(current: str = "rookie") -> dict:
+def wardrobe(current: str = "rookie", gender: str = "male") -> dict:
+    """Гардероб, как его отдаёт сервер: только образы своего пола."""
     from bot.game.looks import LOOKS
 
     return {
@@ -1108,13 +1109,14 @@ def wardrobe(current: str = "rookie") -> dict:
                 "affordable": True,
             }
             for look in LOOKS
-            if not look.pro  # образ подписки виден только своему хозяину
+            # Старая выдача видна только своему хозяину, чужой пол — никому
+            if not look.pro and look.gender == gender
         ],
     }
 
 
 async def test_tapping_the_avatar_opens_the_wardrobe(server):
-    """По аватару открывается выбор образа: шесть своих и шесть за кредиты."""
+    """По аватару открывается выбор образа: три своих и три за кредиты."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
@@ -1128,15 +1130,37 @@ async def test_tapping_the_avatar_opens_the_wardrobe(server):
         await page.locator("#hero-avatar").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
 
-        assert await page.locator(".look").count() == 12
+        assert await page.locator(".look").count() == 6
         assert await page.locator(".look.current .look-title").inner_text() == "Новичок"
         # платные подписаны ценой, свои — словом
         tags = await page.locator(".look-tag").all_inner_texts()
-        assert sum(1 for tag in tags if "💰" in tag) == 6
-        assert await page.locator(".look-group").count() == 2
+        assert sum(1 for tag in tags if "💰" in tag) == 3
 
         await page.locator("#sheet-close").click()
         assert await page.locator("#sheet").is_hidden()
+        await browser.close()
+
+
+async def test_the_wardrobe_of_a_woman_holds_womens_looks(server):
+    """Гардероб приходит своего пола, и делить его на группы нечего."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player),
+            looks=wardrobe(current="rebel", gender="female"),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#hero-avatar").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        titles = await page.locator(".look-title").all_inner_texts()
+        assert "Бунтарка" in titles and "Барменша" in titles
+        assert "Новичок" not in titles, "мужские образы на женскую страницу не идут"
+        # Одна группа — один список: заголовок над ним только занимал строку
+        assert await page.locator(".look-group").count() == 0
+        assert await page.locator(".look-grid").count() == 1
         await browser.close()
 
 
@@ -1434,13 +1458,11 @@ async def test_the_last_fight_of_a_thing_is_said_out_loud(server):
         await browser.close()
 
 
-async def test_the_wrench_is_a_traffic_light_of_three_colours(server):
-    """Фон ключа говорит, сколько боёв осталось: 3 жёлтый, 2 оранжевый, 1 красный.
+async def test_the_wear_mark_is_a_traffic_light_of_three_squares(server):
+    """Цветной квадрат в углу: жёлтый за три боя, оранжевый за два, красный за один.
 
-    Раньше фон был один на все три случая, и «почини когда-нибудь»
-    выглядело так же срочно, как «рассыплется в следующем бою». Сверяем
-    посчитанные браузером цвета, а не классы: класс можно поставить один,
-    а перекрыть его тремя разными правилами.
+    Сам символ и есть предупреждение: цвет рисует он, а не подложка под
+    ним. Поэтому сверяем символ, а не посчитанный браузером фон.
     """
     player = make_player()
 
@@ -1452,42 +1474,46 @@ async def test_the_wrench_is_a_traffic_light_of_three_colours(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero-slots-left .slot-wear")
         mark = page.locator("#hero-slots-left .slot-wear").first
-        colour = await mark.evaluate(
-            "node => getComputedStyle(node).backgroundColor"
-        )
-        classes = await mark.get_attribute("class")
+        said = await mark.inner_text()
+        hint = await mark.get_attribute("title")
         await browser.close()
-        return colour, classes
+        return said.strip(), hint
 
     async with async_playwright() as pw:
         # У трубы запас 20: износ 17 — три боя, 18 — два, 19 — один
-        three, three_class = await paint(17)
-        two, two_class = await paint(18)
-        one, one_class = await paint(19)
+        three, three_hint = await paint(17)
+        two, _ = await paint(18)
+        one, one_hint = await paint(19)
 
-    assert "left3" in three_class and "left2" in two_class and "left1" in one_class
-    # Три разных цвета, а не один на всех
-    assert len({three, two, one}) == 3, f"цвета повторяются: {three} {two} {one}"
+    assert (three, two, one) == ("🟨", "🟧", "🟥")
+    assert "3 боя" in three_hint and "1 бой" in one_hint
 
-    def hue(said):
-        """Тон цвета в градусах: 60 — жёлтый, 30 — оранжевый, 0 — красный.
 
-        Меряем тон, а не каналы по отдельности: оранжевый ярче алого и по
-        красному каналу его обгоняет, хотя глазом он ближе к жёлтому.
-        """
-        import colorsys
+async def test_the_wear_mark_carries_no_icon_and_no_backing(server):
+    """Ни ключа внутри, ни кружка под ним: квадрат сам сплошной."""
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, wear=18, slot=Slot.WEAPON)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
 
-        red, green, blue = (
-            int(part) / 255 for part in said.strip("rgba() ").split(",")[:3]
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-slots-left .slot-wear")
+
+        mark = page.locator("#hero-slots-left .slot-wear").first
+        assert "🔧" not in await mark.inner_text(), "ключа внутри быть не должно"
+        dressed = await mark.evaluate(
+            "node => {"
+            "  const style = getComputedStyle(node);"
+            "  return {"
+            "    back: style.backgroundColor,"
+            "    ring: style.boxShadow,"
+            "    round: style.borderTopLeftRadius,"
+            "  };"
+            "}"
         )
-        return colorsys.rgb_to_hsv(red, green, blue)[0] * 360
-
-    yellow, orange, red = hue(three), hue(two), hue(one)
-    # Светофор: тон уходит от жёлтого к красному, шаг за шагом
-    assert 40 <= yellow <= 65, f"три боя — жёлтый, а не {yellow:.0f}°"
-    assert 15 <= orange <= 40, f"два боя — оранжевый, а не {orange:.0f}°"
-    assert red <= 15, f"один бой — красный, а не {red:.0f}°"
-    assert yellow > orange > red
+        assert dressed["back"] in ("rgba(0, 0, 0, 0)", "transparent"), dressed
+        assert dressed["ring"] == "none", dressed
+        await browser.close()
 
 
 async def test_the_wrench_shows_up_only_in_the_last_three_fights(server):
@@ -2039,11 +2065,12 @@ async def test_the_pro_card_always_leads_the_mage_counter(server):
         pro = page.locator("#pro-card .thing")
         text = await pro.inner_text()
         assert "Подписка PRO" in text
-        assert "Полуторный опыт за каждый бой" in text
-        # Первым делом — аналитик: ради него подписку и берут. Снаряжения
-        # в ней нет, и обещать его карточка не должна
-        assert "Аналитик в бою" in text
-        assert "Клинок" not in text
+        # Три строки и ничего больше: ни вещей, ни образа, ни значка
+        assert "150% опыта за бой" in text
+        assert "Аналитик-помощник во время боя" in text
+        assert "Страховка жизни и здоровья" in text
+        assert "Клинок" not in text and "Образ" not in text
+        assert "Значок" not in text
 
         # подписка идёт раньше любого товара прилавка
         first = page.locator("#magic .thing").first

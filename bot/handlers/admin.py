@@ -129,14 +129,10 @@ async def cmd_give_pro(
         grant.until,
     )
 
-    extras = []
-    if grant.look:
-        extras.append("🥷 Образ ассасина — в гардеробе")
     await message.answer(
         f"💎 <b>{esc(player.nickname)}</b>: подписка "
         f"{'продлена' if was else 'оформлена'} на {days} дней — "
         f"до {club_moment(grant.until)} мск."
-        + ("\n" + "\n".join(extras) if extras else "")
     )
 
 

@@ -355,15 +355,17 @@ function worstLeft(slot) {
   return lives.length ? Math.min(...lives) : 0;
 }
 
-/** Ключ на клетке. Фон говорит, сколько боёв вещи осталось. */
+// Квадрат в углу клетки: сколько боёв вещи осталось. Три — жёлтый, два —
+// оранжевый, один — красный. Сам квадрат и есть предупреждение: ключ
+// внутри цветного кружка читался хуже, чем чистый цвет, и требовал
+// подложки, которая на пёстрой картинке выглядела случайным овалом
+const WEAR_LIGHTS = ["🟥", "🟥", "🟧", "🟨"];
+
+/** Метка износа на клетке. Цвет говорит, сколько боёв вещи осталось. */
 function wearBadge(state, left) {
   const mark = document.createElement("span");
-  // Светофор по числу, а не по состоянию: «просится в починку» и «вот-вот
-  // рассыплется» — это три разных срочности, и глазом их различают по
-  // цвету быстрее, чем по подписи под клеткой
-  const steps = ["left1", "left1", "left2", "left3"];
-  mark.className = "slot-wear " + state + " " + (steps[left] || "left3");
-  mark.textContent = "🔧";
+  mark.className = "slot-wear " + state;
+  mark.textContent = WEAR_LIGHTS[left] || WEAR_LIGHTS[3];
   mark.title = left
     ? "Осталось " + left + " " + fightWord(left)
     : "Вещь на исходе";
@@ -2313,10 +2315,14 @@ function proCard(pro) {
   });
   body.appendChild(gains);
 
-  const note = document.createElement("div");
-  note.className = "thing-note";
-  note.textContent = pro.note;
-  body.appendChild(note);
+  // Оговорка под списком бывает пустой: трём строкам она не нужна, а
+  // пустая строка под ними читается как обрыв
+  if (pro.note) {
+    const note = document.createElement("div");
+    note.className = "thing-note";
+    note.textContent = pro.note;
+    body.appendChild(note);
+  }
 
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
@@ -2363,12 +2369,9 @@ async function takePro(pro) {
     renderMagic(data.magic);
     haptic((feedback) => feedback.notificationOccurred("success"));
     const got = data.pro;
-    const extras = [];
-    if (got.look) extras.push("образ ассасина — в гардеробе");
     popup(
       "💎 " + pro.title,
       (got.renewed ? "Подписка продлена на " : "Подписка на ") + got.days + " дней."
-        + (extras.length ? "\n" + extras.join("\n") : "")
     );
   } catch (error) {
     popup("Не вышло", error.message);
@@ -5443,23 +5446,15 @@ function lookTile(look) {
   return box;
 }
 
+// Гардероб приходит уже своего пола: делить его на «мужские» и «женские»
+// нечего, и заголовок над единственной группой только занимал строку
 function renderLooks(looks) {
   const list = el("sheet-list");
   list.textContent = "";
-  [
-    ["male", "Мужские"],
-    ["female", "Женские"],
-  ].forEach(([gender, title]) => {
-    const head = document.createElement("div");
-    head.className = "look-group";
-    head.textContent = title;
-    const grid = document.createElement("div");
-    grid.className = "look-grid";
-    looks
-      .filter((look) => look.gender === gender)
-      .forEach((look) => grid.appendChild(lookTile(look)));
-    list.append(head, grid);
-  });
+  const grid = document.createElement("div");
+  grid.className = "look-grid";
+  looks.forEach((look) => grid.appendChild(lookTile(look)));
+  list.appendChild(grid);
 }
 
 async function openLooks() {
@@ -5471,7 +5466,7 @@ async function openLooks() {
     if (!response.ok) throw new Error("Гардероб не открылся.");
     const data = await response.json();
     el("sheet-note").textContent =
-      "Шесть образов открыты всем, остальные покупаются раз и навсегда. "
+      "Три образа открыты всем, остальные покупаются раз и навсегда. "
       + "На бой образ не влияет.";
     renderLooks(data.looks);
   } catch (error) {

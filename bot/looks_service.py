@@ -3,6 +3,16 @@
 Правило одно: платный образ покупается один раз, дальше он свой навсегда.
 Смена образа между уже своими бесплатна и мгновенна — это внешность, а не
 экипировка, на бой она не влияет никак.
+
+**Гардероб показывает образы своего пола.** Пол выбирают при создании
+персонажа, и дальше он и решает, из чего боец одевается: женщине незачем
+листать мужские лица, чтобы добраться до своих. Чужой пол не прячется
+запретом, а просто не приходит на страницу — выбирать там нечего.
+
+Исключение одно: образ, который уже на бойце или уже куплен. Такой
+показывается всегда, какого бы он ни был пола. Бойцы, заведённые до
+выбора пола, получили мужской, и отнимать у них купленное за кредиты
+лицо из-за этого было бы воровством.
 """
 
 from __future__ import annotations
@@ -39,6 +49,23 @@ def is_owned(look: Look, owned: set[str]) -> bool:
     return look.code in owned if (look.paid or look.pro) else True
 
 
+def shown_to(look: Look, player: Player, owned: set[str]) -> bool:
+    """Показывать ли этот образ этому бойцу.
+
+    Три причины показать: он своего пола, он уже куплен или он сейчас на
+    бойце. Две последние важнее пола — купленное и надетое не отнимают.
+    """
+    if look.pro and look.code not in owned:
+        # Старая выдача: у кого её нет, у того и не будет — кнопка,
+        # которая ничего не делает, только дразнит
+        return False
+    return (
+        look.gender == player.sex
+        or look.code in owned
+        or look.code == player.look
+    )
+
+
 async def choose_look(db: Database, player: Player, code: str) -> LookChoice:
     """Надеть образ, купив его, если он платный и ещё не куплен."""
     look = get_look(code)
@@ -47,8 +74,14 @@ async def choose_look(db: Database, player: Player, code: str) -> LookChoice:
 
     owned = await db.owned_looks(player.user_id)
     if look.pro and look.code not in owned:
-        # Образ подписки за кредиты не берут: он приходит вместе с PRO
-        raise LookError("Этот образ приходит с подпиской PRO. Оформить — /pro")
+        # Этот образ раздавали с подпиской и раздавать перестали: ни за
+        # кредиты, ни за звёзды его теперь не получить
+        raise LookError("Этот образ больше не выдают.")
+    # Чужой пол не только не показывается, но и не продаётся. Спрятанная
+    # кнопка обходится запросом мимо страницы, и без этой проверки боец
+    # мог купить лицо, которого потом не увидит в своём гардеробе
+    if not shown_to(look, player, owned):
+        raise LookError("Этот образ не из твоего гардероба.")
     bought = False
     if look.paid and look.code not in owned:
         if player.credits < look.price:
@@ -70,11 +103,7 @@ async def choose_look(db: Database, player: Player, code: str) -> LookChoice:
 
 
 async def wardrobe(db: Database, player: Player) -> list[dict]:
-    """Все образы разом: какой надет, какие свои, какие ещё купить.
-
-    Образ подписки видит только тот, кому он достался: показывать его
-    остальным значило бы дразнить кнопкой, которая ничего не делает.
-    """
+    """Образы своего пола: какой надет, какие свои, какие ещё купить."""
     owned = await db.owned_looks(player.user_id)
     chosen = current_look(player)
     return [
@@ -94,8 +123,15 @@ async def wardrobe(db: Database, player: Player) -> list[dict]:
             "affordable": player.credits >= look.price,
         }
         for look in LOOKS
-        if not look.pro or look.code in owned
+        if shown_to(look, player, owned)
     ]
 
 
-__all__ = ["LookChoice", "LookError", "choose_look", "current_look", "wardrobe"]
+__all__ = [
+    "LookChoice",
+    "LookError",
+    "choose_look",
+    "current_look",
+    "shown_to",
+    "wardrobe",
+]
