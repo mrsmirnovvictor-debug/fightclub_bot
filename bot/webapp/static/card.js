@@ -6734,7 +6734,7 @@ function crowdRow(one) {
   box.append(face, name, level);
   if (one.callable) {
     box.appendChild(
-      button("Позвать", {
+      button("Обмен", {
         onClick: () => tradeAction({ action: "invite", user_id: one.user_id }),
       })
     );

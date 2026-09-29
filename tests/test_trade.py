@@ -574,6 +574,37 @@ async def test_the_page_gets_its_own_half_apart_from_the_other(table, db):
     assert table_body["max_credits"] == 500
 
 
+async def test_the_other_half_shows_the_things_themselves_not_the_word(table, db):
+    """Чужая выкладка — предметами: название, картинка и износ на месте."""
+    trades, _, first, second = table
+    knife = await with_gear(db, second, "knife", wear=4)
+    trades.put_item(second, GEAR, str(knife.id))
+
+    body = await build_trade(first, trades)
+
+    his = body["trade"]["his"]["items"]
+    assert [one["title"] for one in his] == [knife.title]
+    row = his[0]
+    assert row["title"] != "Вещь" and row["icon"] != "🎒"
+    assert row["icon"] == knife.emoji
+    assert row["image"] == knife.image
+    assert row["wear"] == 4
+    assert row["wear_text"] == knife.describe_wear()
+    assert row["slot_title"] == knife.item.slot.section.capitalize()
+
+
+async def test_the_other_half_calls_a_vanished_thing_a_thing(table, db):
+    """Вещи у хозяина уже нет — заглушка остаётся, стол не рушится."""
+    trades, _, first, second = table
+    knife = await with_gear(db, second, "knife")
+    trades.put_item(second, GEAR, str(knife.id))
+    await db.delete_gear(knife.id)
+
+    body = await build_trade(first, trades)
+
+    assert [one["title"] for one in body["trade"]["his"]["items"]] == ["Вещь"]
+
+
 async def test_the_other_half_never_carries_his_backpack(table, db):
     """Соперник видит выложенное, а не то, что у тебя есть."""
     trades, _, first, second = table

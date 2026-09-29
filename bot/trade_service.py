@@ -458,6 +458,16 @@ class TradeService:
         await self.settle(trade)
         return trade, True
 
+    async def mate(self, trade: Trade, user_id: int) -> Player | None:
+        """Тот, кто сидит с другой стороны стола.
+
+        Нужен ровно за одним: показать его выкладку вещами, а не словом
+        «вещь». Название, картинка и износ лежат у хозяина, и другого
+        места, где их взять, нет. В ответ из него уходит только то, что
+        он сам выложил: рюкзак соперника не показывают.
+        """
+        return await self.db.get_player(trade.other(user_id).user_id)
+
     # ---------- кто на рынке ----------
 
     def _require_market(self, player: Player, his: bool = False) -> None:

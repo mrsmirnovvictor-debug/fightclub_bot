@@ -94,8 +94,10 @@ def potion_offer(potion, count: int, have: int) -> dict[str, Any]:
 def offer_payload(offer: Offer, owner: Player | None) -> dict[str, Any]:
     """Выкладка со стола. Хозяин нужен для вещи: её данные лежат у него.
 
-    Чужого хозяина у нас нет, и это не беда: у вещи на чужой половине
-    остаются название, картинка и износ, а больше в строке и не видно.
+    Хозяин чужой половины приходит сюда наравне со своим: без него вся
+    чужая выкладка называлась бы «Вещь», а смотреть на стол, где вместо
+    предметов четыре одинаковых мешка, незачем. Заглушка ниже остаётся
+    на один случай — вещи у хозяина уже нет.
     """
     if offer.kind == GEAR:
         owned = owner.find_gear(offer.item_id) if owner else None
@@ -153,7 +155,9 @@ def basket_payload(player: Player, side: Side) -> list[dict[str, Any]]:
     return rows
 
 
-def trade_payload(trade: Trade, player: Player) -> dict[str, Any]:
+def trade_payload(
+    trade: Trade, player: Player, mate: Player | None = None
+) -> dict[str, Any]:
     """Стол целиком, уже разложенный на свою половину и чужую."""
     mine = trade.side(player.user_id)
     return {
@@ -161,7 +165,7 @@ def trade_payload(trade: Trade, player: Player) -> dict[str, Any]:
         # По нему страница понимает, что стол поменялся, и гасит согласие
         "version": trade.version,
         "mine": side_payload(mine, player),
-        "his": side_payload(trade.other(player.user_id), None),
+        "his": side_payload(trade.other(player.user_id), mate),
         "max_items": MAX_ITEMS,
         "max_credits": player.credits,
         "basket": basket_payload(player, mine),
@@ -209,7 +213,8 @@ async def build_trade(
     if trade is None and not body["done"]:
         body["done"] = service.take_done(player.user_id)
     if trade is not None:
-        body["trade"] = trade_payload(trade, player)
+        mate = await service.mate(trade, player.user_id)
+        body["trade"] = trade_payload(trade, player, mate)
         return body
 
     here = await service.crowd(player, moment)

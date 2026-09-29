@@ -6800,6 +6800,17 @@ async def test_those_in_the_club_stand_above_those_who_left(server):
         await browser.close()
 
 
+async def test_the_button_by_a_fighter_says_what_it_opens(server):
+    """«Обмен», а не «Позвать»: нажатие открывает стол, а не зовёт к себе."""
+    crowd = market_crowd((43, "Марла", True, False))
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=crowd)
+        await page.wait_for_selector(".fighter")
+
+        assert await page.locator(".crowd .btn").all_inner_texts() == ["Обмен"]
+        await browser.close()
+
+
 async def test_a_fighter_already_swapping_has_no_button(server):
     crowd = market_crowd((43, "Марла", True, True))
     async with async_playwright() as pw:
@@ -6864,6 +6875,28 @@ async def test_only_your_own_half_of_the_table_can_be_edited(server):
         # Своя половина — «Ты отдаёшь», чужая подписана именем
         assert "Ты отдаёшь" in await own.locator(".half-who").inner_text()
         assert "Марла отдаёт" in await theirs.locator(".half-who").inner_text()
+        await browser.close()
+
+
+async def test_the_other_half_names_his_things_and_shows_their_wear(server):
+    """На чужой половине лежат предметы, а не четыре одинаковых «вещи»."""
+    table = trade_table(
+        mine_items=[trade_offer("11", "Нож")],
+        his_items=[
+            dict(trade_offer("12", "Бита"), icon="🏏", wear_text="Бита цела"),
+            dict(trade_offer("13", "Куртка"), icon="🧥", wear_text="Куртка на исходе"),
+        ],
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table")
+
+        theirs = page.locator(".half:not(.own)")
+        assert await theirs.locator(".lot-title").all_inner_texts() == ["Бита", "Куртка"]
+        assert await theirs.locator(".lot-wear").all_inner_texts() == [
+            "Бита цела", "Куртка на исходе",
+        ]
+        assert await theirs.locator(".lot-pic").first.inner_text() == "🏏"
         await browser.close()
 
 
