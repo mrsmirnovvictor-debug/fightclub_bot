@@ -123,9 +123,13 @@ class Player:
     effects: list[ActiveEffect] = field(default_factory=list)
     # Травма. Одна или ни одной, и тоже по часам
     injury: ActiveInjury | None = None
-    # Страховой полис — пока единственный документ бойца. Просроченный
-    # остаётся здесь же: документ не исчезает, у него кончается срок
+    # Страховой полис. Просроченный остаётся здесь же: документ не
+    # исчезает, у него кончается срок
     policy: Policy | None = None
+    # До какого часа абонемент в зал. 0 — его не было. Лежит на бойце, а
+    # не в службе зала, потому что это второй документ: его показывают в
+    # карточке, а она собирается без похода в базу
+    gym_until: int = 0
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
@@ -419,6 +423,10 @@ class Player:
         """Действует ли полис прямо сейчас."""
         moment = now_ts() if now is None else now
         return self.policy is not None and self.policy.is_active(moment)
+
+    def in_gym_club(self, now: int | None = None) -> bool:
+        """Действует ли абонемент в зал прямо сейчас."""
+        return self.gym_until > (now_ts() if now is None else now)
 
     def seconds_until_ready(self, now: int | None = None) -> int:
         return seconds_until_ready(self.current_hp(now), self.max_hp)

@@ -671,6 +671,7 @@ class Database:
         player.effects = await self.list_effects(player.user_id)
         player.injury = await self.injury_of(player.user_id)
         player.policy = await self.policy_of(player.user_id)
+        player.gym_until = await self.gym_pass_of(player.user_id)
         player.loadout = await self.list_abilities(player.user_id)
         return player
 
@@ -1245,13 +1246,17 @@ class Database:
         }
 
     async def start_gym_visit(
-        self, user_id: int, slot: str, stat: str, until: int
+        self, user_id: int, slot: str, stat: str, until: int, limit: int = 0
     ) -> bool:
-        """Встать на тренировку. False — в этом слоте боец уже отработал.
+        """Встать на тренировку. False — места нет или боец уже вставал.
 
         Ключ таблицы — боец и слот, поэтому вторая запись в тот же слот не
         проходит вовсе: «одна тренировка на слот» держит база, а не проверка
         перед вставкой, которую две быстрые кнопки обошли бы.
+
+        Так же и с числом мест: сначала встаём, потом считаем, и лишний
+        уходит сам. Проверка до вставки пропустила бы шестого, пока пятый
+        ещё не записался, — а тут запись либо есть, либо её нет.
         """
         cursor = await self.conn.execute(
             """
@@ -1260,8 +1265,18 @@ class Database:
             """,
             (user_id, slot, stat, until),
         )
+        if cursor.rowcount <= 0:
+            await self.conn.commit()
+            return False
+        if limit and await self.gym_slot_crowd(slot) > limit:
+            await self.conn.execute(
+                "DELETE FROM gym_visits WHERE user_id = ? AND slot = ?",
+                (user_id, slot),
+            )
+            await self.conn.commit()
+            return False
         await self.conn.commit()
-        return cursor.rowcount > 0
+        return True
 
     async def close_gym_visit(self, user_id: int, slot: str) -> bool:
         """Отметить тренировку отработанной. False — её уже закрыли."""
@@ -1272,24 +1287,60 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
-    async def drop_gym_visit(self, user_id: int, slot: str) -> None:
-        """Убрать запись: боец ушёл с тренировки, не достояв."""
-        await self.conn.execute(
-            "DELETE FROM gym_visits WHERE user_id = ? AND slot = ?", (user_id, slot)
-        )
-        await self.conn.commit()
+    async def gym_slots_taken(
+        self, user_id: int, slots: list[str]
+    ) -> dict[str, bool]:
+        """Слоты бойца из этого списка: ключ → отработан ли до конца.
 
-    async def gym_slots_done(self, user_id: int, slots: list[str]) -> set[str]:
-        """Какие из этих слотов боец уже отработал или отрабатывает."""
+        Отработанное и идущее различаются, потому что различаются на
+        табло: ✅ против часов. Одним множеством они выглядели бы
+        одинаково, и боец не видел бы, что стоит на занятии прямо сейчас.
+        """
         if not slots:
-            return set()
+            return {}
         marks = ",".join("?" for _ in slots)
         async with self.conn.execute(
-            f"SELECT slot FROM gym_visits WHERE user_id = ? AND slot IN ({marks})",
+            f"SELECT slot, done FROM gym_visits "
+            f"WHERE user_id = ? AND slot IN ({marks})",
             (user_id, *slots),
         ) as cursor:
             rows = await cursor.fetchall()
-        return {str(row["slot"]) for row in rows}
+        return {str(row["slot"]): bool(row["done"]) for row in rows}
+
+    async def gym_visits_today(self, user_id: int, day: str) -> int:
+        """Сколько занятий боец уже занял в этих сутках.
+
+        Считаются и отработанные, и идущее: место в дне занято тем и
+        другим, и цена следующего занятия растёт от обоих.
+        """
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS taken FROM gym_visits "
+            "WHERE user_id = ? AND slot LIKE ?",
+            (user_id, f"{day}:%"),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["taken"]) if row else 0
+
+    async def gym_slot_crowd(self, slot: str) -> int:
+        """Сколько бойцов в этом занятии — вместе с теми, кто ещё стоит."""
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS taken FROM gym_visits WHERE slot = ?", (slot,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["taken"]) if row else 0
+
+    async def gym_slots_crowd(self, slots: list[str]) -> dict[str, int]:
+        """Сколько народу в каждом из этих занятий — одним запросом."""
+        if not slots:
+            return {}
+        marks = ",".join("?" for _ in slots)
+        async with self.conn.execute(
+            f"SELECT slot, COUNT(*) AS taken FROM gym_visits "
+            f"WHERE slot IN ({marks}) GROUP BY slot",
+            tuple(slots),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {str(row["slot"]): int(row["taken"]) for row in rows}
 
     # ---------- документы: страховой полис ----------
 

@@ -2330,3 +2330,29 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .gym-slot.late { border-color: var(--hp-yellow); background: var(--slot); }
 .gym-slot.past { opacity: 0.45; }
 .gym-slot.done .gym-slot-mark { color: var(--hp-green); font-weight: 600; }
+
+/* Прайс дня лесенкой: уже потраченные ступени приглушены, следующая
+   выделена — по ней и видно, во что обойдётся ещё одно занятие */
+.day-prices { margin-bottom: 16px; }
+.day-price {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 13.5px;
+  border: 1px solid transparent;
+}
+.day-price-number { color: var(--muted); }
+.day-price-value { font-weight: 600; }
+.day-price.spent { opacity: 0.45; }
+.day-price.next { border-color: var(--accent); background: var(--slot); }
+.day-price.next .day-price-value { color: var(--accent); }
+
+.gym-day-line { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
+.gym-now-seats { font-size: 12.5px; color: var(--muted); }
+/* Занятие без мест — как прошедшее: нажимать в нём нечего */
+.gym-slot.full { opacity: 0.55; }
+.gym-slot.training { border-color: var(--hp-green); background: var(--slot); }
+.gym-slot.training .gym-slot-mark,
+.gym-slot.done .gym-slot-mark { font-size: 12px; }

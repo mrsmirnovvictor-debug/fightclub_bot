@@ -133,6 +133,9 @@ def gym_state(
     visit: dict | None = None,
     points: tuple[int, int, int] = (0, 0, 0),
     ups: tuple[int, int, int] = (0, 0, 0),
+    taken_today: int = 0,
+    seats: int = 0,
+    marks: tuple[str, ...] = (),
 ) -> dict:
     """Зал, как его отдаёт сервер: абонемент, слот, прогресс и табло."""
     from bot.game.classes import Stat
@@ -140,6 +143,9 @@ def gym_state(
         MAX_UPGRADES, SLOT_HOURS, TRAINING_MINUTES, UPGRADE_STEPS, total_for,
         training_for,
     )
+
+    from bot.game.gym import DAY_PRICES, SLOT_LIMIT, VISITS_PER_DAY, day_is_full
+    from bot.game.gym import price_of_visit
 
     def slot(hour: int, code: str, state: str) -> dict:
         one = next(t for t in (training_for(s) for s in
@@ -150,6 +156,7 @@ def gym_state(
             "code": one.code, "title": one.title, "emoji": one.emoji,
             "stat": one.stat.value, "gains": one.gains,
             "starts": 0, "ends": 0, "state": state,
+            "taken": seats, "limit": SLOT_LIMIT, "full": seats >= SLOT_LIMIT,
         }
 
     codes = ["power", "cardio", "crossfit", "power", "cardio", "crossfit"]
@@ -160,7 +167,13 @@ def gym_state(
             "title": "Сегодня" if not shift else ("Завтра" if shift == 1 else "Среда"),
             "today": shift == 0,
             "slots": [
-                slot(hour, code, now_state if (not shift and index == 2) else "ahead")
+                slot(
+                    hour,
+                    code,
+                    now_state if (not shift and index == 2)
+                    else (marks[index] if not shift and index < len(marks)
+                          else "ahead"),
+                )
                 for index, (hour, code) in enumerate(zip(SLOT_HOURS, codes))
             ],
         })
@@ -184,6 +197,17 @@ def gym_state(
                 {"code": "year", "title": "Год", "days": 365, "price": 4000,
                  "note": "Цена восьми месяцев за двенадцать", "affordable": True,
                  "per_day": 11.0},
+            ],
+        },
+        "day": {
+            "taken": taken_today,
+            "limit": VISITS_PER_DAY,
+            "full": day_is_full(taken_today),
+            "price": 0 if day_is_full(taken_today) else price_of_visit(taken_today),
+            "free_left": max(0, 1 - taken_today),
+            "prices": [
+                {"number": number, "price": price, "free": price == 0}
+                for number, price in enumerate(DAY_PRICES, start=1)
             ],
         },
         "now": board[0]["slots"][2],
@@ -7466,7 +7490,7 @@ async def test_the_open_slot_carries_the_only_join_button(server):
 
         assert "Кросс-фит" in await page.locator(".gym-now-title").inner_text()
         joins = await page.locator(".gym-now .btn").all_inner_texts()
-        assert joins == ["Присоединиться · 15 мин"]
+        assert joins == ["Присоединиться · по абонементу"]
         # В расписании кнопок нет вовсе
         assert await page.locator(".gym-schedule .btn").count() == 0
         await browser.close()
@@ -7492,7 +7516,7 @@ async def test_a_slot_already_worked_offers_nothing(server):
         assert "уже отработал" in await page.locator("#gym-note").inner_text()
         # И в табло этот слот помечен
         mark = page.locator(".gym-day.today .gym-slot.done .gym-slot-mark")
-        assert await mark.inner_text() == "отработано"
+        assert await mark.inner_text() == "✅"
         await browser.close()
 
 
@@ -7588,6 +7612,147 @@ async def test_the_ladder_is_spelled_out_under_the_progress(server):
         note = await page.locator(".gym-progress .screen-note").inner_text()
         assert "3, 6, 12, 24, 48" in note
         assert "93" in note
+        await browser.close()
+
+
+async def test_the_gym_holds_two_tabs_and_opens_on_the_trainings(server):
+    """Табло — на первой вкладке, абонемент со всеми ценами — на второй."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.wait_for_selector("#gym-tabs")
+
+        tabs = await page.locator("#gym-tabs .chip").all_inner_texts()
+        assert tabs == ["Тренировки", "Абонемент"]
+        # Открывается зал на тренировках: расписание на месте, прайса нет
+        assert await page.locator(".gym-schedule").count() == 1
+        assert await page.locator(".day-prices").count() == 0
+
+        await page.locator("#gym-tabs .chip", has_text="Абонемент").click()
+        await page.wait_for_selector(".day-prices")
+
+        assert await page.locator(".gym-schedule").count() == 0
+        assert await page.locator(".gym-progress").count() == 0
+        assert "Абонемент до" in await page.locator(".gym-pass").inner_text()
+        assert "Продлить абонемент" in (
+            await page.locator(".tickets .shelf-head").inner_text()
+        )
+        await browser.close()
+
+
+async def test_the_second_tab_spells_out_the_price_of_every_training(server):
+    """Лесенка дня: первая по абонементу, дальше 50, 50, 100, 100, 200."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.locator("#gym-tabs .chip", has_text="Абонемент").click()
+        await page.wait_for_selector(".day-prices")
+
+        rows = await page.locator(".day-price-value").all_inner_texts()
+        assert rows == [
+            "по абонементу", "50 💰", "50 💰", "100 💰", "100 💰", "200 💰",
+        ]
+        numbers = await page.locator(".day-price-number").all_inner_texts()
+        assert numbers == ["1-е", "2-е", "3-е", "4-е", "5-е", "6-е"]
+        await browser.close()
+
+
+async def test_the_ladder_marks_what_is_spent_and_what_is_next(server):
+    """Две тренировки позади — третья подсвечена, и она по 50."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(taken_today=2))
+        await page.locator("#gym-tabs .chip", has_text="Абонемент").click()
+        await page.wait_for_selector(".day-prices")
+
+        assert await page.locator(".day-price.spent").count() == 2
+        nxt = page.locator(".day-price.next")
+        assert await nxt.count() == 1
+        assert "3-е" in await nxt.inner_text()
+        assert "50 💰" in await nxt.inner_text()
+        assert "Сегодня занято 2 из 6" in (
+            await page.locator(".day-prices .screen-note").inner_text()
+        )
+        await browser.close()
+
+
+async def test_the_join_button_carries_the_price_of_the_extra_training(server):
+    """Бесплатная отработана — на кнопке цена второй, а не «по абонементу»."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(taken_today=1))
+        await page.wait_for_selector(".gym-now")
+
+        joins = await page.locator(".gym-now .btn").all_inner_texts()
+        assert joins == ["Присоединиться · 50 💰"]
+        assert "Сегодня 1 из 6 · следующее 50 💰" in (
+            await page.locator(".gym-day-line").inner_text()
+        )
+        await browser.close()
+
+
+async def test_the_free_training_is_named_by_the_day_line(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.wait_for_selector(".gym-day-line")
+
+        assert "Сегодня 0 из 6 · следующее по абонементу" in (
+            await page.locator(".gym-day-line").inner_text()
+        )
+        await browser.close()
+
+
+async def test_a_day_worked_to_the_end_stops_offering_trainings(server):
+    """Шесть занятий — потолок суток: кнопки нет ни при каком слоте."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(taken_today=6))
+        await page.wait_for_selector(".gym-now")
+
+        assert await page.locator(".gym-now .btn").count() == 0
+        assert "потолок суток" in await page.locator("#gym-note").inner_text()
+        assert "на сегодня всё" in await page.locator(".gym-day-line").inner_text()
+        await browser.close()
+
+
+async def test_the_seats_are_counted_before_the_button_is_pressed(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(seats=3))
+        await page.wait_for_selector(".gym-now")
+
+        assert "Мест занято: 3 из 5" in (
+            await page.locator(".gym-now-seats").inner_text()
+        )
+        assert await page.locator(".gym-now .btn").count() == 1
+        await browser.close()
+
+
+async def test_a_full_slot_takes_no_one_else(server):
+    """Пять человек уже отработали — записаться нельзя."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(
+            pw, server, gym_state(now_state="full", seats=5),
+        )
+        await page.wait_for_selector(".gym-now")
+
+        assert await page.locator(".gym-now .btn").count() == 0
+        assert "мест нет" in await page.locator("#gym-note").inner_text()
+        assert "Мест занято: 5 из 5" in (
+            await page.locator(".gym-now-seats").inner_text()
+        )
+        mark = page.locator(".gym-day.today .gym-slot.full .gym-slot-mark")
+        assert await mark.inner_text() == "мест нет"
+        await browser.close()
+
+
+async def test_the_board_marks_the_running_training_by_the_clock(server):
+    """Идущая тренировка — 🕗, отработанная — ✅, и оба значка на табло."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(
+            pw, server, gym_state(now_state="training", marks=("done", "past")),
+        )
+        await page.wait_for_selector(".gym-day")
+
+        today = page.locator(".gym-day.today")
+        assert await today.locator(".gym-slot.training .gym-slot-mark").inner_text() == "🕗"
+        assert await today.locator(".gym-slot.done .gym-slot-mark").inner_text() == "✅"
+        # У прошедшего слота значка нет вовсе
+        assert await today.locator(".gym-slot.past .gym-slot-mark").count() == 0
         await browser.close()
 
 

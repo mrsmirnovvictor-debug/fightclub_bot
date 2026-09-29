@@ -26,6 +26,14 @@
 в кнопку: шесть слотов в день дали бы под полсотни очков в сутки вместо
 шести.
 
+**Первая тренировка в день бесплатна, дальше за кредиты.** Абонемент
+даёт одно занятие в сутки; вторая и третья стоят по 50, четвёртая и
+пятая по 100, шестая 200. Считаются занятия по московским суткам — тем
+же, по которым живёт расписание.
+
+**В слоте пять мест.** Зал не резиновый: шестому приходится ждать
+следующего занятия.
+
 **Очки тратятся.** Каждое улучшение стоит свою цену — 3, 6, 12, 24 и 48
 тренировок, — а не считается от начала времён. Всего на пять улучшений
 одной характеристики уходит 93 тренировки.
@@ -61,6 +69,15 @@ SLOTS_PER_TRAINING = len(SLOT_HOURS) // 3
 
 # На сколько дней вперёд зал показывает расписание
 SCHEDULE_DAYS = 7
+
+# Почём каждая следующая тренировка за сутки. Первая по абонементу —
+# даром, дальше цена растёт ступенями. Длина списка и есть потолок дня:
+# больше шести занятий в сутках всё равно нет
+DAY_PRICES: tuple[int, ...] = (0, 50, 50, 100, 100, 200)
+VISITS_PER_DAY = len(DAY_PRICES)
+
+# Сколько бойцов помещается в одно занятие
+SLOT_LIMIT = 5
 
 # Сколько тренировок стоит каждое следующее улучшение
 UPGRADE_STEPS: tuple[int, ...] = (3, 6, 12, 24, 48)
@@ -198,6 +215,32 @@ class Slot:
         return self.is_open(now) and self.seconds_left(now) > TRAINING_SECONDS
 
 
+def price_of_visit(done_today: int) -> int:
+    """Почём следующая тренировка бойцу, у которого сегодня уже столько.
+
+    Ноль — первая за сутки, она входит в абонемент. Отрицательное число
+    вернуть нельзя: дальше шестой тренировок в сутках просто нет, и об
+    этом говорит `day_is_full`.
+    """
+    if done_today < 0 or done_today >= VISITS_PER_DAY:
+        return 0
+    return DAY_PRICES[done_today]
+
+
+def day_is_full(done_today: int) -> bool:
+    """Все шесть занятий суток отработаны — больше вставать некуда."""
+    return done_today >= VISITS_PER_DAY
+
+
+def slot_is_full(taken: int) -> bool:
+    return taken >= SLOT_LIMIT
+
+
+def day_of_slot(slot_id: str) -> str:
+    """Из ключа слота — его день: «2026-10-05:08» → «2026-10-05»."""
+    return slot_id.split(":", 1)[0]
+
+
 def week_of(day: date) -> tuple[int, int]:
     """Год и номер недели по ISO — зерно розыгрыша."""
     year, week, _ = day.isocalendar()
@@ -296,6 +339,9 @@ def total_for(ups: int) -> int:
 
 __all__ = [
     "BY_CODE",
+    "VISITS_PER_DAY",
+    "SLOT_LIMIT",
+    "DAY_PRICES",
     "BY_STAT",
     "GYM_STATS",
     "MAX_UPGRADES",
@@ -315,6 +361,8 @@ __all__ = [
     "Training",
     "can_upgrade",
     "cover_by_pro",
+    "day_is_full",
+    "day_of_slot",
     "day_schedule",
     "get_pass",
     "get_training",
@@ -322,7 +370,9 @@ __all__ = [
     "moscow_day",
     "next_slot",
     "price_of_upgrade",
+    "price_of_visit",
     "schedule_from",
+    "slot_is_full",
     "slot_now",
     "slot_start",
     "total_for",

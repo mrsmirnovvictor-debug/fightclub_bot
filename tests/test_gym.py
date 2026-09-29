@@ -361,14 +361,15 @@ async def test_leaving_the_gym_loses_the_training_and_the_slot(db):
     assert "не зачтена" in said
     rows = await progress_of(db, player)
     assert sum(row.points for row in rows.values()) == 0
-    # И слот потрачен: вернуться и доработать его нельзя
+    # И занятие потрачено: вернуться и доработать его нельзя
     player.location = GYM
     await db.save_player(player)
-    with pytest.raises(GymError, match="меньше пятнадцати минут|уже отработал"):
-        await join(db, player, slot_now(now).ends - 60)
+    with pytest.raises(GymError, match="уже отработал"):
+        await join(db, player, now + TRAINING_SECONDS + 60)
 
 
 async def test_walking_out_early_costs_the_slot(db):
+    """Ушёл — занятие потрачено: ни очка, ни второй попытки в том же слоте."""
     now = at_slot(0, shift=60)
     player = await with_pass(db, now)
     await join(db, player, now)
@@ -378,6 +379,9 @@ async def test_walking_out_early_costs_the_slot(db):
     assert await visit_of(db, player) is None
     rows = await progress_of(db, player)
     assert sum(row.points for row in rows.values()) == 0
+    # И заново в это же занятие не встать
+    with pytest.raises(GymError, match="уже отработал"):
+        await join(db, player, now + 60)
 
 
 # ---------- улучшение ----------
@@ -464,7 +468,7 @@ async def test_the_board_marks_the_open_slot_and_the_ones_around_it(db):
     player = await with_pass(db, now)
 
     body = build_gym(player, await db.gym_pass_of(42), await progress_of(db, player),
-                     None, set(), now)
+                     None, {}, {}, 0, now)
 
     today = body["schedule"][0]
     assert today["today"] and today["title"] == "Сегодня"
@@ -481,9 +485,10 @@ async def test_the_board_marks_a_slot_already_worked(db):
     visit = await join(db, player, now)
 
     body = build_gym(player, await db.gym_pass_of(42), await progress_of(db, player),
-                     await visit_of(db, player), {visit.slot}, now)
+                     await visit_of(db, player), {visit.slot: False}, {}, 1, now)
 
-    assert body["schedule"][0]["slots"][0]["state"] == "done"
+    # Боец стоит на занятии прямо сейчас — это не «отработано»
+    assert body["schedule"][0]["slots"][0]["state"] == "training"
     assert body["visit"]["seconds_left"] == TRAINING_SECONDS
     assert not body["visit"]["over"]
 
@@ -494,7 +499,7 @@ async def test_the_board_says_when_joining_is_too_late(db):
     late = slot_now(now + 60).ends - 60
 
     body = build_gym(player, await db.gym_pass_of(42), await progress_of(db, player),
-                     None, set(), late)
+                     None, {}, {}, 0, late)
 
     assert body["now"]["state"] == "late"
 
@@ -687,3 +692,314 @@ async def test_the_gym_screen_says_the_pass_came_with_the_subscription(client, d
     assert response.status == 200
     assert body["pass"]["active"]
     assert "по подписке" in body["said"]
+
+
+# ---------- цена дня ----------
+
+
+def test_the_first_training_a_day_is_free_and_the_rest_cost():
+    from bot.game.gym import DAY_PRICES, VISITS_PER_DAY, day_is_full, price_of_visit
+
+    assert DAY_PRICES == (0, 50, 50, 100, 100, 200)
+    assert VISITS_PER_DAY == 6
+    assert [price_of_visit(n) for n in range(6)] == [0, 50, 50, 100, 100, 200]
+    assert day_is_full(6) and not day_is_full(5)
+
+
+async def test_the_first_training_costs_nothing(db):
+    now = at_slot(0, shift=60)
+    player = await with_pass(db, now)
+    player.credits = 0
+    await db.save_player(player)
+
+    visit = await join(db, player, now)
+
+    assert visit.price == 0 and player.credits == 0
+
+
+async def test_the_second_training_of_the_day_costs_fifty(db):
+    now = at_slot(0, shift=60)
+    player = await with_pass(db, now)
+    player.credits = 500
+    await db.save_player(player)
+    await join(db, player, now)
+    await settle(db, player, now + TRAINING_SECONDS)
+
+    later = at_slot(1, shift=60)
+    visit = await join(db, player, later)
+
+    assert visit.price == 50
+    assert (await db.get_player(42)).credits == 450
+
+
+async def test_the_day_ladder_is_walked_price_by_price(db):
+    """50, 50, 100, 100, 200 — за вторую и дальше."""
+    from bot.game.gym import DAY_PRICES
+
+    player = await with_pass(db, at_slot(0))
+    player.credits = 10_000
+    await db.save_player(player)
+
+    prices = []
+    for index in range(6):
+        moment = at_slot(index, shift=60)
+        visit = await join(db, player, moment)
+        prices.append(visit.price)
+        await settle(db, player, moment + TRAINING_SECONDS)
+
+    assert prices == list(DAY_PRICES)
+    assert (await db.get_player(42)).credits == 10_000 - sum(DAY_PRICES)
+
+
+async def test_a_seventh_training_a_day_is_refused(db):
+    """Шесть слотов — шесть занятий, и это потолок суток."""
+    player = await with_pass(db, at_slot(0))
+    player.credits = 10_000
+    await db.save_player(player)
+    for index in range(6):
+        moment = at_slot(index, shift=60)
+        await join(db, player, moment)
+        await settle(db, player, moment + TRAINING_SECONDS)
+
+    # Седьмого слота в сутках нет вовсе — зал закрыт после восьми вечера
+    assert slot_now(at_slot(5, shift=SLOT_SECONDS + 60)) is None
+
+
+async def test_an_empty_purse_buys_no_second_training(db):
+    now = at_slot(0, shift=60)
+    player = await with_pass(db, now)
+    player.credits = 10
+    await db.save_player(player)
+    await join(db, player, now)
+    await settle(db, player, now + TRAINING_SECONDS)
+
+    with pytest.raises(GymError, match="сверх абонемента стоит 50"):
+        await join(db, player, at_slot(1, shift=60))
+
+    assert (await db.get_player(42)).credits == 10
+
+
+async def test_the_price_counts_trainings_not_slot_numbers(db):
+    """Пропустивший утро платит за вторую столько же, сколько и не пропустивший."""
+    player = await with_pass(db, at_slot(0))
+    player.credits = 1000
+    await db.save_player(player)
+    # Первое занятие — вечернее, четвёртое по счёту слотов
+    late = at_slot(3, shift=60)
+    first = await join(db, player, late)
+    await settle(db, player, late + TRAINING_SECONDS)
+
+    second = await join(db, player, at_slot(4, shift=60))
+
+    assert first.price == 0 and second.price == 50
+
+
+async def test_a_new_day_brings_the_free_training_back(db):
+    player = await with_pass(db, at_slot(0))
+    player.credits = 1000
+    await db.save_player(player)
+    now = at_slot(0, shift=60)
+    await join(db, player, now)
+    await settle(db, player, now + TRAINING_SECONDS)
+
+    # Следующие сутки — счёт с нуля
+    tomorrow = now + 24 * 60 * 60
+    visit = await join(db, player, tomorrow)
+
+    assert visit.price == 0
+
+
+async def test_an_abandoned_training_still_counts_against_the_day(db):
+    """Место в дне занято и брошенным занятием: слот потрачен."""
+    now = at_slot(0, shift=60)
+    player = await with_pass(db, now)
+    player.credits = 1000
+    await db.save_player(player)
+    await join(db, player, now)
+    await settle(db, player, now + TRAINING_SECONDS)
+
+    # Второе занятие бросаем, не достояв
+    await join(db, player, at_slot(1, shift=60))
+    await leave(db, player)
+
+    # Третье стоит как третье, а не как второе
+    third = await join(db, player, at_slot(2, shift=60))
+    assert third.price == 50
+    from bot.gym_service import day_count
+
+    assert await day_count(db, player, "2026-10-05") == 3
+
+
+# ---------- пять мест ----------
+
+
+async def crowd_the_slot(db: Database, now: int, how_many: int) -> None:
+    """Посадить в идущее занятие столько чужих бойцов."""
+    slot = slot_now(now)
+    for user_id in range(100, 100 + how_many):
+        await db.start_gym_visit(
+            user_id, slot.id, slot.training.stat.value, now + TRAINING_SECONDS
+        )
+
+
+async def test_a_slot_holds_five_fighters(db):
+    from bot.game.gym import SLOT_LIMIT
+
+    assert SLOT_LIMIT == 5
+    now = at_slot(0, shift=60)
+    player = await with_pass(db, now)
+    await crowd_the_slot(db, now, 4)
+
+    visit = await join(db, player, now)
+
+    assert visit.stat is not None
+    assert await db.gym_slot_crowd(slot_now(now).id) == 5
+
+
+async def test_the_sixth_fighter_is_turned_away(db):
+    now = at_slot(0, shift=60)
+    player = await with_pass(db, now)
+    await crowd_the_slot(db, now, 5)
+
+    with pytest.raises(GymError, match="мест заняты"):
+        await join(db, player, now)
+
+    assert await db.gym_slot_crowd(slot_now(now).id) == 5
+    assert await visit_of(db, player) is None
+
+
+async def test_a_full_slot_takes_no_money(db):
+    now = at_slot(0, shift=60)
+    player = await with_pass(db, now)
+    player.credits = 1000
+    await db.save_player(player)
+    await join(db, player, now)
+    await settle(db, player, now + TRAINING_SECONDS)
+    # Второе занятие платное — и набито битком
+    later = at_slot(1, shift=60)
+    await crowd_the_slot(db, later, 5)
+
+    with pytest.raises(GymError, match="мест заняты"):
+        await join(db, player, later)
+
+    assert (await db.get_player(42)).credits == 1000, "за отказ не берут"
+
+
+async def test_the_last_seat_is_not_given_out_twice(db):
+    """Пятое место достаётся одному: считаем после записи, а не до."""
+    now = at_slot(0, shift=60)
+    first = await with_pass(db, now)
+    second = await stand(db, Player(
+        user_id=43, nickname="Марла", class_code="warrior", level=8,
+        credits=0, location=GYM,
+        **Stats(strength=10, agility=10, intuition=10, endurance=10).as_dict(),
+    ))
+    await db.set_gym_pass(43, now + 10_000)
+    await crowd_the_slot(db, now, 4)
+
+    await join(db, first, now)
+    with pytest.raises(GymError, match="мест"):
+        await join(db, second, now)
+
+    assert await db.gym_slot_crowd(slot_now(now).id) == 5
+
+
+async def test_the_board_says_how_many_seats_are_taken(db):
+    now = at_slot(0, shift=60)
+    player = await with_pass(db, now)
+    await crowd_the_slot(db, now, 5)
+    slots = [slot.id for slot in schedule_from(now)]
+
+    body = build_gym(
+        player, await db.gym_pass_of(42), await progress_of(db, player), None,
+        await db.gym_slots_taken(42, slots), await db.gym_slots_crowd(slots), 0, now,
+    )
+
+    first = body["schedule"][0]["slots"][0]
+    assert first["taken"] == 5 and first["limit"] == 5 and first["full"]
+    assert first["state"] == "full"
+    assert body["now"]["state"] == "full"
+
+
+# ---------- абонемент в документах ----------
+
+
+async def test_the_pass_shows_up_in_the_documents(db):
+    from bot.webapp.documents import build_documents
+
+    now = at_slot(0)
+    player = await stand(db, make_player(credits=600))
+    await buy_pass(db, player, "month", now)
+    fresh = await db.get_player(42)
+
+    body = build_documents(fresh, now)
+
+    paper = next(one for one in body["documents"] if one["kind"] == "gym")
+    assert paper["title"] == "Абонемент в тренажёрный зал"
+    assert paper["holder"] == "Тайлер" and paper["holder_title"] == "Владелец"
+    assert paper["active"] and paper["state"] == "Действует"
+    assert any("бесплатно" in line for line in paper["gives"])
+    # Номера у абонемента нет: его заводят на входе, а не выписывают
+    assert paper["number"] == ""
+
+
+async def test_an_expired_pass_stays_a_document(db):
+    from bot.webapp.documents import build_documents
+
+    now = at_slot(0)
+    player = await stand(db, make_player(credits=600))
+    await buy_pass(db, player, "month", now)
+    fresh = await db.get_player(42)
+    later = fresh.gym_until + 60
+
+    paper = next(
+        one for one in build_documents(fresh, later)["documents"]
+        if one["kind"] == "gym"
+    )
+
+    assert not paper["active"] and paper["state"] == "Срок вышел"
+
+
+async def test_without_a_pass_there_is_no_gym_document(db):
+    from bot.webapp.documents import build_documents
+
+    player = await stand(db, make_player())
+
+    body = build_documents(player, at_slot(0))
+
+    assert not [one for one in body["documents"] if one["kind"] == "gym"]
+
+
+async def test_the_seat_check_is_made_after_the_record_not_before(db):
+    """Место считается по записи, а не перед ней.
+
+    Проверка до вставки пропустила бы шестого, пока пятый ещё не
+    записался. Здесь она обходится напрямую, мимо `join`: сам `join`
+    отказал бы раньше, и до этой защиты дело бы не дошло.
+    """
+    from bot.game.gym import SLOT_LIMIT
+
+    now = at_slot(0, shift=60)
+    slot = slot_now(now)
+    for user_id in range(100, 100 + SLOT_LIMIT):
+        assert await db.start_gym_visit(
+            user_id, slot.id, "strength", now + 900, limit=SLOT_LIMIT
+        )
+
+    late = await db.start_gym_visit(
+        42, slot.id, "strength", now + 900, limit=SLOT_LIMIT
+    )
+
+    assert not late, "шестого не записывают"
+    # И его запись не осталась в занятии
+    assert await db.gym_slot_crowd(slot.id) == SLOT_LIMIT
+
+
+async def test_without_a_limit_the_record_is_kept(db):
+    """Ноль мест — значит ограничения нет: так зовут не из зала."""
+    now = at_slot(0, shift=60)
+    slot = slot_now(now)
+    for user_id in range(100, 110):
+        await db.start_gym_visit(user_id, slot.id, "strength", now + 900)
+
+    assert await db.gym_slot_crowd(slot.id) == 10

@@ -15,6 +15,12 @@
 Абонемент подписчику держит сама подписка — тем же `settle`, что сводит и
 тренировку. Не выдачей месяца, а выравниванием срока по концу подписки:
 иначе бесплатный месяц складывался бы сам с собой и переживал бы PRO.
+
+**Первая тренировка в сутки бесплатна, дальше за кредиты.** Цена растёт
+по числу уже занятых сегодня занятий, а не по номеру слота: пропустивший
+утро платит за вторую тренировку столько же, сколько и не пропустивший.
+Списывается она при записи, и обратно не приходит — как и потраченный
+слот, если боец ушёл раньше времени.
 """
 
 from __future__ import annotations
@@ -25,13 +31,19 @@ from dataclasses import dataclass
 from bot.database import Database
 from bot.game.classes import Stat, Stats
 from bot.game.gym import (
+    SLOT_LIMIT,
     TRAINING_SECONDS,
     UPGRADE_GAIN,
+    VISITS_PER_DAY,
     Pass,
     can_upgrade,
     cover_by_pro,
+    day_is_full,
+    day_of_slot,
     get_pass,
     price_of_upgrade,
+    price_of_visit,
+    slot_is_full,
     slot_now,
     training_for,
 )
@@ -76,6 +88,7 @@ class Visit:
     slot: str
     stat: Stat
     until: int
+    price: int = 0  # сколько за неё списали сверх абонемента
 
     def seconds_left(self, now: int) -> int:
         return max(0, self.until - now)
@@ -138,6 +151,7 @@ async def cover_pass(db: Database, player: Player, now: int | None = None) -> st
     if not until:
         return ""
     await db.set_gym_pass(player.user_id, until)
+    player.gym_until = until
     logger.info(
         "Абонемент бойца %s держится подпиской до %s", player.user_id, until
     )
@@ -177,7 +191,9 @@ async def buy_pass(
     start = was if has_pass(was, moment) else moment
     player.pay(ticket.price)
     await db.save_player(player)
-    await db.set_gym_pass(player.user_id, start + ticket.days * 24 * 60 * 60)
+    until = start + ticket.days * 24 * 60 * 60
+    await db.set_gym_pass(player.user_id, until)
+    player.gym_until = until
     logger.info(
         "Абонемент в зал бойцу %s: %s за %s", player.user_id, ticket.code, ticket.price
     )
@@ -192,6 +208,21 @@ def _require_gym(player: Player, now: int | None = None) -> None:
         require(player, Service.TRAIN, now)
     except Exception as error:
         raise GymError(str(error)) from error
+
+
+async def day_count(db: Database, player: Player, day: str) -> int:
+    """Сколько занятий боец уже занял в этих сутках."""
+    return await db.gym_visits_today(player.user_id, day)
+
+
+async def next_price(db: Database, player: Player, now: int | None = None) -> int:
+    """Почём бойцу следующая тренировка сегодня. Ноль — первая, по абонементу."""
+    moment = now_ts() if now is None else now
+    from bot.game.gym import moscow_day
+
+    return price_of_visit(
+        await day_count(db, player, moscow_day(moment).isoformat())
+    )
 
 
 async def join(db: Database, player: Player, now: int | None = None) -> Visit:
@@ -212,20 +243,61 @@ async def join(db: Database, player: Player, now: int | None = None) -> Visit:
             "До конца занятия меньше пятнадцати минут — "
             "записывайся на следующее."
         )
+    if slot_is_full(await db.gym_slot_crowd(slot.id)):
+        raise GymError(
+            f"В этом занятии все {SLOT_LIMIT} мест заняты — "
+            "приходи на следующее."
+        )
+
+    # Цена считается по уже занятым сегодня занятиям, а не по номеру слота:
+    # пропустивший утро платит за вторую тренировку столько же, сколько и
+    # не пропустивший
+    taken = await day_count(db, player, day_of_slot(slot.id))
+    if day_is_full(taken):
+        raise GymError(
+            f"На сегодня хватит: {VISITS_PER_DAY} занятий — это потолок суток."
+        )
+    price = price_of_visit(taken)
+    if price and not player.can_afford(price):
+        raise GymError(
+            f"Занятие сверх абонемента стоит {price} 💰, "
+            f"а на счету {player.credits} 💰."
+        )
 
     started = await db.start_gym_visit(
-        player.user_id, slot.id, slot.training.stat.value, moment + TRAINING_SECONDS
+        player.user_id,
+        slot.id,
+        slot.training.stat.value,
+        moment + TRAINING_SECONDS,
+        limit=SLOT_LIMIT,
     )
     if not started:
+        # Либо боец в этом занятии уже стоял, либо последнее место заняли
+        # в ту же секунду. Второе бывает редко, и различать их незачем:
+        # обе причины ведут к следующему занятию
+        if await db.gym_slot_crowd(slot.id) >= SLOT_LIMIT:
+            raise GymError(
+                f"Место заняли раньше: в занятии всего {SLOT_LIMIT}. "
+                "Приходи на следующее."
+            )
         raise GymError("В этом занятии ты уже отработал. Следующее — по расписанию.")
+
+    # Платим после записи: не записались — не списали
+    if price:
+        player.pay(price)
+        await db.save_player(player)
     logger.info(
-        "Боец %s встал на тренировку %s в слоте %s",
+        "Боец %s встал на тренировку %s в слоте %s за %s",
         player.user_id,
         slot.training.code,
         slot.id,
+        price,
     )
     return Visit(
-        slot=slot.id, stat=slot.training.stat, until=moment + TRAINING_SECONDS
+        slot=slot.id,
+        stat=slot.training.stat,
+        until=moment + TRAINING_SECONDS,
+        price=price,
     )
 
 
@@ -259,7 +331,10 @@ async def _close_visit(
     try:
         require(player, Service.TRAIN, moment)
     except Exception:
-        await db.drop_gym_visit(player.user_id, visit.slot)
+        # Занятие закрываем, но очка не даём: оно потрачено. Стереть
+        # запись значило бы вернуть и место в занятии, и место в дне, —
+        # то есть отпустить бойца погулять и вернуться к той же цене
+        await db.close_gym_visit(player.user_id, visit.slot)
         logger.info("Боец %s ушёл с тренировки %s", player.user_id, visit.slot)
         return "Ты ушёл из зала до конца занятия — тренировка не зачтена."
 
@@ -278,11 +353,16 @@ async def _close_visit(
 
 
 async def leave(db: Database, player: Player) -> None:
-    """Уйти с тренировки досрочно. Слот при этом потрачен."""
+    """Уйти с тренировки досрочно.
+
+    Занятие при этом потрачено — и место в нём, и место в сегодняшнем
+    счёте, и уплаченные за него кредиты. Иначе уход был бы бесплатным
+    способом передумать: встал, посмотрел, ушёл, встал заново.
+    """
     visit = await visit_of(db, player)
     if visit is None:
         raise GymError("Ты сейчас не тренируешься.")
-    await db.drop_gym_visit(player.user_id, visit.slot)
+    await db.close_gym_visit(player.user_id, visit.slot)
 
 
 # ---------- улучшение ----------
@@ -330,6 +410,8 @@ async def upgrade(
 __all__ = [
     "GymError",
     "cover_pass",
+    "day_count",
+    "next_price",
     "Progress",
     "Upgrade",
     "Visit",

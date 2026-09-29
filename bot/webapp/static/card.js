@@ -5735,6 +5735,19 @@ let gymData = null;
 let gymBusy = false;
 let gymTimer = null;
 
+// Две вкладки: занятия и абонемент. Без абонемента вкладок нет вовсе —
+// выбирать не из чего, и вторая была бы единственной
+const GYM_TABS = [
+  ["train", "Тренировки"],
+  ["pass", "Абонемент"],
+];
+let gymTab = "train";
+
+function pickGymTab(name) {
+  gymTab = name;
+  if (gymData) renderGym(gymData);
+}
+
 async function loadGym() {
   try {
     const response = await fetch("api/gym", {
@@ -5791,12 +5804,78 @@ function renderGym(data) {
     body.appendChild(passShelf(data));
     return;
   }
-  body.appendChild(passLine(data.pass));
+
+  const tabs = document.createElement("div");
+  tabs.className = "bubbles";
+  tabs.id = "gym-tabs";
+  GYM_TABS.forEach(([code, label]) => {
+    tabs.appendChild(chip(label, gymTab === code, () => pickGymTab(code)));
+  });
+  body.appendChild(tabs);
+
+  if (gymTab === "pass") {
+    body.appendChild(passTab(data));
+    return;
+  }
   if (data.visit && data.visit.stat) body.appendChild(visitBox(data.visit));
   else body.appendChild(slotBox(data));
+  body.appendChild(dayLine(data.day));
   body.appendChild(progressBox(data));
   body.appendChild(scheduleBox(data.schedule));
   startGymClock();
+}
+
+/** Вкладка «Абонемент»: что есть, почём докупать и что ещё продают. */
+function passTab(data) {
+  const box = document.createElement("div");
+  box.appendChild(passLine(data.pass));
+  box.appendChild(dayPrices(data.day));
+  box.appendChild(passShelf(data, "Продлить абонемент"));
+  return box;
+}
+
+/** Прайс дня лесенкой: во что обойдётся день, если ходить до вечера. */
+function dayPrices(day) {
+  const box = document.createElement("section");
+  box.className = "day-prices";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Занятия в день";
+  box.appendChild(head);
+
+  day.prices.forEach((row) => {
+    const line = document.createElement("div");
+    line.className = "day-price"
+      + (row.number <= day.taken ? " spent" : "")
+      + (row.number === day.taken + 1 ? " next" : "");
+    const number = document.createElement("span");
+    number.className = "day-price-number";
+    number.textContent = row.number + "-е";
+    const price = document.createElement("span");
+    price.className = "day-price-value";
+    price.textContent = row.free ? "по абонементу" : num(row.price) + " 💰";
+    line.append(number, price);
+    box.appendChild(line);
+  });
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = day.full
+    ? "На сегодня всё: " + day.limit + " занятий — это потолок суток."
+    : "Сегодня занято " + day.taken + " из " + day.limit + ".";
+  box.appendChild(note);
+  return box;
+}
+
+/** Строка под кнопкой: сколько сегодня взято и почём следующее. */
+function dayLine(day) {
+  const box = document.createElement("p");
+  box.className = "gym-day-line";
+  box.textContent = day.full
+    ? "Сегодня отработано " + day.taken + " из " + day.limit + " — на сегодня всё."
+    : "Сегодня " + day.taken + " из " + day.limit + " · следующее "
+      + (day.price ? num(day.price) + " 💰" : "по абонементу");
+  return box;
 }
 
 function gymHint(data) {
@@ -5804,24 +5883,33 @@ function gymHint(data) {
     return "Без абонемента на тренировки не пускают.";
   }
   if (data.visit && data.visit.stat) return "Идёт тренировка. Не уходи из зала.";
+  if (data.day && data.day.full) {
+    return "На сегодня всё: " + data.day.limit + " занятий — потолок суток.";
+  }
   if (data.now && data.now.state === "open") return "Занятие идёт — можно вставать.";
   if (data.now && data.now.state === "late") {
     return "Занятие заканчивается: записываться поздно.";
   }
+  if (data.now && data.now.state === "full") {
+    return "В этом занятии мест нет. Приходи на следующее.";
+  }
   if (data.now && data.now.state === "done") {
     return "В этом занятии ты уже отработал. Следующее — по расписанию.";
+  }
+  if (data.now && data.now.state === "training") {
+    return "Ты стоишь на этом занятии.";
   }
   return "Сейчас занятий нет. Ближайшее — в расписании.";
 }
 
 // ---------- абонемент ----------
 
-function passShelf(data) {
+function passShelf(data, title) {
   const box = document.createElement("section");
   box.className = "tickets";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = "Абонемент";
+  head.textContent = title || "Абонемент";
   box.appendChild(head);
   data.pass.tickets.forEach((ticket) => box.appendChild(ticketCard(ticket)));
   return box;
@@ -5907,11 +5995,25 @@ function slotBox(data) {
 
   // Кнопка живёт при идущем слоте, а не в строке табло: сорок две кнопки
   // на расписании означали бы сорок один отказ
-  if (data.now && data.now.state === "open") {
+  // Сколько мест занято — видно до того, как нажмёшь
+  const seats = document.createElement("div");
+  seats.className = "gym-now-seats";
+  seats.textContent = "Мест занято: " + slot.taken + " из " + slot.limit;
+  box.appendChild(seats);
+
+  if (data.now && data.now.state === "open" && !data.day.full) {
+    const price = data.day.price;
     box.appendChild(
-      button("Присоединиться · " + data.minutes + " мин", {
-        onClick: () => gymAction({ action: "join" }),
-      })
+      button(
+        "Присоединиться · " + (price ? num(price) + " 💰" : "по абонементу"),
+        {
+          // Цену с кнопки не снимаем, даже когда платить нечем
+          disabled: price > data.credits,
+          hint: "Занятие сверх абонемента стоит " + num(price)
+            + " 💰, а на счету " + num(data.credits) + " 💰.",
+          onClick: () => gymAction({ action: "join" }),
+        }
+      )
     );
   } else {
     const note = document.createElement("p");
@@ -6040,10 +6142,14 @@ function scheduleDay(day) {
   return box;
 }
 
+// Значками, а не словами: в строке расписания на слово места нет, а
+// часы и галочка читаются с одного взгляда
 const SLOT_MARKS = {
   open: "идёт",
   late: "заканчивается",
-  done: "отработано",
+  training: "🕗",
+  done: "✅",
+  full: "мест нет",
   past: "",
   ahead: "",
 };
@@ -6174,15 +6280,22 @@ function paperCard(paper, bare) {
 
   const issuer = document.createElement("p");
   issuer.className = "paper-issuer";
-  // По какому праву полис на руках: оплачен или держится подпиской
-  issuer.textContent =
-    paper.issuer + " · № " + paper.number + " · " + paper.ground;
+  // Контора, номер и по какому праву документ на руках. Номер есть не у
+  // всякого бланка: абонемент заводят на входе, а не выписывают, и
+  // «№ » с пустотой после него выглядело бы потерянным полем
+  issuer.textContent = [
+    paper.issuer,
+    paper.number ? "№ " + paper.number : "",
+    paper.ground,
+  ].filter(Boolean).join(" · ");
   box.appendChild(issuer);
 
+  // Подписи полей приходят с сервером, а не зашиты здесь: у полиса
+  // «Застрахован», у абонемента «Владелец», и бланк один на оба
   box.appendChild(
     paperRows([
-      ["Застрахован", paper.holder],
-      ["Период страхования", paper.period],
+      [paper.holder_title || "Застрахован", paper.holder],
+      [paper.period_title || "Период страхования", paper.period],
       ["Покрытие", paper.covers],
     ])
   );

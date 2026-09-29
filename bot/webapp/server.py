@@ -41,7 +41,7 @@ from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
 from bot.webapp.hospital import build_hospital
-from bot.game.gym import MAX_UPGRADES, schedule_from
+from bot.game.gym import MAX_UPGRADES, moscow_day, schedule_from
 from bot.webapp.gym import build_gym
 from bot.webapp.insurance import build_insurance
 from bot.webapp.trade import build_trade
@@ -52,7 +52,8 @@ from bot.trade_service import TradeError, TradeService
 from bot.insurance_service import InsuranceError, buy_policy, set_renew, settle
 from bot.gym_service import GymError
 from bot.gym_service import buy_pass, join as gym_join, leave as gym_leave
-from bot.gym_service import progress_of, settle as gym_settle, upgrade
+from bot.gym_service import day_count, progress_of
+from bot.gym_service import settle as gym_settle, upgrade
 from bot.gym_service import visit_of
 from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
@@ -955,15 +956,19 @@ async def _gym_state(request: web.Request, player, said: str = "") -> dict:
     стоит дешевле, чем отдельная ручка под него.
     """
     db = request.app[DB_KEY]
+    moment = now_ts()
     rows = await progress_of(db, player)
     visit = await visit_of(db, player)
-    slots = [slot.id for slot in schedule_from(now_ts())]
+    slots = [slot.id for slot in schedule_from(moment)]
     body = build_gym(
         player,
         await db.gym_pass_of(player.user_id),
         rows,
         visit,
-        await db.gym_slots_done(player.user_id, slots),
+        await db.gym_slots_taken(player.user_id, slots),
+        await db.gym_slots_crowd(slots),
+        await day_count(db, player, moscow_day(moment).isoformat()),
+        moment,
     )
     body["said"] = said
     return body
@@ -996,8 +1001,10 @@ async def api_gym_action(request: web.Request) -> web.Response:
             ticket = await buy_pass(db, player, str(data.get("code") or ""))
             said = f"Абонемент на {ticket.title.lower()} куплен: −{ticket.price} 💰."
         elif action == "join":
-            await gym_join(db, player)
+            visit = await gym_join(db, player)
             said = "Ты на тренировке. Пятнадцать минут — и очко твоё."
+            if visit.price:
+                said += f" Списано {visit.price} 💰 сверх абонемента."
         elif action == "leave":
             await gym_leave(db, player)
             said = "Ты ушёл с тренировки. Занятие потрачено."
