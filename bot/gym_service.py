@@ -11,6 +11,10 @@
    конца больше пятнадцати минут.
 3. **Место.** Тренируются в зале. Ушёл до конца тренировки — очка нет:
    пятнадцать минут стоят именно в зале, а не где придётся.
+
+Абонемент подписчику держит сама подписка — тем же `settle`, что сводит и
+тренировку. Не выдачей месяца, а выравниванием срока по концу подписки:
+иначе бесплатный месяц складывался бы сам с собой и переживал бы PRO.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from bot.game.gym import (
     UPGRADE_GAIN,
     Pass,
     can_upgrade,
+    cover_by_pro,
     get_pass,
     price_of_upgrade,
     slot_now,
@@ -119,10 +124,39 @@ async def visit_of(db: Database, player: Player) -> Visit | None:
 # ---------- абонемент ----------
 
 
+async def cover_pass(db: Database, player: Player, now: int | None = None) -> str:
+    """Дотянуть абонемент до конца подписки. Пусто — тянуть нечего.
+
+    Это и есть «с PRO абонемент даётся сам»: не выдача месяца, а
+    выравнивание срока по концу подписки. Зовётся и при выдаче самой
+    подписки, и здесь — второе догоняет тех, у кого PRO началась раньше
+    этого правила, и тех, кому её продлили мимо магазина.
+    """
+    moment = now_ts() if now is None else now
+    was = await db.gym_pass_of(player.user_id)
+    until = cover_by_pro(was, player.pro_until, moment)
+    if not until:
+        return ""
+    await db.set_gym_pass(player.user_id, until)
+    logger.info(
+        "Абонемент бойца %s держится подпиской до %s", player.user_id, until
+    )
+    return (
+        "Абонемент продлён по подписке — до её конца."
+        if has_pass(was, moment)
+        else "Абонемент открыт по подписке — на весь её срок."
+    )
+
+
 async def buy_pass(
     db: Database, player: Player, code: str, now: int | None = None
 ) -> Pass:
-    """Купить абонемент. Живой продлевается с конца, кончившийся — с сейчас."""
+    """Купить абонемент. Живой продлевается с конца, кончившийся — с сейчас.
+
+    Месяц ложится поверх того срока, что есть, — в том числе поверх срока
+    подписки. Подписчик, купивший абонемент, получает время после
+    подписки, а не вместо неё.
+    """
     ticket = get_pass(code)
     if ticket is None:
         raise GymError("Такого абонемента в зале не продают.")
@@ -133,6 +167,10 @@ async def buy_pass(
         )
 
     moment = now_ts() if now is None else now
+    # Сначала выравниваем по подписке, и только потом кладём срок сверху:
+    # иначе купленный месяц считался бы от старого конца и часть его
+    # ушла бы под время, которое и так держит подписка
+    await cover_pass(db, player, moment)
     was = await db.gym_pass_of(player.user_id)
     # Продлевается с конца, а не с сегодняшнего дня: купивший второй месяц
     # заранее получает два месяца, а не один
@@ -192,17 +230,30 @@ async def join(db: Database, player: Player, now: int | None = None) -> Visit:
 
 
 async def settle(db: Database, player: Player, now: int | None = None) -> str:
-    """Свести законченную тренировку. Возвращает, что сказать, или пусто.
+    """Свести часы зала. Возвращает, что сказать бойцу, или пусто.
+
+    Двух дел: дотянуть абонемент по живой подписке и закрыть отстоявшую
+    своё тренировку. Случиться могут оба разом — тогда говорим и о том, и
+    о другом: открывшийся абонемент не та новость, которую стоит съесть.
 
     Зовётся оттуда, где на зал смотрят. Это не действие игрока, а сверка
     часов, и говорить о ней стоит, только когда что-то случилось.
     """
     moment = now_ts() if now is None else now
-    visit = await visit_of(db, player)
-    if visit is None or not visit.is_over(moment):
-        return ""
+    # Подписка идёт первой: она может открыть абонемент, без которого в
+    # зал не пустят вовсе
+    lines = [await cover_pass(db, player, moment)]
 
-    training = training_for(visit.stat)
+    visit = await visit_of(db, player)
+    if visit is not None and visit.is_over(moment):
+        lines.append(await _close_visit(db, player, visit, moment))
+    return " ".join(line for line in lines if line)
+
+
+async def _close_visit(
+    db: Database, player: Player, visit: Visit, moment: int
+) -> str:
+    """Закрыть отстоявшую своё тренировку и выдать за неё очко."""
     # Пятнадцать минут стоят в зале. Ушёл — тренировка не считается, и
     # слот на неё потрачен: так и в жизни
     try:
@@ -221,6 +272,7 @@ async def settle(db: Database, player: Player, now: int | None = None) -> str:
         visit.stat.value,
         points,
     )
+    training = training_for(visit.stat)
     name = training.title if training else "Тренировка"
     return f"{name} отработана: +1 очко в {visit.stat.dative}."
 
@@ -277,6 +329,7 @@ async def upgrade(
 
 __all__ = [
     "GymError",
+    "cover_pass",
     "Progress",
     "Upgrade",
     "Visit",

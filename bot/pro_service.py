@@ -2,7 +2,7 @@
 
 Одна дверь на все входы: и оплата звёздами, и бесплатная акция приходят
 сюда. Внутри всегда одно и то же — продлить срок и дотянуть до нового
-срока страховой полис.
+срока то, что подписка держит: страховой полис и абонемент в зал.
 
 Вещей подписка не выдаёт: ни клинка, ни образа. И то и другое оставалось
 у бойца навсегда, то есть подписка продавала вечное за месячную цену. У
@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from bot.database import Database
 from bot.game.health import now_ts
 from bot.game.pro import ProOffer, promo_is_on, promo_offer
+from bot.gym_service import cover_pass
 from bot.insurance_service import cover_by_pro
 from bot.models import Player
 
@@ -44,6 +45,7 @@ class ProGrant:
     offer: ProOffer
     until: int
     policy: bool = False  # полис выписали или дотянули прямо сейчас
+    gym: bool = False  # абонемент в зал открыли или дотянули прямо сейчас
     renewed: bool = False  # подписка была жива, мы её продлили
 
     def seconds_left(self, now: int | None = None) -> int:
@@ -59,9 +61,10 @@ async def grant_pro(
     player.extend_pro(offer.seconds, moment)
 
     await db.save_player(player)
-    # Полис — после сохранения срока: `cover_by_pro` смотрит на `pro_until`,
-    # и до сохранения он увидел бы прежний конец подписки
+    # Полис и абонемент — после сохранения срока: обе сверки смотрят на
+    # `pro_until`, и до сохранения увидели бы прежний конец подписки
     policy = bool(await cover_by_pro(db, player, moment))
+    gym = bool(await cover_pass(db, player, moment))
     logger.info(
         "PRO: боец %s до %s (%s дней, %s ⭐)",
         player.user_id,
@@ -73,6 +76,7 @@ async def grant_pro(
         offer=offer,
         until=player.pro_until,
         policy=policy,
+        gym=gym,
         renewed=renewed,
     )
 

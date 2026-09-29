@@ -143,7 +143,7 @@ async def test_a_second_subscription_only_extends_the_term(db):
     assert await db.owned_looks(42) == set()
 
 
-def test_the_benefits_are_three_bare_promises(db):
+def test_the_benefits_are_bare_one_line_promises(db):
     """Описание короткое намеренно — и ничего вечного не обещает.
 
     Проверяем не буквы, а обещание: ни одна строка не называет вещь или
@@ -157,14 +157,12 @@ def test_the_benefits_are_three_bare_promises(db):
         assert word not in said, f"описание обещает вечное: {word}"
     # Значок в список не идёт: его видно и так
     assert "значок" not in said
-    # Три строки, по одному предложению в каждой
-    assert len(pro.BENEFITS) == 3
+    # По строке на услугу, каждая — одно предложение без оговорок
     for line in pro.BENEFITS:
         assert line.count(".") == 0 and len(line) <= 60, line
     # А то, ради чего подписку берут, названо
-    assert "аналитик" in said
-    assert "страховка" in said
-    assert "опыта" in said
+    for word in ("аналитик", "страховка", "абонемент", "опыта"):
+        assert word in said, f"описание молчит о главном: {word}"
 
 
 def test_the_blade_is_a_reward_and_never_a_purchase():
@@ -301,10 +299,12 @@ def test_the_pro_card_leads_the_mage_counter():
     magic = build_magic(make_player())
 
     assert magic["pro"]["title"] == "Подписка PRO"
-    assert magic["pro"]["benefits"] == ["150% опыта за бой",
-                                        "Аналитик-помощник во время боя",
-                                        "Страховка жизни и здоровья "
-                                        "подключается автоматически"]
+    assert magic["pro"]["benefits"] == [
+        "150% опыта за бой",
+        "Аналитик-помощник во время боя",
+        "Страховка жизни и здоровья подключается автоматически",
+        "Абонемент в тренажёрный зал на всё время подписки",
+    ]
     assert magic["pro"]["image"].endswith("/magic/pro.jpeg")
     assert not magic["pro"]["active"]
 

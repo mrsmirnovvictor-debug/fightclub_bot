@@ -566,3 +566,124 @@ async def test_an_unknown_action_is_refused(client, db):
     )
 
     assert response.status == 400
+
+
+# ---------- абонемент по подписке ----------
+
+
+def pro_player(days: int = 30, credits: int = 0, now: int | None = None) -> Player:
+    """Боец с живой подпиской PRO."""
+    from bot.game.health import now_ts
+
+    player = make_player(credits=credits)
+    player.pro_until = (now_ts() if now is None else now) + days * 24 * 60 * 60
+    return player
+
+
+async def test_a_subscription_opens_the_pass_for_its_own_term(db):
+    """«На время, пока действует PRO, у игрока есть абонемент»."""
+    from bot.gym_service import cover_pass
+
+    now = at_slot(0)
+    player = await stand(db, pro_player(now=now))
+
+    said = await cover_pass(db, player, now)
+
+    assert "по подписке" in said
+    assert player.credits == 0, "абонемент по подписке не стоит кредитов"
+    # Срок абонемента — ровно срок подписки, а не месяц
+    assert await db.gym_pass_of(player.user_id) == player.pro_until
+
+
+async def test_a_subscriber_walks_into_a_training_without_paying(db):
+    """Абонемент открывается сам — и в зал пускают."""
+    now = at_slot(0, shift=60)
+    player = await stand(db, pro_player(now=now, credits=0))
+
+    said = await settle(db, player, now)
+    visit = await join(db, player, now)
+
+    assert "по подписке" in said
+    assert visit.stat == slot_now(now).training.stat
+    assert player.credits == 0
+
+
+async def test_a_subscriber_cannot_stack_free_passes(db):
+    """Подписка держит срок, а не выдаёт месяцы."""
+    from bot.gym_service import cover_pass
+
+    now = at_slot(0)
+    player = await stand(db, pro_player(now=now))
+
+    first = await cover_pass(db, player, now)
+    again = [await cover_pass(db, player, now) for _ in range(9)]
+
+    assert first, "первый раз абонемент всё-таки открывают"
+    assert again == [""] * 9, "дальше подписке нечего прибавить"
+    assert await db.gym_pass_of(player.user_id) == player.pro_until
+
+
+async def test_the_pass_dies_with_the_subscription(db):
+    from bot.gym_service import cover_pass, has_pass
+
+    now = at_slot(0)
+    player = await stand(db, pro_player(days=1, now=now))
+    await cover_pass(db, player, now)
+    after = player.pro_until + 1
+
+    assert not has_pass(await db.gym_pass_of(player.user_id), after)
+    # И сам собой не продлевается: за него ни разу не платили
+    assert await cover_pass(db, player, after) == ""
+
+
+async def test_a_paid_pass_longer_than_the_subscription_is_not_cut(db):
+    from bot.gym_service import cover_pass
+
+    now = at_slot(0)
+    player = await stand(db, pro_player(days=1, credits=10_000, now=now))
+    await buy_pass(db, player, "year", now)
+    paid = await db.gym_pass_of(player.user_id)
+
+    assert await cover_pass(db, player, now) == ""
+    assert await db.gym_pass_of(player.user_id) == paid
+
+
+async def test_a_subscriber_who_pays_gets_time_after_the_subscription(db):
+    """Подписчик покупает не абонемент, который у него есть, а время после."""
+    now = at_slot(0)
+    player = await stand(db, pro_player(days=30, credits=600, now=now))
+    await settle(db, player, now)
+    pro_end = player.pro_until
+
+    ticket = await buy_pass(db, player, "month", now)
+
+    assert ticket.price == 500 and player.credits == 100
+    assert await db.gym_pass_of(player.user_id) == pro_end + 30 * 24 * 60 * 60
+
+
+async def test_extending_the_subscription_extends_the_pass_with_it(db):
+    from bot.game.pro import paid_offer
+    from bot.pro_service import grant_pro
+
+    now = at_slot(0)
+    player = await stand(db, pro_player(days=1, now=now))
+    await settle(db, player, now)
+    first = await db.gym_pass_of(player.user_id)
+
+    grant = await grant_pro(db, player, paid_offer(), now)
+
+    assert grant.gym, "выдача подписки должна дотянуть абонемент"
+    assert await db.gym_pass_of(player.user_id) == player.pro_until > first
+
+
+async def test_the_gym_screen_says_the_pass_came_with_the_subscription(client, db):
+    """Путь целиком: подписчик открывает зал и уже с абонементом."""
+    now = at_slot(0)
+    await stand(db, pro_player(now=now, credits=0))
+
+    response = await client.get("/api/gym", headers=headers())
+    body = await response.json()
+
+    assert response.status == 200
+    assert body["pass"]["active"]
+    assert "по подписке" in body["said"]
