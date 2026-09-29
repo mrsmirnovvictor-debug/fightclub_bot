@@ -2226,3 +2226,107 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   color: var(--muted);
   line-height: 1.35;
 }
+
+/* ---------- тренажёрный зал ---------- */
+
+/* Абонемент: три карточки, когда его нет. Есть — одна строка сверху */
+.tickets { display: grid; gap: 8px; margin-bottom: 14px; }
+.ticket {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  display: grid;
+  gap: 3px;
+}
+.ticket-title { font-weight: 700; }
+.ticket-note { font-size: 12.5px; color: var(--muted); }
+.ticket-day { font-size: 12px; color: var(--gold); font-weight: 600; }
+.ticket .btn { margin-top: 6px; }
+.gym-pass { margin: 0 0 12px; font-size: 12.5px; color: var(--muted); }
+
+/* Что происходит прямо сейчас — первым и в рамке: за этим в зал и зашли */
+.gym-now {
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--panel);
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+/* Идущая тренировка обводится зелёным: она уже идёт, а не предлагается */
+.gym-now.training { border-color: var(--hp-green); }
+.gym-now-title { font-weight: 700; font-size: 15px; }
+.gym-now-when { font-size: 12.5px; color: var(--muted); }
+.gym-now-note { margin: 0; font-size: 12.5px; color: var(--muted); }
+.gym-clock {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--hp-green);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Прогресс: полоса на каждую характеристику и кнопка «Улучшить» */
+.gym-progress { margin-bottom: 16px; }
+.grow {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+/* Очков хватает — рамка зелёная: кнопку видно, не листая */
+.grow.ready { border-color: var(--hp-green); }
+.grow.maxed { opacity: 0.72; }
+.grow-head { display: flex; align-items: baseline; gap: 8px; }
+.grow-title { font-weight: 700; flex: 1; min-width: 0; }
+.grow-ups { font-size: 12.5px; color: var(--muted); font-weight: 700; }
+.grow-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--hp-track);
+  overflow: hidden;
+}
+.grow-fill { height: 100%; background: var(--hp-green); border-radius: 999px; }
+.grow-note { font-size: 12.5px; color: var(--muted); }
+.grow .btn { margin-top: 2px; }
+
+/* Расписание: день заголовком, шесть строк под ним */
+.gym-day { margin-bottom: 12px; }
+.gym-day-head {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.gym-day.today .gym-day-head { color: var(--accent); }
+.gym-slot {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+.gym-slot-clock {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.gym-slot-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gym-slot-mark { flex: none; font-size: 11.5px; color: var(--muted); }
+/* Идущий слот выделен, прошедший приглушён, отработанный помечен зелёным */
+.gym-slot.open { border-color: var(--accent); background: var(--slot); }
+.gym-slot.late { border-color: var(--hp-yellow); background: var(--slot); }
+.gym-slot.past { opacity: 0.45; }
+.gym-slot.done .gym-slot-mark { color: var(--hp-green); font-weight: 600; }

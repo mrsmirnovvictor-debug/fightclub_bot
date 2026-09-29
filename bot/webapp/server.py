@@ -18,7 +18,7 @@ from bot.database import Database
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError
 from bot.raid_service import RaidError
-from bot.game.classes import ALL_STATS
+from bot.game.classes import ALL_STATS, Stat
 from bot.game.equipment import Slot
 from bot.game.modes import mode_of
 from bot.game.potions import get_potion
@@ -41,6 +41,8 @@ from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
 from bot.webapp.hospital import build_hospital
+from bot.game.gym import MAX_UPGRADES, schedule_from
+from bot.webapp.gym import build_gym
 from bot.webapp.insurance import build_insurance
 from bot.webapp.trade import build_trade
 from bot.webapp.workshop import build_workshop
@@ -48,6 +50,10 @@ from bot.content.mods import star_of
 from bot.hospital_service import HospitalError, heal
 from bot.trade_service import TradeError, TradeService
 from bot.insurance_service import InsuranceError, buy_policy, set_renew, settle
+from bot.gym_service import GymError
+from bot.gym_service import buy_pass, join as gym_join, leave as gym_leave
+from bot.gym_service import progress_of, settle as gym_settle, upgrade
+from bot.gym_service import visit_of
 from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
 from bot.game.health import format_duration, now_ts
@@ -939,6 +945,86 @@ async def api_market_action(request: web.Request) -> web.Response:
     return await _market(request, player)
 
 
+# ---------- тренажёрный зал ----------
+
+
+async def _gym_state(request: web.Request, player, said: str = "") -> dict:
+    """Состояние зала целиком.
+
+    Расписание в него входит полностью — оно выводится, а не читается, и
+    стоит дешевле, чем отдельная ручка под него.
+    """
+    db = request.app[DB_KEY]
+    rows = await progress_of(db, player)
+    visit = await visit_of(db, player)
+    slots = [slot.id for slot in schedule_from(now_ts())]
+    body = build_gym(
+        player,
+        await db.gym_pass_of(player.user_id),
+        rows,
+        visit,
+        await db.gym_slots_done(player.user_id, slots),
+    )
+    body["said"] = said
+    return body
+
+
+async def _in_gym(request: web.Request) -> tuple:
+    """Боец в зале, с уже сведённой тренировкой.
+
+    Пятнадцать минут сводятся здесь — в единственном месте, где на зал
+    смотрят. Часов, которые обходили бы базу по будильнику, у клуба нет.
+    """
+    player = await _at(request, Service.TRAIN)
+    return player, await gym_settle(request.app[DB_KEY], player)
+
+
+async def api_gym(request: web.Request) -> web.Response:
+    """Зал: абонемент, расписание, идущая тренировка и прогресс."""
+    player, said = await _in_gym(request)
+    return web.json_response(await _gym_state(request, player, said))
+
+
+async def api_gym_action(request: web.Request) -> web.Response:
+    """Купить абонемент, встать на тренировку, уйти с неё или улучшиться."""
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    player, said = await _in_gym(request)
+    db = request.app[DB_KEY]
+    try:
+        if action == "pass":
+            ticket = await buy_pass(db, player, str(data.get("code") or ""))
+            said = f"Абонемент на {ticket.title.lower()} куплен: −{ticket.price} 💰."
+        elif action == "join":
+            await gym_join(db, player)
+            said = "Ты на тренировке. Пятнадцать минут — и очко твоё."
+        elif action == "leave":
+            await gym_leave(db, player)
+            said = "Ты ушёл с тренировки. Занятие потрачено."
+        elif action == "upgrade":
+            try:
+                stat = Stat(str(data.get("stat") or ""))
+            except ValueError as error:
+                raise GymError("Такой характеристики нет.") from error
+            grown = await upgrade(db, player, stat)
+            said = (
+                f"{grown.stat.title.capitalize()} выросла до {grown.value}. "
+                f"Улучшений: {grown.ups} из {MAX_UPGRADES}."
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except GymError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    # Кредиты и характеристики могли только что поменяться: перечитываем
+    # бойца, чтобы зал и карточка говорили одно и то же
+    config = request.app[CONFIG_KEY]
+    fresh = await db.get_player(player.user_id) or player
+    body = await _gym_state(request, fresh, said)
+    body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
+    return web.json_response(body)
+
+
 # ---------- страховая компания ----------
 
 
@@ -1454,6 +1540,8 @@ def create_app(
             web.get("/api/history", api_history),
             web.get("/api/market", api_market),
             web.post("/api/market", api_market_action),
+            web.get("/api/gym", api_gym),
+            web.post("/api/gym", api_gym_action),
             web.get("/api/insurance", api_insurance),
             web.post("/api/insurance", api_policy),
             web.get("/api/trade", api_trade),

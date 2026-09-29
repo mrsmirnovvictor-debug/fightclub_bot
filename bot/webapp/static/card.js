@@ -1749,15 +1749,15 @@ function lotCard(lot) {
 }
 
 const SCREENS = [
-  "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "trade",
-  "house", "bag", "hero",
+  "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
+  "trade", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
 const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
-  insurance: "map", house: "map",
+  insurance: "map", gym: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1784,6 +1784,9 @@ function showTab(name) {
   if (name === "workshop") loadWorkshop();
   if (name === "hospital") loadHospital();
   if (name === "insurance") loadInsurance();
+  // Часы тренировки идут, только пока на зал смотрят
+  if (name === "gym") loadGym();
+  else stopGymClock();
   // Стол на рынке общий: пока на него смотрят — опрашиваем, ушли — молчим
   if (name === "trade") startTradeWatch();
   else stopTradeWatch();
@@ -2148,6 +2151,7 @@ const HOUSE_SCREENS = {
   heal: () => showTab("hospital"),
   trade: () => showTab("trade"),
   insurance: () => showTab("insurance"),
+  train: () => showTab("gym"),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -5714,6 +5718,358 @@ function render(card, keepTab) {
 // показывать экран клуба и что на нём можно
 let myPlace = null;
 
+// ---------- тренажёрный зал ----------
+//
+// Экран собран сверху вниз по срочности: идущая тренировка, потом слот, к
+// которому можно присоединиться, потом накопленное, и только затем
+// расписание на неделю. Абонемента нет — всё остальное не показываем
+// вовсе: без него в зал не пускают, и полоса прогресса под запертой
+// дверью только дразнит.
+//
+// Часы тикают на странице, а очко засчитывает сервер. Страница лишь
+// перестаёт ждать и спрашивает заново, когда пятнадцать минут вышли:
+// решать, отработана ли тренировка, ей нельзя — она не видит, в зале ли
+// боец на самом деле.
+
+let gymData = null;
+let gymBusy = false;
+let gymTimer = null;
+
+async function loadGym() {
+  try {
+    const response = await fetch("api/gym", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("gym-note").textContent = "Зал не открылся.";
+      return;
+    }
+    renderGym(await response.json());
+  } catch (error) {
+    el("gym-note").textContent = error.message;
+  }
+}
+
+async function gymAction(payload) {
+  if (gymBusy) return;
+  gymBusy = true;
+  try {
+    const response = await fetch("api/gym", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Зал", data.error || "Не получилось.");
+      await loadGym();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderGym(data);
+    if (data.said) popup("Зал", data.said);
+  } catch (error) {
+    popup("Зал", "Сервер не ответил.");
+  } finally {
+    gymBusy = false;
+  }
+}
+
+function renderGym(data) {
+  gymData = data;
+  el("shop-purse-gym").textContent = "";
+  el("shop-purse-gym").appendChild(purse(data.credits));
+  el("gym-note").textContent = data.said || gymHint(data);
+
+  const body = el("gym-body");
+  body.textContent = "";
+  if (!data.pass.active) {
+    body.appendChild(passShelf(data));
+    return;
+  }
+  body.appendChild(passLine(data.pass));
+  if (data.visit && data.visit.stat) body.appendChild(visitBox(data.visit));
+  else body.appendChild(slotBox(data));
+  body.appendChild(progressBox(data));
+  body.appendChild(scheduleBox(data.schedule));
+  startGymClock();
+}
+
+function gymHint(data) {
+  if (!data.pass.active) {
+    return "Без абонемента на тренировки не пускают.";
+  }
+  if (data.visit && data.visit.stat) return "Идёт тренировка. Не уходи из зала.";
+  if (data.now && data.now.state === "open") return "Занятие идёт — можно вставать.";
+  if (data.now && data.now.state === "late") {
+    return "Занятие заканчивается: записываться поздно.";
+  }
+  if (data.now && data.now.state === "done") {
+    return "В этом занятии ты уже отработал. Следующее — по расписанию.";
+  }
+  return "Сейчас занятий нет. Ближайшее — в расписании.";
+}
+
+// ---------- абонемент ----------
+
+function passShelf(data) {
+  const box = document.createElement("section");
+  box.className = "tickets";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Абонемент";
+  box.appendChild(head);
+  data.pass.tickets.forEach((ticket) => box.appendChild(ticketCard(ticket)));
+  return box;
+}
+
+function ticketCard(ticket) {
+  const box = document.createElement("div");
+  box.className = "ticket";
+
+  const title = document.createElement("div");
+  title.className = "ticket-title";
+  title.textContent = ticket.title;
+  const note = document.createElement("div");
+  note.className = "ticket-note";
+  note.textContent = ticket.note;
+  // Цена дня — по ней и видно, что год выгоднее месяца
+  const perDay = document.createElement("div");
+  perDay.className = "ticket-day";
+  perDay.textContent = ticket.per_day + " 💰 в день";
+  box.append(title, note, perDay);
+
+  box.appendChild(
+    button(num(ticket.price) + " 💰", {
+      // Цену с кнопки не снимаем, даже когда платить нечем: по ней и
+      // видно, сколько не хватает
+      disabled: !ticket.affordable,
+      hint: "Не хватает кредитов: абонемент стоит " + num(ticket.price) + " 💰.",
+      onClick: () => gymAction({ action: "pass", code: ticket.code }),
+    })
+  );
+  return box;
+}
+
+function passLine(ticket) {
+  const box = document.createElement("p");
+  box.className = "gym-pass";
+  box.textContent =
+    "🎟 Абонемент до " + ticket.until + " — осталось "
+    + ticket.days_left + " " + plural(ticket.days_left, "день", "дня", "дней");
+  return box;
+}
+
+// ---------- идущая тренировка и ближайший слот ----------
+
+function visitBox(visit) {
+  const box = document.createElement("section");
+  box.className = "gym-now training";
+
+  const title = document.createElement("div");
+  title.className = "gym-now-title";
+  title.textContent = visit.emoji + " " + visit.title;
+  const clock = document.createElement("div");
+  clock.className = "gym-clock";
+  clock.id = "gym-clock";
+  box.append(title, clock);
+
+  box.appendChild(
+    button("Уйти с тренировки", {
+      secondary: true,
+      onClick: () => gymAction({ action: "leave" }),
+    })
+  );
+  const note = document.createElement("p");
+  note.className = "gym-now-note";
+  note.textContent = "Уйдёшь из зала до конца — занятие не зачтётся.";
+  box.appendChild(note);
+  return box;
+}
+
+function slotBox(data) {
+  const box = document.createElement("section");
+  box.className = "gym-now";
+  const slot = data.now && data.now.id ? data.now : data.next;
+  if (!slot || !slot.id) return box;
+
+  const title = document.createElement("div");
+  title.className = "gym-now-title";
+  title.textContent = slot.emoji + " " + slot.title;
+  const when = document.createElement("div");
+  when.className = "gym-now-when";
+  when.textContent = slot.clock + " · " + slot.gains;
+  box.append(title, when);
+
+  // Кнопка живёт при идущем слоте, а не в строке табло: сорок две кнопки
+  // на расписании означали бы сорок один отказ
+  if (data.now && data.now.state === "open") {
+    box.appendChild(
+      button("Присоединиться · " + data.minutes + " мин", {
+        onClick: () => gymAction({ action: "join" }),
+      })
+    );
+  } else {
+    const note = document.createElement("p");
+    note.className = "gym-now-note";
+    note.textContent = data.now && data.now.id
+      ? gymHint(data)
+      : "Ближайшее занятие — " + slot.clock + ".";
+    box.appendChild(note);
+  }
+  return box;
+}
+
+/** Часы тренировки тикают на странице, а очко засчитывает сервер. */
+function startGymClock() {
+  stopGymClock();
+  if (!gymData || !gymData.visit || !gymData.visit.stat) return;
+  gymTimer = setInterval(tickGym, 1000);
+  tickGym();
+}
+
+function stopGymClock() {
+  if (gymTimer) clearInterval(gymTimer);
+  gymTimer = null;
+}
+
+function tickGym() {
+  const shown = el("gym-clock");
+  if (!shown || !gymData || !gymData.visit) return;
+  const left = Math.max(0, gymData.visit.until - Math.floor(Date.now() / 1000));
+  if (!left) {
+    // Время вышло — спрашиваем сервер: отработана ли тренировка, решает он
+    stopGymClock();
+    loadGym();
+    return;
+  }
+  const minutes = Math.floor(left / 60);
+  const seconds = left % 60;
+  shown.textContent =
+    "Осталось " + minutes + ":" + String(seconds).padStart(2, "0");
+}
+
+// ---------- прогресс ----------
+
+function progressBox(data) {
+  const box = document.createElement("section");
+  box.className = "gym-progress";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Прогресс";
+  box.appendChild(head);
+  data.progress.forEach((row) => box.appendChild(progressRow(row)));
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Улучшения дорожают: " + data.steps.join(", ") + " тренировок. "
+    + "Всего на пять — " + data.total + ".";
+  box.appendChild(note);
+  return box;
+}
+
+function progressRow(row) {
+  const box = document.createElement("div");
+  box.className = "grow" + (row.ready ? " ready" : "") + (row.maxed ? " maxed" : "");
+
+  const head = document.createElement("div");
+  head.className = "grow-head";
+  const title = document.createElement("span");
+  title.className = "grow-title";
+  title.textContent = row.emoji + " " + row.title;
+  const ups = document.createElement("span");
+  ups.className = "grow-ups";
+  ups.textContent = row.ups + " / " + row.max_ups;
+  head.append(title, ups);
+  box.appendChild(head);
+
+  const bar = document.createElement("div");
+  bar.className = "grow-bar";
+  const fill = document.createElement("div");
+  fill.className = "grow-fill";
+  fill.style.width = row.percent + "%";
+  bar.appendChild(fill);
+  box.appendChild(bar);
+
+  const said = document.createElement("div");
+  said.className = "grow-note";
+  said.textContent = row.maxed
+    ? "Потолок зала: больше не растёт"
+    : row.training_emoji + " " + row.training + " · " + row.points + " из "
+      + row.price;
+  box.appendChild(said);
+
+  if (!row.maxed) {
+    box.appendChild(
+      button("Улучшить · +" + row.gain, {
+        disabled: !row.ready,
+        hint: "Не хватает тренировок: нужно ещё " + row.left + ".",
+        onClick: () => gymAction({ action: "upgrade", stat: row.stat }),
+      })
+    );
+  }
+  return box;
+}
+
+// ---------- расписание ----------
+
+function scheduleBox(days) {
+  const box = document.createElement("section");
+  box.className = "gym-schedule";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Расписание на неделю";
+  box.appendChild(head);
+  days.forEach((day) => box.appendChild(scheduleDay(day)));
+  return box;
+}
+
+function scheduleDay(day) {
+  const box = document.createElement("div");
+  box.className = "gym-day" + (day.today ? " today" : "");
+  const head = document.createElement("div");
+  head.className = "gym-day-head";
+  head.textContent = day.title;
+  box.appendChild(head);
+  day.slots.forEach((slot) => box.appendChild(scheduleSlot(slot)));
+  return box;
+}
+
+const SLOT_MARKS = {
+  open: "идёт",
+  late: "заканчивается",
+  done: "отработано",
+  past: "",
+  ahead: "",
+};
+
+function scheduleSlot(slot) {
+  const box = document.createElement("div");
+  box.className = "gym-slot " + slot.state;
+
+  const clock = document.createElement("span");
+  clock.className = "gym-slot-clock";
+  clock.textContent = slot.clock;
+  const title = document.createElement("span");
+  title.className = "gym-slot-title";
+  title.textContent = slot.emoji + " " + slot.title;
+  box.append(clock, title);
+
+  const mark = SLOT_MARKS[slot.state];
+  if (mark) {
+    const tag = document.createElement("span");
+    tag.className = "gym-slot-mark";
+    tag.textContent = mark;
+    box.appendChild(tag);
+  }
+  return box;
+}
+
 // ---------- документы бойца ----------
 //
 // Раздел заведён под то, что будет копиться: полис первый, за ним пойдут
@@ -6611,7 +6967,7 @@ function stopTradeWatch() {
 // по несколько домов — клуб и казино, пять разных прилавков, — и что
 // показывать, знает только то место, где боец сейчас стоит.
 const INTERIOR_SCREENS = [
-  "club", "shop", "magic", "workshop", "hospital", "insurance", "trade",
+  "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "trade",
   "house",
 ];
 
@@ -6752,8 +7108,8 @@ el("sheet-back").addEventListener("click", closeSheet);
 // так же. Нижняя панель ведёт в клуб, в рюкзак и в карточку — то есть
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
-  "house", "hospital", "trade", "insurance", "shop", "magic", "workshop",
-  "club",
+  "house", "hospital", "trade", "insurance", "gym", "shop", "magic",
+  "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

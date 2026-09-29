@@ -205,6 +205,25 @@
     <div class="cures" id="hospital-list"></div>
   </main>
 
+  <!-- ---------- 3b1. Тренажёрный зал ---------- -->
+  <!-- Зал устроен сверху вниз по срочности: что происходит прямо сейчас,
+       что накоплено, и уже потом расписание на неделю. Абонемент всплывает
+       первым только когда его нет — без него всё остальное недоступно. -->
+  <main id="gym" class="screen hidden">
+    <figure class="interior hidden" id="gym-interior">
+      <img class="interior-pic" id="gym-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="gym-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-gym"></span>
+    </header>
+    <h1 class="screen-title">🏋️ Тренажёрный зал</h1>
+    <p class="screen-note" id="gym-note"></p>
+
+    <div id="gym-body"></div>
+  </main>
+
   <!-- ---------- 3b2. Страховая компания ---------- -->
   <!-- Страховая продаёт не услугу, а документ: на экране прежде всего сам
        полис — как он будет выглядеть в «Документах», — и уже под ним цена
