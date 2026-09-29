@@ -5971,6 +5971,139 @@ async def test_the_calendar_stands_seven_cells_to_a_row(server):
         await browser.close()
 
 
+async def test_the_reward_window_stays_inside_itself_on_a_narrow_phone(server):
+    """Окно наград не вылезает за свою ширину на узком экране.
+
+    Тест рядом мерит календарь на 420 точках — там всё сходилось, — а
+    андроид это 360, и ровно там семь клеток переставали ужиматься и
+    уезжали за край окна. Поэтому меряем узкими экранами и не одним.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        for width in (360, 320, 280):
+            await page.set_viewport_size({"width": width, "height": 780})
+            await page.wait_for_timeout(50)
+            out = await page.evaluate("""() => {
+              const box = document.getElementById('daily-box');
+              const edge = box.getBoundingClientRect().right;
+              const over = [];
+              box.querySelectorAll('*').forEach((one) => {
+                if (one.getBoundingClientRect().right > edge + 0.5)
+                  over.push(one.className);
+              });
+              const cells = [...box.querySelectorAll('.gift')];
+              const first = cells[0].getBoundingClientRect();
+              return {
+                scroll: box.scrollWidth - box.clientWidth,
+                over: over.slice(0, 5),
+                inRow: cells.filter((one) => Math.abs(
+                  one.getBoundingClientRect().y - first.y) < 1).length,
+                square: Math.abs(first.width - first.height) < 1.5,
+                width: first.width,
+              };
+            }""")
+            assert out["over"] == [], f"на {width} за окно вылезло: {out['over']}"
+            assert out["scroll"] == 0, f"на {width} окно поехало вбок"
+            # И календарь при этом остаётся календарём, а не столбиком
+            assert out["inRow"] == 7, f"на {width} в ряду {out['inRow']} клеток"
+            assert out["square"], f"на {width} клетка перестала быть квадратной"
+            assert out["width"] > 14, f"на {width} клетка схлопнулась"
+        await browser.close()
+
+
+async def test_no_gift_icon_spills_out_of_its_cell(server):
+    """Значок не вылезает из клетки на узком экране.
+
+    Обратная сторона того, что клетки ужимаются: значок в неподвижном
+    кегле рано или поздно окажется шире клетки. Поэтому он едет за
+    шириной экрана вместе с ней.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        for width in (420, 360, 320, 280):
+            await page.set_viewport_size({"width": width, "height": 780})
+            await page.wait_for_timeout(50)
+            worst = await page.evaluate("""() => {
+              let over = -99;
+              document.querySelectorAll('#daily-ladder .gift').forEach((cell) => {
+                const box = cell.getBoundingClientRect();
+                const icon = cell.querySelector('.gift-icon').getBoundingClientRect();
+                over = Math.max(over, icon.width - box.width);
+              });
+              return over;
+            }""")
+            assert worst <= 0, f"на {width} значок шире клетки на {worst:.1f}"
+
+            # И то же правило, но не глифом, а кеглем: эмодзи рисуются
+            # разной ширины, и завтрашняя награда может прийти со значком
+            # шире сегодняшних. Доля от клетки — то, что вёрстка обещает
+            # любому значку, а не только тем, что лежат в календаре сейчас
+            share = await page.evaluate("""() => {
+              let most = 0;
+              document.querySelectorAll('#daily-ladder .gift').forEach((cell) => {
+                const icon = cell.querySelector('.gift-icon');
+                most = Math.max(most, parseFloat(getComputedStyle(icon).fontSize)
+                  / cell.getBoundingClientRect().width);
+              });
+              return most;
+            }""")
+            assert share <= 0.70, f"на {width} кегель значка — {share:.0%} клетки"
+        await browser.close()
+
+
+async def test_a_wider_emoji_font_does_not_push_the_calendar_out(server):
+    """Шрифт на телефоне рисует эмодзи шире — календарь всё равно на месте.
+
+    Баг пришёл с андроида, а мерить его приходится здешним хромиумом, и
+    эмодзи у них разной ширины. Поэтому широкий шрифт подделываем: кегель
+    значка задираем поверх вёрстки и смотрим, держится ли строка. Клетка
+    при этом обязана остаться прежней ширины — не распухнуть по значку.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        await page.set_viewport_size({"width": 360, "height": 780})
+        await page.wait_for_timeout(50)
+        before = await page.evaluate(
+            "() => document.querySelector('.gift').getBoundingClientRect().width"
+        )
+
+        await page.add_style_tag(
+            content="#daily-ladder .gift-icon { font-size: 34px !important; }"
+        )
+        await page.wait_for_timeout(50)
+
+        out = await page.evaluate("""() => {
+          const box = document.getElementById('daily-box');
+          const ladder = document.getElementById('daily-ladder');
+          return {
+            scroll: box.scrollWidth - box.clientWidth,
+            ladder: ladder.scrollWidth - ladder.clientWidth,
+            cell: document.querySelector('.gift').getBoundingClientRect().width,
+          };
+        }""")
+        assert out["cell"] == pytest.approx(before, abs=0.5), "клетка распухла по значку"
+        assert out["ladder"] == 0, "строка клеток поехала вбок"
+        assert out["scroll"] == 0, "окно поехало вбок"
+        await browser.close()
+
+
 async def test_a_short_month_gets_a_short_calendar(server):
     """В феврале клеток двадцать восемь — календарь считает по месяцу."""
     player = make_player()

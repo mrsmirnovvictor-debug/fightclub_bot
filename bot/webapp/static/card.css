@@ -1848,6 +1848,12 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   align-items: center;
   justify-content: center;
   aspect-ratio: 1;
+  /* Не только ради картинки по углам. Пока у клетки `overflow: visible`,
+     её наименьшая ширина — ширина содержимого, и семь клеток со значком
+     внутри отказывались ужиматься: на экране в 360 точек — а это обычный
+     андроид — календарь уезжал за край окна. С `hidden` этой нижней
+     границы нет, и клетки делят строку поровну, сколько бы её ни было */
+  overflow: hidden;
   border-radius: 8px;
   background: var(--gift-back);
   border: 1px solid var(--line);
@@ -1871,7 +1877,15 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-weight: 700;
   line-height: 1;
 }
-.gift-icon { font-size: 20px; line-height: 1; }
+/* Значок едет за клеткой, а клетка — за шириной экрана: семь клеток с
+   зазорами занимают примерно `(ширина - 90px) / 7`, и значок берёт от неё
+   долю, при которой глиф умещается внутрь с запасом. Эмодзи шире своего
+   кегля, поэтому запас и нужен: в фиксированном кегле значок на узком
+   экране вылезал из клетки */
+.gift-icon {
+  font-size: clamp(13px, calc((100vw - 90px) / 13), 20px);
+  line-height: 1;
+}
 .gift-pic {
   position: absolute;
   inset: 0;
@@ -1919,7 +1933,9 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 
 /* Веху отмечаем значком покрупнее. Ни кромку, ни подложку не трогаем:
    кромка занята делом, а фон у всех клеток один */
-.gift.big .gift-icon { font-size: 23px; }
+.gift.big .gift-icon {
+  font-size: clamp(15px, calc((100vw - 90px) / 13 + 3px), 23px);
+}
 
 .daily-pick {
   margin: 8px 0 0;
@@ -1988,13 +2004,11 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   background: var(--hp-green);
 }
 
-@media (max-width: 340px) {
-  .gift-icon { font-size: 17px; }
-  .gift.big .gift-icon { font-size: 19px; }
-}
-
 .daily-buttons { display: flex; gap: 8px; margin-top: 12px; }
-.daily-buttons .btn { flex: 1; }
+/* У `.btn` своя нижняя граница в 120 точек, и вдвоём кнопки не влезали в
+   узкое окно. `flex: 1` их не ужимал: он делит свободное место, а не
+   отменяет минимум */
+.daily-buttons .btn { flex: 1; min-width: 0; }
 
 /* ---------- рынок: обмен между бойцами ---------- */
 
