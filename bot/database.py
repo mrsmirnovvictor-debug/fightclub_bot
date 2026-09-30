@@ -74,11 +74,6 @@ CREATE TABLE IF NOT EXISTS players (
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
--- Номер счёта называют вслух, чтобы принять перевод, и ищут по нему
--- чужой счёт. Уникальность держит база: розыгрыш номера может совпасть
-CREATE UNIQUE INDEX IF NOT EXISTS players_account
-    ON players(account_number) WHERE account_number <> '';
-
 CREATE TABLE IF NOT EXISTS inventory (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id  INTEGER NOT NULL,
@@ -475,13 +470,25 @@ class Database:
         self._conn: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
+        """Открыть базу и довести её до нынешней версии.
+
+        Сорвалось посреди — закрываем за собой. Соединение `aiosqlite`
+        держит свой поток, и брошенное на полпути оно не даёт процессу
+        завершиться: бот молча висит вместо того, чтобы упасть с
+        понятной ошибкой. Ошибку при этом не глотаем — она и есть ответ
+        на вопрос, почему бот не поднялся.
+        """
         self._ensure_directory()
         self._conn = await aiosqlite.connect(self.path)
-        self._conn.row_factory = aiosqlite.Row
-        await self._conn.execute("PRAGMA foreign_keys = ON")
-        await self._conn.executescript(SCHEMA)
-        await self._migrate()
-        await self._conn.commit()
+        try:
+            self._conn.row_factory = aiosqlite.Row
+            await self._conn.execute("PRAGMA foreign_keys = ON")
+            await self._conn.executescript(SCHEMA)
+            await self._migrate()
+            await self._conn.commit()
+        except Exception:
+            await self.close()
+            raise
 
     async def _migrate(self) -> None:
         """Дописать колонки, которых нет в базе, созданной прошлой версией."""
@@ -495,10 +502,28 @@ class Database:
                 logger.info("База обновлена: добавлена колонка players.%s", column)
         if "raid_fights" not in existing:
             await self._split_raids_from_record()
+        # Индексы по дописанным колонкам — только здесь, после самих
+        # колонок. В `SCHEMA` им не место: на живой базе `CREATE TABLE IF
+        # NOT EXISTS` ничего не делает, колонка ещё не дописана, и индекс
+        # по ней роняет запуск на «no such column». На пустой базе такой
+        # индекс проходит — потому и не виден ниоткуда, кроме обновления
+        await self._index_migrated_columns()
         await self._settle_genders()
         await self._migrate_inventory()
         await self._migrate_duels()
         await self._migrate_arenas()
+
+    async def _index_migrated_columns(self) -> None:
+        """Индексы по колонкам, которых в первой версии базы не было.
+
+        Номер счёта называют вслух, чтобы принять перевод, и по нему же
+        ищут чужой счёт. Уникальность держит база: розыгрыш номера может
+        совпасть, и ловить это в питоне значило бы ловить с опозданием.
+        """
+        await self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS players_account "
+            "ON players(account_number) WHERE account_number <> ''"
+        )
 
     async def _settle_genders(self) -> None:
         """Бойцам без пола поставить мужской.
