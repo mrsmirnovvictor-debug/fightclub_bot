@@ -43,8 +43,10 @@ from bot.game.gym import (
     training_for,
 )
 from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.gym_service import Progress, Visit, has_pass
 from bot.models import Player
+from bot.webapp.bank import purse_payload
 
 WEEKDAYS = (
     "понедельник",
@@ -179,38 +181,50 @@ def pass_payload(player: Player, until: int, now: int) -> dict[str, Any]:
         "active": live,
         "until": club_moment(until) if until else "",
         "days_left": max(0, (until - now) // (24 * 60 * 60)) if live else 0,
-        "tickets": [
-            {
-                "code": ticket.code,
-                "title": ticket.title,
-                "days": ticket.days,
-                "price": ticket.price,
-                "note": ticket.note,
-                "affordable": player.can_afford(ticket.price),
-                # Во сколько обходится день: по нему и видно, что год выгоднее
-                "per_day": round(ticket.price / ticket.days, 1),
-            }
-            for ticket in PASSES
-        ],
+        "tickets": [_ticket_payload(player, ticket, now) for ticket in PASSES],
     }
 
 
-def day_payload(taken: int) -> dict[str, Any]:
+def _ticket_payload(player: Player, ticket, now: int) -> dict[str, Any]:
+    """Абонемент на прилавке. Цена — под выбранный кошелёк."""
+    price = player.price_here(ticket.price, now, Service.TRAIN)
+    return {
+        "code": ticket.code,
+        "title": ticket.title,
+        "days": ticket.days,
+        "price": price,
+        "full_price": ticket.price,
+        "off": ticket.price - price,
+        "note": ticket.note,
+        "affordable": player.can_afford(price, now, Service.TRAIN),
+        # Во сколько обходится день: по нему и видно, что год выгоднее
+        "per_day": round(price / ticket.days, 1),
+    }
+
+
+def day_payload(taken: int, player: Player | None = None, now: int = 0) -> dict[str, Any]:
     """Сколько занятий сегодня взято, почём следующее и весь прайс.
 
     Прайс показывается целиком, а не одной ценой: по лесенке видно, во
     что обойдётся сегодняшний день, если ходить до вечера.
     """
     full = day_is_full(taken)
+
+    def here(price: int) -> int:
+        """Цена занятия под тем кошельком, которым боец здесь платит."""
+        if player is None or not price:
+            return price
+        return player.price_here(price, now, Service.TRAIN)
+
     return {
         "taken": taken,
         "limit": VISITS_PER_DAY,
         "full": full,
         # Ноль — следующее занятие по абонементу, то есть даром
-        "price": 0 if full else price_of_visit(taken),
+        "price": 0 if full else here(price_of_visit(taken)),
         "free_left": max(0, 1 - taken),
         "prices": [
-            {"number": number, "price": price, "free": price == 0}
+            {"number": number, "price": here(price), "free": price == 0}
             for number, price in enumerate(DAY_PRICES, start=1)
         ],
     }
@@ -237,7 +251,8 @@ def build_gym(
         "steps": list(UPGRADE_STEPS),
         "total": total_for(MAX_UPGRADES),
         "pass": pass_payload(player, until, moment),
-        "day": day_payload(taken_today),
+        "day": day_payload(taken_today, player, moment),
+        "purse": purse_payload(player, moment, Service.TRAIN),
         # Слот, к которому можно присоединиться прямо сейчас. Пусто — зал
         # закрыт, и тогда страница называет ближайший
         "now": slot_payload(live, moment, mine.get(live.id), seats.get(live.id, 0))

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from bot.database import Database
 from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.game.insurance import POLICY_PRICE, Policy, extended, pro_cover
 from bot.models import Player
 
@@ -64,11 +65,11 @@ async def buy_policy(
     после подписки, а не вместо неё.
     """
     moment = now_ts() if now is None else now
-    price = price_for(player)
-    if not player.can_afford(price):
+    price = player.price_here(price_for(player), moment, Service.INSURANCE)
+    if not player.can_afford(price, moment, Service.INSURANCE):
         raise InsuranceError(
             f"Не хватает кредитов: полис стоит {price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"а {player.purse_note(moment, Service.INSURANCE)}."
         )
 
     # Сначала выравниваем срок по подписке, и только потом кладём месяц
@@ -80,7 +81,7 @@ async def buy_policy(
     policy = extended(was, moment)
     renewed = was is not None and was.is_active(moment)
 
-    player.pay(price)
+    player.pay(price, moment, Service.INSURANCE)
     await db.save_player(player)
     await db.set_policy(player.user_id, policy)
     player.policy = policy
@@ -140,19 +141,22 @@ async def settle(
     if policy is None or not policy.due(moment):
         return ""
 
-    price = price_for(player)
-    if not player.can_afford(price):
+    # Автопродление платит тем же кошельком, что и сам боец: карта даёт
+    # на полис свои десять процентов и когда за ним не приходили
+    price = player.price_here(price_for(player), moment, Service.INSURANCE)
+    if not player.can_afford(price, moment, Service.INSURANCE):
         # Выключаем, а не пробуем каждый раз: иначе боец, которому не
         # хватает трёхсот, платил бы за полис первым же кредитом, пришедшим
         # на счёт, — и узнавал об этом по пустому кошельку
         await set_renew(db, player, False)
         return (
-            f"Автопродление полиса выключено: на счету было "
-            f"{player.credits} 💰, а продление стоит {price} 💰."
+            f"Автопродление полиса выключено: "
+            f"{player.purse_note(moment, Service.INSURANCE)}, "
+            f"а продление стоит {price} 💰."
         )
 
     renewed = policy.renewed(moment)
-    player.pay(price)
+    player.pay(price, moment, Service.INSURANCE)
     await db.save_player(player)
     await db.set_policy(player.user_id, renewed)
     player.policy = renewed

@@ -27,6 +27,13 @@ from bot.game.economy import (
     ups_earned,
 )
 from bot.game.injuries import ActiveInjury, injury_loss
+from bot.game.bank import (
+    CARD,
+    CASH,
+    CARD_YEAR_PRICE,
+    YEAR_SECONDS,
+    price_for,
+)
 from bot.game.insurance import Policy
 from bot.game.health import (
     HealthState,
@@ -130,6 +137,18 @@ class Player:
     # не в службе зала, потому что это второй документ: его показывают в
     # карточке, а она собирается без похода в базу
     gym_until: int = 0
+    # Счёт в Vegas Банке. Номер пустой — счёта нет. Деньги на счету — это
+    # второй кошелёк бойца, наравне с `credits`: там наличные, тут счёт
+    account_number: str = ""
+    account_balance: int = 0
+    # Карта банка: когда выпущена и до какого часа оплачено обслуживание.
+    # Срока окончания у карты нет — она бессрочна, — есть оплаченный год
+    card_at: int = 0
+    card_paid_until: int = 0
+    # Чем боец предпочитает платить: `bank.CASH` или `bank.CARD`. Это
+    # только предпочтение — карта не всюду ходит и не всегда обслужена,
+    # а значит, спросить надо `purse_for`, а не это поле
+    pay_from: str = CARD
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
@@ -561,13 +580,97 @@ class Player:
         self.credits = max(0, self.credits + amount)
         return self.credits
 
-    def can_afford(self, price: int) -> bool:
-        return self.credits >= price
+    # ---------- два кошелька ----------
 
-    def pay(self, price: int) -> None:
-        if not self.can_afford(price):
+    @property
+    def has_account(self) -> bool:
+        return bool(self.account_number)
+
+    @property
+    def has_card(self) -> bool:
+        return bool(self.card_at) and self.has_account
+
+    def card_works(self, now: int) -> bool:
+        """Обслужена ли карта. Просроченный год её запирает, но не закрывает.
+
+        Без часа ответа нет: обслужена карта или нет — вопрос о моменте.
+        Поэтому `now` в ноль означает «нет», а не «да». Вопрос этот
+        задают перед списанием, и ошибка в пользу карты сняла бы деньги
+        не с того кошелька.
+        """
+        return self.has_card and 0 < now < self.card_paid_until
+
+    def settle_card(self, now: int) -> int:
+        """Списать со счёта год обслуживания, если он подошёл.
+
+        Один год за подход, а не все пропущенные: клуб берёт деньги за
+        услугу, а не за время, в которое к услуге не приходили. То же
+        правило и у страхового полиса.
+
+        Не хватило на счету — карта не закрывается, а перестаёт
+        обслуживаться: ею не заплатишь, пока долг не погашен. Закрывать
+        её за сто кредитов было бы наказанием не по вине.
+        """
+        if not self.has_card or now < self.card_paid_until:
+            return 0
+        if self.account_balance < CARD_YEAR_PRICE:
+            return 0
+        self.account_balance -= CARD_YEAR_PRICE
+        self.card_paid_until = now + YEAR_SECONDS
+        return CARD_YEAR_PRICE
+
+    def purse_for(self, now: int, service=None) -> str:
+        """Чем боец заплатит здесь на самом деле.
+
+        Предпочтение — половина ответа. Вторая половина в том, ходит ли
+        карта в этом месте и обслужена ли она: на рынке не ходит, с
+        неоплаченным годом не работает нигде. Всё, что не карта, —
+        мешочек, и спрашивать больше нечего.
+        """
+        from bot.game.bank import card_works as place_takes_card
+
+        if self.pay_from != CARD:
+            return CASH
+        if not self.card_works(now) or not place_takes_card(service):
+            return CASH
+        return CARD
+
+    def purse_money(self, purse: str) -> int:
+        return self.account_balance if purse == CARD else self.credits
+
+    def purse_note(self, now: int = 0, service=None) -> str:
+        """«в мешочке 50 💰» или «на счету 50 💰» — для отказа по деньгам.
+
+        Кошелька теперь два, и отказ обязан называть тот, из которого
+        здесь платят: иначе боец с пятью тысячами на счету читает «не
+        хватает кредитов» и не понимает, где его деньги.
+        """
+        purse = self.purse_for(now, service)
+        where = "на счету" if purse == CARD else "в мешочке"
+        return f"{where} {self.purse_money(purse)} 💰"
+
+    def price_here(self, price: int, now: int, service=None) -> int:
+        """Цена для этого бойца: со скидкой карты, если платит картой."""
+        return price_for(price, self.purse_for(now, service), service)
+
+    def can_afford(self, price: int, now: int = 0, service=None) -> bool:
+        return self.purse_money(self.purse_for(now, service)) >= price
+
+    def pay(self, price: int, now: int = 0, service=None) -> str:
+        """Снять цену с того кошелька, которым боец здесь платит.
+
+        Цену сюда передают уже посчитанную: скидку считают там, где её
+        показывают, — иначе на витрине стояло бы одно число, а с кошелька
+        уходило другое.
+        """
+        purse = self.purse_for(now, service)
+        if self.purse_money(purse) < price:
             raise ValueError("Недостаточно кредитов")
-        self.credits -= price
+        if purse == CARD:
+            self.account_balance -= price
+        else:
+            self.credits -= price
+        return purse
 
     def apply_rating(self, delta: int) -> int:
         self.rating = max(0, self.rating + delta)

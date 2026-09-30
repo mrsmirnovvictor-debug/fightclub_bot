@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 import aiosqlite
 
+from bot.game.bank import CARD
 from bot.game.economy import RATING_START
 from bot.game.locations import FIGHT_CLUB
 from bot.game.abilities import Loadout
@@ -62,8 +64,20 @@ CREATE TABLE IF NOT EXISTS players (
     location       TEXT    NOT NULL DEFAULT 'fight_club',
     travel_to      TEXT,
     arrives_at     INTEGER NOT NULL DEFAULT 0,
+    -- Vegas Банк: счёт и карта. Деньги на счету — второй кошелёк бойца,
+    -- и лежит он там же, где первый: в одной строке с наличными
+    account_number  TEXT    NOT NULL DEFAULT '',
+    account_balance INTEGER NOT NULL DEFAULT 0,
+    card_at         INTEGER NOT NULL DEFAULT 0,
+    card_paid_until INTEGER NOT NULL DEFAULT 0,
+    pay_from        TEXT    NOT NULL DEFAULT 'card',
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Номер счёта называют вслух, чтобы принять перевод, и ищут по нему
+-- чужой счёт. Уникальность держит база: розыгрыш номера может совпасть
+CREATE UNIQUE INDEX IF NOT EXISTS players_account
+    ON players(account_number) WHERE account_number <> '';
 
 CREATE TABLE IF NOT EXISTS inventory (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -412,7 +426,8 @@ PLAYER_COLUMNS = (
     "agility, intuition, endurance, free_points, level, exp, total_exp, "
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
     "raid_wins, raid_fights, seen_at, location, travel_to, arrives_at, "
-    "city, birthplace, pro_until, gender, created_at"
+    "city, birthplace, pro_until, gender, created_at, "
+    "account_number, account_balance, card_at, card_paid_until, pay_from"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -435,6 +450,15 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("travel_to", "TEXT"),
     ("arrives_at", "INTEGER NOT NULL DEFAULT 0"),
     ("seen_at", "INTEGER NOT NULL DEFAULT 0"),
+    # Vegas Банк: счёт и карта лежат на бойце, а не отдельной таблицей.
+    # Деньги на счету — это второй кошелёк, и хранить его там же, где
+    # первый, значит, что списание с любого из них сохраняется одним
+    # `save_player`, а перевод между бойцами — одной сделкой на две строки
+    ("account_number", "TEXT NOT NULL DEFAULT ''"),  # пусто — счёта нет
+    ("account_balance", "INTEGER NOT NULL DEFAULT 0"),
+    ("card_at", "INTEGER NOT NULL DEFAULT 0"),  # 0 — карты нет
+    ("card_paid_until", "INTEGER NOT NULL DEFAULT 0"),
+    ("pay_from", f"TEXT NOT NULL DEFAULT '{CARD}'"),
 )
 
 
@@ -687,8 +711,10 @@ class Database:
                 exp, total_exp, micro_ups, credits, rating, hp, hp_at,
                 wins, losses, draws, raid_wins, raid_fights, seen_at,
                 location, travel_to, arrives_at,
-                city, birthplace, pro_until, gender, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                city, birthplace, pro_until, gender, created_at,
+                account_number, account_balance, card_at, card_paid_until, pay_from
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                      ?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -720,7 +746,12 @@ class Database:
                 travel_to      = excluded.travel_to,
                 arrives_at     = excluded.arrives_at,
                 pro_until      = excluded.pro_until,
-                gender         = excluded.gender
+                gender         = excluded.gender,
+                account_number  = excluded.account_number,
+                account_balance = excluded.account_balance,
+                card_at         = excluded.card_at,
+                card_paid_until = excluded.card_paid_until,
+                pay_from        = excluded.pay_from
             """,
             (
                 player.user_id,
@@ -756,6 +787,11 @@ class Database:
                 player.pro_until,
                 player.gender,
                 player.created_at,
+                player.account_number,
+                player.account_balance,
+                player.card_at,
+                player.card_paid_until,
+                player.pay_from,
             ),
         )
         await self.conn.commit()
@@ -882,6 +918,119 @@ class Database:
                 owned.mod_value,
                 owned.id,
             ),
+        )
+        await self.conn.commit()
+
+    # ---------- Vegas Банк ----------
+
+    async def open_account(self, user_id: int, number: str) -> bool:
+        """Завести счёт. False — счёт уже есть или номер занят.
+
+        Проверка `account_number = ''` стоит в самом запросе: два нажатия
+        подряд иначе выписали бы бойцу второй номер поверх первого, а
+        вместе с ним потеряли бы деньги на старом счету.
+        """
+        try:
+            cursor = await self.conn.execute(
+                "UPDATE players SET account_number = ? "
+                "WHERE user_id = ? AND account_number = ''",
+                (number, user_id),
+            )
+        except sqlite3.IntegrityError:
+            # Номер разыгран, а такой уже у кого-то есть: служба разыграет
+            # следующий. Столкновение редкое, но молчать о нём нельзя
+            return False
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def account_holder(self, number: str) -> Player | None:
+        """Чей это счёт. None — такого номера в банке нет."""
+        if not number:
+            return None
+        async with self.conn.execute(
+            f"SELECT {PLAYER_COLUMNS} FROM players WHERE account_number = ?",
+            (number,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return _to_player(row) if row else None
+
+    async def move_to_account(self, user_id: int, amount: int) -> bool:
+        """Положить наличные на свой счёт. False — столько наличных нет.
+
+        Обе половины — одним запросом: между «проверили» и «списали» иначе
+        помещается покупка в соседнем окне, и на счёт легло бы то, чего
+        уже нет в мешочке.
+        """
+        if amount <= 0:
+            return False
+        cursor = await self.conn.execute(
+            "UPDATE players SET credits = credits - ?, account_balance = "
+            "account_balance + ? WHERE user_id = ? AND credits >= ? "
+            "AND account_number <> ''",
+            (amount, amount, user_id, amount),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def move_to_cash(self, user_id: int, amount: int) -> bool:
+        """Снять со счёта наличные. False — столько на счету нет."""
+        if amount <= 0:
+            return False
+        cursor = await self.conn.execute(
+            "UPDATE players SET account_balance = account_balance - ?, "
+            "credits = credits + ? WHERE user_id = ? AND account_balance >= ?",
+            (amount, amount, user_id, amount),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def send_to_account(self, user_id: int, number: str, amount: int) -> bool:
+        """Перевести со своего счёта на чужой по номеру.
+
+        Две строки правятся одной сделкой: если вторая половина не
+        прошла — чужой счёт закрыли между проверкой и переводом, — откат
+        возвращает деньги отправителю целиком. Половины перевода не
+        бывает.
+        """
+        if amount <= 0:
+            return False
+        taken = await self.conn.execute(
+            "UPDATE players SET account_balance = account_balance - ? "
+            "WHERE user_id = ? AND account_balance >= ? AND account_number <> ?",
+            (amount, user_id, amount, number),
+        )
+        if taken.rowcount <= 0:
+            await self.conn.rollback()
+            return False
+        given = await self.conn.execute(
+            "UPDATE players SET account_balance = account_balance + ? "
+            "WHERE account_number = ?",
+            (amount, number),
+        )
+        if given.rowcount <= 0:
+            await self.conn.rollback()
+            return False
+        await self.conn.commit()
+        return True
+
+    async def issue_card(self, user_id: int, issued: int, paid_until: int) -> bool:
+        """Выпустить карту. False — карта уже есть или счёта нет.
+
+        Условие `card_at = 0` в запросе: два нажатия подряд иначе выпустили
+        бы вторую карту и взяли за неё вторую сотню.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE players SET card_at = ?, card_paid_until = ? "
+            "WHERE user_id = ? AND card_at = 0 AND account_number <> ''",
+            (issued, paid_until, user_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def set_pay_from(self, user_id: int, purse: str) -> None:
+        """Чем боец предпочитает платить."""
+        await self.conn.execute(
+            "UPDATE players SET pay_from = ? WHERE user_id = ?", (purse, user_id)
         )
         await self.conn.commit()
 

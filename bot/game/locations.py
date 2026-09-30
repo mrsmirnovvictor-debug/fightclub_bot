@@ -33,6 +33,7 @@ from bot.game.injuries import LIMP_TIMES
 class Service(str, Enum):
     """Чем занимаются в локации. У каждой ручки сервера — своя услуга."""
 
+    BANK = "bank"  # Vegas Банк: счёт, карта и банкомат
     FIGHT = "fight"  # ринг: вызовы, бои, отряд, турниры
     RAID = "raid"  # рейд-босс
     REPAIR = "repair"  # починка вещей
@@ -53,6 +54,7 @@ class Service(str, Enum):
 
 
 SERVICE_TITLES: dict[Service, str] = {
+    Service.BANK: "держать деньги в банке",
     Service.FIGHT: "драться",
     Service.RAID: "идти в рейд",
     Service.REPAIR: "чинить вещи",
@@ -589,7 +591,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.442083, 0.235646), (0.613177, 0.240431),
             (0.611052, 0.325359), (0.446334, 0.321172),
         ),
-        soon="хранение денег",
+        services=(Service.BANK,),
         genitive="банка",
     ),
     Location(

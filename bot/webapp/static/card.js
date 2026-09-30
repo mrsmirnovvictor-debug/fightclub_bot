@@ -1405,6 +1405,9 @@ function renderShop(data) {
 
   const list = el("shop-list");
   list.textContent = "";
+  // Кошелёк — над прилавком: цены на витрине уже посчитаны под него,
+  // и переключают его здесь же, а не сходив за этим в банк
+  list.appendChild(walletBar(data.purse, loadShop));
   data.sections
     .filter((section) => filters.slot === "all" || section.slot === filters.slot)
     .forEach((section) => {
@@ -1530,6 +1533,7 @@ function renderMarket(data) {
 
   const body = el("market-body");
   body.textContent = "";
+  body.appendChild(walletBar(data.purse, loadMarket));
 
   const tabs = document.createElement("div");
   tabs.className = "bubbles";
@@ -1750,14 +1754,14 @@ function lotCard(lot) {
 
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
-  "trade", "house", "bag", "hero",
+  "bank", "trade", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
 const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
-  insurance: "map", gym: "map", house: "map",
+  insurance: "map", gym: "map", bank: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1787,6 +1791,7 @@ function showTab(name) {
   // Часы тренировки идут, только пока на зал смотрят
   if (name === "gym") loadGym();
   else stopGymClock();
+  if (name === "bank") loadBank();
   // Стол на рынке общий: пока на него смотрят — опрашиваем, ушли — молчим
   if (name === "trade") startTradeWatch();
   else stopTradeWatch();
@@ -2152,6 +2157,7 @@ const HOUSE_SCREENS = {
   trade: () => showTab("trade"),
   insurance: () => showTab("insurance"),
   train: () => showTab("gym"),
+  bank: () => showTab("bank"),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -4920,6 +4926,7 @@ function renderHospital(data) {
 
   const list = el("hospital-list");
   list.textContent = "";
+  list.appendChild(walletBar(data.purse, loadHospital));
   // Травма лечится отдельно от здоровья: другая беда, другая цена — и
   // стоит она первой, потому что с ней в клуб не пускают вовсе
   if (data.injury && data.injury.code) list.appendChild(injuryCure(data.injury));
@@ -5100,15 +5107,19 @@ function renderRepairTab(data) {
     : "Чинить нечего: всё снятое целое, а надетое сюда не берут.";
   const list = el("repair-list");
   list.textContent = "";
+  list.appendChild(walletBar(data.purse, loadWorkshop));
   // На вкладке лежит только побитое, и делают тут одно — чинят. Поэтому
   // на карточке одна кнопка: не хватает на всю починку — чиним на сколько
   // хватает, и это написано прямо на ней
+  // Считаем по тому кошельку, которым здесь платят: у бойца с картой
+  // деньги лежат на счету, и мешочек о них ничего не знает
+  const money = spendable(data);
   data.repair.forEach((item) => {
-    const card = thingCard(item, data.credits, false, true);
+    const card = thingCard(item, money, false, true);
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
-    const affordable = Math.min(item.wear, data.credits);
-    const full = item.repair_price <= data.credits;
+    const affordable = Math.min(item.wear, money);
+    const full = item.repair_price <= money;
     buttons.appendChild(
       button(
         full
@@ -5185,6 +5196,7 @@ function renderModsTab(data) {
     + "характеристику. Сколько именно, решает бросок у мастера.";
   const list = el("mods-list");
   list.textContent = "";
+  list.appendChild(walletBar(data.purse, loadWorkshop));
   data.shop.forEach((section) => {
     const head = document.createElement("h2");
     head.className = "shelf-head";
@@ -5801,6 +5813,7 @@ function renderGym(data) {
   const body = el("gym-body");
   body.textContent = "";
   if (!data.pass.active) {
+    body.appendChild(walletBar(data.purse, loadGym));
     body.appendChild(passShelf(data));
     return;
   }
@@ -5817,6 +5830,7 @@ function renderGym(data) {
     body.appendChild(passTab(data));
     return;
   }
+  body.appendChild(walletBar(data.purse, loadGym));
   if (data.visit && data.visit.stat) body.appendChild(visitBox(data.visit));
   else body.appendChild(slotBox(data));
   body.appendChild(dayLine(data.day));
@@ -5828,6 +5842,7 @@ function renderGym(data) {
 /** Вкладка «Абонемент»: что есть, почём докупать и что ещё продают. */
 function passTab(data) {
   const box = document.createElement("div");
+  box.appendChild(walletBar(data.purse, loadGym));
   box.appendChild(passLine(data.pass));
   box.appendChild(dayPrices(data.day));
   box.appendChild(passShelf(data, "Продлить абонемент"));
@@ -6176,6 +6191,560 @@ function scheduleSlot(slot) {
   return box;
 }
 
+// ---------- Vegas Банк ----------
+//
+// Три вкладки: «Новый продукт», «Счета» и «Банкомат». Порядок в них от
+// пустого банка к обжитому, а открывается банк на той, которая бойцу
+// сейчас нужна: без счёта — на «Новом продукте», со счётом — на «Счетах».
+// Открывать пустой банкомат человеку, которому нечего снимать, незачем.
+
+let bankData = null;
+let bankTab = "";
+let bankBusy = false;
+
+function pickBankTab(name) {
+  bankTab = name;
+  if (bankData) renderBank(bankData);
+}
+
+async function loadBank() {
+  try {
+    const response = await fetch("api/bank", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("bank-note").textContent = "Банк не открылся.";
+      return;
+    }
+    renderBank(await response.json());
+  } catch (error) {
+    el("bank-note").textContent = error.message;
+  }
+}
+
+async function bankAction(payload) {
+  if (bankBusy) return;
+  bankBusy = true;
+  try {
+    const response = await fetch("api/bank", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Банк", data.error || "Не получилось.");
+      await loadBank();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderBank(data);
+    if (data.said) popup("Банк", data.said);
+  } catch (error) {
+    popup("Банк", "Сервер не ответил.");
+  } finally {
+    bankBusy = false;
+  }
+}
+
+function renderBank(data) {
+  bankData = data;
+  el("shop-purse-bank").textContent = "";
+  el("shop-purse-bank").appendChild(purse(data.credits));
+  el("bank-note").textContent = data.said || bankHint(data);
+
+  // Без счёта показывать в «Счетах» и «Банкомате» нечего: банк
+  // открывается там, где бойцу есть что делать
+  if (!bankTab) bankTab = data.account.open ? "accounts" : "new";
+  if (!data.account.open) bankTab = "new";
+
+  const body = el("bank-body");
+  body.textContent = "";
+
+  const tabs = document.createElement("div");
+  tabs.className = "bubbles";
+  tabs.id = "bank-tabs";
+  data.tabs.forEach((tab) => {
+    tabs.appendChild(
+      chip(tab.title, bankTab === tab.code, () => pickBankTab(tab.code))
+    );
+  });
+  body.appendChild(tabs);
+
+  if (bankTab === "new") body.appendChild(newProductTab(data));
+  else if (bankTab === "atm") body.appendChild(atmTab(data));
+  else body.appendChild(accountsTab(data));
+}
+
+function bankHint(data) {
+  if (!data.account.open) {
+    return "Счёт открывается сразу и ничего не стоит.";
+  }
+  if (!data.bank_card.open) {
+    return "Карта даёт скидки в городе и платит прямо со счёта.";
+  }
+  if (!data.bank_card.works) {
+    return "Карта не обслуживается: пополни счёт, и она заработает.";
+  }
+  return "Счёт и карта на месте. Снять наличные — в банкомате.";
+}
+
+// ---------- вкладка «Новый продукт» ----------
+
+function newProductTab(data) {
+  const box = document.createElement("div");
+  if (!data.account.open) box.appendChild(accountOffer(data.account));
+  if (!data.bank_card.open) box.appendChild(cardOffer(data));
+  if (data.account.open && data.bank_card.open) {
+    const done = document.createElement("p");
+    done.className = "screen-note";
+    done.textContent =
+      "Всё, что банк выдаёт, у тебя уже есть: счёт и карта. "
+      + "Второй счёт и вторая карта на одного бойца не открываются.";
+    box.appendChild(done);
+  }
+  box.appendChild(discountShelf(data.discounts));
+  return box;
+}
+
+function accountOffer(account) {
+  const box = document.createElement("section");
+  box.className = "offer";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "💼 " + account.title;
+  box.appendChild(head);
+
+  box.appendChild(givesList(account.gives));
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = account.note;
+  box.appendChild(note);
+
+  box.appendChild(
+    button("Открыть счёт — бесплатно", {
+      onClick: () => bankAction({ action: "account" }),
+    })
+  );
+  return box;
+}
+
+function cardOffer(data) {
+  const card = data.bank_card;
+  const box = document.createElement("section");
+  box.className = "offer";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = card.emoji + " " + card.title;
+  box.appendChild(head);
+
+  box.appendChild(givesList(card.gives));
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = card.note;
+  box.appendChild(note);
+
+  // Счёта нет — кнопку не прячем, а объясняем: спрятанная кнопка не
+  // говорит, чего не хватает
+  const ready = data.account.open;
+  box.appendChild(
+    button("Выпустить карту · " + num(card.price) + " 💰", {
+      disabled: !ready,
+      hint: "Сначала открой счёт: карта выпускается к нему.",
+      onClick: () => bankAction({ action: "card" }),
+    })
+  );
+  return box;
+}
+
+function givesList(rows) {
+  const list = document.createElement("ul");
+  list.className = "gives";
+  (rows || []).forEach((line) => {
+    const item = document.createElement("li");
+    item.textContent = line;
+    list.appendChild(item);
+  });
+  return list;
+}
+
+/** Прайс скидок: где и сколько снимает карта. */
+function discountShelf(rows) {
+  const box = document.createElement("section");
+  box.className = "day-prices";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Скидки по карте";
+  box.appendChild(head);
+
+  (rows || []).forEach((row) => {
+    const line = document.createElement("div");
+    line.className = "day-price";
+    const where = document.createElement("span");
+    where.className = "day-price-number";
+    where.textContent = row.title;
+    const off = document.createElement("span");
+    off.className = "day-price-value";
+    off.textContent = "−" + row.percent + "%";
+    line.append(where, off);
+    box.appendChild(line);
+  });
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Где банк скидки не обещал — мастерская, комиссионка, лавка мага — "
+    + "картой платится полная цена. На рынке из рук в руки карта не ходит.";
+  box.appendChild(note);
+  return box;
+}
+
+// ---------- вкладка «Счета» ----------
+
+function accountsTab(data) {
+  const box = document.createElement("div");
+  box.appendChild(accountBox(data.account));
+  if (data.bank_card.open) box.appendChild(bankCardBox(data.bank_card));
+  else box.appendChild(cardOffer(data));
+  box.appendChild(purseChoice(data));
+  return box;
+}
+
+function accountBox(account) {
+  const box = document.createElement("section");
+  box.className = "account";
+  const head = document.createElement("div");
+  head.className = "account-head";
+  head.textContent = "💼 " + account.title;
+  const number = document.createElement("div");
+  number.className = "account-number";
+  number.id = "bank-number";
+  number.textContent = account.number;
+  // Номер называют вслух, чтобы принять перевод: нажал — скопировал
+  number.title = "Нажми, чтобы скопировать";
+  number.addEventListener("click", () => copyNumber(account.number));
+  const sum = document.createElement("div");
+  sum.className = "account-sum";
+  sum.textContent = num(account.balance) + " 💰";
+  box.append(head, number, sum);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = "По этому номеру тебе переведут деньги со счёта на счёт.";
+  box.appendChild(note);
+  return box;
+}
+
+function copyNumber(number) {
+  try {
+    navigator.clipboard.writeText(number);
+    popup("Номер счёта", number + "\nСкопирован.");
+  } catch (error) {
+    // Буфера может не быть вовсе: тогда просто показываем номер целиком
+    popup("Номер счёта", number);
+  }
+}
+
+function bankCardBox(card) {
+  const box = document.createElement("section");
+  box.className = "plastic" + (card.works ? "" : " stale");
+
+  const head = document.createElement("div");
+  head.className = "plastic-head";
+  const title = document.createElement("span");
+  title.textContent = card.emoji + " " + card.title;
+  const state = document.createElement("span");
+  state.className = "plastic-state";
+  state.textContent = card.state;
+  head.append(title, state);
+
+  const number = document.createElement("div");
+  number.className = "plastic-number";
+  number.textContent = card.number;
+  const holder = document.createElement("div");
+  holder.className = "plastic-holder";
+  holder.textContent = card.holder;
+  const paid = document.createElement("div");
+  paid.className = "plastic-paid";
+  paid.textContent = "Обслуживание оплачено по " + card.paid_until;
+  box.append(head, number, holder, paid);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = card.works
+    ? "Карта в «Документах» — там же, где полис и абонемент."
+    : "На счету нет " + num(card.year_price) + " 💰 за год обслуживания. "
+      + "Пополни счёт — карта заработает сама.";
+  box.appendChild(note);
+  return box;
+}
+
+/** Чем боец платит по умолчанию. Живёт в «Счетах»: это про деньги. */
+function purseChoice(data) {
+  const box = document.createElement("section");
+  box.className = "purse-choice";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Чем платить в городе";
+  box.appendChild(head);
+
+  const row = document.createElement("div");
+  row.className = "purse-row";
+  data.purses.forEach((one) => {
+    row.appendChild(purseChip(one));
+  });
+  box.appendChild(row);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = data.choice_note || data.purse.note;
+  box.appendChild(note);
+  return box;
+}
+
+function purseChip(one) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className =
+    "purse-pick" + (one.chosen ? " on" : "") + (one.ready ? "" : " off");
+  btn.dataset.purse = one.code;
+  const title = document.createElement("span");
+  title.className = "purse-pick-title";
+  title.textContent = one.emoji + " " + one.title;
+  const money = document.createElement("span");
+  money.className = "purse-pick-money";
+  money.textContent = num(one.money) + " 💰";
+  btn.append(title, money);
+  if (!one.ready) {
+    btn.addEventListener("click", () =>
+      popup("Банк", "Карты Vegas Банка у тебя нет — платить ею нечем.")
+    );
+  } else if (!one.chosen) {
+    btn.addEventListener("click", () => choosePurse(one.code));
+  }
+  return btn;
+}
+
+// ---------- вкладка «Банкомат» ----------
+
+function atmTab(data) {
+  const box = document.createElement("div");
+
+  const sums = document.createElement("div");
+  sums.className = "atm-sums";
+  sums.appendChild(atmSum("💰 Наличные", data.credits));
+  sums.appendChild(atmSum("💼 На счету", data.account.balance));
+  box.appendChild(sums);
+
+  box.appendChild(
+    moneyForm("Положить на счёт", "Положить", data.credits, (amount) =>
+      bankAction({ action: "deposit", amount: amount })
+    )
+  );
+  box.appendChild(
+    moneyForm("Снять наличными", "Снять", data.account.balance, (amount) =>
+      bankAction({ action: "withdraw", amount: amount })
+    )
+  );
+  box.appendChild(sendForm(data));
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Банкомат и переводы — без комиссии: банк в клубе зарабатывает на "
+    + "карте, а не на движении денег.";
+  box.appendChild(note);
+  return box;
+}
+
+function atmSum(title, amount) {
+  const box = document.createElement("div");
+  box.className = "atm-sum";
+  const head = document.createElement("span");
+  head.className = "atm-sum-title";
+  head.textContent = title;
+  const money = document.createElement("span");
+  money.className = "atm-sum-money";
+  money.textContent = num(amount) + " 💰";
+  box.append(head, money);
+  return box;
+}
+
+function moneyForm(title, action, most, onSend) {
+  const box = document.createElement("section");
+  box.className = "money-form";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = title;
+  box.appendChild(head);
+
+  const row = document.createElement("div");
+  row.className = "money-row";
+  const field = document.createElement("input");
+  field.type = "number";
+  field.className = "money-field";
+  field.inputMode = "numeric";
+  field.min = "1";
+  field.max = String(most);
+  field.placeholder = "Сколько";
+  const all = document.createElement("button");
+  all.type = "button";
+  all.className = "money-all";
+  all.textContent = "Всё";
+  all.addEventListener("click", () => {
+    field.value = String(most);
+  });
+  row.append(field, all);
+  box.appendChild(row);
+
+  box.appendChild(
+    button(action, {
+      disabled: most <= 0,
+      hint: "Переносить нечего.",
+      onClick: () => {
+        const amount = Math.floor(Number(field.value) || 0);
+        if (amount <= 0) {
+          popup("Банк", "Сумма должна быть больше нуля.");
+          return;
+        }
+        field.value = "";
+        onSend(amount);
+      },
+    })
+  );
+  return box;
+}
+
+function sendForm(data) {
+  const box = document.createElement("section");
+  box.className = "money-form";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Перевести на чужой счёт";
+  box.appendChild(head);
+
+  const number = document.createElement("input");
+  number.type = "text";
+  number.className = "money-field wide";
+  number.id = "bank-send-number";
+  number.placeholder = "VB-0000-0000-0000";
+  number.autocomplete = "off";
+  box.appendChild(number);
+
+  const row = document.createElement("div");
+  row.className = "money-row";
+  const field = document.createElement("input");
+  field.type = "number";
+  field.className = "money-field";
+  field.inputMode = "numeric";
+  field.min = "1";
+  field.max = String(data.account.balance);
+  field.placeholder = "Сколько";
+  row.appendChild(field);
+  box.appendChild(row);
+
+  box.appendChild(
+    button("Перевести", {
+      disabled: data.account.balance <= 0,
+      hint: "На счету пусто — переводить нечего.",
+      onClick: () => {
+        const amount = Math.floor(Number(field.value) || 0);
+        if (!number.value.trim()) {
+          popup("Банк", "Назови номер счёта получателя.");
+          return;
+        }
+        if (amount <= 0) {
+          popup("Банк", "Сумма должна быть больше нуля.");
+          return;
+        }
+        bankAction({
+          action: "send",
+          number: number.value.trim(),
+          amount: amount,
+        });
+      },
+    })
+  );
+  return box;
+}
+
+// ---------- кошелёк на прилавке ----------
+//
+// Переключатель стоит на каждом экране с ценами, а не только в банке:
+// выбирать, чем платить, надо там, где стоит цена. Цены на витрине уже
+// посчитаны сервером под выбранный кошелёк — страница ничего не считает
+// сама, иначе однажды показала бы скидку там, где её нет.
+
+/** Сколько денег в том кошельке, которым здесь платят. */
+function spendable(data) {
+  const state = data && data.purse;
+  if (!state) return data ? data.credits : 0;
+  return state.purse === "card" ? state.balance : state.cash;
+}
+
+function walletBar(state, reload) {
+  const box = document.createElement("section");
+  box.className = "wallet";
+  if (!state) return box;
+
+  const row = document.createElement("div");
+  row.className = "wallet-row";
+  [
+    ["cash", state.cash, true],
+    ["card", state.balance, state.has_card && state.card_works && state.takes_card],
+  ].forEach(([code, money, ready]) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className =
+      "wallet-pick"
+      + (state.purse === code ? " on" : "")
+      + (ready ? "" : " off");
+    btn.dataset.purse = code;
+    const title = document.createElement("span");
+    title.className = "wallet-pick-title";
+    title.textContent = state.emoji[code] + " " + state.titles[code];
+    const sum = document.createElement("span");
+    sum.className = "wallet-pick-money";
+    sum.textContent = num(money) + " 💰";
+    btn.append(title, sum);
+    // Скидка видна на самой кнопке: по ней и понятно, зачем переключать
+    if (code === "card" && state.discount) {
+      const off = document.createElement("span");
+      off.className = "wallet-pick-off";
+      off.textContent = "−" + state.discount + "%";
+      btn.appendChild(off);
+    }
+    if (ready && state.prefers !== code) {
+      btn.addEventListener("click", () => choosePurse(code, reload));
+    }
+    row.appendChild(btn);
+  });
+  box.appendChild(row);
+
+  const note = document.createElement("p");
+  note.className = "wallet-note";
+  note.textContent = state.note;
+  box.appendChild(note);
+  return box;
+}
+
+async function choosePurse(code, reload) {
+  try {
+    const data = await post("api/purse", { purse: code });
+    if (data.card) render(data.card, true);
+    if (reload) reload();
+    else await loadBank();
+  } catch (error) {
+    popup("Банк", error.message);
+  }
+}
+
 // ---------- документы бойца ----------
 //
 // Раздел заведён под то, что будет копиться: полис первый, за ним пойдут
@@ -6274,7 +6843,9 @@ function paperCard(paper, bare) {
   title.textContent = paper.emoji + " " + paper.title;
   const state = document.createElement("span");
   state.className = "paper-state";
-  state.textContent = paper.active ? "Действует" : "Срок вышел";
+  // Бланк говорит о себе сам: у карты вместо «срок вышел» стоит «не
+  // обслуживается» — срока у неё нет вовсе, она бессрочна
+  state.textContent = paper.state || (paper.active ? "Действует" : "Срок вышел");
   head.append(title, state);
   box.appendChild(head);
 
@@ -6434,6 +7005,7 @@ function renderInsurance(data) {
 
   const body = el("insurance-body");
   body.textContent = "";
+  body.appendChild(walletBar(data.purse, loadInsurance));
   // Полис на руках — показываем сам бланк: он же лежит в документах, и
   // это тот самый документ, а не его пересказ
   if (data.policy && data.policy.title) {
@@ -7080,8 +7652,8 @@ function stopTradeWatch() {
 // по несколько домов — клуб и казино, пять разных прилавков, — и что
 // показывать, знает только то место, где боец сейчас стоит.
 const INTERIOR_SCREENS = [
-  "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "trade",
-  "house",
+  "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
+  "trade", "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -7221,7 +7793,7 @@ el("sheet-back").addEventListener("click", closeSheet);
 // так же. Нижняя панель ведёт в клуб, в рюкзак и в карточку — то есть
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
-  "house", "hospital", "trade", "insurance", "gym", "shop", "magic",
+  "house", "hospital", "trade", "insurance", "gym", "bank", "shop", "magic",
   "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));

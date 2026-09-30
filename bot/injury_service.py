@@ -20,6 +20,7 @@ import logging
 
 from bot.database import Database
 from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.game.injuries import ActiveInjury, Hurt, Injury
 from bot.game.insurance import discounted
 from bot.inventory_service import settle_gear
@@ -95,14 +96,17 @@ async def heal_injury(
     injury = active.injury if active else None
     if active is None or injury is None or not active.is_active(moment):
         raise InjuryError("Лечить нечего — ты цел.")
-    price = cure_price(player, injury, moment)
-    if not player.can_afford(price):
+    # Полис снимает восемьдесят процентов, карта — десять с того, что
+    # осталось. Скидки складываются в этом порядке: полис назначает цену
+    # лечения, карта — цену оплаты картой
+    price = player.price_here(cure_price(player, injury, moment), moment, Service.HEAL)
+    if not player.can_afford(price, moment, Service.HEAL):
         raise InjuryError(
             f"Не хватает кредитов: лечение стоит {price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"а {player.purse_note(moment, Service.HEAL)}."
         )
 
-    player.pay(price)
+    player.pay(price, moment, Service.HEAL)
     # Совсем мгновенно не лечат: после капельницы боец ещё лежит, но
     # минуты вместо часов. Если травме и так оставалось меньше, срок не
     # удлиняем — за это платить незачем

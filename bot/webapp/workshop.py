@@ -14,7 +14,10 @@ from typing import Any
 
 from bot.content.mods import MODS, star_of
 from bot.game.gear import ModKind, Modifier, OwnedItem
+from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.models import Player
+from bot.webapp.bank import purse_payload
 from bot.webapp.card import item_payload
 
 # Виды товара на прилавке, в том порядке, в каком они лежат на витрине
@@ -25,8 +28,16 @@ KIND_TITLES: tuple[tuple[ModKind, str, str], ...] = (
 )
 
 
-def mod_payload(mod: Modifier, player: Player, mine: dict[str, int]) -> dict[str, Any]:
-    """Строка прилавка: что делает, почём и сколько таких уже в рюкзаке."""
+def mod_payload(
+    mod: Modifier, player: Player, mine: dict[str, int], now: int = 0
+) -> dict[str, Any]:
+    """Строка прилавка: что делает, почём и сколько таких уже в рюкзаке.
+
+    Картой здесь платить можно, а скидки нет: банк её в мастерской не
+    обещал. Цена всё равно идёт через кошелёк — чтобы «не хватает»
+    считалось по тому кошельку, из которого будут платить.
+    """
+    price = player.price_here(mod.price, now, Service.REPAIR)
     return {
         "code": mod.code,
         "title": mod.title,
@@ -37,10 +48,10 @@ def mod_payload(mod: Modifier, player: Player, mine: dict[str, int]) -> dict[str
         "image": mod.picture,
         "span": mod.span,
         "stat": mod.stat,
-        "price": mod.price,
+        "price": price,
         "gain": mod.describe(mod.low) + "…" + mod.describe(mod.high).split()[-1],
         "owned": mine.get(mod.code, 0),
-        "can_afford": player.can_afford(mod.price),
+        "can_afford": player.can_afford(price, now, Service.REPAIR),
     }
 
 
@@ -59,10 +70,14 @@ def target_payload(player: Player, owned: OwnedItem) -> dict[str, Any]:
     return row
 
 
-def build_workshop(player: Player, mine: dict[str, int]) -> dict[str, Any]:
+def build_workshop(
+    player: Player, mine: dict[str, int], now: int | None = None
+) -> dict[str, Any]:
     """Мастерская целиком: три вкладки одним ответом."""
+    moment = now_ts() if now is None else now
     return {
         "credits": player.credits,
+        "purse": purse_payload(player, moment, Service.REPAIR),
         # Починка: только то, что не надето и при этом побито. Надетое
         # чинить не дают — сначала снимают, иначе вещь чинится прямо на
         # бойце. Целое на вкладке не лежит вовсе: мастеру его показывать
@@ -78,7 +93,7 @@ def build_workshop(player: Player, mine: dict[str, int]) -> dict[str, Any]:
                 "title": title,
                 "icon": icon,
                 "items": [
-                    mod_payload(mod, player, mine)
+                    mod_payload(mod, player, mine, moment)
                     for mod in MODS
                     if mod.kind is kind
                 ],
@@ -87,7 +102,9 @@ def build_workshop(player: Player, mine: dict[str, int]) -> dict[str, Any]:
         ],
         # Что у бойца в рюкзаке из модификаторов — второй слот мастера
         "mods": [
-            mod_payload(mod, player, mine) for mod in MODS if mine.get(mod.code)
+            mod_payload(mod, player, mine, moment)
+            for mod in MODS
+            if mine.get(mod.code)
         ],
         # Что можно модифицировать: всё, на чём ещё нет звёздочки
         "targets": [

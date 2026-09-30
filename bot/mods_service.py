@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 from bot.content.mods import get_mod, star_of
 from bot.database import Database
+from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.game.gear import Modifier, OwnedItem
 from bot.models import Player
 
@@ -42,17 +44,24 @@ class ModResult:
         return self.mod.describe(self.value)
 
 
-async def buy_mod(db: Database, player: Player, code: str) -> Modifier:
-    """Купить модификатор в мастерской. Он ложится в рюкзак стопкой."""
+async def buy_mod(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> Modifier:
+    """Купить модификатор в мастерской. Он ложится в рюкзак стопкой.
+
+    Картой платить можно, а скидки нет: в мастерской банк её не обещал.
+    """
     mod = get_mod(code)
     if mod is None:
         raise ModError("Такого модификатора в мастерской нет.")
-    if not player.can_afford(mod.price):
+    moment = now_ts() if now is None else now
+    price = player.price_here(mod.price, moment, Service.REPAIR)
+    if not player.can_afford(price, moment, Service.REPAIR):
         raise ModError(
-            f"Не хватает кредитов: «{mod.title}» стоит {mod.price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"Не хватает кредитов: «{mod.title}» стоит {price} 💰, "
+            f"а {player.purse_note(moment, Service.REPAIR)}."
         )
-    player.pay(mod.price)
+    player.pay(price, moment, Service.REPAIR)
     await db.save_player(player)
     await db.add_mod(player.user_id, code)
     return mod

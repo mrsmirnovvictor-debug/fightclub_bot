@@ -33,7 +33,9 @@ from bot.game.insurance import (
     discounted,
 )
 from bot.game.injuries import HURT_PRICE, Hurt
+from bot.game.locations import Service
 from bot.insurance_service import price_for
+from bot.webapp.bank import purse_payload
 from bot.models import Player
 from bot.webapp.documents import policy_document
 
@@ -62,7 +64,8 @@ def price_rows() -> list[dict[str, Any]]:
 def build_insurance(player: Player, now: int | None = None) -> dict[str, Any]:
     """Прилавок страховой: полис, его цена и что он даёт."""
     moment = now_ts() if now is None else now
-    price = price_for(player)
+    full = price_for(player)
+    price = player.price_here(full, moment, Service.INSURANCE)
     live = player.insured(moment)
     paper = policy_document(player, moment)
     by_pro = bool(paper.get("by_pro"))
@@ -77,10 +80,13 @@ def build_insurance(player: Player, now: int | None = None) -> dict[str, Any]:
         "days": POLICY_DAYS,
         "discount": round(HEAL_DISCOUNT * 100),
         "price": price,
+        "full_price": full,
+        "off": full - price,
+        "purse": purse_payload(player, moment, Service.INSURANCE),
         "pro": player.is_pro(moment),
         # Полис держит подписка: покупать нечего, пока она жива
         "by_pro": by_pro,
-        "affordable": player.can_afford(price),
+        "affordable": player.can_afford(price, moment, Service.INSURANCE),
         "insured": live,
         # Документ целиком — тот же, что лежит в «Документах»: страница
         # рисует его одной и той же вёрсткой в двух местах

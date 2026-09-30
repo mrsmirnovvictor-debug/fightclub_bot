@@ -67,6 +67,17 @@ from bot.game.locations import (
 )
 from bot.travel_service import Travel, TravelError, require
 from bot.webapp.citymap import build_map
+from bot.bank_service import (
+    BankError,
+    choose_purse,
+    deposit,
+    issue_card,
+    open_account,
+    send,
+    withdraw,
+)
+from bot.game.bank import CARD
+from bot.webapp.bank import build_bank
 from bot.webapp.card import (
     build_market,
     build_card,
@@ -326,6 +337,11 @@ async def _at(request: web.Request, service: Service, own: bool = True):
     player = await (_own_player(request) if own else _fighter(request))
     # Дошёл, пока его не спрашивали, — записываем прибытие
     if player.arrive():
+        await request.app[DB_KEY].save_player(player)
+    # И заодно сводим год обслуживания карты: своих часов у банка нет, а
+    # эта дверь — единственная, через которую проходят все места города.
+    # Свести надо до того, как где-то спросят, чем боец платит
+    if player.settle_card(now_ts()):
         await request.app[DB_KEY].save_player(player)
     require(player, service)
     return player
@@ -619,7 +635,9 @@ async def api_repair(request: web.Request) -> web.Response:
     db = request.app[DB_KEY]
     try:
         player = await _at(request, Service.REPAIR)
-        result = await repair_item(db, player, _int_field(data, "item_id"), points)
+        result = await repair_item(
+            db, player, _int_field(data, "item_id"), points, service=Service.REPAIR
+        )
     except InventoryError as error:
         return web.json_response({"error": str(error)}, status=409)
 
@@ -696,23 +714,24 @@ async def api_buy(request: web.Request) -> web.Response:
     try:
         # Оружие берут у оружейника, склянки в аптеке, остальное у
         # одёжника: спрашиваем ровно то место, где эта вещь и лежит
-        player = await _at(request, service_for(code))
+        service = service_for(code)
+        player = await _at(request, service)
         if potion is not None:
-            await buy_potion(request.app[DB_KEY], player, code)
+            await buy_potion(request.app[DB_KEY], player, code, service)
             # Склянку не надевают — её пьют, поэтому и подсказка другая
             bought = {
                 "code": potion.code,
                 "title": potion.title,
-                "price": potion.price,
+                "price": player.price_here(potion.price, now_ts(), service),
                 "can_equip": False,
                 "consumable": True,
             }
         else:
-            item = await buy(request.app[DB_KEY], player, code)
+            item = await buy(request.app[DB_KEY], player, code, service)
             bought = {
                 "code": item.code,
                 "title": item.title,
-                "price": item.item.price,
+                "price": player.price_here(item.item.price, now_ts(), service),
                 "can_equip": player.can_equip(item.item),
                 "consumable": False,
             }
@@ -999,7 +1018,10 @@ async def api_gym_action(request: web.Request) -> web.Response:
     try:
         if action == "pass":
             ticket = await buy_pass(db, player, str(data.get("code") or ""))
-            said = f"Абонемент на {ticket.title.lower()} куплен: −{ticket.price} 💰."
+            # Цену называем ту, что ушла с кошелька, а не ту, что в прайсе:
+            # по карте она меньше, и назвать прайсовую значило бы соврать
+            paid = player.price_here(ticket.price, now_ts(), Service.TRAIN)
+            said = f"Абонемент на {ticket.title.lower()} куплен: −{paid} 💰."
         elif action == "join":
             visit = await gym_join(db, player)
             said = "Ты на тренировке. Пятнадцать минут — и очко твоё."
@@ -1090,6 +1112,95 @@ async def api_policy(request: web.Request) -> web.Response:
             "card": build_card(player, config.bot_token, player.user_id),
             "insurance": body,
             "said": said,
+        }
+    )
+
+
+# ---------- Vegas Банк ----------
+
+
+async def _bank_state(request: web.Request, player, said: str = "") -> web.Response:
+    """Ответ банка всегда один и тот же: банк целиком плюс карточка.
+
+    Карточка едет вместе с банком потому, что деньги в ней и показаны: на
+    экране банка их два кошелька, и разойтись им нельзя ни на кредит.
+    """
+    config = request.app[CONFIG_KEY]
+    body = build_bank(player, now_ts(), said)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_bank(request: web.Request) -> web.Response:
+    """Банк: счёт, карта, банкомат и прайс скидок."""
+    player = await _at(request, Service.BANK)
+    return await _bank_state(request, player)
+
+
+async def api_bank_action(request: web.Request) -> web.Response:
+    """Открыть счёт, выпустить карту, положить, снять, перевести, выбрать."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.BANK)
+    try:
+        if action == "account":
+            number = await open_account(db, player)
+            said = f"Счёт открыт: {number}. Ведение бесплатное."
+        elif action == "card":
+            price = await issue_card(db, player)
+            said = (
+                f"Карта Vegas Банка выпущена: −{price} 💰. "
+                f"Первый год обслуживания уже в этой сотне."
+            )
+        elif action == "deposit":
+            move = await deposit(db, player, _int_field(data, "amount"))
+            said = f"На счёт: +{move.amount} 💰. Теперь на нём {move.balance} 💰."
+        elif action == "withdraw":
+            move = await withdraw(db, player, _int_field(data, "amount"))
+            said = f"Наличными: +{move.amount} 💰. На счету {move.balance} 💰."
+        elif action == "send":
+            move, name = await send(
+                db, player, str(data.get("number") or ""), _int_field(data, "amount")
+            )
+            said = f"Переведено {move.amount} 💰 бойцу {name}."
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except BankError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    # Деньги только что двигались: перечитываем бойца, чтобы банк и
+    # карточка говорили одно и то же
+    fresh = await db.get_player(player.user_id) or player
+    return await _bank_state(request, fresh, said)
+
+
+async def api_purse(request: web.Request) -> web.Response:
+    """Чем боец платит. Место не спрашиваем — и не случайно.
+
+    Выбрать кошелёк надо там, где стоит цена, то есть у любого прилавка
+    города, а не только в банке. Услуги за этим нет: это предпочтение
+    бойца, а не операция банка, и запирать его в одном доме значило бы
+    гонять человека через полгорода, чтобы заплатить наличными.
+    """
+    data = await _payload(request)
+    player = await _own_player(request)
+    db = request.app[DB_KEY]
+    try:
+        purse = await choose_purse(db, player, str(data.get("purse") or ""))
+    except BankError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "purse": purse,
+            "said": (
+                "Платим картой: скидки банка считаются."
+                if purse == CARD
+                else "Платим наличными: скидки по карте не будет."
+            ),
+            "card": build_card(player, config.bot_token, player.user_id),
         }
     )
 
@@ -1547,6 +1658,9 @@ def create_app(
             web.get("/api/history", api_history),
             web.get("/api/market", api_market),
             web.post("/api/market", api_market_action),
+            web.get("/api/bank", api_bank),
+            web.post("/api/bank", api_bank_action),
+            web.post("/api/purse", api_purse),
             web.get("/api/gym", api_gym),
             web.post("/api/gym", api_gym_action),
             web.get("/api/insurance", api_insurance),

@@ -128,12 +128,67 @@ def gym_document(player: Player, moment: int) -> dict[str, Any]:
     }
 
 
+def card_document(player: Player, moment: int) -> dict[str, Any]:
+    """Карта Vegas Банка как документ. Пустой словарь — карты не было.
+
+    Бланк тот же, что у полиса и абонемента, но срока окончания у него
+    нет: карта бессрочна. Вместо «действует до» на ней стоит оплаченный
+    год — по нему и видно, когда банк возьмёт следующую сотню.
+    """
+    from bot.game.bank import (
+        CARD_BENEFITS,
+        CARD_CODE,
+        CARD_EMOJI,
+        CARD_TITLE,
+        CARD_YEAR_PRICE,
+        card_number,
+        year_text,
+    )
+
+    if not player.has_card:
+        return {}
+    works = player.card_works(moment)
+    return {
+        "code": CARD_CODE,
+        "kind": "bank",
+        "emoji": CARD_EMOJI,
+        "title": CARD_TITLE,
+        "issuer": "Vegas Банк",
+        "number": card_number(player.account_number),
+        "holder": player.nickname,
+        "holder_title": "Держатель",
+        "issued": club_moment(player.card_at),
+        "until": "",
+        # Срока у карты нет, и писать «действует до» на бессрочном бланке
+        # значило бы врать. Пишем то, что правда: до какого часа оплачено
+        "period": f"Бессрочно · обслуживание оплачено по {year_text(player.card_paid_until)}",
+        "period_title": "Срок",
+        "active": works,
+        "seconds_left": 0,
+        "covers": "Оплата в магазинах и конторах города",
+        "gives": list(CARD_BENEFITS),
+        "auto_renew": False,
+        "switchable": False,
+        "note": (
+            f"Обслуживание {CARD_YEAR_PRICE} 💰 в год списывается со счёта. "
+            "Не хватило — карта не закрывается, а перестаёт обслуживаться "
+            "до пополнения счёта."
+        ),
+        "state": "Действует" if works else "Не обслуживается",
+        "ground": "Оплачена",
+    }
+
+
 def build_documents(player: Player, now: int | None = None) -> dict[str, Any]:
     """Раздел «Документы» целиком."""
     moment = now_ts() if now is None else now
     papers = [
         row
-        for row in (policy_document(player, moment), gym_document(player, moment))
+        for row in (
+            policy_document(player, moment),
+            gym_document(player, moment),
+            card_document(player, moment),
+        )
         if row
     ]
     return {
@@ -143,9 +198,10 @@ def build_documents(player: Player, now: int | None = None) -> dict[str, Any]:
         # выглядит поломанным, а не новым
         "empty_note": (
             "Пока ни одного документа. Полис страхования оформляют в "
-            "страховой компании, абонемент — в тренажёрном зале."
+            "страховой компании, абонемент — в тренажёрном зале, "
+            "карту — в Vegas Банке."
         ),
     }
 
 
-__all__ = ["build_documents", "gym_document", "policy_document"]
+__all__ = ["build_documents", "card_document", "gym_document", "policy_document"]

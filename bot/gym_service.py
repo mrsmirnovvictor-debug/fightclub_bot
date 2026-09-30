@@ -174,13 +174,14 @@ async def buy_pass(
     ticket = get_pass(code)
     if ticket is None:
         raise GymError("Такого абонемента в зале не продают.")
-    if not player.can_afford(ticket.price):
+    moment = now_ts() if now is None else now
+    price = player.price_here(ticket.price, moment, Service.TRAIN)
+    if not player.can_afford(price, moment, Service.TRAIN):
         raise GymError(
-            f"Не хватает кредитов: абонемент стоит {ticket.price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"Не хватает кредитов: абонемент стоит {price} 💰, "
+            f"а {player.purse_note(moment, Service.TRAIN)}."
         )
 
-    moment = now_ts() if now is None else now
     # Сначала выравниваем по подписке, и только потом кладём срок сверху:
     # иначе купленный месяц считался бы от старого конца и часть его
     # ушла бы под время, которое и так держит подписка
@@ -189,13 +190,13 @@ async def buy_pass(
     # Продлевается с конца, а не с сегодняшнего дня: купивший второй месяц
     # заранее получает два месяца, а не один
     start = was if has_pass(was, moment) else moment
-    player.pay(ticket.price)
+    player.pay(price, moment, Service.TRAIN)
     await db.save_player(player)
     until = start + ticket.days * 24 * 60 * 60
     await db.set_gym_pass(player.user_id, until)
     player.gym_until = until
     logger.info(
-        "Абонемент в зал бойцу %s: %s за %s", player.user_id, ticket.code, ticket.price
+        "Абонемент в зал бойцу %s: %s за %s", player.user_id, ticket.code, price
     )
     return ticket
 
@@ -257,11 +258,11 @@ async def join(db: Database, player: Player, now: int | None = None) -> Visit:
         raise GymError(
             f"На сегодня хватит: {VISITS_PER_DAY} занятий — это потолок суток."
         )
-    price = price_of_visit(taken)
-    if price and not player.can_afford(price):
+    price = player.price_here(price_of_visit(taken), moment, Service.TRAIN)
+    if price and not player.can_afford(price, moment, Service.TRAIN):
         raise GymError(
             f"Занятие сверх абонемента стоит {price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"а {player.purse_note(moment, Service.TRAIN)}."
         )
 
     started = await db.start_gym_visit(
@@ -284,7 +285,7 @@ async def join(db: Database, player: Player, now: int | None = None) -> Visit:
 
     # Платим после записи: не записались — не списали
     if price:
-        player.pay(price)
+        player.pay(price, moment, Service.TRAIN)
         await db.save_player(player)
     logger.info(
         "Боец %s встал на тренировку %s в слоте %s за %s",

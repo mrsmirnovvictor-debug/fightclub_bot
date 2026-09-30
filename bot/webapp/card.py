@@ -38,7 +38,12 @@ from bot.game.equipment import (
 from bot.game.abilities import MAX_ABILITIES, TIER_COST
 from bot.game.gear import ModKind
 from bot.game.market import FEE as MARKET_FEE, buyback
-from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
+from bot.game.health import (
+    FULL_REGEN_SECONDS,
+    HealthState,
+    format_duration,
+    now_ts,
+)
 from bot.game.locations import Service, get_location
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
@@ -58,6 +63,7 @@ from bot.game.stats import derive
 from bot.game.store import PACKS
 from bot.models import Player
 from bot.webapp.auth import sign_avatar
+from bot.webapp.bank import purse_payload
 from bot.webapp.documents import build_documents
 
 # Ссылка на аватар живёт час — столько же, сколько открытая карточка
@@ -388,8 +394,22 @@ def capped_share(base: float, gear: float, total, cap: float) -> dict:
     }
 
 
-def goods_payload(player: Player, item: Item, owned: int) -> dict:
-    """Строка витрины: цена, требования, свойства и кому подходит."""
+def goods_payload(
+    player: Player,
+    item: Item,
+    owned: int,
+    service: Service | None = None,
+    now: int | None = None,
+) -> dict:
+    """Строка витрины: цена, требования, свойства и кому подходит.
+
+    Цена приходит уже под выбранный кошелёк: скидку карты считают там,
+    где показывают цену, иначе на прилавке стояло бы одно число, а с
+    кошелька уходило другое. `full` — цена без скидки, по ней видно, что
+    карта даёт.
+    """
+    moment = now_ts() if now is None else now
+    price = player.price_here(item.price, moment, service)
     return {
         "code": item.code,
         "title": item.title,
@@ -398,10 +418,12 @@ def goods_payload(player: Player, item: Item, owned: int) -> dict:
         "kind": item.kind.value,
         "slot": item.slot.value,
         "slot_title": item.slot.section.capitalize(),
-        "price": item.price,
+        "price": price,
+        "full_price": item.price,
+        "off": item.price - price,
         "level_required": item.level_required,
         "unlocked": player.level >= item.level_required,
-        "affordable": player.can_afford(item.price),
+        "affordable": player.can_afford(price, moment, service),
         "can_equip": player.can_equip(item),
         "owned": owned,
         "requirements": requirements_payload(player, item),
@@ -431,9 +453,17 @@ def potion_gains_payload(potion: Potion) -> list[dict]:
     return rows
 
 
-def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
+def potion_payload(
+    player: Player,
+    potion: Potion,
+    owned: int,
+    service: Service | None = None,
+    now: int | None = None,
+) -> dict:
     """Склянка на витрине и в рюкзаке. Ключи те же, что у вещи: рисует их
     одна и та же карточка, а `consumable` разводит кнопки."""
+    moment = now_ts() if now is None else now
+    price = player.price_here(potion.price, moment, service)
     return {
         "code": potion.code,
         "title": potion.title,
@@ -454,10 +484,12 @@ def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
         "max_wear": potion.max_wear,
         "wear_text": potion.describe_wear(),
         "note": potion.note,
-        "price": potion.price,
+        "price": price,
+        "full_price": potion.price,
+        "off": potion.price - price,
         "level_required": potion.level_required,
         "unlocked": player.level >= potion.level_required,
-        "affordable": player.can_afford(potion.price),
+        "affordable": player.can_afford(price, moment, service),
         "owned": owned,
         "requirements": [
             {
@@ -474,10 +506,10 @@ def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
     }
 
 
-def potions_section(player: Player) -> dict:
+def potions_section(player: Player, service: Service | None = None) -> dict:
     """Раздел «Прочее»: то, что пьют, а не надевают."""
     rows = [
-        potion_payload(player, potion, player.potion_count(potion.code))
+        potion_payload(player, potion, player.potion_count(potion.code), service)
         for potion in POTIONS
     ]
     return {
@@ -591,8 +623,11 @@ def sells(service: Service, slot: Slot) -> bool:
     return False
 
 
-def build_shop(player: Player, service: Service = Service.CLOTHES) -> dict:
+def build_shop(
+    player: Player, service: Service = Service.CLOTHES, now: int | None = None
+) -> dict:
     """Прилавок магазина: только то, чем торгуют именно здесь."""
+    moment = now_ts() if now is None else now
     mine: dict[str, int] = {}
     for owned in player.gear:
         mine[owned.code] = mine.get(owned.code, 0) + 1
@@ -603,7 +638,10 @@ def build_shop(player: Player, service: Service = Service.CLOTHES) -> dict:
     for slot, items in shop_sections(shelf):
         if not items or not sells(service, slot):
             continue  # пустой раздел — пустая полка: показывать нечего
-        rows = [goods_payload(player, item, mine.get(item.code, 0)) for item in items]
+        rows = [
+            goods_payload(player, item, mine.get(item.code, 0), service, moment)
+            for item in items
+        ]
         sections.append(
             {
                 "slot": slot.value,
@@ -615,11 +653,14 @@ def build_shop(player: Player, service: Service = Service.CLOTHES) -> dict:
         )
     # Склянки не надевают, слота у них нет — и стоят они в аптеке
     if service is Service.POTIONS:
-        sections.append(potions_section(player))
+        sections.append(potions_section(player, service))
     return {
         "credits": player.credits,
         "level": player.level,
         "service": service.value,
+        # Чем боец здесь платит: по этому прилавок и рисует переключатель
+        # кошельков, а цены выше уже посчитаны под выбранный
+        "purse": purse_payload(player, moment, service),
         "fclass": {"code": player.fclass.code, "title": player.fclass.title},
         "sections": sections,
     }
@@ -651,7 +692,7 @@ def place_payload(player: Player, now: int | None = None) -> dict:
 # ---------- комиссионка ----------
 
 
-def lot_payload(player: Player, lot: dict) -> dict:
+def lot_payload(player: Player, lot: dict, now: int = 0) -> dict:
     """Строка комиссионки: чья вещь, с каким износом и за сколько."""
     from bot.game.equipment import MAX_WEAR
     from bot.game.market import fee_of, payout
@@ -679,7 +720,7 @@ def lot_payload(player: Player, lot: dict) -> dict:
         "wear": owned.wear,
         "max_wear": owned.max_wear,
         "wear_text": owned.describe_wear(),
-        "affordable": player.can_afford(price),
+        "affordable": player.can_afford(price, now, Service.MARKET),
         "can_equip": player.can_equip(item),
         "requirements": requirements_payload(player, item),
         "bonuses": bonuses_payload(item, player.fclass),
@@ -711,9 +752,10 @@ def sellable_payload(player: Player, owned: OwnedItem) -> dict:
     }
 
 
-def build_market(player: Player, lots: list[dict]) -> dict:
+def build_market(player: Player, lots: list[dict], now: int | None = None) -> dict:
     """Комиссионка: полки по типам вещей, свои лоты и что можно выставить."""
-    rows = [lot_payload(player, lot) for lot in lots]
+    moment = now_ts() if now is None else now
+    rows = [lot_payload(player, lot, moment) for lot in lots]
     sections = []
     for slot in ALL_SLOTS:
         goods = [row for row in rows if row["slot"] == slot.value]
@@ -731,6 +773,9 @@ def build_market(player: Player, lots: list[dict]) -> dict:
     return {
         "credits": player.credits,
         "fee": round(MARKET_FEE * 100),
+        # Картой здесь платить можно, но скидки нет: боец платит не
+        # лавке, а другому бойцу, и цену назначил тот
+        "purse": purse_payload(player, moment, Service.MARKET),
         "sections": sections,
         "mine": [row for row in rows if row["mine"]],
         # Выставить можно только то, что не надето: надетое сначала снимают

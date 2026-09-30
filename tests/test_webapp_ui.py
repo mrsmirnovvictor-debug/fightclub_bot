@@ -126,6 +126,63 @@ EMPTY_HISTORY = {
 }
 
 
+def bank_state(
+    account: bool = True,
+    card: bool = True,
+    works: bool = True,
+    balance: int = 3_000,
+    cash: int = 1_200,
+    prefers: str = "card",
+) -> dict:
+    """Банк, как его отдаёт сервер: счёт, карта, банкомат и прайс скидок."""
+    from bot.game.classes import Stats
+    from bot.game.health import now_ts
+    from bot.models import Player
+    from bot.webapp.bank import build_bank
+
+    moment = now_ts()
+    player = Player(
+        user_id=42, nickname="Тайлер", class_code="warrior", location="bank",
+        credits=cash, pay_from=prefers,
+        **Stats(strength=10, agility=10, intuition=10, endurance=10).as_dict(),
+    )
+    if account:
+        player.account_number = "VB-1234-5678-9012"
+        player.account_balance = balance
+    if card and account:
+        player.card_at = moment - 1_000
+        # Не обслужена — значит, оплаченный год позади
+        player.card_paid_until = moment + 1_000 if works else moment - 1
+    return build_bank(player, moment)
+
+
+def purse_state(
+    purse: str = "card",
+    takes_card: bool = True,
+    has_card: bool = True,
+    works: bool = True,
+    discount: int = 10,
+    cash: int = 1_200,
+    balance: int = 3_000,
+) -> dict:
+    """Кошелёк так, как он уезжает в каждый экран с ценами."""
+    return {
+        "purse": purse,
+        "prefers": purse,
+        "cash": cash,
+        "balance": balance,
+        "has_account": True,
+        "has_card": has_card,
+        "card_works": works,
+        "takes_card": takes_card,
+        "discount": discount,
+        "now_off": discount if purse == "card" else 0,
+        "titles": {"cash": "Мешочек", "card": "Карта"},
+        "emoji": {"cash": "💰", "card": "💳"},
+        "note": "Карта: −" + str(discount) + "% к ценам в этом месте.",
+    }
+
+
 def gym_state(
     days: int = 3,
     pass_days: int = 30,
@@ -210,6 +267,7 @@ def gym_state(
                 for number, price in enumerate(DAY_PRICES, start=1)
             ],
         },
+        "purse": purse_state(),
         "now": board[0]["slots"][2],
         "next": board[0]["slots"][3],
         "visit": visit or {},
@@ -390,7 +448,7 @@ async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
     battle=None, city=None, workshop=None, hospital=None, trade=None,
-    insurance=None, gym=None, images=False, telegram="",
+    insurance=None, gym=None, bank=None, images=False, telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -419,6 +477,7 @@ async def open_page(
     await page.route("**/api/trade*", canned(trade or EMPTY_TRADE))
     await page.route("**/api/insurance*", canned(insurance or empty_insurance()))
     await page.route("**/api/gym*", canned(gym or gym_state()))
+    await page.route("**/api/bank*", canned(bank or bank_state()))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
@@ -4485,25 +4544,25 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
 
 
 async def test_a_house_without_a_trade_says_when_it_opens(server):
-    """Банк на карте есть, зайти можно, а услуги пока нет.
+    """Почта на карте есть, зайти можно, а услуги пока нет.
 
-    Раньше банк отвечал всплывашкой, и боец оставался на карте — то есть
-    внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
+    Раньше такой дом отвечал всплывашкой, и боец оставался на карте — то
+    есть внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
     записка о том, чего тут ждать.
     """
-    walker = make_player(location="bank")
+    walker = make_player(location="post_office")
     card = build_card(walker, TOKEN, viewer_id=walker.user_id)
     async with async_playwright() as pw:
         browser, page = await open_map(
-            pw, server, city_map("bank"), card, images=True
+            pw, server, city_map("post_office"), card, images=True
         )
 
-        await page.locator(".zone-house").filter(has_text="Банк").click()
+        await page.locator(".zone-house").filter(has_text="Почта").click()
         await page.wait_for_selector("#house:not(.hidden)")
 
-        assert await page.locator("#house-title").inner_text() == "Банк"
+        assert await page.locator("#house-title").inner_text() == "Почта"
         note = await page.locator("#house-soon").inner_text()
-        assert "Скоро" in note and "хранение денег" in note
+        assert "Скоро" in note and "награды и подарки" in note
         # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
         assert "active" in (await page.locator("#tab-map").get_attribute("class"))
         # Обратно — на карту, кнопкой в углу
@@ -7930,4 +7989,192 @@ async def test_the_gym_screen_is_left_by_the_map_button(server):
         await page.wait_for_selector("#map:not(.hidden)")
 
         assert await page.locator("#gym").is_hidden()
+        await browser.close()
+
+
+# ---------- Vegas Банк ----------
+
+
+async def open_bank(pw, server, bank=None):
+    """Открыть банк. Он живёт на своём экране, как зал и страховая."""
+    player = make_player("bank")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), bank=bank,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "bank")
+    await page.wait_for_selector("#bank:not(.hidden)")
+    return browser, page
+
+
+async def test_the_bank_stands_on_three_tabs(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.wait_for_selector("#bank-tabs")
+
+        tabs = await page.locator("#bank-tabs .chip").all_inner_texts()
+        assert tabs == ["Новый продукт", "Счета", "Банкомат"]
+        await browser.close()
+
+
+async def test_a_bank_without_an_account_opens_on_the_new_product(server):
+    """Показывать пустой банкомат тому, кому нечего снимать, незачем."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(account=False, card=False)
+        )
+        await page.wait_for_selector(".offer")
+
+        assert "Открыть счёт" in await page.locator(".offer .btn").first.inner_text()
+        # Счетов и банкомата нет вовсе, пока нет счёта
+        assert await page.locator(".account-number").count() == 0
+        assert await page.locator(".atm-sums").count() == 0
+        await browser.close()
+
+
+async def test_a_bank_with_an_account_opens_on_the_accounts(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.wait_for_selector(".account")
+
+        assert await page.locator(".account-number").inner_text() == "VB-1234-5678-9012"
+        assert "3\u00a0000" in await page.locator(".account-sum").inner_text()
+        await browser.close()
+
+
+async def test_the_card_carries_the_same_number_as_the_account(server):
+    """Счёт и карта — одни деньги, и номер у них один."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.wait_for_selector(".plastic")
+
+        assert await page.locator(".plastic-number").inner_text() == (
+            await page.locator(".account-number").inner_text()
+        )
+        assert await page.locator(".plastic-holder").inner_text() == "Тайлер"
+        assert "Действует" in await page.locator(".plastic-state").inner_text()
+        await browser.close()
+
+
+async def test_an_unserviced_card_says_so_instead_of_pretending(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server, bank=bank_state(works=False))
+        await page.wait_for_selector(".plastic")
+
+        assert await page.locator(".plastic.stale").count() == 1
+        assert "Не обслуживается" in await page.locator(".plastic-state").inner_text()
+        assert "Пополни счёт" in await page.locator(".plastic .screen-note").inner_text()
+        await browser.close()
+
+
+async def test_the_atm_offers_putting_in_taking_out_and_sending(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Банкомат").click()
+        await page.wait_for_selector(".atm-sums")
+
+        heads = await page.locator(".money-form .shelf-head").all_inner_texts()
+        assert heads == [
+            "Положить на счёт", "Снять наличными", "Перевести на чужой счёт",
+        ]
+        sums = await page.locator(".atm-sum-money").all_inner_texts()
+        assert sums == ["1\u00a0200 💰", "3\u00a0000 💰"]
+        # Номер получателя спрашивают полем, а не догадкой
+        assert await page.locator("#bank-send-number").count() == 1
+        await browser.close()
+
+
+async def test_the_new_product_tab_spells_out_the_discounts(server):
+    """Прайс скидок собран из той же таблицы, по которой считают цену."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Новый продукт").click()
+        await page.wait_for_selector(".day-prices")
+
+        rows = await page.locator(".day-prices .day-price-value").all_inner_texts()
+        assert "−15%" in rows and "−5%" in rows and "−10%" in rows
+        # В прайсе стоят дома, а не дела: «Аптека», а не «покупать эликсиры»
+        places = await page.locator(".day-prices .day-price-number").all_inner_texts()
+        assert "Аптека" in places and "Больница" in places
+        await browser.close()
+
+
+async def test_a_bank_that_gave_everything_stops_offering(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Новый продукт").click()
+        await page.wait_for_selector(".day-prices")
+
+        assert await page.locator(".offer").count() == 0
+        assert "уже есть" in await page.locator("#bank-body .screen-note").first.inner_text()
+        await browser.close()
+
+
+# ---------- кошелёк на прилавке ----------
+
+
+async def test_the_wallet_bar_stands_over_the_counter_with_both_purses(server):
+    """Выбирают, чем платить, там, где стоит цена."""
+    player = make_player("pharmacy")
+    shop = build_shop(player, Service.POTIONS)
+    shop["purse"] = purse_state(discount=15)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id), shop,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "shop")
+        await page.wait_for_selector(".wallet")
+
+        picks = await page.locator(".wallet-pick-title").all_inner_texts()
+        assert picks == ["💰 Мешочек", "💳 Карта"]
+        money = await page.locator(".wallet-pick-money").all_inner_texts()
+        assert money == ["1\u00a0200 💰", "3\u00a0000 💰"]
+        # Выбранный горит, и на карте написано, сколько она снимает
+        assert await page.locator(".wallet-pick.on").get_attribute("data-purse") == "card"
+        assert await page.locator(".wallet-pick-off").inner_text() == "−15%"
+        await browser.close()
+
+
+async def test_a_counter_that_takes_no_card_says_so_and_dims_it(server):
+    """На рынке карта не ходит — кнопку не прячем, а гасим и объясняем."""
+    player = make_player("pharmacy")
+    shop = build_shop(player, Service.POTIONS)
+    shop["purse"] = purse_state(purse="cash", takes_card=False, discount=0)
+    shop["purse"]["note"] = "Здесь платят только наличными: карта тут не ходит."
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id), shop,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "shop")
+        await page.wait_for_selector(".wallet")
+
+        card = page.locator(".wallet-pick[data-purse='card']")
+        assert await card.evaluate("one => one.classList.contains('off')")
+        assert "только наличными" in await page.locator(".wallet-note").inner_text()
+        await browser.close()
+
+
+async def test_the_shop_shows_the_price_the_card_will_take(server):
+    """Цена на витрине — та, что уйдёт с кошелька, а не прайсовая."""
+    player = make_player("pharmacy")
+    shop = build_shop(player, Service.POTIONS)
+    shop["purse"] = purse_state(discount=15)
+    row = shop["sections"][0]["items"][0]
+    row.update(price=85, full_price=100, off=15, affordable=True)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id), shop,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "shop")
+        await page.wait_for_selector(".thing")
+
+        prices = await page.locator(".thing .btn").first.inner_text()
+        assert "85" in prices, prices
         await browser.close()
