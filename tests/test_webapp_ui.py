@@ -177,7 +177,7 @@ def purse_state(
         "takes_card": takes_card,
         "discount": discount,
         "now_off": discount if purse == "card" else 0,
-        "titles": {"cash": "Мешочек", "card": "Карта"},
+        "titles": {"cash": "Наличные", "card": "Карта"},
         "emoji": {"cash": "💰", "card": "💳"},
         "note": "Карта: −" + str(discount) + "% к ценам в этом месте.",
     }
@@ -8043,6 +8043,23 @@ async def test_a_bank_with_an_account_opens_on_the_accounts(server):
         await browser.close()
 
 
+async def test_the_purses_are_named_cash_and_card(server):
+    """Названия берём из правил, а не из подделки: их и видит игрок.
+
+    Соседний тест про кошелёк над прилавком читает подпись из фикстуры —
+    там проверяется вёрстка. Здесь банк собран настоящим `build_bank`, и
+    подпись приезжает из `PURSE_TITLES`: переименовали кошелёк в правилах
+    — тест обязан это заметить.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.wait_for_selector(".purse-choice")
+
+        names = await page.locator(".purse-pick-title").all_inner_texts()
+        assert names == ["💰 Наличные", "💳 Карта"]
+        await browser.close()
+
+
 async def test_the_card_carries_the_same_number_as_the_account(server):
     """Счёт и карта — одни деньги, и номер у них один."""
     async with async_playwright() as pw:
@@ -8129,7 +8146,7 @@ async def test_the_wallet_bar_stands_over_the_counter_with_both_purses(server):
         await page.wait_for_selector(".wallet")
 
         picks = await page.locator(".wallet-pick-title").all_inner_texts()
-        assert picks == ["💰 Мешочек", "💳 Карта"]
+        assert picks == ["💰 Наличные", "💳 Карта"]
         money = await page.locator(".wallet-pick-money").all_inner_texts()
         assert money == ["1\u00a0200 💰", "3\u00a0000 💰"]
         # Выбранный горит, и на карте написано, сколько она снимает

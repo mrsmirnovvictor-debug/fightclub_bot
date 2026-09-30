@@ -149,10 +149,11 @@ async def settle(
         # хватает трёхсот, платил бы за полис первым же кредитом, пришедшим
         # на счёт, — и узнавал об этом по пустому кошельку
         await set_renew(db, player, False)
+        # Строка о кошельке встаёт после «а» — там, где она стоит во всех
+        # прочих отказах по деньгам. Обе её половины писаны под это место
         return (
-            f"Автопродление полиса выключено: "
-            f"{player.purse_note(moment, Service.INSURANCE)}, "
-            f"а продление стоит {price} 💰."
+            f"Автопродление полиса выключено: продление стоит {price} 💰, "
+            f"а {player.purse_note(moment, Service.INSURANCE)}."
         )
 
     renewed = policy.renewed(moment)

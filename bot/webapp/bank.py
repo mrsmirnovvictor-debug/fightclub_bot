@@ -80,7 +80,7 @@ def purse_payload(
         # Ходит ли карта в этом месте вовсе. На рынке — нет
         "takes_card": takes_card,
         "discount": percent,
-        # Сколько скидки боец получает прямо сейчас: выбрал мешочек —
+        # Сколько скидки боец получает прямо сейчас: выбрал наличные —
         # ноль, и это видно без чтения правил
         "now_off": percent if purse == CARD else 0,
         "titles": dict(PURSE_TITLES),
@@ -107,7 +107,7 @@ def _purse_note(
             "Пополни счёт в банке."
         )
     if player.purse_for(moment, service) != CARD:
-        return "Выбран мешочек: скидка по карте не считается."
+        return "Выбраны наличные: скидка по карте не считается."
     if percent:
         return f"Карта: −{percent}% к ценам в этом месте."
     return "Здесь банк скидки не обещал — платится полная цена."
@@ -237,7 +237,7 @@ def build_bank(
                 "title": PURSE_TITLES[code],
                 "emoji": PURSE_EMOJI[code],
                 "money": player.purse_money(code),
-                # Мешочек есть всегда, карту сначала выпускают
+                # Наличные есть всегда, карту сначала выпускают
                 "ready": code == CASH or player.has_card,
                 "chosen": player.pay_from == code,
             }

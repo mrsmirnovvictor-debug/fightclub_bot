@@ -502,7 +502,7 @@ async def test_paying_takes_the_money_from_the_purse_that_was_chosen(db):
 
     assert where == CARD
     assert player.account_balance == 200
-    assert player.credits == 100, "взяли из мешочка вместо счёта"
+    assert player.credits == 100, "взяли наличными вместо счёта"
 
 
 async def test_the_price_shown_is_the_price_taken(db):
@@ -629,7 +629,7 @@ async def test_the_pharmacy_shows_and_takes_the_card_price(client, db):
     fresh = await db.get_player(42)
     # Списано со счёта ровно то, что стояло на витрине
     assert was - fresh.account_balance == row["price"]
-    assert fresh.credits == 400, "деньги взяли из мешочка вместо счёта"
+    assert fresh.credits == 400, "деньги взяли наличными вместо счёта"
 
 
 async def test_the_pouch_pays_the_full_price_at_the_same_counter(client, db):
@@ -692,6 +692,6 @@ async def test_the_trade_table_never_sees_the_account(db):
     await trades.invite(player, second.user_id)
     await trades.accept(second)
 
-    # Сто на счету на стол не положишь: стол видит только мешочек
+    # Сто на счету на стол не положишь: стол видит только наличные
     with pytest.raises(TradeError, match="больше положить нечего"):
         trades.put_credits(player, 100)
