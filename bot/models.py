@@ -149,6 +149,16 @@ class Player:
     # только предпочтение — карта не всюду ходит и не всегда обслужена,
     # а значит, спросить надо `purse_for`, а не это поле
     pay_from: str = CARD
+    # Работа. Пусто — не работает. Часы копятся за неделю (`job_minutes`)
+    # и за сутки (`shift_minutes`): недельные решают жалованье, суточные
+    # — можно ли встать на смену ещё раз сегодня
+    job_code: str = ""
+    job_since: int = 0
+    job_week: int = 0  # начало оплачиваемой недели: понедельник, 9:00 МСК
+    job_minutes: int = 0
+    shift_until: int = 0  # 0 — смена не идёт
+    shift_day: str = ""  # какие это сутки по Москве, в виде «2026-09-30»
+    shift_minutes: int = 0
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
@@ -579,6 +589,24 @@ class Player:
     def grant_credits(self, amount: int) -> int:
         self.credits = max(0, self.credits + amount)
         return self.credits
+
+    # ---------- работа ----------
+
+    @property
+    def works(self) -> bool:
+        return bool(self.job_code)
+
+    def on_shift(self, now: int) -> bool:
+        """Идёт ли смена прямо сейчас.
+
+        Пока идёт, боец заперт в своём доме: он на работе. Часов, которые
+        сняли бы замок по будильнику, у клуба нет — замок спадает сам,
+        как только час прошёл.
+        """
+        return self.shift_until > now
+
+    def shift_left(self, now: int) -> int:
+        return max(0, self.shift_until - now)
 
     # ---------- два кошелька ----------
 

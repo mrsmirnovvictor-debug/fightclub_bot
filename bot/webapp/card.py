@@ -666,6 +666,23 @@ def build_shop(
     }
 
 
+def work_badge(player: Player, moment: int) -> dict:
+    """Работает ли боец здесь и не на смене ли он прямо сейчас.
+
+    Ровно два признака, и оба нужны шапке: по первому кнопка появляется,
+    по второму меняет надпись. Всё остальное о работе лежит на её
+    собственном экране — в карточке ему делать нечего.
+    """
+    from bot.game.work import vacancy_at
+
+    here = vacancy_at(player.where(moment))
+    return {
+        "here": bool(here is not None and here.code == player.job_code),
+        "on_shift": player.on_shift(moment),
+        "code": player.job_code,
+    }
+
+
 # ---------- где боец ----------
 
 
@@ -1008,6 +1025,10 @@ def build_card(
             "free_points": player.free_points,
         },
         "place": place_payload(player, moment),
+        # Работа: по ней в шапке того дома, где боец стоит, встаёт кнопка
+        # «Работа». Хозяину карточки — своя работа, чужому — ничего: где
+        # человек работает, сопернику знать незачем
+        "work": work_badge(player, moment) if is_self else {},
         # Кто сейчас в клубе, а кого давно не видели. Видно всем, кто
         # открыл карточку: по этому и решают, есть ли смысл вызывать
         "seen": {

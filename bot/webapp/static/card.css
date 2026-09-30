@@ -2521,3 +2521,125 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-weight: 600;
   cursor: pointer;
 }
+
+/* ---------- работа: агентство и смена ---------- */
+
+/* Кнопка входа на работу — в шапке того дома, где боец работает. Она
+   одна на все пять домов и встаёт в ту шапку, что сейчас на виду */
+.work-entry {
+  margin-left: auto;
+  padding: 5px 10px;
+  border: 1px solid var(--slot-line);
+  border-radius: 999px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+/* Идёт смена — кнопка горит: из дома всё равно не выйти, и это не
+   новость, о которой надо догадываться */
+.work-entry.on { border-color: var(--accent); color: var(--accent); }
+
+/* Своя работа: часы за неделю и когда платят */
+.job {
+  margin-bottom: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.job-head { display: flex; justify-content: space-between; gap: 8px; }
+.job-title { font-weight: 700; }
+.job-where { font-size: 12px; color: var(--muted); }
+.job-pay { margin: 7px 0 0; font-size: 12px; color: var(--muted); }
+.job-warn { margin: 6px 0 0; font-size: 12.5px; color: var(--hp-red); }
+.job .btn { margin-top: 9px; }
+
+/* Полоса недельных часов. Красная — норма под угрозой: в понедельник
+   уволят, и узнать об этом лучше до понедельника */
+.hours { margin: 9px 0 0; }
+.hours-line {
+  height: 7px;
+  border-radius: 4px;
+  background: var(--slot);
+  overflow: hidden;
+}
+.hours-fill { height: 100%; background: var(--hp-green); }
+.hours-fill.short { background: var(--hp-red); }
+.hours-text { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+
+/* Доска вакансий */
+.board { margin-bottom: 14px; }
+.vacancy {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+}
+.vacancy.mine { border-color: var(--accent); }
+/* Занятое место не прячем: по нему видно, что работа в городе кончилась
+   не вообще, а именно эта */
+.vacancy.taken { opacity: 0.6; }
+.vacancy-head { display: flex; justify-content: space-between; gap: 8px; }
+.vacancy-title { font-weight: 700; }
+.vacancy-pay { font-weight: 700; color: var(--gold); white-space: nowrap; }
+.vacancy-facts { margin: 7px 0 0; display: grid; gap: 2px; }
+.vacancy-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.vacancy-fact span:first-child { color: var(--muted); }
+.vacancy-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.vacancy-state { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
+.vacancy .btn { margin-top: 9px; }
+
+/* Тест: вопрос и варианты. Выбранный вариант горит так же, как всё
+   выбранное в клубе, — один язык на весь апп */
+.quiz { margin-bottom: 14px; }
+.question {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+}
+.question-text { margin-bottom: 7px; font-size: 13.5px; font-weight: 600; }
+.answer {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 8px 10px;
+  border: 1px solid var(--slot-line);
+  border-radius: 9px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.answer.on { border-color: var(--accent); background: var(--panel); }
+.quiz-buttons { display: flex; gap: 8px; margin-top: 12px; }
+.quiz-buttons .btn { flex: 1; min-width: 0; }
+
+/* Смена: часы и кнопка «Начать работать» */
+.shift {
+  margin-bottom: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.shift-head { font-size: 13px; font-weight: 600; }
+.shift-clock {
+  margin-top: 5px;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.shift .btn { margin-top: 9px; }

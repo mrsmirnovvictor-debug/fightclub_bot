@@ -264,6 +264,44 @@
     <div id="bank-body"></div>
   </main>
 
+  <!-- ---------- 3b4. HR-агентство ---------- -->
+  <!-- Доска из пяти мест: место одно на город, и по доске сразу видно,
+       кем оно занято. Вопросы теста на доске не лежат — их выдают по
+       заявке, и верный ответ не уезжает на страницу вовсе. -->
+  <main id="hr" class="screen hidden">
+    <figure class="interior hidden" id="hr-interior">
+      <img class="interior-pic" id="hr-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="hr-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-hr"></span>
+    </header>
+    <h1 class="screen-title">💼 HR-агентство</h1>
+    <p class="screen-note" id="hr-note"></p>
+
+    <div id="hr-body"></div>
+  </main>
+
+  <!-- ---------- 3b5. Рабочее место ---------- -->
+  <!-- Один экран на все пять домов: что в нём показывать, решает то
+       место, где боец стоит. Своё — смена и часы; чужое — записка о том,
+       что место занимают через агентство. -->
+  <main id="work" class="screen hidden">
+    <figure class="interior hidden" id="work-interior">
+      <img class="interior-pic" id="work-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="work-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-work"></span>
+    </header>
+    <h1 class="screen-title" id="work-title">💼 Работа</h1>
+    <p class="screen-note" id="work-note"></p>
+
+    <div id="work-body"></div>
+  </main>
+
   <!-- ---------- 3c. Рынок: обмен между бойцами ---------- -->
   <!-- Стол общий, и это главное свойство экрана: страница здесь ничего
        не помнит и ничего не досчитывает. Всё, что видно, — последний

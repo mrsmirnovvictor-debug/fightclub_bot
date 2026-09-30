@@ -501,7 +501,7 @@ def test_a_touch_finds_the_door_under_it():
 
 
 def test_houses_without_a_trade_are_still_on_the_map():
-    """Почта, бар и стадион пока только стоят.
+    """Стадион и прочие дома второй очереди пока только стоят.
 
     Зайти в них можно — иначе город выглядит нарисованным наполовину, —
     но никакой услуги за ними нет, и сервер её не знает.
@@ -509,16 +509,25 @@ def test_houses_without_a_trade_are_still_on_the_map():
     from bot.game.locations import LOCATIONS
 
     coming = [place for place in LOCATIONS if not place.works]
-    # Три дома первой очереди и шестнадцать второй: город вырос
+    # Один дом первой очереди и пятнадцать второй: город вырос
     # картинками раньше, чем правилами, и это нормально — лишь бы в
-    # каждом было сказано, чего в нём ждать. Пять домов из этого списка
-    # уже вышли: в больнице лечат, на рынке меняются, в страховой
-    # оформляют полис, в зале тренируются, в банке держат деньги
-    assert {"post_office", "stadium", "bar"} <= {place.code for place in coming}
+    # каждом было сказано, чего в нём ждать. Дома из этого списка
+    # выходят по одному: в больнице лечат, на рынке меняются, в
+    # страховой оформляют полис, в зале тренируются, в банке держат
+    # деньги, в агентстве нанимают
+    assert {"stadium"} <= {place.code for place in coming}
     assert not {
-        "hospital", "market", "insurance_office", "strength_gym", "bank"
+        "hospital", "market", "insurance_office", "strength_gym", "bank",
+        "office_building",
     } & {place.code for place in coming}
-    assert len(coming) == 19
+    assert len(coming) == 16
+    # Бар и почта — особый случай: за ними уже стоит работа, но обещано
+    # сверх неё и другое. У такого дома есть и услуга, и строка «скоро»
+    from bot.game.locations import get_location
+
+    for code in ("bar", "post_office"):
+        place = get_location(code)
+        assert place.works and place.soon, code
     for place in coming:
         assert place.soon, f"{place.code}: не сказано, что здесь будет"
         assert place.services == ()

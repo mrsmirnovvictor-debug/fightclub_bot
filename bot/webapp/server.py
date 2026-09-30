@@ -77,7 +77,15 @@ from bot.bank_service import (
     withdraw,
 )
 from bot.game.bank import CARD
+from bot.game.work import SHIFT_HOURS
 from bot.webapp.bank import build_bank
+from bot.webapp.work import build_hr, build_work
+from bot.work_service import WorkError
+from bot.work_service import apply as work_apply
+from bot.work_service import quit_job as work_quit
+from bot.work_service import quiz_payload
+from bot.work_service import settle as work_settle
+from bot.work_service import start_shift, vacancies
 from bot.webapp.card import (
     build_market,
     build_card,
@@ -1205,6 +1213,129 @@ async def api_purse(request: web.Request) -> web.Response:
     )
 
 
+# ---------- работа: агентство и смена ----------
+
+
+async def _worker(request: web.Request, service: Service) -> tuple:
+    """Боец на месте, с уже сведённой неделей.
+
+    Неделя закрывается здесь — в единственных двух местах, куда за
+    работой приходят. Часов, которые раздавали бы жалованье по
+    будильнику, у клуба нет, как нет их у страховой и у зала.
+    """
+    player = await _at(request, service)
+    return player, await work_settle(request.app[DB_KEY], player)
+
+
+async def _hr_state(request: web.Request, player, said: str = "") -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = build_hr(player, await vacancies(db, player))
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_hr(request: web.Request) -> web.Response:
+    """Доска агентства: пять мест города и что с ними у этого бойца."""
+    player, said = await _worker(request, Service.HIRE)
+    return await _hr_state(request, player, said)
+
+
+async def api_hr_action(request: web.Request) -> web.Response:
+    """Взять вопросы, подать заявку с ответами или уйти с работы."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player, said = await _worker(request, Service.HIRE)
+    attempt = None
+    try:
+        if action == "quiz":
+            code = str(data.get("code") or "")
+            if not quiz_payload(code):
+                return web.json_response(
+                    {"error": "Такой вакансии в агентстве нет."}, status=409
+                )
+            body = build_hr(player, await vacancies(db, player))
+            body["quiz"] = quiz_payload(code)
+            body["code"] = code
+            return web.json_response(body)
+        if action == "apply":
+            answers = [int(one) for one in data.get("answers") or []]
+            done = await work_apply(
+                db, player, str(data.get("code") or ""), answers
+            )
+            attempt = {
+                "hired": done.hired,
+                "right": done.right,
+                "total": done.total,
+                "need": done.need,
+                "title": done.vacancy.title,
+                "account": done.account,
+            }
+            said = (
+                f"Тебя взяли: {done.vacancy.title}. "
+                f"{done.right} из {done.total} верных."
+                if done.hired
+                else (
+                    f"Не взяли: {done.right} из {done.total}, "
+                    f"а нужно {done.need}. Вернуться можно через неделю."
+                )
+            )
+            if done.account:
+                said += f" Открыт счёт {done.account} — на него придёт жалованье."
+        elif action == "quit":
+            gone = await work_quit(db, player)
+            said = f"Ты ушёл с места «{gone.title}». Вакансия снова в агентстве."
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except (WorkError, ValueError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    config = request.app[CONFIG_KEY]
+    body = build_hr(fresh, await vacancies(db, fresh))
+    body["said"] = said
+    body["attempt"] = attempt or {}
+    body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
+    return web.json_response(body)
+
+
+async def api_work(request: web.Request) -> web.Response:
+    """Рабочее место: смена, часы за сутки и за неделю."""
+    player, said = await _worker(request, Service.WORK)
+    body = build_work(player)
+    body["said"] = said
+    return web.json_response(body)
+
+
+async def api_work_action(request: web.Request) -> web.Response:
+    """Встать на смену. Уйти с неё нельзя — боец заперт до конца часа."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player, said = await _worker(request, Service.WORK)
+    try:
+        if action == "start":
+            until = await start_shift(db, player)
+            said = (
+                f"Смена началась: {SHIFT_HOURS} часа. "
+                "Из дома не выйти, пока она не кончится."
+            )
+            del until
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except WorkError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    config = request.app[CONFIG_KEY]
+    body = build_work(fresh)
+    body["said"] = said
+    body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
+    return web.json_response(body)
+
+
 # ---------- рынок: обмен между бойцами ----------
 
 
@@ -1661,6 +1792,10 @@ def create_app(
             web.get("/api/bank", api_bank),
             web.post("/api/bank", api_bank_action),
             web.post("/api/purse", api_purse),
+            web.get("/api/hr", api_hr),
+            web.post("/api/hr", api_hr_action),
+            web.get("/api/work", api_work),
+            web.post("/api/work", api_work_action),
             web.get("/api/gym", api_gym),
             web.post("/api/gym", api_gym_action),
             web.get("/api/insurance", api_insurance),

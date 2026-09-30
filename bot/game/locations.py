@@ -34,6 +34,8 @@ class Service(str, Enum):
     """Чем занимаются в локации. У каждой ручки сервера — своя услуга."""
 
     BANK = "bank"  # Vegas Банк: счёт, карта и банкомат
+    HIRE = "hire"  # HR-агентство: вакансии города и приёмный тест
+    WORK = "work"  # смена на своём рабочем месте
     FIGHT = "fight"  # ринг: вызовы, бои, отряд, турниры
     RAID = "raid"  # рейд-босс
     REPAIR = "repair"  # починка вещей
@@ -55,6 +57,8 @@ class Service(str, Enum):
 
 SERVICE_TITLES: dict[Service, str] = {
     Service.BANK: "держать деньги в банке",
+    Service.HIRE: "искать работу",
+    Service.WORK: "работать",
     Service.FIGHT: "драться",
     Service.RAID: "идти в рейд",
     Service.REPAIR: "чинить вещи",
@@ -473,7 +477,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.436769, 0.26256), (0.632306, 0.272727),
             (0.629118, 0.358852), (0.438895, 0.34988),
         ),
-        services=(Service.FIGHT,),
+        services=(Service.FIGHT, Service.WORK),
         genitive="бойцовского клуба",
     ),
     Location(
@@ -537,7 +541,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.467588, 0.264354), (0.603613, 0.273923),
             (0.597237, 0.329545), (0.467588, 0.324163),
         ),
-        services=(Service.RAID,),
+        services=(Service.RAID, Service.WORK),
         genitive="казино",
         interior="underground_casino_interior",
     ),
@@ -615,6 +619,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.740701, 0.579545), (0.825717, 0.606459),
             (0.819341, 0.649522), (0.738576, 0.626794),
         ),
+        services=(Service.WORK,),
         soon="награды и подарки",
         genitive="почты",
     ),
@@ -640,6 +645,11 @@ LOCATIONS: tuple[Location, ...] = (
             (0.488842, 0.670455), (0.5983, 0.678828),
             (0.534538, 0.725478), (0.485654, 0.716507),
         ),
+        # Бар пока только нанимает: за стойкой работают, а угощения и
+        # задания за ней появятся позже. Поэтому у дома есть и услуга, и
+        # строка «скоро» — экран работы её и покажет тому, кто тут не
+        # работает
+        services=(Service.WORK,),
         soon="задания и угощения",
         genitive="бара",
     ),
@@ -715,20 +725,20 @@ LOCATIONS: tuple[Location, ...] = (
             (0.560043, 0.272727), (0.701382, 0.26256),
             (0.699256, 0.324163), (0.561105, 0.333134),
         ),
-        services=(Service.TRAIN,),
+        services=(Service.TRAIN, Service.WORK),
         genitive="зала",
         interior_folder=art.NEW_INTERIORS,
     ),
     Location(
         "office_building",
-        "Офисное здание",
+        "HR-агентство",
         district=GYM,
         entrance=(
             (0.592986, 0.678828), (0.712009, 0.66866),
             (0.714134, 0.723684), (0.591923, 0.736842),
         ),
-        soon="работа и жалованье",
-        genitive="офиса",
+        services=(Service.HIRE,),
+        genitive="агентства",
         interior_folder=art.NEW_INTERIORS,
     ),
     Location(

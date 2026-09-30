@@ -1754,14 +1754,15 @@ function lotCard(lot) {
 
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
-  "bank", "trade", "house", "bag", "hero",
+  "bank", "hr", "work", "trade", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
 const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
-  insurance: "map", gym: "map", bank: "map", house: "map",
+  insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
+  house: "map",
 };
 let lastTab = "hero";
 
@@ -1792,6 +1793,12 @@ function showTab(name) {
   if (name === "gym") loadGym();
   else stopGymClock();
   if (name === "bank") loadBank();
+  if (name === "hr") loadHr();
+  // Часы смены идут, только пока на работу смотрят
+  if (name === "work") loadWork();
+  else stopWorkClock();
+  // Кнопка «Работа» встаёт в шапку того дома, что сейчас открыт
+  paintWorkEntry(name);
   // Стол на рынке общий: пока на него смотрят — опрашиваем, ушли — молчим
   if (name === "trade") startTradeWatch();
   else stopTradeWatch();
@@ -2158,6 +2165,8 @@ const HOUSE_SCREENS = {
   insurance: () => showTab("insurance"),
   train: () => showTab("gym"),
   bank: () => showTab("bank"),
+  hire: () => showTab("hr"),
+  work: () => showTab("work"),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -5611,7 +5620,13 @@ function renderHead(prefix, card) {
   el(prefix + "level").textContent = "[" + card.level + "]";
 }
 
+// Последняя карточка: по ней рисуется кнопка входа на работу в шапке
+// того дома, где боец стоит. Карточка перерисовывается часто, и держать
+// её здесь дешевле, чем спрашивать сервер на каждом переключении экрана
+let cardData = null;
+
 function render(card, keepTab) {
+  cardData = card;
   renderHead("bag-", card);
   renderHead("hero-", card);
   document.title = card.name + " [" + card.level + "]";
@@ -6745,6 +6760,567 @@ async function choosePurse(code, reload) {
   }
 }
 
+// ---------- HR-агентство ----------
+//
+// Доска из пяти мест. Место одно на город: занято — видно кем, и заявку
+// подавать некуда. Тест приходит по нажатию «Подать заявку» и живёт
+// ровно до ответа: верных ответов на странице нет вовсе, сверяет сервер.
+
+let hrData = null;
+let hrBusy = false;
+let hrQuiz = null; // {code, questions, chosen}
+
+async function loadHr() {
+  try {
+    const response = await fetch("api/hr", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("hr-note").textContent = "Агентство не открылось.";
+      return;
+    }
+    renderHr(await response.json());
+  } catch (error) {
+    el("hr-note").textContent = error.message;
+  }
+}
+
+async function hrAction(payload) {
+  if (hrBusy) return;
+  hrBusy = true;
+  try {
+    const response = await fetch("api/hr", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Агентство", data.error || "Не получилось.");
+      await loadHr();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    if (data.quiz) {
+      hrQuiz = { code: data.code, questions: data.quiz, chosen: [] };
+    } else {
+      hrQuiz = null;
+    }
+    renderHr(data);
+    if (data.said) popup("Агентство", data.said);
+  } catch (error) {
+    popup("Агентство", "Сервер не ответил.");
+  } finally {
+    hrBusy = false;
+  }
+}
+
+function renderHr(data) {
+  hrData = data;
+  el("hr-note").textContent = data.said || hrHint(data);
+
+  const body = el("hr-body");
+  body.textContent = "";
+
+  // Идёт тест — на экране только он: уходить с половины некуда, а
+  // доска под вопросами отвлекала бы от единственного, что сейчас важно
+  if (hrQuiz) {
+    body.appendChild(quizBox(data));
+    return;
+  }
+  if (data.job && data.job.code) body.appendChild(myJobBox(data.job));
+  body.appendChild(boardBox(data));
+  body.appendChild(rulesBox(data));
+}
+
+function hrHint(data) {
+  if (data.job && data.job.code) {
+    return "Ты уже работаешь. Работа одна на бойца.";
+  }
+  const open = (data.vacancies || []).filter((one) => one.open).length;
+  if (!open) return "Свободных мест сейчас нет. Загляни позже.";
+  return "Пять мест на город. Заявка — и мини-тест из пяти вопросов.";
+}
+
+/** Своя работа: часы за неделю и когда платят. */
+function myJobBox(job) {
+  const box = document.createElement("section");
+  box.className = "job";
+
+  const head = document.createElement("div");
+  head.className = "job-head";
+  const title = document.createElement("span");
+  title.className = "job-title";
+  title.textContent = job.emoji + " " + job.title;
+  const where = document.createElement("span");
+  where.className = "job-where";
+  where.textContent = job.place_title;
+  head.append(title, where);
+  box.appendChild(head);
+
+  box.appendChild(hoursBar(job));
+
+  const pay = document.createElement("p");
+  pay.className = "job-pay";
+  pay.textContent =
+    "Жалованье " + num(job.salary) + " 💰 в неделю · сейчас набежало "
+    + num(job.payout) + " 💰 · выплата " + job.payday;
+  box.appendChild(pay);
+
+  if (!job.safe) {
+    const warn = document.createElement("p");
+    warn.className = "job-warn";
+    warn.textContent =
+      "Меньше половины нормы — уволят в понедельник. Нужно отработать "
+      + job.keep_hours + " ч.";
+    box.appendChild(warn);
+  }
+
+  box.appendChild(
+    button("Уйти с работы", {
+      secondary: true,
+      onClick: () => askQuit(job),
+    })
+  );
+  return box;
+}
+
+function hoursBar(job) {
+  const box = document.createElement("div");
+  box.className = "hours";
+  const line = document.createElement("div");
+  line.className = "hours-line";
+  const fill = document.createElement("div");
+  fill.className = "hours-fill" + (job.safe ? "" : " short");
+  fill.style.width = job.percent + "%";
+  line.appendChild(fill);
+  const text = document.createElement("div");
+  text.className = "hours-text";
+  text.textContent =
+    "Отработано " + job.worked + " из " + job.hours + " ч за неделю";
+  box.append(line, text);
+  return box;
+}
+
+function askQuit(job) {
+  // Уход стоит недели без этого места: спрашиваем до, а не после
+  popup(
+    "Уйти с работы",
+    "Место освободится, а подать на него снова можно будет через неделю. "
+      + "Заработанное за эту неделю выплатят сразу."
+  );
+  hrAction({ action: "quit" });
+}
+
+/** Доска вакансий: пять мест города. */
+function boardBox(data) {
+  const box = document.createElement("section");
+  box.className = "board";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Вакансии города";
+  box.appendChild(head);
+  (data.vacancies || []).forEach((one) => box.appendChild(vacancyCard(one, data)));
+  return box;
+}
+
+function vacancyCard(one, data) {
+  const box = document.createElement("article");
+  box.className =
+    "vacancy" + (one.mine ? " mine" : "") + (one.taken && !one.mine ? " taken" : "");
+
+  const head = document.createElement("div");
+  head.className = "vacancy-head";
+  const title = document.createElement("span");
+  title.className = "vacancy-title";
+  title.textContent = one.emoji + " " + one.title;
+  const pay = document.createElement("span");
+  pay.className = "vacancy-pay";
+  pay.textContent = num(one.salary) + " 💰/нед";
+  head.append(title, pay);
+  box.appendChild(head);
+
+  const facts = document.createElement("div");
+  facts.className = "vacancy-facts";
+  [
+    ["Место", one.place_title],
+    ["Норма", one.hours + " ч в неделю"],
+    ["Образование", one.education],
+  ].forEach(([name, value]) => {
+    const row = document.createElement("div");
+    row.className = "vacancy-fact";
+    const left = document.createElement("span");
+    left.textContent = name;
+    const right = document.createElement("span");
+    right.textContent = value;
+    row.append(left, right);
+    facts.appendChild(row);
+  });
+  box.appendChild(facts);
+
+  if (one.note) {
+    const note = document.createElement("p");
+    note.className = "vacancy-note";
+    note.textContent = one.note;
+    box.appendChild(note);
+  }
+
+  box.appendChild(vacancyButton(one, data));
+  return box;
+}
+
+function vacancyButton(one, data) {
+  if (one.mine) {
+    const said = document.createElement("p");
+    said.className = "vacancy-state";
+    said.textContent = "Здесь работаешь ты.";
+    return said;
+  }
+  if (one.taken) {
+    const said = document.createElement("p");
+    said.className = "vacancy-state";
+    said.textContent = "Занято: " + one.taken_by + ".";
+    return said;
+  }
+  if (one.blocked) {
+    const said = document.createElement("p");
+    said.className = "vacancy-state";
+    said.textContent =
+      blockWhy(one.block_reason) + " Снова можно через " + one.block_days + " дн.";
+    return said;
+  }
+  const busy = Boolean(data.job && data.job.code);
+  return button("Подать заявку", {
+    disabled: busy,
+    hint: "У тебя уже есть работа. Работа одна на бойца.",
+    onClick: () => hrAction({ action: "quiz", code: one.code }),
+  });
+}
+
+function blockWhy(reason) {
+  if (reason === "test") return "Тест сюда ты уже провалил.";
+  if (reason === "fired") return "Отсюда тебя уволили.";
+  if (reason === "quit") return "Отсюда ты ушёл сам.";
+  return "Сюда сейчас нельзя.";
+}
+
+function rulesBox(data) {
+  const box = document.createElement("section");
+  box.className = "day-prices";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Как это устроено";
+  box.appendChild(head);
+  [
+    ["Тест", data.questions + " вопросов, нужно " + data.pass_percent + "%"],
+    ["Смена", data.shift_hours + " ч, не больше " + data.day_hours + " ч в сутки"],
+    ["Выплата", "в понедельник в 9:00 по Москве"],
+    ["Мало часов", "меньше половины нормы — увольнение"],
+    ["После отказа", "заявка снова через " + data.cooldown_days + " дн."],
+  ].forEach(([name, value]) => {
+    const line = document.createElement("div");
+    line.className = "day-price";
+    const left = document.createElement("span");
+    left.className = "day-price-number";
+    left.textContent = name;
+    const right = document.createElement("span");
+    right.className = "day-price-value";
+    right.textContent = value;
+    line.append(left, right);
+    box.appendChild(line);
+  });
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = data.note;
+  box.appendChild(note);
+  return box;
+}
+
+// ---------- мини-тест ----------
+
+function quizBox(data) {
+  const box = document.createElement("section");
+  box.className = "quiz";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Тест на место";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Пять вопросов, ответить верно надо на " + data.pass_percent
+    + "%. Ошибиться можно один раз.";
+  box.appendChild(note);
+
+  hrQuiz.questions.forEach((question, index) => {
+    box.appendChild(questionCard(question, index));
+  });
+
+  const row = document.createElement("div");
+  row.className = "quiz-buttons";
+  row.appendChild(
+    button("Ответить", {
+      disabled: hrQuiz.chosen.filter((one) => one !== undefined).length
+        < hrQuiz.questions.length,
+      hint: "Ответь на все вопросы.",
+      onClick: () =>
+        hrAction({
+          action: "apply",
+          code: hrQuiz.code,
+          answers: hrQuiz.chosen,
+        }),
+    })
+  );
+  row.appendChild(
+    button("Передумал", {
+      secondary: true,
+      onClick: () => {
+        hrQuiz = null;
+        renderHr(hrData);
+      },
+    })
+  );
+  box.appendChild(row);
+  return box;
+}
+
+function questionCard(question, index) {
+  const box = document.createElement("div");
+  box.className = "question";
+  const text = document.createElement("div");
+  text.className = "question-text";
+  text.textContent = index + 1 + ". " + question.text;
+  box.appendChild(text);
+
+  question.options.forEach((option, at) => {
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "answer" + (hrQuiz.chosen[index] === at ? " on" : "");
+    pick.textContent = option;
+    pick.addEventListener("click", () => {
+      hrQuiz.chosen[index] = at;
+      renderHr(hrData);
+    });
+    box.appendChild(pick);
+  });
+  return box;
+}
+
+// ---------- рабочее место ----------
+
+let workData = null;
+let workBusy = false;
+let workTimer = null;
+
+async function loadWork() {
+  try {
+    const response = await fetch("api/work", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("work-note").textContent = "Сюда не попасть.";
+      return;
+    }
+    renderWork(await response.json());
+  } catch (error) {
+    el("work-note").textContent = error.message;
+  }
+}
+
+async function workAction(payload) {
+  if (workBusy) return;
+  workBusy = true;
+  try {
+    const response = await fetch("api/work", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Работа", data.error || "Не получилось.");
+      await loadWork();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderWork(data);
+    if (data.said) popup("Работа", data.said);
+  } catch (error) {
+    popup("Работа", "Сервер не ответил.");
+  } finally {
+    workBusy = false;
+  }
+}
+
+function renderWork(data) {
+  workData = data;
+  el("work-title").textContent = data.job.code
+    ? data.job.emoji + " " + data.job.title
+    : "💼 Работа";
+  el("work-note").textContent = data.said || data.note;
+
+  const body = el("work-body");
+  body.textContent = "";
+
+  if (data.shift && data.shift.seconds_left) {
+    body.appendChild(shiftBox(data));
+    startWorkClock();
+    return;
+  }
+  stopWorkClock();
+  if (!data.job.code) {
+    body.appendChild(strangerBox(data));
+    return;
+  }
+  body.appendChild(hoursBar(data.job));
+  body.appendChild(dayBox(data));
+  body.appendChild(payBox(data.job));
+}
+
+/** Идёт смена: часы тикают на странице, а время считает сервер. */
+function shiftBox(data) {
+  const box = document.createElement("section");
+  box.className = "shift";
+  const head = document.createElement("div");
+  head.className = "shift-head";
+  head.textContent = "Смена идёт";
+  const clock = document.createElement("div");
+  clock.className = "shift-clock";
+  clock.id = "work-clock";
+  box.append(head, clock);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Часы уже засчитаны. Из дома не выйти, пока смена не кончится — "
+    + "ты на работе.";
+  box.appendChild(note);
+  return box;
+}
+
+function startWorkClock() {
+  stopWorkClock();
+  workTimer = setInterval(tickWork, 1000);
+  tickWork();
+}
+
+function stopWorkClock() {
+  if (workTimer) clearInterval(workTimer);
+  workTimer = null;
+}
+
+function tickWork() {
+  const shown = el("work-clock");
+  if (!shown || !workData || !workData.shift) return;
+  const left = Math.max(
+    0,
+    workData.shift.until - Math.floor(Date.now() / 1000)
+  );
+  if (!left) {
+    stopWorkClock();
+    loadWork();
+    return;
+  }
+  const minutes = Math.floor(left / 60);
+  const seconds = left % 60;
+  shown.textContent =
+    "Осталось " + minutes + ":" + String(seconds).padStart(2, "0");
+}
+
+function dayBox(data) {
+  const box = document.createElement("section");
+  box.className = "shift";
+  const head = document.createElement("div");
+  head.className = "shift-head";
+  head.textContent =
+    "Сегодня отработано " + data.job.today + " из " + data.job.day_hours + " ч";
+  box.appendChild(head);
+
+  box.appendChild(
+    button("Начать работать · " + data.shift_hours + " ч", {
+      disabled: !data.can_start,
+      hint: "На сегодня хватит: в сутки работают "
+        + data.job.day_hours + " часа.",
+      onClick: () => workAction({ action: "start" }),
+    })
+  );
+  return box;
+}
+
+function payBox(job) {
+  const box = document.createElement("p");
+  box.className = "job-pay";
+  box.textContent =
+    "Набежало " + num(job.payout) + " 💰 · выплата " + job.payday
+    + " на счёт в банке";
+  return box;
+}
+
+/** Чужое рабочее место: что тут вообще есть. */
+function strangerBox(data) {
+  const box = document.createElement("section");
+  box.className = "offer";
+  if (!data.vacancy.code) return box;
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = data.vacancy.emoji + " " + data.vacancy.title;
+  box.appendChild(head);
+
+  const facts = document.createElement("div");
+  facts.className = "vacancy-facts";
+  [
+    ["Жалованье", num(data.vacancy.salary) + " 💰 в неделю"],
+    ["Норма", data.vacancy.hours + " ч в неделю"],
+  ].forEach(([name, value]) => {
+    const row = document.createElement("div");
+    row.className = "vacancy-fact";
+    const left = document.createElement("span");
+    left.textContent = name;
+    const right = document.createElement("span");
+    right.textContent = value;
+    row.append(left, right);
+    facts.appendChild(row);
+  });
+  box.appendChild(facts);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = "Это место занимают в HR-агентстве, а не здесь.";
+  box.appendChild(note);
+  return box;
+}
+
+// ---------- вход на работу из своего дома ----------
+//
+// Кнопка живёт в шапке того экрана, который открыт: у зала свой экран, у
+// клуба свой, а у бара — этот же. Рисовать её в каждом экране отдельно
+// значило бы пять раз одно и то же, поэтому она одна и вешается на ту
+// шапку, что сейчас на виду.
+
+function paintWorkEntry(screen) {
+  document.querySelectorAll(".work-entry").forEach((one) => one.remove());
+  if (screen === "work" || screen === "hr") return;
+  if (!cardData || !cardData.work || !cardData.work.here) return;
+  const head = el(screen) && el(screen).querySelector(".screen-head");
+  if (!head) return;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "work-entry" + (cardData.work.on_shift ? " on" : "");
+  btn.textContent = cardData.work.on_shift ? "🕗 Смена" : "💼 Работа";
+  btn.addEventListener("click", () => showTab("work"));
+  head.appendChild(btn);
+}
+
 // ---------- документы бойца ----------
 //
 // Раздел заведён под то, что будет копиться: полис первый, за ним пойдут
@@ -7653,7 +8229,7 @@ function stopTradeWatch() {
 // показывать, знает только то место, где боец сейчас стоит.
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
-  "trade", "house",
+  "hr", "work", "trade", "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -7793,8 +8369,8 @@ el("sheet-back").addEventListener("click", closeSheet);
 // так же. Нижняя панель ведёт в клуб, в рюкзак и в карточку — то есть
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
-  "house", "hospital", "trade", "insurance", "gym", "bank", "shop", "magic",
-  "workshop", "club",
+  "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
+  "shop", "magic", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

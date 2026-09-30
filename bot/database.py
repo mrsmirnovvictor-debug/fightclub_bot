@@ -71,6 +71,14 @@ CREATE TABLE IF NOT EXISTS players (
     card_at         INTEGER NOT NULL DEFAULT 0,
     card_paid_until INTEGER NOT NULL DEFAULT 0,
     pay_from        TEXT    NOT NULL DEFAULT 'card',
+    -- Работа: одна на бойца, и потому живёт в его же строке
+    job_code        TEXT    NOT NULL DEFAULT '',
+    job_since       INTEGER NOT NULL DEFAULT 0,
+    job_week        INTEGER NOT NULL DEFAULT 0,
+    job_minutes     INTEGER NOT NULL DEFAULT 0,
+    shift_until     INTEGER NOT NULL DEFAULT 0,
+    shift_day       TEXT    NOT NULL DEFAULT '',
+    shift_minutes   INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -161,6 +169,17 @@ CREATE TABLE IF NOT EXISTS injuries (
 
 -- Тренажёрный зал. Три таблицы, потому что у них разная жизнь: абонемент
 -- кончается по часам, прогресс копится навсегда, а тренировка живёт
+-- Запрет подавать заявку: неделя после отказа на тесте и после
+-- увольнения. Строка на пару «боец и вакансия»: отказ в баре не мешает
+-- проситься на почту
+CREATE TABLE IF NOT EXISTS job_blocks (
+    user_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    until   INTEGER NOT NULL,
+    reason  TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, code)
+);
+
 -- пятнадцать минут и исчезает. Расписание не хранится вовсе — оно
 -- разыгрывается по номеру недели, см. bot/game/gym.py
 CREATE TABLE IF NOT EXISTS gym_passes (
@@ -422,7 +441,9 @@ PLAYER_COLUMNS = (
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
     "raid_wins, raid_fights, seen_at, location, travel_to, arrives_at, "
     "city, birthplace, pro_until, gender, created_at, "
-    "account_number, account_balance, card_at, card_paid_until, pay_from"
+    "account_number, account_balance, card_at, card_paid_until, pay_from, "
+    "job_code, job_since, job_week, job_minutes, shift_until, "
+    "shift_day, shift_minutes"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -454,6 +475,15 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("card_at", "INTEGER NOT NULL DEFAULT 0"),  # 0 — карты нет
     ("card_paid_until", "INTEGER NOT NULL DEFAULT 0"),
     ("pay_from", f"TEXT NOT NULL DEFAULT '{CARD}'"),
+    # Работа. Как и счёт, она лежит на бойце: работа одна, и держать под
+    # неё таблицу из одной строки на человека незачем
+    ("job_code", "TEXT NOT NULL DEFAULT ''"),  # пусто — не работает
+    ("job_since", "INTEGER NOT NULL DEFAULT 0"),
+    ("job_week", "INTEGER NOT NULL DEFAULT 0"),  # начало оплачиваемой недели
+    ("job_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за неделю
+    ("shift_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — смена не идёт
+    ("shift_day", "TEXT NOT NULL DEFAULT ''"),  # какие это сутки по Москве
+    ("shift_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за сутки
 )
 
 
@@ -523,6 +553,13 @@ class Database:
         await self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS players_account "
             "ON players(account_number) WHERE account_number <> ''"
+        )
+        # Вакансия одна на город: второго бармена база не примет. Держать
+        # это питоном значило бы ловить с опозданием — двое, нажавшие
+        # «устроиться» в одну секунду, оба прошли бы проверку
+        await self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS players_job "
+            "ON players(job_code) WHERE job_code <> ''"
         )
 
     async def _settle_genders(self) -> None:
@@ -737,9 +774,11 @@ class Database:
                 wins, losses, draws, raid_wins, raid_fights, seen_at,
                 location, travel_to, arrives_at,
                 city, birthplace, pro_until, gender, created_at,
-                account_number, account_balance, card_at, card_paid_until, pay_from
+                account_number, account_balance, card_at, card_paid_until, pay_from,
+                job_code, job_since, job_week, job_minutes,
+                shift_until, shift_day, shift_minutes
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      ?,?,?,?,?)
+                      ?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -776,7 +815,14 @@ class Database:
                 account_balance = excluded.account_balance,
                 card_at         = excluded.card_at,
                 card_paid_until = excluded.card_paid_until,
-                pay_from        = excluded.pay_from
+                pay_from        = excluded.pay_from,
+                job_code        = excluded.job_code,
+                job_since       = excluded.job_since,
+                job_week        = excluded.job_week,
+                job_minutes     = excluded.job_minutes,
+                shift_until     = excluded.shift_until,
+                shift_day       = excluded.shift_day,
+                shift_minutes   = excluded.shift_minutes
             """,
             (
                 player.user_id,
@@ -817,6 +863,13 @@ class Database:
                 player.card_at,
                 player.card_paid_until,
                 player.pay_from,
+                player.job_code,
+                player.job_since,
+                player.job_week,
+                player.job_minutes,
+                player.shift_until,
+                player.shift_day,
+                player.shift_minutes,
             ),
         )
         await self.conn.commit()
@@ -834,6 +887,7 @@ class Database:
         await self.conn.execute("DELETE FROM effects WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM injuries WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM policies WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM job_blocks WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM gym_passes WHERE user_id = ?", (user_id,))
         await self.conn.execute(
             "DELETE FROM gym_progress WHERE user_id = ?", (user_id,)
@@ -1058,6 +1112,93 @@ class Database:
             "UPDATE players SET pay_from = ? WHERE user_id = ?", (purse, user_id)
         )
         await self.conn.commit()
+
+    # ---------- работа ----------
+
+    async def take_job(self, user_id: int, code: str, now: int, week: int) -> bool:
+        """Занять вакансию. False — её уже заняли или боец где-то работает.
+
+        Оба условия стоят в самом запросе. Проверить в питоне, а потом
+        записать, значит оставить щель, в которую пролезает второй
+        бармен: двое, нажавшие «устроиться» в одну секунду, оба прошли бы
+        проверку. Уникальность вакансии дополнительно держит индекс.
+        """
+        try:
+            cursor = await self.conn.execute(
+                "UPDATE players SET job_code = ?, job_since = ?, job_week = ?, "
+                "job_minutes = 0, shift_until = 0, shift_day = '', "
+                "shift_minutes = 0 "
+                "WHERE user_id = ? AND job_code = '' "
+                "AND NOT EXISTS (SELECT 1 FROM players WHERE job_code = ?)",
+                (code, now, week, user_id, code),
+            )
+        except sqlite3.IntegrityError:
+            # Вакансию заняли в ту же секунду: индекс не дал второму
+            return False
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def taken_jobs(self) -> dict[str, dict]:
+        """Какие вакансии заняты и кем: код работы → кто и с какой недели.
+
+        Неделя нужна тому, кто смотрит на доску: держателя, у которого
+        она давно кончилась, пора рассчитать и снять с места. Иначе
+        боец, переставший заходить, занимал бы место вечно — а место
+        одно на город.
+        """
+        async with self.conn.execute(
+            "SELECT user_id, job_code, nickname, job_week "
+            "FROM players WHERE job_code <> ''"
+        ) as cursor:
+            return {
+                row["job_code"]: {
+                    "user_id": row["user_id"],
+                    "nickname": row["nickname"],
+                    "week": row["job_week"],
+                }
+                for row in await cursor.fetchall()
+            }
+
+    async def leave_job(self, user_id: int) -> None:
+        """Уйти с работы: место освобождается, часы обнуляются."""
+        await self.conn.execute(
+            "UPDATE players SET job_code = '', job_since = 0, job_week = 0, "
+            "job_minutes = 0, shift_until = 0, shift_day = '', shift_minutes = 0 "
+            "WHERE user_id = ?",
+            (user_id,),
+        )
+        await self.conn.commit()
+
+    async def block_job(
+        self, user_id: int, code: str, until: int, reason: str = ""
+    ) -> None:
+        """Закрыть вакансию для этого бойца до этого часа."""
+        await self.conn.execute(
+            "INSERT INTO job_blocks (user_id, code, until, reason) VALUES (?,?,?,?) "
+            "ON CONFLICT(user_id, code) DO UPDATE SET "
+            "until = excluded.until, reason = excluded.reason",
+            (user_id, code, until, reason),
+        )
+        await self.conn.commit()
+
+    async def job_blocks_of(self, user_id: int, now: int) -> dict[str, dict]:
+        """Какие вакансии бойцу сейчас закрыты и до какого часа.
+
+        Просроченные строки тут же и убираем: запрет кончился, и держать
+        его в базе значит однажды показать игроку запрет из прошлого года.
+        """
+        await self.conn.execute(
+            "DELETE FROM job_blocks WHERE user_id = ? AND until <= ?", (user_id, now)
+        )
+        await self.conn.commit()
+        async with self.conn.execute(
+            "SELECT code, until, reason FROM job_blocks WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            return {
+                row["code"]: {"until": row["until"], "reason": row["reason"]}
+                for row in await cursor.fetchall()
+            }
 
     async def hand_over_gear(self, item_id: int, giver_id: int, taker_id: int) -> bool:
         """Передать вещь другому бойцу. False — вещь уже не у того хозяина.

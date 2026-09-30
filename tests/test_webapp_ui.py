@@ -126,6 +126,55 @@ EMPTY_HISTORY = {
 }
 
 
+def hr_state(job: str = "", taken=(), blocked=()) -> dict:
+    """Агентство, как его отдаёт сервер: доска из пяти мест."""
+    from bot.game.health import now_ts
+    from bot.webapp.work import build_hr
+    from bot.game.work import COOLDOWN_SECONDS, VACANCIES
+
+    moment = now_ts()
+    player = make_player("office_building")
+    if job:
+        player.job_code = job
+        player.job_since = moment - 3 * 24 * 60 * 60
+        player.job_week = moment - 2 * 24 * 60 * 60
+        player.job_minutes = 6 * 60
+        player.account_number = "VB-1234-5678-9012"
+    rows = [
+        {
+            "vacancy": one,
+            "taken_by": ("Тайлер" if one.code == job
+                         else "Марла" if one.code in taken else ""),
+            "mine": one.code == job,
+            "blocked_until": moment + COOLDOWN_SECONDS if one.code in blocked else 0,
+            "block_reason": "test" if one.code in blocked else "",
+        }
+        for one in VACANCIES
+    ]
+    return build_hr(player, rows, moment)
+
+
+def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> dict:
+    """Рабочее место, как его отдаёт сервер."""
+    from bot.game.health import now_ts
+    from bot.game.work import get_vacancy, moscow_day
+    from bot.webapp.work import build_work
+
+    moment = now_ts()
+    place = get_vacancy(job).place if job else "bar"
+    player = make_player(place)
+    if job:
+        player.job_code = job
+        player.job_since = moment - 3 * 24 * 60 * 60
+        player.job_week = moment - 2 * 24 * 60 * 60
+        player.job_minutes = 6 * 60
+        player.shift_day = moscow_day(moment).isoformat()
+        player.shift_minutes = today
+        if shift:
+            player.shift_until = moment + 1_800
+    return build_work(player, moment)
+
+
 def bank_state(
     account: bool = True,
     card: bool = True,
@@ -448,7 +497,8 @@ async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
     battle=None, city=None, workshop=None, hospital=None, trade=None,
-    insurance=None, gym=None, bank=None, images=False, telegram="",
+    insurance=None, gym=None, bank=None, hr=None, work=None,
+    images=False, telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -478,6 +528,11 @@ async def open_page(
     await page.route("**/api/insurance*", canned(insurance or empty_insurance()))
     await page.route("**/api/gym*", canned(gym or gym_state()))
     await page.route("**/api/bank*", canned(bank or bank_state()))
+    await page.route("**/api/hr*", canned(hr or hr_state()))
+    # Без звёздочки на конце, и это не придирка: `**/api/work*` ловит и
+    # `/api/workshop`, а перехват в Playwright выигрывает последний — и
+    # мастерская начинала получать ответ рабочего места
+    await page.route("**/api/work", canned(work or work_state()))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
@@ -4544,25 +4599,25 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
 
 
 async def test_a_house_without_a_trade_says_when_it_opens(server):
-    """Почта на карте есть, зайти можно, а услуги пока нет.
+    """Стадион на карте есть, зайти можно, а услуги пока нет.
 
     Раньше такой дом отвечал всплывашкой, и боец оставался на карте — то
     есть внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
     записка о том, чего тут ждать.
     """
-    walker = make_player(location="post_office")
+    walker = make_player(location="stadium")
     card = build_card(walker, TOKEN, viewer_id=walker.user_id)
     async with async_playwright() as pw:
         browser, page = await open_map(
-            pw, server, city_map("post_office"), card, images=True
+            pw, server, city_map("stadium"), card, images=True
         )
 
-        await page.locator(".zone-house").filter(has_text="Почта").click()
+        await page.locator(".zone-house").filter(has_text="Стадион").click()
         await page.wait_for_selector("#house:not(.hidden)")
 
-        assert await page.locator("#house-title").inner_text() == "Почта"
+        assert await page.locator("#house-title").inner_text() == "Стадион"
         note = await page.locator("#house-soon").inner_text()
-        assert "Скоро" in note and "награды и подарки" in note
+        assert "Скоро" in note and "элитный рейд" in note
         # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
         assert "active" in (await page.locator("#tab-map").get_attribute("class"))
         # Обратно — на карту, кнопкой в углу
@@ -8194,4 +8249,248 @@ async def test_the_shop_shows_the_price_the_card_will_take(server):
 
         prices = await page.locator(".thing .btn").first.inner_text()
         assert "85" in prices, prices
+        await browser.close()
+
+
+# ---------- HR-агентство и работа ----------
+
+
+async def open_hr(pw, server, hr=None):
+    player = make_player("office_building")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), hr=hr,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "hr")
+    await page.wait_for_selector("#hr:not(.hidden)")
+    return browser, page
+
+
+async def open_work(pw, server, work=None, place="bar", job="bartender"):
+    player = make_player(place)
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["work"] = {"here": bool(job), "on_shift": False, "code": job}
+    browser, page = await open_page(
+        pw, server, card, build_shop(player), work=work,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "work")
+    await page.wait_for_selector("#work:not(.hidden)")
+    return browser, page
+
+
+async def test_the_agency_shows_all_five_vacancies(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server)
+        await page.wait_for_selector(".vacancy")
+
+        titles = await page.locator(".vacancy-title").all_inner_texts()
+        assert len(titles) == 5
+        assert any("Бармен" in one for one in titles)
+        pays = await page.locator(".vacancy-pay").all_inner_texts()
+        assert "250 💰/нед" in pays and "200 💰/нед" in pays
+        await browser.close()
+
+
+async def test_a_taken_vacancy_names_its_holder_and_offers_nothing(server):
+    """Место одно на город: занятое не прячем, а подписываем."""
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=hr_state(taken=("croupier",)))
+        await page.wait_for_selector(".vacancy")
+
+        taken = page.locator(".vacancy.taken")
+        assert await taken.count() == 1
+        assert "Занято: Марла." in await taken.locator(".vacancy-state").inner_text()
+        assert await taken.locator(".btn").count() == 0
+        await browser.close()
+
+
+async def test_a_blocked_vacancy_says_why_and_for_how_long(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=hr_state(blocked=("bartender",)))
+        await page.wait_for_selector(".vacancy")
+
+        said = await page.locator(".vacancy").first.locator(".vacancy-state").inner_text()
+        assert "провалил" in said and "7 дн" in said
+        await browser.close()
+
+
+async def test_the_quiz_opens_by_the_button_and_hides_the_board(server):
+    """Идёт тест — на экране только он: уходить с половины некуда."""
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server)
+        await page.wait_for_selector(".vacancy")
+        await page.route("**/api/hr", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(dict(hr_state(), quiz=[
+                {"text": "Вопрос " + str(i), "options": ["А", "Б", "В"]}
+                for i in range(1, 6)
+            ], code="bartender")),
+        ))
+
+        await page.locator(".vacancy .btn").first.click()
+        await page.wait_for_selector(".quiz")
+
+        assert await page.locator(".question").count() == 5
+        assert await page.locator(".board").count() == 0
+        # Кнопка ответа заперта, пока не ответили на всё
+        answer = page.locator(".quiz-buttons .btn").first
+        assert await answer.is_disabled()
+        await browser.close()
+
+
+async def test_the_quiz_lets_you_answer_only_after_every_question(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server)
+        await page.wait_for_selector(".vacancy")
+        await page.route("**/api/hr", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(dict(hr_state(), quiz=[
+                {"text": "Вопрос " + str(i), "options": ["А", "Б", "В"]}
+                for i in range(1, 6)
+            ], code="bartender")),
+        ))
+        await page.locator(".vacancy .btn").first.click()
+        await page.wait_for_selector(".quiz")
+
+        for index in range(5):
+            await page.locator(".question").nth(index).locator(".answer").first.click()
+
+        answer = page.locator(".quiz-buttons .btn").first
+        assert not await answer.is_disabled()
+        # Выбранный вариант горит
+        assert await page.locator(".answer.on").count() == 5
+        await browser.close()
+
+
+async def test_my_job_shows_the_week_and_the_payday(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=hr_state(job="bartender"))
+        await page.wait_for_selector(".job")
+
+        assert "Бармен" in await page.locator(".job-title").inner_text()
+        assert "Отработано 6 из 10 ч" in await page.locator(".hours-text").inner_text()
+        assert "150" in await page.locator(".job-pay").inner_text()
+        await browser.close()
+
+
+async def test_a_week_under_half_the_norm_warns_before_monday(server):
+    """Уволят в понедельник — узнать об этом лучше до понедельника."""
+    state = hr_state(job="bartender")
+    state["job"].update(worked=2, percent=20, payout=50, safe=False, left=8)
+
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=state)
+        await page.wait_for_selector(".job")
+
+        assert await page.locator(".job-warn").count() == 1
+        assert "уволят" in await page.locator(".job-warn").inner_text()
+        assert await page.locator(".hours-fill.short").count() == 1
+        await browser.close()
+
+
+async def test_the_workplace_offers_the_shift(server):
+    async with async_playwright() as pw:
+        browser, page = await open_work(pw, server)
+        await page.wait_for_selector(".shift")
+
+        assert "Начать работать" in await page.locator(".shift .btn").inner_text()
+        assert "Сегодня отработано 0 из 2 ч" in (
+            await page.locator(".shift-head").inner_text()
+        )
+        await browser.close()
+
+
+async def test_a_day_already_worked_offers_nothing(server):
+    async with async_playwright() as pw:
+        browser, page = await open_work(pw, server, work=work_state(today=120))
+        await page.wait_for_selector(".shift")
+
+        assert await page.locator(".shift .btn").is_disabled()
+        assert "хватит" in await page.locator("#work-note").inner_text()
+        await browser.close()
+
+
+async def test_a_running_shift_counts_down_and_says_the_door_is_shut(server):
+    async with async_playwright() as pw:
+        browser, page = await open_work(pw, server, work=work_state(shift=True))
+        await page.wait_for_selector(".shift-clock")
+
+        clock = await page.locator("#work-clock").inner_text()
+        assert clock.startswith("Осталось 29:") or clock.startswith("Осталось 30:")
+        assert "не выйти" in await page.locator(".shift .screen-note").inner_text()
+        # Пока смена идёт, начинать нечего
+        assert await page.locator(".shift .btn").count() == 0
+        await browser.close()
+
+
+async def test_a_stranger_at_the_workplace_is_sent_to_the_agency(server):
+    async with async_playwright() as pw:
+        browser, page = await open_work(
+            pw, server, work=work_state(job=""), job=""
+        )
+        await page.wait_for_selector("#work:not(.hidden)")
+
+        assert await page.locator(".shift").count() == 0
+        assert "HR-агентств" in await page.locator("#work-note").inner_text()
+        await browser.close()
+
+
+async def test_the_work_button_stands_in_the_head_of_your_own_house(server):
+    """Кнопка одна на все пять домов и встаёт в ту шапку, что на виду."""
+    player = make_player("strength_gym")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["work"] = {"here": True, "on_shift": False, "code": "trainer"}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), gym=gym_state(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "gym")
+        await page.wait_for_selector("#gym:not(.hidden)")
+
+        entry = page.locator("#gym .work-entry")
+        assert await entry.count() == 1
+        assert await entry.inner_text() == "💼 Работа"
+        # Нажатие уводит на работу, а зал остаётся залом
+        await entry.click()
+        await page.wait_for_selector("#work:not(.hidden)")
+        await browser.close()
+
+
+async def test_there_is_no_work_button_where_you_do_not_work(server):
+    player = make_player("strength_gym")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["work"] = {"here": False, "on_shift": False, "code": ""}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), gym=gym_state(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "gym")
+        await page.wait_for_selector("#gym:not(.hidden)")
+
+        assert await page.locator(".work-entry").count() == 0
+        await browser.close()
+
+
+async def test_the_work_button_lights_up_during_a_shift(server):
+    player = make_player("strength_gym")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["work"] = {"here": True, "on_shift": True, "code": "trainer"}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), gym=gym_state(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "gym")
+        await page.wait_for_selector("#gym .work-entry")
+
+        entry = page.locator("#gym .work-entry")
+        assert await entry.inner_text() == "🕗 Смена"
+        assert await entry.evaluate("one => one.classList.contains('on')")
         await browser.close()

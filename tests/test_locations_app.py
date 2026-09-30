@@ -61,7 +61,7 @@ async def test_the_map_shows_the_city_and_where_you_stand(client, db):
 
 
 async def test_houses_without_a_trade_say_so(client, db):
-    """Почта на карте есть, но услуги за ней пока нет."""
+    """Стадион на карте есть, но услуги за ним пока нет."""
     await db.save_player(make_player())
 
     body = await (await client.get("/api/map", headers=headers())).json()
@@ -72,9 +72,12 @@ async def test_houses_without_a_trade_say_so(client, db):
     }
 
     assert len(houses) == 33
-    assert houses["post_office"]["works"] is False
-    assert houses["post_office"]["soon"]
-    assert houses["post_office"]["services"] == []
+    assert houses["stadium"]["works"] is False
+    assert houses["stadium"]["soon"] and houses["stadium"]["services"] == []
+    # Бар уже нанимает, но обещано сверх работы и другое: у дома есть и
+    # услуга, и строка «скоро»
+    assert houses["bar"]["works"] is True
+    assert houses["bar"]["services"] == ["work"] and houses["bar"]["soon"]
     # А банк уже открыт: за ним счёт, карта и банкомат
     assert houses["bank"]["works"] is True
     assert houses["bank"]["services"] == ["bank"]
