@@ -30,6 +30,7 @@ from bot.board_service import RAID, Board, Pin
 from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
+from bot.game.injuries import Injury
 from bot.game.combat import (
     Action,
     Fighter,
@@ -77,6 +78,7 @@ from bot.game.raid import (
     boss_fighter,
     judge_raid,
 )
+from bot.injury_service import hurt_player
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import raid_lobby_keyboard
 from bot.messaging import Announcer
@@ -191,6 +193,9 @@ class RaidSession:
     # Слова судьи за текущую волну и разбор по ходам за весь рейд
     said: list[str] = field(default_factory=list)
     rounds: list[dict] = field(default_factory=list)
+    # Кого покалечил босс: боец → травма. Записывается в конце рейда,
+    # когда бойцы подняты из базы
+    hurt: dict[int, Injury] = field(default_factory=dict)
     fallen: list[int] = field(default_factory=list)
     prompt_message_id: int | None = None
     timer: asyncio.Task | None = None
@@ -690,6 +695,7 @@ class RaidService:
         )
         session.said.extend(said)
         session.rounds.append(turn_payload(result, said))
+        session.hurt.update(result.injuries)
         session.strikes += 1
         if not fighter.alive:
             session.fallen.append(user_id)
@@ -873,6 +879,11 @@ class RaidService:
             # Подвал идёт по своему счёту: босс — не человек, и валят его
             # толпой. В победах и поражениях бойца остаются только те, кого
             # он бил сам
+            # Травма от босса — до всего прочего: снятая ею экипировка
+            # меняет и запас здоровья, и то, что снашивается износом
+            injury = session.hurt.get(user_id)
+            if injury is not None:
+                await hurt_player(self.db, player, injury)
             player.raid_fights += 1
             if outcome.won:
                 player.raid_wins += 1

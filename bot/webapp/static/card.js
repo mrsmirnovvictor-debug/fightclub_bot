@@ -89,6 +89,16 @@ function statValue(stat) {
     bonus.textContent = ` (${stat.base} + ${stat.bonus})`;
     box.appendChild(bonus);
   }
+  // Потеря от травмы — красным и отдельным числом: «Ловкость -5 (-10)».
+  // В общую прибавку её не складываем, иначе видно только итог, а он и
+  // сам по себе бывает отрицательным
+  if (stat.loss) {
+    box.classList.add("hurt");
+    const loss = document.createElement("span");
+    loss.className = "loss";
+    loss.textContent = ` (${stat.loss})`;
+    box.appendChild(loss);
+  }
   return box;
 }
 
@@ -295,7 +305,7 @@ function renderSlots(container, slots, own, info) {
     const dying = worstWear(slot);
     if (dying) {
       box.classList.add(dying);
-      box.appendChild(wearBadge(dying));
+      box.appendChild(wearBadge(dying, worstLeft(slot)));
     }
     box.addEventListener("click", () => {
       haptic((feedback) => feedback.selectionChanged());
@@ -336,10 +346,29 @@ function worstWear(slot) {
   return "";
 }
 
-function wearBadge(state) {
+function worstLeft(slot) {
+  // Сколько боёв осталось у самой изношенной вещи клетки. По этому числу
+  // и красится ключ: три — жёлтый, два — оранжевый, один — красный
+  const lives = [slot.item, slot.under]
+    .filter((one) => one && wearState(one))
+    .map(wearLeft);
+  return lives.length ? Math.min(...lives) : 0;
+}
+
+// Квадрат в углу клетки: сколько боёв вещи осталось. Три — жёлтый, два —
+// оранжевый, один — красный. Сам квадрат и есть предупреждение: ключ
+// внутри цветного кружка читался хуже, чем чистый цвет, и требовал
+// подложки, которая на пёстрой картинке выглядела случайным овалом
+const WEAR_LIGHTS = ["🟥", "🟥", "🟧", "🟨"];
+
+/** Метка износа на клетке. Цвет говорит, сколько боёв вещи осталось. */
+function wearBadge(state, left) {
   const mark = document.createElement("span");
   mark.className = "slot-wear " + state;
-  mark.textContent = "🔧";
+  mark.textContent = WEAR_LIGHTS[left] || WEAR_LIGHTS[3];
+  mark.title = left
+    ? "Осталось " + left + " " + fightWord(left)
+    : "Вещь на исходе";
   return mark;
 }
 
@@ -619,12 +648,13 @@ function thingCard(item, credits, shop, bare) {
           ? button("Купить · " + item.stars + " ⭐", {
               onClick: () => buyRelic(item),
             })
-          : button(
-              item.affordable
-                ? "Купить · " + item.price + " 💰"
-                : "Не хватает кредитов",
-              { disabled: !item.affordable, onClick: () => purchase(item) }
-            )
+          // Цена стоит на кнопке всегда, даже когда её нечем заплатить:
+          // «не хватает кредитов» вместо числа не говорит, сколько
+          // копить, — а счёт лежит тут же, сверху экрана
+          : button("Купить · " + item.price + " 💰", {
+              disabled: !item.affordable,
+              onClick: () => purchase(item),
+            })
       );
       body.appendChild(buy);
     }
@@ -708,7 +738,7 @@ function renderDaily(card) {
   const state = card.daily;
   if (!state) return;
   dailyState = state;
-  el("hero-daily").classList.remove("hidden");
+  // Кнопку рисует `paintHeroTabs` — он идёт следом, уже зная про календарь
 
   const veil = el("daily-veil");
   if (dailyShown) {
@@ -1147,10 +1177,15 @@ function spell(seconds) {
 function paintEffects() {
   const passed = (Date.now() - effectsAt) / 1000;
   const live = effects.filter((effect) => effect.seconds_left - passed > 0);
+  // Травма живёт в той же строке, что и эликсиры: и то и другое висит на
+  // бойце по часам. Только эликсир даёт, а травма отнимает — отсюда и
+  // красная плашка, и место в начале строки
+  const hurt = injuryChip(passed);
   ["effects", "hero-effects"].forEach((id) => {
     const box = el(id);
     box.textContent = "";
-    box.classList.toggle("hidden", live.length === 0);
+    box.classList.toggle("hidden", live.length === 0 && !hurt);
+    if (hurt) box.appendChild(hurt.cloneNode(true));
     live.forEach((effect) => {
       const chip = document.createElement("span");
       chip.className = "effect";
@@ -1167,10 +1202,58 @@ function paintEffects() {
     effects = live;
     refresh();
   }
+  // То же и с травмой: отлежала своё — характеристика вернулась, и
+  // карточку надо перечитать. Забываем её сразу, чтобы не звать сервер
+  // на каждой секунде
+  if (injury && !hurt) {
+    injury = null;
+    refresh();
+  }
 }
 
-function startEffects(list) {
+// Травма бойца по последней карточке: код, слова и сколько осталось
+let injury = null;
+
+function injuryChip(passed) {
+  if (!injury || !injury.text) return null;
+  const left = Math.max(0, (injury.seconds_left || 0) - passed);
+  if (left <= 0) return null;
+  const chip = document.createElement("span");
+  chip.className = "effect hurt";
+  // Слова приходят с сервера целиком, а тикающий остаток дописываем на
+  // месте: перечитывать карточку каждую секунду ради минуты незачем
+  chip.textContent =
+    "🤕 " + injury.hurt_title[0].toUpperCase() + injury.hurt_title.slice(1) +
+    ": " + injury.title + ". Ещё " + longSpell(left) + ".";
+  if (injury.crippled) chip.textContent += " Драться нельзя.";
+  return chip;
+}
+
+// «10 часов 15 минут» — словами, как это написано в карточке
+function longSpell(seconds) {
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const parts = [];
+  if (hours) parts.push(hours + " " + plural(hours, "час", "часа", "часов"));
+  if (minutes) {
+    parts.push(minutes + " " + plural(minutes, "минута", "минуты", "минут"));
+  }
+  return parts.length ? parts.join(" ") : "меньше минуты";
+}
+
+function plural(count, one, few, many) {
+  const last = count % 10;
+  const pair = count % 100;
+  if (pair >= 11 && pair <= 14) return many;
+  if (last === 1) return one;
+  if (last >= 2 && last <= 4) return few;
+  return many;
+}
+
+function startEffects(list, hurt) {
   effects = list || [];
+  injury = hurt && hurt.text ? hurt : null;
   effectsAt = Date.now();
   paintEffects();
 }
@@ -1322,6 +1405,9 @@ function renderShop(data) {
 
   const list = el("shop-list");
   list.textContent = "";
+  // Кошелёк — над прилавком: цены на витрине уже посчитаны под него,
+  // и переключают его здесь же, а не сходив за этим в банк
+  list.appendChild(walletBar(data.purse, loadShop));
   data.sections
     .filter((section) => filters.slot === "all" || section.slot === filters.slot)
     .forEach((section) => {
@@ -1405,19 +1491,102 @@ function marketFollowsBag() {
   else marketData = null;
 }
 
+// Комиссионка живёт двумя делами, и они не смешиваются: за одним сюда
+// приходят купить, за другим — сдать. Раньше они лежали одним свитком,
+// и покупателю приходилось пролистывать собственный рюкзак, чтобы
+// добраться до чужих лотов.
+const MARKET_TABS = [
+  ["shelf", "🛒 Прилавок"],
+  ["mine", "🤝 Продать своё"],
+];
+let marketTab = "shelf";
+
+function pickMarketTab(name) {
+  marketTab = name;
+  if (marketData) renderMarket(marketData);
+}
+
+// Прилавок — это чужое. Свои лоты стоят на второй вкладке, рядом с
+// рюкзаком: снять с продажи — дело продавца, а не покупателя
+function othersShelves(data) {
+  return data.sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((lot) => !lot.mine),
+    }))
+    .filter((section) => section.items.length);
+}
+
 function renderMarket(data) {
   marketData = data;
   el("shop-purse").textContent = "";
   el("shop-purse").appendChild(purse(data.credits));
-  const count = data.sections.reduce((all, row) => all + row.items.length, 0);
-  el("market-note").textContent = count
-    ? "Вещи игроков клуба. Клуб берёт " + data.fee + "% с каждой продажи."
-    : "На комиссии пусто. Выставь своё — заберут.";
+
+  const shelves = othersShelves(data);
+  const strangers = shelves.reduce((all, row) => all + row.items.length, 0);
+  const mine = data.mine || [];
+  el("market-note").textContent = marketTab === "shelf"
+    ? strangers
+      ? "Вещи игроков клуба. Клуб берёт " + data.fee + "% с каждой продажи."
+      : "На прилавке пусто: чужого никто не выставил."
+    : "Выставленное ждёт покупателя. Клуб берёт " + data.fee + "% с продажи.";
 
   const body = el("market-body");
   body.textContent = "";
+  body.appendChild(walletBar(data.purse, loadMarket));
+
+  const tabs = document.createElement("div");
+  tabs.className = "bubbles";
+  tabs.id = "market-tabs";
+  MARKET_TABS.forEach(([code, label]) => {
+    const count = code === "shelf" ? strangers : mine.length + data.sellable.length;
+    tabs.appendChild(
+      chip(
+        count ? label + " · " + count : label,
+        marketTab === code,
+        () => pickMarketTab(code)
+      )
+    );
+  });
+  body.appendChild(tabs);
+
+  if (marketTab === "shelf") {
+    if (!shelves.length) body.appendChild(emptyShelf("Чужих вещей сейчас нет."));
+    shelves.forEach((section) => body.appendChild(marketShelf(section)));
+    return;
+  }
+  if (mine.length) body.appendChild(mineBox(mine));
   body.appendChild(sellBox(data));
-  data.sections.forEach((section) => body.appendChild(marketShelf(section)));
+}
+
+function emptyShelf(said) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const empty = document.createElement("p");
+  empty.className = "shelf-empty";
+  empty.textContent = said;
+  box.appendChild(empty);
+  return box;
+}
+
+function mineBox(mine) {
+  // Что уже стоит на прилавке от тебя: отсюда же и снимается
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "📤 На продаже";
+  const count = document.createElement("span");
+  count.className = "shelf-count";
+  count.textContent = "лотов " + mine.length;
+  head.appendChild(count);
+  box.appendChild(head);
+
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  mine.forEach((lot) => list.appendChild(lotCard(lot)));
+  box.appendChild(list);
+  return box;
 }
 
 function sellBox(data) {
@@ -1426,7 +1595,7 @@ function sellBox(data) {
   box.className = "shelf";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = "🤝 Выставить своё";
+  head.textContent = "🎒 В рюкзаке";
   box.appendChild(head);
 
   if (!data.sellable.length) {
@@ -1571,13 +1740,11 @@ function lotCard(lot) {
           secondary: true,
           onClick: () => marketAction({ action: "withdraw", lot_id: lot.id }),
         })
-      : button(
-          lot.affordable ? "Купить · " + lot.price + " 💰" : "Не хватает кредитов",
-          {
-            disabled: !lot.affordable,
-            onClick: () => buyLot(lot),
-          }
-        )
+      // Цена на кнопке стоит всегда — и когда кредитов не хватает тоже
+      : button("Купить · " + lot.price + " 💰", {
+          disabled: !lot.affordable,
+          onClick: () => buyLot(lot),
+        })
   );
   body.appendChild(buttons);
 
@@ -1586,13 +1753,16 @@ function lotCard(lot) {
 }
 
 const SCREENS = [
-  "club", "map", "shop", "magic", "workshop", "hospital", "house", "bag", "hero",
+  "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
+  "bank", "hr", "work", "trade", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
 const TABS = ["club", "map", "bag", "hero"];
 const OPENED_FROM = {
-  shop: "map", magic: "map", workshop: "map", hospital: "map", house: "map",
+  shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
+  insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
+  house: "map",
 };
 let lastTab = "hero";
 
@@ -1618,6 +1788,20 @@ function showTab(name) {
   }
   if (name === "workshop") loadWorkshop();
   if (name === "hospital") loadHospital();
+  if (name === "insurance") loadInsurance();
+  // Часы тренировки идут, только пока на зал смотрят
+  if (name === "gym") loadGym();
+  else stopGymClock();
+  if (name === "bank") loadBank();
+  if (name === "hr") loadHr();
+  // Часы смены идут, только пока на работу смотрят
+  if (name === "work") loadWork();
+  else stopWorkClock();
+  // Кнопка «Работа» встаёт в шапку того дома, что сейчас открыт
+  paintWorkEntry(name);
+  // Стол на рынке общий: пока на него смотрят — опрашиваем, ушли — молчим
+  if (name === "trade") startTradeWatch();
+  else stopTradeWatch();
   if (name === "map") loadMap();
   // Часы рейда идут, только пока на карту смотрят
   if (name === "map") startRaidClock();
@@ -1977,6 +2161,12 @@ const HOUSE_SCREENS = {
   },
   repair: () => openWorkshop(),
   heal: () => showTab("hospital"),
+  trade: () => showTab("trade"),
+  insurance: () => showTab("insurance"),
+  train: () => showTab("gym"),
+  bank: () => showTab("bank"),
+  hire: () => showTab("hr"),
+  work: () => showTab("work"),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -2144,10 +2334,14 @@ function proCard(pro) {
   });
   body.appendChild(gains);
 
-  const note = document.createElement("div");
-  note.className = "thing-note";
-  note.textContent = pro.note;
-  body.appendChild(note);
+  // Оговорка под списком бывает пустой: трём строкам она не нужна, а
+  // пустая строка под ними читается как обрыв
+  if (pro.note) {
+    const note = document.createElement("div");
+    note.className = "thing-note";
+    note.textContent = pro.note;
+    body.appendChild(note);
+  }
 
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
@@ -2194,13 +2388,9 @@ async function takePro(pro) {
     renderMagic(data.magic);
     haptic((feedback) => feedback.notificationOccurred("success"));
     const got = data.pro;
-    const extras = [];
-    if (got.blade) extras.push("клинок ассасина — в инвентаре");
-    if (got.look) extras.push("образ ассасина — в гардеробе");
     popup(
       "💎 " + pro.title,
       (got.renewed ? "Подписка продлена на " : "Подписка на ") + got.days + " дней."
-        + (extras.length ? "\n" + extras.join("\n") : "")
     );
   } catch (error) {
     popup("Не вышло", error.message);
@@ -4738,19 +4928,83 @@ function renderHospital(data) {
   el("shop-purse-hospital").textContent = "";
   el("shop-purse-hospital").appendChild(purse(data.credits));
 
-  const whole = data.hp.missing <= 0;
+  const whole = data.hp.missing <= 0 && !(data.injury && data.injury.code);
   el("hospital-note").textContent = whole
     ? "Врач осматривает тебя и разводит руками: лечить нечего."
     : "Здоровье затягивается и само — больница просто не даёт ждать.";
 
   const list = el("hospital-list");
   list.textContent = "";
+  list.appendChild(walletBar(data.purse, loadHospital));
+  // Травма лечится отдельно от здоровья: другая беда, другая цена — и
+  // стоит она первой, потому что с ней в клуб не пускают вовсе
+  if (data.injury && data.injury.code) list.appendChild(injuryCure(data.injury));
   // Дешёвое лечение, которого хватает целиком, делает дорогое бессмысленным
   const enough = data.cures.filter((cure) => cure.healed >= data.hp.missing);
   const cheapest = enough.length
     ? Math.min(...enough.map((cure) => cure.price))
     : 0;
   data.cures.forEach((cure) => list.appendChild(cureCard(cure, cheapest)));
+}
+
+function injuryCure(hurt) {
+  const box = document.createElement("div");
+  box.className = "cure hurt";
+
+  const title = document.createElement("div");
+  title.className = "cure-title";
+  title.textContent = "🤕 " + hurt.title;
+  box.appendChild(title);
+
+  const note = document.createElement("div");
+  note.className = "cure-note";
+  note.textContent = hurt.text;
+  box.appendChild(note);
+
+  const gain = document.createElement("div");
+  gain.className = "cure-gain";
+  gain.textContent = hurt.crippled
+    ? "После лечения — " + hurt.cure_minutes + " мин, и снова на ринг"
+    : "После лечения — " + hurt.cure_minutes + " мин, и как новый";
+  box.appendChild(gain);
+
+  // По полису лечение дешевле впятеро, и сказать об этом надо здесь:
+  // одно дешёвое число выглядело бы просто дешёвым лечением, а не
+  // работой документа, за который заплачено
+  if (hurt.insured) {
+    const saved = document.createElement("div");
+    saved.className = "cure-insured";
+    saved.textContent =
+      "📄 По полису: −" + hurt.discount + "%, вместо " + num(hurt.full_price)
+      + " 💰. Экономия " + num(hurt.saved) + " 💰.";
+    box.appendChild(saved);
+  }
+
+  box.appendChild(
+    button("Лечить · " + num(hurt.price) + " 💰", {
+      disabled: !hurt.affordable,
+      onClick: () => takeInjuryCure(hurt),
+    })
+  );
+  return box;
+}
+
+async function takeInjuryCure(hurt) {
+  if (busy) return;
+  busy = true;
+  try {
+    const data = await post("api/injury", {});
+    render(data.card, true);
+    renderHospital(data.hospital);
+    popup(
+      "🤕 " + data.done.title,
+      "Вылечили. Отлежаться — ещё " + data.done.minutes + " мин."
+    );
+  } catch (error) {
+    popup("Не вышло", error.message);
+  } finally {
+    busy = false;
+  }
 }
 
 function cureCard(cure, cheapest) {
@@ -4862,15 +5116,19 @@ function renderRepairTab(data) {
     : "Чинить нечего: всё снятое целое, а надетое сюда не берут.";
   const list = el("repair-list");
   list.textContent = "";
+  list.appendChild(walletBar(data.purse, loadWorkshop));
   // На вкладке лежит только побитое, и делают тут одно — чинят. Поэтому
   // на карточке одна кнопка: не хватает на всю починку — чиним на сколько
   // хватает, и это написано прямо на ней
+  // Считаем по тому кошельку, которым здесь платят: у бойца с картой
+  // деньги лежат на счету, и наличные о них ничего не знают
+  const money = spendable(data);
   data.repair.forEach((item) => {
-    const card = thingCard(item, data.credits, false, true);
+    const card = thingCard(item, money, false, true);
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
-    const affordable = Math.min(item.wear, data.credits);
-    const full = item.repair_price <= data.credits;
+    const affordable = Math.min(item.wear, money);
+    const full = item.repair_price <= money;
     buttons.appendChild(
       button(
         full
@@ -4947,6 +5205,7 @@ function renderModsTab(data) {
     + "характеристику. Сколько именно, решает бросок у мастера.";
   const list = el("mods-list");
   list.textContent = "";
+  list.appendChild(walletBar(data.purse, loadWorkshop));
   data.shop.forEach((section) => {
     const head = document.createElement("h2");
     head.className = "shelf-head";
@@ -5212,23 +5471,15 @@ function lookTile(look) {
   return box;
 }
 
+// Гардероб приходит уже своего пола: делить его на «мужские» и «женские»
+// нечего, и заголовок над единственной группой только занимал строку
 function renderLooks(looks) {
   const list = el("sheet-list");
   list.textContent = "";
-  [
-    ["male", "Мужские"],
-    ["female", "Женские"],
-  ].forEach(([gender, title]) => {
-    const head = document.createElement("div");
-    head.className = "look-group";
-    head.textContent = title;
-    const grid = document.createElement("div");
-    grid.className = "look-grid";
-    looks
-      .filter((look) => look.gender === gender)
-      .forEach((look) => grid.appendChild(lookTile(look)));
-    list.append(head, grid);
-  });
+  const grid = document.createElement("div");
+  grid.className = "look-grid";
+  looks.forEach((look) => grid.appendChild(lookTile(look)));
+  list.appendChild(grid);
 }
 
 async function openLooks() {
@@ -5240,7 +5491,7 @@ async function openLooks() {
     if (!response.ok) throw new Error("Гардероб не открылся.");
     const data = await response.json();
     el("sheet-note").textContent =
-      "Шесть образов открыты всем, остальные покупаются раз и навсегда. "
+      "Три образа открыты всем, остальные покупаются раз и навсегда. "
       + "На бой образ не влияет.";
     renderLooks(data.looks);
   } catch (error) {
@@ -5369,13 +5620,19 @@ function renderHead(prefix, card) {
   el(prefix + "level").textContent = "[" + card.level + "]";
 }
 
+// Последняя карточка: по ней рисуется кнопка входа на работу в шапке
+// того дома, где боец стоит. Карточка перерисовывается часто, и держать
+// её здесь дешевле, чем спрашивать сервер на каждом переключении экрана
+let cardData = null;
+
 function render(card, keepTab) {
+  cardData = card;
   renderHead("bag-", card);
   renderHead("hero-", card);
   document.title = card.name + " [" + card.level + "]";
 
   startHealthTicker(card.hp);
-  startEffects(card.effects);
+  startEffects(card.effects, card.injury);
   renderAvatar(card);
   renderSlots(el("slots-left"), card.slots.left, card.is_self);
   renderSlots(el("slots-right"), card.slots.right, card.is_self);
@@ -5385,6 +5642,7 @@ function render(card, keepTab) {
   renderSlots(el("hero-slots-right"), card.slots.right, card.is_self, true);
   renderSkills(card);
   renderDaily(card);
+  renderPapers(card);
   renderBag(card);
   // Рюкзак поменялся — значит поменялось и то, что можно выставить на
   // комиссию. Без этого экран комиссионки остаётся с прежним списком: он
@@ -5487,6 +5745,2497 @@ function render(card, keepTab) {
 // показывать экран клуба и что на нём можно
 let myPlace = null;
 
+// ---------- тренажёрный зал ----------
+//
+// Экран собран сверху вниз по срочности: идущая тренировка, потом слот, к
+// которому можно присоединиться, потом накопленное, и только затем
+// расписание на неделю. Абонемента нет — всё остальное не показываем
+// вовсе: без него в зал не пускают, и полоса прогресса под запертой
+// дверью только дразнит.
+//
+// Часы тикают на странице, а очко засчитывает сервер. Страница лишь
+// перестаёт ждать и спрашивает заново, когда пятнадцать минут вышли:
+// решать, отработана ли тренировка, ей нельзя — она не видит, в зале ли
+// боец на самом деле.
+
+let gymData = null;
+let gymBusy = false;
+let gymTimer = null;
+
+// Две вкладки: занятия и абонемент. Без абонемента вкладок нет вовсе —
+// выбирать не из чего, и вторая была бы единственной
+const GYM_TABS = [
+  ["train", "Тренировки"],
+  ["pass", "Абонемент"],
+];
+let gymTab = "train";
+
+function pickGymTab(name) {
+  gymTab = name;
+  if (gymData) renderGym(gymData);
+}
+
+async function loadGym() {
+  try {
+    const response = await fetch("api/gym", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("gym-note").textContent = "Зал не открылся.";
+      return;
+    }
+    renderGym(await response.json());
+  } catch (error) {
+    el("gym-note").textContent = error.message;
+  }
+}
+
+async function gymAction(payload) {
+  if (gymBusy) return;
+  gymBusy = true;
+  try {
+    const response = await fetch("api/gym", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Зал", data.error || "Не получилось.");
+      await loadGym();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderGym(data);
+    if (data.said) popup("Зал", data.said);
+  } catch (error) {
+    popup("Зал", "Сервер не ответил.");
+  } finally {
+    gymBusy = false;
+  }
+}
+
+function renderGym(data) {
+  gymData = data;
+  el("shop-purse-gym").textContent = "";
+  el("shop-purse-gym").appendChild(purse(data.credits));
+  el("gym-note").textContent = data.said || gymHint(data);
+
+  const body = el("gym-body");
+  body.textContent = "";
+  if (!data.pass.active) {
+    body.appendChild(walletBar(data.purse, loadGym));
+    body.appendChild(passShelf(data));
+    return;
+  }
+
+  const tabs = document.createElement("div");
+  tabs.className = "bubbles";
+  tabs.id = "gym-tabs";
+  GYM_TABS.forEach(([code, label]) => {
+    tabs.appendChild(chip(label, gymTab === code, () => pickGymTab(code)));
+  });
+  body.appendChild(tabs);
+
+  if (gymTab === "pass") {
+    body.appendChild(passTab(data));
+    return;
+  }
+  body.appendChild(walletBar(data.purse, loadGym));
+  if (data.visit && data.visit.stat) body.appendChild(visitBox(data.visit));
+  else body.appendChild(slotBox(data));
+  body.appendChild(dayLine(data.day));
+  body.appendChild(progressBox(data));
+  body.appendChild(scheduleBox(data.schedule));
+  startGymClock();
+}
+
+/** Вкладка «Абонемент»: что есть, почём докупать и что ещё продают. */
+function passTab(data) {
+  const box = document.createElement("div");
+  box.appendChild(walletBar(data.purse, loadGym));
+  box.appendChild(passLine(data.pass));
+  box.appendChild(dayPrices(data.day));
+  box.appendChild(passShelf(data, "Продлить абонемент"));
+  return box;
+}
+
+/** Прайс дня лесенкой: во что обойдётся день, если ходить до вечера. */
+function dayPrices(day) {
+  const box = document.createElement("section");
+  box.className = "day-prices";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Занятия в день";
+  box.appendChild(head);
+
+  day.prices.forEach((row) => {
+    const line = document.createElement("div");
+    line.className = "day-price"
+      + (row.number <= day.taken ? " spent" : "")
+      + (row.number === day.taken + 1 ? " next" : "");
+    const number = document.createElement("span");
+    number.className = "day-price-number";
+    number.textContent = row.number + "-е";
+    const price = document.createElement("span");
+    price.className = "day-price-value";
+    price.textContent = row.free ? "по абонементу" : num(row.price) + " 💰";
+    line.append(number, price);
+    box.appendChild(line);
+  });
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = day.full
+    ? "На сегодня всё: " + day.limit + " занятий — это потолок суток."
+    : "Сегодня занято " + day.taken + " из " + day.limit + ".";
+  box.appendChild(note);
+  return box;
+}
+
+/** Строка под кнопкой: сколько сегодня взято и почём следующее. */
+function dayLine(day) {
+  const box = document.createElement("p");
+  box.className = "gym-day-line";
+  box.textContent = day.full
+    ? "Сегодня отработано " + day.taken + " из " + day.limit + " — на сегодня всё."
+    : "Сегодня " + day.taken + " из " + day.limit + " · следующее "
+      + (day.price ? num(day.price) + " 💰" : "по абонементу");
+  return box;
+}
+
+function gymHint(data) {
+  if (!data.pass.active) {
+    return "Без абонемента на тренировки не пускают.";
+  }
+  if (data.visit && data.visit.stat) return "Идёт тренировка. Не уходи из зала.";
+  if (data.day && data.day.full) {
+    return "На сегодня всё: " + data.day.limit + " занятий — потолок суток.";
+  }
+  if (data.now && data.now.state === "open") return "Занятие идёт — можно вставать.";
+  if (data.now && data.now.state === "late") {
+    return "Занятие заканчивается: записываться поздно.";
+  }
+  if (data.now && data.now.state === "full") {
+    return "В этом занятии мест нет. Приходи на следующее.";
+  }
+  if (data.now && data.now.state === "done") {
+    return "В этом занятии ты уже отработал. Следующее — по расписанию.";
+  }
+  if (data.now && data.now.state === "training") {
+    return "Ты стоишь на этом занятии.";
+  }
+  return "Сейчас занятий нет. Ближайшее — в расписании.";
+}
+
+// ---------- абонемент ----------
+
+function passShelf(data, title) {
+  const box = document.createElement("section");
+  box.className = "tickets";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = title || "Абонемент";
+  box.appendChild(head);
+  data.pass.tickets.forEach((ticket) => box.appendChild(ticketCard(ticket)));
+  return box;
+}
+
+function ticketCard(ticket) {
+  const box = document.createElement("div");
+  box.className = "ticket";
+
+  const title = document.createElement("div");
+  title.className = "ticket-title";
+  title.textContent = ticket.title;
+  const note = document.createElement("div");
+  note.className = "ticket-note";
+  note.textContent = ticket.note;
+  // Цена дня — по ней и видно, что год выгоднее месяца
+  const perDay = document.createElement("div");
+  perDay.className = "ticket-day";
+  perDay.textContent = ticket.per_day + " 💰 в день";
+  box.append(title, note, perDay);
+
+  box.appendChild(
+    button(num(ticket.price) + " 💰", {
+      // Цену с кнопки не снимаем, даже когда платить нечем: по ней и
+      // видно, сколько не хватает
+      disabled: !ticket.affordable,
+      hint: "Не хватает кредитов: абонемент стоит " + num(ticket.price) + " 💰.",
+      onClick: () => gymAction({ action: "pass", code: ticket.code }),
+    })
+  );
+  return box;
+}
+
+function passLine(ticket) {
+  const box = document.createElement("p");
+  box.className = "gym-pass";
+  box.textContent =
+    "🎟 Абонемент до " + ticket.until + " — осталось "
+    + ticket.days_left + " " + plural(ticket.days_left, "день", "дня", "дней");
+  return box;
+}
+
+// ---------- идущая тренировка и ближайший слот ----------
+
+function visitBox(visit) {
+  const box = document.createElement("section");
+  box.className = "gym-now training";
+
+  const title = document.createElement("div");
+  title.className = "gym-now-title";
+  title.textContent = visit.emoji + " " + visit.title;
+  const clock = document.createElement("div");
+  clock.className = "gym-clock";
+  clock.id = "gym-clock";
+  box.append(title, clock);
+
+  box.appendChild(
+    button("Уйти с тренировки", {
+      secondary: true,
+      onClick: () => gymAction({ action: "leave" }),
+    })
+  );
+  const note = document.createElement("p");
+  note.className = "gym-now-note";
+  note.textContent = "Уйдёшь из зала до конца — занятие не зачтётся.";
+  box.appendChild(note);
+  return box;
+}
+
+function slotBox(data) {
+  const box = document.createElement("section");
+  box.className = "gym-now";
+  const slot = data.now && data.now.id ? data.now : data.next;
+  if (!slot || !slot.id) return box;
+
+  const title = document.createElement("div");
+  title.className = "gym-now-title";
+  title.textContent = slot.emoji + " " + slot.title;
+  const when = document.createElement("div");
+  when.className = "gym-now-when";
+  when.textContent = slot.clock + " · " + slot.gains;
+  box.append(title, when);
+
+  // Кнопка живёт при идущем слоте, а не в строке табло: сорок две кнопки
+  // на расписании означали бы сорок один отказ
+  // Сколько мест занято — видно до того, как нажмёшь
+  const seats = document.createElement("div");
+  seats.className = "gym-now-seats";
+  seats.textContent = "Мест занято: " + slot.taken + " из " + slot.limit;
+  box.appendChild(seats);
+
+  if (data.now && data.now.state === "open" && !data.day.full) {
+    const price = data.day.price;
+    box.appendChild(
+      button(
+        "Присоединиться · " + (price ? num(price) + " 💰" : "по абонементу"),
+        {
+          // Цену с кнопки не снимаем, даже когда платить нечем.
+          // Хватает ли денег, решает сервер: кошелька два, и сравнение с
+          // наличными запирало кнопку тому, у кого деньги на счету
+          disabled: !data.day.affordable,
+          hint: "Занятие сверх абонемента стоит " + num(price)
+            + " 💰, а " + purseNote(data.purse) + ".",
+          onClick: () => gymAction({ action: "join" }),
+        }
+      )
+    );
+  } else {
+    const note = document.createElement("p");
+    note.className = "gym-now-note";
+    note.textContent = data.now && data.now.id
+      ? gymHint(data)
+      : "Ближайшее занятие — " + slot.clock + ".";
+    box.appendChild(note);
+  }
+  return box;
+}
+
+/** Часы тренировки тикают на странице, а очко засчитывает сервер. */
+function startGymClock() {
+  stopGymClock();
+  if (!gymData || !gymData.visit || !gymData.visit.stat) return;
+  gymTimer = setInterval(tickGym, 1000);
+  tickGym();
+}
+
+function stopGymClock() {
+  if (gymTimer) clearInterval(gymTimer);
+  gymTimer = null;
+}
+
+function tickGym() {
+  const shown = el("gym-clock");
+  if (!shown || !gymData || !gymData.visit) return;
+  const left = Math.max(0, gymData.visit.until - Math.floor(Date.now() / 1000));
+  if (!left) {
+    // Время вышло — спрашиваем сервер: отработана ли тренировка, решает он
+    stopGymClock();
+    loadGym();
+    return;
+  }
+  const minutes = Math.floor(left / 60);
+  const seconds = left % 60;
+  shown.textContent =
+    "Осталось " + minutes + ":" + String(seconds).padStart(2, "0");
+}
+
+// ---------- прогресс ----------
+
+function progressBox(data) {
+  const box = document.createElement("section");
+  box.className = "gym-progress";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Прогресс";
+  box.appendChild(head);
+  data.progress.forEach((row) => box.appendChild(progressRow(row)));
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Улучшения дорожают: " + data.steps.join(", ") + " тренировок. "
+    + "Всего на пять — " + data.total + ".";
+  box.appendChild(note);
+  return box;
+}
+
+function progressRow(row) {
+  const box = document.createElement("div");
+  box.className = "grow" + (row.ready ? " ready" : "") + (row.maxed ? " maxed" : "");
+
+  const head = document.createElement("div");
+  head.className = "grow-head";
+  const title = document.createElement("span");
+  title.className = "grow-title";
+  title.textContent = row.emoji + " " + row.title;
+  const ups = document.createElement("span");
+  ups.className = "grow-ups";
+  ups.textContent = row.ups + " / " + row.max_ups;
+  head.append(title, ups);
+  box.appendChild(head);
+
+  const bar = document.createElement("div");
+  bar.className = "grow-bar";
+  const fill = document.createElement("div");
+  fill.className = "grow-fill";
+  fill.style.width = row.percent + "%";
+  bar.appendChild(fill);
+  box.appendChild(bar);
+
+  const said = document.createElement("div");
+  said.className = "grow-note";
+  said.textContent = row.maxed
+    ? "Потолок зала: больше не растёт"
+    : row.training_emoji + " " + row.training + " · " + row.points + " из "
+      + row.price;
+  box.appendChild(said);
+
+  if (!row.maxed) {
+    box.appendChild(
+      button("Улучшить · +" + row.gain, {
+        disabled: !row.ready,
+        hint: "Не хватает тренировок: нужно ещё " + row.left + ".",
+        onClick: () => gymAction({ action: "upgrade", stat: row.stat }),
+      })
+    );
+  }
+  return box;
+}
+
+// ---------- расписание ----------
+
+function scheduleBox(days) {
+  const box = document.createElement("section");
+  box.className = "gym-schedule";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Расписание на неделю";
+  box.appendChild(head);
+  days.forEach((day) => box.appendChild(scheduleDay(day)));
+  return box;
+}
+
+function scheduleDay(day) {
+  const box = document.createElement("div");
+  box.className = "gym-day" + (day.today ? " today" : "");
+  const head = document.createElement("div");
+  head.className = "gym-day-head";
+  head.textContent = day.title;
+  box.appendChild(head);
+  day.slots.forEach((slot) => box.appendChild(scheduleSlot(slot)));
+  return box;
+}
+
+// Значками, а не словами: в строке расписания на слово места нет, а
+// часы и галочка читаются с одного взгляда
+const SLOT_MARKS = {
+  open: "идёт",
+  late: "заканчивается",
+  training: "🕗",
+  done: "✅",
+  full: "мест нет",
+  past: "",
+  ahead: "",
+};
+
+function scheduleSlot(slot) {
+  const box = document.createElement("div");
+  box.className = "gym-slot " + slot.state;
+
+  const clock = document.createElement("span");
+  clock.className = "gym-slot-clock";
+  clock.textContent = slot.clock;
+  const title = document.createElement("span");
+  title.className = "gym-slot-title";
+  title.textContent = slot.emoji + " " + slot.title;
+  box.append(clock, title);
+
+  const mark = SLOT_MARKS[slot.state];
+  if (mark) {
+    const tag = document.createElement("span");
+    tag.className = "gym-slot-mark";
+    tag.textContent = mark;
+    box.appendChild(tag);
+  }
+  return box;
+}
+
+// ---------- Vegas Банк ----------
+//
+// Три вкладки: «Новый продукт», «Счета» и «Банкомат». Порядок в них от
+// пустого банка к обжитому, а открывается банк на той, которая бойцу
+// сейчас нужна: без счёта — на «Новом продукте», со счётом — на «Счетах».
+// Открывать пустой банкомат человеку, которому нечего снимать, незачем.
+
+let bankData = null;
+let bankTab = "";
+let bankBusy = false;
+
+function pickBankTab(name) {
+  bankTab = name;
+  if (bankData) renderBank(bankData);
+}
+
+async function loadBank() {
+  try {
+    const response = await fetch("api/bank", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("bank-note").textContent = "Банк не открылся.";
+      return;
+    }
+    renderBank(await response.json());
+  } catch (error) {
+    el("bank-note").textContent = error.message;
+  }
+}
+
+async function bankAction(payload) {
+  if (bankBusy) return;
+  bankBusy = true;
+  try {
+    const response = await fetch("api/bank", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Банк", data.error || "Не получилось.");
+      await loadBank();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderBank(data);
+    if (data.said) popup("Банк", data.said);
+  } catch (error) {
+    popup("Банк", "Сервер не ответил.");
+  } finally {
+    bankBusy = false;
+  }
+}
+
+function renderBank(data) {
+  bankData = data;
+  el("shop-purse-bank").textContent = "";
+  el("shop-purse-bank").appendChild(purse(data.credits));
+  el("bank-note").textContent = data.said || bankHint(data);
+
+  // Без счёта показывать в «Счетах» и «Банкомате» нечего: банк
+  // открывается там, где бойцу есть что делать
+  if (!bankTab) bankTab = data.account.open ? "accounts" : "new";
+  if (!data.account.open) bankTab = "new";
+
+  const body = el("bank-body");
+  body.textContent = "";
+
+  const tabs = document.createElement("div");
+  tabs.className = "bubbles";
+  tabs.id = "bank-tabs";
+  data.tabs.forEach((tab) => {
+    tabs.appendChild(
+      chip(tab.title, bankTab === tab.code, () => pickBankTab(tab.code))
+    );
+  });
+  body.appendChild(tabs);
+
+  if (bankTab === "new") body.appendChild(newProductTab(data));
+  else if (bankTab === "atm") body.appendChild(atmTab(data));
+  else body.appendChild(accountsTab(data));
+}
+
+function bankHint(data) {
+  if (!data.account.open) {
+    return "Счёт открывается сразу и ничего не стоит.";
+  }
+  if (!data.bank_card.open) {
+    return "Карта даёт скидки в городе и платит прямо со счёта.";
+  }
+  if (!data.bank_card.works) {
+    return "Карта не обслуживается: пополни счёт, и она заработает.";
+  }
+  return "Счёт и карта на месте. Снять наличные — в банкомате.";
+}
+
+// ---------- вкладка «Новый продукт» ----------
+
+function newProductTab(data) {
+  const box = document.createElement("div");
+  if (!data.account.open) box.appendChild(accountOffer(data.account));
+  if (!data.bank_card.open) box.appendChild(cardOffer(data));
+  if (data.account.open && data.bank_card.open) {
+    const done = document.createElement("p");
+    done.className = "screen-note";
+    done.textContent =
+      "Всё, что банк выдаёт, у тебя уже есть: счёт и карта. "
+      + "Второй счёт и вторая карта на одного бойца не открываются.";
+    box.appendChild(done);
+  }
+  box.appendChild(discountShelf(data.discounts));
+  return box;
+}
+
+function accountOffer(account) {
+  const box = document.createElement("section");
+  box.className = "offer";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "💼 " + account.title;
+  box.appendChild(head);
+
+  box.appendChild(givesList(account.gives));
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = account.note;
+  box.appendChild(note);
+
+  box.appendChild(
+    button("Открыть счёт — бесплатно", {
+      onClick: () => bankAction({ action: "account" }),
+    })
+  );
+  return box;
+}
+
+function cardOffer(data) {
+  const card = data.bank_card;
+  const box = document.createElement("section");
+  box.className = "offer";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = card.emoji + " " + card.title;
+  box.appendChild(head);
+
+  box.appendChild(givesList(card.gives));
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = card.note;
+  box.appendChild(note);
+
+  // Счёта нет — кнопку не прячем, а объясняем: спрятанная кнопка не
+  // говорит, чего не хватает
+  const ready = data.account.open;
+  box.appendChild(
+    button("Выпустить карту · " + num(card.price) + " 💰", {
+      disabled: !ready,
+      hint: "Сначала открой счёт: карта выпускается к нему.",
+      onClick: () => bankAction({ action: "card" }),
+    })
+  );
+  return box;
+}
+
+function givesList(rows) {
+  const list = document.createElement("ul");
+  list.className = "gives";
+  (rows || []).forEach((line) => {
+    const item = document.createElement("li");
+    item.textContent = line;
+    list.appendChild(item);
+  });
+  return list;
+}
+
+/** Прайс скидок: где и сколько снимает карта. */
+function discountShelf(rows) {
+  const box = document.createElement("section");
+  box.className = "day-prices";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Скидки по карте";
+  box.appendChild(head);
+
+  (rows || []).forEach((row) => {
+    const line = document.createElement("div");
+    line.className = "day-price";
+    const where = document.createElement("span");
+    where.className = "day-price-number";
+    where.textContent = row.title;
+    const off = document.createElement("span");
+    off.className = "day-price-value";
+    off.textContent = "−" + row.percent + "%";
+    line.append(where, off);
+    box.appendChild(line);
+  });
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Где банк скидки не обещал — мастерская, комиссионка, лавка мага — "
+    + "картой платится полная цена. На рынке из рук в руки карта не ходит.";
+  box.appendChild(note);
+  return box;
+}
+
+// ---------- вкладка «Счета» ----------
+
+function accountsTab(data) {
+  const box = document.createElement("div");
+  box.appendChild(accountBox(data.account));
+  if (data.bank_card.open) box.appendChild(bankCardBox(data.bank_card));
+  else box.appendChild(cardOffer(data));
+  box.appendChild(purseChoice(data));
+  return box;
+}
+
+function accountBox(account) {
+  const box = document.createElement("section");
+  box.className = "account";
+  const head = document.createElement("div");
+  head.className = "account-head";
+  head.textContent = "💼 " + account.title;
+  const number = document.createElement("div");
+  number.className = "account-number";
+  number.id = "bank-number";
+  number.textContent = account.number;
+  // Номер называют вслух, чтобы принять перевод: нажал — скопировал
+  number.title = "Нажми, чтобы скопировать";
+  number.addEventListener("click", () => copyNumber(account.number));
+  const sum = document.createElement("div");
+  sum.className = "account-sum";
+  sum.textContent = num(account.balance) + " 💰";
+  box.append(head, number, sum);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = "По этому номеру тебе переведут деньги со счёта на счёт.";
+  box.appendChild(note);
+  return box;
+}
+
+function copyNumber(number) {
+  try {
+    navigator.clipboard.writeText(number);
+    popup("Номер счёта", number + "\nСкопирован.");
+  } catch (error) {
+    // Буфера может не быть вовсе: тогда просто показываем номер целиком
+    popup("Номер счёта", number);
+  }
+}
+
+function bankCardBox(card) {
+  const box = document.createElement("section");
+  box.className = "plastic" + (card.works ? "" : " stale");
+
+  const head = document.createElement("div");
+  head.className = "plastic-head";
+  const title = document.createElement("span");
+  title.textContent = card.emoji + " " + card.title;
+  const state = document.createElement("span");
+  state.className = "plastic-state";
+  state.textContent = card.state;
+  head.append(title, state);
+
+  const number = document.createElement("div");
+  number.className = "plastic-number";
+  number.textContent = card.number;
+  const holder = document.createElement("div");
+  holder.className = "plastic-holder";
+  holder.textContent = card.holder;
+  const paid = document.createElement("div");
+  paid.className = "plastic-paid";
+  paid.textContent = "Обслуживание оплачено по " + card.paid_until;
+  box.append(head, number, holder, paid);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = card.works
+    ? "Карта в «Документах» — там же, где полис и абонемент."
+    : "На счету нет " + num(card.year_price) + " 💰 за год обслуживания. "
+      + "Пополни счёт — карта заработает сама.";
+  box.appendChild(note);
+  return box;
+}
+
+/** Чем боец платит по умолчанию. Живёт в «Счетах»: это про деньги. */
+function purseChoice(data) {
+  const box = document.createElement("section");
+  box.className = "purse-choice";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Чем платить в городе";
+  box.appendChild(head);
+
+  const row = document.createElement("div");
+  row.className = "purse-row";
+  data.purses.forEach((one) => {
+    row.appendChild(purseChip(one));
+  });
+  box.appendChild(row);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = data.choice_note || data.purse.note;
+  box.appendChild(note);
+  return box;
+}
+
+function purseChip(one) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className =
+    "purse-pick" + (one.chosen ? " on" : "") + (one.ready ? "" : " off");
+  btn.dataset.purse = one.code;
+  const title = document.createElement("span");
+  title.className = "purse-pick-title";
+  title.textContent = one.emoji + " " + one.title;
+  const money = document.createElement("span");
+  money.className = "purse-pick-money";
+  money.textContent = num(one.money) + " 💰";
+  btn.append(title, money);
+  if (!one.ready) {
+    btn.addEventListener("click", () =>
+      popup("Банк", "Карты Vegas Банка у тебя нет — платить ею нечем.")
+    );
+  } else if (!one.chosen) {
+    btn.addEventListener("click", () => choosePurse(one.code));
+  }
+  return btn;
+}
+
+// ---------- вкладка «Банкомат» ----------
+
+function atmTab(data) {
+  const box = document.createElement("div");
+
+  const sums = document.createElement("div");
+  sums.className = "atm-sums";
+  sums.appendChild(atmSum("💰 Наличные", data.credits));
+  sums.appendChild(atmSum("💼 На счету", data.account.balance));
+  box.appendChild(sums);
+
+  box.appendChild(
+    moneyForm("Положить на счёт", "Положить", data.credits, (amount) =>
+      bankAction({ action: "deposit", amount: amount })
+    )
+  );
+  box.appendChild(
+    moneyForm("Снять наличными", "Снять", data.account.balance, (amount) =>
+      bankAction({ action: "withdraw", amount: amount })
+    )
+  );
+  box.appendChild(sendForm(data));
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Банкомат и переводы — без комиссии: банк в клубе зарабатывает на "
+    + "карте, а не на движении денег.";
+  box.appendChild(note);
+  return box;
+}
+
+function atmSum(title, amount) {
+  const box = document.createElement("div");
+  box.className = "atm-sum";
+  const head = document.createElement("span");
+  head.className = "atm-sum-title";
+  head.textContent = title;
+  const money = document.createElement("span");
+  money.className = "atm-sum-money";
+  money.textContent = num(amount) + " 💰";
+  box.append(head, money);
+  return box;
+}
+
+function moneyForm(title, action, most, onSend) {
+  const box = document.createElement("section");
+  box.className = "money-form";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = title;
+  box.appendChild(head);
+
+  const row = document.createElement("div");
+  row.className = "money-row";
+  const field = document.createElement("input");
+  field.type = "number";
+  field.className = "money-field";
+  field.inputMode = "numeric";
+  field.min = "1";
+  field.max = String(most);
+  field.placeholder = "Сколько";
+  const all = document.createElement("button");
+  all.type = "button";
+  all.className = "money-all";
+  all.textContent = "Всё";
+  all.addEventListener("click", () => {
+    field.value = String(most);
+  });
+  row.append(field, all);
+  box.appendChild(row);
+
+  box.appendChild(
+    button(action, {
+      disabled: most <= 0,
+      hint: "Переносить нечего.",
+      onClick: () => {
+        const amount = Math.floor(Number(field.value) || 0);
+        if (amount <= 0) {
+          popup("Банк", "Сумма должна быть больше нуля.");
+          return;
+        }
+        field.value = "";
+        onSend(amount);
+      },
+    })
+  );
+  return box;
+}
+
+function sendForm(data) {
+  const box = document.createElement("section");
+  box.className = "money-form";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Перевести на чужой счёт";
+  box.appendChild(head);
+
+  const number = document.createElement("input");
+  number.type = "text";
+  number.className = "money-field wide";
+  number.id = "bank-send-number";
+  number.placeholder = "VB-0000-0000-0000";
+  number.autocomplete = "off";
+  box.appendChild(number);
+
+  const row = document.createElement("div");
+  row.className = "money-row";
+  const field = document.createElement("input");
+  field.type = "number";
+  field.className = "money-field";
+  field.inputMode = "numeric";
+  field.min = "1";
+  field.max = String(data.account.balance);
+  field.placeholder = "Сколько";
+  row.appendChild(field);
+  box.appendChild(row);
+
+  box.appendChild(
+    button("Перевести", {
+      disabled: data.account.balance <= 0,
+      hint: "На счету пусто — переводить нечего.",
+      onClick: () => {
+        const amount = Math.floor(Number(field.value) || 0);
+        if (!number.value.trim()) {
+          popup("Банк", "Назови номер счёта получателя.");
+          return;
+        }
+        if (amount <= 0) {
+          popup("Банк", "Сумма должна быть больше нуля.");
+          return;
+        }
+        bankAction({
+          action: "send",
+          number: number.value.trim(),
+          amount: amount,
+        });
+      },
+    })
+  );
+  return box;
+}
+
+// ---------- кошелёк на прилавке ----------
+//
+// Переключатель стоит на каждом экране с ценами, а не только в банке:
+// выбирать, чем платить, надо там, где стоит цена. Цены на витрине уже
+// посчитаны сервером под выбранный кошелёк — страница ничего не считает
+// сама, иначе однажды показала бы скидку там, где её нет.
+
+/** «наличными 50 💰» или «на счету 50 💰» — для отказа по деньгам.
+ *
+ * Та же строка, что у сервера, и по той же причине: кошелька два, и
+ * отказ обязан называть тот, из которого здесь платят. Иначе боец с
+ * тысячей на счету читает «не хватает» и не понимает, где его деньги.
+ */
+function purseNote(state) {
+  if (!state) return "денег не хватает";
+  return state.purse === "card"
+    ? "на счету " + num(state.balance) + " 💰"
+    : "наличными " + num(state.cash) + " 💰";
+}
+
+/** Сколько денег в том кошельке, которым здесь платят. */
+function spendable(data) {
+  const state = data && data.purse;
+  if (!state) return data ? data.credits : 0;
+  return state.purse === "card" ? state.balance : state.cash;
+}
+
+function walletBar(state, reload) {
+  const box = document.createElement("section");
+  box.className = "wallet";
+  if (!state) return box;
+
+  const row = document.createElement("div");
+  row.className = "wallet-row";
+  [
+    ["cash", state.cash, true],
+    ["card", state.balance, state.has_card && state.card_works && state.takes_card],
+  ].forEach(([code, money, ready]) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className =
+      "wallet-pick"
+      + (state.purse === code ? " on" : "")
+      + (ready ? "" : " off");
+    btn.dataset.purse = code;
+    const title = document.createElement("span");
+    title.className = "wallet-pick-title";
+    title.textContent = state.emoji[code] + " " + state.titles[code];
+    const sum = document.createElement("span");
+    sum.className = "wallet-pick-money";
+    sum.textContent = num(money) + " 💰";
+    btn.append(title, sum);
+    // Скидка видна на самой кнопке: по ней и понятно, зачем переключать
+    if (code === "card" && state.discount) {
+      const off = document.createElement("span");
+      off.className = "wallet-pick-off";
+      off.textContent = "−" + state.discount + "%";
+      btn.appendChild(off);
+    }
+    if (ready && state.prefers !== code) {
+      btn.addEventListener("click", () => choosePurse(code, reload));
+    }
+    row.appendChild(btn);
+  });
+  box.appendChild(row);
+
+  const note = document.createElement("p");
+  note.className = "wallet-note";
+  note.textContent = state.note;
+  box.appendChild(note);
+  return box;
+}
+
+async function choosePurse(code, reload) {
+  try {
+    const data = await post("api/purse", { purse: code });
+    if (data.card) render(data.card, true);
+    if (reload) reload();
+    else await loadBank();
+  } catch (error) {
+    popup("Банк", error.message);
+  }
+}
+
+// ---------- HR-агентство ----------
+//
+// Доска из пяти мест. Место одно на город: занято — видно кем, и заявку
+// подавать некуда. Тест приходит по нажатию «Подать заявку» и живёт
+// ровно до ответа: верных ответов на странице нет вовсе, сверяет сервер.
+
+let hrData = null;
+let hrBusy = false;
+let hrQuiz = null; // {code, questions, chosen}
+
+async function loadHr() {
+  try {
+    const response = await fetch("api/hr", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("hr-note").textContent = "Агентство не открылось.";
+      return;
+    }
+    renderHr(await response.json());
+  } catch (error) {
+    el("hr-note").textContent = error.message;
+  }
+}
+
+async function hrAction(payload) {
+  if (hrBusy) return;
+  hrBusy = true;
+  try {
+    const response = await fetch("api/hr", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Агентство", data.error || "Не получилось.");
+      await loadHr();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    if (data.quiz) {
+      hrQuiz = { code: data.code, questions: data.quiz, chosen: [] };
+    } else {
+      hrQuiz = null;
+    }
+    renderHr(data);
+    if (data.said) popup("Агентство", data.said);
+  } catch (error) {
+    popup("Агентство", "Сервер не ответил.");
+  } finally {
+    hrBusy = false;
+  }
+}
+
+function renderHr(data) {
+  hrData = data;
+  el("hr-note").textContent = data.said || hrHint(data);
+
+  const body = el("hr-body");
+  body.textContent = "";
+
+  // Идёт тест — на экране только он: уходить с половины некуда, а
+  // доска под вопросами отвлекала бы от единственного, что сейчас важно
+  if (hrQuiz) {
+    body.appendChild(quizBox(data));
+    return;
+  }
+  if (data.job && data.job.code) body.appendChild(myJobBox(data.job));
+  body.appendChild(boardBox(data));
+  body.appendChild(rulesBox(data));
+}
+
+function hrHint(data) {
+  if (data.job && data.job.code) {
+    return "Ты уже работаешь. Работа одна на бойца.";
+  }
+  const open = (data.vacancies || []).filter((one) => one.open).length;
+  if (!open) return "Свободных мест сейчас нет. Загляни позже.";
+  return "Пять мест на город. Заявка — и мини-тест из пяти вопросов.";
+}
+
+/** Своя работа: часы за неделю и когда платят. */
+function myJobBox(job) {
+  const box = document.createElement("section");
+  box.className = "job";
+
+  const head = document.createElement("div");
+  head.className = "job-head";
+  const title = document.createElement("span");
+  title.className = "job-title";
+  title.textContent = job.emoji + " " + job.title;
+  const where = document.createElement("span");
+  where.className = "job-where";
+  where.textContent = job.place_title;
+  head.append(title, where);
+  box.appendChild(head);
+
+  box.appendChild(hoursBar(job));
+
+  const pay = document.createElement("p");
+  pay.className = "job-pay";
+  pay.textContent =
+    "Жалованье " + num(job.salary) + " 💰 в неделю · сейчас набежало "
+    + num(job.payout) + " 💰 · выплата " + job.payday;
+  box.appendChild(pay);
+
+  if (!job.safe) {
+    const warn = document.createElement("p");
+    warn.className = "job-warn";
+    warn.textContent =
+      "Меньше половины нормы — уволят в понедельник. Нужно отработать "
+      + job.keep_hours + " ч.";
+    box.appendChild(warn);
+  }
+
+  box.appendChild(
+    button("Уйти с работы", {
+      secondary: true,
+      onClick: () => askQuit(job),
+    })
+  );
+  return box;
+}
+
+function hoursBar(job) {
+  const box = document.createElement("div");
+  box.className = "hours";
+  const line = document.createElement("div");
+  line.className = "hours-line";
+  const fill = document.createElement("div");
+  fill.className = "hours-fill" + (job.safe ? "" : " short");
+  fill.style.width = job.percent + "%";
+  line.appendChild(fill);
+  const text = document.createElement("div");
+  text.className = "hours-text";
+  text.textContent =
+    "Отработано " + job.worked + " из " + job.hours + " ч за неделю";
+  box.append(line, text);
+  return box;
+}
+
+function askQuit(job) {
+  // Уход стоит недели без этого места: спрашиваем до, а не после
+  popup(
+    "Уйти с работы",
+    "Место освободится, а подать на него снова можно будет через неделю. "
+      + "Заработанное за эту неделю выплатят сразу."
+  );
+  hrAction({ action: "quit" });
+}
+
+/** Доска вакансий: пять мест города. */
+function boardBox(data) {
+  const box = document.createElement("section");
+  box.className = "board";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Вакансии города";
+  box.appendChild(head);
+  (data.vacancies || []).forEach((one) => box.appendChild(vacancyCard(one, data)));
+  return box;
+}
+
+function vacancyCard(one, data) {
+  const box = document.createElement("article");
+  box.className =
+    "vacancy" + (one.mine ? " mine" : "") + (one.taken && !one.mine ? " taken" : "");
+
+  const head = document.createElement("div");
+  head.className = "vacancy-head";
+  const title = document.createElement("span");
+  title.className = "vacancy-title";
+  title.textContent = one.emoji + " " + one.title;
+  const pay = document.createElement("span");
+  pay.className = "vacancy-pay";
+  pay.textContent = num(one.salary) + " 💰/нед";
+  head.append(title, pay);
+  box.appendChild(head);
+
+  const facts = document.createElement("div");
+  facts.className = "vacancy-facts";
+  [
+    ["Место", one.place_title],
+    ["Норма", one.hours + " ч в неделю"],
+    ["Образование", one.education],
+  ].forEach(([name, value]) => {
+    const row = document.createElement("div");
+    row.className = "vacancy-fact";
+    const left = document.createElement("span");
+    left.textContent = name;
+    const right = document.createElement("span");
+    right.textContent = value;
+    row.append(left, right);
+    facts.appendChild(row);
+  });
+  box.appendChild(facts);
+
+  if (one.note) {
+    const note = document.createElement("p");
+    note.className = "vacancy-note";
+    note.textContent = one.note;
+    box.appendChild(note);
+  }
+
+  box.appendChild(vacancyButton(one, data));
+  return box;
+}
+
+function vacancyButton(one, data) {
+  if (one.mine) {
+    const said = document.createElement("p");
+    said.className = "vacancy-state";
+    said.textContent = "Здесь работаешь ты.";
+    return said;
+  }
+  if (one.taken) {
+    const said = document.createElement("p");
+    said.className = "vacancy-state";
+    said.textContent = "Занято: " + one.taken_by + ".";
+    return said;
+  }
+  if (one.blocked) {
+    const said = document.createElement("p");
+    said.className = "vacancy-state";
+    said.textContent =
+      blockWhy(one.block_reason) + " Снова можно через " + one.block_days + " дн.";
+    return said;
+  }
+  const busy = Boolean(data.job && data.job.code);
+  return button("Подать заявку", {
+    disabled: busy,
+    hint: "У тебя уже есть работа. Работа одна на бойца.",
+    onClick: () => hrAction({ action: "quiz", code: one.code }),
+  });
+}
+
+function blockWhy(reason) {
+  if (reason === "test") return "Тест сюда ты уже провалил.";
+  if (reason === "fired") return "Отсюда тебя уволили.";
+  if (reason === "quit") return "Отсюда ты ушёл сам.";
+  return "Сюда сейчас нельзя.";
+}
+
+function rulesBox(data) {
+  const box = document.createElement("section");
+  box.className = "day-prices";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Как это устроено";
+  box.appendChild(head);
+  [
+    ["Тест", data.questions + " вопросов, нужно " + data.pass_percent + "%"],
+    ["Смена", data.shift_hours + " ч, не больше " + data.day_hours + " ч в сутки"],
+    ["Выплата", "в понедельник в 9:00 по Москве"],
+    ["Мало часов", "меньше половины нормы — увольнение"],
+    ["После отказа", "заявка снова через " + data.cooldown_days + " дн."],
+  ].forEach(([name, value]) => {
+    const line = document.createElement("div");
+    line.className = "day-price";
+    const left = document.createElement("span");
+    left.className = "day-price-number";
+    left.textContent = name;
+    const right = document.createElement("span");
+    right.className = "day-price-value";
+    right.textContent = value;
+    line.append(left, right);
+    box.appendChild(line);
+  });
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = data.note;
+  box.appendChild(note);
+  return box;
+}
+
+// ---------- мини-тест ----------
+
+function quizBox(data) {
+  const box = document.createElement("section");
+  box.className = "quiz";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Тест на место";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Пять вопросов, ответить верно надо на " + data.pass_percent
+    + "%. Ошибиться можно один раз.";
+  box.appendChild(note);
+
+  hrQuiz.questions.forEach((question, index) => {
+    box.appendChild(questionCard(question, index));
+  });
+
+  const row = document.createElement("div");
+  row.className = "quiz-buttons";
+  row.appendChild(
+    button("Ответить", {
+      disabled: hrQuiz.chosen.filter((one) => one !== undefined).length
+        < hrQuiz.questions.length,
+      hint: "Ответь на все вопросы.",
+      onClick: () =>
+        hrAction({
+          action: "apply",
+          code: hrQuiz.code,
+          answers: hrQuiz.chosen,
+        }),
+    })
+  );
+  row.appendChild(
+    button("Передумал", {
+      secondary: true,
+      onClick: () => {
+        hrQuiz = null;
+        renderHr(hrData);
+      },
+    })
+  );
+  box.appendChild(row);
+  return box;
+}
+
+function questionCard(question, index) {
+  const box = document.createElement("div");
+  box.className = "question";
+  const text = document.createElement("div");
+  text.className = "question-text";
+  text.textContent = index + 1 + ". " + question.text;
+  box.appendChild(text);
+
+  question.options.forEach((option, at) => {
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "answer" + (hrQuiz.chosen[index] === at ? " on" : "");
+    pick.textContent = option;
+    pick.addEventListener("click", () => {
+      hrQuiz.chosen[index] = at;
+      renderHr(hrData);
+    });
+    box.appendChild(pick);
+  });
+  return box;
+}
+
+// ---------- рабочее место ----------
+
+let workData = null;
+let workBusy = false;
+let workTimer = null;
+
+async function loadWork() {
+  try {
+    const response = await fetch("api/work", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("work-note").textContent = "Сюда не попасть.";
+      return;
+    }
+    renderWork(await response.json());
+  } catch (error) {
+    el("work-note").textContent = error.message;
+  }
+}
+
+async function workAction(payload) {
+  if (workBusy) return;
+  workBusy = true;
+  try {
+    const response = await fetch("api/work", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Работа", data.error || "Не получилось.");
+      await loadWork();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderWork(data);
+    if (data.said) popup("Работа", data.said);
+  } catch (error) {
+    popup("Работа", "Сервер не ответил.");
+  } finally {
+    workBusy = false;
+  }
+}
+
+function renderWork(data) {
+  workData = data;
+  el("work-title").textContent = data.job.code
+    ? data.job.emoji + " " + data.job.title
+    : "💼 Работа";
+  el("work-note").textContent = data.said || data.note;
+
+  const body = el("work-body");
+  body.textContent = "";
+
+  if (data.shift && data.shift.seconds_left) {
+    body.appendChild(shiftBox(data));
+    startWorkClock();
+    return;
+  }
+  stopWorkClock();
+  if (!data.job.code) {
+    body.appendChild(strangerBox(data));
+    return;
+  }
+  body.appendChild(hoursBar(data.job));
+  body.appendChild(dayBox(data));
+  body.appendChild(payBox(data.job));
+}
+
+/** Идёт смена: часы тикают на странице, а время считает сервер. */
+function shiftBox(data) {
+  const box = document.createElement("section");
+  box.className = "shift";
+  const head = document.createElement("div");
+  head.className = "shift-head";
+  head.textContent = "Смена идёт";
+  const clock = document.createElement("div");
+  clock.className = "shift-clock";
+  clock.id = "work-clock";
+  box.append(head, clock);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Часы уже засчитаны. Из дома не выйти, пока смена не кончится — "
+    + "ты на работе.";
+  box.appendChild(note);
+  return box;
+}
+
+function startWorkClock() {
+  stopWorkClock();
+  workTimer = setInterval(tickWork, 1000);
+  tickWork();
+}
+
+function stopWorkClock() {
+  if (workTimer) clearInterval(workTimer);
+  workTimer = null;
+}
+
+function tickWork() {
+  const shown = el("work-clock");
+  if (!shown || !workData || !workData.shift) return;
+  const left = Math.max(
+    0,
+    workData.shift.until - Math.floor(Date.now() / 1000)
+  );
+  if (!left) {
+    stopWorkClock();
+    loadWork();
+    return;
+  }
+  const minutes = Math.floor(left / 60);
+  const seconds = left % 60;
+  shown.textContent =
+    "Осталось " + minutes + ":" + String(seconds).padStart(2, "0");
+}
+
+function dayBox(data) {
+  const box = document.createElement("section");
+  box.className = "shift";
+  const head = document.createElement("div");
+  head.className = "shift-head";
+  head.textContent =
+    "Сегодня отработано " + data.job.today + " из " + data.job.day_hours + " ч";
+  box.appendChild(head);
+
+  box.appendChild(
+    button("Начать работать · " + data.shift_hours + " ч", {
+      disabled: !data.can_start,
+      hint: "На сегодня хватит: в сутки работают "
+        + data.job.day_hours + " часа.",
+      onClick: () => workAction({ action: "start" }),
+    })
+  );
+  return box;
+}
+
+function payBox(job) {
+  const box = document.createElement("p");
+  box.className = "job-pay";
+  box.textContent =
+    "Набежало " + num(job.payout) + " 💰 · выплата " + job.payday
+    + " на счёт в банке";
+  return box;
+}
+
+/** Чужое рабочее место: что тут вообще есть. */
+function strangerBox(data) {
+  const box = document.createElement("section");
+  box.className = "offer";
+  if (!data.vacancy.code) return box;
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = data.vacancy.emoji + " " + data.vacancy.title;
+  box.appendChild(head);
+
+  const facts = document.createElement("div");
+  facts.className = "vacancy-facts";
+  [
+    ["Жалованье", num(data.vacancy.salary) + " 💰 в неделю"],
+    ["Норма", data.vacancy.hours + " ч в неделю"],
+  ].forEach(([name, value]) => {
+    const row = document.createElement("div");
+    row.className = "vacancy-fact";
+    const left = document.createElement("span");
+    left.textContent = name;
+    const right = document.createElement("span");
+    right.textContent = value;
+    row.append(left, right);
+    facts.appendChild(row);
+  });
+  box.appendChild(facts);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = "Это место занимают в HR-агентстве, а не здесь.";
+  box.appendChild(note);
+  return box;
+}
+
+// ---------- вход на работу из своего дома ----------
+//
+// Кнопка живёт в шапке того экрана, который открыт: у зала свой экран, у
+// клуба свой, а у бара — этот же. Рисовать её в каждом экране отдельно
+// значило бы пять раз одно и то же, поэтому она одна и вешается на ту
+// шапку, что сейчас на виду.
+
+function paintWorkEntry(screen) {
+  document.querySelectorAll(".work-entry").forEach((one) => one.remove());
+  if (screen === "work" || screen === "hr") return;
+  if (!cardData || !cardData.work || !cardData.work.here) return;
+  const head = el(screen) && el(screen).querySelector(".screen-head");
+  if (!head) return;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "work-entry" + (cardData.work.on_shift ? " on" : "");
+  btn.textContent = cardData.work.on_shift ? "🕗 Смена" : "💼 Работа";
+  btn.addEventListener("click", () => showTab("work"));
+  head.appendChild(btn);
+}
+
+// ---------- документы бойца ----------
+//
+// Раздел заведён под то, что будет копиться: полис первый, за ним пойдут
+// права из автошколы и всё прочее, что выдают конторы города. Поэтому
+// рисуется список, а не «полис в карточке»: вёрстка одна на все бланки, и
+// про число документов она ничего не знает.
+
+const HERO_TABS = [
+  ["stats", "Характеристики"],
+  ["papers", "Документы"],
+];
+let heroTab = "stats";
+
+function pickHeroTab(name) {
+  heroTab = name;
+  HERO_TABS.forEach(([code]) => {
+    el("hero-" + code).classList.toggle("hidden", code !== name);
+  });
+  paintHeroTabs();
+}
+
+/** Кнопка в ряду под бойцом. Одна вёрстка на все три.
+ *
+ * `dot` — точка сбоку: есть что забрать. Больше на этих кнопках ничего
+ * не пишется: три слова в ряд читаются с одного взгляда, а значки и
+ * счётчики рядом с ними превращали ряд в три разные надписи.
+ */
+function heroAct(label, on, onClick, dot) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "hero-act" + (on ? " on" : "");
+  const text = document.createElement("span");
+  text.className = "hero-act-text";
+  text.textContent = label;
+  btn.appendChild(text);
+  if (dot) {
+    const tag = document.createElement("span");
+    tag.className = "hero-act-mark dot";
+    btn.appendChild(tag);
+  }
+  btn.addEventListener("click", () => {
+    haptic((feedback) => feedback.selectionChanged());
+    onClick();
+  });
+  return btn;
+}
+
+function paintHeroTabs() {
+  const tabs = el("hero-tabs");
+  tabs.textContent = "";
+  HERO_TABS.forEach(([code, label]) => {
+    tabs.appendChild(heroAct(label, heroTab === code, () => pickHeroTab(code)));
+  });
+  // Награды — кнопка того же вида, но не раздел: она открывает окно и
+  // потому никогда не горит выбранной. Нечего показывать — её нет вовсе
+  if (!dailyState) return;
+  const btn = heroAct(
+    "Награды",
+    false,
+    openDaily,
+    Boolean(dailyState.fresh || dailyState.waiting.length)
+  );
+  btn.id = "hero-daily";
+  tabs.appendChild(btn);
+}
+
+let papers = [];
+
+function renderPapers(card) {
+  // Документы приходят только на своей карточке: полис с чужим именем и
+  // сроком — не то, что показывают сопернику
+  papers = (card.is_self && card.documents) || [];
+  const list = el("papers-list");
+  list.textContent = "";
+  papers.forEach((paper) => list.appendChild(paperCard(paper)));
+  el("papers-note").textContent = papers.length
+    ? ""
+    : "Пока ни одного документа. Полис страхования жизни и здоровья "
+      + "оформляют в страховой компании.";
+  // Вкладки прячем на чужой карточке целиком: там второй раздел пустой
+  // всегда, и вкладка без содержимого — это обещание, которого не будет
+  el("hero-tabs").classList.toggle("hidden", !card.is_self);
+  if (!card.is_self) pickHeroTab("stats");
+  else paintHeroTabs();
+}
+
+/** Бланк документа: заголовок, поля и что он даёт. */
+function paperCard(paper, bare) {
+  const box = document.createElement("article");
+  box.className = "paper" + (paper.active ? "" : " stale");
+
+  const head = document.createElement("header");
+  head.className = "paper-head";
+  const title = document.createElement("h3");
+  title.className = "paper-title";
+  title.textContent = paper.emoji + " " + paper.title;
+  const state = document.createElement("span");
+  state.className = "paper-state";
+  // Бланк говорит о себе сам: у карты вместо «срок вышел» стоит «не
+  // обслуживается» — срока у неё нет вовсе, она бессрочна
+  state.textContent = paper.state || (paper.active ? "Действует" : "Срок вышел");
+  head.append(title, state);
+  box.appendChild(head);
+
+  const issuer = document.createElement("p");
+  issuer.className = "paper-issuer";
+  // Контора, номер и по какому праву документ на руках. Номер есть не у
+  // всякого бланка: абонемент заводят на входе, а не выписывают, и
+  // «№ » с пустотой после него выглядело бы потерянным полем
+  issuer.textContent = [
+    paper.issuer,
+    paper.number ? "№ " + paper.number : "",
+    paper.ground,
+  ].filter(Boolean).join(" · ");
+  box.appendChild(issuer);
+
+  // Подписи полей приходят с сервером, а не зашиты здесь: у полиса
+  // «Застрахован», у абонемента «Владелец», и бланк один на оба
+  box.appendChild(
+    paperRows([
+      [paper.holder_title || "Застрахован", paper.holder],
+      [paper.period_title || "Период страхования", paper.period],
+      ["Покрытие", paper.covers],
+    ])
+  );
+
+  const gives = document.createElement("ul");
+  gives.className = "paper-gives";
+  paper.gives.forEach((line) => {
+    const li = document.createElement("li");
+    li.textContent = line;
+    gives.appendChild(li);
+  });
+  box.appendChild(gives);
+
+  if (paper.note) {
+    const note = document.createElement("p");
+    note.className = "paper-note";
+    note.textContent = paper.note;
+    box.appendChild(note);
+  }
+
+  // Полис просрочен — на бланке об этом сказано словами, а не только
+  // серым цветом: цвет на светлой теме читается хуже, чем кажется
+  if (!paper.active) {
+    const dead = document.createElement("p");
+    dead.className = "paper-dead";
+    dead.textContent =
+      "Срок вышел " + paper.until + ". Продлить можно в страховой компании.";
+    box.appendChild(dead);
+  }
+
+  // На экране страховой бланк показывают вместе с кнопками; в документах
+  // он сам по себе, и переключатель продления — единственное, что с ним
+  // делают, не выходя из карточки. У полиса подписки переключать нечего:
+  // им распоряжается не боец, а срок его PRO
+  if (!bare && paper.switchable) box.appendChild(renewSwitch(paper));
+  if (!bare && !paper.switchable) box.appendChild(proHeldNote(paper));
+  return box;
+}
+
+/** Полис держит подписка: сказать это словами вместо переключателя. */
+function proHeldNote(paper) {
+  const said = document.createElement("p");
+  said.className = "paper-held";
+  said.textContent =
+    "💎 Полис держит подписка PRO — до " + paper.until
+    + ". Оформлять и продлевать его не нужно.";
+  return said;
+}
+
+function paperRows(pairs) {
+  const list = document.createElement("ul");
+  list.className = "rows paper-rows";
+  pairs.forEach(([label, value]) => list.appendChild(row(label, value)));
+  return list;
+}
+
+/** Автопродление: одна кнопка, и она же говорит текущее состояние. */
+function renewSwitch(paper) {
+  const box = document.createElement("div");
+  box.className = "paper-renew";
+  const said = document.createElement("span");
+  said.className = "paper-renew-state";
+  said.textContent = paper.auto_renew
+    ? "🔄 Автопродление включено"
+    : "⏹ Автопродление выключено";
+  box.appendChild(said);
+  box.appendChild(
+    button(paper.auto_renew ? "Отключить" : "Включить", {
+      secondary: paper.auto_renew,
+      onClick: () => policyAction({ action: "renew", on: !paper.auto_renew }),
+    })
+  );
+  return box;
+}
+
+// ---------- страховая компания ----------
+
+let insuranceData = null;
+let insuranceBusy = false;
+
+async function loadInsurance() {
+  try {
+    const response = await fetch("api/insurance", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("insurance-note").textContent = "Страховая не открылась.";
+      return;
+    }
+    renderInsurance(await response.json());
+  } catch (error) {
+    el("insurance-note").textContent = error.message;
+  }
+}
+
+async function policyAction(payload) {
+  if (insuranceBusy) return;
+  insuranceBusy = true;
+  try {
+    const response = await fetch("api/insurance", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Страховая", data.error || "Не получилось.");
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    // Полис лежит в документах, а деньги — в карточке: перерисовываем и её
+    if (data.card) render(data.card, true);
+    if (data.insurance) renderInsurance(data.insurance);
+    if (data.said) popup("Страховая", data.said);
+  } catch (error) {
+    popup("Страховая", "Сервер не ответил.");
+  } finally {
+    insuranceBusy = false;
+  }
+}
+
+function renderInsurance(data) {
+  insuranceData = data;
+  el("shop-purse-insurance").textContent = "";
+  el("shop-purse-insurance").appendChild(purse(data.credits));
+  el("insurance-note").textContent =
+    data.said
+    || (data.by_pro
+      ? "Полис держит подписка — оформлять ничего не нужно."
+      : data.insured
+        ? "Полис на руках. Продлить можно в любой момент — месяц ляжет сверху."
+        : "Первая услуга конторы: лечение травм по полису дешевле впятеро.");
+
+  const body = el("insurance-body");
+  body.textContent = "";
+  body.appendChild(walletBar(data.purse, loadInsurance));
+  // Полис на руках — показываем сам бланк: он же лежит в документах, и
+  // это тот самый документ, а не его пересказ
+  if (data.policy && data.policy.title) {
+    body.appendChild(paperCard(data.policy));
+  } else {
+    body.appendChild(policyOffer(data));
+  }
+  body.appendChild(priceTable(data));
+  body.appendChild(buyPolicyRow(data));
+}
+
+/** Полиса нет: что он такое и что даёт. */
+function policyOffer(data) {
+  const box = document.createElement("article");
+  box.className = "paper offer";
+  const title = document.createElement("h3");
+  title.className = "paper-title";
+  title.textContent = data.emoji + " " + data.title;
+  const issuer = document.createElement("p");
+  issuer.className = "paper-issuer";
+  issuer.textContent = data.issuer;
+  box.append(title, issuer);
+
+  const gives = document.createElement("ul");
+  gives.className = "paper-gives";
+  data.gives.forEach((line) => {
+    const li = document.createElement("li");
+    li.textContent = line;
+    gives.appendChild(li);
+  });
+  box.appendChild(gives);
+
+  const note = document.createElement("p");
+  note.className = "paper-note";
+  note.textContent = data.note;
+  box.appendChild(note);
+  return box;
+}
+
+/** Прайс больницы с полисом и без: проценты словами убеждают хуже чисел. */
+function priceTable(data) {
+  const box = document.createElement("section");
+  box.className = "policy-prices";
+  const head = document.createElement("h3");
+  head.className = "policy-prices-head";
+  head.textContent = "Лечение травм: без полиса и с ним";
+  box.appendChild(head);
+  data.prices.forEach((line) => {
+    const item = document.createElement("div");
+    item.className = "policy-price";
+    const title = document.createElement("span");
+    title.className = "policy-price-title";
+    title.textContent = line.title.charAt(0).toUpperCase() + line.title.slice(1);
+    const was = document.createElement("span");
+    was.className = "policy-price-was";
+    was.textContent = num(line.full) + " 💰";
+    const now = document.createElement("span");
+    now.className = "policy-price-now";
+    now.textContent = num(line.price) + " 💰";
+    item.append(title, was, now);
+    box.appendChild(item);
+  });
+  return box;
+}
+
+/** Кнопка покупки. Подписчику рядом с нулём стоит зачёркнутая цена. */
+function buyPolicyRow(data) {
+  const box = document.createElement("div");
+  box.className = "policy-buy";
+
+  const price = document.createElement("div");
+  price.className = "policy-buy-price";
+  price.textContent = num(data.price) + " 💰 за " + data.days + " дней";
+  box.appendChild(price);
+
+  // Полис держит подписка — объясняем, за что тогда кнопка берёт деньги
+  if (data.why) {
+    const why = document.createElement("p");
+    why.className = "policy-buy-why";
+    why.textContent = data.why;
+    box.appendChild(why);
+  }
+
+  box.appendChild(
+    button(data.action, {
+      // Цену с кнопки не снимаем, даже когда платить нечем: по ней и видно,
+      // сколько не хватает
+      disabled: !data.affordable,
+      hint:
+        "Не хватает кредитов: полис стоит " + num(data.price)
+        + " 💰, а " + purseNote(data.purse) + ".",
+      onClick: () => policyAction({ action: "buy" }),
+    })
+  );
+  return box;
+}
+
+// ---------- рынок: обмен между бойцами ----------
+//
+// Стол один, а смотрят на него двое, и каждый со своей страницы. Отсюда
+// два правила, которым здесь подчинено всё остальное.
+//
+// Первое: страница ничего не решает сама. Что лежит на столе, сколько
+// там кредитов и нажаты ли кнопки — приходит с сервера целиком, и
+// перерисовывается тоже целиком. Догадка вида «я только что выложил
+// меч, значит он там» разошлась бы с чужой правкой в ту же секунду.
+//
+// Второе: перерисовываем только когда стол правда поменялся. У сервера
+// для этого есть `version`, и по нему собирается подпись состояния:
+// опрос идёт каждые две секунды, а в поле для кредитов в это время
+// набирают число. Перерисовка на каждый опрос сбрасывала бы набранное.
+
+let tradeData = null;
+let tradeTimer = null;
+let tradeBusy = false;
+let tradeShown = "";
+// Сколько секунд осталось приглашению — тикает на странице, а не
+// приходит с сервера двадцать раз: до конца минуты опрос успевает
+// пройти тридцать раз, и каждый его ответ перерисовывал бы экран
+let tradeClock = null;
+// Когда пришёл последний ответ: по нему и дотикивают секунды
+let tradeAt = 0;
+// Чем кончился прошлый обмен. Сервер говорит это один раз — второй
+// опрос через две секунды пришёл бы уже без записки, и человек успевал
+// прочитать полфразы. Поэтому держим её на странице до первого действия
+let tradeDone = "";
+
+/** Подпись состояния: по ней видно, надо ли перерисовывать. */
+function tradeShape(data) {
+  const table = data.trade || {};
+  const sides = table.id
+    ? [table.mine, table.his].map((side) => [
+        side.credits,
+        side.ready,
+        side.items.map((one) => one.kind + one.key + "x" + one.count).join(","),
+      ])
+    : [];
+  return JSON.stringify([
+    data.credits,
+    data.done,
+    table.id || 0,
+    table.version || 0,
+    sides,
+    // Секунды в подпись не идут: их дотикивает страница
+    (data.invite && data.invite.from_id) || 0,
+    (data.sent && data.sent.to_id) || 0,
+    (data.crowd || []).map((one) => [one.user_id, one.online, one.callable]),
+  ]);
+}
+
+async function loadTrade() {
+  try {
+    const response = await fetch("api/trade", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("trade-note").textContent = "Рынок не открылся.";
+      return;
+    }
+    showTrade(await response.json());
+  } catch (error) {
+    el("trade-note").textContent = error.message;
+  }
+}
+
+function showTrade(data) {
+  tradeData = data;
+  tradeAt = Date.now();
+  if (data.done) tradeDone = data.done;
+  // За новым столом прошлому обмену места нет
+  if (data.trade && data.trade.id) tradeDone = "";
+  el("shop-purse-trade").textContent = "";
+  el("shop-purse-trade").appendChild(purse(data.credits));
+  const shape = tradeShape(data);
+  if (shape === tradeShown) {
+    tickInvite();
+    return;
+  }
+  tradeShown = shape;
+  renderTrade(data);
+}
+
+/** Перерисовать, вернув палец туда, где он был. */
+function renderTrade(data) {
+  const was = document.activeElement;
+  const spot = was && el("trade-body").contains(was) ? was.id : "";
+  const body = el("trade-body");
+  body.textContent = "";
+
+  // Чем кончился прошлый обмен — первой строкой и один раз: сервер
+  // отдаёт эту фразу единожды, дальше её на странице уже нет
+  el("trade-note").textContent = tradeDone || tradeHint(data);
+  if (data.trade && data.trade.id) {
+    body.appendChild(tradeTable(data.trade));
+  } else {
+    if (data.invite && data.invite.from_id) body.appendChild(inviteBanner(data.invite));
+    if (data.sent && data.sent.to_id) body.appendChild(sentBanner(data.sent));
+    body.appendChild(tradeCrowd(data.crowd || []));
+  }
+
+  if (spot && el(spot)) {
+    const back = el(spot);
+    back.focus();
+    if (back.setSelectionRange) {
+      const end = String(back.value).length;
+      try {
+        back.setSelectionRange(end, end);
+      } catch (error) {
+        // Не всякое поле умеет каретку — и не всякому это нужно
+      }
+    }
+  }
+  tickInvite();
+}
+
+function tradeHint(data) {
+  if (data.trade && data.trade.id) return "";
+  if (data.invite && data.invite.from_id) return "Тебе предлагают обмен.";
+  if (data.sent && data.sent.to_id) return "Ждём ответа.";
+  if (!(data.crowd || []).length) {
+    return "На рынке пусто. Обмен идёт из рук в руки — нужен второй.";
+  }
+  return "Позови бойца к столу — и он ответит в течение минуты.";
+}
+
+async function tradeAction(payload) {
+  if (tradeBusy) return;
+  tradeBusy = true;
+  // Нажали — значит записку прочли
+  tradeDone = "";
+  tradeShown = "";
+  try {
+    const response = await fetch("api/trade", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Обмен", data.error || "Не получилось.");
+      // Отказ мог случиться потому, что стол уже другой: перечитываем
+      await loadTrade();
+      return;
+    }
+    haptic((feedback) => feedback.impactOccurred("light"));
+    showTrade(data);
+  } catch (error) {
+    popup("Обмен", "Сервер не ответил.");
+  } finally {
+    tradeBusy = false;
+  }
+}
+
+// ---------- кто на рынке ----------
+
+function tradeCrowd(crowd) {
+  const box = document.createElement("div");
+  box.className = "crowd";
+  const online = crowd.filter((one) => one.online);
+  const away = crowd.filter((one) => !one.online);
+  // В сети — выше: с этим обмен состоится сейчас. Ушедшего звать можно,
+  // но ответить он сможет, только пока приглашение живо
+  if (online.length) box.appendChild(crowdGroup("🟢 В сети", online));
+  if (away.length) box.appendChild(crowdGroup("Не в клубе", away));
+  return box;
+}
+
+function crowdGroup(title, rows) {
+  const box = document.createElement("section");
+  box.className = "crowd-group";
+  const head = document.createElement("h2");
+  head.className = "crowd-head";
+  head.textContent = title + " · " + rows.length;
+  box.appendChild(head);
+  rows.forEach((one) => box.appendChild(crowdRow(one)));
+  return box;
+}
+
+function crowdRow(one) {
+  const box = document.createElement("div");
+  box.className = "fighter" + (one.online ? "" : " away");
+
+  const face = document.createElement("span");
+  face.className = "fighter-class";
+  face.textContent = one.fclass.emoji;
+
+  const name = document.createElement("span");
+  name.className = "fighter-name";
+  name.textContent = one.pro ? one.nickname + " 💎" : one.nickname;
+
+  const level = document.createElement("span");
+  level.className = "fighter-level";
+  level.textContent = "[" + one.level + "]";
+
+  box.append(face, name, level);
+  if (one.callable) {
+    box.appendChild(
+      button("Обмен", {
+        onClick: () => tradeAction({ action: "invite", user_id: one.user_id }),
+      })
+    );
+  } else {
+    const why = document.createElement("span");
+    why.className = "crowd-busy";
+    why.textContent = one.trading ? "Уже меняется" : "Занят";
+    box.appendChild(why);
+  }
+  return box;
+}
+
+// ---------- приглашения ----------
+
+function inviteBanner(invite) {
+  const box = document.createElement("section");
+  box.className = "invite";
+  const text = document.createElement("p");
+  text.className = "invite-text";
+  text.textContent = invite.from_name + " предлагает обмен.";
+  const clock = document.createElement("p");
+  clock.className = "invite-clock";
+  clock.id = "invite-clock";
+  box.append(text, clock);
+
+  const row = document.createElement("div");
+  row.className = "invite-buttons";
+  row.appendChild(button("Согласиться", { onClick: () => tradeAction({ action: "accept" }) }));
+  row.appendChild(
+    button("Отказаться", {
+      secondary: true,
+      onClick: () => tradeAction({ action: "decline" }),
+    })
+  );
+  box.appendChild(row);
+  return box;
+}
+
+function sentBanner(sent) {
+  const box = document.createElement("section");
+  box.className = "invite sent";
+  const text = document.createElement("p");
+  text.className = "invite-text";
+  text.textContent = "Ждём ответа: " + sent.name + ".";
+  const clock = document.createElement("p");
+  clock.className = "invite-clock";
+  clock.id = "invite-clock";
+  box.append(text, clock);
+  box.appendChild(
+    button("Забрать приглашение", {
+      secondary: true,
+      onClick: () => tradeAction({ action: "withdraw" }),
+    })
+  );
+  return box;
+}
+
+/** Секунды приглашения дотикиваются на месте, без нового запроса. */
+function tickInvite() {
+  const shown = el("invite-clock");
+  if (!shown || !tradeData) return;
+  const invite = (tradeData.invite && tradeData.invite.from_id)
+    ? tradeData.invite
+    : tradeData.sent;
+  if (!invite) return;
+  const left = Math.max(0, invite.seconds_left - Math.round(tradeAge() / 1000));
+  shown.textContent = left
+    ? "Осталось " + left + " " + plural(left, "секунда", "секунды", "секунд")
+    : "Время вышло.";
+}
+
+function tradeAge() {
+  return tradeAt ? Date.now() - tradeAt : 0;
+}
+
+// ---------- стол ----------
+
+function tradeTable(table) {
+  const box = document.createElement("section");
+  box.className = "table";
+  box.appendChild(tradeHalf(table.his, false, table));
+  box.appendChild(tradeHalf(table.mine, true, table));
+  box.appendChild(tradeButtons(table));
+  return box;
+}
+
+function tradeHalf(side, own, table) {
+  const box = document.createElement("div");
+  box.className = "half" + (own ? " own" : "") + (side.ready ? " ready" : "");
+
+  const head = document.createElement("div");
+  head.className = "half-head";
+  const who = document.createElement("span");
+  who.className = "half-who";
+  who.textContent = own ? "Ты отдаёшь" : side.nickname + " отдаёт";
+  const mark = document.createElement("span");
+  mark.className = "half-mark";
+  mark.textContent = side.ready ? "✅ Готов" : "⏳ Думает";
+  head.append(who, mark);
+  box.appendChild(head);
+
+  box.appendChild(own ? ownCredits(side, table) : theirCredits(side));
+
+  const list = document.createElement("div");
+  list.className = "half-items";
+  if (!side.items.length) {
+    const empty = document.createElement("p");
+    empty.className = "half-empty";
+    empty.textContent = own ? "Пока ничего не выложено." : "Пока ничего не выложил.";
+    list.appendChild(empty);
+  }
+  side.items.forEach((one) => list.appendChild(tableItem(one, own)));
+  box.appendChild(list);
+
+  if (own) {
+    box.appendChild(
+      button("Выложить вещь", {
+        secondary: true,
+        onClick: () => openBasket(table),
+      })
+    );
+  }
+  return box;
+}
+
+function theirCredits(side) {
+  const row = document.createElement("p");
+  row.className = "half-credits";
+  row.textContent = side.credits
+    ? num(side.credits) + " 💰"
+    : "Без кредитов";
+  return row;
+}
+
+// Кредиты уходят на сервер по окончании набора, а не на каждую цифру:
+// иначе «1000» успело бы отправиться как 1, 10 и 100, и каждое из них
+// сбросило бы согласие соперника
+function ownCredits(side, table) {
+  const row = document.createElement("div");
+  row.className = "half-credits own";
+  const field = document.createElement("input");
+  field.type = "number";
+  field.id = "trade-credits";
+  field.inputMode = "numeric";
+  field.min = "0";
+  field.max = String(table.max_credits);
+  field.value = String(side.credits);
+  field.addEventListener("change", () => {
+    const amount = Math.max(0, Math.min(table.max_credits, Number(field.value) || 0));
+    field.value = String(amount);
+    if (amount !== side.credits) tradeAction({ action: "credits", credits: amount });
+  });
+  const tail = document.createElement("span");
+  tail.className = "half-max";
+  tail.textContent = "💰 из " + num(table.max_credits);
+  row.append(field, tail);
+  return row;
+}
+
+function tableItem(one, own) {
+  const box = document.createElement("div");
+  box.className = "lot";
+
+  const pic = document.createElement("div");
+  pic.className = "lot-pic";
+  pic.appendChild(slotPicture(one, one.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "lot-body";
+  const title = document.createElement("div");
+  title.className = "lot-title";
+  title.textContent = one.stack ? one.title + " ×" + one.count : one.title;
+  body.appendChild(title);
+  if (one.wear_text) {
+    const wear = document.createElement("div");
+    wear.className = "lot-wear";
+    wear.textContent = one.wear_text;
+    body.appendChild(wear);
+  }
+  box.appendChild(body);
+
+  if (own) {
+    const off = document.createElement("button");
+    off.type = "button";
+    off.className = "lot-off";
+    off.textContent = "✕";
+    off.title = "Убрать со стола";
+    off.setAttribute("aria-label", "Убрать «" + one.title + "» со стола");
+    off.addEventListener("click", () =>
+      tradeAction({ action: "item", kind: one.kind, key: one.key, count: 0 })
+    );
+    box.appendChild(off);
+  }
+  return box;
+}
+
+function tradeButtons(table) {
+  const row = document.createElement("div");
+  row.className = "table-buttons";
+  const mine = table.mine;
+  if (mine.ready) {
+    row.appendChild(
+      button("Передумать", {
+        secondary: true,
+        onClick: () => tradeAction({ action: "unconfirm" }),
+      })
+    );
+  } else {
+    row.appendChild(
+      button("Подтвердить", {
+        disabled: mine.empty && table.his.empty,
+        hint: "Пустой стол менять не на что.",
+        onClick: () => tradeAction({ action: "confirm" }),
+      })
+    );
+  }
+  row.appendChild(
+    button("Отказаться", {
+      secondary: true,
+      onClick: () => tradeAction({ action: "cancel" }),
+    })
+  );
+  const note = document.createElement("p");
+  note.className = "table-note";
+  note.textContent = table.waiting
+    ? "Ты готов. Ждём второго."
+    : "Любая правка стола снимает оба согласия.";
+  row.appendChild(note);
+  return row;
+}
+
+// ---------- рюкзак у стола ----------
+//
+// Чужой рюкзак сюда не приходит вовсе: соперник видит выложенное, а не
+// то, что у тебя есть.
+
+function openBasket(table) {
+  openSheet("Что выложить", "Не больше " + table.max_items + " предметов за раз");
+  const list = el("sheet-list");
+  if (!table.basket.length) {
+    const empty = document.createElement("p");
+    empty.className = "sheet-note";
+    empty.textContent = "Рюкзак пуст. Надетое сначала снимают.";
+    list.appendChild(empty);
+    return;
+  }
+  table.basket.forEach((one) => list.appendChild(basketRow(one)));
+}
+
+function basketRow(one) {
+  const box = document.createElement("div");
+  box.className = "lot" + (one.on_table ? " on" : "");
+
+  const pic = document.createElement("div");
+  pic.className = "lot-pic";
+  pic.appendChild(slotPicture(one, one.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "lot-body";
+  const title = document.createElement("div");
+  title.className = "lot-title";
+  title.textContent = one.title;
+  body.appendChild(title);
+  const under = document.createElement("div");
+  under.className = "lot-wear";
+  under.textContent = one.stack
+    ? "В рюкзаке: " + one.max_count + " шт."
+    : one.wear_text;
+  body.appendChild(under);
+  box.appendChild(body);
+
+  // У склянок вместо «выложить» — сколько штук: их передают числом, и
+  // четыре разных эликсира не должны стоить четырёх мест на столе
+  if (one.stack) {
+    box.appendChild(stackPicker(one));
+  } else {
+    box.appendChild(
+      button(one.on_table ? "Убрать" : "Выложить", {
+        secondary: one.on_table,
+        onClick: () => {
+          closeSheet();
+          tradeAction({
+            action: "item",
+            kind: one.kind,
+            key: one.key,
+            count: one.on_table ? 0 : 1,
+          });
+        },
+      })
+    );
+  }
+  return box;
+}
+
+function stackPicker(one) {
+  const box = document.createElement("div");
+  box.className = "stack";
+  const field = document.createElement("input");
+  field.type = "number";
+  field.inputMode = "numeric";
+  field.min = "0";
+  field.max = String(one.max_count);
+  field.value = String(one.count);
+  field.className = "stack-count";
+  box.appendChild(field);
+  box.appendChild(
+    button("На стол", {
+      onClick: () => {
+        const count = Math.max(0, Math.min(one.max_count, Number(field.value) || 0));
+        closeSheet();
+        tradeAction({ action: "item", kind: one.kind, key: one.key, count });
+      },
+    })
+  );
+  return box;
+}
+
+// ---------- опрос ----------
+//
+// Стол общий, и чужую правку видно только запросом: две секунды — то же
+// сердцебиение, что на ринге.
+
+function startTradeWatch() {
+  loadTrade();
+  if (tradeTimer) return;
+  tradeTimer = setInterval(loadTrade, 2000);
+  tradeClock = setInterval(tickInvite, 1000);
+}
+
+function stopTradeWatch() {
+  if (tradeTimer) clearInterval(tradeTimer);
+  if (tradeClock) clearInterval(tradeClock);
+  tradeTimer = null;
+  tradeClock = null;
+}
+
 // ---------- вид изнутри ----------
 //
 // С карты у дома видно одну дверь, а всё остальное время боец проводит
@@ -5494,7 +8243,8 @@ let myPlace = null;
 // по несколько домов — клуб и казино, пять разных прилавков, — и что
 // показывать, знает только то место, где боец сейчас стоит.
 const INTERIOR_SCREENS = [
-  "club", "shop", "magic", "workshop", "hospital", "house",
+  "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
+  "hr", "work", "trade", "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -5630,9 +8380,15 @@ el("hero-avatar").addEventListener("click", () => {
 });
 el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
-el("hero-daily").addEventListener("click", openDaily);
-el("house-back").addEventListener("click", () => showTab("map"));
-el("hospital-back").addEventListener("click", () => showTab("map"));
+// Выход на карту есть в каждом доме: боец пришёл сюда ногами и уходит
+// так же. Нижняя панель ведёт в клуб, в рюкзак и в карточку — то есть
+// куда угодно, кроме того места, откуда он в этот дом зашёл
+[
+  "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
+  "shop", "magic", "workshop", "club",
+].forEach((screen) => {
+  el(screen + "-back").addEventListener("click", () => showTab("map"));
+});
 watchInteriors();
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты

@@ -136,17 +136,11 @@ async def on_paid(message: Message, store: StoreService) -> None:
 
     if grant.is_pro:
         got = grant.pro
-        extras = []
-        if got and got.blade:
-            extras.append("🗡 Клинок ассасина — в инвентаре")
-        if got and got.look:
-            extras.append("🥷 Образ ассасина — в гардеробе")
         await message.answer(
             f"💎 <b>{grant.label}</b> "
             f"{'продлена' if got and got.renewed else 'оформлена'} на "
             f"{grant.goods.days} дней.\n"
-            + ("\n".join(extras) + "\n" if extras else "")
-            + "\nОпыт за бои теперь идёт в полтора раза. Подробности: /pro"
+            "\nОпыт за бои теперь идёт в полтора раза. Подробности: /pro"
         )
         return
 
@@ -176,7 +170,10 @@ def pro_text(player, offer: ProOffer, claimed: bool = False) -> str:
         lines += [f"✅ Подписка активна, осталось <b>{spell_duration(left)}</b>.", ""]
     lines.append("<b>Что даёт</b>")
     lines += [f"• {line}" for line in pro.BENEFITS]
-    lines += ["", pro.NOTE]
+    # Оговорка под списком бывает пустой: список из трёх строк в ней не
+    # нуждается, и пустая строка вместо неё читалась бы как обрыв
+    if pro.NOTE:
+        lines += ["", pro.NOTE]
     promo = pro.promo_note(offer, claimed)
     if promo:
         lines += ["", promo]
@@ -236,16 +233,10 @@ async def on_pro(
         except ProError as error:
             await callback.answer(str(error), show_alert=True)
             return
-        extras = []
-        if grant.blade:
-            extras.append("🗡 Клинок ассасина — в инвентаре")
-        if grant.look:
-            extras.append("🥷 Образ ассасина — в гардеробе")
         await callback.message.answer(
             f"💎 Подписка {'продлена' if grant.renewed else 'оформлена'} на "
             f"{grant.offer.days} дней — бесплатно, по акции.\n"
-            + ("\n".join(extras) + "\n" if extras else "")
-            + "\nОпыт за бои теперь идёт в полтора раза."
+            "\nОпыт за бои теперь идёт в полтора раза."
         )
         await callback.answer("Добро пожаловать в PRO!")
         return

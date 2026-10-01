@@ -12,7 +12,7 @@ import pytest
 from bot.config import Config
 from bot.game.classes import get_class
 from bot.game.health import now_ts
-from bot.game.pro import DAY, PRO_DAYS, PRO_ITEM, PRO_LOOK
+from bot.game.pro import DAY, LEGACY_LOOK, PRO_DAYS
 from bot.handlers.admin import MAX_GIFT_DAYS, is_owner
 from bot.models import Player
 from tests.harness import DISPATCHER, Client
@@ -97,8 +97,12 @@ async def test_without_an_owner_even_the_owner_is_refused(club, caplog):
 # ---------- выдача ----------
 
 
-async def test_the_owner_grants_a_month(club):
-    """Месяц подписки, клинок в рюкзак и образ в гардероб — как за звёзды."""
+async def test_the_owner_grants_a_month_and_nothing_else(club):
+    """Месяц подписки — и только срок: ни вещей, ни образа.
+
+    Выдача от руки не должна оказаться единственной дверью, через которую
+    ещё ходит то, что из подписки убрали.
+    """
     db, owner, session = club
     before = now_ts()
 
@@ -107,8 +111,8 @@ async def test_the_owner_grants_a_month(club):
     until = await pro_of(db)
     assert PRO_DAYS * DAY - 60 <= until - before <= PRO_DAYS * DAY + 60
     player = await db.get_player(777)
-    assert any(owned.code == PRO_ITEM for owned in player.gear), "клинок не выдали"
-    assert PRO_LOOK in await db.owned_looks(777)
+    assert player.gear == [], "подписка снаряжения не даёт"
+    assert LEGACY_LOOK not in await db.owned_looks(777), "и образа тоже"
     # Ответ называет бойца и до какого часа подписка
     said = session.texts[-1]
     assert "x RED x" in said and "30 дней" in said and "мск" in said
@@ -187,3 +191,172 @@ async def test_the_gift_stays_out_of_the_paid_history(club):
     await owner.send("/givepro x RED x")
 
     assert await db.purchases_of(777) == [], "подарок попал в историю оплат"
+
+
+# ---------- кредиты ----------
+
+
+async def cash_of(db, user_id: int = 777) -> int:
+    player = await db.get_player(user_id)
+    return player.credits
+
+
+async def test_a_stranger_cannot_print_money(club):
+    """Чужому команды не существует: ни начисления, ни отказа."""
+    db, _, session = club
+    stranger = Client(db)
+
+    await stranger.send("/givecredits x RED x 500")
+
+    assert session.texts == [], "посторонний не должен знать, что она есть"
+    assert await cash_of(db) == 0
+
+
+async def test_without_an_owner_even_the_owner_prints_nothing(club, caplog):
+    """OWNER_ID не задан — команда молчит, но след остаётся в логах."""
+    db, owner, session = club
+    DISPATCHER["config"] = replace(DISPATCHER["config"], owner_id=0)
+
+    with caplog.at_level("WARNING"):
+        await owner.send("/givecredits x RED x 500")
+
+    assert session.texts == []
+    assert await cash_of(db) == 0
+    assert "OWNER_ID" in caplog.text
+
+
+async def test_the_owner_hands_out_credits(club):
+    """Сумма ложится наличными, и ответ называет и было, и стало."""
+    db, owner, session = club
+
+    await owner.send("/givecredits x RED x 500")
+
+    assert await cash_of(db) == 500
+    said = session.texts[-1]
+    assert "x RED x" in said and "500" in said and "начислено" in said
+
+
+async def test_credits_land_as_cash_and_not_on_the_bank_account(club):
+    """Начисление — такой же доход, как всякий другой: оно наличными.
+
+    Со счётом боец разбирается сам, в банке. Положи команда деньги туда,
+    на рынке их нельзя было бы передать, а в зале — заплатить без карты.
+    """
+    db, owner, _ = club
+
+    await owner.send("/givecredits x RED x 500")
+
+    player = await db.get_player(777)
+    assert player.credits == 500
+    assert player.account_balance == 0, "деньги ушли на счёт, а не в карман"
+
+
+async def test_a_grant_adds_to_what_the_fighter_already_had(club):
+    """Начисление кладётся сверху, а не заменяет кошелёк."""
+    db, owner, _ = club
+
+    await owner.send("/givecredits x RED x 500")
+    await owner.send("/givecredits x RED x 300")
+
+    assert await cash_of(db) == 800
+
+
+async def test_there_is_no_ceiling_on_the_sum(club):
+    """«Любое количество» — значит любое: потолка у начисления нет."""
+    db, owner, session = club
+
+    await owner.send("/givecredits x RED x 1000000")
+
+    assert await cash_of(db) == 1_000_000
+    assert "начислено" in session.texts[-1]
+
+
+async def test_a_minus_takes_credits_back(club):
+    """Лишний ноль в сумме исправляется минусом, а не правкой базы."""
+    db, owner, session = club
+    await owner.send("/givecredits x RED x 5000")
+
+    await owner.send("/givecredits x RED x -4500")
+
+    assert await cash_of(db) == 500
+    assert "снято" in session.texts[-1] and "4500" in session.texts[-1]
+
+
+async def test_taking_more_than_there_is_empties_the_purse_and_no_more(club):
+    """Кошелёк не уходит в минус: долгов в клубе нет."""
+    db, owner, _ = club
+    await owner.send("/givecredits x RED x 100")
+
+    await owner.send("/givecredits x RED x -1000")
+
+    assert await cash_of(db) == 0
+
+
+async def test_a_nickname_ending_in_a_number_still_gets_its_credits(club):
+    """«Боец 7» — это ник, а сумма стоит после него."""
+    db, owner, _ = club
+    await db.save_player(make_player(778, "Боец 7"))
+
+    await owner.send("/givecredits Боец 7 500")
+
+    assert await cash_of(db, 778) == 500
+    assert await cash_of(db) == 0, "начислили не тому"
+
+
+async def test_an_unknown_fighter_gets_no_credits(club):
+    """Ника нет в клубе — говорим об этом и ничего не трогаем."""
+    db, owner, session = club
+
+    await owner.send("/givecredits Кого-то-нет 500")
+
+    assert "нет" in session.texts[-1] and "givecredits" in session.texts[-1]
+    assert await cash_of(db) == 0
+
+
+async def test_a_sum_that_is_not_a_number_is_refused(club):
+    """«много» — не сумма; команда объясняет, как её позвать."""
+    db, owner, session = club
+
+    await owner.send("/givecredits x RED x много")
+
+    assert "givecredits" in session.texts[-1]
+    assert await cash_of(db) == 0
+
+
+async def test_a_command_without_a_sum_explains_itself(club):
+    """Один ник без суммы — тоже не команда: нужны оба слова."""
+    db, owner, session = club
+
+    await owner.send("/givecredits x RED x")
+
+    assert "givecredits" in session.texts[-1]
+    assert await cash_of(db) == 0
+
+
+async def test_an_empty_money_command_explains_itself(club):
+    """Без имени команда объясняет, как ей пользоваться."""
+    db, owner, session = club
+
+    await owner.send("/givecredits")
+
+    assert "givecredits" in session.texts[-1]
+    assert await cash_of(db) == 0
+
+
+async def test_zero_changes_nothing_and_says_so(club):
+    """Ноль кредитов — не начисление: пустой ответ бойцу был бы ложью."""
+    db, owner, session = club
+
+    await owner.send("/givecredits x RED x 0")
+
+    assert await cash_of(db) == 0
+    assert "оль" in session.texts[-1]
+
+
+async def test_the_grant_stays_out_of_the_paid_history(club):
+    """Начисленное — не покупка: в истории оплат ему места нет."""
+    db, owner, _ = club
+
+    await owner.send("/givecredits x RED x 500")
+
+    assert await db.purchases_of(777) == []

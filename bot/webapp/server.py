@@ -18,7 +18,7 @@ from bot.database import Database
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError
 from bot.raid_service import RaidError
-from bot.game.classes import ALL_STATS
+from bot.game.classes import ALL_STATS, Stat
 from bot.game.equipment import Slot
 from bot.game.modes import mode_of
 from bot.game.potions import get_potion
@@ -41,9 +41,21 @@ from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
 from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
 from bot.webapp.hospital import build_hospital
+from bot.game.gym import MAX_UPGRADES, moscow_day, schedule_from
+from bot.webapp.gym import build_gym
+from bot.webapp.insurance import build_insurance
+from bot.webapp.trade import build_trade
 from bot.webapp.workshop import build_workshop
 from bot.content.mods import star_of
 from bot.hospital_service import HospitalError, heal
+from bot.trade_service import TradeError, TradeService
+from bot.insurance_service import InsuranceError, buy_policy, set_renew, settle
+from bot.gym_service import GymError
+from bot.gym_service import buy_pass, join as gym_join, leave as gym_leave
+from bot.gym_service import day_count, progress_of
+from bot.gym_service import settle as gym_settle, upgrade
+from bot.gym_service import visit_of
+from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
 from bot.game.health import format_duration, now_ts
 from bot.game.locations import (
@@ -55,6 +67,25 @@ from bot.game.locations import (
 )
 from bot.travel_service import Travel, TravelError, require
 from bot.webapp.citymap import build_map
+from bot.bank_service import (
+    BankError,
+    choose_purse,
+    deposit,
+    issue_card,
+    open_account,
+    send,
+    withdraw,
+)
+from bot.game.bank import CARD
+from bot.game.work import SHIFT_HOURS
+from bot.webapp.bank import build_bank
+from bot.webapp.work import build_hr, build_work
+from bot.work_service import WorkError
+from bot.work_service import apply as work_apply
+from bot.work_service import quit_job as work_quit
+from bot.work_service import quiz_payload
+from bot.work_service import settle as work_settle
+from bot.work_service import start_shift, vacancies
 from bot.webapp.card import (
     build_market,
     build_card,
@@ -84,6 +115,8 @@ STORE_KEY: web.AppKey = web.AppKey("store")
 RAIDS_KEY: web.AppKey = web.AppKey("raids")
 # Групповые бои: состав собирают где угодно, а дерутся в карточке
 BATTLES_KEY: web.AppKey = web.AppKey("battles")
+# Столы на рынке: обмен идёт минуты и живёт в памяти, как и бои
+TRADE_KEY: web.AppKey[TradeService] = web.AppKey("trades", TradeService)
 # Кто водит бойцов по городу
 TRAVEL_KEY: web.AppKey[Travel] = web.AppKey("travel", Travel)
 # Кому недавно уже ставили отметку «был в клубе»: боец → время по часам
@@ -268,10 +301,18 @@ async def api_card(request: web.Request) -> web.Response:
     # отдельной разовой раздачей пришлось бы ровно один раз, а забыть о
     # ней — навсегда
     visit = None
+    said = ""
     if player.user_id == viewer.user_id:
         await ensure_starter(db, player)
         visit = await check_in(db, player)
+        # Документы боец видит здесь, значит здесь же и сводится
+        # автопродление полиса. Только своё: чужому полису нас не
+        # спрашивают, и тратить чужие кредиты, открыв чужую карточку, —
+        # именно та ошибка, от которой спасает это условие
+        said = await settle(db, player)
     card = build_card(player, config.bot_token, viewer.user_id)
+    if said:
+        card["said"] = said
     if visit is not None:
         card["daily"] = daily_payload(visit)
     return web.json_response(card)
@@ -304,6 +345,11 @@ async def _at(request: web.Request, service: Service, own: bool = True):
     player = await (_own_player(request) if own else _fighter(request))
     # Дошёл, пока его не спрашивали, — записываем прибытие
     if player.arrive():
+        await request.app[DB_KEY].save_player(player)
+    # И заодно сводим год обслуживания карты: своих часов у банка нет, а
+    # эта дверь — единственная, через которую проходят все места города.
+    # Свести надо до того, как где-то спросят, чем боец платит
+    if player.settle_card(now_ts()):
         await request.app[DB_KEY].save_player(player)
     require(player, service)
     return player
@@ -395,9 +441,40 @@ async def api_unequip(request: web.Request) -> web.Response:
 
 
 async def api_hospital(request: web.Request) -> web.Response:
-    """Приёмный покой: здоровье бойца, его счёт и прайс."""
+    """Приёмный покой: здоровье бойца, его счёт и прайс.
+
+    Полис предъявляют здесь, поэтому здесь же сводится и его
+    автопродление: цена лечения зависит от того, жив ли полис, и узнать
+    это надо до того, как показан прайс.
+    """
     player = await _at(request, Service.HEAL)
-    return web.json_response(build_hospital(player))
+    said = await settle(request.app[DB_KEY], player)
+    body = build_hospital(player)
+    body["said"] = said
+    return web.json_response(body)
+
+
+async def api_injury(request: web.Request) -> web.Response:
+    """Вылечить травму за кредиты. Тоже только в больнице."""
+    try:
+        player = await _at(request, Service.HEAL)
+        await settle(request.app[DB_KEY], player)
+        healed = await heal_injury(request.app[DB_KEY], player)
+    except InjuryError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    injury = healed.injury
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "hospital": build_hospital(player),
+            "done": {
+                "title": injury.title if injury else "",
+                "minutes": healed.seconds_left() // 60,
+            },
+        }
+    )
 
 
 async def api_heal(request: web.Request) -> web.Response:
@@ -566,7 +643,9 @@ async def api_repair(request: web.Request) -> web.Response:
     db = request.app[DB_KEY]
     try:
         player = await _at(request, Service.REPAIR)
-        result = await repair_item(db, player, _int_field(data, "item_id"), points)
+        result = await repair_item(
+            db, player, _int_field(data, "item_id"), points, service=Service.REPAIR
+        )
     except InventoryError as error:
         return web.json_response({"error": str(error)}, status=409)
 
@@ -643,23 +722,24 @@ async def api_buy(request: web.Request) -> web.Response:
     try:
         # Оружие берут у оружейника, склянки в аптеке, остальное у
         # одёжника: спрашиваем ровно то место, где эта вещь и лежит
-        player = await _at(request, service_for(code))
+        service = service_for(code)
+        player = await _at(request, service)
         if potion is not None:
-            await buy_potion(request.app[DB_KEY], player, code)
+            await buy_potion(request.app[DB_KEY], player, code, service)
             # Склянку не надевают — её пьют, поэтому и подсказка другая
             bought = {
                 "code": potion.code,
                 "title": potion.title,
-                "price": potion.price,
+                "price": player.price_here(potion.price, now_ts(), service),
                 "can_equip": False,
                 "consumable": True,
             }
         else:
-            item = await buy(request.app[DB_KEY], player, code)
+            item = await buy(request.app[DB_KEY], player, code, service)
             bought = {
                 "code": item.code,
                 "title": item.title,
-                "price": item.item.price,
+                "price": player.price_here(item.item.price, now_ts(), service),
                 "can_equip": player.can_equip(item.item),
                 "consumable": False,
             }
@@ -748,8 +828,6 @@ async def api_pro(request: web.Request) -> web.Response:
             "pro": {
                 "days": grant.offer.days,
                 "renewed": grant.renewed,
-                "blade": grant.blade,
-                "look": grant.look,
                 "seconds_left": grant.seconds_left(),
             },
         }
@@ -893,6 +971,430 @@ async def api_market_action(request: web.Request) -> web.Response:
         return web.json_response({"error": str(error)}, status=409)
 
     return await _market(request, player)
+
+
+# ---------- тренажёрный зал ----------
+
+
+async def _gym_state(request: web.Request, player, said: str = "") -> dict:
+    """Состояние зала целиком.
+
+    Расписание в него входит полностью — оно выводится, а не читается, и
+    стоит дешевле, чем отдельная ручка под него.
+    """
+    db = request.app[DB_KEY]
+    moment = now_ts()
+    rows = await progress_of(db, player)
+    visit = await visit_of(db, player)
+    slots = [slot.id for slot in schedule_from(moment)]
+    body = build_gym(
+        player,
+        await db.gym_pass_of(player.user_id),
+        rows,
+        visit,
+        await db.gym_slots_taken(player.user_id, slots),
+        await db.gym_slots_crowd(slots),
+        await day_count(db, player, moscow_day(moment).isoformat()),
+        moment,
+    )
+    body["said"] = said
+    return body
+
+
+async def _in_gym(request: web.Request) -> tuple:
+    """Боец в зале, с уже сведённой тренировкой.
+
+    Пятнадцать минут сводятся здесь — в единственном месте, где на зал
+    смотрят. Часов, которые обходили бы базу по будильнику, у клуба нет.
+    """
+    player = await _at(request, Service.TRAIN)
+    return player, await gym_settle(request.app[DB_KEY], player)
+
+
+async def api_gym(request: web.Request) -> web.Response:
+    """Зал: абонемент, расписание, идущая тренировка и прогресс."""
+    player, said = await _in_gym(request)
+    return web.json_response(await _gym_state(request, player, said))
+
+
+async def api_gym_action(request: web.Request) -> web.Response:
+    """Купить абонемент, встать на тренировку, уйти с неё или улучшиться."""
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    player, said = await _in_gym(request)
+    db = request.app[DB_KEY]
+    try:
+        if action == "pass":
+            ticket = await buy_pass(db, player, str(data.get("code") or ""))
+            # Цену называем ту, что ушла с кошелька, а не ту, что в прайсе:
+            # по карте она меньше, и назвать прайсовую значило бы соврать
+            paid = player.price_here(ticket.price, now_ts(), Service.TRAIN)
+            said = f"Абонемент на {ticket.title.lower()} куплен: −{paid} 💰."
+        elif action == "join":
+            visit = await gym_join(db, player)
+            said = "Ты на тренировке. Пятнадцать минут — и очко твоё."
+            if visit.price:
+                said += f" Списано {visit.price} 💰 сверх абонемента."
+        elif action == "leave":
+            await gym_leave(db, player)
+            said = "Ты ушёл с тренировки. Занятие потрачено."
+        elif action == "upgrade":
+            try:
+                stat = Stat(str(data.get("stat") or ""))
+            except ValueError as error:
+                raise GymError("Такой характеристики нет.") from error
+            grown = await upgrade(db, player, stat)
+            said = (
+                f"{grown.stat.title.capitalize()} выросла до {grown.value}. "
+                f"Улучшений: {grown.ups} из {MAX_UPGRADES}."
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except GymError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    # Кредиты и характеристики могли только что поменяться: перечитываем
+    # бойца, чтобы зал и карточка говорили одно и то же
+    config = request.app[CONFIG_KEY]
+    fresh = await db.get_player(player.user_id) or player
+    body = await _gym_state(request, fresh, said)
+    body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
+    return web.json_response(body)
+
+
+# ---------- страховая компания ----------
+
+
+async def _insured(request: web.Request) -> tuple:
+    """Боец в страховой, с уже сведённым автопродлением.
+
+    Продление сводится здесь и в больнице — в двух местах, где полис
+    смотрят или предъявляют. Часов, которые списывали бы кредиты по
+    будильнику, в клубе нет: срок вышел, и это выясняется в ту минуту,
+    когда за полисом пришли.
+    """
+    player = await _at(request, Service.INSURANCE)
+    said = await settle(request.app[DB_KEY], player)
+    return player, said
+
+
+async def api_insurance(request: web.Request) -> web.Response:
+    """Прилавок страховой: полис, его цена и что он даёт."""
+    player, said = await _insured(request)
+    body = build_insurance(player)
+    body["said"] = said
+    return web.json_response(body)
+
+
+async def api_policy(request: web.Request) -> web.Response:
+    """Оформить полис, продлить его или переключить автопродление."""
+    data = await _payload(request)
+    action = str(data.get("action") or "buy")
+    player, said = await _insured(request)
+    config = request.app[CONFIG_KEY]
+    try:
+        if action == "buy":
+            deal = await buy_policy(request.app[DB_KEY], player)
+            said = (
+                f"Полис продлён на месяц. Списано {deal.price} 💰."
+                if deal.renewed
+                else f"Полис оформлен. Списано {deal.price} 💰."
+            )
+        elif action == "renew":
+            on = bool(data.get("on"))
+            await set_renew(request.app[DB_KEY], player, on)
+            said = (
+                "Автопродление включено: месяц будет продлеваться сам."
+                if on
+                else "Автопродление выключено: полис кончится в свой срок."
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except InsuranceError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    body = build_insurance(player)
+    body["said"] = said
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "insurance": body,
+            "said": said,
+        }
+    )
+
+
+# ---------- Vegas Банк ----------
+
+
+async def _bank_state(request: web.Request, player, said: str = "") -> web.Response:
+    """Ответ банка всегда один и тот же: банк целиком плюс карточка.
+
+    Карточка едет вместе с банком потому, что деньги в ней и показаны: на
+    экране банка их два кошелька, и разойтись им нельзя ни на кредит.
+    """
+    config = request.app[CONFIG_KEY]
+    body = build_bank(player, now_ts(), said)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_bank(request: web.Request) -> web.Response:
+    """Банк: счёт, карта, банкомат и прайс скидок."""
+    player = await _at(request, Service.BANK)
+    return await _bank_state(request, player)
+
+
+async def api_bank_action(request: web.Request) -> web.Response:
+    """Открыть счёт, выпустить карту, положить, снять, перевести, выбрать."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.BANK)
+    try:
+        if action == "account":
+            number = await open_account(db, player)
+            said = f"Счёт открыт: {number}. Ведение бесплатное."
+        elif action == "card":
+            price = await issue_card(db, player)
+            said = (
+                f"Карта Vegas Банка выпущена: −{price} 💰. "
+                f"Первый год обслуживания уже в этой сотне."
+            )
+        elif action == "deposit":
+            move = await deposit(db, player, _int_field(data, "amount"))
+            said = f"На счёт: +{move.amount} 💰. Теперь на нём {move.balance} 💰."
+        elif action == "withdraw":
+            move = await withdraw(db, player, _int_field(data, "amount"))
+            said = f"Наличными: +{move.amount} 💰. На счету {move.balance} 💰."
+        elif action == "send":
+            move, name = await send(
+                db, player, str(data.get("number") or ""), _int_field(data, "amount")
+            )
+            said = f"Переведено {move.amount} 💰 бойцу {name}."
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except BankError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    # Деньги только что двигались: перечитываем бойца, чтобы банк и
+    # карточка говорили одно и то же
+    fresh = await db.get_player(player.user_id) or player
+    return await _bank_state(request, fresh, said)
+
+
+async def api_purse(request: web.Request) -> web.Response:
+    """Чем боец платит. Место не спрашиваем — и не случайно.
+
+    Выбрать кошелёк надо там, где стоит цена, то есть у любого прилавка
+    города, а не только в банке. Услуги за этим нет: это предпочтение
+    бойца, а не операция банка, и запирать его в одном доме значило бы
+    гонять человека через полгорода, чтобы заплатить наличными.
+    """
+    data = await _payload(request)
+    player = await _own_player(request)
+    db = request.app[DB_KEY]
+    try:
+        purse = await choose_purse(db, player, str(data.get("purse") or ""))
+    except BankError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        {
+            "purse": purse,
+            "said": (
+                "Платим картой: скидки банка считаются."
+                if purse == CARD
+                else "Платим наличными: скидки по карте не будет."
+            ),
+            "card": build_card(player, config.bot_token, player.user_id),
+        }
+    )
+
+
+# ---------- работа: агентство и смена ----------
+
+
+async def _worker(request: web.Request, service: Service) -> tuple:
+    """Боец на месте, с уже сведённой неделей.
+
+    Неделя закрывается здесь — в единственных двух местах, куда за
+    работой приходят. Часов, которые раздавали бы жалованье по
+    будильнику, у клуба нет, как нет их у страховой и у зала.
+    """
+    player = await _at(request, service)
+    return player, await work_settle(request.app[DB_KEY], player)
+
+
+async def _hr_state(request: web.Request, player, said: str = "") -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = build_hr(player, await vacancies(db, player))
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_hr(request: web.Request) -> web.Response:
+    """Доска агентства: пять мест города и что с ними у этого бойца."""
+    player, said = await _worker(request, Service.HIRE)
+    return await _hr_state(request, player, said)
+
+
+async def api_hr_action(request: web.Request) -> web.Response:
+    """Взять вопросы, подать заявку с ответами или уйти с работы."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player, said = await _worker(request, Service.HIRE)
+    attempt = None
+    try:
+        if action == "quiz":
+            code = str(data.get("code") or "")
+            if not quiz_payload(code):
+                return web.json_response(
+                    {"error": "Такой вакансии в агентстве нет."}, status=409
+                )
+            body = build_hr(player, await vacancies(db, player))
+            body["quiz"] = quiz_payload(code)
+            body["code"] = code
+            return web.json_response(body)
+        if action == "apply":
+            answers = [int(one) for one in data.get("answers") or []]
+            done = await work_apply(
+                db, player, str(data.get("code") or ""), answers
+            )
+            attempt = {
+                "hired": done.hired,
+                "right": done.right,
+                "total": done.total,
+                "need": done.need,
+                "title": done.vacancy.title,
+                "account": done.account,
+            }
+            said = (
+                f"Тебя взяли: {done.vacancy.title}. "
+                f"{done.right} из {done.total} верных."
+                if done.hired
+                else (
+                    f"Не взяли: {done.right} из {done.total}, "
+                    f"а нужно {done.need}. Вернуться можно через неделю."
+                )
+            )
+            if done.account:
+                said += f" Открыт счёт {done.account} — на него придёт жалованье."
+        elif action == "quit":
+            gone = await work_quit(db, player)
+            said = f"Ты ушёл с места «{gone.title}». Вакансия снова в агентстве."
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except (WorkError, ValueError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    config = request.app[CONFIG_KEY]
+    body = build_hr(fresh, await vacancies(db, fresh))
+    body["said"] = said
+    body["attempt"] = attempt or {}
+    body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
+    return web.json_response(body)
+
+
+async def api_work(request: web.Request) -> web.Response:
+    """Рабочее место: смена, часы за сутки и за неделю."""
+    player, said = await _worker(request, Service.WORK)
+    body = build_work(player)
+    body["said"] = said
+    return web.json_response(body)
+
+
+async def api_work_action(request: web.Request) -> web.Response:
+    """Встать на смену. Уйти с неё нельзя — боец заперт до конца часа."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player, said = await _worker(request, Service.WORK)
+    try:
+        if action == "start":
+            until = await start_shift(db, player)
+            said = (
+                f"Смена началась: {SHIFT_HOURS} часа. "
+                "Из дома не выйти, пока она не кончится."
+            )
+            del until
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except WorkError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    config = request.app[CONFIG_KEY]
+    body = build_work(fresh)
+    body["said"] = said
+    body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
+    return web.json_response(body)
+
+
+# ---------- рынок: обмен между бойцами ----------
+
+
+async def _trade_state(request: web.Request, player) -> web.Response:
+    """Ответ рынка всегда один и тот же: состояние целиком.
+
+    Страница ничего не досчитывает сама — стол общий, и любая её догадка
+    о том, что там теперь лежит, разошлась бы с чужой правкой.
+    """
+    return web.json_response(await build_trade(player, request.app.get(TRADE_KEY)))
+
+
+async def api_trade(request: web.Request) -> web.Response:
+    """Кто на рынке, кто тебя позвал и что лежит на столе."""
+    player = await _at(request, Service.TRADE)
+    return await _trade_state(request, player)
+
+
+async def api_trade_action(request: web.Request) -> web.Response:
+    """Позвать, согласиться, выложить, подтвердить или отказаться."""
+    trades = request.app.get(TRADE_KEY)
+    if trades is None:  # pragma: no cover - бот без службы обмена не живёт
+        raise web.HTTPServiceUnavailable(text="Обмен сейчас не работает")
+    data = await _payload(request)
+    action = str(data.get("action", ""))
+    player = await _at(request, Service.TRADE)
+    try:
+        if action == "invite":
+            await trades.invite(player, _int_field(data, "user_id"))
+        elif action == "accept":
+            await trades.accept(player)
+        elif action == "decline":
+            trades.decline(player.user_id)
+        elif action == "withdraw":
+            trades.withdraw(player.user_id)
+        elif action == "credits":
+            trades.put_credits(player, _int_field(data, "credits"))
+        elif action == "item":
+            trades.put_item(
+                player,
+                str(data.get("kind", "")),
+                str(data.get("key", "")),
+                _int_field(data, "count"),
+            )
+        elif action == "confirm":
+            await trades.ready(player)
+        elif action == "unconfirm":
+            trades.unconfirm(player)
+        elif action == "cancel":
+            trades.cancel(player)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except TradeError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    # Кредиты и вещи могли только что переехать: перечитываем бойца, чтобы
+    # на столе и в рюкзаке было то же, что в базе
+    fresh = await request.app[DB_KEY].get_player(player.user_id)
+    return await _trade_state(request, fresh or player)
 
 
 # ---------- рейды ----------
@@ -1217,10 +1719,15 @@ async def travel_guard(request: web.Request, handler):
     Проверку места ставит `_at`, а мест этих десяток. Ловить её в каждой
     ручке значит написать один и тот же except двенадцать раз и однажды
     забыть — тогда «сходи в мастерскую» превратится в пятисотку.
+
+    Здесь же ловится «ты на ринге»: её поднимает тот же `_at`, ещё до
+    всякой услуги. Ручки, которые работают с вещами, ловят её и сами, а
+    ручки, которые только показывают прилавок, — нет, и до этой сети им
+    оставалась пятисотка на бойце, которого позвали в бой из группы.
     """
     try:
         return await handler(request)
-    except TravelError as error:
+    except (TravelError, InventoryError) as error:
         return web.json_response({"error": str(error)}, status=409)
 
 
@@ -1248,8 +1755,12 @@ def create_app(
         app[RAIDS_KEY] = raids
     if battles is not None:
         app[BATTLES_KEY] = battles
+    app[TRADE_KEY] = TradeService(db)
     # Кого дорога спрашивает, можно ли уходить: из недодранного боя нельзя
     app[TRAVEL_KEY].watch(duels, raids, battles)
+    # А обмен спрашивает то же самое про стол: позвать занятого бойцом
+    # нельзя, и согласиться, пока тебя ждут на ринге, — тоже
+    app[TRADE_KEY].watch(duels, raids, battles)
     app.add_routes(
         [
             web.get("/", index),
@@ -1265,6 +1776,7 @@ def create_app(
             web.get("/api/workshop", api_workshop),
             web.get("/api/hospital", api_hospital),
             web.post("/api/heal", api_heal),
+            web.post("/api/injury", api_injury),
             web.post("/api/mod", api_mod),
             web.post("/api/handin", api_handin),
             web.get("/api/shop", api_shop),
@@ -1277,6 +1789,19 @@ def create_app(
             web.get("/api/history", api_history),
             web.get("/api/market", api_market),
             web.post("/api/market", api_market_action),
+            web.get("/api/bank", api_bank),
+            web.post("/api/bank", api_bank_action),
+            web.post("/api/purse", api_purse),
+            web.get("/api/hr", api_hr),
+            web.post("/api/hr", api_hr_action),
+            web.get("/api/work", api_work),
+            web.post("/api/work", api_work_action),
+            web.get("/api/gym", api_gym),
+            web.post("/api/gym", api_gym_action),
+            web.get("/api/insurance", api_insurance),
+            web.post("/api/insurance", api_policy),
+            web.get("/api/trade", api_trade),
+            web.post("/api/trade", api_trade_action),
             web.get("/api/raid", api_raid),
             web.post("/api/raid", api_raid_action),
             web.get("/api/raids", api_raids_history),

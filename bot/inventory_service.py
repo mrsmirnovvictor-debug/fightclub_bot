@@ -9,6 +9,8 @@ from __future__ import annotations
 import random
 
 from bot.database import Database
+from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.game.market import buyback
 from bot.game.equipment import (
     REPAIR_PRICE_PER_POINT,
@@ -28,8 +30,19 @@ class InventoryError(Exception):
     """Ошибка, которую можно показать игроку как есть."""
 
 
-async def buy(db: Database, player: Player, code: str) -> OwnedItem:
-    """Купить вещь в лавке. Надевать можно потом — хоть через пять уровней."""
+async def buy(
+    db: Database,
+    player: Player,
+    code: str,
+    service: Service | None = None,
+    now: int | None = None,
+) -> OwnedItem:
+    """Купить вещь в лавке. Надевать можно потом — хоть через пять уровней.
+
+    Место передаёт тот, кто знает, где боец стоит: от места зависит, какую
+    скидку даёт карта. Места нет — платят наличными и по полной цене, и
+    это не оплошность: у лавки в личке бота адреса нет.
+    """
     item: Item | None = get_item(code)
     if item is None:
         raise InventoryError("Такого товара в лавке нет.")
@@ -38,13 +51,15 @@ async def buy(db: Database, player: Player, code: str) -> OwnedItem:
             f"«{item.title}» открывается на {item.level_required} уровне, "
             f"а у тебя {player.level}."
         )
-    if not player.can_afford(item.price):
+    moment = now_ts() if now is None else now
+    price = player.price_here(item.price, moment, service)
+    if not player.can_afford(price, moment, service):
         raise InventoryError(
-            f"Не хватает кредитов: «{item.title}» стоит {item.price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"Не хватает кредитов: «{item.title}» стоит {price} 💰, "
+            f"а {player.purse_note(moment, service)}."
         )
 
-    player.pay(item.price)
+    player.pay(price, moment, service)
     await db.save_player(player)
     owned = await db.add_gear(player.user_id, item.code)
     player.gear.append(owned)
@@ -113,8 +128,13 @@ async def repair_item(
     item_id: int,
     points: int | None = None,
     rng: random.Random | None = None,
+    service: Service | None = None,
+    now: int | None = None,
 ) -> RepairResult:
-    """Починить вещь за кредиты: один пункт износа — один кредит."""
+    """Починить вещь за кредиты: один пункт износа — один кредит.
+
+    Картой платить можно, а скидки нет: банк её в мастерской не обещал.
+    """
     owned = player.find_gear(item_id)
     if owned is None:
         raise InventoryError("Такой вещи в инвентаре нет.")
@@ -124,15 +144,16 @@ async def repair_item(
     points = owned.wear if points is None else max(0, min(points, owned.wear))
     if points <= 0:
         raise InventoryError("Чинить нужно хотя бы на один пункт.")
-    price = points * REPAIR_PRICE_PER_POINT
-    if not player.can_afford(price):
+    moment = now_ts() if now is None else now
+    price = player.price_here(points * REPAIR_PRICE_PER_POINT, moment, service)
+    if not player.can_afford(price, moment, service):
         raise InventoryError(
             f"Не хватает кредитов: починка на {points} — это {price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"а {player.purse_note(moment, service)}."
         )
 
     result = repair(owned, points, rng)
-    player.pay(result.price)
+    player.pay(player.price_here(result.price, moment, service), moment, service)
     await db.save_player(player)
     if result.destroyed:
         await db.delete_gear(owned.id)

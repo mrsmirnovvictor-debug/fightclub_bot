@@ -201,16 +201,21 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    модификации, и две границы на одной клетке спорили бы между собой */
 .slot.aging { box-shadow: inset 0 0 0 2px var(--hp-yellow); }
 .slot.dying { box-shadow: inset 0 0 0 2px var(--hp-red); }
+/* Метка износа в углу клетки: цветной квадрат и ничего больше. Цвет —
+   светофор по числу оставшихся боёв, его рисует сам символ.
+
+   Ни подложки, ни кружка: ключ внутри цветного овала читался хуже
+   чистого цвета, а подложка под ним на пёстрой картинке выглядела
+   случайным пятном. Квадрату подложка не нужна — он сам сплошной. */
 .slot-wear {
   position: absolute;
-  right: -3px;
-  bottom: -3px;
+  right: -2px;
+  bottom: -2px;
   font-size: 11px;
   line-height: 1;
-  padding: 2px;
-  border-radius: 50%;
-  background: var(--slot);
 }
+/* Последний бой — ещё и свечение: квадрат в четверть пальца легко не
+   заметить на пёстрой картинке */
 .slot-wear.dying { filter: drop-shadow(0 0 2px var(--hp-red)); }
 
 .avatar {
@@ -616,11 +621,33 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   gap: 4px;
 }
 .cure-title { font-weight: 700; }
+/* Травма на приёме: та же карточка, но красная — её лечат первой */
+.cure.hurt { border-color: var(--hp-red); }
+.cure.hurt .cure-title { color: var(--hp-red); }
 .cure-note { color: var(--muted); font-size: 12.5px; line-height: 1.35; }
 .cure-gain { font-size: 13px; font-weight: 600; color: var(--hp-green); }
 /* За то же самое рядом просят меньше — говорим об этом прямо на карточке */
 .cure-cheaper { font-size: 12.5px; color: var(--hp-yellow); }
 .cure .btn { margin-top: 6px; }
+
+/* ---------- травма ---------- */
+
+/* Травма стоит в той же строке, что и эликсиры, но читается наоборот:
+   эликсир прибавляет, травма отнимает. Поэтому красная рамка — чтобы её
+   не приняли за очередную склянку */
+.effect.hurt {
+  border-color: var(--hp-red);
+  color: var(--hp-red);
+  font-weight: 600;
+  /* Единственная плашка, которой разрешено переноситься: в ней целое
+     предложение, а не два слова с часами */
+  white-space: normal;
+}
+/* Просевшая характеристика — красная целиком, вместе с числом: она
+   бывает и отрицательной, и «-5» без цвета читается как опечатка */
+.rows .hurt { color: var(--hp-red); font-weight: 700; }
+.rows .hurt .loss { font-weight: 600; }
+.rows .hurt .bonus { color: var(--hp-red); opacity: 0.8; }
 
 .foot {
   margin-top: 12px;
@@ -717,12 +744,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .sheet-note { margin: 6px 0 12px; font-size: 12.5px; color: var(--muted); }
 
-.look-group {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--muted);
-  margin: 10px 0 8px;
-}
 .look-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1232,6 +1253,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* Разделы клуба стоят по центру: их всего четыре, и прижатые к левому
    краю они читаются как начало списка, который не поместился */
 #club-sections { justify-content: center; }
+/* Разделов персонажа два, и по той же причине они стоят по центру */
+#hero-tabs { justify-content: center; }
 
 /* Записка вместо ринга там, где не дерутся. Строкой под разделами она
    терялась: экран выглядел сломанным — вкладки есть, а под ними пусто */
@@ -1340,8 +1363,16 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* Строка выбора — всегда одна строка. Переносить надписи нельзя: кнопки
    в столбцах разъезжаются по высоте, а «Голова+Корпус» пополам не
    читается. Поэтому размер шрифта привязан к ширине экрана и ужимается
-   на узком телефоне — до предела, за которым уже не разобрать. */
-.zone-columns { --zone-font: clamp(9.5px, 3.1vw, 13px); }
+   на узком телефоне — до предела, за которым уже не разобрать.
+
+   Мерка объявлена на всей форме хода, а не на одних столбцах: советы
+   лежат отдельной строкой над ними и тоже считают себя по ней. Пока
+   мерка стояла на столбцах, совет оставался без неё и вылезал крупным —
+   буквами вдвое больше кнопок, о которых он говорит.
+
+   Третий столбец ужимает только сами кнопки: советов по-прежнему два,
+   и их ширина от второго оружия не меняется. */
+.turn-form { --zone-font: clamp(9.5px, 3.1vw, 13px); }
 .zone-columns.three { --zone-font: clamp(8.5px, 2.55vw, 12px); }
 /* Сетке и всему, что в ней лежит, разрешено быть уже своего содержимого:
    без этого столбец растягивается по самой длинной надписи и панель
@@ -1817,6 +1848,12 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   align-items: center;
   justify-content: center;
   aspect-ratio: 1;
+  /* Не только ради картинки по углам. Пока у клетки `overflow: visible`,
+     её наименьшая ширина — ширина содержимого, и семь клеток со значком
+     внутри отказывались ужиматься: на экране в 360 точек — а это обычный
+     андроид — календарь уезжал за край окна. С `hidden` этой нижней
+     границы нет, и клетки делят строку поровну, сколько бы её ни было */
+  overflow: hidden;
   border-radius: 8px;
   background: var(--gift-back);
   border: 1px solid var(--line);
@@ -1840,7 +1877,15 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-weight: 700;
   line-height: 1;
 }
-.gift-icon { font-size: 20px; line-height: 1; }
+/* Значок едет за клеткой, а клетка — за шириной экрана: семь клеток с
+   зазорами занимают примерно `(ширина - 90px) / 7`, и значок берёт от неё
+   долю, при которой глиф умещается внутрь с запасом. Эмодзи шире своего
+   кегля, поэтому запас и нужен: в фиксированном кегле значок на узком
+   экране вылезал из клетки */
+.gift-icon {
+  font-size: clamp(13px, calc((100vw - 90px) / 13), 20px);
+  line-height: 1;
+}
 .gift-pic {
   position: absolute;
   inset: 0;
@@ -1888,7 +1933,9 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 
 /* Веху отмечаем значком покрупнее. Ни кромку, ни подложку не трогаем:
    кромка занята делом, а фон у всех клеток один */
-.gift.big .gift-icon { font-size: 23px; }
+.gift.big .gift-icon {
+  font-size: clamp(15px, calc((100vw - 90px) / 13 + 3px), 23px);
+}
 
 .daily-pick {
   margin: 8px 0 0;
@@ -1901,20 +1948,698 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    ничего не стоит, а половинная смотрелась бы обрубком. Одета как панель
    под ней: тот же фон, та же кромка, тот же цвет текста и тот же радиус.
    Синяя кнопка посреди спокойной карточки читается как чужая */
-.hero-acts { margin: 8px 0 2px; }
-.hero-acts .btn {
-  width: 100%;
-  padding: 10px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--ink);
-}
+/* Три входа в нижнюю половину карточки — «Характеристики», «Документы» и
+   «Награды» — одной кнопкой на всех. Раньше первые две были пузырями, а
+   третья широкой кнопкой во всю строку, и ряд читался как две разные
+   вещи: выбор раздела и действие. Теперь это один ряд равных кнопок.
 
-@media (max-width: 340px) {
-  .gift-icon { font-size: 17px; }
-  .gift.big .gift-icon { font-size: 19px; }
+   Колонки растут сами: кнопок бывает две (календаря ещё нет) и три, и в
+   обоих случаях они делят строку ровно. */
+.hero-acts {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+.hero-act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px 8px;
+  border: 1px solid var(--slot-line);
+  border-radius: 999px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+/* Выбранный раздел горит так же, как выбранный пузырь на других экранах:
+   один язык на весь апп, чтобы «выбрано» нигде не переучивалось */
+.hero-act.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.hero-act:active { transform: scale(0.97); }
+.hero-act-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* Точка сбоку: есть что забрать. Единственная метка на этих кнопках —
+   счётчики и значки рядом с тремя словами делали из ряда три разные
+   надписи вместо одного выбора */
+.hero-act-mark.dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--hp-green);
 }
 
 .daily-buttons { display: flex; gap: 8px; margin-top: 12px; }
-.daily-buttons .btn { flex: 1; }
+/* У `.btn` своя нижняя граница в 120 точек, и вдвоём кнопки не влезали в
+   узкое окно. `flex: 1` их не ужимал: он делит свободное место, а не
+   отменяет минимум */
+.daily-buttons .btn { flex: 1; min-width: 0; }
+
+/* ---------- рынок: обмен между бойцами ---------- */
+
+/* Список рынка — те же строки, что в картотеке: класс, имя, уровень и
+   одна кнопка. Ушедшие бледнее — позвать их можно, но ответят они
+   только если вернутся в минуту */
+.crowd-group { margin-bottom: 12px; }
+.crowd-head {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+.fighter.away { opacity: 0.62; }
+.crowd-busy { font-size: 12.5px; color: var(--muted); flex: none; }
+.crowd .btn { flex: none; padding: 6px 12px; font-size: 13px; }
+
+/* Приглашение: плашка поверх списка. Секунды в ней тикают на месте */
+.invite {
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+  background: var(--panel);
+  display: grid;
+  gap: 8px;
+}
+.invite.sent { border-color: var(--line); }
+.invite-text { margin: 0; font-weight: 700; }
+.invite-clock { margin: 0; font-size: 12.5px; color: var(--muted); }
+.invite-buttons { display: flex; gap: 8px; }
+.invite-buttons .btn { flex: 1; }
+
+/* Стол: чужая половина сверху, своя снизу — редактируемое ближе к
+   пальцу. Готовая половина обводится зелёным: по цвету видно, ждут тебя
+   или ты ждёшь */
+.table { display: grid; gap: 10px; }
+.half {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  display: grid;
+  gap: 8px;
+}
+.half.own { border-color: var(--accent); }
+.half.ready { border-color: var(--hp-green); }
+.half-head { display: flex; align-items: center; gap: 8px; }
+.half-who { font-weight: 700; flex: 1; min-width: 0; }
+.half-mark { font-size: 12.5px; color: var(--muted); flex: none; }
+.half.ready .half-mark { color: var(--hp-green); font-weight: 700; }
+.half-credits { margin: 0; font-weight: 700; color: var(--gold); }
+.half-credits.own { display: flex; gap: 8px; align-items: center; }
+.half-credits.own input {
+  width: 110px;
+  padding: 7px 8px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+}
+.half-max { font-size: 12.5px; color: var(--muted); font-weight: 400; }
+.half-items { display: grid; gap: 6px; }
+.half-empty { margin: 0; font-size: 12.5px; color: var(--muted); }
+
+/* Выкладка: картинка, название, износ — и крестик только на своей
+   половине. Чужую половину видно, но не трогают */
+.lot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--slot);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.lot.on { border-color: var(--accent); }
+.lot-pic {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+.lot-pic img { max-width: 100%; max-height: 100%; }
+.lot-body { flex: 1; min-width: 0; }
+.lot-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lot-wear { font-size: 12px; color: var(--muted); }
+.lot-off {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.lot .btn { flex: none; padding: 6px 12px; font-size: 13px; }
+
+/* Склянки передают числом: поле и кнопка в одну строку */
+.stack { display: flex; gap: 6px; align-items: center; flex: none; }
+.stack-count {
+  width: 56px;
+  padding: 6px 8px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  text-align: center;
+}
+
+.table-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.table-buttons .btn { flex: 1 1 40%; }
+.table-note {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---------- документы и страховая ---------- */
+
+/* Бланк документа: рамка, шапка с состоянием, поля строками и то, что он
+   даёт. Просроченный бледнеет, но остаётся читаемым: документ не
+   исчезает, у него кончается срок */
+.papers { display: grid; gap: 10px; }
+.paper {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--panel);
+  display: grid;
+  gap: 8px;
+  /* Тонкая полоса слева — как поле на бланке */
+  border-left: 3px solid var(--accent);
+}
+.paper.stale { border-left-color: var(--muted); opacity: 0.78; }
+.paper-head { display: flex; align-items: baseline; gap: 8px; }
+.paper-title { margin: 0; font-size: 15px; font-weight: 700; flex: 1; min-width: 0; }
+.paper-state {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--hp-green);
+}
+.paper.stale .paper-state { color: var(--muted); }
+.paper-issuer { margin: 0; font-size: 12.5px; color: var(--muted); }
+.paper-rows { margin: 0; }
+.paper-gives {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.4;
+  display: grid;
+  gap: 3px;
+}
+.paper-note { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.35; }
+.paper-dead { margin: 0; font-size: 12.5px; color: var(--hp-yellow); }
+.paper-renew {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.paper-renew-state { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); }
+.paper-renew .btn { flex: none; padding: 6px 12px; font-size: 13px; }
+
+/* Прайс больницы с полисом и без: старое число зачёркнуто, новое рядом */
+.policy-prices {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--panel);
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+.policy-prices-head { margin: 0 0 2px; font-size: 13px; font-weight: 700; }
+.policy-price { display: flex; align-items: baseline; gap: 8px; font-size: 13.5px; }
+.policy-price-title { flex: 1; min-width: 0; }
+.policy-price-was {
+  color: var(--muted);
+  text-decoration: line-through;
+  flex: none;
+}
+.policy-price-now { font-weight: 700; color: var(--hp-green); flex: none; }
+
+.policy-buy { display: grid; gap: 8px; margin-top: 12px; }
+.policy-buy-price {
+  text-align: center;
+  font-weight: 700;
+  color: var(--gold);
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  align-items: baseline;
+}
+
+/* Скидка по полису на карточке лечения травмы */
+.cure-insured { font-size: 12.5px; font-weight: 600; color: var(--hp-green); }
+
+/* Полис держит подписка: вместо переключателя — строка о том, чем он жив */
+.paper-held {
+  margin: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+/* Зачем подписчику покупать месяц, если полис у него и так есть */
+.policy-buy-why {
+  margin: 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+/* ---------- тренажёрный зал ---------- */
+
+/* Абонемент: три карточки, когда его нет. Есть — одна строка сверху */
+.tickets { display: grid; gap: 8px; margin-bottom: 14px; }
+.ticket {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  display: grid;
+  gap: 3px;
+}
+.ticket-title { font-weight: 700; }
+.ticket-note { font-size: 12.5px; color: var(--muted); }
+.ticket-day { font-size: 12px; color: var(--gold); font-weight: 600; }
+.ticket .btn { margin-top: 6px; }
+.gym-pass { margin: 0 0 12px; font-size: 12.5px; color: var(--muted); }
+
+/* Что происходит прямо сейчас — первым и в рамке: за этим в зал и зашли */
+.gym-now {
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--panel);
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+/* Идущая тренировка обводится зелёным: она уже идёт, а не предлагается */
+.gym-now.training { border-color: var(--hp-green); }
+.gym-now-title { font-weight: 700; font-size: 15px; }
+.gym-now-when { font-size: 12.5px; color: var(--muted); }
+.gym-now-note { margin: 0; font-size: 12.5px; color: var(--muted); }
+.gym-clock {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--hp-green);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Прогресс: полоса на каждую характеристику и кнопка «Улучшить» */
+.gym-progress { margin-bottom: 16px; }
+.grow {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+/* Очков хватает — рамка зелёная: кнопку видно, не листая */
+.grow.ready { border-color: var(--hp-green); }
+.grow.maxed { opacity: 0.72; }
+.grow-head { display: flex; align-items: baseline; gap: 8px; }
+.grow-title { font-weight: 700; flex: 1; min-width: 0; }
+.grow-ups { font-size: 12.5px; color: var(--muted); font-weight: 700; }
+.grow-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--hp-track);
+  overflow: hidden;
+}
+.grow-fill { height: 100%; background: var(--hp-green); border-radius: 999px; }
+.grow-note { font-size: 12.5px; color: var(--muted); }
+.grow .btn { margin-top: 2px; }
+
+/* Расписание: день заголовком, шесть строк под ним */
+.gym-day { margin-bottom: 12px; }
+.gym-day-head {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.gym-day.today .gym-day-head { color: var(--accent); }
+.gym-slot {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+.gym-slot-clock {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.gym-slot-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gym-slot-mark { flex: none; font-size: 11.5px; color: var(--muted); }
+/* Идущий слот выделен, прошедший приглушён, отработанный помечен зелёным */
+.gym-slot.open { border-color: var(--accent); background: var(--slot); }
+.gym-slot.late { border-color: var(--hp-yellow); background: var(--slot); }
+.gym-slot.past { opacity: 0.45; }
+.gym-slot.done .gym-slot-mark { color: var(--hp-green); font-weight: 600; }
+
+/* Прайс дня лесенкой: уже потраченные ступени приглушены, следующая
+   выделена — по ней и видно, во что обойдётся ещё одно занятие */
+.day-prices { margin-bottom: 16px; }
+.day-price {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 13.5px;
+  border: 1px solid transparent;
+}
+.day-price-number { color: var(--muted); }
+.day-price-value { font-weight: 600; }
+.day-price.spent { opacity: 0.45; }
+.day-price.next { border-color: var(--accent); background: var(--slot); }
+.day-price.next .day-price-value { color: var(--accent); }
+
+.gym-day-line { margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
+.gym-now-seats { font-size: 12.5px; color: var(--muted); }
+/* Занятие без мест — как прошедшее: нажимать в нём нечего */
+.gym-slot.full { opacity: 0.55; }
+.gym-slot.training { border-color: var(--hp-green); background: var(--slot); }
+.gym-slot.training .gym-slot-mark,
+.gym-slot.done .gym-slot-mark { font-size: 12px; }
+
+/* ---------- Vegas Банк ---------- */
+
+/* Кошелёк над прилавком. Стоит на каждом экране с ценами, а не только в
+   банке: выбирают, чем платить, там, где стоит цена. Две кнопки в ряд —
+   не «настройка», а видимый выбор, и на каждой написано, сколько в этом
+   кошельке лежит */
+.wallet { margin: 0 0 12px; }
+.wallet-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.wallet-pick {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--slot-line);
+  border-radius: 10px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wallet-pick.on { border-color: var(--accent); background: var(--panel); }
+/* Кошелька нет или он тут не ходит: кнопку не прячем — по ней и видно,
+   чего не хватает. Спрятанная ничего не объясняет */
+.wallet-pick.off { opacity: 0.45; cursor: default; }
+.wallet-pick-title { font-size: 12px; font-weight: 600; }
+.wallet-pick-money { font-size: 13.5px; font-weight: 700; }
+.wallet-pick.on .wallet-pick-money { color: var(--accent); }
+.wallet-pick-off {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--gold);
+}
+.wallet-note { margin: 5px 2px 0; font-size: 11.5px; color: var(--muted); }
+
+/* Счёт: номер крупно — его называют вслух, чтобы принять перевод */
+.account,
+.plastic,
+.offer {
+  margin-bottom: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.account-head { font-size: 12.5px; color: var(--muted); }
+.account-number {
+  margin: 4px 0 2px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.account-sum { font-size: 18px; font-weight: 700; color: var(--gold); }
+.account .screen-note,
+.plastic .screen-note,
+.offer .screen-note { margin: 6px 0 0; }
+
+/* Карта нарисована картой: номер, держатель и оплаченный год */
+.plastic-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.plastic-state { color: var(--muted); font-weight: 600; }
+.plastic.stale { opacity: 0.6; }
+.plastic.stale .plastic-state { color: var(--hp-red); }
+.plastic-number {
+  margin: 7px 0 3px;
+  font-size: 15.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.plastic-holder { font-size: 12.5px; }
+.plastic-paid { margin-top: 3px; font-size: 11.5px; color: var(--muted); }
+
+/* Что даёт продукт — списком: одно обещание в строке */
+.gives { margin: 6px 0 0; padding-left: 17px; }
+.gives li { font-size: 12.5px; line-height: 1.45; }
+
+.purse-choice { margin-bottom: 14px; }
+.purse-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.purse-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--slot-line);
+  border-radius: 10px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.purse-pick.on { border-color: var(--accent); background: var(--panel); }
+.purse-pick.off { opacity: 0.45; }
+.purse-pick-title { font-size: 12px; font-weight: 600; }
+.purse-pick-money { font-size: 13.5px; font-weight: 700; }
+
+/* Банкомат: два счётчика сверху, формы под ними */
+.atm-sums { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 14px; }
+.atm-sum {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.atm-sum-title { font-size: 11.5px; color: var(--muted); }
+.atm-sum-money { font-size: 15px; font-weight: 700; }
+
+.money-form { margin-bottom: 14px; }
+.money-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.money-field {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--slot-line);
+  border-radius: 9px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+.money-field.wide { width: 100%; margin-bottom: 6px; }
+.money-all {
+  flex: none;
+  padding: 0 12px;
+  border: 1px solid var(--slot-line);
+  border-radius: 9px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* ---------- работа: агентство и смена ---------- */
+
+/* Кнопка входа на работу — в шапке того дома, где боец работает. Она
+   одна на все пять домов и встаёт в ту шапку, что сейчас на виду */
+.work-entry {
+  margin-left: auto;
+  padding: 5px 10px;
+  border: 1px solid var(--slot-line);
+  border-radius: 999px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+/* Идёт смена — кнопка горит: из дома всё равно не выйти, и это не
+   новость, о которой надо догадываться */
+.work-entry.on { border-color: var(--accent); color: var(--accent); }
+
+/* Своя работа: часы за неделю и когда платят */
+.job {
+  margin-bottom: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.job-head { display: flex; justify-content: space-between; gap: 8px; }
+.job-title { font-weight: 700; }
+.job-where { font-size: 12px; color: var(--muted); }
+.job-pay { margin: 7px 0 0; font-size: 12px; color: var(--muted); }
+.job-warn { margin: 6px 0 0; font-size: 12.5px; color: var(--hp-red); }
+.job .btn { margin-top: 9px; }
+
+/* Полоса недельных часов. Красная — норма под угрозой: в понедельник
+   уволят, и узнать об этом лучше до понедельника */
+.hours { margin: 9px 0 0; }
+.hours-line {
+  height: 7px;
+  border-radius: 4px;
+  background: var(--slot);
+  overflow: hidden;
+}
+.hours-fill { height: 100%; background: var(--hp-green); }
+.hours-fill.short { background: var(--hp-red); }
+.hours-text { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+
+/* Доска вакансий */
+.board { margin-bottom: 14px; }
+.vacancy {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+}
+.vacancy.mine { border-color: var(--accent); }
+/* Занятое место не прячем: по нему видно, что работа в городе кончилась
+   не вообще, а именно эта */
+.vacancy.taken { opacity: 0.6; }
+.vacancy-head { display: flex; justify-content: space-between; gap: 8px; }
+.vacancy-title { font-weight: 700; }
+.vacancy-pay { font-weight: 700; color: var(--gold); white-space: nowrap; }
+.vacancy-facts { margin: 7px 0 0; display: grid; gap: 2px; }
+.vacancy-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.vacancy-fact span:first-child { color: var(--muted); }
+.vacancy-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.vacancy-state { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
+.vacancy .btn { margin-top: 9px; }
+
+/* Тест: вопрос и варианты. Выбранный вариант горит так же, как всё
+   выбранное в клубе, — один язык на весь апп */
+.quiz { margin-bottom: 14px; }
+.question {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+}
+.question-text { margin-bottom: 7px; font-size: 13.5px; font-weight: 600; }
+.answer {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 8px 10px;
+  border: 1px solid var(--slot-line);
+  border-radius: 9px;
+  background: var(--slot);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.answer.on { border-color: var(--accent); background: var(--panel); }
+.quiz-buttons { display: flex; gap: 8px; margin-top: 12px; }
+.quiz-buttons .btn { flex: 1; min-width: 0; }
+
+/* Смена: часы и кнопка «Начать работать» */
+.shift {
+  margin-bottom: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.shift-head { font-size: 13px; font-weight: 600; }
+.shift-clock {
+  margin-top: 5px;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.shift .btn { margin-top: 9px; }

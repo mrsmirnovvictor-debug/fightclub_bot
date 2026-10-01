@@ -26,6 +26,15 @@ from bot.game.economy import (
     exp_to_next_level,
     ups_earned,
 )
+from bot.game.injuries import ActiveInjury, injury_loss
+from bot.game.bank import (
+    CARD,
+    CASH,
+    CARD_YEAR_PRICE,
+    YEAR_SECONDS,
+    price_for,
+)
+from bot.game.insurance import Policy
 from bot.game.health import (
     HealthState,
     health_state,
@@ -43,6 +52,7 @@ from bot.game.potions import (
     get_potion,
 )
 from bot.game.locations import FIGHT_CLUB
+from bot.game.looks import MALE
 from bot.game.pro import PRO_BADGE
 from bot.game.stats import derive
 from bot.game.world import DEFAULT_BIRTHPLACE, DEFAULT_CITY
@@ -118,6 +128,37 @@ class Player:
     potions: dict[str, int] = field(default_factory=dict)
     # Что сейчас действует. Просроченное сюда не попадает — база чистит сама
     effects: list[ActiveEffect] = field(default_factory=list)
+    # Травма. Одна или ни одной, и тоже по часам
+    injury: ActiveInjury | None = None
+    # Страховой полис. Просроченный остаётся здесь же: документ не
+    # исчезает, у него кончается срок
+    policy: Policy | None = None
+    # До какого часа абонемент в зал. 0 — его не было. Лежит на бойце, а
+    # не в службе зала, потому что это второй документ: его показывают в
+    # карточке, а она собирается без похода в базу
+    gym_until: int = 0
+    # Счёт в Vegas Банке. Номер пустой — счёта нет. Деньги на счету — это
+    # второй кошелёк бойца, наравне с `credits`: там наличные, тут счёт
+    account_number: str = ""
+    account_balance: int = 0
+    # Карта банка: когда выпущена и до какого часа оплачено обслуживание.
+    # Срока окончания у карты нет — она бессрочна, — есть оплаченный год
+    card_at: int = 0
+    card_paid_until: int = 0
+    # Чем боец предпочитает платить: `bank.CASH` или `bank.CARD`. Это
+    # только предпочтение — карта не всюду ходит и не всегда обслужена,
+    # а значит, спросить надо `purse_for`, а не это поле
+    pay_from: str = CARD
+    # Работа. Пусто — не работает. Часы копятся за неделю (`job_minutes`)
+    # и за сутки (`shift_minutes`): недельные решают жалованье, суточные
+    # — можно ли встать на смену ещё раз сегодня
+    job_code: str = ""
+    job_since: int = 0
+    job_week: int = 0  # начало оплачиваемой недели: понедельник, 9:00 МСК
+    job_minutes: int = 0
+    shift_until: int = 0  # 0 — смена не идёт
+    shift_day: str = ""  # какие это сутки по Москве, в виде «2026-09-30»
+    shift_minutes: int = 0
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
@@ -163,8 +204,13 @@ class Player:
         Выпитое сюда не входит намеренно. Эффект уходит сам, по часам, и
         вещь, надетая под эликсир, слетала бы посреди боя без единого
         нажатия — экипировка не должна зависеть от того, что тикает.
+
+        А вот травма входит, и это не противоречие: эликсир даёт, травма
+        отнимает. Вещь, надетая под эликсир, слетела бы ни за что; вещь,
+        которую сломанная рука больше не держит, обязана слететь — иначе
+        травма ничего не значит.
         """
-        return self.base_stats.merge(self.equipment.bonus)
+        return self.base_stats.merge(self.equipment.bonus).merge(self.injury_loss)
 
     def stats_without(self, owned: OwnedItem | None) -> Stats:
         """Характеристики, как если бы этой вещи на бойце не было."""
@@ -269,10 +315,21 @@ class Player:
         return max(0, self.potions.get(code, 0))
 
     @property
+    def injury_loss(self) -> Stats:
+        """Что отнимает травма. Пусто — травмы нет или она уже отлежала."""
+        return injury_loss(self.injury)
+
+    @property
     def stats(self) -> Stats:
-        """Характеристики с учётом надетого и выпитого — их видит боевой движок."""
-        return self.base_stats.merge(self.equipment.bonus).merge(
-            effects_bonus(self.effects)
+        """Характеристики с учётом надетого, выпитого и сломанного.
+
+        Их видит боевой движок. Травма может увести характеристику в
+        минус — тогда боец не дерётся вовсе, это решает `can_fight`.
+        """
+        return (
+            self.base_stats.merge(self.equipment.bonus)
+            .merge(effects_bonus(self.effects))
+            .merge(self.injury_loss)
         )
 
     @property
@@ -361,8 +418,44 @@ class Player:
     def health_state(self, now: int | None = None) -> HealthState:
         return health_state(self.current_hp(now), self.max_hp)
 
+    @property
+    def limping(self) -> bool:
+        """Есть ли травма. По городу такой боец идёт вдвое дольше."""
+        return self.injury is not None and self.injury.is_active()
+
+    @property
+    def crippled(self) -> bool:
+        """Травма увела характеристику в минус — драться нечем.
+
+        Не всякая травма выводит из строя: у крепкого бойца минус десять
+        к силе оставляют её положительной, и он дерётся дальше, просто
+        хуже. А вот когда характеристика ушла ниже нуля, драться уже
+        нечем — тут и ждёт больница.
+        """
+        stats = self.stats
+        return any(stats.get(stat) < 0 for stat in ALL_STATS)
+
     def can_fight(self, now: int | None = None) -> bool:
-        return self.health_state(now).can_fight
+        return self.health_state(now).can_fight and not self.crippled
+
+    @property
+    def sex(self) -> str:
+        """Пол бойца. Пусто в базе — мужской, как у всех, кого завели до вопроса.
+
+        Запасной ответ нужен не ради старых записей — их правит миграция, —
+        а ради самой карточки: гардероб решает по этому полю, какие образы
+        показывать, и пустая строка оставила бы его без единого.
+        """
+        return self.gender or MALE
+
+    def insured(self, now: int | None = None) -> bool:
+        """Действует ли полис прямо сейчас."""
+        moment = now_ts() if now is None else now
+        return self.policy is not None and self.policy.is_active(moment)
+
+    def in_gym_club(self, now: int | None = None) -> bool:
+        """Действует ли абонемент в зал прямо сейчас."""
+        return self.gym_until > (now_ts() if now is None else now)
 
     def seconds_until_ready(self, now: int | None = None) -> int:
         return seconds_until_ready(self.current_hp(now), self.max_hp)
@@ -497,13 +590,119 @@ class Player:
         self.credits = max(0, self.credits + amount)
         return self.credits
 
-    def can_afford(self, price: int) -> bool:
-        return self.credits >= price
+    # ---------- работа ----------
 
-    def pay(self, price: int) -> None:
-        if not self.can_afford(price):
+    @property
+    def works(self) -> bool:
+        return bool(self.job_code)
+
+    def on_shift(self, now: int) -> bool:
+        """Идёт ли смена прямо сейчас.
+
+        Пока идёт, боец заперт в своём доме: он на работе. Часов, которые
+        сняли бы замок по будильнику, у клуба нет — замок спадает сам,
+        как только час прошёл.
+        """
+        return self.shift_until > now
+
+    def shift_left(self, now: int) -> int:
+        return max(0, self.shift_until - now)
+
+    # ---------- два кошелька ----------
+
+    @property
+    def has_account(self) -> bool:
+        return bool(self.account_number)
+
+    @property
+    def has_card(self) -> bool:
+        return bool(self.card_at) and self.has_account
+
+    def card_works(self, now: int) -> bool:
+        """Обслужена ли карта. Просроченный год её запирает, но не закрывает.
+
+        Без часа ответа нет: обслужена карта или нет — вопрос о моменте.
+        Поэтому `now` в ноль означает «нет», а не «да». Вопрос этот
+        задают перед списанием, и ошибка в пользу карты сняла бы деньги
+        не с того кошелька.
+        """
+        return self.has_card and 0 < now < self.card_paid_until
+
+    def settle_card(self, now: int) -> int:
+        """Списать со счёта год обслуживания, если он подошёл.
+
+        Один год за подход, а не все пропущенные: клуб берёт деньги за
+        услугу, а не за время, в которое к услуге не приходили. То же
+        правило и у страхового полиса.
+
+        Не хватило на счету — карта не закрывается, а перестаёт
+        обслуживаться: ею не заплатишь, пока долг не погашен. Закрывать
+        её за сто кредитов было бы наказанием не по вине.
+        """
+        if not self.has_card or now < self.card_paid_until:
+            return 0
+        if self.account_balance < CARD_YEAR_PRICE:
+            return 0
+        self.account_balance -= CARD_YEAR_PRICE
+        self.card_paid_until = now + YEAR_SECONDS
+        return CARD_YEAR_PRICE
+
+    def purse_for(self, now: int, service=None) -> str:
+        """Чем боец заплатит здесь на самом деле.
+
+        Предпочтение — половина ответа. Вторая половина в том, ходит ли
+        карта в этом месте и обслужена ли она: на рынке не ходит, с
+        неоплаченным годом не работает нигде. Всё, что не карта, —
+        наличные, и спрашивать больше нечего.
+        """
+        from bot.game.bank import card_works as place_takes_card
+
+        if self.pay_from != CARD:
+            return CASH
+        if not self.card_works(now) or not place_takes_card(service):
+            return CASH
+        return CARD
+
+    def purse_money(self, purse: str) -> int:
+        return self.account_balance if purse == CARD else self.credits
+
+    def purse_note(self, now: int = 0, service=None) -> str:
+        """«наличными 50 💰» или «на счету 50 💰» — для отказа по деньгам.
+
+        Кошелька теперь два, и отказ обязан называть тот, из которого
+        здесь платят: иначе боец с пятью тысячами на счету читает «не
+        хватает кредитов» и не понимает, где его деньги.
+
+        Строка всегда встаёт на одно и то же место — после «а», — и обе
+        половины писаны так, чтобы там читаться: «стоит 120 💰, а
+        наличными 50 💰».
+        """
+        purse = self.purse_for(now, service)
+        where = "на счету" if purse == CARD else "наличными"
+        return f"{where} {self.purse_money(purse)} 💰"
+
+    def price_here(self, price: int, now: int, service=None) -> int:
+        """Цена для этого бойца: со скидкой карты, если платит картой."""
+        return price_for(price, self.purse_for(now, service), service)
+
+    def can_afford(self, price: int, now: int = 0, service=None) -> bool:
+        return self.purse_money(self.purse_for(now, service)) >= price
+
+    def pay(self, price: int, now: int = 0, service=None) -> str:
+        """Снять цену с того кошелька, которым боец здесь платит.
+
+        Цену сюда передают уже посчитанную: скидку считают там, где её
+        показывают, — иначе на витрине стояло бы одно число, а с кошелька
+        уходило другое.
+        """
+        purse = self.purse_for(now, service)
+        if self.purse_money(purse) < price:
             raise ValueError("Недостаточно кредитов")
-        self.credits -= price
+        if purse == CARD:
+            self.account_balance -= price
+        else:
+            self.credits -= price
+        return purse
 
     def apply_rating(self, delta: int) -> int:
         self.rating = max(0, self.rating + delta)

@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 import aiosqlite
 
+from bot.game.bank import CARD
 from bot.game.economy import RATING_START
 from bot.game.locations import FIGHT_CLUB
 from bot.game.abilities import Loadout
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
 from bot.game.health import now_ts
+from bot.game.injuries import ActiveInjury, get_injury
+from bot.game.insurance import Policy
+from bot.game.looks import MALE
 from bot.game.modes import FightMode, mode_of
 from bot.game.potions import ActiveEffect, get_potion
 from bot.game.world import DEFAULT_CITY
@@ -59,6 +64,21 @@ CREATE TABLE IF NOT EXISTS players (
     location       TEXT    NOT NULL DEFAULT 'fight_club',
     travel_to      TEXT,
     arrives_at     INTEGER NOT NULL DEFAULT 0,
+    -- Vegas Банк: счёт и карта. Деньги на счету — второй кошелёк бойца,
+    -- и лежит он там же, где первый: в одной строке с наличными
+    account_number  TEXT    NOT NULL DEFAULT '',
+    account_balance INTEGER NOT NULL DEFAULT 0,
+    card_at         INTEGER NOT NULL DEFAULT 0,
+    card_paid_until INTEGER NOT NULL DEFAULT 0,
+    pay_from        TEXT    NOT NULL DEFAULT 'card',
+    -- Работа: одна на бойца, и потому живёт в его же строке
+    job_code        TEXT    NOT NULL DEFAULT '',
+    job_since       INTEGER NOT NULL DEFAULT 0,
+    job_week        INTEGER NOT NULL DEFAULT 0,
+    job_minutes     INTEGER NOT NULL DEFAULT 0,
+    shift_until     INTEGER NOT NULL DEFAULT 0,
+    shift_day       TEXT    NOT NULL DEFAULT '',
+    shift_minutes   INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -137,6 +157,63 @@ CREATE TABLE IF NOT EXISTS effects (
     code    TEXT    NOT NULL,
     until   INTEGER NOT NULL,
     PRIMARY KEY (user_id, code)
+);
+
+-- Травма у бойца одна: сломанная рука не отменяет сломанную ногу, но
+-- показывать и лечить две разом — это уже лазарет, а не клуб
+CREATE TABLE IF NOT EXISTS injuries (
+    user_id INTEGER PRIMARY KEY,
+    code    TEXT    NOT NULL,
+    until   INTEGER NOT NULL
+);
+
+-- Тренажёрный зал. Три таблицы, потому что у них разная жизнь: абонемент
+-- кончается по часам, прогресс копится навсегда, а тренировка живёт
+-- Запрет подавать заявку: неделя после отказа на тесте и после
+-- увольнения. Строка на пару «боец и вакансия»: отказ в баре не мешает
+-- проситься на почту
+CREATE TABLE IF NOT EXISTS job_blocks (
+    user_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    until   INTEGER NOT NULL,
+    reason  TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (user_id, code)
+);
+
+-- пятнадцать минут и исчезает. Расписание не хранится вовсе — оно
+-- разыгрывается по номеру недели, см. bot/game/gym.py
+CREATE TABLE IF NOT EXISTS gym_passes (
+    user_id INTEGER PRIMARY KEY,
+    until   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gym_progress (
+    user_id INTEGER NOT NULL,
+    stat    TEXT    NOT NULL,
+    points  INTEGER NOT NULL DEFAULT 0,
+    ups     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, stat)
+);
+
+-- Идущая тренировка: одна на бойца. `slot` — ключ клетки расписания, по
+-- нему и видно, что в этом слоте боец уже отработал
+CREATE TABLE IF NOT EXISTS gym_visits (
+    user_id INTEGER NOT NULL,
+    slot    TEXT    NOT NULL,
+    stat    TEXT    NOT NULL,
+    until   INTEGER NOT NULL,
+    done    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, slot)
+);
+
+-- Документы бойца. Пока их вид один — полис страхования, — и у него своя
+-- таблица, а не столбец в players: документы будут копиться, и у каждого
+-- свои поля. Один полис на бойца: второй такой же не выдают, его продлевают
+CREATE TABLE IF NOT EXISTS policies (
+    user_id     INTEGER PRIMARY KEY,
+    issued      INTEGER NOT NULL,
+    until       INTEGER NOT NULL,
+    auto_renew  INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS rings (
@@ -363,7 +440,10 @@ PLAYER_COLUMNS = (
     "agility, intuition, endurance, free_points, level, exp, total_exp, "
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
     "raid_wins, raid_fights, seen_at, location, travel_to, arrives_at, "
-    "city, birthplace, pro_until, gender, created_at"
+    "city, birthplace, pro_until, gender, created_at, "
+    "account_number, account_balance, card_at, card_paid_until, pay_from, "
+    "job_code, job_since, job_week, job_minutes, shift_until, "
+    "shift_day, shift_minutes"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -386,6 +466,24 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("travel_to", "TEXT"),
     ("arrives_at", "INTEGER NOT NULL DEFAULT 0"),
     ("seen_at", "INTEGER NOT NULL DEFAULT 0"),
+    # Vegas Банк: счёт и карта лежат на бойце, а не отдельной таблицей.
+    # Деньги на счету — это второй кошелёк, и хранить его там же, где
+    # первый, значит, что списание с любого из них сохраняется одним
+    # `save_player`, а перевод между бойцами — одной сделкой на две строки
+    ("account_number", "TEXT NOT NULL DEFAULT ''"),  # пусто — счёта нет
+    ("account_balance", "INTEGER NOT NULL DEFAULT 0"),
+    ("card_at", "INTEGER NOT NULL DEFAULT 0"),  # 0 — карты нет
+    ("card_paid_until", "INTEGER NOT NULL DEFAULT 0"),
+    ("pay_from", f"TEXT NOT NULL DEFAULT '{CARD}'"),
+    # Работа. Как и счёт, она лежит на бойце: работа одна, и держать под
+    # неё таблицу из одной строки на человека незачем
+    ("job_code", "TEXT NOT NULL DEFAULT ''"),  # пусто — не работает
+    ("job_since", "INTEGER NOT NULL DEFAULT 0"),
+    ("job_week", "INTEGER NOT NULL DEFAULT 0"),  # начало оплачиваемой недели
+    ("job_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за неделю
+    ("shift_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — смена не идёт
+    ("shift_day", "TEXT NOT NULL DEFAULT ''"),  # какие это сутки по Москве
+    ("shift_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за сутки
 )
 
 
@@ -402,13 +500,25 @@ class Database:
         self._conn: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
+        """Открыть базу и довести её до нынешней версии.
+
+        Сорвалось посреди — закрываем за собой. Соединение `aiosqlite`
+        держит свой поток, и брошенное на полпути оно не даёт процессу
+        завершиться: бот молча висит вместо того, чтобы упасть с
+        понятной ошибкой. Ошибку при этом не глотаем — она и есть ответ
+        на вопрос, почему бот не поднялся.
+        """
         self._ensure_directory()
         self._conn = await aiosqlite.connect(self.path)
-        self._conn.row_factory = aiosqlite.Row
-        await self._conn.execute("PRAGMA foreign_keys = ON")
-        await self._conn.executescript(SCHEMA)
-        await self._migrate()
-        await self._conn.commit()
+        try:
+            self._conn.row_factory = aiosqlite.Row
+            await self._conn.execute("PRAGMA foreign_keys = ON")
+            await self._conn.executescript(SCHEMA)
+            await self._migrate()
+            await self._conn.commit()
+        except Exception:
+            await self.close()
+            raise
 
     async def _migrate(self) -> None:
         """Дописать колонки, которых нет в базе, созданной прошлой версией."""
@@ -422,9 +532,53 @@ class Database:
                 logger.info("База обновлена: добавлена колонка players.%s", column)
         if "raid_fights" not in existing:
             await self._split_raids_from_record()
+        # Индексы по дописанным колонкам — только здесь, после самих
+        # колонок. В `SCHEMA` им не место: на живой базе `CREATE TABLE IF
+        # NOT EXISTS` ничего не делает, колонка ещё не дописана, и индекс
+        # по ней роняет запуск на «no such column». На пустой базе такой
+        # индекс проходит — потому и не виден ниоткуда, кроме обновления
+        await self._index_migrated_columns()
+        await self._settle_genders()
         await self._migrate_inventory()
         await self._migrate_duels()
         await self._migrate_arenas()
+
+    async def _index_migrated_columns(self) -> None:
+        """Индексы по колонкам, которых в первой версии базы не было.
+
+        Номер счёта называют вслух, чтобы принять перевод, и по нему же
+        ищут чужой счёт. Уникальность держит база: розыгрыш номера может
+        совпасть, и ловить это в питоне значило бы ловить с опозданием.
+        """
+        await self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS players_account "
+            "ON players(account_number) WHERE account_number <> ''"
+        )
+        # Вакансия одна на город: второго бармена база не примет. Держать
+        # это питоном значило бы ловить с опозданием — двое, нажавшие
+        # «устроиться» в одну секунду, оба прошли бы проверку
+        await self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS players_job "
+            "ON players(job_code) WHERE job_code <> ''"
+        )
+
+    async def _settle_genders(self) -> None:
+        """Бойцам без пола поставить мужской.
+
+        Пол спрашивают при создании, но бойцы, заведённые до этого вопроса,
+        остались с пустой строкой — и гардероб не знал, какие образы им
+        показывать. Ставим мужской: все эти бойцы выбирали внешность из
+        мужского набора, другого тогда и не было.
+
+        Правка идёт на каждом запуске и ничего не стоит: если пустых нет,
+        `UPDATE` не трогает ни строки.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE players SET gender = ? WHERE gender = '' OR gender IS NULL",
+            (MALE,),
+        )
+        if cursor.rowcount > 0:
+            logger.info("База обновлена: пол проставлен %s бойцам", cursor.rowcount)
 
     async def _migrate_inventory(self) -> None:
         """Дописать колонки модификации в уже живой инвентарь."""
@@ -601,6 +755,9 @@ class Database:
         player.gear = await self.list_gear(player.user_id)
         player.potions = await self.list_potions(player.user_id)
         player.effects = await self.list_effects(player.user_id)
+        player.injury = await self.injury_of(player.user_id)
+        player.policy = await self.policy_of(player.user_id)
+        player.gym_until = await self.gym_pass_of(player.user_id)
         player.loadout = await self.list_abilities(player.user_id)
         return player
 
@@ -616,8 +773,12 @@ class Database:
                 exp, total_exp, micro_ups, credits, rating, hp, hp_at,
                 wins, losses, draws, raid_wins, raid_fights, seen_at,
                 location, travel_to, arrives_at,
-                city, birthplace, pro_until, gender, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                city, birthplace, pro_until, gender, created_at,
+                account_number, account_balance, card_at, card_paid_until, pay_from,
+                job_code, job_since, job_week, job_minutes,
+                shift_until, shift_day, shift_minutes
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                      ?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -649,7 +810,19 @@ class Database:
                 travel_to      = excluded.travel_to,
                 arrives_at     = excluded.arrives_at,
                 pro_until      = excluded.pro_until,
-                gender         = excluded.gender
+                gender         = excluded.gender,
+                account_number  = excluded.account_number,
+                account_balance = excluded.account_balance,
+                card_at         = excluded.card_at,
+                card_paid_until = excluded.card_paid_until,
+                pay_from        = excluded.pay_from,
+                job_code        = excluded.job_code,
+                job_since       = excluded.job_since,
+                job_week        = excluded.job_week,
+                job_minutes     = excluded.job_minutes,
+                shift_until     = excluded.shift_until,
+                shift_day       = excluded.shift_day,
+                shift_minutes   = excluded.shift_minutes
             """,
             (
                 player.user_id,
@@ -685,6 +858,18 @@ class Database:
                 player.pro_until,
                 player.gender,
                 player.created_at,
+                player.account_number,
+                player.account_balance,
+                player.card_at,
+                player.card_paid_until,
+                player.pay_from,
+                player.job_code,
+                player.job_since,
+                player.job_week,
+                player.job_minutes,
+                player.shift_until,
+                player.shift_day,
+                player.shift_minutes,
             ),
         )
         await self.conn.commit()
@@ -700,6 +885,14 @@ class Database:
         await self.conn.execute("DELETE FROM inventory WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM potions WHERE user_id = ?", (user_id,))
         await self.conn.execute("DELETE FROM effects WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM injuries WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM policies WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM job_blocks WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM gym_passes WHERE user_id = ?", (user_id,))
+        await self.conn.execute(
+            "DELETE FROM gym_progress WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.execute("DELETE FROM gym_visits WHERE user_id = ?", (user_id,))
         await self.conn.commit()
 
     async def find_by_nickname(self, nickname: str) -> Player | None:
@@ -725,6 +918,25 @@ class Database:
         for player in players:
             player.gear = await self.list_gear(player.user_id)
         return players
+
+    async def players_at(self, location: str, limit: int = 50) -> list[Player]:
+        """Кто сейчас в этой локации. Недавние сверху — они и в сети.
+
+        Дорога считается по времени прибытия, и вышедший десять секунд
+        назад числится ещё там, откуда вышел. Поэтому список отдаётся
+        как есть, а кто где на самом деле, решает уже `Player.where`.
+        """
+        async with self.conn.execute(
+            f"""
+            SELECT {PLAYER_COLUMNS} FROM players
+            WHERE location = ? OR travel_to = ?
+            ORDER BY seen_at DESC
+            LIMIT ?
+            """,
+            (location, location, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_to_player(row) for row in rows]
 
     async def all_players(self, limit: int = 200) -> list[Player]:
         """Все бойцы клуба: сильные сверху. Экипировку не тянем — она не нужна."""
@@ -787,6 +999,258 @@ class Database:
             ),
         )
         await self.conn.commit()
+
+    # ---------- Vegas Банк ----------
+
+    async def open_account(self, user_id: int, number: str) -> bool:
+        """Завести счёт. False — счёт уже есть или номер занят.
+
+        Проверка `account_number = ''` стоит в самом запросе: два нажатия
+        подряд иначе выписали бы бойцу второй номер поверх первого, а
+        вместе с ним потеряли бы деньги на старом счету.
+        """
+        try:
+            cursor = await self.conn.execute(
+                "UPDATE players SET account_number = ? "
+                "WHERE user_id = ? AND account_number = ''",
+                (number, user_id),
+            )
+        except sqlite3.IntegrityError:
+            # Номер разыгран, а такой уже у кого-то есть: служба разыграет
+            # следующий. Столкновение редкое, но молчать о нём нельзя
+            return False
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def account_holder(self, number: str) -> Player | None:
+        """Чей это счёт. None — такого номера в банке нет."""
+        if not number:
+            return None
+        async with self.conn.execute(
+            f"SELECT {PLAYER_COLUMNS} FROM players WHERE account_number = ?",
+            (number,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return _to_player(row) if row else None
+
+    async def move_to_account(self, user_id: int, amount: int) -> bool:
+        """Положить наличные на свой счёт. False — столько наличных нет.
+
+        Обе половины — одним запросом: между «проверили» и «списали» иначе
+        помещается покупка в соседнем окне, и на счёт легло бы то, чего
+        уже нет в наличных.
+        """
+        if amount <= 0:
+            return False
+        cursor = await self.conn.execute(
+            "UPDATE players SET credits = credits - ?, account_balance = "
+            "account_balance + ? WHERE user_id = ? AND credits >= ? "
+            "AND account_number <> ''",
+            (amount, amount, user_id, amount),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def move_to_cash(self, user_id: int, amount: int) -> bool:
+        """Снять со счёта наличные. False — столько на счету нет."""
+        if amount <= 0:
+            return False
+        cursor = await self.conn.execute(
+            "UPDATE players SET account_balance = account_balance - ?, "
+            "credits = credits + ? WHERE user_id = ? AND account_balance >= ?",
+            (amount, amount, user_id, amount),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def send_to_account(self, user_id: int, number: str, amount: int) -> bool:
+        """Перевести со своего счёта на чужой по номеру.
+
+        Две строки правятся одной сделкой: если вторая половина не
+        прошла — чужой счёт закрыли между проверкой и переводом, — откат
+        возвращает деньги отправителю целиком. Половины перевода не
+        бывает.
+        """
+        if amount <= 0:
+            return False
+        taken = await self.conn.execute(
+            "UPDATE players SET account_balance = account_balance - ? "
+            "WHERE user_id = ? AND account_balance >= ? AND account_number <> ?",
+            (amount, user_id, amount, number),
+        )
+        if taken.rowcount <= 0:
+            await self.conn.rollback()
+            return False
+        given = await self.conn.execute(
+            "UPDATE players SET account_balance = account_balance + ? "
+            "WHERE account_number = ?",
+            (amount, number),
+        )
+        if given.rowcount <= 0:
+            await self.conn.rollback()
+            return False
+        await self.conn.commit()
+        return True
+
+    async def issue_card(self, user_id: int, issued: int, paid_until: int) -> bool:
+        """Выпустить карту. False — карта уже есть или счёта нет.
+
+        Условие `card_at = 0` в запросе: два нажатия подряд иначе выпустили
+        бы вторую карту и взяли за неё вторую сотню.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE players SET card_at = ?, card_paid_until = ? "
+            "WHERE user_id = ? AND card_at = 0 AND account_number <> ''",
+            (issued, paid_until, user_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def set_pay_from(self, user_id: int, purse: str) -> None:
+        """Чем боец предпочитает платить."""
+        await self.conn.execute(
+            "UPDATE players SET pay_from = ? WHERE user_id = ?", (purse, user_id)
+        )
+        await self.conn.commit()
+
+    # ---------- работа ----------
+
+    async def take_job(self, user_id: int, code: str, now: int, week: int) -> bool:
+        """Занять вакансию. False — её уже заняли или боец где-то работает.
+
+        Оба условия стоят в самом запросе. Проверить в питоне, а потом
+        записать, значит оставить щель, в которую пролезает второй
+        бармен: двое, нажавшие «устроиться» в одну секунду, оба прошли бы
+        проверку. Уникальность вакансии дополнительно держит индекс.
+        """
+        try:
+            cursor = await self.conn.execute(
+                "UPDATE players SET job_code = ?, job_since = ?, job_week = ?, "
+                "job_minutes = 0, shift_until = 0, shift_day = '', "
+                "shift_minutes = 0 "
+                "WHERE user_id = ? AND job_code = '' "
+                "AND NOT EXISTS (SELECT 1 FROM players WHERE job_code = ?)",
+                (code, now, week, user_id, code),
+            )
+        except sqlite3.IntegrityError:
+            # Вакансию заняли в ту же секунду: индекс не дал второму
+            return False
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def taken_jobs(self) -> dict[str, dict]:
+        """Какие вакансии заняты и кем: код работы → кто и с какой недели.
+
+        Неделя нужна тому, кто смотрит на доску: держателя, у которого
+        она давно кончилась, пора рассчитать и снять с места. Иначе
+        боец, переставший заходить, занимал бы место вечно — а место
+        одно на город.
+        """
+        async with self.conn.execute(
+            "SELECT user_id, job_code, nickname, job_week "
+            "FROM players WHERE job_code <> ''"
+        ) as cursor:
+            return {
+                row["job_code"]: {
+                    "user_id": row["user_id"],
+                    "nickname": row["nickname"],
+                    "week": row["job_week"],
+                }
+                for row in await cursor.fetchall()
+            }
+
+    async def leave_job(self, user_id: int) -> None:
+        """Уйти с работы: место освобождается, часы обнуляются."""
+        await self.conn.execute(
+            "UPDATE players SET job_code = '', job_since = 0, job_week = 0, "
+            "job_minutes = 0, shift_until = 0, shift_day = '', shift_minutes = 0 "
+            "WHERE user_id = ?",
+            (user_id,),
+        )
+        await self.conn.commit()
+
+    async def block_job(
+        self, user_id: int, code: str, until: int, reason: str = ""
+    ) -> None:
+        """Закрыть вакансию для этого бойца до этого часа."""
+        await self.conn.execute(
+            "INSERT INTO job_blocks (user_id, code, until, reason) VALUES (?,?,?,?) "
+            "ON CONFLICT(user_id, code) DO UPDATE SET "
+            "until = excluded.until, reason = excluded.reason",
+            (user_id, code, until, reason),
+        )
+        await self.conn.commit()
+
+    async def job_blocks_of(self, user_id: int, now: int) -> dict[str, dict]:
+        """Какие вакансии бойцу сейчас закрыты и до какого часа.
+
+        Просроченные строки тут же и убираем: запрет кончился, и держать
+        его в базе значит однажды показать игроку запрет из прошлого года.
+        """
+        await self.conn.execute(
+            "DELETE FROM job_blocks WHERE user_id = ? AND until <= ?", (user_id, now)
+        )
+        await self.conn.commit()
+        async with self.conn.execute(
+            "SELECT code, until, reason FROM job_blocks WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            return {
+                row["code"]: {"until": row["until"], "reason": row["reason"]}
+                for row in await cursor.fetchall()
+            }
+
+    async def hand_over_gear(self, item_id: int, giver_id: int, taker_id: int) -> bool:
+        """Передать вещь другому бойцу. False — вещь уже не у того хозяина.
+
+        Вещь не копируется и не пересоздаётся: у неё тот же номер, тот же
+        износ и та же модификация, меняется только хозяин. И слот сразу
+        пустой — чужая вещь попадает в рюкзак, а не сразу на плечи.
+
+        Хозяина проверяет сам запрос. Между «выложил на стол» и «оба
+        согласились» проходят минуты, и за это время вещь могли продать в
+        комиссионку; условие в `WHERE` — единственное место, где это
+        видно наверняка.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE inventory SET user_id = ?, slot = NULL WHERE id = ? AND user_id = ?",
+            (taker_id, item_id, giver_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def hand_over_potions(
+        self, code: str, giver_id: int, taker_id: int, count: int
+    ) -> bool:
+        """Передать склянки. False — столько их у хозяина уже нет.
+
+        Склянки не нумерованы, поэтому передаётся не вещь, а число: у
+        одного отнимается, другому прибавляется. Условие `count >= ?`
+        делает списание и проверку одним движением.
+        """
+        if count <= 0:
+            return False
+        cursor = await self.conn.execute(
+            "UPDATE potions SET count = count - ? "
+            "WHERE user_id = ? AND code = ? AND count >= ?",
+            (count, giver_id, code, count),
+        )
+        if cursor.rowcount <= 0:
+            await self.conn.commit()
+            return False
+        await self.conn.execute(
+            "DELETE FROM potions WHERE user_id = ? AND code = ? AND count <= 0",
+            (giver_id, code),
+        )
+        await self.conn.execute(
+            """
+            INSERT INTO potions (user_id, code, count) VALUES (?,?,?)
+            ON CONFLICT(user_id, code) DO UPDATE SET count = count + excluded.count
+            """,
+            (taker_id, code, count),
+        )
+        await self.conn.commit()
+        return True
 
     async def delete_gear(self, item_id: int) -> None:
         await self.conn.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
@@ -997,6 +1461,272 @@ class Database:
             for row in rows
             if get_potion(row["code"]) is not None
         ]
+
+    # ---------- травмы ----------
+
+    async def injury_of(self, user_id: int) -> ActiveInjury | None:
+        """Травма бойца. Отлежавшую своё стираем тут же — как и эффекты."""
+        await self.conn.execute(
+            "DELETE FROM injuries WHERE user_id = ? AND until <= ?",
+            (user_id, now_ts()),
+        )
+        await self.conn.commit()
+        async with self.conn.execute(
+            "SELECT code, until FROM injuries WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None or get_injury(row["code"]) is None:
+            return None
+        return ActiveInjury(code=row["code"], until=int(row["until"]))
+
+    # ---------- тренажёрный зал ----------
+
+    async def gym_pass_of(self, user_id: int) -> int:
+        """До какого часа у бойца абонемент. 0 — абонемента не было."""
+        async with self.conn.execute(
+            "SELECT until FROM gym_passes WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["until"]) if row else 0
+
+    async def set_gym_pass(self, user_id: int, until: int) -> None:
+        await self.conn.execute(
+            """
+            INSERT INTO gym_passes (user_id, until) VALUES (?,?)
+            ON CONFLICT(user_id) DO UPDATE SET until = excluded.until
+            """,
+            (user_id, until),
+        )
+        await self.conn.commit()
+
+    async def gym_progress_of(self, user_id: int) -> dict[str, tuple[int, int]]:
+        """Прогресс бойца: характеристика → (очки, сделанные улучшения)."""
+        async with self.conn.execute(
+            "SELECT stat, points, ups FROM gym_progress WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {row["stat"]: (int(row["points"]), int(row["ups"])) for row in rows}
+
+    async def add_gym_point(self, user_id: int, stat: str) -> int:
+        """Записать отработанную тренировку. Вернуть, сколько очков стало."""
+        await self.conn.execute(
+            """
+            INSERT INTO gym_progress (user_id, stat, points, ups) VALUES (?,?,1,0)
+            ON CONFLICT(user_id, stat) DO UPDATE SET points = points + 1
+            """,
+            (user_id, stat),
+        )
+        await self.conn.commit()
+        async with self.conn.execute(
+            "SELECT points FROM gym_progress WHERE user_id = ? AND stat = ?",
+            (user_id, stat),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["points"]) if row else 0
+
+    async def spend_gym_points(self, user_id: int, stat: str, price: int) -> bool:
+        """Списать очки на улучшение. False — их уже не хватает.
+
+        Списание и проверка одним запросом: между «хватает» и «списали»
+        боец успел бы нажать кнопку второй раз, и одно улучшение вышло бы
+        дважды по цене одного.
+        """
+        cursor = await self.conn.execute(
+            """
+            UPDATE gym_progress SET points = points - ?, ups = ups + 1
+            WHERE user_id = ? AND stat = ? AND points >= ?
+            """,
+            (price, user_id, stat, price),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def gym_visit_of(self, user_id: int) -> dict | None:
+        """Тренировка, которую боец ещё не забрал. None — забирать нечего."""
+        async with self.conn.execute(
+            """
+            SELECT slot, stat, until FROM gym_visits
+            WHERE user_id = ? AND done = 0 ORDER BY until LIMIT 1
+            """,
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "slot": str(row["slot"]),
+            "stat": str(row["stat"]),
+            "until": int(row["until"]),
+        }
+
+    async def start_gym_visit(
+        self, user_id: int, slot: str, stat: str, until: int, limit: int = 0
+    ) -> bool:
+        """Встать на тренировку. False — места нет или боец уже вставал.
+
+        Ключ таблицы — боец и слот, поэтому вторая запись в тот же слот не
+        проходит вовсе: «одна тренировка на слот» держит база, а не проверка
+        перед вставкой, которую две быстрые кнопки обошли бы.
+
+        Так же и с числом мест: сначала встаём, потом считаем, и лишний
+        уходит сам. Проверка до вставки пропустила бы шестого, пока пятый
+        ещё не записался, — а тут запись либо есть, либо её нет.
+        """
+        cursor = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO gym_visits (user_id, slot, stat, until)
+            VALUES (?,?,?,?)
+            """,
+            (user_id, slot, stat, until),
+        )
+        if cursor.rowcount <= 0:
+            await self.conn.commit()
+            return False
+        if limit and await self.gym_slot_crowd(slot) > limit:
+            await self.conn.execute(
+                "DELETE FROM gym_visits WHERE user_id = ? AND slot = ?",
+                (user_id, slot),
+            )
+            await self.conn.commit()
+            return False
+        await self.conn.commit()
+        return True
+
+    async def close_gym_visit(self, user_id: int, slot: str) -> bool:
+        """Отметить тренировку отработанной. False — её уже закрыли."""
+        cursor = await self.conn.execute(
+            "UPDATE gym_visits SET done = 1 WHERE user_id = ? AND slot = ? AND done = 0",
+            (user_id, slot),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def gym_slots_taken(
+        self, user_id: int, slots: list[str]
+    ) -> dict[str, bool]:
+        """Слоты бойца из этого списка: ключ → отработан ли до конца.
+
+        Отработанное и идущее различаются, потому что различаются на
+        табло: ✅ против часов. Одним множеством они выглядели бы
+        одинаково, и боец не видел бы, что стоит на занятии прямо сейчас.
+        """
+        if not slots:
+            return {}
+        marks = ",".join("?" for _ in slots)
+        async with self.conn.execute(
+            f"SELECT slot, done FROM gym_visits "
+            f"WHERE user_id = ? AND slot IN ({marks})",
+            (user_id, *slots),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {str(row["slot"]): bool(row["done"]) for row in rows}
+
+    async def gym_visits_today(self, user_id: int, day: str) -> int:
+        """Сколько занятий боец уже занял в этих сутках.
+
+        Считаются и отработанные, и идущее: место в дне занято тем и
+        другим, и цена следующего занятия растёт от обоих.
+        """
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS taken FROM gym_visits "
+            "WHERE user_id = ? AND slot LIKE ?",
+            (user_id, f"{day}:%"),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["taken"]) if row else 0
+
+    async def gym_slot_crowd(self, slot: str) -> int:
+        """Сколько бойцов в этом занятии — вместе с теми, кто ещё стоит."""
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS taken FROM gym_visits WHERE slot = ?", (slot,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["taken"]) if row else 0
+
+    async def gym_slots_crowd(self, slots: list[str]) -> dict[str, int]:
+        """Сколько народу в каждом из этих занятий — одним запросом."""
+        if not slots:
+            return {}
+        marks = ",".join("?" for _ in slots)
+        async with self.conn.execute(
+            f"SELECT slot, COUNT(*) AS taken FROM gym_visits "
+            f"WHERE slot IN ({marks}) GROUP BY slot",
+            tuple(slots),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {str(row["slot"]): int(row["taken"]) for row in rows}
+
+    # ---------- документы: страховой полис ----------
+
+    async def policy_of(self, user_id: int) -> Policy | None:
+        """Полис бойца. Просроченный не стираем — он остаётся документом.
+
+        Тем и отличается от травмы: травма отболела и её нет, а полис с
+        вышедшим сроком по-прежнему лежит в документах. По нему видно, до
+        какого часа он действовал, и его продлевают, а не выписывают заново.
+        """
+        async with self.conn.execute(
+            "SELECT issued, until, auto_renew FROM policies WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return Policy(
+            issued=int(row["issued"]),
+            until=int(row["until"]),
+            auto_renew=bool(row["auto_renew"]),
+        )
+
+    async def set_policy(self, user_id: int, policy: Policy) -> None:
+        """Записать полис. Продление ложится поверх прежнего."""
+        await self.conn.execute(
+            """
+            INSERT INTO policies (user_id, issued, until, auto_renew)
+            VALUES (?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                issued = excluded.issued,
+                until = excluded.until,
+                auto_renew = excluded.auto_renew
+            """,
+            (user_id, policy.issued, policy.until, int(policy.auto_renew)),
+        )
+        await self.conn.commit()
+
+    async def set_policy_renew(self, user_id: int, auto_renew: bool) -> bool:
+        """Включить или выключить автопродление. False — полиса нет."""
+        cursor = await self.conn.execute(
+            "UPDATE policies SET auto_renew = ? WHERE user_id = ?",
+            (int(auto_renew), user_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def drop_policy(self, user_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM policies WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
+
+    async def set_injury(self, user_id: int, code: str, until: int) -> None:
+        """Записать травму. Новая ложится поверх прежней."""
+        await self.conn.execute(
+            """
+            INSERT INTO injuries (user_id, code, until) VALUES (?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                code = excluded.code, until = excluded.until
+            """,
+            (user_id, code, until),
+        )
+        await self.conn.commit()
+
+    async def drop_injury(self, user_id: int) -> None:
+        """Снять травму досрочно: так её и лечат."""
+        await self.conn.execute(
+            "DELETE FROM injuries WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
 
     async def drop_effect(self, user_id: int, code: str) -> None:
         """Погасить эффект досрочно: так уходит вытесненный эликсир."""

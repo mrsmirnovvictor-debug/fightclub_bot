@@ -1,9 +1,20 @@
 """Команды владельца клуба: то, что делается руками и в обход правил.
 
-Их ровно одна — выдать подписку. Всё остальное боец добывает сам: за
-звёзды, за кредиты или за победы, и заводить сюда «дать кредитов» или
-«поднять уровень» не стоит. Чем короче этот список, тем меньше в клубе
-того, что нельзя объяснить правилами.
+Их две — выдать подписку и начислить кредиты. Больше сюда заводить не
+стоит: уровень, характеристики, вещи боец добывает сам, и чем короче
+этот список, тем меньше в клубе того, что нельзя объяснить правилами.
+
+Кредиты в этом списке — не подарок, а инструмент: ими возвращают
+потерянное на чужой ошибке и платят за то, чего в игре ещё нет
+(турнир, конкурс, отыгрыш). Поэтому у начисления нет потолка, зато
+есть минус: `/givecredits ник -500` снимает. Без минуса лишний ноль в
+сумме исправить было бы нечем, а потолок, за которым владелец идёт
+правкой базы, хуже честного «любое число».
+
+Кредиты ложатся наличными, как всякий другой доход: на счёт в банке их
+кладёт уже сам боец. Своего кошелька у владельца нет — деньги берутся
+из ниоткуда, и ровно поэтому дверь заперта так же крепко, как у
+подписки.
 
 Кто владелец, решает `OWNER_ID` в окружении. Ноль или мусор — владельца
 нет, и команда не отвечает никому, включая того, кто её писал:
@@ -11,10 +22,11 @@
 команда не отвечает вовсе, а не ругается: её для них попросту не
 существует.
 
-Выдача идёт той же дверью, что и оплата звёздами (`grant_pro`), — иначе
-подарочная подписка однажды разошлась бы с купленной: клинок бы не лёг,
-образ не открылся. Разница только в цене: ноль звёзд и запись в журнале
-как подарок, чтобы такое продление не путалось с покупками в истории.
+Выдача подписки идёт той же дверью, что и оплата звёздами (`grant_pro`),
+— иначе подарочная подписка однажды разошлась бы с купленной: клинок бы
+не лёг, образ не открылся. Разница только в цене: ноль звёзд и запись в
+журнале как подарок, чтобы такое продление не путалось с покупками в
+истории.
 """
 
 from __future__ import annotations
@@ -43,10 +55,16 @@ router.message.filter(F.chat.type == "private")
 # опечатка в числе, а не намерение
 MAX_GIFT_DAYS = 365
 
-HOW_TO = (
+PRO_HOW_TO = (
     "Кому и насколько: <code>/givepro ник</code> — на месяц, "
     "<code>/givepro ник 7</code> — на неделю.\n"
     "Ник пишется как в карточке, пробелы внутри можно."
+)
+
+MONEY_HOW_TO = (
+    "Кому и сколько: <code>/givecredits ник 500</code> — начислить, "
+    "<code>/givecredits ник -500</code> — снять.\n"
+    "Ник пишется как в карточке, пробелы внутри можно; сумма — последней."
 )
 
 
@@ -92,13 +110,13 @@ async def cmd_give_pro(
 
     args = command.args or ""
     if not args.strip():
-        await message.answer("Кому выдавать?\n\n" + HOW_TO)
+        await message.answer("Кому выдавать?\n\n" + PRO_HOW_TO)
         return
 
     player, days = await read_target(db, args)
     if player is None:
         await message.answer(
-            f"Бойца «{esc(' '.join(args.split()))}» в клубе нет.\n\n" + HOW_TO
+            f"Бойца «{esc(' '.join(args.split()))}» в клубе нет.\n\n" + PRO_HOW_TO
         )
         return
     if not 1 <= days <= MAX_GIFT_DAYS:
@@ -129,17 +147,104 @@ async def cmd_give_pro(
         grant.until,
     )
 
-    extras = []
-    if grant.blade:
-        extras.append("🗡 Клинок ассасина — в инвентаре")
-    if grant.look:
-        extras.append("🥷 Образ ассасина — в гардеробе")
     await message.answer(
         f"💎 <b>{esc(player.nickname)}</b>: подписка "
         f"{'продлена' if was else 'оформлена'} на {days} дней — "
         f"до {club_moment(grant.until)} мск."
-        + ("\n" + "\n".join(extras) if extras else "")
     )
 
 
-__all__ = ["MAX_GIFT_DAYS", "cmd_give_pro", "is_owner", "read_target", "router"]
+def _as_amount(said: str) -> int | None:
+    """Прочесть сумму со знаком. None — это не число."""
+    body = said[1:] if said[:1] in "+-" else said
+    if not body.isdigit():
+        return None
+    return -int(body) if said[:1] == "-" else int(body)
+
+
+async def read_purse(db: Database, args: str) -> tuple[Player | None, int | None]:
+    """Разобрать «ник сумма». Сумма None — её не назвали или назвали не числом.
+
+    Здесь, в отличие от подписки, сумма обязательна, поэтому последнее
+    слово читается как число всегда. Прозвищу это не мешает: «Боец 7»
+    остаётся прозвищем, потому что сумма стоит после него — «Боец 7 500»
+    разбирается как пятьсот кредитов тому самому «Бойцу 7».
+    """
+    text = " ".join(args.split())
+    if not text:
+        return None, None
+    head, _, tail = text.rpartition(" ")
+    amount = _as_amount(tail) if head else None
+    if amount is None:
+        return None, None
+    return await db.find_by_nickname(head), amount
+
+
+@router.message(Command("givecredits"))
+async def cmd_give_credits(
+    message: Message, command: CommandObject, db: Database, config: Config
+) -> None:
+    """Начислить бойцу кредиты (или снять). Только владельцу клуба."""
+    if not is_owner(message.from_user.id, config):
+        if not config.owner_id:
+            logger.warning(
+                "Команда владельца без OWNER_ID: %s просил /givecredits",
+                message.from_user.id,
+            )
+        return
+
+    args = command.args or ""
+    said = " ".join(args.split())
+    if not said:
+        await message.answer("Кому начислять?\n\n" + MONEY_HOW_TO)
+        return
+
+    player, amount = await read_purse(db, args)
+    if amount is None:
+        # Ник и сумма нужны оба, и по одному слову не видно, что назвали:
+        # «500» — это сумма без ника, «Рагнар» — ник без суммы
+        await message.answer(
+            f"Не разобрал «{esc(said)}»: нужны и ник, и сумма.\n\n"
+            + MONEY_HOW_TO
+        )
+        return
+    if player is None:
+        head = said.rpartition(" ")[0]
+        await message.answer(f"Бойца «{esc(head)}» в клубе нет.\n\n" + MONEY_HOW_TO)
+        return
+    if amount == 0:
+        await message.answer("Ноль кредитов — это ничего. Назовите сумму.")
+        return
+
+    was = player.credits
+    # `grant_credits` сам не даёт уйти ниже нуля, поэтому снять больше,
+    # чем у бойца есть, — не ошибка: кошелёк просто опустеет
+    became = player.grant_credits(amount)
+    await db.save_player(player)
+    logger.info(
+        "Владелец начислил кредиты: %s (%s) %+d — было %s, стало %s",
+        player.nickname,
+        player.user_id,
+        amount,
+        was,
+        became,
+    )
+
+    verb = "начислено" if amount > 0 else "снято"
+    await message.answer(
+        f"💰 <b>{esc(player.nickname)}</b>: {verb} {abs(amount)} "
+        f"кредитов. Наличными было {was}, стало {became}."
+    )
+
+
+__all__ = [
+    "MAX_GIFT_DAYS",
+    "MONEY_HOW_TO",
+    "PRO_HOW_TO",
+    "cmd_give_credits",
+    "cmd_give_pro",
+    "is_owner",
+    "read_purse",
+    "read_target",
+    "router",
+]

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 
 from bot.database import Database
 from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.game.potions import Potion, PotionKind, get_potion
 from bot.models import Player
 
@@ -75,21 +76,33 @@ def _find(code: str) -> Potion:
     return potion
 
 
-async def buy_potion(db: Database, player: Player, code: str) -> Potion:
-    """Купить склянку. Пить — когда понадобится, хоть через неделю."""
+async def buy_potion(
+    db: Database,
+    player: Player,
+    code: str,
+    service: Service | None = None,
+    now: int | None = None,
+) -> Potion:
+    """Купить склянку. Пить — когда понадобится, хоть через неделю.
+
+    Место передаёт тот, кто знает, где боец стоит: в аптеке карта даёт
+    пятнадцать процентов, а вне её — ничего.
+    """
     potion = _find(code)
     if player.level < potion.level_required:
         raise PotionError(
             f"«{potion.title}» открывается на {potion.level_required} уровне, "
             f"а у тебя {player.level}."
         )
-    if not player.can_afford(potion.price):
+    moment = now_ts() if now is None else now
+    price = player.price_here(potion.price, moment, service)
+    if not player.can_afford(price, moment, service):
         raise PotionError(
-            f"Не хватает кредитов: «{potion.title}» стоит {potion.price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"Не хватает кредитов: «{potion.title}» стоит {price} 💰, "
+            f"а {player.purse_note(moment, service)}."
         )
 
-    player.pay(potion.price)
+    player.pay(price, moment, service)
     await db.save_player(player)
     player.potions[potion.code] = await db.add_potion(player.user_id, potion.code)
     return potion

@@ -23,6 +23,7 @@ from bot.game.equipment import (
 from bot.game.modes import FightMode
 from bot.game.health import FULL_REGEN_SECONDS, HURT_THRESHOLD, READY_THRESHOLD
 from bot.game.hospital import FULL_PRICE, PATCH_HEAL, PATCH_PRICE
+from bot.game.injuries import Hurt
 from bot.game.economy import (
     LEVEL_CREDITS,
     MAX_LEVEL,
@@ -180,6 +181,21 @@ def help_text(turn_timeout: int = 30, round_break: int = 30) -> str:
         f"Ждать не обязательно: в больнице подлатают за кредиты — "
         f"{PATCH_PRICE} 💰 за {PATCH_HEAL} единиц здоровья или {FULL_PRICE} 💰 "
         "за полное выздоровление.\n\n"
+        "<b>Травмы</b>\n"
+        "Добивающий крит иногда ломает всерьёз. Травма зависит от того, куда "
+        "пришёлся последний удар: в голову — интуиция, в корпус — сила, ниже "
+        "пояса — ловкость.\n"
+        f"🤕 Лёгкая — {Hurt.LIGHT.penalty} на {Hurt.LIGHT.hours} часа, "
+        f"средняя — {Hurt.MEDIUM.penalty} на {Hurt.MEDIUM.hours} часов, "
+        f"тяжёлая — {Hurt.HEAVY.penalty} на {Hurt.HEAVY.hours} часов.\n"
+        "Вещи, на которые просевшей характеристики больше не хватает, уходят "
+        "в рюкзак сами. Характеристика может уйти в минус — с такой на ринг "
+        "не выпускают, пока травма не пройдёт.\n"
+        "По городу травмированный идёт вдвое дольше.\n"
+        f"Лечат в больнице: {Hurt.LIGHT.price} / {Hurt.MEDIUM.price} / "
+        f"{Hurt.HEAVY.price} 💰 — после лечения остаётся "
+        f"{Hurt.LIGHT.cure_seconds // 60}–{Hurt.HEAVY.cure_seconds // 60} "
+        "минут, а не часы.\n\n"
         "<b>Лавка, экипировка и инвентарь</b>\n"
         "Лавка живёт в мини-аппе, на вкладке «Магазины» (/buy откроет её "
         "кнопкой). Товар разложен по типам вещей и открывается уровнем: "

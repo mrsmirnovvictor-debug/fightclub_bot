@@ -35,6 +35,7 @@ from bot.game.battle import (
     team_name,
 )
 from bot.game.classes import Zone, block_combo, block_title
+from bot.game.injuries import Injury
 from bot.game.combat import (
     Action,
     Fighter,
@@ -63,6 +64,7 @@ from bot.game.narrator import (
     strike_lines,
 )
 from bot.game.fightlog import turn_payload
+from bot.injury_service import record_injuries
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import LobbyCB, lobby_keyboard
 from bot.messaging import Announcer
@@ -185,6 +187,9 @@ class BattleSession:
     summary: list[str] = field(default_factory=list)
     # Разбор по ходам для карточки: по размену на каждую пару
     rounds: list[dict] = field(default_factory=list)
+    # Кого покалечило за бой: боец → травма. Броски делают размены, а
+    # записывается это в конце, когда бойцы подняты из базы
+    hurt: dict[int, Injury] = field(default_factory=dict)
 
     @property
     def key(self) -> ChatKey | None:
@@ -635,6 +640,7 @@ class BattleService:
                 limit=MAX_BATTLE_ROUNDS,
             )
             results.append(result)
+            session.hurt.update(result.injuries)
             spoken = strike_lines(result, session.fighters, self.rng)
             # Вторая половина приёмов десятой ступени: она летит мимо пары,
             # и разнести её может только тот, кто знает стороны
@@ -713,6 +719,10 @@ class BattleService:
                 players[user_id] = player
         if not players:  # pragma: no cover - персонажей удалили по ходу боя
             return ""
+
+        # Травмы боя: их набрали размены, а записываются они здесь, где
+        # бойцы наконец подняты из базы
+        await record_injuries(self.db, session.hurt, players)
 
         levels = {
             user_id: session.fighters[user_id].level for user_id in session.fighters

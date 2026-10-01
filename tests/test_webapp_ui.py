@@ -126,6 +126,250 @@ EMPTY_HISTORY = {
 }
 
 
+def hr_state(job: str = "", taken=(), blocked=()) -> dict:
+    """Агентство, как его отдаёт сервер: доска из пяти мест."""
+    from bot.game.health import now_ts
+    from bot.webapp.work import build_hr
+    from bot.game.work import COOLDOWN_SECONDS, VACANCIES
+
+    moment = now_ts()
+    player = make_player("office_building")
+    if job:
+        player.job_code = job
+        player.job_since = moment - 3 * 24 * 60 * 60
+        player.job_week = moment - 2 * 24 * 60 * 60
+        player.job_minutes = 6 * 60
+        player.account_number = "VB-1234-5678-9012"
+    rows = [
+        {
+            "vacancy": one,
+            "taken_by": ("Тайлер" if one.code == job
+                         else "Марла" if one.code in taken else ""),
+            "mine": one.code == job,
+            "blocked_until": moment + COOLDOWN_SECONDS if one.code in blocked else 0,
+            "block_reason": "test" if one.code in blocked else "",
+        }
+        for one in VACANCIES
+    ]
+    return build_hr(player, rows, moment)
+
+
+def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> dict:
+    """Рабочее место, как его отдаёт сервер."""
+    from bot.game.health import now_ts
+    from bot.game.work import get_vacancy, moscow_day
+    from bot.webapp.work import build_work
+
+    moment = now_ts()
+    place = get_vacancy(job).place if job else "bar"
+    player = make_player(place)
+    if job:
+        player.job_code = job
+        player.job_since = moment - 3 * 24 * 60 * 60
+        player.job_week = moment - 2 * 24 * 60 * 60
+        player.job_minutes = 6 * 60
+        player.shift_day = moscow_day(moment).isoformat()
+        player.shift_minutes = today
+        if shift:
+            player.shift_until = moment + 1_800
+    return build_work(player, moment)
+
+
+def bank_state(
+    account: bool = True,
+    card: bool = True,
+    works: bool = True,
+    balance: int = 3_000,
+    cash: int = 1_200,
+    prefers: str = "card",
+) -> dict:
+    """Банк, как его отдаёт сервер: счёт, карта, банкомат и прайс скидок."""
+    from bot.game.classes import Stats
+    from bot.game.health import now_ts
+    from bot.models import Player
+    from bot.webapp.bank import build_bank
+
+    moment = now_ts()
+    player = Player(
+        user_id=42, nickname="Тайлер", class_code="warrior", location="bank",
+        credits=cash, pay_from=prefers,
+        **Stats(strength=10, agility=10, intuition=10, endurance=10).as_dict(),
+    )
+    if account:
+        player.account_number = "VB-1234-5678-9012"
+        player.account_balance = balance
+    if card and account:
+        player.card_at = moment - 1_000
+        # Не обслужена — значит, оплаченный год позади
+        player.card_paid_until = moment + 1_000 if works else moment - 1
+    return build_bank(player, moment)
+
+
+def purse_state(
+    purse: str = "card",
+    takes_card: bool = True,
+    has_card: bool = True,
+    works: bool = True,
+    discount: int = 10,
+    cash: int = 1_200,
+    balance: int = 3_000,
+) -> dict:
+    """Кошелёк так, как он уезжает в каждый экран с ценами."""
+    return {
+        "purse": purse,
+        "prefers": purse,
+        "cash": cash,
+        "balance": balance,
+        "has_account": True,
+        "has_card": has_card,
+        "card_works": works,
+        "takes_card": takes_card,
+        "discount": discount,
+        "now_off": discount if purse == "card" else 0,
+        "titles": {"cash": "Наличные", "card": "Карта"},
+        "emoji": {"cash": "💰", "card": "💳"},
+        "note": "Карта: −" + str(discount) + "% к ценам в этом месте.",
+    }
+
+
+def gym_state(
+    days: int = 3,
+    pass_days: int = 30,
+    now_state: str = "open",
+    visit: dict | None = None,
+    points: tuple[int, int, int] = (0, 0, 0),
+    ups: tuple[int, int, int] = (0, 0, 0),
+    taken_today: int = 0,
+    seats: int = 0,
+    marks: tuple[str, ...] = (),
+    affordable: bool = True,
+    purse: dict | None = None,
+) -> dict:
+    """Зал, как его отдаёт сервер: абонемент, слот, прогресс и табло."""
+    from bot.game.classes import Stat
+    from bot.game.gym import (
+        MAX_UPGRADES, SLOT_HOURS, TRAINING_MINUTES, UPGRADE_STEPS, total_for,
+        training_for,
+    )
+
+    from bot.game.gym import DAY_PRICES, SLOT_LIMIT, VISITS_PER_DAY, day_is_full
+    from bot.game.gym import price_of_visit
+
+    def slot(hour: int, code: str, state: str) -> dict:
+        one = next(t for t in (training_for(s) for s in
+                              (Stat.STRENGTH, Stat.AGILITY, Stat.INTUITION))
+                   if t.code == code)
+        return {
+            "id": f"2026-10-05:{hour:02d}", "clock": f"{hour:02d}:00–{hour + 2:02d}:00",
+            "code": one.code, "title": one.title, "emoji": one.emoji,
+            "stat": one.stat.value, "gains": one.gains,
+            "starts": 0, "ends": 0, "state": state,
+            "taken": seats, "limit": SLOT_LIMIT, "full": seats >= SLOT_LIMIT,
+        }
+
+    codes = ["power", "cardio", "crossfit", "power", "cardio", "crossfit"]
+    board = []
+    for shift in range(days):
+        board.append({
+            "day": f"2026-10-{5 + shift:02d}",
+            "title": "Сегодня" if not shift else ("Завтра" if shift == 1 else "Среда"),
+            "today": shift == 0,
+            "slots": [
+                slot(
+                    hour,
+                    code,
+                    now_state if (not shift and index == 2)
+                    else (marks[index] if not shift and index < len(marks)
+                          else "ahead"),
+                )
+                for index, (hour, code) in enumerate(zip(SLOT_HOURS, codes))
+            ],
+        })
+    stats = (Stat.STRENGTH, Stat.AGILITY, Stat.INTUITION)
+    wallet = purse or purse_state()
+    return {
+        # Наличные берём из кошелька, а не задаём отдельно: на сервере это
+        # одно и то же число, и разойтись им в подделке нельзя — иначе
+        # тест про пустой мешочек проходит с пустым мешочком только на
+        # словах
+        "credits": wallet["cash"],
+        "minutes": TRAINING_MINUTES,
+        "steps": list(UPGRADE_STEPS),
+        "total": total_for(MAX_UPGRADES),
+        "pass": {
+            "active": pass_days > 0,
+            "until": "05.11.26 12:00",
+            "days_left": pass_days,
+            "tickets": [
+                {"code": "month", "title": "Месяц", "days": 30, "price": 500,
+                 "note": "Попробовать и втянуться", "affordable": True,
+                 "per_day": 16.7},
+                {"code": "half", "title": "Полгода", "days": 182, "price": 2500,
+                 "note": "Дешевле двух месяцев в пересчёте", "affordable": True,
+                 "per_day": 13.7},
+                {"code": "year", "title": "Год", "days": 365, "price": 4000,
+                 "note": "Цена восьми месяцев за двенадцать", "affordable": True,
+                 "per_day": 11.0},
+            ],
+        },
+        "day": {
+            "taken": taken_today,
+            "limit": VISITS_PER_DAY,
+            "full": day_is_full(taken_today),
+            "price": 0 if day_is_full(taken_today) else price_of_visit(taken_today),
+            "affordable": affordable,
+            "free_left": max(0, 1 - taken_today),
+            "prices": [
+                {"number": number, "price": price, "free": price == 0}
+                for number, price in enumerate(DAY_PRICES, start=1)
+            ],
+        },
+        "purse": wallet,
+        "now": board[0]["slots"][2],
+        "next": board[0]["slots"][3],
+        "visit": visit or {},
+        "progress": [
+            {
+                "stat": stat.value, "title": stat.title.capitalize(),
+                "emoji": stat.emoji, "training": training_for(stat).title,
+                "training_emoji": training_for(stat).emoji,
+                "points": got, "ups": done, "max_ups": MAX_UPGRADES,
+                "price": UPGRADE_STEPS[done] if done < MAX_UPGRADES else 0,
+                "ready": done < MAX_UPGRADES and got >= UPGRADE_STEPS[done],
+                "maxed": done >= MAX_UPGRADES, "gain": 1,
+                "left": max(0, (UPGRADE_STEPS[done] if done < MAX_UPGRADES else 0) - got),
+                "percent": 100 if done >= MAX_UPGRADES
+                else round(min(1, got / UPGRADE_STEPS[done]) * 100),
+            }
+            for stat, got, done in zip(stats, points, ups)
+        ],
+        "schedule": board,
+        "said": "",
+    }
+
+
+def empty_insurance() -> dict:
+    """Страховая, в которой у бойца полиса ещё нет."""
+    from bot.game.insurance import BENEFITS, EMOJI, INSURER, NOTE, TITLE
+    from bot.webapp.insurance import price_rows
+
+    return {
+        "credits": 500, "emoji": EMOJI, "title": TITLE, "issuer": INSURER,
+        "covers": "Лечение любых травм в больнице города",
+        "gives": list(BENEFITS), "note": NOTE, "days": 30, "discount": 80,
+        "price": 300, "pro": False, "by_pro": False,
+        "affordable": True, "insured": False, "policy": {},
+        "action": "Оформить полис", "prices": price_rows(),
+        "auto_renew": False, "said": "", "why": "",
+    }
+
+
+# Рынок без никого: страница на нём говорит, что обмен идёт из рук в руки
+EMPTY_TRADE = {
+    "credits": 0, "where": "Рынок", "max_items": 4, "invite_seconds": 60,
+    "crowd": [], "invite": {}, "sent": {}, "trade": {}, "done": "",
+}
+
 EMPTY_MARKET = {
     "credits": 0, "fee": 5, "sections": [], "mine": [], "sellable": [],
 }
@@ -260,8 +504,9 @@ def city_map(
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
-    battle=None, city=None, workshop=None, hospital=None, images=False,
-    telegram="",
+    battle=None, city=None, workshop=None, hospital=None, trade=None,
+    insurance=None, gym=None, bank=None, hr=None, work=None,
+    images=False, telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -287,6 +532,15 @@ async def open_page(
     await page.route("**/api/map*", canned(city or city_map()))
     await page.route("**/api/workshop*", canned(workshop or EMPTY_WORKSHOP))
     await page.route("**/api/hospital*", canned(hospital or EMPTY_HOSPITAL))
+    await page.route("**/api/trade*", canned(trade or EMPTY_TRADE))
+    await page.route("**/api/insurance*", canned(insurance or empty_insurance()))
+    await page.route("**/api/gym*", canned(gym or gym_state()))
+    await page.route("**/api/bank*", canned(bank or bank_state()))
+    await page.route("**/api/hr*", canned(hr or hr_state()))
+    # Без звёздочки на конце, и это не придирка: `**/api/work*` ловит и
+    # `/api/workshop`, а перехват в Playwright выигрывает последний — и
+    # мастерская начинала получать ответ рабочего места
+    await page.route("**/api/work", canned(work or work_state()))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
@@ -585,7 +839,19 @@ MARKET = {
             ],
         }
     ],
-    "mine": [],
+    # Сервер кладёт свои лоты и в раздел, и отдельным списком: на
+    # прилавке их больше нет, а на своей вкладке они и живут
+    "mine": [
+        {
+            "id": 12, "code": "pipe", "title": "Деревянная бита",
+            "icon": "🏏", "image": "", "slot": "weapon",
+            "slot_title": "Оружие", "price": 400, "payout": 380,
+            "fee": 20, "seller_id": 42, "seller": "Растафарайчик",
+            "mine": True, "wear": 0, "max_wear": 20, "wear_text": "новая",
+            "affordable": False, "can_equip": True, "requirements": [],
+            "bonuses": [], "shop_price": 150,
+        }
+    ],
     "sellable": [
         {
             "id": 21, "code": "bandana", "title": "Бандана", "icon": "🧢",
@@ -641,25 +907,71 @@ async def test_a_shop_screen_says_whose_counter_it_is(server):
         await browser.close()
 
 
-async def test_the_market_shows_lots_on_shelves_by_type(server):
-    """Чужие вещи лежат по полкам, и видно, кто их выставил."""
+async def test_the_counter_holds_what_others_put_up(server):
+    """На прилавке чужие вещи по полкам, и видно, кто их выставил.
+
+    Своё на прилавок не попадает: комиссионка открывается покупателем, и
+    листать собственный рюкзак ради чужого лота он не должен.
+    """
     async with async_playwright() as pw:
         browser, page = await open_market(pw, server)
 
         assert "Клуб берёт 5%" in await page.locator("#market-note").inner_text()
         shelves = await page.locator("#market-body .shelf-head").all_inner_texts()
-        assert "Выставить своё" in shelves[0]
-        assert "Оружие" in shelves[1] and "лотов 2" in shelves[1]
+        assert len(shelves) == 1
+        assert "Оружие" in shelves[0] and "лотов 1" in shelves[0]
 
-        lots = await page.locator("#market-body .shelf").nth(1).locator(
-            ".thing"
-        ).all_inner_texts()
+        lots = await page.locator("#market-body .thing").all_inner_texts()
+        assert len(lots) == 1, "на прилавке оказалось своё"
         assert "Продаёт: Марла" in lots[0]
         assert "🔧 Износ: 6 из 20" in lots[0]
         assert "200 💰 · в лавке 110 💰" in lots[0]
-        # свой лот подписан по-своему и снимается, а не покупается
-        assert "Твой лот" in lots[1]
-        assert "придёт 380 💰" in lots[1]
+        await browser.close()
+
+
+async def test_the_market_keeps_the_price_on_the_button_when_money_is_short(server):
+    """И в комиссионке цена остаётся на кнопке, когда платить нечем."""
+    poor = {
+        **MARKET,
+        "credits": 5,
+        "sections": [
+            {
+                **MARKET["sections"][0],
+                "items": [
+                    {**MARKET["sections"][0]["items"][0], "affordable": False},
+                ],
+            }
+        ],
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_market(pw, server, poor)
+
+        buy = page.locator("#market-body .thing .btn").first
+        assert await buy.inner_text() == "Купить · 200 💰"
+        assert await buy.is_disabled()
+        assert "Не хватает" not in await page.locator("#market-body").inner_text()
+        await browser.close()
+
+
+async def test_the_two_tabs_split_buying_from_selling(server):
+    """Две вкладки: на прилавке чужое, на второй — своё и рюкзак."""
+    async with async_playwright() as pw:
+        browser, page = await open_market(pw, server)
+
+        tabs = await page.locator("#market-tabs .chip").all_inner_texts()
+        assert tabs == ["🛒 Прилавок · 1", "🤝 Продать своё · 2"]
+        assert "on" in (await page.locator("#market-tabs .chip").first
+                        .get_attribute("class"))
+
+        await page.get_by_role("button", name="🤝 Продать своё · 2").click()
+        said = await page.locator("#market-body").inner_text()
+        assert "На продаже" in said and "В рюкзаке" in said
+        # свой лот здесь, и его снимают, а не покупают
+        assert "Твой лот" in said and "придёт 380 💰" in said
+        assert "Бандана" in said
+        # а чужого на этой вкладке нет
+        assert "Продаёт: Марла" not in said
+        assert "Клуб берёт 5%" in await page.locator("#market-note").inner_text()
         await browser.close()
 
 
@@ -717,6 +1029,7 @@ async def test_your_own_lot_is_taken_back_not_bought(server):
             )
 
         await page.route("**/api/market", catch)
+        await page.get_by_role("button", name="🤝 Продать своё · 2").click()
         await page.get_by_role("button", name="Снять с продажи").click()
         await page.wait_for_timeout(200)
 
@@ -730,8 +1043,10 @@ async def test_your_gear_goes_on_sale_with_a_price(server):
 
     async with async_playwright() as pw:
         browser, page = await open_market(pw, server)
+        # Рюкзак — на второй вкладке: сдают своё там же, где снимают с продажи
+        await page.get_by_role("button", name="🤝 Продать своё · 2").click()
 
-        card = page.locator("#market-body .shelf").first
+        card = page.locator("#market-body .shelf").last
         assert "От 20 до 120 💰" in await card.inner_text()
         price = card.locator(".sell-price")
         assert await price.get_attribute("min") == "20"
@@ -784,6 +1099,8 @@ async def test_the_market_rereads_the_backpack_when_you_come_back(server):
         await page.evaluate("showTab('shop'); pickShopSection('market')")
         await page.wait_for_selector("#shop-market:not(.hidden)")
 
+        # Рюкзак живёт на второй вкладке комиссионки
+        await page.get_by_role("button", name="🤝 Продать своё · 2").click()
         assert "Бандана" in await page.locator("#market-body").inner_text()
 
         # ушли на другую вкладку и вернулись — список перечитан
@@ -804,8 +1121,40 @@ async def test_an_empty_market_says_so(server):
             pw, server, {**EMPTY_MARKET, "credits": 100}
         )
 
-        assert "На комиссии пусто" in await page.locator("#market-note").inner_text()
+        assert "На прилавке пусто" in await page.locator("#market-note").inner_text()
+        assert "Чужих вещей сейчас нет" in await page.locator("#market-body").inner_text()
+
+        # А в рюкзаке пусто — это уже про вторую вкладку
+        await page.get_by_role("button", name="🤝 Продать своё").click()
         assert "В рюкзаке пусто" in await page.locator("#market-body").inner_text()
+        await browser.close()
+
+
+async def test_the_club_counter_keeps_the_price_when_money_is_short(server):
+    """Пустой кошелёк не стирает цену с кнопки лавки.
+
+    Вместо числа на ней стояло «Не хватает кредитов», и прилавок
+    переставал отвечать на единственный вопрос, ради которого на него
+    смотрят: сколько это стоит. Мастерская и больница так не делают —
+    теперь и лавка тоже.
+    """
+    poor = make_player()
+    poor.credits = 0
+    card = build_card(poor, TOKEN, viewer_id=poor.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(poor, Service.CLOTHES)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.evaluate("showTab('shop')")
+        await page.wait_for_selector("#shop-list .thing .btn")
+
+        buy = page.locator("#shop-list .thing .btn").first
+        said = await buy.inner_text()
+        assert said.startswith("Купить · ") and said.endswith("💰"), said
+        assert await buy.is_disabled()
+        assert "Не хватает" not in await page.locator("#shop-list").inner_text()
         await browser.close()
 
 
@@ -970,7 +1319,8 @@ async def test_a_stranger_sees_no_plus(server):
 # ---------- образ и снятие вещей ----------
 
 
-def wardrobe(current: str = "rookie") -> dict:
+def wardrobe(current: str = "rookie", gender: str = "male") -> dict:
+    """Гардероб, как его отдаёт сервер: только образы своего пола."""
     from bot.game.looks import LOOKS
 
     return {
@@ -989,13 +1339,14 @@ def wardrobe(current: str = "rookie") -> dict:
                 "affordable": True,
             }
             for look in LOOKS
-            if not look.pro  # образ подписки виден только своему хозяину
+            # Старая выдача видна только своему хозяину, чужой пол — никому
+            if not look.pro and look.gender == gender
         ],
     }
 
 
 async def test_tapping_the_avatar_opens_the_wardrobe(server):
-    """По аватару открывается выбор образа: шесть своих и шесть за кредиты."""
+    """По аватару открывается выбор образа: три своих и три за кредиты."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
@@ -1009,15 +1360,37 @@ async def test_tapping_the_avatar_opens_the_wardrobe(server):
         await page.locator("#hero-avatar").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
 
-        assert await page.locator(".look").count() == 12
+        assert await page.locator(".look").count() == 6
         assert await page.locator(".look.current .look-title").inner_text() == "Новичок"
         # платные подписаны ценой, свои — словом
         tags = await page.locator(".look-tag").all_inner_texts()
-        assert sum(1 for tag in tags if "💰" in tag) == 6
-        assert await page.locator(".look-group").count() == 2
+        assert sum(1 for tag in tags if "💰" in tag) == 3
 
         await page.locator("#sheet-close").click()
         assert await page.locator("#sheet").is_hidden()
+        await browser.close()
+
+
+async def test_the_wardrobe_of_a_woman_holds_womens_looks(server):
+    """Гардероб приходит своего пола, и делить его на группы нечего."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player),
+            looks=wardrobe(current="rebel", gender="female"),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#hero-avatar").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        titles = await page.locator(".look-title").all_inner_texts()
+        assert "Бунтарка" in titles and "Барменша" in titles
+        assert "Новичок" not in titles, "мужские образы на женскую страницу не идут"
+        # Одна группа — один список: заголовок над ним только занимал строку
+        assert await page.locator(".look-group").count() == 0
+        assert await page.locator(".look-grid").count() == 1
         await browser.close()
 
 
@@ -1313,6 +1686,84 @@ async def test_the_last_fight_of_a_thing_is_said_out_loud(server):
         assert "dying" in (await cell.get_attribute("class"))
         assert "ещё один бой" in await cell.get_attribute("title")
         await browser.close()
+
+
+async def test_the_wear_mark_is_a_traffic_light_of_three_squares(server):
+    """Цветной квадрат в углу: жёлтый за три боя, оранжевый за два, красный за один.
+
+    Сам символ и есть предупреждение: цвет рисует он, а не подложка под
+    ним. Поэтому сверяем символ, а не посчитанный браузером фон.
+    """
+    player = make_player()
+
+    async def paint(wear):
+        player.gear = [
+            OwnedItem(item=CATALOGUE["pipe"], id=1, wear=wear, slot=Slot.WEAPON)
+        ]
+        card = build_card(player, TOKEN, viewer_id=player.user_id)
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-slots-left .slot-wear")
+        mark = page.locator("#hero-slots-left .slot-wear").first
+        said = await mark.inner_text()
+        hint = await mark.get_attribute("title")
+        await browser.close()
+        return said.strip(), hint
+
+    async with async_playwright() as pw:
+        # У трубы запас 20: износ 17 — три боя, 18 — два, 19 — один
+        three, three_hint = await paint(17)
+        two, _ = await paint(18)
+        one, one_hint = await paint(19)
+
+    assert (three, two, one) == ("🟨", "🟧", "🟥")
+    assert "3 боя" in three_hint and "1 бой" in one_hint
+
+
+async def test_the_wear_mark_carries_no_icon_and_no_backing(server):
+    """Ни ключа внутри, ни кружка под ним: квадрат сам сплошной."""
+    player = make_player()
+    player.gear = [OwnedItem(item=CATALOGUE["pipe"], id=1, wear=18, slot=Slot.WEAPON)]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-slots-left .slot-wear")
+
+        mark = page.locator("#hero-slots-left .slot-wear").first
+        assert "🔧" not in await mark.inner_text(), "ключа внутри быть не должно"
+        dressed = await mark.evaluate(
+            "node => {"
+            "  const style = getComputedStyle(node);"
+            "  return {"
+            "    back: style.backgroundColor,"
+            "    ring: style.boxShadow,"
+            "    round: style.borderTopLeftRadius,"
+            "  };"
+            "}"
+        )
+        assert dressed["back"] in ("rgba(0, 0, 0, 0)", "transparent"), dressed
+        assert dressed["ring"] == "none", dressed
+        await browser.close()
+
+
+async def test_the_wrench_shows_up_only_in_the_last_three_fights(server):
+    """Четыре боя в запасе — ключа ещё нет, три — уже есть."""
+    player = make_player()
+
+    async def badges(wear):
+        player.gear = [
+            OwnedItem(item=CATALOGUE["pipe"], id=1, wear=wear, slot=Slot.WEAPON)
+        ]
+        card = build_card(player, TOKEN, viewer_id=player.user_id)
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        count = await page.locator("#hero-slots-left .slot-wear").count()
+        await browser.close()
+        return count
+
+    async with async_playwright() as pw:
+        assert await badges(16) == 0, "за четыре боя до конца ключа ещё нет"
+        assert await badges(17) == 1, "за три боя ключ уже нужен"
 
 
 async def test_a_thing_with_a_long_life_ahead_says_nothing(server):
@@ -1844,8 +2295,12 @@ async def test_the_pro_card_always_leads_the_mage_counter(server):
         pro = page.locator("#pro-card .thing")
         text = await pro.inner_text()
         assert "Подписка PRO" in text
-        assert "Полуторный опыт за каждый бой" in text
-        assert "Клинок ассасина в инвентарь — навсегда" in text
+        # Три строки и ничего больше: ни вещей, ни образа, ни значка
+        assert "150% опыта за бой" in text
+        assert "Аналитик-помощник во время боя" in text
+        assert "Страховка жизни и здоровья" in text
+        assert "Клинок" not in text and "Образ" not in text
+        assert "Значок" not in text
 
         # подписка идёт раньше любого товара прилавка
         first = page.locator("#magic .thing").first
@@ -3301,6 +3756,30 @@ async def test_the_tips_take_half_the_width_each(server):
         await browser.close()
 
 
+async def test_the_tips_are_written_no_bigger_than_the_buttons(server):
+    """Совет набран той же меркой, что и кнопки удара и блока.
+
+    Мерка живёт на всей форме хода. Пока она стояла на одних столбцах,
+    совет — он лежит отдельной строкой над ними — оставался без неё и
+    вылезал буквами вдвое больше тех кнопок, о которых говорит.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(
+            pw, server, raid_with_wave({"scout": BOSS_SCOUT})
+        )
+        await page.wait_for_selector(".zone-columns")
+
+        async def ink(selector):
+            return await page.locator(selector).first.evaluate(
+                "node => parseFloat(getComputedStyle(node).fontSize)"
+            )
+
+        tip = await ink("#raid-body .zone-tip-move")
+        zone = await ink("#raid-body .zone")
+        assert abs(tip - zone) < 0.5, f"совет {tip}px, кнопка {zone}px"
+        await browser.close()
+
+
 async def test_the_analyst_sits_under_the_buttons_in_the_cellar(server):
     """Разбор — под кнопками хода и свёрнутый: место над ними занято.
 
@@ -4128,30 +4607,161 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
 
 
 async def test_a_house_without_a_trade_says_when_it_opens(server):
-    """Банк на карте есть, зайти можно, а услуги пока нет.
+    """Стадион на карте есть, зайти можно, а услуги пока нет.
 
-    Раньше банк отвечал всплывашкой, и боец оставался на карте — то есть
-    внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
+    Раньше такой дом отвечал всплывашкой, и боец оставался на карте — то
+    есть внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
     записка о том, чего тут ждать.
     """
-    walker = make_player(location="bank")
+    walker = make_player(location="stadium")
     card = build_card(walker, TOKEN, viewer_id=walker.user_id)
     async with async_playwright() as pw:
         browser, page = await open_map(
-            pw, server, city_map("bank"), card, images=True
+            pw, server, city_map("stadium"), card, images=True
         )
 
-        await page.locator(".zone-house").filter(has_text="Банк").click()
+        await page.locator(".zone-house").filter(has_text="Стадион").click()
         await page.wait_for_selector("#house:not(.hidden)")
 
-        assert await page.locator("#house-title").inner_text() == "Банк"
+        assert await page.locator("#house-title").inner_text() == "Стадион"
         note = await page.locator("#house-soon").inner_text()
-        assert "Скоро" in note and "хранение денег" in note
+        assert "Скоро" in note and "элитный рейд" in note
         # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
         assert "active" in (await page.locator("#tab-map").get_attribute("class"))
         # Обратно — на карту, кнопкой в углу
         await page.locator("#house-back").click()
         await page.wait_for_selector("#map:not(.hidden)")
+        await browser.close()
+
+
+# ---------- травмы ----------
+
+
+def hurt_card(player, hours: int = 10, minutes: int = 15):
+    """Карточка бойца с тяжёлой травмой ноги."""
+    from bot.game.injuries import ActiveInjury
+
+    player.injury = ActiveInjury("broken_leg", now_ts() + hours * 3600 + minutes * 60)
+    return build_card(player, TOKEN, viewer_id=player.user_id)
+
+
+async def test_an_injury_stands_in_the_card_like_an_elixir(server):
+    """Травма висит в той же строке, что и эликсиры, и называет свой срок."""
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, hurt_card(player), build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        chip = page.locator("#hero-effects .effect.hurt")
+        assert await chip.count() == 1
+        said = await chip.inner_text()
+        assert "Тяжёлая травма: перелом ноги" in said
+        assert "Ещё 10 часов 15 минут" in said
+        await browser.close()
+
+
+async def test_a_broken_stat_is_red_and_may_go_below_zero(server):
+    """«Ловкость -5 (-20)» — красным: минус в характеристике не опечатка."""
+    player = make_player()
+    player.agility = 15  # травма уводит ловкость в минус
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, hurt_card(player), build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        row = page.locator("#stats li").filter(has_text="Ловкость").first
+        said = await row.inner_text()
+        assert "-5" in said and "(-20)" in said
+
+        painted = await row.locator(".hurt").evaluate(
+            "node => getComputedStyle(node).color"
+        )
+        whole = await page.locator("#stats li").filter(
+            has_text="Выносливость"
+        ).first.evaluate("node => getComputedStyle(node).color")
+        assert painted != whole, "просевшая характеристика не отличается цветом"
+        await browser.close()
+
+
+async def test_a_whole_fighter_has_no_injury_chip(server):
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#hero-effects .effect.hurt").count() == 0
+        assert await page.locator("#stats .hurt").count() == 0
+        await browser.close()
+
+
+async def test_the_hospital_treats_the_injury_for_its_own_price(server):
+    """У травмы своя карточка в больнице, своя цена и свой срок."""
+    walker = make_player(location="hospital")
+    card = hurt_card(walker)
+    desk = {
+        **hospital_state(hp=300),
+        "injury": {
+            "code": "broken_leg", "title": "перелом ноги",
+            "hurt_title": "тяжёлая травма",
+            "text": "Тяжёлая травма: перелом ноги. Ещё 10 часов 15 минут.",
+            "price": 300, "affordable": True, "cure_minutes": 20,
+            "crippled": True,
+        },
+    }
+    asked = []
+
+    async def cure(route):
+        asked.append(route.request.post_data)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({
+                "card": build_card(walker, TOKEN, viewer_id=42),
+                "hospital": hospital_state(hp=300),
+                "done": {"title": "перелом ноги", "minutes": 20},
+            }),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("hospital"), card, hospital=desk
+        )
+        await page.route("**/api/injury", cure)
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        await page.wait_for_selector(".cure")
+
+        hurt = page.locator(".cure.hurt")
+        assert await hurt.count() == 1
+        said = await hurt.inner_text()
+        assert "перелом ноги" in said and "Ещё 10 часов 15 минут" in said
+        assert "20 мин" in said
+        button = hurt.locator(".btn")
+        assert await button.inner_text() == "Лечить · 300 💰"
+
+        await button.click()
+        await page.wait_for_function(
+            "() => !document.querySelector('.cure.hurt')", timeout=5000
+        )
+        assert asked, "лечение не ушло на сервер"
+        await browser.close()
+
+
+async def test_a_whole_fighter_sees_no_injury_in_the_hospital(server):
+    walker = make_player(location="hospital")
+    card = build_card(walker, TOKEN, viewer_id=walker.user_id)
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("hospital"), card, hospital=hospital_state(hp=40)
+        )
+        await page.locator(".zone-house").filter(has_text="Больница").click()
+        await page.wait_for_selector("#hospital:not(.hidden)")
+        await page.wait_for_selector(".cure")
+
+        assert await page.locator(".cure.hurt").count() == 0
         await browser.close()
 
 
@@ -4447,9 +5057,23 @@ async def test_the_card_says_where_the_fighter_stands(server):
         )
 
         walker = make_player()
-        walker.set_out("pharmacy", 20)
+        # Дорога длинная нарочно: проверяется «боец в пути», а не сколько
+        # ему идти, и короткий путь зависел бы от скорости машины
+        walker.set_out("pharmacy", 600)
         moving = build_card(walker, TOKEN, viewer_id=walker.user_id)
+        # Подменяем и ответ сервера, а не только рисуем карточку руками.
+        # Карточка перечитывается сама — по сердцебиению и после боя, — и
+        # без подмены очередное обновление возвращало бы прежний дом
+        # поверх дороги. Этот тест из-за такой гонки мигал через раз
+        await page.route(
+            "**/api/card*",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(moving),
+            ),
+        )
         await page.evaluate("card => render(card)", moving)
+        await page.wait_for_selector("#hero-city.on-road")
 
         line = await page.locator("#hero-city").inner_text()
         assert "В пути до дома «Аптека»" in line
@@ -4462,7 +5086,9 @@ async def test_the_info_card_says_where_the_fighter_is_walking(server):
     rival = make_player()
     rival.user_id = 43
     rival.nickname = "Марла"
-    rival.set_out("pharmacy", 20)
+    # Дорога длинная нарочно — см. соседний тест: проверяется «в пути»,
+    # а не длина пути, и короткая дорога зависела бы от скорости машины
+    rival.set_out("pharmacy", 600)
     rival_card = build_card(rival, TOKEN, viewer_id=me.user_id)
 
     async with async_playwright() as pw:
@@ -5467,6 +6093,139 @@ async def test_the_calendar_stands_seven_cells_to_a_row(server):
         await browser.close()
 
 
+async def test_the_reward_window_stays_inside_itself_on_a_narrow_phone(server):
+    """Окно наград не вылезает за свою ширину на узком экране.
+
+    Тест рядом мерит календарь на 420 точках — там всё сходилось, — а
+    андроид это 360, и ровно там семь клеток переставали ужиматься и
+    уезжали за край окна. Поэтому меряем узкими экранами и не одним.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        for width in (360, 320, 280):
+            await page.set_viewport_size({"width": width, "height": 780})
+            await page.wait_for_timeout(50)
+            out = await page.evaluate("""() => {
+              const box = document.getElementById('daily-box');
+              const edge = box.getBoundingClientRect().right;
+              const over = [];
+              box.querySelectorAll('*').forEach((one) => {
+                if (one.getBoundingClientRect().right > edge + 0.5)
+                  over.push(one.className);
+              });
+              const cells = [...box.querySelectorAll('.gift')];
+              const first = cells[0].getBoundingClientRect();
+              return {
+                scroll: box.scrollWidth - box.clientWidth,
+                over: over.slice(0, 5),
+                inRow: cells.filter((one) => Math.abs(
+                  one.getBoundingClientRect().y - first.y) < 1).length,
+                square: Math.abs(first.width - first.height) < 1.5,
+                width: first.width,
+              };
+            }""")
+            assert out["over"] == [], f"на {width} за окно вылезло: {out['over']}"
+            assert out["scroll"] == 0, f"на {width} окно поехало вбок"
+            # И календарь при этом остаётся календарём, а не столбиком
+            assert out["inRow"] == 7, f"на {width} в ряду {out['inRow']} клеток"
+            assert out["square"], f"на {width} клетка перестала быть квадратной"
+            assert out["width"] > 14, f"на {width} клетка схлопнулась"
+        await browser.close()
+
+
+async def test_no_gift_icon_spills_out_of_its_cell(server):
+    """Значок не вылезает из клетки на узком экране.
+
+    Обратная сторона того, что клетки ужимаются: значок в неподвижном
+    кегле рано или поздно окажется шире клетки. Поэтому он едет за
+    шириной экрана вместе с ней.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+
+        for width in (420, 360, 320, 280):
+            await page.set_viewport_size({"width": width, "height": 780})
+            await page.wait_for_timeout(50)
+            worst = await page.evaluate("""() => {
+              let over = -99;
+              document.querySelectorAll('#daily-ladder .gift').forEach((cell) => {
+                const box = cell.getBoundingClientRect();
+                const icon = cell.querySelector('.gift-icon').getBoundingClientRect();
+                over = Math.max(over, icon.width - box.width);
+              });
+              return over;
+            }""")
+            assert worst <= 0, f"на {width} значок шире клетки на {worst:.1f}"
+
+            # И то же правило, но не глифом, а кеглем: эмодзи рисуются
+            # разной ширины, и завтрашняя награда может прийти со значком
+            # шире сегодняшних. Доля от клетки — то, что вёрстка обещает
+            # любому значку, а не только тем, что лежат в календаре сейчас
+            share = await page.evaluate("""() => {
+              let most = 0;
+              document.querySelectorAll('#daily-ladder .gift').forEach((cell) => {
+                const icon = cell.querySelector('.gift-icon');
+                most = Math.max(most, parseFloat(getComputedStyle(icon).fontSize)
+                  / cell.getBoundingClientRect().width);
+              });
+              return most;
+            }""")
+            assert share <= 0.70, f"на {width} кегель значка — {share:.0%} клетки"
+        await browser.close()
+
+
+async def test_a_wider_emoji_font_does_not_push_the_calendar_out(server):
+    """Шрифт на телефоне рисует эмодзи шире — календарь всё равно на месте.
+
+    Баг пришёл с андроида, а мерить его приходится здешним хромиумом, и
+    эмодзи у них разной ширины. Поэтому широкий шрифт подделываем: кегель
+    значка задираем поверх вёрстки и смотрим, держится ли строка. Клетка
+    при этом обязана остаться прежней ширины — не распухнуть по значку.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        await page.set_viewport_size({"width": 360, "height": 780})
+        await page.wait_for_timeout(50)
+        before = await page.evaluate(
+            "() => document.querySelector('.gift').getBoundingClientRect().width"
+        )
+
+        await page.add_style_tag(
+            content="#daily-ladder .gift-icon { font-size: 34px !important; }"
+        )
+        await page.wait_for_timeout(50)
+
+        out = await page.evaluate("""() => {
+          const box = document.getElementById('daily-box');
+          const ladder = document.getElementById('daily-ladder');
+          return {
+            scroll: box.scrollWidth - box.clientWidth,
+            ladder: ladder.scrollWidth - ladder.clientWidth,
+            cell: document.querySelector('.gift').getBoundingClientRect().width,
+          };
+        }""")
+        assert out["cell"] == pytest.approx(before, abs=0.5), "клетка распухла по значку"
+        assert out["ladder"] == 0, "строка клеток поехала вбок"
+        assert out["scroll"] == 0, "окно поехало вбок"
+        await browser.close()
+
+
 async def test_a_short_month_gets_a_short_calendar(server):
     """В феврале клеток двадцать восемь — календарь считает по месяцу."""
     player = make_player()
@@ -5759,22 +6518,27 @@ async def test_a_missing_picture_falls_back_to_the_icon(server):
         await browser.close()
 
 
-async def test_the_calendar_button_is_dressed_like_the_panel(server):
-    """Кнопка одета как таблица под ней: тот же фон, кромка и цвет текста.
+async def test_the_three_profile_buttons_are_dressed_alike(server):
+    """«Характеристики», «Документы» и «Награды» — одна кнопка на всех.
 
-    Синяя кнопка посреди спокойной карточки читается как чужая, поэтому
-    сверяем не класс, а посчитанные браузером цвета — они и решают.
+    Сверяем не класс, а посчитанные браузером цвета и размеры: класс можно
+    поставить один, а перекрыть его тремя разными правилами. Кнопка
+    выбранного раздела горит, поэтому сравниваем невыбранные между собой.
     """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+    card["documents"] = [make_policy()]
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, build_shop(player))
-        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#hero-tabs .hero-act")
 
-        def looks(selector):
-            return page.locator(selector).evaluate(
+        acts = page.locator("#hero-tabs .hero-act")
+        assert await acts.count() == 3, "три кнопки в одном ряду"
+
+        def looks(one):
+            return one.evaluate(
                 "node => {"
                 "  const style = getComputedStyle(node);"
                 "  return {"
@@ -5783,19 +6547,82 @@ async def test_the_calendar_button_is_dressed_like_the_panel(server):
                 "    edge: style.borderTopColor,"
                 "    width: style.borderTopWidth,"
                 "    round: style.borderTopLeftRadius,"
+                "    size: style.fontSize,"
+                "    weight: style.fontWeight,"
+                "    padY: style.paddingTop,"
+                "    padX: style.paddingLeft,"
                 "  };"
                 "}"
             )
 
-        gate = await looks("#hero-daily")
-        panel = await looks("#hero .panel")
+        # Невыбранные две — «Документы» и «Награды»
+        papers = await looks(acts.nth(1))
+        daily = await looks(acts.nth(2))
+        assert papers == daily, f"кнопки разной одежды: {papers} против {daily}"
 
-        assert gate == panel, f"кнопка выбивается из карточки: {gate} против {panel}"
+        # И ширина одна: ряд делится ровно, а не по длине надписи
+        widths = await acts.evaluate_all(
+            "boxes => boxes.map(box => Math.round(box.getBoundingClientRect().width))"
+        )
+        assert max(widths) - min(widths) <= 1, f"кнопки разной ширины: {widths}"
+        await browser.close()
+
+
+async def test_the_chosen_section_is_the_only_lit_button(server):
+    """Выбранный раздел горит, а «Награды» — окно, и гореть ей нечем."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-tabs .hero-act")
+
+        lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
+        assert len(lit) == 1 and "Характеристики" in lit[0]
+
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
+        assert len(lit) == 1 and "Документы" in lit[0]
+
+        # Награды нажали — ряд не поменялся, открылось окно
+        await page.locator("#hero-daily").click()
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
+        assert len(lit) == 1 and "Документы" in lit[0]
+        await browser.close()
+
+
+async def test_a_waiting_reward_puts_a_dot_on_its_button(server):
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state(days=2, waiting=True, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-daily")
+
+        assert await page.locator("#hero-daily .hero-act-mark.dot").count() == 1
+        await browser.close()
+
+
+async def test_without_a_calendar_the_row_holds_only_two_buttons(server):
+    """Кнопка без содержимого — обещание, которого не будет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card.pop("daily", None)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-tabs .hero-act")
+
+        assert await page.locator("#hero-tabs .hero-act").count() == 2
+        assert await page.locator("#hero-daily").count() == 0
         await browser.close()
 
 
 async def test_the_hero_tab_opens_the_calendar_on_demand(server):
-    """Кнопка «Ежедневные награды» открывает окно, когда игрок сам захочет."""
+    """Кнопка «Награды» открывает окно, когда игрок сам захочет."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     # окно само не всплывает: день засчитан, забирать нечего
@@ -5808,7 +6635,7 @@ async def test_the_hero_tab_opens_the_calendar_on_demand(server):
 
         gate = page.locator("#hero-daily")
         assert await gate.is_visible()
-        assert "Ежедневные награды" in await gate.inner_text()
+        assert "Награды" in await gate.inner_text()
 
         await gate.click()
 
@@ -6096,4 +6923,1642 @@ async def test_when_the_turn_norm_is_spent_the_panel_says_so(server):
         await page.wait_for_selector(".energy-note")
 
         assert "кончились" in await page.locator(".energy-note").inner_text()
+        await browser.close()
+
+
+# ---------- рынок: обмен между бойцами ----------
+#
+# Стол общий, и глазами страницы это значит одно: своя половина
+# редактируется, чужая — нет, и всё, что на них лежит, приходит с
+# сервера. Тесты здесь проверяют именно это разделение, а не разметку.
+
+
+def market_crowd(*rows) -> dict:
+    """Рынок с людьми: каждая строка — кто и в сети ли он."""
+    return dict(
+        EMPTY_TRADE,
+        credits=500,
+        crowd=[
+            {
+                "user_id": user_id,
+                "nickname": nickname,
+                "level": 5,
+                "pro": False,
+                "fclass": {"code": "warrior", "title": "Воин", "emoji": "⚔️"},
+                "online": online,
+                "presence": "🟢 В клубе" if online else "Не был в клубе 20 минут",
+                "trading": trading,
+                "busy": False,
+                "callable": not trading,
+            }
+            for user_id, nickname, online, trading in rows
+        ],
+    )
+
+
+def trade_offer(key: str, title: str, count: int = 1, stack: bool = False) -> dict:
+    return {
+        "kind": "potion" if stack else "gear",
+        "key": key,
+        "title": title,
+        "icon": "🔪",
+        "image": "",
+        "slot_title": "Оружие",
+        "wear": 3,
+        "max_wear": 20,
+        "wear_text": "3 из 20",
+        "count": count,
+        "max_count": 5 if stack else 1,
+        "stack": stack,
+        "shop_price": 110,
+    }
+
+
+def trade_table(
+    mine_credits: int = 0,
+    his_credits: int = 0,
+    mine_items=(),
+    his_items=(),
+    mine_ready: bool = False,
+    his_ready: bool = False,
+    basket=(),
+    version: int = 1,
+) -> dict:
+    """Стол, как его отдаёт сервер: своя половина отдельно от чужой."""
+    return dict(
+        EMPTY_TRADE,
+        credits=500,
+        trade={
+            "id": 1,
+            "version": version,
+            "mine": {
+                "user_id": 42, "nickname": "Растафарайчик",
+                "credits": mine_credits, "ready": mine_ready,
+                "items": list(mine_items),
+                "empty": not mine_items and mine_credits <= 0,
+            },
+            "his": {
+                "user_id": 43, "nickname": "Марла",
+                "credits": his_credits, "ready": his_ready,
+                "items": list(his_items),
+                "empty": not his_items and his_credits <= 0,
+            },
+            "max_items": 4,
+            "max_credits": 500,
+            "basket": list(basket),
+            "waiting": mine_ready and not his_ready,
+        },
+    )
+
+
+async def open_trade(pw, server, trade=None):
+    """Открыть рынок. Обмен живёт на нём, и только на нём."""
+    player = make_player("market")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), trade=trade,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "trade")
+    await page.wait_for_selector("#trade:not(.hidden)")
+    return browser, page
+
+
+async def test_an_empty_market_says_the_swap_needs_a_second(server):
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server)
+
+        note = await page.locator("#trade-note").inner_text()
+        assert "нужен второй" in note
+        assert await page.locator(".fighter").count() == 0
+        await browser.close()
+
+
+async def test_those_in_the_club_stand_above_those_who_left(server):
+    """«Онлайн сверху и офлайн, если не в клубе» — двумя группами."""
+    crowd = market_crowd(
+        (43, "Марла", True, False),
+        (44, "Боб", False, False),
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=crowd)
+        await page.wait_for_selector(".fighter")
+
+        heads = await page.locator(".crowd-head").all_inner_texts()
+        assert heads[0].startswith("🟢 В сети")
+        assert "Не в клубе" in heads[1]
+        names = await page.locator(".fighter-name").all_inner_texts()
+        assert names == ["Марла", "Боб"]
+        # Ушедший бледнее, но позвать его всё равно можно
+        assert await page.locator(".fighter.away").count() == 1
+        assert await page.locator(".crowd .btn").count() == 2
+        await browser.close()
+
+
+async def test_the_button_by_a_fighter_says_what_it_opens(server):
+    """«Обмен», а не «Позвать»: нажатие открывает стол, а не зовёт к себе."""
+    crowd = market_crowd((43, "Марла", True, False))
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=crowd)
+        await page.wait_for_selector(".fighter")
+
+        assert await page.locator(".crowd .btn").all_inner_texts() == ["Обмен"]
+        await browser.close()
+
+
+async def test_a_fighter_already_swapping_has_no_button(server):
+    crowd = market_crowd((43, "Марла", True, True))
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=crowd)
+        await page.wait_for_selector(".fighter")
+
+        assert await page.locator(".crowd .btn").count() == 0
+        assert "Уже меняется" in await page.locator(".crowd-busy").inner_text()
+        await browser.close()
+
+
+async def test_the_invitation_shows_both_answers_and_a_countdown(server):
+    invited = dict(
+        EMPTY_TRADE,
+        invite={"from_id": 43, "from_name": "Марла", "to_id": 42, "name": "Марла",
+                "seconds_left": 45},
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=invited)
+        await page.wait_for_selector(".invite")
+
+        assert "Марла предлагает обмен." in await page.locator(".invite-text").inner_text()
+        assert "45" in await page.locator("#invite-clock").inner_text()
+        buttons = await page.locator(".invite-buttons .btn").all_inner_texts()
+        assert buttons == ["Согласиться", "Отказаться"]
+        await browser.close()
+
+
+async def test_the_sent_invitation_can_be_taken_back(server):
+    sent = dict(
+        EMPTY_TRADE,
+        sent={"from_id": 42, "from_name": "Растафарайчик", "to_id": 43,
+              "name": "Марла", "seconds_left": 12},
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=sent)
+        await page.wait_for_selector(".invite.sent")
+
+        assert "Ждём ответа: Марла." in await page.locator(".invite-text").inner_text()
+        assert "Забрать приглашение" in await page.locator(".invite .btn").inner_text()
+        await browser.close()
+
+
+async def test_only_your_own_half_of_the_table_can_be_edited(server):
+    """Чужую половину видно, но на ней нет ни поля, ни крестика."""
+    table = trade_table(
+        mine_credits=200,
+        his_credits=50,
+        mine_items=[trade_offer("11", "Нож")],
+        his_items=[trade_offer("12", "Бита")],
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table")
+
+        own = page.locator(".half.own")
+        theirs = page.locator(".half:not(.own)")
+        assert await own.locator("#trade-credits").count() == 1
+        assert await theirs.locator("input").count() == 0
+        assert await own.locator(".lot-off").count() == 1
+        assert await theirs.locator(".lot-off").count() == 0
+        # Своя половина — «Ты отдаёшь», чужая подписана именем
+        assert "Ты отдаёшь" in await own.locator(".half-who").inner_text()
+        assert "Марла отдаёт" in await theirs.locator(".half-who").inner_text()
+        await browser.close()
+
+
+async def test_the_other_half_names_his_things_and_shows_their_wear(server):
+    """На чужой половине лежат предметы, а не четыре одинаковых «вещи»."""
+    table = trade_table(
+        mine_items=[trade_offer("11", "Нож")],
+        his_items=[
+            dict(trade_offer("12", "Бита"), icon="🏏", wear_text="Бита цела"),
+            dict(trade_offer("13", "Куртка"), icon="🧥", wear_text="Куртка на исходе"),
+        ],
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table")
+
+        theirs = page.locator(".half:not(.own)")
+        assert await theirs.locator(".lot-title").all_inner_texts() == ["Бита", "Куртка"]
+        assert await theirs.locator(".lot-wear").all_inner_texts() == [
+            "Бита цела", "Куртка на исходе",
+        ]
+        assert await theirs.locator(".lot-pic").first.inner_text() == "🏏"
+        await browser.close()
+
+
+async def test_the_other_half_stands_above_your_own(server):
+    """Правят своё — значит своё ближе к пальцу, а чужое сверху."""
+    table = trade_table(mine_credits=10, his_credits=20)
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table")
+
+        halves = await page.locator(".half").evaluate_all(
+            "boxes => boxes.map(box => box.className)"
+        )
+        assert "own" not in halves[0]
+        assert "own" in halves[1]
+        await browser.close()
+
+
+async def test_the_ready_half_is_marked_for_both_to_see(server):
+    table = trade_table(mine_credits=100, his_ready=True)
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table")
+
+        ready = page.locator(".half.ready")
+        assert await ready.count() == 1
+        assert "Готов" in await ready.locator(".half-mark").inner_text()
+        assert "Думает" in await page.locator(".half.own .half-mark").inner_text()
+        await browser.close()
+
+
+async def test_the_table_warns_that_an_edit_drops_both_confirmations(server):
+    table = trade_table(mine_credits=100)
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table-note")
+
+        assert "снимает оба согласия" in await page.locator(".table-note").inner_text()
+        buttons = await page.locator(".table-buttons .btn").all_inner_texts()
+        assert buttons == ["Подтвердить", "Отказаться"]
+        await browser.close()
+
+
+async def test_a_confirmed_half_offers_to_change_its_mind(server):
+    table = trade_table(mine_credits=100, mine_ready=True)
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".table-buttons")
+
+        buttons = await page.locator(".table-buttons .btn").all_inner_texts()
+        assert buttons == ["Передумать", "Отказаться"]
+        assert "Ждём второго" in await page.locator(".table-note").inner_text()
+        await browser.close()
+
+
+async def test_an_empty_table_cannot_be_confirmed(server):
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=trade_table())
+        await page.wait_for_selector(".table-buttons")
+
+        confirm = page.locator(".table-buttons .btn").first
+        assert await confirm.inner_text() == "Подтвердить"
+        assert await confirm.is_disabled()
+        await browser.close()
+
+
+async def test_a_stack_on_the_table_shows_how_many(server):
+    """Склянки передают числом — и число видно прямо в строке."""
+    table = trade_table(
+        mine_items=[trade_offer("heal_small", "Малая аптечка", 3, stack=True)]
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".lot")
+
+        assert "Малая аптечка ×3" in await page.locator(".lot-title").inner_text()
+        await browser.close()
+
+
+async def test_the_basket_opens_in_a_window_over_the_table(server):
+    table = trade_table(
+        basket=[
+            trade_offer("11", "Нож"),
+            trade_offer("heal_small", "Малая аптечка", 2, stack=True),
+        ]
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".half.own .btn")
+        await page.locator(".half.own .btn").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert "Не больше 4" in await page.locator("#sheet-note").inner_text()
+        titles = await page.locator("#sheet-list .lot-title").all_inner_texts()
+        assert titles == ["Нож", "Малая аптечка"]
+        # У вещи одна кнопка, у склянок вместо неё поле со счётом
+        assert await page.locator("#sheet-list .stack-count").count() == 1
+        assert await page.locator("#sheet-list .lot .btn").count() == 2
+        await browser.close()
+
+
+async def test_the_basket_says_how_many_of_a_stack_are_left(server):
+    table = trade_table(
+        basket=[trade_offer("heal_small", "Малая аптечка", 2, stack=True)]
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=table)
+        await page.wait_for_selector(".half.own .btn")
+        await page.locator(".half.own .btn").click()
+        await page.wait_for_selector("#sheet-list .lot")
+
+        assert "В рюкзаке: 5 шт." in await page.locator("#sheet-list .lot-wear").inner_text()
+        assert await page.locator(".stack-count").input_value() == "2"
+        await browser.close()
+
+
+async def test_what_the_last_swap_ended_with_stays_on_screen(server):
+    """Сервер говорит это один раз, а читать человеку — дольше двух секунд."""
+    done = dict(EMPTY_TRADE, done="Обмен прошёл.")
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=done)
+
+        assert "Обмен прошёл." in await page.locator("#trade-note").inner_text()
+        # Следующий опрос приходит уже без записки — она всё равно на месте
+        await page.evaluate(
+            "data => showTrade(data)", dict(EMPTY_TRADE, done="")
+        )
+        assert "Обмен прошёл." in await page.locator("#trade-note").inner_text()
+        await browser.close()
+
+
+async def test_a_new_table_wipes_the_last_swaps_note(server):
+    done = dict(EMPTY_TRADE, done="Обмен прошёл.")
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server, trade=done)
+
+        await page.evaluate("data => showTrade(data)", trade_table(mine_credits=5))
+        await page.wait_for_selector(".table")
+
+        assert "Обмен прошёл." not in await page.locator("#trade-note").inner_text()
+        await browser.close()
+
+
+async def test_the_market_screen_is_left_by_the_map_button(server):
+    async with async_playwright() as pw:
+        browser, page = await open_trade(pw, server)
+
+        await page.locator("#trade-back").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+
+        assert await page.locator("#trade").is_hidden()
+        await browser.close()
+
+
+# ---------- документы бойца и страховая ----------
+#
+# Раздел «Документы» проверяется на двух вещах: он рядом с «Параметрами», а
+# не вместо них, и он только свой. Полис с чужим именем и сроком соперник
+# видеть не должен — как и рюкзак.
+
+
+def make_policy(
+    active: bool = True, auto_renew: bool = True, by_pro: bool = False
+) -> dict:
+    """Бланк полиса, как его отдаёт сервер.
+
+    `by_pro` — полис, который держит подписка: у него другой срок, другие
+    обещания и нет переключателя автопродления.
+    """
+    from bot.game.health import now_ts
+    from bot.game.insurance import NOTE, POLICY_SECONDS, Policy
+    from bot.webapp.documents import policy_document
+
+    moment = now_ts()
+    player = make_player()
+    player.policy = (
+        Policy(issued=moment, until=moment + POLICY_SECONDS, auto_renew=auto_renew)
+        if active
+        else Policy(
+            issued=moment - 2 * POLICY_SECONDS,
+            until=moment - 60,
+            auto_renew=auto_renew,
+        )
+    )
+    if by_pro:
+        # Подписка держит полис ровно до своего конца: срок один и тот же
+        player.pro_until = player.policy.until
+    paper = policy_document(player, moment)
+    assert paper["note"] == NOTE and paper["by_pro"] is by_pro
+    return paper
+
+
+def card_with_papers(papers, is_self: bool = True) -> dict:
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=42 if is_self else 43)
+    card["documents"] = papers
+    card["is_self"] = is_self
+    return card
+
+
+async def open_hero(pw, server, card=None):
+    browser, page = await open_page(pw, server, card or card_with_papers([]))
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.wait_for_selector("#hero-tabs .hero-act")
+    return browser, page
+
+
+async def test_the_character_screen_has_two_sections_and_starts_on_stats(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server)
+
+        tabs = await page.locator("#hero-tabs .hero-act").all_inner_texts()
+        assert len(tabs) == 2
+        assert "Характеристики" in tabs[0] and "Документы" in tabs[1]
+        # Параметры открыты, документы свёрнуты
+        assert await page.locator("#hero-stats").is_visible()
+        assert await page.locator("#hero-papers").is_hidden()
+        await browser.close()
+
+
+async def test_the_fighter_himself_stays_above_both_sections(server):
+    """Куклу и здоровье за вкладку не прячем: они нужны в обоих разделах."""
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.wait_for_selector("#hero-papers:not(.hidden)")
+
+        assert await page.locator("#hero-avatar").is_visible()
+        assert await page.locator("#hero-hp").is_visible()
+        assert await page.locator("#hero-stats").is_hidden()
+        await browser.close()
+
+
+async def test_the_buttons_are_three_bare_words(server):
+    """Ни значков, ни счётчиков: три слова читаются с одного взгляда.
+
+    Число документов на кнопке и эмодзи перед каждым словом превращали ряд
+    в три разные надписи вместо одного выбора.
+    """
+    player = make_player()
+    card = card_with_papers([make_policy(), make_policy()])
+    card["daily"] = daily_state(days=2, waiting=False, fresh=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero-tabs .hero-act")
+
+        said = await page.locator("#hero-tabs .hero-act").all_inner_texts()
+
+        assert said == ["Характеристики", "Документы", "Награды"]
+        # Двух документов на кнопке не видно: она про раздел, а не про счёт
+        assert not any(ch.isdigit() for ch in "".join(said))
+        await browser.close()
+
+
+async def test_the_policy_names_the_holder_the_period_and_what_it_gives(server):
+    """Ровно то, что просили видеть в описании полиса."""
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.wait_for_selector(".paper")
+
+        assert "Полис страхования жизни и здоровья" in await page.locator(
+            ".paper-title"
+        ).inner_text()
+        rows = await page.locator(".paper-rows li").all_inner_texts()
+        joined = " | ".join(rows)
+        assert "Застрахован" in joined and "Растафарайчик" in joined
+        assert "Период страхования" in joined
+        gives = await page.locator(".paper-gives li").all_inner_texts()
+        assert any("80%" in line for line in gives)
+        assert "Действует" in await page.locator(".paper-state").inner_text()
+        await browser.close()
+
+
+async def test_an_expired_policy_says_so_in_words_not_only_in_grey(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(
+            pw, server, card_with_papers([make_policy(active=False)])
+        )
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.wait_for_selector(".paper")
+
+        assert await page.locator(".paper.stale").count() == 1
+        assert "Срок вышел" in await page.locator(".paper-state").inner_text()
+        assert "страховой компании" in await page.locator(".paper-dead").inner_text()
+        await browser.close()
+
+
+async def test_the_renewal_switch_says_which_way_it_is_set(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.wait_for_selector(".paper-renew")
+
+        said = await page.locator(".paper-renew-state").inner_text()
+        assert "Автопродление включено" in said
+        assert "Отключить" in await page.locator(".paper-renew .btn").inner_text()
+        await browser.close()
+
+
+async def test_the_switch_offers_to_turn_the_renewal_back_on(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(
+            pw, server, card_with_papers([make_policy(auto_renew=False)])
+        )
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.wait_for_selector(".paper-renew")
+
+        said = await page.locator(".paper-renew-state").inner_text()
+        assert "выключено" in said
+        assert "Включить" in await page.locator(".paper-renew .btn").inner_text()
+        await browser.close()
+
+
+async def test_an_empty_documents_section_says_where_papers_come_from(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hero(pw, server)
+        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.wait_for_selector("#hero-papers:not(.hidden)")
+
+        assert await page.locator(".paper").count() == 0
+        assert "страховой компании" in await page.locator("#papers-note").inner_text()
+        await browser.close()
+
+
+async def test_somebody_elses_card_has_no_documents_tab_at_all(server):
+    """Вкладка без содержимого — это обещание, которого не будет."""
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card_with_papers([], is_self=False)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        assert await page.locator("#hero-tabs").is_hidden()
+        assert await page.locator("#hero-stats").is_visible()
+        await browser.close()
+
+
+async def open_insurance(pw, server, state=None):
+    player = make_player("insurance_office")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), insurance=state,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "insurance")
+    await page.wait_for_selector("#insurance-body .policy-buy")
+    return browser, page
+
+
+async def test_the_office_offers_the_policy_and_names_its_price(server):
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server)
+
+        assert "Полис страхования жизни и здоровья" in await page.locator(
+            ".paper.offer .paper-title"
+        ).inner_text()
+        assert "300 💰 за 30 дней" in await page.locator(
+            ".policy-buy-price"
+        ).inner_text()
+        assert "Оформить полис" in await page.locator(".policy-buy .btn").inner_text()
+        await browser.close()
+
+
+async def test_the_office_shows_the_hospital_price_list_both_ways(server):
+    """Проценты словами убеждают хуже, чем «300 → 60»."""
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server)
+
+        was = await page.locator(".policy-price-was").all_inner_texts()
+        now = await page.locator(".policy-price-now").all_inner_texts()
+        assert was == ["100 💰", "200 💰", "300 💰"]
+        assert now == ["20 💰", "40 💰", "60 💰"]
+        await browser.close()
+
+
+async def test_a_subscriber_is_told_the_subscription_holds_his_policy(server):
+    """Иначе кнопка с ценой у человека, у которого полис уже есть, — ошибка."""
+    from bot.game.insurance import PRO_BENEFITS
+
+    state = dict(
+        empty_insurance(),
+        pro=True,
+        by_pro=True,
+        insured=True,
+        policy=make_policy(by_pro=True),
+        gives=list(PRO_BENEFITS),
+        action="Продлить на месяц",
+        why="Полис держит подписка — до её последнего часа. Купленный месяц "
+            "ляжет сверху и останется, когда подписка кончится.",
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server, state)
+
+        assert "держит подписка" in await page.locator("#insurance-note").inner_text()
+        assert "держит подписка" in await page.locator(".policy-buy-why").inner_text()
+        # Цена та же, что у всех: платят за время после подписки
+        assert "300 💰" in await page.locator(".policy-buy-price").inner_text()
+        # У бланка подписки переключателя нет — есть строка о том, чем он жив
+        assert await page.locator(".paper-renew").count() == 0
+        assert "Полис держит подписка PRO" in await page.locator(
+            ".paper-held"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_a_paid_policy_keeps_its_renewal_switch(server):
+    state = dict(
+        empty_insurance(), insured=True, policy=make_policy(),
+        action="Продлить на месяц",
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server, state)
+
+        assert await page.locator(".paper-renew").count() == 1
+        assert await page.locator(".paper-held").count() == 0
+        assert "Оплачен" in await page.locator(".paper-issuer").inner_text()
+        await browser.close()
+
+
+async def test_the_price_stays_on_the_button_when_money_is_short(server):
+    state = dict(empty_insurance(), credits=100, affordable=False)
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server, state)
+
+        assert await page.locator(".policy-buy .btn").is_disabled()
+        assert "300 💰" in await page.locator(".policy-buy-price").inner_text()
+        await browser.close()
+
+
+async def test_the_office_shows_the_live_policy_as_the_document_itself(server):
+    state = dict(
+        empty_insurance(),
+        insured=True,
+        policy=make_policy(),
+        action="Продлить на месяц",
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server, state)
+
+        # Тот же бланк, что в документах, а не его пересказ
+        assert await page.locator(".paper:not(.offer)").count() == 1
+        assert "Растафарайчик" in await page.locator(".paper-rows").inner_text()
+        assert "Продлить на месяц" in await page.locator(
+            ".policy-buy .btn"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_the_office_screen_is_left_by_the_map_button(server):
+    async with async_playwright() as pw:
+        browser, page = await open_insurance(pw, server)
+
+        await page.locator("#insurance-back").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+
+        assert await page.locator("#insurance").is_hidden()
+        await browser.close()
+
+
+async def test_the_hospital_names_the_policy_when_it_cuts_the_price(server):
+    """Одно дешёвое число выглядело бы просто дешёвым лечением."""
+    state = hospital_state(hp=40)
+    state["injury"] = {
+        "code": "broken_arm", "title": "перелом руки", "hurt_title": "Тяжёлая травма",
+        "text": "Тяжёлая травма: перелом руки. Ещё 10 часов.",
+        "price": 60, "full_price": 300, "insured": True, "saved": 240,
+        "discount": 80, "affordable": True, "cure_minutes": 20, "crippled": False,
+    }
+    player = make_player("hospital")
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), hospital=state,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "hospital")
+        await page.wait_for_selector(".cure.hurt")
+
+        said = await page.locator(".cure-insured").inner_text()
+        assert "По полису: −80%" in said
+        assert "вместо 300 💰" in said and "Экономия 240 💰" in said
+        assert "Лечить · 60 💰" in await page.locator(".cure.hurt .btn").inner_text()
+        await browser.close()
+
+
+# ---------- выход на карту ----------
+#
+# Боец приходит в дом ногами и уходит так же. Нижняя панель ведёт в клуб,
+# в рюкзак и в карточку — то есть куда угодно, кроме карты, с которой он в
+# этот дом зашёл. Поэтому кнопка «На карту» нужна в каждом доме, а не в
+# тех четырёх, до которых дошли руки.
+
+# Все экраны-дома: то, куда боец заходит с карты. Рюкзак и карточка сюда
+# не идут — это вкладки, а не места; касса — лист поверх экрана, и у неё
+# своя кнопка «Назад», ведущая туда, откуда её открыли
+HOUSE_SCREENS_UI = [
+    "club", "shop", "magic", "workshop", "hospital", "insurance", "trade",
+    "house",
+]
+
+
+async def test_every_house_has_a_way_back_to_the_map(server):
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        for screen in HOUSE_SCREENS_UI:
+            await open_screen(page, screen)
+            await page.wait_for_selector(f"#{screen}:not(.hidden)")
+            back = page.locator(f"#{screen}-back")
+            assert await back.count() == 1, f"{screen}: нет выхода на карту"
+            assert await back.is_visible(), f"{screen}: выход не виден"
+            assert "На карту" in await back.inner_text(), f"{screen}: чужая надпись"
+        await browser.close()
+
+
+async def test_the_way_back_really_opens_the_map(server):
+    """Кнопка есть — и она работает: в каждом доме, а не только в первом."""
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        for screen in HOUSE_SCREENS_UI:
+            await open_screen(page, screen)
+            await page.wait_for_selector(f"#{screen}:not(.hidden)")
+            await page.locator(f"#{screen}-back").click()
+            await page.wait_for_selector("#map:not(.hidden)")
+            assert await page.locator(f"#{screen}").is_hidden(), screen
+        await browser.close()
+
+
+async def test_the_title_stays_under_the_way_back_in_every_house(server):
+    """Заголовок стоит под кнопкой, а не рядом с ней.
+
+    Иначе в одних домах он оказывается на первой строке, в других на
+    второй, и шапки домов перестают быть одной шапкой.
+    """
+    player = make_player()
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        for screen in HOUSE_SCREENS_UI:
+            await open_screen(page, screen)
+            await page.wait_for_selector(f"#{screen}:not(.hidden)")
+            # Заголовок — не внутри шапки: там живут выход и кошелёк
+            inside = await page.locator(f"#{screen} .screen-head .screen-title").count()
+            assert inside == 0, f"{screen}: заголовок в шапке"
+            head = await page.locator(f"#{screen} .screen-head").bounding_box()
+            title = await page.locator(f"#{screen} .screen-title").first.bounding_box()
+            assert title["y"] >= head["y"] + head["height"] - 1, screen
+        await browser.close()
+
+
+# ---------- тренажёрный зал ----------
+#
+# Экран собран по срочности: что идёт сейчас, что накоплено, и только
+# потом расписание. Без абонемента не показывается ничего, кроме него
+# самого: полоса прогресса под запертой дверью только дразнит.
+
+
+async def open_gym(pw, server, state=None):
+    player = make_player("strength_gym")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), gym=state,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "gym")
+    await page.wait_for_selector("#gym:not(.hidden)")
+    return browser, page
+
+
+async def test_without_a_ticket_the_gym_shows_only_tickets(server):
+    """Без абонемента в зал не пускают — и показывать нечего."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(pass_days=0))
+        await page.wait_for_selector(".ticket")
+
+        assert "Без абонемента" in await page.locator("#gym-note").inner_text()
+        titles = await page.locator(".ticket-title").all_inner_texts()
+        assert titles == ["Месяц", "Полгода", "Год"]
+        # Неразрывный пробел в тысячах ставит сам форматтер чисел
+        prices = [
+            said.replace("\u00a0", " ")
+            for said in await page.locator(".ticket .btn").all_inner_texts()
+        ]
+        assert prices == ["500 💰", "2 500 💰", "4 000 💰"]
+        # Ни расписания, ни прогресса под запертой дверью
+        assert await page.locator(".gym-progress").count() == 0
+        assert await page.locator(".gym-schedule").count() == 0
+        await browser.close()
+
+
+async def test_the_ticket_names_the_price_of_a_day(server):
+    """По цене дня и видно, что год выгоднее месяца."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(pass_days=0))
+        await page.wait_for_selector(".ticket")
+
+        days = await page.locator(".ticket-day").all_inner_texts()
+        assert days == ["16.7 💰 в день", "13.7 💰 в день", "11 💰 в день"]
+        await browser.close()
+
+
+async def test_the_open_slot_carries_the_only_join_button(server):
+    """Кнопка при идущем слоте, а не в каждой строке табло."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.wait_for_selector(".gym-now")
+
+        assert "Кросс-фит" in await page.locator(".gym-now-title").inner_text()
+        joins = await page.locator(".gym-now .btn").all_inner_texts()
+        assert joins == ["Присоединиться · по абонементу"]
+        # В расписании кнопок нет вовсе
+        assert await page.locator(".gym-schedule .btn").count() == 0
+        await browser.close()
+
+
+async def test_a_slot_about_to_end_takes_no_joiners(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(now_state="late"))
+        await page.wait_for_selector(".gym-now")
+
+        assert await page.locator(".gym-now .btn").count() == 0
+        assert "поздно" in await page.locator(".gym-now-note").inner_text()
+        assert "заканчивается" in await page.locator("#gym-note").inner_text()
+        await browser.close()
+
+
+async def test_a_slot_already_worked_offers_nothing(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(now_state="done"))
+        await page.wait_for_selector(".gym-now")
+
+        assert await page.locator(".gym-now .btn").count() == 0
+        assert "уже отработал" in await page.locator("#gym-note").inner_text()
+        # И в табло этот слот помечен
+        mark = page.locator(".gym-day.today .gym-slot.done .gym-slot-mark")
+        assert await mark.inner_text() == "✅"
+        await browser.close()
+
+
+async def test_a_running_training_counts_down_and_offers_to_leave(server):
+    """Часы тикают на странице, а очко засчитывает сервер."""
+    import time
+
+    visit = {
+        "stat": "strength", "title": "Силовая тренировка", "emoji": "🏋️",
+        "seconds_left": 900, "until": int(time.time()) + 900, "over": False,
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(visit=visit))
+        await page.wait_for_selector(".gym-now.training")
+
+        assert "Силовая тренировка" in await page.locator(".gym-now-title").inner_text()
+        clock = await page.locator("#gym-clock").inner_text()
+        assert clock.startswith("Осталось 14:") or clock.startswith("Осталось 15:")
+        assert "Уйти с тренировки" in await page.locator(".gym-now .btn").inner_text()
+        assert "не уходи из зала" in (
+            await page.locator("#gym-note").inner_text()
+        ).lower()
+        await browser.close()
+
+
+async def test_the_progress_bar_says_how_far_the_next_upgrade_is(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(points=(2, 0, 0)))
+        await page.wait_for_selector(".grow")
+
+        rows = page.locator(".grow")
+        assert await rows.count() == 3, "три характеристики зала"
+        first = rows.nth(0)
+        assert "Сила" in await first.locator(".grow-title").inner_text()
+        assert await first.locator(".grow-ups").inner_text() == "0 / 5"
+        assert "Силовая тренировка · 2 из 3" in await first.locator(
+            ".grow-note"
+        ).inner_text()
+        # Очков не хватает — кнопка есть, но не нажимается
+        assert await first.locator(".btn").is_disabled()
+        await browser.close()
+
+
+async def test_a_ready_stat_lights_up_and_offers_the_upgrade(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(points=(3, 0, 0)))
+        await page.wait_for_selector(".grow")
+
+        ready = page.locator(".grow.ready")
+        assert await ready.count() == 1
+        assert "Сила" in await ready.locator(".grow-title").inner_text()
+        assert await ready.locator(".btn").is_enabled()
+        assert "Улучшить · +1" in await ready.locator(".btn").inner_text()
+        await browser.close()
+
+
+async def test_a_maxed_stat_stops_offering_anything(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(ups=(5, 0, 0)))
+        await page.wait_for_selector(".grow")
+
+        maxed = page.locator(".grow.maxed")
+        assert await maxed.count() == 1
+        assert await maxed.locator(".btn").count() == 0
+        assert "Потолок зала" in await maxed.locator(".grow-note").inner_text()
+        assert await maxed.locator(".grow-ups").inner_text() == "5 / 5"
+        await browser.close()
+
+
+async def test_the_board_shows_days_with_six_slots_each(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.wait_for_selector(".gym-day")
+
+        days = page.locator(".gym-day")
+        assert await days.count() == 3
+        heads = await page.locator(".gym-day-head").all_inner_texts()
+        assert heads[0] == "Сегодня" and heads[1] == "Завтра"
+        assert await days.nth(0).locator(".gym-slot").count() == 6
+        clocks = await days.nth(0).locator(".gym-slot-clock").all_inner_texts()
+        assert clocks == [
+            "08:00–10:00", "10:00–12:00", "12:00–14:00",
+            "14:00–16:00", "16:00–18:00", "18:00–20:00",
+        ]
+        await browser.close()
+
+
+async def test_the_ladder_is_spelled_out_under_the_progress(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.wait_for_selector(".gym-progress")
+
+        note = await page.locator(".gym-progress .screen-note").inner_text()
+        assert "3, 6, 12, 24, 48" in note
+        assert "93" in note
+        await browser.close()
+
+
+async def test_the_gym_holds_two_tabs_and_opens_on_the_trainings(server):
+    """Табло — на первой вкладке, абонемент со всеми ценами — на второй."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.wait_for_selector("#gym-tabs")
+
+        tabs = await page.locator("#gym-tabs .chip").all_inner_texts()
+        assert tabs == ["Тренировки", "Абонемент"]
+        # Открывается зал на тренировках: расписание на месте, прайса нет
+        assert await page.locator(".gym-schedule").count() == 1
+        assert await page.locator(".day-prices").count() == 0
+
+        await page.locator("#gym-tabs .chip", has_text="Абонемент").click()
+        await page.wait_for_selector(".day-prices")
+
+        assert await page.locator(".gym-schedule").count() == 0
+        assert await page.locator(".gym-progress").count() == 0
+        assert "Абонемент до" in await page.locator(".gym-pass").inner_text()
+        assert "Продлить абонемент" in (
+            await page.locator(".tickets .shelf-head").inner_text()
+        )
+        await browser.close()
+
+
+async def test_the_second_tab_spells_out_the_price_of_every_training(server):
+    """Лесенка дня: первая по абонементу, дальше 50, 50, 100, 100, 200."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.locator("#gym-tabs .chip", has_text="Абонемент").click()
+        await page.wait_for_selector(".day-prices")
+
+        rows = await page.locator(".day-price-value").all_inner_texts()
+        assert rows == [
+            "по абонементу", "50 💰", "50 💰", "100 💰", "100 💰", "200 💰",
+        ]
+        numbers = await page.locator(".day-price-number").all_inner_texts()
+        assert numbers == ["1-е", "2-е", "3-е", "4-е", "5-е", "6-е"]
+        await browser.close()
+
+
+async def test_the_ladder_marks_what_is_spent_and_what_is_next(server):
+    """Две тренировки позади — третья подсвечена, и она по 50."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(taken_today=2))
+        await page.locator("#gym-tabs .chip", has_text="Абонемент").click()
+        await page.wait_for_selector(".day-prices")
+
+        assert await page.locator(".day-price.spent").count() == 2
+        nxt = page.locator(".day-price.next")
+        assert await nxt.count() == 1
+        assert "3-е" in await nxt.inner_text()
+        assert "50 💰" in await nxt.inner_text()
+        assert "Сегодня занято 2 из 6" in (
+            await page.locator(".day-prices .screen-note").inner_text()
+        )
+        await browser.close()
+
+
+async def test_the_join_button_carries_the_price_of_the_extra_training(server):
+    """Бесплатная отработана — на кнопке цена второй, а не «по абонементу»."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(taken_today=1))
+        await page.wait_for_selector(".gym-now")
+
+        joins = await page.locator(".gym-now .btn").all_inner_texts()
+        assert joins == ["Присоединиться · 50 💰"]
+        assert "Сегодня 1 из 6 · следующее 50 💰" in (
+            await page.locator(".gym-day-line").inner_text()
+        )
+        await browser.close()
+
+
+async def test_the_free_training_is_named_by_the_day_line(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.wait_for_selector(".gym-day-line")
+
+        assert "Сегодня 0 из 6 · следующее по абонементу" in (
+            await page.locator(".gym-day-line").inner_text()
+        )
+        await browser.close()
+
+
+async def test_a_day_worked_to_the_end_stops_offering_trainings(server):
+    """Шесть занятий — потолок суток: кнопки нет ни при каком слоте."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(taken_today=6))
+        await page.wait_for_selector(".gym-now")
+
+        assert await page.locator(".gym-now .btn").count() == 0
+        assert "потолок суток" in await page.locator("#gym-note").inner_text()
+        assert "на сегодня всё" in await page.locator(".gym-day-line").inner_text()
+        await browser.close()
+
+
+async def test_the_seats_are_counted_before_the_button_is_pressed(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, gym_state(seats=3))
+        await page.wait_for_selector(".gym-now")
+
+        assert "Мест занято: 3 из 5" in (
+            await page.locator(".gym-now-seats").inner_text()
+        )
+        assert await page.locator(".gym-now .btn").count() == 1
+        await browser.close()
+
+
+async def test_a_full_slot_takes_no_one_else(server):
+    """Пять человек уже отработали — записаться нельзя."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(
+            pw, server, gym_state(now_state="full", seats=5),
+        )
+        await page.wait_for_selector(".gym-now")
+
+        assert await page.locator(".gym-now .btn").count() == 0
+        assert "мест нет" in await page.locator("#gym-note").inner_text()
+        assert "Мест занято: 5 из 5" in (
+            await page.locator(".gym-now-seats").inner_text()
+        )
+        mark = page.locator(".gym-day.today .gym-slot.full .gym-slot-mark")
+        assert await mark.inner_text() == "мест нет"
+        await browser.close()
+
+
+async def test_the_board_marks_the_running_training_by_the_clock(server):
+    """Идущая тренировка — 🕗, отработанная — ✅, и оба значка на табло."""
+    async with async_playwright() as pw:
+        browser, page = await open_gym(
+            pw, server, gym_state(now_state="training", marks=("done", "past")),
+        )
+        await page.wait_for_selector(".gym-day")
+
+        today = page.locator(".gym-day.today")
+        assert await today.locator(".gym-slot.training .gym-slot-mark").inner_text() == "🕗"
+        assert await today.locator(".gym-slot.done .gym-slot-mark").inner_text() == "✅"
+        # У прошедшего слота значка нет вовсе
+        assert await today.locator(".gym-slot.past .gym-slot-mark").count() == 0
+        await browser.close()
+
+
+async def test_the_gym_screen_is_left_by_the_map_button(server):
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+
+        await page.locator("#gym-back").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+
+        assert await page.locator("#gym").is_hidden()
+        await browser.close()
+
+
+# ---------- Vegas Банк ----------
+
+
+async def open_bank(pw, server, bank=None):
+    """Открыть банк. Он живёт на своём экране, как зал и страховая."""
+    player = make_player("bank")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), bank=bank,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "bank")
+    await page.wait_for_selector("#bank:not(.hidden)")
+    return browser, page
+
+
+async def test_the_bank_stands_on_three_tabs(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.wait_for_selector("#bank-tabs")
+
+        tabs = await page.locator("#bank-tabs .chip").all_inner_texts()
+        assert tabs == ["Новый продукт", "Счета", "Банкомат"]
+        await browser.close()
+
+
+async def test_a_bank_without_an_account_opens_on_the_new_product(server):
+    """Показывать пустой банкомат тому, кому нечего снимать, незачем."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(account=False, card=False)
+        )
+        await page.wait_for_selector(".offer")
+
+        assert "Открыть счёт" in await page.locator(".offer .btn").first.inner_text()
+        # Счетов и банкомата нет вовсе, пока нет счёта
+        assert await page.locator(".account-number").count() == 0
+        assert await page.locator(".atm-sums").count() == 0
+        await browser.close()
+
+
+async def test_a_bank_with_an_account_opens_on_the_accounts(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.wait_for_selector(".account")
+
+        assert await page.locator(".account-number").inner_text() == "VB-1234-5678-9012"
+        assert "3\u00a0000" in await page.locator(".account-sum").inner_text()
+        await browser.close()
+
+
+async def test_the_purses_are_named_cash_and_card(server):
+    """Названия берём из правил, а не из подделки: их и видит игрок.
+
+    Соседний тест про кошелёк над прилавком читает подпись из фикстуры —
+    там проверяется вёрстка. Здесь банк собран настоящим `build_bank`, и
+    подпись приезжает из `PURSE_TITLES`: переименовали кошелёк в правилах
+    — тест обязан это заметить.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.wait_for_selector(".purse-choice")
+
+        names = await page.locator(".purse-pick-title").all_inner_texts()
+        assert names == ["💰 Наличные", "💳 Карта"]
+        await browser.close()
+
+
+async def test_the_card_carries_the_same_number_as_the_account(server):
+    """Счёт и карта — одни деньги, и номер у них один."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.wait_for_selector(".plastic")
+
+        assert await page.locator(".plastic-number").inner_text() == (
+            await page.locator(".account-number").inner_text()
+        )
+        assert await page.locator(".plastic-holder").inner_text() == "Тайлер"
+        assert "Действует" in await page.locator(".plastic-state").inner_text()
+        await browser.close()
+
+
+async def test_an_unserviced_card_says_so_instead_of_pretending(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server, bank=bank_state(works=False))
+        await page.wait_for_selector(".plastic")
+
+        assert await page.locator(".plastic.stale").count() == 1
+        assert "Не обслуживается" in await page.locator(".plastic-state").inner_text()
+        assert "Пополни счёт" in await page.locator(".plastic .screen-note").inner_text()
+        await browser.close()
+
+
+async def test_the_atm_offers_putting_in_taking_out_and_sending(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Банкомат").click()
+        await page.wait_for_selector(".atm-sums")
+
+        heads = await page.locator(".money-form .shelf-head").all_inner_texts()
+        assert heads == [
+            "Положить на счёт", "Снять наличными", "Перевести на чужой счёт",
+        ]
+        sums = await page.locator(".atm-sum-money").all_inner_texts()
+        assert sums == ["1\u00a0200 💰", "3\u00a0000 💰"]
+        # Номер получателя спрашивают полем, а не догадкой
+        assert await page.locator("#bank-send-number").count() == 1
+        await browser.close()
+
+
+async def test_the_new_product_tab_spells_out_the_discounts(server):
+    """Прайс скидок собран из той же таблицы, по которой считают цену."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Новый продукт").click()
+        await page.wait_for_selector(".day-prices")
+
+        rows = await page.locator(".day-prices .day-price-value").all_inner_texts()
+        assert "−15%" in rows and "−5%" in rows and "−10%" in rows
+        # В прайсе стоят дома, а не дела: «Аптека», а не «покупать эликсиры»
+        places = await page.locator(".day-prices .day-price-number").all_inner_texts()
+        assert "Аптека" in places and "Больница" in places
+        await browser.close()
+
+
+async def test_a_bank_that_gave_everything_stops_offering(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Новый продукт").click()
+        await page.wait_for_selector(".day-prices")
+
+        assert await page.locator(".offer").count() == 0
+        assert "уже есть" in await page.locator("#bank-body .screen-note").first.inner_text()
+        await browser.close()
+
+
+# ---------- кошелёк на прилавке ----------
+
+
+async def test_the_wallet_bar_stands_over_the_counter_with_both_purses(server):
+    """Выбирают, чем платить, там, где стоит цена."""
+    player = make_player("pharmacy")
+    shop = build_shop(player, Service.POTIONS)
+    shop["purse"] = purse_state(discount=15)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id), shop,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "shop")
+        await page.wait_for_selector(".wallet")
+
+        picks = await page.locator(".wallet-pick-title").all_inner_texts()
+        assert picks == ["💰 Наличные", "💳 Карта"]
+        money = await page.locator(".wallet-pick-money").all_inner_texts()
+        assert money == ["1\u00a0200 💰", "3\u00a0000 💰"]
+        # Выбранный горит, и на карте написано, сколько она снимает
+        assert await page.locator(".wallet-pick.on").get_attribute("data-purse") == "card"
+        assert await page.locator(".wallet-pick-off").inner_text() == "−15%"
+        await browser.close()
+
+
+async def test_a_counter_that_takes_no_card_says_so_and_dims_it(server):
+    """На рынке карта не ходит — кнопку не прячем, а гасим и объясняем."""
+    player = make_player("pharmacy")
+    shop = build_shop(player, Service.POTIONS)
+    shop["purse"] = purse_state(purse="cash", takes_card=False, discount=0)
+    shop["purse"]["note"] = "Здесь платят только наличными: карта тут не ходит."
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id), shop,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "shop")
+        await page.wait_for_selector(".wallet")
+
+        card = page.locator(".wallet-pick[data-purse='card']")
+        assert await card.evaluate("one => one.classList.contains('off')")
+        assert "только наличными" in await page.locator(".wallet-note").inner_text()
+        await browser.close()
+
+
+async def test_the_shop_shows_the_price_the_card_will_take(server):
+    """Цена на витрине — та, что уйдёт с кошелька, а не прайсовая."""
+    player = make_player("pharmacy")
+    shop = build_shop(player, Service.POTIONS)
+    shop["purse"] = purse_state(discount=15)
+    row = shop["sections"][0]["items"][0]
+    row.update(price=85, full_price=100, off=15, affordable=True)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id), shop,
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "shop")
+        await page.wait_for_selector(".thing")
+
+        prices = await page.locator(".thing .btn").first.inner_text()
+        assert "85" in prices, prices
+        await browser.close()
+
+
+# ---------- HR-агентство и работа ----------
+
+
+async def open_hr(pw, server, hr=None):
+    player = make_player("office_building")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), hr=hr,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "hr")
+    await page.wait_for_selector("#hr:not(.hidden)")
+    return browser, page
+
+
+async def open_work(pw, server, work=None, place="bar", job="bartender"):
+    player = make_player(place)
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["work"] = {"here": bool(job), "on_shift": False, "code": job}
+    browser, page = await open_page(
+        pw, server, card, build_shop(player), work=work,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "work")
+    await page.wait_for_selector("#work:not(.hidden)")
+    return browser, page
+
+
+async def test_the_agency_shows_all_five_vacancies(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server)
+        await page.wait_for_selector(".vacancy")
+
+        titles = await page.locator(".vacancy-title").all_inner_texts()
+        assert len(titles) == 5
+        assert any("Бармен" in one for one in titles)
+        pays = await page.locator(".vacancy-pay").all_inner_texts()
+        assert "250 💰/нед" in pays and "200 💰/нед" in pays
+        await browser.close()
+
+
+async def test_a_taken_vacancy_names_its_holder_and_offers_nothing(server):
+    """Место одно на город: занятое не прячем, а подписываем."""
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=hr_state(taken=("croupier",)))
+        await page.wait_for_selector(".vacancy")
+
+        taken = page.locator(".vacancy.taken")
+        assert await taken.count() == 1
+        assert "Занято: Марла." in await taken.locator(".vacancy-state").inner_text()
+        assert await taken.locator(".btn").count() == 0
+        await browser.close()
+
+
+async def test_a_blocked_vacancy_says_why_and_for_how_long(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=hr_state(blocked=("bartender",)))
+        await page.wait_for_selector(".vacancy")
+
+        said = await page.locator(".vacancy").first.locator(".vacancy-state").inner_text()
+        assert "провалил" in said and "7 дн" in said
+        await browser.close()
+
+
+async def test_the_quiz_opens_by_the_button_and_hides_the_board(server):
+    """Идёт тест — на экране только он: уходить с половины некуда."""
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server)
+        await page.wait_for_selector(".vacancy")
+        await page.route("**/api/hr", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(dict(hr_state(), quiz=[
+                {"text": "Вопрос " + str(i), "options": ["А", "Б", "В"]}
+                for i in range(1, 6)
+            ], code="bartender")),
+        ))
+
+        await page.locator(".vacancy .btn").first.click()
+        await page.wait_for_selector(".quiz")
+
+        assert await page.locator(".question").count() == 5
+        assert await page.locator(".board").count() == 0
+        # Кнопка ответа заперта, пока не ответили на всё
+        answer = page.locator(".quiz-buttons .btn").first
+        assert await answer.is_disabled()
+        await browser.close()
+
+
+async def test_the_quiz_lets_you_answer_only_after_every_question(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server)
+        await page.wait_for_selector(".vacancy")
+        await page.route("**/api/hr", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(dict(hr_state(), quiz=[
+                {"text": "Вопрос " + str(i), "options": ["А", "Б", "В"]}
+                for i in range(1, 6)
+            ], code="bartender")),
+        ))
+        await page.locator(".vacancy .btn").first.click()
+        await page.wait_for_selector(".quiz")
+
+        for index in range(5):
+            await page.locator(".question").nth(index).locator(".answer").first.click()
+
+        answer = page.locator(".quiz-buttons .btn").first
+        assert not await answer.is_disabled()
+        # Выбранный вариант горит
+        assert await page.locator(".answer.on").count() == 5
+        await browser.close()
+
+
+async def test_my_job_shows_the_week_and_the_payday(server):
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=hr_state(job="bartender"))
+        await page.wait_for_selector(".job")
+
+        assert "Бармен" in await page.locator(".job-title").inner_text()
+        assert "Отработано 6 из 10 ч" in await page.locator(".hours-text").inner_text()
+        assert "150" in await page.locator(".job-pay").inner_text()
+        await browser.close()
+
+
+async def test_a_week_under_half_the_norm_warns_before_monday(server):
+    """Уволят в понедельник — узнать об этом лучше до понедельника."""
+    state = hr_state(job="bartender")
+    state["job"].update(worked=2, percent=20, payout=50, safe=False, left=8)
+
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=state)
+        await page.wait_for_selector(".job")
+
+        assert await page.locator(".job-warn").count() == 1
+        assert "уволят" in await page.locator(".job-warn").inner_text()
+        assert await page.locator(".hours-fill.short").count() == 1
+        await browser.close()
+
+
+async def test_the_workplace_offers_the_shift(server):
+    async with async_playwright() as pw:
+        browser, page = await open_work(pw, server)
+        await page.wait_for_selector(".shift")
+
+        assert "Начать работать" in await page.locator(".shift .btn").inner_text()
+        assert "Сегодня отработано 0 из 2 ч" in (
+            await page.locator(".shift-head").inner_text()
+        )
+        await browser.close()
+
+
+async def test_a_day_already_worked_offers_nothing(server):
+    async with async_playwright() as pw:
+        browser, page = await open_work(pw, server, work=work_state(today=120))
+        await page.wait_for_selector(".shift")
+
+        assert await page.locator(".shift .btn").is_disabled()
+        assert "хватит" in await page.locator("#work-note").inner_text()
+        await browser.close()
+
+
+async def test_a_running_shift_counts_down_and_says_the_door_is_shut(server):
+    async with async_playwright() as pw:
+        browser, page = await open_work(pw, server, work=work_state(shift=True))
+        await page.wait_for_selector(".shift-clock")
+
+        clock = await page.locator("#work-clock").inner_text()
+        assert clock.startswith("Осталось 29:") or clock.startswith("Осталось 30:")
+        assert "не выйти" in await page.locator(".shift .screen-note").inner_text()
+        # Пока смена идёт, начинать нечего
+        assert await page.locator(".shift .btn").count() == 0
+        await browser.close()
+
+
+async def test_a_stranger_at_the_workplace_is_sent_to_the_agency(server):
+    async with async_playwright() as pw:
+        browser, page = await open_work(
+            pw, server, work=work_state(job=""), job=""
+        )
+        await page.wait_for_selector("#work:not(.hidden)")
+
+        assert await page.locator(".shift").count() == 0
+        assert "HR-агентств" in await page.locator("#work-note").inner_text()
+        await browser.close()
+
+
+async def test_the_work_button_stands_in_the_head_of_your_own_house(server):
+    """Кнопка одна на все пять домов и встаёт в ту шапку, что на виду."""
+    player = make_player("strength_gym")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["work"] = {"here": True, "on_shift": False, "code": "trainer"}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), gym=gym_state(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "gym")
+        await page.wait_for_selector("#gym:not(.hidden)")
+
+        entry = page.locator("#gym .work-entry")
+        assert await entry.count() == 1
+        assert await entry.inner_text() == "💼 Работа"
+        # Нажатие уводит на работу, а зал остаётся залом
+        await entry.click()
+        await page.wait_for_selector("#work:not(.hidden)")
+        await browser.close()
+
+
+async def test_there_is_no_work_button_where_you_do_not_work(server):
+    player = make_player("strength_gym")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["work"] = {"here": False, "on_shift": False, "code": ""}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), gym=gym_state(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "gym")
+        await page.wait_for_selector("#gym:not(.hidden)")
+
+        assert await page.locator(".work-entry").count() == 0
+        await browser.close()
+
+
+async def test_the_work_button_lights_up_during_a_shift(server):
+    player = make_player("strength_gym")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["work"] = {"here": True, "on_shift": True, "code": "trainer"}
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), gym=gym_state(),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "gym")
+        await page.wait_for_selector("#gym .work-entry")
+
+        entry = page.locator("#gym .work-entry")
+        assert await entry.inner_text() == "🕗 Смена"
+        assert await entry.evaluate("one => one.classList.contains('on')")
+        await browser.close()
+
+
+async def test_the_gym_opens_the_button_when_the_money_is_on_the_card(server):
+    """Баг: с пустым мешочком и деньгами на счету кнопка была заперта.
+
+    Страница сравнивала цену с наличными, а платят здесь картой. Теперь
+    «хватает ли» приходит с сервера — тем же вопросом, что задаёт касса.
+    """
+    state = gym_state(
+        taken_today=1,
+        purse=purse_state(purse="card", cash=0, balance=3_000, discount=10),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, state)
+        await page.wait_for_selector(".gym-now")
+
+        join = page.locator(".gym-now .btn")
+        assert await join.count() == 1
+        assert not await join.is_disabled(), "кнопка заперта при деньгах на счету"
+        await browser.close()
+
+
+async def test_the_gym_shuts_the_button_when_neither_purse_has_enough(server):
+    state = gym_state(
+        taken_today=1,
+        affordable=False,
+        purse=purse_state(purse="card", cash=0, balance=10, discount=10),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, state)
+        await page.wait_for_selector(".gym-now")
+
+        assert await page.locator(".gym-now .btn").is_disabled()
+        await browser.close()
+
+
+async def test_the_refusal_names_the_purse_the_till_uses(server):
+    """Отказ по деньгам называет тот кошелёк, из которого здесь платят.
+
+    Строка та же, что у сервера, и по той же причине: кошелька два, и
+    «не хватает, а на счету 0» бойцу с тысячей на счету ничего не
+    объясняет. Проверяем саму `purseNote` — подсказку на запертой кнопке
+    браузер не покажет, у отключённой кнопки нажатий не бывает.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.wait_for_selector(".gym-now")
+
+        said = await page.evaluate("""() => [
+          purseNote({purse: "card", cash: 0, balance: 1200}),
+          purseNote({purse: "cash", cash: 50, balance: 1200}),
+          purseNote(null),
+        ]""")
+
+        assert said[0] == "на счету 1\u00a0200 💰"
+        assert said[1] == "наличными 50 💰"
+        assert said[2] == "денег не хватает"
         await browser.close()

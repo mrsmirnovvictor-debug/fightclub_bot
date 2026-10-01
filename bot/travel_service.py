@@ -69,8 +69,21 @@ class Travel:
                 "Сначала закончи бой: соперник ждёт, и уходить посреди "
                 "этого нечестно."
             )
+        # Со смены не уходят: боец на работе, а не гуляет по городу.
+        # Замок спадает сам, когда час смены пройдёт, — сторожа у него
+        # нет, как и у дороги
+        if player.on_shift(moment):
+            left = format_duration(player.shift_left(moment))
+            raise LockedError(
+                f"Ты на смене — до конца {left}. С работы не уходят."
+            )
 
-        player.set_out(place.code, travel_seconds(player.location, place.code), moment)
+        # Травмированный идёт вдвое дольше: с переломом не побегаешь
+        player.set_out(
+            place.code,
+            travel_seconds(player.location, place.code, player.limping),
+            moment,
+        )
         await self.db.save_player(player)
         return place
 

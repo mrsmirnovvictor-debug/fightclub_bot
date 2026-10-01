@@ -27,11 +27,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from bot.game import art
+from bot.game.injuries import LIMP_TIMES
 
 
 class Service(str, Enum):
     """Чем занимаются в локации. У каждой ручки сервера — своя услуга."""
 
+    BANK = "bank"  # Vegas Банк: счёт, карта и банкомат
+    HIRE = "hire"  # HR-агентство: вакансии города и приёмный тест
+    WORK = "work"  # смена на своём рабочем месте
     FIGHT = "fight"  # ринг: вызовы, бои, отряд, турниры
     RAID = "raid"  # рейд-босс
     REPAIR = "repair"  # починка вещей
@@ -42,6 +46,9 @@ class Service(str, Enum):
     PREMIUM = "premium"  # элитный магазин, за звёзды
     FAN = "fan"  # фанатский магазин: экипировка своей команды
     MARKET = "market"  # комиссионка: торговля между бойцами
+    TRADE = "trade"  # рынок: обмен из рук в руки
+    INSURANCE = "insurance"  # страховая: полис страхования жизни и здоровья
+    TRAIN = "train"  # тренажёрный зал: тренировки на характеристики
 
     @property
     def title(self) -> str:
@@ -49,6 +56,9 @@ class Service(str, Enum):
 
 
 SERVICE_TITLES: dict[Service, str] = {
+    Service.BANK: "держать деньги в банке",
+    Service.HIRE: "искать работу",
+    Service.WORK: "работать",
     Service.FIGHT: "драться",
     Service.RAID: "идти в рейд",
     Service.REPAIR: "чинить вещи",
@@ -59,6 +69,9 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.PREMIUM: "покупать за звёзды",
     Service.FAN: "покупать фанатскую экипировку",
     Service.MARKET: "торговать с бойцами",
+    Service.TRADE: "меняться из рук в руки",
+    Service.INSURANCE: "страховаться",
+    Service.TRAIN: "тренироваться",
 }
 
 
@@ -285,14 +298,20 @@ def district_hops(source: str, target: str) -> int:
     return _DISTANCES.get(source, {}).get(target, FAR_AWAY)
 
 
-def travel_seconds(source: str, target: str) -> int:
-    """Сколько идти от одного места до другого. Ноль — уже на месте."""
+def travel_seconds(source: str, target: str, limping: bool = False) -> int:
+    """Сколько идти от одного места до другого. Ноль — уже на месте.
+
+    `limping` — боец травмирован. Со сломанной ногой дорога вдвое
+    длиннее, и это единственное, что травма делает с городом: ходить
+    она не запрещает, только замедляет.
+    """
     if source == target:
         return 0
     here, there = get_location(source), get_location(target)
     if here is None or there is None:  # pragma: no cover - дом не с карты
         return STEP
-    return STEP * (district_hops(here.district, there.district) + 1)
+    seconds = STEP * (district_hops(here.district, there.district) + 1)
+    return seconds * LIMP_TIMES if limping else seconds
 
 
 # ---------- сама карта ----------
@@ -458,7 +477,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.436769, 0.26256), (0.632306, 0.272727),
             (0.629118, 0.358852), (0.438895, 0.34988),
         ),
-        services=(Service.FIGHT,),
+        services=(Service.FIGHT, Service.WORK),
         genitive="бойцовского клуба",
     ),
     Location(
@@ -522,7 +541,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.467588, 0.264354), (0.603613, 0.273923),
             (0.597237, 0.329545), (0.467588, 0.324163),
         ),
-        services=(Service.RAID,),
+        services=(Service.RAID, Service.WORK),
         genitive="казино",
         interior="underground_casino_interior",
     ),
@@ -576,7 +595,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.442083, 0.235646), (0.613177, 0.240431),
             (0.611052, 0.325359), (0.446334, 0.321172),
         ),
-        soon="хранение денег",
+        services=(Service.BANK,),
         genitive="банка",
     ),
     Location(
@@ -588,7 +607,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.140276, 0.536483), (0.308183, 0.500598),
             (0.300744, 0.559809), (0.140276, 0.606459),
         ),
-        soon="торговля между игроками",
+        services=(Service.TRADE,),
         genitive="рынка",
     ),
     Location(
@@ -600,6 +619,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.740701, 0.579545), (0.825717, 0.606459),
             (0.819341, 0.649522), (0.738576, 0.626794),
         ),
+        services=(Service.WORK,),
         soon="награды и подарки",
         genitive="почты",
     ),
@@ -625,6 +645,11 @@ LOCATIONS: tuple[Location, ...] = (
             (0.488842, 0.670455), (0.5983, 0.678828),
             (0.534538, 0.725478), (0.485654, 0.716507),
         ),
+        # Бар пока только нанимает: за стойкой работают, а угощения и
+        # задания за ней появятся позже. Поэтому у дома есть и услуга, и
+        # строка «скоро» — экран работы её и покажет тому, кто тут не
+        # работает
+        services=(Service.WORK,),
         soon="задания и угощения",
         genitive="бара",
     ),
@@ -688,7 +713,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.548353, 0.568182), (0.679065, 0.588517),
             (0.676939, 0.650718), (0.548353, 0.62799),
         ),
-        soon="страховка вещей от износа",
+        services=(Service.INSURANCE,),
         genitive="страховой",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -700,20 +725,20 @@ LOCATIONS: tuple[Location, ...] = (
             (0.560043, 0.272727), (0.701382, 0.26256),
             (0.699256, 0.324163), (0.561105, 0.333134),
         ),
-        soon="тренировки на характеристики",
+        services=(Service.TRAIN, Service.WORK),
         genitive="зала",
         interior_folder=art.NEW_INTERIORS,
     ),
     Location(
         "office_building",
-        "Офисное здание",
+        "HR-агентство",
         district=GYM,
         entrance=(
             (0.592986, 0.678828), (0.712009, 0.66866),
             (0.714134, 0.723684), (0.591923, 0.736842),
         ),
-        soon="работа и жалованье",
-        genitive="офиса",
+        services=(Service.HIRE,),
+        genitive="агентства",
         interior_folder=art.NEW_INTERIORS,
     ),
     Location(

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from bot.database import Database
 from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.game.hospital import Cure, get_cure
 from bot.models import Player
 
@@ -57,13 +58,16 @@ async def heal(
     healed = cure.healed(current, player.max_hp)
     if healed <= 0:
         raise HospitalError("Ты и так целый — врачу тут делать нечего.")
-    if not player.can_afford(cure.price):
+    # Больница у города одна, и услуга в ней одна: место известно без
+    # вопросов, и спрашивать его параметром было бы лишним обрядом
+    price = player.price_here(cure.price, moment, Service.HEAL)
+    if not player.can_afford(price, moment, Service.HEAL):
         raise HospitalError(
-            f"Не хватает кредитов: «{cure.title}» стоит {cure.price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"Не хватает кредитов: «{cure.title}» стоит {price} 💰, "
+            f"а {player.purse_note(moment, Service.HEAL)}."
         )
 
-    player.pay(cure.price)
+    player.pay(price, moment, Service.HEAL)
     player.set_hp(current + healed, moment)
     await db.save_player(player)
     logger.info(
@@ -71,9 +75,11 @@ async def heal(
         player.user_id,
         cure.code,
         healed,
-        cure.price,
+        price,
     )
-    return CureResult(cure=cure, healed=healed, price=cure.price, hp=player.hp)
+    # В итоге стоит та цена, что ушла с кошелька, а не та, что в прайсе:
+    # по ней игроку и скажут, во что обошёлся приём
+    return CureResult(cure=cure, healed=healed, price=price, hp=player.hp)
 
 
 __all__ = ["CureResult", "HospitalError", "heal"]

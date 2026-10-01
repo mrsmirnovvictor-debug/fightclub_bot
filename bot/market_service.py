@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import Any
 
 from bot.database import Database
+from bot.game.health import now_ts
+from bot.game.locations import Service
 from bot.game.equipment import Item, get_item
 from bot.game.market import fee_of, payout, price_is_sane, price_range
 from bot.models import Player
@@ -83,7 +85,9 @@ async def withdraw_lot(db: Database, player: Player, lot_id: int) -> str:
     return owned.title
 
 
-async def buy_lot(db: Database, player: Player, lot_id: int) -> dict[str, Any]:
+async def buy_lot(
+    db: Database, player: Player, lot_id: int, now: int | None = None
+) -> dict[str, Any]:
     """Купить чужую вещь. Возвращает, что купили и за сколько."""
     lot = await db.market_lot(lot_id)
     if lot is None:
@@ -91,17 +95,21 @@ async def buy_lot(db: Database, player: Player, lot_id: int) -> dict[str, Any]:
     if lot["seller_id"] == player.user_id:
         raise MarketError("Это твой же лот. Сними его с продажи, а не покупай.")
     item = _item_of(lot["code"])
+    # Картой платить можно — комиссионка это прилавок, а не рынок из рук
+    # в руки. Скидки нет: банк её тут не обещал, да и платит боец не
+    # лавке, а другому бойцу
+    moment = now_ts() if now is None else now
     price = int(lot["price"])
-    if not player.can_afford(price):
+    if not player.can_afford(price, moment, Service.MARKET):
         raise MarketError(
             f"Не хватает кредитов: «{item.title}» стоит {price} 💰, "
-            f"а на счету {player.credits} 💰."
+            f"а {player.purse_note(moment, Service.MARKET)}."
         )
     # Лот забирает тот, чей DELETE прошёл первым: деньги считаем уже после
     if not await db.take_lot(lot_id):
         raise MarketError("Этот лот уже разобрали.")
 
-    player.pay(price)
+    player.pay(price, moment, Service.MARKET)
     await db.save_player(player)
     owned = await db.add_gear(
         player.user_id, lot["code"], max_wear=lot["max_wear"], wear=lot["wear"]

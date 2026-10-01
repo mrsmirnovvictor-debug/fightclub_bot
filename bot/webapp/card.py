@@ -38,7 +38,12 @@ from bot.game.equipment import (
 from bot.game.abilities import MAX_ABILITIES, TIER_COST
 from bot.game.gear import ModKind
 from bot.game.market import FEE as MARKET_FEE, buyback
-from bot.game.health import FULL_REGEN_SECONDS, HealthState, format_duration
+from bot.game.health import (
+    FULL_REGEN_SECONDS,
+    HealthState,
+    format_duration,
+    now_ts,
+)
 from bot.game.locations import Service, get_location
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
@@ -58,6 +63,8 @@ from bot.game.stats import derive
 from bot.game.store import PACKS
 from bot.models import Player
 from bot.webapp.auth import sign_avatar
+from bot.webapp.bank import purse_payload
+from bot.webapp.documents import build_documents
 
 # Ссылка на аватар живёт час — столько же, сколько открытая карточка
 AVATAR_TTL = 60 * 60
@@ -89,11 +96,18 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
     Свойства вещи идут сюда целиком, а не одной строкой: по нажатию на
     клетку куклы их показывают списком, как в рюкзаке. Строка `bonus`
     при этом остаётся — она короткая и годится для подсказки.
+
+    **`slot` — куда вещь надета, а не куда она надевается.** Разница
+    видна на оружии во второй руке: сам предмет знает слот `weapon`,
+    а лежит он в `offhand`. Страница снимает вещь по этому полю, и пока
+    здесь стоял слот предмета, нажатие на вторую руку снимало оружие из
+    первой — а второе нажатие отвечало «слот и так пуст», хотя в клетке
+    оружие было видно.
     """
     in_hands = weapon_in_hands(owned.real, fclass)
     return {
         "id": owned.id,
-        "slot": owned.item.slot.value,
+        "slot": (owned.slot or owned.item.slot).value,
         "code": owned.code,
         "title": owned.title,
         "icon": owned.emoji,
@@ -380,8 +394,22 @@ def capped_share(base: float, gear: float, total, cap: float) -> dict:
     }
 
 
-def goods_payload(player: Player, item: Item, owned: int) -> dict:
-    """Строка витрины: цена, требования, свойства и кому подходит."""
+def goods_payload(
+    player: Player,
+    item: Item,
+    owned: int,
+    service: Service | None = None,
+    now: int | None = None,
+) -> dict:
+    """Строка витрины: цена, требования, свойства и кому подходит.
+
+    Цена приходит уже под выбранный кошелёк: скидку карты считают там,
+    где показывают цену, иначе на прилавке стояло бы одно число, а с
+    кошелька уходило другое. `full` — цена без скидки, по ней видно, что
+    карта даёт.
+    """
+    moment = now_ts() if now is None else now
+    price = player.price_here(item.price, moment, service)
     return {
         "code": item.code,
         "title": item.title,
@@ -390,10 +418,12 @@ def goods_payload(player: Player, item: Item, owned: int) -> dict:
         "kind": item.kind.value,
         "slot": item.slot.value,
         "slot_title": item.slot.section.capitalize(),
-        "price": item.price,
+        "price": price,
+        "full_price": item.price,
+        "off": item.price - price,
         "level_required": item.level_required,
         "unlocked": player.level >= item.level_required,
-        "affordable": player.can_afford(item.price),
+        "affordable": player.can_afford(price, moment, service),
         "can_equip": player.can_equip(item),
         "owned": owned,
         "requirements": requirements_payload(player, item),
@@ -423,9 +453,17 @@ def potion_gains_payload(potion: Potion) -> list[dict]:
     return rows
 
 
-def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
+def potion_payload(
+    player: Player,
+    potion: Potion,
+    owned: int,
+    service: Service | None = None,
+    now: int | None = None,
+) -> dict:
     """Склянка на витрине и в рюкзаке. Ключи те же, что у вещи: рисует их
     одна и та же карточка, а `consumable` разводит кнопки."""
+    moment = now_ts() if now is None else now
+    price = player.price_here(potion.price, moment, service)
     return {
         "code": potion.code,
         "title": potion.title,
@@ -446,10 +484,12 @@ def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
         "max_wear": potion.max_wear,
         "wear_text": potion.describe_wear(),
         "note": potion.note,
-        "price": potion.price,
+        "price": price,
+        "full_price": potion.price,
+        "off": potion.price - price,
         "level_required": potion.level_required,
         "unlocked": player.level >= potion.level_required,
-        "affordable": player.can_afford(potion.price),
+        "affordable": player.can_afford(price, moment, service),
         "owned": owned,
         "requirements": [
             {
@@ -466,10 +506,10 @@ def potion_payload(player: Player, potion: Potion, owned: int) -> dict:
     }
 
 
-def potions_section(player: Player) -> dict:
+def potions_section(player: Player, service: Service | None = None) -> dict:
     """Раздел «Прочее»: то, что пьют, а не надевают."""
     rows = [
-        potion_payload(player, potion, player.potion_count(potion.code))
+        potion_payload(player, potion, player.potion_count(potion.code), service)
         for potion in POTIONS
     ]
     return {
@@ -583,8 +623,11 @@ def sells(service: Service, slot: Slot) -> bool:
     return False
 
 
-def build_shop(player: Player, service: Service = Service.CLOTHES) -> dict:
+def build_shop(
+    player: Player, service: Service = Service.CLOTHES, now: int | None = None
+) -> dict:
     """Прилавок магазина: только то, чем торгуют именно здесь."""
+    moment = now_ts() if now is None else now
     mine: dict[str, int] = {}
     for owned in player.gear:
         mine[owned.code] = mine.get(owned.code, 0) + 1
@@ -595,7 +638,10 @@ def build_shop(player: Player, service: Service = Service.CLOTHES) -> dict:
     for slot, items in shop_sections(shelf):
         if not items or not sells(service, slot):
             continue  # пустой раздел — пустая полка: показывать нечего
-        rows = [goods_payload(player, item, mine.get(item.code, 0)) for item in items]
+        rows = [
+            goods_payload(player, item, mine.get(item.code, 0), service, moment)
+            for item in items
+        ]
         sections.append(
             {
                 "slot": slot.value,
@@ -607,13 +653,33 @@ def build_shop(player: Player, service: Service = Service.CLOTHES) -> dict:
         )
     # Склянки не надевают, слота у них нет — и стоят они в аптеке
     if service is Service.POTIONS:
-        sections.append(potions_section(player))
+        sections.append(potions_section(player, service))
     return {
         "credits": player.credits,
         "level": player.level,
         "service": service.value,
+        # Чем боец здесь платит: по этому прилавок и рисует переключатель
+        # кошельков, а цены выше уже посчитаны под выбранный
+        "purse": purse_payload(player, moment, service),
         "fclass": {"code": player.fclass.code, "title": player.fclass.title},
         "sections": sections,
+    }
+
+
+def work_badge(player: Player, moment: int) -> dict:
+    """Работает ли боец здесь и не на смене ли он прямо сейчас.
+
+    Ровно два признака, и оба нужны шапке: по первому кнопка появляется,
+    по второму меняет надпись. Всё остальное о работе лежит на её
+    собственном экране — в карточке ему делать нечего.
+    """
+    from bot.game.work import vacancy_at
+
+    here = vacancy_at(player.where(moment))
+    return {
+        "here": bool(here is not None and here.code == player.job_code),
+        "on_shift": player.on_shift(moment),
+        "code": player.job_code,
     }
 
 
@@ -643,7 +709,7 @@ def place_payload(player: Player, now: int | None = None) -> dict:
 # ---------- комиссионка ----------
 
 
-def lot_payload(player: Player, lot: dict) -> dict:
+def lot_payload(player: Player, lot: dict, now: int = 0) -> dict:
     """Строка комиссионки: чья вещь, с каким износом и за сколько."""
     from bot.game.equipment import MAX_WEAR
     from bot.game.market import fee_of, payout
@@ -671,7 +737,7 @@ def lot_payload(player: Player, lot: dict) -> dict:
         "wear": owned.wear,
         "max_wear": owned.max_wear,
         "wear_text": owned.describe_wear(),
-        "affordable": player.can_afford(price),
+        "affordable": player.can_afford(price, now, Service.MARKET),
         "can_equip": player.can_equip(item),
         "requirements": requirements_payload(player, item),
         "bonuses": bonuses_payload(item, player.fclass),
@@ -703,9 +769,10 @@ def sellable_payload(player: Player, owned: OwnedItem) -> dict:
     }
 
 
-def build_market(player: Player, lots: list[dict]) -> dict:
+def build_market(player: Player, lots: list[dict], now: int | None = None) -> dict:
     """Комиссионка: полки по типам вещей, свои лоты и что можно выставить."""
-    rows = [lot_payload(player, lot) for lot in lots]
+    moment = now_ts() if now is None else now
+    rows = [lot_payload(player, lot, moment) for lot in lots]
     sections = []
     for slot in ALL_SLOTS:
         goods = [row for row in rows if row["slot"] == slot.value]
@@ -723,6 +790,9 @@ def build_market(player: Player, lots: list[dict]) -> dict:
     return {
         "credits": player.credits,
         "fee": round(MARKET_FEE * 100),
+        # Картой здесь платить можно, но скидки нет: боец платит не
+        # лавке, а другому бойцу, и цену назначил тот
+        "purse": purse_payload(player, moment, Service.MARKET),
         "sections": sections,
         "mine": [row for row in rows if row["mine"]],
         # Выставить можно только то, что не надето: надетое сначала снимают
@@ -802,7 +872,31 @@ def build_topup(player: Player, open_for_business: bool = True) -> dict:
     }
 
 
-def stats_payload(base: Stats, bonus: Stats) -> list[dict]:
+def injury_payload(player: Player, now: int) -> dict:
+    """Травма бойца для карточки. Пустой словарь — боец цел."""
+    active = player.injury
+    injury = active.injury if active else None
+    if active is None or injury is None or not active.is_active(now):
+        return {}
+    left = active.seconds_left(now)
+    return {
+        "code": injury.code,
+        "title": injury.title,
+        "hurt": injury.hurt.value,
+        "hurt_title": injury.hurt.title,
+        "stat": injury.stat.value,
+        "penalty": injury.penalty,
+        "seconds_left": left,
+        # «Тяжёлая травма: перелом руки. Ещё 10 часов 15 минут.»
+        "text": active.describe(now),
+        # Драться с минусовой характеристикой нельзя — говорим об этом
+        # там же, где о самой травме
+        "crippled": player.crippled,
+        "price": injury.hurt.price,
+    }
+
+
+def stats_payload(base: Stats, bonus: Stats, loss: Stats | None = None) -> list[dict]:
     return [
         {
             "code": stat.value,
@@ -812,7 +906,11 @@ def stats_payload(base: Stats, bonus: Stats) -> list[dict]:
             "emoji": stat.emoji,
             "base": base.get(stat),
             "bonus": bonus.get(stat),
-            "total": base.get(stat) + bonus.get(stat),
+            # Потеря от травмы идёт отдельным числом, а не в общей
+            # прибавке: на экране она красная, и складывать её с
+            # прибавкой от вещей значило бы прятать травму внутри плюса
+            "loss": (loss or Stats()).get(stat),
+            "total": base.get(stat) + bonus.get(stat) + (loss or Stats()).get(stat),
         }
         for stat in ALL_STATS
     ]
@@ -882,7 +980,11 @@ def build_card(
         "stats": stats_payload(
             player.base_stats,
             equipment.bonus.merge(effects_bonus(player.effects, moment)),
+            player.injury_loss,
         ),
+        # Травма: что сломано, надолго ли и что она отнимает. Пусто —
+        # боец цел
+        "injury": injury_payload(player, moment),
         "slots": {
             "left": [slot_payload(equipment, slot, fclass) for slot in LEFT_SLOTS],
             "right": [slot_payload(equipment, slot, fclass) for slot in RIGHT_SLOTS],
@@ -902,6 +1004,9 @@ def build_card(
         ]
         if is_self
         else [],
+        # Документы — только хозяину: полис с его именем и сроком чужому
+        # знать незачем, это не снаряжение и на бой не влияет
+        "documents": build_documents(player, moment)["documents"] if is_self else [],
         # Что сейчас действует — видно всем: эффект уже учтён в характеристиках
         "effects": [
             effect_payload(effect, moment)
@@ -920,6 +1025,10 @@ def build_card(
             "free_points": player.free_points,
         },
         "place": place_payload(player, moment),
+        # Работа: по ней в шапке того дома, где боец стоит, встаёт кнопка
+        # «Работа». Хозяину карточки — своя работа, чужому — ничего: где
+        # человек работает, сопернику знать незачем
+        "work": work_badge(player, moment) if is_self else {},
         # Кто сейчас в клубе, а кого давно не видели. Видно всем, кто
         # открыл карточку: по этому и решают, есть ли смысл вызывать
         "seen": {

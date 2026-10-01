@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from bot.game.classes import ZONE_PREPOSITIONAL, Zone
 from bot.game.economy import MAX_LEVEL
 from bot.game.health import HURT_THRESHOLD, READY_THRESHOLD, format_duration
+from bot.game.injuries import Injury
 from bot.game.links import links
 from bot.game.modes import FightMode
 from bot.game.pro import PRO_BADGE
@@ -459,12 +460,36 @@ def strike_lines(
     Позовёшь второй раз — получишь другие слова про тот же удар.
     """
     rng = rng or random
-    return [
+    said = [
         describe_strike(
             strike, fighters[strike.attacker_id], fighters[strike.defender_id], rng
         )
         for strike in result.strikes
     ]
+    # Травма — последней строкой размена: сначала удар, от которого боец
+    # упал, и только потом — чем это для него кончилось
+    said += [
+        injury_line(fighters[user_id], injury)
+        for user_id, injury in result.injuries.items()
+        if user_id in fighters
+    ]
+    return said
+
+
+def injury_line(fighter: Fighter, injury: Injury) -> str:
+    """«🤕 Марла: перелом руки — тяжёлая травма: 💪 сила −20 на 12 часов.»"""
+    return (
+        f"🤕 {esc(fighter.name)}: {injury.title} — {injury.describe()} "
+        f"на {injury.hurt.hours} {_hours_word(injury.hurt.hours)}."
+    )
+
+
+def _hours_word(hours: int) -> str:
+    if hours % 10 == 1 and hours % 100 != 11:
+        return "час"
+    if hours % 10 in (2, 3, 4) and hours % 100 not in (12, 13, 14):
+        return "часа"
+    return "часов"
 
 
 def round_report(

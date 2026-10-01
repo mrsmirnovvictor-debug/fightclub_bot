@@ -24,9 +24,10 @@
     </figure>
 
     <header class="screen-head">
-      <h1 class="screen-title" id="club-title">🥊 Бойцовский клуб</h1>
+      <button type="button" class="back" id="club-back">← На карту</button>
       <span class="screen-count" id="club-count"></span>
     </header>
+    <h1 class="screen-title" id="club-title">🥊 Бойцовский клуб</h1>
 
     <!-- Разделы одной вкладки: бои, рейд, игроки и статистика -->
     <div class="bubbles" id="club-sections"></div>
@@ -92,9 +93,10 @@
     </figure>
 
     <header class="screen-head">
-      <h1 class="screen-title" id="shop-title">🏪 Лавка клуба</h1>
+      <button type="button" class="back" id="shop-back">← На карту</button>
       <span class="shop-purse" id="shop-purse"></span>
     </header>
+    <h1 class="screen-title" id="shop-title">🏪 Лавка клуба</h1>
 
     <!-- Лавка клуба: товар по типам вещей -->
     <section id="shop-club">
@@ -120,8 +122,9 @@
     </figure>
 
     <header class="screen-head">
-      <h1 class="screen-title">💎 Магазин «Элита»</h1>
+      <button type="button" class="back" id="magic-back">← На карту</button>
     </header>
+    <h1 class="screen-title">💎 Магазин «Элита»</h1>
     <p class="screen-note" id="magic-note"></p>
     <div id="pro-card"></div>
     <div id="magic-list"></div>
@@ -139,9 +142,10 @@
     </figure>
 
     <header class="screen-head">
-      <h1 class="screen-title">🔧 Мастерская</h1>
+      <button type="button" class="back" id="workshop-back">← На карту</button>
       <span class="shop-purse" id="shop-purse-workshop"></span>
     </header>
+    <h1 class="screen-title">🔧 Мастерская</h1>
 
     <!-- Три вкладки одной локации -->
     <div class="bubbles" id="workshop-tabs"></div>
@@ -199,6 +203,123 @@
     <div class="hp-note" id="hospital-hp-note"></div>
 
     <div class="cures" id="hospital-list"></div>
+  </main>
+
+  <!-- ---------- 3b1. Тренажёрный зал ---------- -->
+  <!-- Зал устроен сверху вниз по срочности: что происходит прямо сейчас,
+       что накоплено, и уже потом расписание на неделю. Абонемент всплывает
+       первым только когда его нет — без него всё остальное недоступно. -->
+  <main id="gym" class="screen hidden">
+    <figure class="interior hidden" id="gym-interior">
+      <img class="interior-pic" id="gym-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="gym-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-gym"></span>
+    </header>
+    <h1 class="screen-title">🏋️ Тренажёрный зал</h1>
+    <p class="screen-note" id="gym-note"></p>
+
+    <div id="gym-body"></div>
+  </main>
+
+  <!-- ---------- 3b2. Страховая компания ---------- -->
+  <!-- Страховая продаёт не услугу, а документ: на экране прежде всего сам
+       полис — как он будет выглядеть в «Документах», — и уже под ним цена
+       и прайс больницы с полисом и без. -->
+  <main id="insurance" class="screen hidden">
+    <figure class="interior hidden" id="insurance-interior">
+      <img class="interior-pic" id="insurance-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="insurance-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-insurance"></span>
+    </header>
+    <h1 class="screen-title">🏦 Страховая компания</h1>
+    <p class="screen-note" id="insurance-note"></p>
+
+    <div id="insurance-body"></div>
+  </main>
+
+  <!-- ---------- 3b3. Vegas Банк ---------- -->
+  <!-- Три вкладки, и порядок у них от пустого банка к обжитому: пока
+       счёта нет, показывать в «Счетах» и «Банкомате» нечего, и банк
+       открывается на «Новом продукте». Как только счёт есть, банк сам
+       открывается на «Счетах»: туда ходят каждый день, а за новым
+       продуктом — один раз. -->
+  <main id="bank" class="screen hidden">
+    <figure class="interior hidden" id="bank-interior">
+      <img class="interior-pic" id="bank-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="bank-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-bank"></span>
+    </header>
+    <h1 class="screen-title">🏦 Vegas Банк</h1>
+    <p class="screen-note" id="bank-note"></p>
+
+    <div id="bank-body"></div>
+  </main>
+
+  <!-- ---------- 3b4. HR-агентство ---------- -->
+  <!-- Доска из пяти мест: место одно на город, и по доске сразу видно,
+       кем оно занято. Вопросы теста на доске не лежат — их выдают по
+       заявке, и верный ответ не уезжает на страницу вовсе. -->
+  <main id="hr" class="screen hidden">
+    <figure class="interior hidden" id="hr-interior">
+      <img class="interior-pic" id="hr-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="hr-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-hr"></span>
+    </header>
+    <h1 class="screen-title">💼 HR-агентство</h1>
+    <p class="screen-note" id="hr-note"></p>
+
+    <div id="hr-body"></div>
+  </main>
+
+  <!-- ---------- 3b5. Рабочее место ---------- -->
+  <!-- Один экран на все пять домов: что в нём показывать, решает то
+       место, где боец стоит. Своё — смена и часы; чужое — записка о том,
+       что место занимают через агентство. -->
+  <main id="work" class="screen hidden">
+    <figure class="interior hidden" id="work-interior">
+      <img class="interior-pic" id="work-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="work-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-work"></span>
+    </header>
+    <h1 class="screen-title" id="work-title">💼 Работа</h1>
+    <p class="screen-note" id="work-note"></p>
+
+    <div id="work-body"></div>
+  </main>
+
+  <!-- ---------- 3c. Рынок: обмен между бойцами ---------- -->
+  <!-- Стол общий, и это главное свойство экрана: страница здесь ничего
+       не помнит и ничего не досчитывает. Всё, что видно, — последний
+       ответ сервера; своя половина приходит отдельно от чужой, чтобы
+       вёрстка не решала, что чьё. -->
+  <main id="trade" class="screen hidden">
+    <figure class="interior hidden" id="trade-interior">
+      <img class="interior-pic" id="trade-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="trade-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-trade"></span>
+    </header>
+    <h1 class="screen-title">🤝 Рынок</h1>
+    <p class="screen-note" id="trade-note"></p>
+
+    <div id="trade-body"></div>
   </main>
 
   <!-- ---------- 3c. Дом без услуги ---------- -->
@@ -292,15 +413,19 @@
       <p class="screen-note" id="skills-note"></p>
     </section>
 
-    <!-- Календарь входа открывается отсюда: окно всплывает само раз в день,
-         а посмотреть, что впереди, хочется когда угодно -->
-    <div class="hero-acts">
-      <button type="button" class="btn hidden" id="hero-daily">
-        🎁 Ежедневные награды
-      </button>
-    </div>
+    <!-- Три входа в нижнюю половину карточки, и все три одной кнопкой:
+         «Характеристики» — то, что тут было всегда, «Документы» — то, что
+         боец получает в конторах города, «Награды» — календарь входа.
+         Наверху не делим ничего: имя, здоровье, кукла и приёмы нужны при
+         любом выборе, и прятать их значило бы заставить переключаться
+         туда-обратно, чтобы посмотреть на бойца.
 
-    <section class="panel">
+         Собираются они на стороне страницы: третья кнопка появляется
+         только когда календарь есть что показать, а у второй на счётчике
+         число документов. -->
+    <div class="hero-acts" id="hero-tabs"></div>
+
+    <section class="panel" id="hero-stats">
       <ul class="rows" id="stats"></ul>
       <div id="upgrade" class="upgrade hidden"></div>
       <hr class="rule">
@@ -309,6 +434,13 @@
       <ul class="rows" id="combat"></ul>
       <hr class="rule">
       <ul class="rows" id="record"></ul>
+    </section>
+
+    <!-- Документы: пока один полис, но раздел заведён под то, что будет
+         копиться — права, пропуска и всё прочее, что выдают конторы -->
+    <section id="hero-papers" class="hidden">
+      <div class="papers" id="papers-list"></div>
+      <p class="screen-note" id="papers-note"></p>
     </section>
 
     <footer class="foot" id="foot"></footer>
