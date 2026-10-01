@@ -242,6 +242,8 @@ def gym_state(
     taken_today: int = 0,
     seats: int = 0,
     marks: tuple[str, ...] = (),
+    affordable: bool = True,
+    purse: dict | None = None,
 ) -> dict:
     """Зал, как его отдаёт сервер: абонемент, слот, прогресс и табло."""
     from bot.game.classes import Stat
@@ -284,8 +286,13 @@ def gym_state(
             ],
         })
     stats = (Stat.STRENGTH, Stat.AGILITY, Stat.INTUITION)
+    wallet = purse or purse_state()
     return {
-        "credits": 10_000,
+        # Наличные берём из кошелька, а не задаём отдельно: на сервере это
+        # одно и то же число, и разойтись им в подделке нельзя — иначе
+        # тест про пустой мешочек проходит с пустым мешочком только на
+        # словах
+        "credits": wallet["cash"],
         "minutes": TRAINING_MINUTES,
         "steps": list(UPGRADE_STEPS),
         "total": total_for(MAX_UPGRADES),
@@ -310,13 +317,14 @@ def gym_state(
             "limit": VISITS_PER_DAY,
             "full": day_is_full(taken_today),
             "price": 0 if day_is_full(taken_today) else price_of_visit(taken_today),
+            "affordable": affordable,
             "free_left": max(0, 1 - taken_today),
             "prices": [
                 {"number": number, "price": price, "free": price == 0}
                 for number, price in enumerate(DAY_PRICES, start=1)
             ],
         },
-        "purse": purse_state(),
+        "purse": wallet,
         "now": board[0]["slots"][2],
         "next": board[0]["slots"][3],
         "visit": visit or {},
@@ -8493,4 +8501,64 @@ async def test_the_work_button_lights_up_during_a_shift(server):
         entry = page.locator("#gym .work-entry")
         assert await entry.inner_text() == "🕗 Смена"
         assert await entry.evaluate("one => one.classList.contains('on')")
+        await browser.close()
+
+
+async def test_the_gym_opens_the_button_when_the_money_is_on_the_card(server):
+    """Баг: с пустым мешочком и деньгами на счету кнопка была заперта.
+
+    Страница сравнивала цену с наличными, а платят здесь картой. Теперь
+    «хватает ли» приходит с сервера — тем же вопросом, что задаёт касса.
+    """
+    state = gym_state(
+        taken_today=1,
+        purse=purse_state(purse="card", cash=0, balance=3_000, discount=10),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, state)
+        await page.wait_for_selector(".gym-now")
+
+        join = page.locator(".gym-now .btn")
+        assert await join.count() == 1
+        assert not await join.is_disabled(), "кнопка заперта при деньгах на счету"
+        await browser.close()
+
+
+async def test_the_gym_shuts_the_button_when_neither_purse_has_enough(server):
+    state = gym_state(
+        taken_today=1,
+        affordable=False,
+        purse=purse_state(purse="card", cash=0, balance=10, discount=10),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server, state)
+        await page.wait_for_selector(".gym-now")
+
+        assert await page.locator(".gym-now .btn").is_disabled()
+        await browser.close()
+
+
+async def test_the_refusal_names_the_purse_the_till_uses(server):
+    """Отказ по деньгам называет тот кошелёк, из которого здесь платят.
+
+    Строка та же, что у сервера, и по той же причине: кошелька два, и
+    «не хватает, а на счету 0» бойцу с тысячей на счету ничего не
+    объясняет. Проверяем саму `purseNote` — подсказку на запертой кнопке
+    браузер не покажет, у отключённой кнопки нажатий не бывает.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_gym(pw, server)
+        await page.wait_for_selector(".gym-now")
+
+        said = await page.evaluate("""() => [
+          purseNote({purse: "card", cash: 0, balance: 1200}),
+          purseNote({purse: "cash", cash: 50, balance: 1200}),
+          purseNote(null),
+        ]""")
+
+        assert said[0] == "на счету 1\u00a0200 💰"
+        assert said[1] == "наличными 50 💰"
+        assert said[2] == "денег не хватает"
         await browser.close()

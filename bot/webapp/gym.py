@@ -216,12 +216,22 @@ def day_payload(taken: int, player: Player | None = None, now: int = 0) -> dict[
             return price
         return player.price_here(price, now, Service.TRAIN)
 
+    price = 0 if full else here(price_of_visit(taken))
     return {
         "taken": taken,
         "limit": VISITS_PER_DAY,
         "full": full,
         # Ноль — следующее занятие по абонементу, то есть даром
-        "price": 0 if full else here(price_of_visit(taken)),
+        "price": price,
+        # Хватает ли на него денег — отвечает сервер, тем же вопросом, что
+        # задаёт касса. Страница этого не считает и считать не должна:
+        # кошелька два, и сравнение с наличными запирало кнопку бойцу,
+        # у которого деньги лежат на счету
+        "affordable": (
+            True
+            if player is None or not price
+            else player.can_afford(price, now, Service.TRAIN)
+        ),
         "free_left": max(0, 1 - taken),
         "prices": [
             {"number": number, "price": here(price), "free": price == 0}

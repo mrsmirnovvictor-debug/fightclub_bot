@@ -695,3 +695,75 @@ async def test_the_trade_table_never_sees_the_account(db):
     # Сто на счету на стол не положишь: стол видит только наличные
     with pytest.raises(TradeError, match="больше положить нечего"):
         trades.put_credits(player, 100)
+
+
+# ---------- деньги на счету — не повод отказать ----------
+
+
+async def test_the_gym_takes_card_money_when_the_pouch_is_empty(db):
+    """Баг: с пустым мешочком и деньгами на счету зал не пускал на занятие.
+
+    Сервер считал верно, а страница сравнивала цену с наличными — и
+    запирала кнопку бойцу, у которого деньги лежат на счету. Теперь
+    «хватает ли» отвечает сервер, тем же вопросом, что задаёт касса.
+    """
+    from bot.webapp.gym import day_payload
+
+    player = await with_card(db, make_player(credits=200, location="strength_gym"))
+    await deposit(db, player, player.credits)
+    assert (player.credits, player.account_balance) == (0, 100)
+
+    # Вторая тренировка в сутках: 50 по прайсу, 45 по карте
+    day = day_payload(1, player, NOW)
+
+    assert day["price"] == 45
+    assert day["affordable"] is True, "отказали при деньгах на счету"
+
+
+async def test_the_gym_still_refuses_when_neither_purse_has_enough(db):
+    from bot.webapp.gym import day_payload
+
+    player = await with_card(db, make_player(credits=110, location="strength_gym"))
+    await deposit(db, player, 10)
+
+    day = day_payload(1, player, NOW)
+
+    assert day["price"] == 45
+    assert day["affordable"] is False
+
+
+async def test_a_free_training_is_affordable_with_empty_pockets(db):
+    """Первая в сутках — по абонементу: денег для неё не нужно вовсе."""
+    from bot.webapp.gym import day_payload
+
+    player = await with_card(db, make_player(credits=100, location="strength_gym"))
+
+    day = day_payload(0, player, NOW)
+
+    assert day["price"] == 0 and day["affordable"] is True
+
+
+async def test_the_gym_charges_the_account_for_an_extra_training(db):
+    """И касса берёт именно со счёта, а не отказывает по пустому мешочку."""
+    from bot.gym_service import join
+    from bot.game.gym import SLOT_HOURS, SLOT_SECONDS, slot_start
+    from datetime import date
+
+    player = await with_card(db, make_player(credits=600, location="strength_gym"))
+    await db.set_gym_pass(player.user_id, NOW + 30 * 24 * 60 * 60)
+    player.gym_until = NOW + 30 * 24 * 60 * 60
+    await deposit(db, player, player.credits)
+    assert player.credits == 0
+
+    # Первое занятие — по абонементу, второе уже за деньги. Смену
+    # закрываем руками: ждать пятнадцать минут тесту незачем
+    monday = slot_start(date(2026, 10, 5), SLOT_HOURS[0]) + 60
+    visit = await join(db, player, monday)
+    await db.close_gym_visit(player.user_id, visit.slot)
+    was = player.account_balance
+
+    # Следующее занятие — в другом слоте: в одном дважды не встают
+    await join(db, player, monday + SLOT_SECONDS)
+
+    assert player.account_balance == was - 45, "деньги не ушли со счёта"
+    assert player.credits == 0
