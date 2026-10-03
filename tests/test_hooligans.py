@@ -267,24 +267,122 @@ def test_every_extra_fighter_brings_one_more_hooligan(party, gang, added):
     assert [one.class_code for one in roster[5:]] == added
 
 
-def test_the_leader_wears_the_fan_shop_and_the_rest_do_not():
-    """Лидер — в фанатском из «Северного Вала», рядовые — в клубном.
+def test_the_whole_gang_wears_the_fan_shop():
+    """Вся банда — в фанатском из «Северного Вала», своей линией на класс.
 
-    Это не косметика, а то, чем рейд держится проходимым: в одинаковой с
-    отрядом экипировке впятером против трёх побед выходит 4%.
+    Фанатских вещей на класс семь: шапка, оружие, футболка, пояс,
+    куртка, штаны и кроссовки. Перчаток и щитов в той линии нет, и
+    пустые слоты добираются клубным — так же, как у игрока, который
+    скупил «Северный Вал» целиком.
     """
+    from bot.game.raid import GANG, boss_kit
+
+    lines = {
+        "tank": "fan_boss_",
+        "rogue": "fan_rogue_",
+        "warrior": "fan_warrior_",
+        "assassin": "fan_assassin_",
+    }
+    for one in GANG:
+        worn = [owned.item.code for owned in boss_kit(one).items.values()]
+        mine = [code for code in worn if code.startswith(lines[one.class_code])]
+        # У линии лидера есть ещё и щит — восьмая вещь; у остальных семь
+        assert len(mine) == (8 if one.class_code == "tank" else 7), (
+            f"{one.title}: не свой комплект — {worn}"
+        )
+        # Из чужой линии — только щит, и только тому, кому он разрешён:
+        # щит в «Северном Вале» один на весь магазин, лежит в линии
+        # лидера, и воину его носить можно
+        foreign = [
+            code
+            for kind, prefix in lines.items()
+            if kind != one.class_code
+            for code in worn
+            if code.startswith(prefix)
+        ]
+        assert set(foreign) <= {"fan_boss_shield"}, (
+            f"{one.title} надел чужую линию: {foreign}"
+        )
+
+
+def test_an_npc_never_wears_what_his_class_cannot():
+    """Снаряжение NPC видно по кнопке «i» — и врать в нём нельзя.
+
+    Пустые слоты добираются с прилавка самым дорогим, что в них лезет, а
+    своей вещи у класса там может не оказаться вовсе: ассасину так
+    достаётся щит, который живой ассасин с земли не поднял бы — и заодно
+    лишает его второй руки. Теперь такое не надевается, и слот остаётся
+    пустым.
+    """
+    from bot.game.raid import BOSSES, GANG, boss_kit
+
+    for one in (*GANG, *BOSSES):
+        for slot, owned in boss_kit(one).items.items():
+            allowed = owned.item.for_classes
+            assert not allowed or one.class_code in allowed, (
+                f"{one.title}: {owned.item.code} не для класса {one.class_code}"
+            )
+
+
+def test_gear_named_by_hand_overrides_the_class_rule():
+    """Что боссу прописали руками, то на нём и останется.
+
+    Правило класса сторожит добор с прилавка — там выбирает не человек, а
+    «самое дорогое, что лезет в слот». Названное же выбрано руками, и
+    если кому-то однажды выпишут чужую вещь нарочно (уникальный трофей,
+    чей-то щит), снимать её не наше дело. Порядок поэтому такой: сперва
+    фильтруем прилавок, потом кладём названное сверху.
+    """
+    from dataclasses import replace
+
     from bot.game.raid import boss_kit
 
-    leader = boss_kit(HOOLIGAN_RAID.leader)
-    assert all(
-        owned.item.code.startswith("fan_boss_")
-        for slot, owned in leader.items.items()
-        if slot.value in ("weapon", "offhand", "shirt", "jacket", "pants")
-    )
-    crew = boss_kit(GANG_WARRIORS[0])
-    worn = [owned.item.code for owned in crew.items.values()]
-    assert "fan_warrior_bat" in worn, "своё оружие у него фанатское"
-    assert sum(code.startswith("fan_") for code in worn) == 1
+    # Щит фанатского сектора ассасину не положен — но если выписать его
+    # руками, он должен остаться
+    stubborn = replace(GANG_ASSASSINS[0], gear=("fan_boss_shield",))
+    worn = {owned.item.code for owned in boss_kit(stubborn).items.values()}
+
+    assert "fan_boss_shield" in worn
+    # А тот же ассасин без приписки щита не носит
+    assert "fan_boss_shield" not in {
+        owned.item.code for owned in boss_kit(GANG_ASSASSINS[0]).items.values()
+    }
+
+
+def test_the_gang_is_dressed_like_fighters_but_not_trained_like_them():
+    """Выучка — вот чем рейд держится проходимым, а не одеждой.
+
+    Рядовому гопнику характеристики распределены по седьмому, хотя
+    сам он десятого и одет по-боевому: форма есть, зала нет. Выучи их
+    полностью — и впятером против трёх побед выходит 5%, то есть рейд
+    непроходим. А лидер — боец настоящий, и накачан он по своему уровню.
+    """
+    from bot.game.raid import GANG_BUILD
+
+    assert GANG_BUILD == 7
+    assert HOOLIGAN_RAID.leader.build_level == 0, "лидер качан по своему уровню"
+    for one in (*GANG_ROGUES, *GANG_WARRIORS, *GANG_ASSASSINS):
+        assert one.build_level == GANG_BUILD
+
+    # Сравниваем не с голой характеристикой, а с тем же гопником, выучи
+    # его полностью: прибавки от фанатского комплекта у обоих одни и те
+    # же, и разницу даёт ровно выучка
+    from dataclasses import replace
+
+    from bot.game.raid import boss_fighter
+
+    for template in HOOLIGAN_RAID.roster(GANG_PARTY):
+        plain = boss_fighter(template, [GANG_LEVEL], 0.0, level=GANG_LEVEL)
+        trained = boss_fighter(
+            replace(template, build_level=0), [GANG_LEVEL], 0.0, level=GANG_LEVEL
+        )
+        if template.build_level:
+            assert plain.stats.total() < trained.stats.total(), (
+                f"{template.title} накачан как боец своего уровня"
+            )
+            assert plain.max_hp < trained.max_hp
+        else:
+            assert plain.stats.total() == trained.stats.total()
 
 
 def test_the_gang_stands_on_its_own_level_whoever_comes():
