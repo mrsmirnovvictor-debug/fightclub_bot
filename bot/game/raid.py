@@ -34,9 +34,15 @@ from bot.game.classes import (
 )
 from bot.game.combat import Action, Fighter
 from bot.game.economy import MAX_LEVEL
-from bot.game.equipment import Equipment, OwnedItem, get_item
+from bot.game.equipment import (
+    Equipment,
+    FAN_SHELF,
+    OwnedItem,
+    get_item,
+    shelf_of,
+)
 from bot.game.health import now_ts
-from bot.game.potions import RAID_PASS, STADIUM_PASS
+from bot.game.potions import RAID_PASS, STADIUM_PASS, get_potion
 from bot.game.reference import best_kit, developed_stats, fan_kit
 
 # Сколько человек идут в рейд. Одному можно — пусть и тяжело: босс всё
@@ -74,6 +80,84 @@ ELIXIR_PRIZES: tuple[str, ...] = (
     "boost_agility",
     "boost_intuition",
 )
+
+
+@dataclass(frozen=True)
+class Spoils:
+    """Что падает за победу сверх кредитов. У каждого рейда своё.
+
+    Три разных броска, и путать их нельзя.
+
+    **Вещь — лучшему по урону.** Берётся с названной полки целиком, не
+    глядя на класс: «рандомная вещь из магазина» и есть рандомная. Чужую
+    линию можно продать или выменять, а подбирать приз под класс значило
+    бы обещать полезное — чего не обещали.
+
+    **Склянка лучшему по урону** — награда подвала, и она же разменная
+    монета: падает чаще вещи, стоит меньше.
+
+    **Склянка всем сразу или никому** — один бросок на весь отряд, а не
+    по броску на человека. Так и задумано: либо после боя пьют все, либо
+    не пьёт никто, и это заметное событие, а не лотерея, в которой одному
+    повезло, а четверым нет.
+    """
+
+    # Полка, с которой падает вещь лучшему по урону, и с какой вероятностью
+    item_shelf: str = ""
+    item_chance: float = 0.0
+    # Склянка лучшему по урону
+    elixir_chance: float = 0.0
+    elixirs: tuple[str, ...] = ()
+    # Склянка всем сразу: один бросок на отряд
+    potion_chance: float = 0.0
+    potions: tuple[str, ...] = ()
+
+    def item_for(self, rng: random.Random | None = None) -> str | None:
+        """Вещь лучшему по урону. None — не выпала или полка не назначена."""
+        if not self.item_shelf or not self.item_chance:
+            return None
+        rng = rng or random
+        if rng.random() >= self.item_chance:
+            return None
+        goods = shelf_of(self.item_shelf)
+        return rng.choice([item.code for item in goods]) if goods else None
+
+    def elixir_for(self, rng: random.Random | None = None) -> str | None:
+        """Склянка лучшему по урону. None — не выпала."""
+        if not self.elixirs or not self.elixir_chance:
+            return None
+        rng = rng or random
+        if rng.random() >= self.elixir_chance:
+            return None
+        return rng.choice(self.elixirs)
+
+    def potion_for(self, rng: random.Random | None = None) -> str | None:
+        """Склянка всему отряду — или никому. Бросок один на всех."""
+        if not self.potions or not self.potion_chance:
+            return None
+        rng = rng or random
+        if rng.random() >= self.potion_chance:
+            return None
+        return rng.choice(self.potions)
+
+
+CELLAR_SPOILS = Spoils(elixir_chance=ELIXIR_CHANCE, elixirs=ELIXIR_PRIZES)
+
+
+def prize_of(code: str) -> tuple[str, str] | None:
+    """Приз по коду: значок и название. None — ни вещь, ни склянка.
+
+    Призом бывает и то, и другое, а код у них общего вида. Разбирать его
+    в двух местах — в рассказе судьи и в истории боёв — значит однажды
+    разойтись: там, где не угадали, приз просто не покажется.
+    """
+    item = get_item(code)
+    if item is not None:
+        return item.emoji, item.title
+    potion = get_potion(code)
+    if potion is not None:
+        return potion.emoji, potion.title
+    return None
 
 # ---------- когда подвал открыт ----------
 #
@@ -511,10 +595,15 @@ class Boss:
     # против трёх в одинаковой экипировке — не сложный бой, а безнадёжный,
     # и мерено это прогоном, а не на глаз
     gear_level: int = 0
+    # Портрет из папки образов, а не из папки боссов: гопники рисовались
+    # вместе с фанатской линией одежды, и лицо у них общее на класс —
+    # четыре файла на тринадцать человек. Пусто — портрет ищется в
+    # `bosses/` под кодом, как у босса казино
+    portrait: str = ""
 
     @property
     def image(self) -> str:
-        return art.boss(self.code)
+        return art.avatar(self.portrait) if self.portrait else art.boss(self.code)
 
     @property
     def raid_name(self) -> str:
@@ -588,17 +677,17 @@ BOSSES: tuple[Boss, ...] = (
 #
 # Одет в фанатское из «Северного Вала» один лидер — ему это и прописано.
 # Рядовые ходят в клубном с третьей ступени прилавка, и ступень здесь
-# мереная, а не на глаз: `scripts/gang_raid.py` гоняет ту же `form_line`
+# мереная, а не на глаз: `scripts/gang_raid.py` гоняет тот же круг
 # и тот же размен, которыми идёт настоящий рейд, и говорит, что выходит у
 # отряда, который просто тыкает кнопки.
 #
 # В одинаковой с отрядом экипировке впятером против трёх побед выходит
-# 4%, то есть рейд непроходим; на десятой ступени прилавка — 0%. На
-# третьей у троих в эталонном комплекте 8%, у троих в фанатском — 21%, у
-# пятерых в фанатском — 65%. Это нижняя граница: прогон жмёт наугад, без
-# аналитика, приёмов и склянок, а живой отряд всем этим как раз и
-# вытягивает. Такой рейд проигрывает тому, кто пришёл тыкать, и даётся
-# тому, кто пришёл готовым, — этого и добивались.
+# около 4%, то есть рейд непроходим. На третьей ступени у троих в
+# эталонном комплекте 10%, у троих в фанатском — 33%, у пятерых в
+# фанатском — 61%, у десятерых — 94%. Это нижняя граница: прогон жмёт
+# наугад, без аналитика, приёмов и склянок, а живой отряд всем этим как
+# раз и вытягивает. Такой рейд проигрывает тому, кто пришёл тыкать, и
+# даётся тому, кто пришёл готовым, — этого и добивались.
 GANG_GEAR_STEP = 3
 
 # Уровень гопников твёрдый: они не подстраиваются под отряд, как босс
@@ -612,7 +701,7 @@ GANG_PARTY = 3
 # Сколько получает за победу каждый. Не делится на отряд, в отличие от
 # казино: билет на матч каждый покупает свой, и доля за него не должна
 # зависеть от того, сколько народу пришло. Втроём и вдесятером сделка у
-# человека одна и та же — пятьдесят за вход, двести за победу.
+# человека одна и та же — пятьдесят за вход, двести пятьдесят за победу.
 #
 # Большой отряд при этом и правда выигрывает чаще: банда растёт на одного
 # за бойца, то есть всегда опережает на двоих, а двое из двенадцати — это
@@ -620,19 +709,89 @@ GANG_PARTY = 3
 # фанатском). Делить за это кошель всё равно нельзя — тогда втроём за
 # самый трудный бой доставалось бы по шестьдесят семь, меньше чем за два
 # билета.
-GANG_PURSE = 200
+GANG_PURSE = 250
 
 # Когда фанаты выходят со стадиона: среда и суббота, с полудня до шести.
 # Расписание твёрдое и не прячется: на матч собираются заранее
 GANG_SCHEDULE = Weekly(weekdays=(2, 5), hour=12, hours=6)
 
+# Сколько у бойца есть на свой удар. Минута, а не полминуты: в банде
+# цель каждую волну новая, и прочесть её надо успеть
+GANG_TURN_SECONDS = 60
+
+# Склянки, которые падают всему отряду разом: по характеристике на
+# каждую и одна на запас здоровья
+GANG_POTIONS: tuple[str, ...] = (
+    "boost_strength",
+    "boost_agility",
+    "boost_endurance",
+    "boost_hp",
+)
+
+# Что с банды падает. Вещь — лучшему по урону, и своя линия у неё не
+# спрашивается: что упало с фанатского прилавка, то и упало. Склянка —
+# всем сразу или никому, одним броском на отряд
+GANG_SPOILS = Spoils(
+    item_shelf=FAN_SHELF,
+    item_chance=0.75,
+    potion_chance=0.8,
+    potions=GANG_POTIONS,
+)
+
+# Повадки по классу: внутри банды они общие, потому что общее у них всё
+# — выучка, форма и привычка драться толпой. Различать их по человеку
+# значило бы придумывать тринадцать характеров там, где есть четыре.
+ROGUE_TEMPER = Temper(
+    attacks=(("legs", 24), ("belt", 23), ("belly", 20), ("chest", 18), ("head", 15)),
+    guards=(("legs", 25), ("belt", 23), ("belly", 19), ("chest", 17), ("head", 16)),
+)
+WARRIOR_TEMPER = Temper(
+    attacks=(("chest", 25), ("belly", 23), ("head", 19), ("belt", 18), ("legs", 15)),
+    guards=(("chest", 24), ("belly", 22), ("head", 20), ("belt", 18), ("legs", 16)),
+)
+ASSASSIN_TEMPER = Temper(
+    attacks=(("belly", 25), ("belt", 24), ("chest", 19), ("legs", 17), ("head", 15)),
+    guards=(("belly", 23), ("belt", 22), ("chest", 20), ("legs", 18), ("head", 17)),
+)
+
+
+def _hooligan(code: str, nick: str, kind: str) -> Boss:
+    """Один гопник с кличкой. Всё остальное у него от класса.
+
+    Кличка — это всё, чем они различаются, и этого достаточно: на табло
+    из тринадцати строк «Ассасин №3» ничего не говорит, а «Мелкий»
+    запоминается с первого боя.
+    """
+    look = {
+        "rogue": ("🤸", "fan_rogue", "fan_rogue_umbrella", ROGUE_TEMPER,
+                  "Метит по ногам и сам закрывается низко."),
+        "warrior": ("⚔️", "fan_warrior", "fan_warrior_bat", WARRIOR_TEMPER,
+                    "Работает по корпусу, широко и без выдумки."),
+        "assassin": ("🗡️", "fan_assassin", "fan_assassin_knife", ASSASSIN_TEMPER,
+                     "Нож ходит в живот и под ремень."),
+    }[kind]
+    emoji, portrait, weapon, temper, manner = look
+    return Boss(
+        code=code,
+        title=nick,
+        emoji=emoji,
+        class_code=kind,
+        weapon=weapon,
+        gear_level=GANG_GEAR_STEP,
+        portrait=portrait,
+        temper=temper,
+        manner=manner,
+    )
+
+
 GANG_LEADER = Boss(
-    code="gang_leader",
-    title="Лидер банды",
+    code="gang_major",
+    title="Лидер банды — Майор",
     emoji="🪖",
     class_code="tank",
     weapon="fan_boss_bat",
     outfit=FAN_OUTFIT,
+    portrait="fan_boss",
     tagline="Держит сектор и отвечает за всех, кто в нём орёт.",
     temper=Temper(
         attacks=(("head", 23), ("chest", 23), ("belly", 20), ("belt", 18), ("legs", 16)),
@@ -641,59 +800,53 @@ GANG_LEADER = Boss(
     manner="Бьёт битой сверху и держит щит у лица.",
 )
 
-GANG_ROGUE = Boss(
-    code="gang_rogue",
-    title="Трикстер",
-    emoji="🤸",
-    class_code="rogue",
-    weapon="fan_rogue_umbrella",
-    gear_level=GANG_GEAR_STEP,
-    temper=Temper(
-        attacks=(("legs", 24), ("belt", 23), ("belly", 20), ("chest", 18), ("head", 15)),
-        guards=(("legs", 25), ("belt", 23), ("belly", 19), ("chest", 17), ("head", 16)),
-    ),
-    manner="Метит по ногам и сам закрывается низко.",
+# Тринадцать кличек: лидер и по четыре на класс. Каждый выходит под своей
+# — повторов в банде нет, и нумеровать однофамильцев не приходится
+GANG_ROGUES: tuple[Boss, ...] = (
+    _hooligan("gang_mazhorchik", "Мажорчик", "rogue"),
+    _hooligan("gang_valera", "Валера", "rogue"),
+    _hooligan("gang_seryy", "Серый", "rogue"),
+    _hooligan("gang_toshchiy", "Тощий", "rogue"),
 )
-
-GANG_WARRIOR = Boss(
-    code="gang_warrior",
-    title="Воин",
-    emoji="⚔️",
-    class_code="warrior",
-    weapon="fan_warrior_bat",
-    gear_level=GANG_GEAR_STEP,
-    temper=Temper(
-        attacks=(("chest", 25), ("belly", 23), ("head", 19), ("belt", 18), ("legs", 15)),
-        guards=(("chest", 24), ("belly", 22), ("head", 20), ("belt", 18), ("legs", 16)),
-    ),
-    manner="Работает по корпусу, широко и без выдумки.",
+GANG_WARRIORS: tuple[Boss, ...] = (
+    _hooligan("gang_yaryy", "Ярый", "warrior"),
+    _hooligan("gang_sedoy", "Седой", "warrior"),
+    _hooligan("gang_dubina", "Дубина", "warrior"),
+    _hooligan("gang_arkadich", "Аркадич", "warrior"),
 )
-
-GANG_ASSASSIN = Boss(
-    code="gang_assassin",
-    title="Ассасин",
-    emoji="🗡️",
-    class_code="assassin",
-    weapon="fan_assassin_knife",
-    gear_level=GANG_GEAR_STEP,
-    temper=Temper(
-        attacks=(("belly", 25), ("belt", 24), ("chest", 19), ("legs", 17), ("head", 15)),
-        guards=(("belly", 23), ("belt", 22), ("chest", 20), ("legs", 18), ("head", 17)),
-    ),
-    manner="Нож ходит в живот и под ремень.",
+GANG_ASSASSINS: tuple[Boss, ...] = (
+    _hooligan("gang_britva", "Бритва", "assassin"),
+    _hooligan("gang_kastet", "Кастет", "assassin"),
+    _hooligan("gang_melkiy", "Мелкий", "assassin"),
+    _hooligan("gang_killer", "Киллер", "assassin"),
 )
 
 # Кого банда выставляет на троих — пятеро, считая лидера
-GANG_CREW: tuple[Boss, ...] = (GANG_ROGUE, GANG_WARRIOR, GANG_ASSASSIN, GANG_ASSASSIN)
+GANG_CREW: tuple[Boss, ...] = (
+    GANG_ROGUES[0],
+    GANG_WARRIORS[0],
+    GANG_ASSASSINS[0],
+    GANG_ASSASSINS[1],
+)
 
-# Кого добавляют за каждого бойца сверх трёх — по кругу, с трикстера
-GANG_RESERVE: tuple[Boss, ...] = (GANG_ROGUE, GANG_WARRIOR, GANG_ASSASSIN)
+# Кого добавляют за каждого бойца сверх трёх — по кругу: трикстер, воин,
+# ассасин, и каждый следующий под новой кличкой. Восьми хватает на полный
+# отряд: при десятерых банда выходит двенадцатью, и тринадцатый
+# (Аркадич) ждёт своего часа — он выйдет, только если поднять потолок
+GANG_RESERVE: tuple[Boss, ...] = (
+    GANG_ROGUES[1], GANG_WARRIORS[1], GANG_ASSASSINS[2],
+    GANG_ROGUES[2], GANG_WARRIORS[2], GANG_ASSASSINS[3],
+    GANG_ROGUES[3], GANG_WARRIORS[3],
+)
+
+# Вся банда списком: по ней ищут гопника по коду и проверяют, что кличек
+# хватает на любой отряд
+GANG: tuple[Boss, ...] = (
+    GANG_LEADER, *GANG_ROGUES, *GANG_WARRIORS, *GANG_ASSASSINS
+)
 
 CELLAR_BOSS = BOSSES[0]
-BOSS_BY_CODE = {
-    boss.code: boss
-    for boss in BOSSES + (GANG_LEADER, GANG_ROGUE, GANG_WARRIOR, GANG_ASSASSIN)
-}
+BOSS_BY_CODE = {boss.code: boss for boss in BOSSES + GANG}
 # У противника свой номер: он не игрок, и с чужим user_id путаться не
 # должен. Банда занимает номера подряд от этого же: лидер — минус первый,
 # и рейд на одного босса остаётся ровно тем, чем был
@@ -703,27 +856,6 @@ BOSS_ID = -1
 def foe_id(index: int) -> int:
     """Номер противника по месту в банде. Первый — тот же BOSS_ID."""
     return BOSS_ID - index
-
-
-def foe_titles(roster: tuple[Boss, ...]) -> tuple[str, ...]:
-    """Имена противников так, как их различит глаз.
-
-    Двух ассасинов в банде зовут одинаково, и на табло они слились бы в
-    одного. Поэтому повторяющиеся нумеруются, а одиночные остаются как
-    есть: «Лидер банды», а не «Лидер банды №1».
-    """
-    total: dict[str, int] = {}
-    for boss in roster:
-        total[boss.title] = total.get(boss.title, 0) + 1
-    seen: dict[str, int] = {}
-    titles: list[str] = []
-    for boss in roster:
-        if total[boss.title] == 1:
-            titles.append(boss.title)
-            continue
-        seen[boss.title] = seen.get(boss.title, 0) + 1
-        titles.append(f"{boss.title} №{seen[boss.title]}")
-    return tuple(titles)
 
 
 @dataclass(frozen=True)
@@ -762,6 +894,10 @@ class RaidKind:
     foe_level: int = 0
     hp_share: float = BOSS_HP_SHARE
     tagline: str = ""
+    # Что падает за победу сверх кредитов
+    spoils: Spoils = CELLAR_SPOILS
+    # Сколько у бойца есть на свой удар. Ноль — брать из настроек
+    turn_seconds: int = 0
 
     @property
     def one_on_one(self) -> bool:
@@ -804,6 +940,7 @@ CELLAR_RAID = RaidKind(
     schedule=CELLAR_SCHEDULE,
     leader=CELLAR_BOSS,
     tagline=CELLAR_BOSS.tagline,
+    spoils=CELLAR_SPOILS,
 )
 
 HOOLIGAN_RAID = RaidKind(
@@ -827,6 +964,8 @@ HOOLIGAN_RAID = RaidKind(
     # Прибавки к здоровью у банды нет: у неё вместо прибавки лишние тела
     hp_share=0.0,
     tagline="Фанатский сектор вываливается со стадиона и ищет, с кем поговорить.",
+    spoils=GANG_SPOILS,
+    turn_seconds=GANG_TURN_SECONDS,
 )
 
 RAID_KINDS: tuple[RaidKind, ...] = (CELLAR_RAID, HOOLIGAN_RAID)
@@ -954,18 +1093,15 @@ def raid_foes(kind: RaidKind, levels: list[int]) -> dict[int, Fighter]:
     тем же, чем был: лидер под минус первым, и прошлые записи боёв
     по-прежнему про него.
     """
-    roster = kind.roster(len(levels))
-    titles = foe_titles(roster)
     return {
         foe_id(index): boss_fighter(
             boss,
             levels,
             kind.hp_share,
             level=kind.foe_level,
-            name=titles[index],
             number=foe_id(index),
         )
-        for index, boss in enumerate(roster)
+        for index, boss in enumerate(kind.roster(len(levels)))
     }
 
 
@@ -1046,15 +1182,13 @@ def damage_board(fighters: dict[int, Fighter]) -> list[tuple[int, int]]:
 
 
 def elixir_for(rng: random.Random | None = None) -> str | None:
-    """Приз лучшему по урону: с некоторой вероятностью — один из эликсиров.
+    """Приз лучшему по урону в подвале: иногда — один из эликсиров.
 
-    Вещей за рейд больше не дают: кошелёк делится на всех, а сверх него у
-    подвала есть только эта склянка, и та не каждый раз.
+    Своя дверь к `CELLAR_SPOILS`, а не второе правило рядом с ним: что
+    падает за победу, решает добыча рейда, и считаться это должно в одном
+    месте.
     """
-    rng = rng or random
-    if rng.random() >= ELIXIR_CHANCE:
-        return None
-    return rng.choice(ELIXIR_PRIZES)
+    return CELLAR_SPOILS.elixir_for(rng)
 
 
 def shares_of(purse: int, party: int) -> list[int]:
@@ -1074,8 +1208,15 @@ __all__ = [
     "CELLAR_RAID",
     "CELLAR_SCHEDULE",
     "FAN_OUTFIT",
+    "GANG",
+    "GANG_ASSASSINS",
     "GANG_CREW",
+    "GANG_POTIONS",
+    "GANG_SPOILS",
+    "GANG_TURN_SECONDS",
     "GANG_LEADER",
+    "GANG_ROGUES",
+    "GANG_WARRIORS",
     "GANG_LEVEL",
     "GANG_PARTY",
     "GANG_PURSE",
@@ -1084,6 +1225,9 @@ __all__ = [
     "HOOLIGAN_RAID",
     "KIND_BY_CODE",
     "Lottery",
+    "CELLAR_SPOILS",
+    "Spoils",
+    "prize_of",
     "RAID_KINDS",
     "RaidKind",
     "SHOWCASE_OUTFIT",
@@ -1091,7 +1235,6 @@ __all__ = [
     "WEEKDAY_WHEN",
     "Weekly",
     "foe_id",
-    "foe_titles",
     "get_kind",
     "kind_at",
     "kind_of_boss",

@@ -61,7 +61,6 @@ from bot.potions_service import PotionError, buy_potion
 from bot.game.raid import (
     BOSS_ID,
     Window,
-    elixir_for,
     FATIGUE_WAVES,
     Boss,
     CELLAR_RAID,
@@ -181,14 +180,19 @@ class RaidSession:
     человека, — а на стадионе их пятеро и больше, и валить их приходится
     по человеку. Поэтому здесь не «босс», а `enemies`: номер → боец.
 
-    **Банда дерётся линией в ширину отряда.** Против каждого живого
-    бойца стоит свой гопник, остальные ждут своей очереди и выходят на
-    место упавших. Рейд поэтому — несколько параллельных «один на один»,
-    а не свалка: у бойца один противник, и он его видит.
+    **Отряд идёт по банде по кругу.** У бойца в каждый миг один
+    противник — тот, до кого дошла очередь, — и после своего размена он
+    переходит к следующему: отработал всех, вернулся к первому. Поэтому
+    рейд не свалка: бить сразу всех нельзя, и кого бьёшь сейчас, видно.
+
+    Круг один на отряд: все начинают с лидера и идут в ногу, пока
+    кто-нибудь не промолчит свой ход. Промолчавший всё равно сдвигается —
+    его бьёт тот, кого он должен был бить, — так что из круга не
+    выпадают.
 
     Сложность отсюда и берётся. Банда всегда на двоих глубже отряда, и
-    троим нужно свалить пятерых, имея три жизни: кто добил своего,
-    встречает следующего — свежего, а сам уже битый.
+    урон приходится разносить по всем, а бьют в ответ столько раз,
+    сколько в отряде живых.
     """
 
     id: int
@@ -225,9 +229,9 @@ class RaidSession:
     # получает ровно столько же, сколько получал бы от противника без
     # характера
     stances: dict[int, int] = field(default_factory=dict)
-    # Кто против кого стоит в этой линии: боец → номер противника.
-    # Держится между волнами: пока оба живы, они дерутся друг с другом
-    pairs: dict[int, int] = field(default_factory=dict)
+    # Кого боец бьёт сейчас: боец → номер противника. Сдвигается после
+    # каждого его размена — и после промолчанного тоже
+    aim: dict[int, int] = field(default_factory=dict)
     summary: list[str] = field(default_factory=list)
     # Кому сколько досталось из кошелька: считается один раз на итоге
     shares: dict[int, int] = field(default_factory=dict)
@@ -274,50 +278,63 @@ class RaidSession:
         return self.template_of(number).temper.turned(self.stances.get(number, 0))
 
     def foe_of(self, user_id: int) -> Fighter | None:
-        """С кем этот боец дерётся прямо сейчас. None — ни с кем."""
-        number = self.pairs.get(user_id)
+        """Кого этот боец бьёт прямо сейчас. None — некого."""
+        number = self.aim.get(user_id)
         return None if number is None else self.enemies.get(number)
 
-    def form_line(self) -> None:
-        """Поставить против каждого живого бойца живого противника.
+    def take_aim(self) -> None:
+        """Навести каждого живого бойца на живого противника.
 
-        Пары держатся, пока оба стоят: своего противника боец видит всю
-        волну и не меняет его из-за того, что рядом кого-то добили.
-        Освободившееся место занимает тот из банды, кто ещё не в линии, —
-        по порядку, в котором банда выставляет своих.
-
-        Противников может оказаться меньше, чем бойцов: в казино босс
-        один на всех, а от банды к концу боя остаётся последний. Тогда на
-        одного наваливаются вдвоём и втроём — свободных сначала разбирают
-        по одному, а дальше встают к тому, на ком народу меньше. Босс
-        казино этим правилом и держится прежним: трое против одного — это
-        трое на нём, как и было.
+        Сюда попадают только те, у кого цели ещё нет или она уже лежит:
+        тот, чья очередь не дошла до конца, остаётся на своём. Новый
+        боец начинает с первого по порядку — с лидера.
         """
         standing = self.standing
         if not standing:
-            self.pairs = {}
+            self.aim = {}
             return
-        # Пары, которые ещё в силе: оба на ногах
-        kept = {
+        self.aim = {
             user_id: number
-            for user_id, number in self.pairs.items()
+            for user_id, number in self.aim.items()
             if self.fighters.get(user_id) is not None
             and self.fighters[user_id].alive
             and number in self.enemies
             and self.enemies[number].alive
         }
-        load = {number: 0 for number in standing}
-        for number in kept.values():
-            load[number] += 1
         for user_id in self.alive_ids:
-            if user_id in kept:
-                continue
-            # Сначала тот, на ком никого, и по порядку банды; дальше тот,
-            # на ком народу меньше всех
-            number = min(standing, key=lambda one: (load[one], standing.index(one)))
-            kept[user_id] = number
-            load[number] += 1
-        self.pairs = kept
+            self.aim.setdefault(user_id, standing[0])
+
+    def next_foe(self, number: int) -> int | None:
+        """Следующий живой по кругу после этого. None — банда кончилась.
+
+        Круг идёт по порядку, в котором банда выставляет своих, и мёртвых
+        перешагивает: отработал последнего — вернулся к первому.
+        """
+        order = self.order
+        if number not in order:
+            return self.standing[0] if self.standing else None
+        start = order.index(number)
+        for step in range(1, len(order) + 1):
+            candidate = order[(start + step) % len(order)]
+            if self.enemies[candidate].alive:
+                return candidate
+        return None
+
+    def move_on(self, user_id: int) -> None:
+        """Сдвинуть бойца на следующего по кругу — после его размена.
+
+        Сдвигается и тот, кто промолчал: его уже ударил тот, кого он
+        должен был бить, и держать его против того же значило бы, что
+        молчание ничего не меняет.
+        """
+        number = self.aim.get(user_id)
+        if number is None:
+            return
+        following = self.next_foe(number)
+        if following is None:
+            self.aim.pop(user_id, None)
+        else:
+            self.aim[user_id] = following
 
     @property
     def key(self) -> ChatKey | None:
@@ -444,8 +461,13 @@ class RaidService:
                 kind,
                 purse=self.config.raid_purse,
                 hp_share=self.config.raid_boss_hp_share,
+                turn_seconds=self.config.raid_turn_timeout,
             )
-        return replace(kind, purse=self.config.raid_gang_purse)
+        return replace(
+            kind,
+            purse=self.config.raid_gang_purse,
+            turn_seconds=self.config.raid_gang_turn_timeout,
+        )
 
     async def _admit(
         self, player: Player, buy: bool = False, kind: RaidKind = CELLAR_RAID
@@ -719,8 +741,8 @@ class RaidService:
         session.stances = {
             number: boss_stance(self.rng) for number in session.enemies
         }
-        # И новая линия: на место упавших банда выставляет тех, кто ждал
-        session.form_line()
+        # И наводка: кто остался без цели — на первого из живых
+        session.take_aim()
         session.choices = {}
         session.acted = set()
         session.said = []
@@ -730,14 +752,14 @@ class RaidService:
         message = await self.voice.send(
             session.chat_id,
             session.thread_id,
-            raid_panel(session, self.config.raid_turn_timeout),
+            raid_panel(session, session.kind.turn_seconds),
         )
         session.prompt_message_id = message.message_id if message else None
         session.timer = asyncio.create_task(self._wave_timer(session, session.wave))
 
     async def _wave_timer(self, session: RaidSession, wave: int) -> None:
         try:
-            await asyncio.sleep(self.config.raid_turn_timeout)
+            await asyncio.sleep(session.kind.turn_seconds)
         except asyncio.CancelledError:  # pragma: no cover - обычная отмена
             return
         if self._raids.get(session.id) is not session or session.wave != wave:
@@ -815,7 +837,7 @@ class RaidService:
         """
         fighter = session.fighters[user_id]
         session.acted.add(user_id)
-        number = session.pairs.get(user_id)
+        number = session.aim.get(user_id)
         enemy = session.enemies.get(number) if number is not None else None
         if enemy is None or not enemy.alive:
             # Противника не осталось: банда кончилась, а волна ещё идёт.
@@ -854,6 +876,9 @@ class RaidService:
             session.fallen.append(user_id)
         if not enemy.alive:
             session.dropped.append(number)
+        # Своё отработал — дальше по кругу. Следующего он увидит сразу,
+        # не дожидаясь волны: его очередь уже сдвинулась
+        session.move_on(user_id)
 
     def _cast(self, session: RaidSession) -> dict[int, Fighter]:
         """Все, кто на поле: отряд и банда. У каждого свой номер."""
@@ -918,7 +943,7 @@ class RaidService:
         await self.voice.edit(
             session.chat_id,
             session.prompt_message_id,
-            raid_panel(session, self.config.raid_turn_timeout),
+            raid_panel(session, session.kind.turn_seconds),
             cosmetic=True,
         )
 
@@ -1019,7 +1044,10 @@ class RaidService:
                     user_id,
                     fighter.damage_dealt,
                     fighter.alive,
-                    prizes.get(user_id),
+                    # В журнале у приза одна клетка, а упасть может и
+                    # вещь, и склянка. Пишем первое: вещь идёт раньше
+                    # склянки, и в истории останется то, что заметнее
+                    next(iter(prizes.get(user_id) or ()), None),
                 )
                 for user_id, fighter in session.fighters.items()
             ],
@@ -1027,13 +1055,21 @@ class RaidService:
 
     async def _apply_results(
         self, session: RaidSession, outcome: RaidOutcome
-    ) -> dict[int, str]:
-        """Кошель поровну на отряд и склянка лучшему по урону — иногда.
+    ) -> dict[int, list[str]]:
+        """Кошель отряду и добыча сверх него: что именно — решает рейд.
 
-        Здоровье и износ вещей записываются в любом случае: подвал не
+        Броска на добычу три, и один из них общий: склянка с банды падает
+        либо всем сразу, либо никому. Поэтому он кидается здесь, до
+        обхода отряда, а не внутри него — иначе «всем сразу» означало бы
+        «каждому по своему броску», то есть совсем другое правило.
+
+        Здоровье и износ вещей записываются в любом случае: рейд не
         разбирает, победил ты или нет.
         """
-        prizes: dict[int, str] = {}
+        prizes: dict[int, list[str]] = {}
+        spoils = session.kind.spoils
+        # Один бросок на весь отряд: пьют все или никто
+        shared = spoils.potion_for(self.rng) if outcome.won else None
         party = list(session.fighters)
         # Платим всем, кто вышел, а не только выжившим: упавший тоже
         # дрался, и его урон валил банду
@@ -1068,11 +1104,25 @@ class RaidService:
                 player.birthplace = session.chat_title
             player.set_hp(fighter.hp)
             await self.db.save_player(player)
+            mine: list[str] = []
             if user_id in top:
-                code = elixir_for(self.rng)
-                if code:
-                    player.potions[code] = await self.db.add_potion(user_id, code)
-                    prizes[user_id] = code
+                # Лучшему по урону — вещь с полки рейда, а если полки у
+                # него нет, то склянка: у подвала добыча такая
+                thing = spoils.item_for(self.rng)
+                if thing:
+                    await self.db.add_gear(user_id, thing)
+                    mine.append(thing)
+                elixir = spoils.elixir_for(self.rng)
+                if elixir:
+                    player.potions[elixir] = await self.db.add_potion(
+                        user_id, elixir
+                    )
+                    mine.append(elixir)
+            if shared:
+                player.potions[shared] = await self.db.add_potion(user_id, shared)
+                mine.append(shared)
+            if mine:
+                prizes[user_id] = mine
             # Победа закрывает окно: второй раз в этот промежуток не пустят
             if outcome.won and window is not None:
                 await self.db.close_raid_window(

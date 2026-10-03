@@ -1517,6 +1517,19 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    многолюдном виде они жмутся: шрифт тот же, воздуха меньше, портретов
    нет вовсе — пять лиц в колонку не влезают, да и ищут на этом табло не
    лицо, а своего противника. */
+/* Кого бьём сейчас: строка над кнопками удара. Стоит первой и заметно,
+   потому что в банде цель меняется каждый ход — нажать удар, не прочитав
+   её, значит ударить не того */
+.raid-aim {
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--slot);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
 .gang-board { display: grid; gap: 4px; min-width: 0; }
 .gang-board.gang-many .boss-card { padding: 5px 6px; gap: 1px; }
 /* Свой противник обведён и чуть светлее: на табло из пяти его иначе не

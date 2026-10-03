@@ -3508,6 +3508,9 @@ function raidShape(data) {
       // «здоровье босса» не меняется вовсе, и табло замирало бы на
       // первой волне
       (raid.gang || [raid.boss]).map((one) => [one.hp, one.alive, one.against]),
+      // Кого бьём сейчас. Цель меняется каждый ход, и без этой строки
+      // подпись над кнопками оставалась бы от прошлого размена
+      raid.foe && raid.foe.number,
       raid.party.map((one) => [one.user_id, one.hp, one.alive, one.acted]),
       // Шкала и заготовки. Без них нажатый приём не доезжал до экрана:
       // сервер честно списывал энергию и клал заготовку, а раздел не
@@ -4030,11 +4033,26 @@ function raidReady(hands) {
   return Boolean(raidDraft.block) && hands.every((row) => raidDraft.attacks[row.hand]);
 }
 
+function raidAim(foe) {
+  // В казино босс один, и подпись «бьём его» ничего не добавляет
+  if (!foe || !foe.alive) return null;
+  const line = document.createElement("p");
+  line.className = "raid-aim";
+  line.textContent = "Бьём: " + foe.emoji + " " + foe.title +
+    " [" + foe.hp + "/" + foe.max_hp + "]";
+  return line;
+}
+
 function raidTurnForm(data) {
   const box = document.createElement("div");
   box.className = "turn-form";
   const hands = raidHands(data);
   const blocks = (data.raid && data.raid.blocks) || data.blocks;
+
+  // Кого бьём сейчас — строкой над кнопками, и первой: цель в банде
+  // меняется каждый ход, и нажимать удар, не зная, по кому, нельзя
+  const aim = raidAim(data.raid && data.raid.foe);
+  if (aim) box.appendChild(aim);
 
   const tricks = abilityPanel(data.raid && data.raid.abilities, (trick) =>
     useAbility("api/raid", trick, renderRaid)

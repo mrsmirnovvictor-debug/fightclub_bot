@@ -2997,7 +2997,9 @@ def raid_with_wave(over=None) -> dict:
         "finished": False, "summary": [],
         "boss": BOSS_IN_WAVE,
         "gang": [BOSS_IN_WAVE],
-        "foe": BOSS_IN_WAVE,
+        # В казино сервер цели не присылает: босс один, и подпись «бьём
+        # его» сказала бы очевидное
+        "foe": None,
         "party": [
             {
                 "user_id": 42, "name": "Растафарайчик", "level": 5, "emoji": "⚔️",
@@ -3124,6 +3126,32 @@ async def test_the_gang_stands_on_the_board_one_card_each(server):
 
         # Портретов в банде нет вовсе — ни у кого
         assert await page.locator(".gang-board .boss-face").count() == 0
+        await browser.close()
+
+
+async def test_the_board_says_who_we_are_hitting_right_now(server):
+    """Цель в банде меняется каждый ход — её имя стоит над кнопками удара.
+
+    Без этой строки боец жмёт удар, не зная, по кому: на табло из пяти
+    рамка «твой» видна, а под пальцем — нет.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_gang())
+
+        aim = page.locator(".raid-aim")
+        assert await aim.count() == 1
+        said = await aim.inner_text()
+        assert "Бьём" in said and "Лидер банды" in said
+        assert "300/240" in said or "300" in said
+        await browser.close()
+
+
+async def test_the_cellar_does_not_say_whom_to_hit(server):
+    """В подвале босс один, и подпись сказала бы очевидное."""
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_wave())
+
+        assert await page.locator(".raid-aim").count() == 0
         await browser.close()
 
 

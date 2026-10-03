@@ -990,17 +990,20 @@ def raid_board(session) -> list[str]:
 
 
 def _raid_against(session, number: int) -> str:
-    """Против кого стоит этот противник. Пусто — против никого.
+    """Кто бьёт этого противника сейчас. Пусто — никто.
 
-    В казино босс один и стоит против всех сразу, поэтому там подпись не
-    нужна: она сказала бы то же самое пять раз.
+    В казино босс один и его бьют все, поэтому там подпись не нужна: она
+    сказала бы то же самое пять раз. В банде на одном могут сойтись
+    несколько — тогда их столько и перечислено.
     """
     if not session.gang:
         return ""
-    for user_id, mate in session.pairs.items():
-        if mate == number and session.fighters[user_id].alive:
-            return f" ← {esc(session.fighters[user_id].name)}"
-    return ""
+    names = [
+        esc(session.fighters[user_id].name)
+        for user_id, mate in session.aim.items()
+        if mate == number and session.fighters[user_id].alive
+    ]
+    return f" ← {', '.join(names)}" if names else ""
 
 
 def raid_mark(session, user_id: int, fighter) -> str:
@@ -1051,11 +1054,11 @@ def raid_break(session, seconds: int) -> str:
 
 
 def raid_result(
-    session, outcome, prizes: dict[int, str] | None = None,
+    session, outcome, prizes: dict[int, list[str]] | None = None,
     shares: dict[int, int] | None = None,
 ) -> str:
     """Итог рейда: чем кончилось, кто сколько набил и кому что досталось."""
-    from bot.game.potions import get_potion
+    from bot.game.raid import prize_of
 
     whom = (
         "Банда"
@@ -1097,10 +1100,14 @@ def raid_result(
         share = shares.get(user_id)
         if share:
             row += f", +{share} 💰"
-        code = prizes.get(user_id)
-        if code:
-            potion = get_potion(code)
-            row += f", приз: {potion.emoji} {esc(potion.title)}" if potion else ""
+        # Призом бывает и вещь, и склянка, и то и другое разом: кто
+        # больше всех набил, мог снять с банды и шмотку, и склянку
+        won = [prize_of(code) for code in prizes.get(user_id) or ()]
+        named = ", ".join(
+            f"{emoji} {esc(title)}" for emoji, title in won if (emoji, title)
+        )
+        if named:
+            row += f", приз: {named}"
         lines.append(row)
 
     if outcome.won:
@@ -1114,10 +1121,26 @@ def raid_result(
                 "каждого, и доля своя.",
             ]
         if prizes:
-            lines.append("🎁 Набившему больше всех досталась склянка.")
+            lines.append(_raid_spoils_line(session, outcome, prizes))
     else:
         lines += ["", "Награды за такое не дают. В другой раз."]
     return "\n".join(lines)
+
+
+def _raid_spoils_line(session, outcome, prizes: dict[int, list[str]]) -> str:
+    """Чем закончилась раздача — одной строкой под табло.
+
+    Склянка с банды падает всем сразу или никому, и сказать об этом стоит
+    прямо: иначе четверо смотрят на пятую строку с призом и думают, что
+    им не повезло лично.
+    """
+    best = set(outcome.top)
+    everyone = [user_id for user_id in prizes if user_id not in best]
+    if len(everyone) + len(best & set(prizes)) == len(session.fighters) and everyone:
+        return "🎁 Склянка упала всему отряду, а лучшему по урону — ещё и сверху."
+    if everyone:
+        return "🎁 Склянка упала отряду."
+    return "🎁 Набившему больше всех кое-что досталось."
 
 
 def lobby_card(lobby, timeout: int) -> str:

@@ -46,8 +46,10 @@ class Config:
     # RAID_NO_WAITS этот срок больше не подчиняется: рейд идёт два раза в
     # сутки, и собрать десятерых за минуту не выйдет даже в тестах
     raid_lobby_timeout: int = 3 * 60
-    # Сколько у бойца есть на свой удар в волне; не успел — пропустил
+    # Сколько у бойца есть на свой удар в волне; не успел — пропустил.
+    # Это срок подвала; у стычки свой, ниже: цель там каждый раз новая
     raid_turn_timeout: int = 30
+    raid_gang_turn_timeout: int = 60
     # Передышка после того, как отряд отработал столько ударов
     raid_strikes_per_break: int = 6
     raid_break: int = 0 if RAID_NO_WAITS else 30
@@ -59,7 +61,7 @@ class Config:
     # Сколько получает каждый за победу над бандой со стадиона. Не
     # делится: билет на матч каждый покупает свой. Число то же, что
     # GANG_PURSE в правилах, и это стережёт тест
-    raid_gang_purse: int = 200
+    raid_gang_purse: int = 250
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
     webapp_port: int = 8080
@@ -137,6 +139,9 @@ def load_config() -> Config:
         ),
         raid_turn_timeout=int(
             os.getenv("RAID_TURN_TIMEOUT", str(Config.raid_turn_timeout))
+        ),
+        raid_gang_turn_timeout=int(
+            os.getenv("RAID_GANG_TURN_TIMEOUT", str(Config.raid_gang_turn_timeout))
         ),
         raid_strikes_per_break=int(
             os.getenv("RAID_STRIKES_PER_BREAK", str(Config.raid_strikes_per_break))

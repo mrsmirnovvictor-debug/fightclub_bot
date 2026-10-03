@@ -10,29 +10,30 @@
 """
 
 import random
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 
 import pytest
 
 from bot.config import Config
+from bot.database import Database
 from bot.game.locations import Service, get_location
 from bot.game.potions import RAID_PASS, STADIUM_PASS, get_potion
 from bot.game.raid import (
     BOSS_ID,
     CELLAR_RAID,
-    GANG_ASSASSIN,
+    GANG_ASSASSINS,
     GANG_LEVEL,
     GANG_PARTY,
     GANG_PURSE,
-    GANG_ROGUE,
-    GANG_WARRIOR,
+    GANG_ROGUES,
+    GANG_WARRIORS,
     HOOLIGAN_RAID,
     MOSCOW,
     RAID_KINDS,
     RaidEnd,
     Weekly,
     foe_id,
-    foe_titles,
     judge_raid,
     kind_at,
     kind_of_boss,
@@ -123,6 +124,30 @@ def floor_gang(session, hp: int = 1) -> None:
     """Оставить банде на один удар каждому."""
     for enemy in session.enemies.values():
         enemy.hp = hp
+
+
+@asynccontextmanager
+async def one_fight(bot, seed: int):
+    """Победный бой на своей базе: своё зерно — своя добыча.
+
+    База закрывается и когда проверка упала: иначе упавший тест оставлял
+    бы за собой открытую базу и живую службу, и прогон вис бы на уборке
+    вместо того, чтобы показать поломку. Это стоило одного зависшего
+    укуса — поэтому уборка здесь в `finally`, а не после проверок.
+    """
+    db = Database(":memory:")
+    await db.connect()
+    service = make_service(bot, db)
+    service.rng = random.Random(seed)
+    try:
+        players, session = await gather(service, db)
+        toughen(session)
+        floor_gang(session)
+        await storm(service, session, players)
+        yield db, players, session
+    finally:
+        await service.shutdown()
+        await db.close()
 
 
 async def storm(service, session, players, waves: int = 40) -> None:
@@ -256,7 +281,7 @@ def test_the_leader_wears_the_fan_shop_and_the_rest_do_not():
         for slot, owned in leader.items.items()
         if slot.value in ("weapon", "offhand", "shirt", "jacket", "pants")
     )
-    crew = boss_kit(GANG_WARRIOR)
+    crew = boss_kit(GANG_WARRIORS[0])
     worn = [owned.item.code for owned in crew.items.values()]
     assert "fan_warrior_bat" in worn, "своё оружие у него фанатское"
     assert sum(code.startswith("fan_") for code in worn) == 1
@@ -280,30 +305,59 @@ def test_each_hooligan_gets_his_own_number_and_the_leader_keeps_the_old_one():
     foes = raid_foes(HOOLIGAN_RAID, [10] * 3)
 
     assert list(foes) == [BOSS_ID, -2, -3, -4, -5]
-    assert foes[BOSS_ID].name == "Лидер банды"
+    assert foes[BOSS_ID].name == "Лидер банды — Майор"
     assert foe_id(0) == BOSS_ID
     # у казино он один и под тем же номером
     assert list(raid_foes(CELLAR_RAID, [5, 5])) == [BOSS_ID]
 
 
-def test_the_twins_are_told_apart_by_a_number():
-    """Два ассасина с одним именем на табло слились бы в одного."""
-    titles = foe_titles(HOOLIGAN_RAID.roster(GANG_PARTY))
+def test_everyone_in_the_gang_has_his_own_nickname():
+    """Кличка у каждого своя: на табло из тринадцати номера не читаются."""
+    from bot.game.raid import GANG
 
-    assert titles == (
-        "Лидер банды", "Трикстер", "Воин", "Ассасин №1", "Ассасин №2"
-    )
-    # а одиночка остаётся без номера: «Лидер банды №1» — это не имя
-    assert foe_titles((GANG_ROGUE,)) == ("Трикстер",)
+    nicks = [one.title for one in GANG]
+
+    assert len(nicks) == 13
+    assert len(set(nicks)) == 13, "две одинаковые клички в банде"
+    assert nicks[0] == "Лидер банды — Майор"
+    assert {"Мажорчик", "Валера", "Серый", "Тощий"} <= set(nicks)
+    assert {"Ярый", "Седой", "Дубина", "Аркадич"} <= set(nicks)
+    assert {"Бритва", "Кастет", "Мелкий", "Киллер"} <= set(nicks)
+    # и в любом отряде на поле нет двух с одной кличкой
+    for party in range(GANG_PARTY, HOOLIGAN_RAID.max_party + 1):
+        out = [one.title for one in HOOLIGAN_RAID.roster(party)]
+        assert len(out) == len(set(out)), f"повтор при отряде из {party}"
+
+
+def test_the_gang_looks_at_you_from_the_avatars_folder():
+    """Портреты гопников лежат среди образов, а не среди боссов.
+
+    Их четыре на тринадцать человек — по лицу на класс: рисовали их
+    вместе с фанатской линией одежды, и там же они и выгружены. Босс
+    казино по-прежнему смотрит из своей папки.
+    """
+    from bot.game import art
+    from bot.game.raid import GANG
+
+    assert GANG[0].image == f"{art.AVATARS}/fan_boss.jpeg"
+    faces = {one.image for one in GANG}
+    assert faces == {
+        f"{art.AVATARS}/fan_boss.jpeg",
+        f"{art.AVATARS}/fan_rogue.jpeg",
+        f"{art.AVATARS}/fan_warrior.jpeg",
+        f"{art.AVATARS}/fan_assassin.jpeg",
+    }
+    # и лицо у всех одного класса общее
+    assert len({one.image for one in GANG_ROGUES}) == 1
+    # а подвал как смотрел из bosses/, так и смотрит
+    assert CELLAR_RAID.leader.image == art.boss("cellar_boss")
 
 
 def test_each_hooligan_has_his_own_habits():
     """Повадки у них разные: трикстер метит по ногам, ассасин — в живот."""
-    assert max(GANG_ROGUE.temper.swings, key=GANG_ROGUE.temper.swings.get) == "legs"
-    assert (
-        max(GANG_ASSASSIN.temper.swings, key=GANG_ASSASSIN.temper.swings.get)
-        == "belly"
-    )
+    rogue, assassin = GANG_ROGUES[0], GANG_ASSASSINS[0]
+    assert max(rogue.temper.swings, key=rogue.temper.swings.get) == "legs"
+    assert max(assassin.temper.swings, key=assassin.temper.swings.get) == "belly"
     assert max(
         HOOLIGAN_RAID.leader.temper.swings,
         key=HOOLIGAN_RAID.leader.temper.swings.get,
@@ -360,8 +414,8 @@ def test_the_stadium_is_where_the_gang_is_met():
 
 def test_the_history_knows_which_raid_a_hooligan_belongs_to():
     """По любому из банды видно, что это была стычка, а не подвал."""
-    assert kind_of_boss("gang_assassin") is HOOLIGAN_RAID
-    assert kind_of_boss("gang_leader") is HOOLIGAN_RAID
+    assert kind_of_boss("gang_britva") is HOOLIGAN_RAID
+    assert kind_of_boss("gang_major") is HOOLIGAN_RAID
     assert kind_of_boss("cellar_boss") is CELLAR_RAID
 
 
@@ -486,96 +540,92 @@ async def test_a_party_that_shrank_below_three_does_not_go_out(bot, db):
     assert "разбежался" in bot.edits[-1].text
 
 
-# ---------- линия: кто против кого ----------
+# ---------- круг: кого бьём сейчас ----------
 
 
-async def test_everyone_gets_his_own_hooligan(bot, db):
-    """Трое против пятерых: у каждого свой противник, двое ждут."""
+async def test_everyone_starts_on_the_leader(bot, db):
+    """Круг один на отряд, и начинается он с первого — с Майора."""
     service = make_service(bot, db)
     players, session = await gather(service, db)
 
     assert len(session.enemies) == 5
-    assert sorted(session.pairs) == [one.user_id for one in players]
-    assert len(set(session.pairs.values())) == 3, "каждому свой, не один на всех"
-    waiting = set(session.standing) - set(session.pairs.values())
-    assert len(waiting) == 2, "двое из банды ещё не в линии"
+    assert sorted(session.aim) == [one.user_id for one in players]
+    assert set(session.aim.values()) == {BOSS_ID}
+    assert session.enemies[BOSS_ID].name == "Лидер банды — Майор"
 
 
-async def test_a_neighbour_s_kill_does_not_change_your_own_opponent(bot, db):
-    """Добили кого-то рядом — твой противник остаётся твоим.
-
-    Пары держатся, а не раздаются заново каждую волну. Без этого смерть
-    чужого гопника перетряхивала всю линию: боец, который полволны бил
-    одного, со следующей волны вставал против другого — целого, — а его
-    битый уходил к соседу.
-    """
-    service = make_service(bot, db)
-    players, session = await gather(service, db)
-    toughen(session)
-    was = dict(session.pairs)
-    middle = players[1].user_id
-    # Валим противника среднего бойца, остальных не трогаем
-    session.enemies[was[middle]].hp = 0
-
-    for player in players:
-        await punch(service, session, player.user_id)
-
-    assert session.wave == 2
-    assert session.pairs[players[0].user_id] == was[players[0].user_id]
-    assert session.pairs[players[2].user_id] == was[players[2].user_id]
-    # А осиротевший встал против того, кто ждал на скамейке
-    assert session.pairs[middle] not in was.values()
-    assert session.enemies[session.pairs[middle]].alive
-
-
-async def test_the_bench_steps_in_for_the_fallen(bot, db):
-    """Добил своего — со следующей волной выходит тот, кто ждал."""
+async def test_a_strike_moves_the_fighter_on_to_the_next(bot, db):
+    """Отработал своего — дальше по кругу, не дожидаясь волны."""
     service = make_service(bot, db)
     players, session = await gather(service, db)
     toughen(session)
     mine = players[0].user_id
-    first = session.pairs[mine]
-    # Валим его наверняка, а не ударом: удар может и не дойти, и тогда
-    # тест проверял бы кости, а не смену в линии
-    session.enemies[first].hp = 0
 
-    for player in players:
-        await punch(service, session, player.user_id)
+    await punch(service, session, mine)
 
-    assert session.enemies[first].alive is False
-    assert session.wave == 2, "волна закрылась, линия построена заново"
-    assert session.pairs[mine] != first, "на его место вышел следующий"
-    assert session.enemies[session.pairs[mine]].alive
+    assert session.aim[mine] == -2, "следующий по порядку банды"
 
 
-async def test_the_last_hooligan_is_ganged_up_on(bot, db):
-    """Противников меньше, чем бойцов, — наваливаются на одного.
-
-    Этим же правилом держится и подвал: трое против одного босса — это
-    трое на нём, а не один, пока двое курят.
-    """
+async def test_the_circle_walks_the_whole_gang_and_comes_back(bot, db):
+    """Пять противников — пять ходов, и шестой снова по лидеру."""
     service = make_service(bot, db)
     players, session = await gather(service, db)
     toughen(session)
-    last = session.pairs[players[0].user_id]
+    # Банду держим на ногах: круг проверяем, а не то, кто кого свалит
+    for enemy in session.enemies.values():
+        enemy.hp = 100_000
+    mine = players[0].user_id
+    seen = []
+
+    for _ in range(6):
+        seen.append(session.aim[mine])
+        for player in players:
+            await punch(service, session, player.user_id)
+
+    assert seen == [BOSS_ID, -2, -3, -4, -5, BOSS_ID]
+
+
+async def test_the_circle_steps_over_the_dead(bot, db):
+    """Упавшего круг перешагивает: бить труп не дают."""
+    service = make_service(bot, db)
+    players, session = await gather(service, db)
+    toughen(session)
+    for enemy in session.enemies.values():
+        enemy.hp = 100_000
+    mine = players[0].user_id
+    session.enemies[-2].hp = 0  # следующий по кругу уже лежит
+
+    await punch(service, session, mine)
+
+    assert session.aim[mine] == -3
+
+
+async def test_the_last_one_standing_is_everyone_s_target(bot, db):
+    """Из банды остался один — круг сводится к нему."""
+    service = make_service(bot, db)
+    players, session = await gather(service, db)
+    toughen(session)
+    last = -4
     for number, enemy in session.enemies.items():
         if number != last:
             enemy.hp = 0
-    session.pairs = {}
-    session.form_line()
+    session.enemies[last].hp = 100_000
+    session.aim = {}
+    session.take_aim()
 
-    assert set(session.pairs.values()) == {last}
-    assert len(session.pairs) == 3
+    assert set(session.aim.values()) == {last}
+    assert len(session.aim) == 3
+    # и круг из одного человека с него же и не уходит
+    assert session.next_foe(last) == last
 
 
-async def test_the_fighter_hits_his_own_hooligan_and_not_the_leader(bot, db):
-    """Урон идёт тому, с кем боец стоит, а не первому в списке."""
+async def test_the_fighter_hits_the_one_he_is_aiming_at(bot, db):
+    """Урон идёт тому, на кого наведён боец, а не первому в списке."""
     service = make_service(bot, db)
     players, session = await gather(service, db)
     toughen(session)
-    # ставим бойца против не-лидера: иначе проверка ничего не различает
-    mate = next(number for number in session.standing if number != BOSS_ID)
-    session.pairs[players[0].user_id] = mate
+    mate = -3
+    session.aim[players[0].user_id] = mate
     full = {number: one.hp for number, one in session.enemies.items()}
 
     await punch(service, session, players[0].user_id)
@@ -584,18 +634,56 @@ async def test_the_fighter_hits_his_own_hooligan_and_not_the_leader(bot, db):
     assert session.enemies[BOSS_ID].hp == full[BOSS_ID], "лидера он не трогал"
 
 
+async def test_a_silent_turn_is_punished_by_that_one_hooligan_only(bot, db):
+    """Промолчал минуту — ударит тот, кого он должен был бить.
+
+    Не вся банда сразу: остальным до него очередь не дошла. И круг при
+    этом сдвигается, иначе молчание ничего бы не меняло и боец стоял бы
+    против одного и того же до конца боя.
+    """
+    service = make_service(bot, db)
+    players, session = await gather(service, db)
+    toughen(session)
+    mine = players[0].user_id
+    target = session.aim[mine]
+    was = session.fighters[mine].hp
+    full = {number: one.hp for number, one in session.enemies.items()}
+
+    # Время вышло: за молчавших дожимает служба
+    await service.skip_the_rest(session)
+
+    assert session.fighters[mine].hp <= was, "его ударил его же противник"
+    assert session.aim[mine] != target, "круг сдвинулся и без удара"
+    # Сам он не ударил никого: в журнале его размен есть, но урона нет
+    assert session.enemies[target].hp == full[target]
+
+
+async def test_the_gang_gives_a_whole_minute_for_a_strike(bot, db):
+    """Минута на удар, а не полминуты: цель каждый раз новая."""
+    from bot.game.raid import GANG_TURN_SECONDS
+
+    assert GANG_TURN_SECONDS == 60
+    assert Config(bot_token="x").raid_gang_turn_timeout == 60
+    # А у подвала свой срок, и он остался прежним
+    assert Config(bot_token="x").raid_turn_timeout == 30
+
+    service = make_service(bot, db, raid_gang_turn_timeout=60)
+    _, session = await gather(service, db)
+    assert session.kind.turn_seconds == 60
+
+
 async def test_a_swing_at_a_finished_gang_is_not_an_exchange(bot, db):
     """Банда кончилась посреди волны — остальные бьют в воздух, а не в труп.
 
-    Своего противника у бойца в этот миг уже нет: он лежит, а нового
-    линия даст только со следующей волны. Такой ход не должен ни считаться
-    разменом, ни тем более роняться об отсутствующего соперника.
+    Цели у бойца в этот миг уже нет: круг обошёл всех, и все лежат. Такой
+    ход не должен ни считаться разменом, ни роняться об отсутствующего.
     """
     service = make_service(bot, db)
     players, session = await gather(service, db)
     toughen(session)
     for enemy in session.enemies.values():
         enemy.hp = 0
+    session.aim = {}
     rounds = len(session.rounds)
 
     await punch(service, session, players[0].user_id)
@@ -628,6 +716,7 @@ async def test_the_cellar_still_splits_its_purse(bot, db):
     assert HOOLIGAN_RAID.split is False
     assert CELLAR_RAID.shares(3) == [34, 33, 33]
     assert HOOLIGAN_RAID.shares(3) == [GANG_PURSE] * 3
+    assert GANG_PURSE == 250
 
 
 def test_the_config_default_matches_the_rules():
@@ -647,7 +736,7 @@ async def test_the_record_remembers_the_gang_by_its_leader(bot, db):
     await storm(service, session, players)
 
     rows = await db.raids_of(players[0].user_id)
-    assert rows[0]["boss"] == "gang_leader"
+    assert rows[0]["boss"] == "gang_major"
     assert rows[0]["boss_level"] == GANG_LEVEL
     assert kind_of_boss(rows[0]["boss"]) is HOOLIGAN_RAID
 
@@ -677,6 +766,27 @@ async def stadium(db):
     app = create_app(WebBot(), db, config, raids=raids)
     async with TestClient(TestServer(app)) as client:
         yield client, raids, db
+    await raids.shutdown()
+
+
+@pytest.fixture
+async def cellar_app(db):
+    """Тот же апп, но боец стоит в казино и с талоном подвала."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from bot.webapp.server import create_app
+    from tests.test_fight_app import make_player as app_player
+    from tests.test_webapp import FakeBot as WebBot, TOKEN
+
+    raids = make_service(FakeBot(), db)
+    player = app_player(42, "Тайлер")
+    player.credits = 500
+    player.location = "casino"
+    await db.save_player(player)
+    await db.add_potion(42, RAID_PASS)
+    app = create_app(WebBot(), db, Config(bot_token=TOKEN), raids=raids)
+    async with TestClient(TestServer(app)) as client:
+        yield client, raids
     await raids.shutdown()
 
 
@@ -720,7 +830,7 @@ async def test_the_screen_shows_the_whole_gang_before_the_fight(stadium):
 
     assert len(body["roster"]) == 5
     assert [one["title"] for one in body["roster"]] == [
-        "Лидер банды", "Трикстер", "Воин", "Ассасин №1", "Ассасин №2"
+        "Лидер банды — Майор", "Мажорчик", "Ярый", "Бритва", "Кастет"
     ]
     for card in body["roster"]:
         assert card["alone"] is False and card["live"] is False
@@ -743,6 +853,21 @@ async def test_the_casino_screen_is_still_about_the_boss(stadium, db):
     assert len(body["roster"]) == 1
 
 
+async def test_the_casino_sends_no_target_of_its_own(cellar_app):
+    """Цель — дело банды: в подвале босс один, и подпись ни к чему."""
+    client, raids = cellar_app
+    await act(client, 42, action="open")
+    # В подвал пускают и одного: отряд выводит созвавший
+    await act(client, 42, action="go")
+    session = raids.raid_of_user(42)
+
+    body = await screen(client)
+
+    assert session is not None and not session.gang
+    assert body["raid"]["foe"] is None
+    assert len(body["raid"]["gang"]) == 1
+
+
 async def test_the_board_names_everyone_and_marks_your_own(stadium):
     """В идущем рейде видна вся банда, и свой противник помечен."""
     client, raids, _ = stadium
@@ -756,14 +881,13 @@ async def test_the_board_names_everyone_and_marks_your_own(stadium):
     gang = body["raid"]["gang"]
 
     assert len(gang) == 5
+    assert [one["title"] for one in gang][:2] == [
+        "Лидер банды — Майор", "Мажорчик"
+    ]
+    # Круг начинается с лидера, значит на нём сейчас весь отряд
+    assert gang[0]["yours"] is True and gang[0]["against"] == 42
+    assert body["raid"]["foe"]["number"] == gang[0]["number"]
     assert sum(one["yours"] for one in gang) == 1, "свой ровно один"
-    assert body["raid"]["foe"]["yours"] is True
-    assert body["raid"]["foe"]["number"] == gang[
-        [one["yours"] for one in gang].index(True)
-    ]["number"]
-    # и у каждого видно, против кого он стоит
-    engaged = [one for one in gang if one["against"] is not None]
-    assert len(engaged) == 3
 
 
 async def test_the_analyst_reads_your_own_hooligan(stadium, db):
@@ -782,7 +906,7 @@ async def test_the_analyst_reads_your_own_hooligan(stadium, db):
     # Ставим бойца против не-лидера: иначе разбор лидера и разбор своего
     # противника выглядели бы одинаково
     mate = next(number for number in session.standing if number != BOSS_ID)
-    session.pairs[42] = mate
+    session.aim[42] = mate
 
     scout = (await screen(client))["raid"]["scout"]
 
@@ -823,3 +947,135 @@ async def test_the_map_counts_both_raids_separately(stadium):
     # расписание в этих тестах снято, значит открыты оба
     assert body["raids"]["stadium"]["state"] == "open"
     assert body["raids"]["casino"]["state"] == "open"
+
+
+# ---------- добыча ----------
+
+
+def test_the_gang_drops_a_fan_thing_to_the_best_and_a_potion_to_all():
+    """Три разных броска, и путать их нельзя."""
+    from bot.content.items import FAN_ITEMS
+    from bot.game.raid import GANG_POTIONS, GANG_SPOILS
+
+    assert GANG_SPOILS.item_chance == 0.75
+    assert GANG_SPOILS.potion_chance == 0.8
+    # Вещь — с фанатского прилавка, и только оттуда
+    shop = {item.code for item in FAN_ITEMS}
+    for seed in range(60):
+        code = GANG_SPOILS.item_for(random.Random(seed))
+        assert code is None or code in shop
+    # Склянки — ровно те четыре, что заказаны
+    assert set(GANG_POTIONS) == {
+        "boost_strength", "boost_agility", "boost_endurance", "boost_hp"
+    }
+    for seed in range(60):
+        code = GANG_SPOILS.potion_for(random.Random(seed))
+        assert code is None or code in GANG_POTIONS
+    # Склянки лучшему по урону банда не даёт — это награда подвала
+    assert GANG_SPOILS.elixir_for(random.Random(1)) is None
+
+
+def test_the_chances_are_really_those_chances():
+    """Три четверти и четыре пятых — не на глаз, а по прогону."""
+    from bot.game.raid import GANG_SPOILS
+
+    rng = random.Random(11)
+    things = sum(GANG_SPOILS.item_for(rng) is not None for _ in range(4000))
+    potions = sum(GANG_SPOILS.potion_for(rng) is not None for _ in range(4000))
+
+    assert 0.72 < things / 4000 < 0.78
+    assert 0.77 < potions / 4000 < 0.83
+
+
+def test_the_cellar_keeps_its_own_spoils():
+    """Подвал по-прежнему роняет склянку лучшему, и ничего больше."""
+    from bot.game.raid import CELLAR_SPOILS
+
+    assert CELLAR_SPOILS.item_for(random.Random(1)) is None
+    assert CELLAR_SPOILS.potion_for(random.Random(1)) is None
+    assert any(
+        CELLAR_SPOILS.elixir_for(random.Random(seed)) for seed in range(20)
+    )
+
+
+def test_a_prize_is_read_whether_it_is_a_thing_or_a_potion():
+    """Код приза один, а приз бывает и вещью, и склянкой."""
+    from bot.game.raid import prize_of
+
+    assert prize_of("fan_assassin_belt")[1] == "Компактный тактический пояс"
+    assert prize_of("boost_endurance")[1] == "Эликсир выносливости"
+    assert prize_of("нет такого") is None
+
+
+async def test_only_the_best_takes_a_thing_and_never_two(bot, db):
+    """Вещь падает лучшему по урону, по одной и больше никому.
+
+    Гоняем несколько боёв, а не один: три четверти — это и четверть
+    пустых рук, и привязывать тест к зерну значило бы проверять зерно.
+    Правило же в другом — кому и сколько, а не выпало ли в этот раз.
+    """
+    from bot.content.items import FAN_ITEMS
+
+    shop = {item.code for item in FAN_ITEMS}
+    lucky = 0
+    for seed in range(8):
+        async with one_fight(bot, seed) as (fresh, players, session):
+            assert session.finished
+            best = max(
+                session.fighters, key=lambda uid: session.fighters[uid].damage_dealt
+            )
+            for player in players:
+                bag = await fresh.list_gear(player.user_id)
+                dropped = [one.item.code for one in bag if one.item.code in shop]
+                if player.user_id == best:
+                    assert len(dropped) <= 1, "за бой падает одна вещь, не стопка"
+                    lucky += len(dropped)
+                else:
+                    assert not dropped, "вещь ушла не лучшему по урону"
+
+    assert lucky, "за восемь боёв не упало ни одной вещи"
+
+
+async def test_the_potion_falls_to_everyone_or_to_nobody(bot, db):
+    """Один бросок на отряд: либо склянка у всех, либо ни у кого."""
+    from bot.game.raid import GANG_POTIONS
+
+    seen = set()
+    for seed in range(6):
+        async with one_fight(bot, seed) as (fresh, players, session):
+            assert session.finished
+            got = []
+            for player in players:
+                rows = await fresh.list_potions(player.user_id)
+                got.append(
+                    sum(count for code, count in rows.items() if code in GANG_POTIONS)
+                )
+            assert len(set(got)) == 1, f"зерно {seed}: склянка досталась не всем"
+            assert got[0] in (0, 1), "за бой падает одна склянка, а не стопка"
+            seen.add(got[0])
+
+    assert seen == {0, 1}, "за шесть боёв не выпало и того, и другого"
+
+
+async def test_a_lost_raid_drops_nothing_at_all(bot, db):
+    """Проиграли — ни кредитов, ни вещей, ни склянок."""
+    from bot.content.items import FAN_ITEMS
+    from bot.game.raid import GANG_POTIONS
+
+    service = make_service(bot, db)
+    players, session = await gather(service, db)
+    for fighter in session.fighters.values():
+        fighter.hp = 1
+    for enemy in session.enemies.values():
+        enemy.hp = 100_000
+    await storm(service, session, players)
+
+    assert session.finished and not session.shares
+    shop = {item.code for item in FAN_ITEMS}
+    for player in players:
+        fresh = await db.get_player(player.user_id)
+        assert fresh.credits == 500
+        assert not [one for one in await db.list_gear(player.user_id)
+                    if one.item.code in shop]
+        rows = await db.list_potions(player.user_id)
+        assert not [code for code in rows if code in GANG_POTIONS]

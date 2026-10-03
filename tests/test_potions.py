@@ -71,11 +71,29 @@ def test_every_potion_has_a_price_and_does_something():
 
 
 def test_the_shelf_holds_exactly_what_was_asked_for():
-    """Два эликсира восстановления и четыре временных — больше ничего."""
+    """Два эликсира восстановления и пять временных — больше ничего.
+
+    Временных стало пять: к силе, ловкости, интуиции и жизням прибавилась
+    выносливость — её роняет банда со стадиона, и не ронять то, чего в
+    лавке нет, она не может.
+    """
     heals = [p for p in POTIONS if p.kind is PotionKind.HEAL]
     boosts = [p for p in POTIONS if p.kind is PotionKind.BOOST]
     assert sorted(p.heal for p in heals) == [30, 60]
-    assert sorted(p.bonus.total() + p.hp for p in boosts) == [10, 10, 10, 60]
+    assert sorted(p.bonus.total() + p.hp for p in boosts) == [10, 10, 10, 10, 60]
+
+
+def test_every_stat_has_its_own_elixir():
+    """Четыре характеристики — четыре склянки, и ни одной лишней."""
+    from bot.game.classes import ALL_STATS
+
+    raised = {
+        stat.value
+        for potion in POTIONS
+        for stat in ALL_STATS
+        if potion.bonus.get(stat)
+    }
+    assert raised == {stat.value for stat in ALL_STATS}
 
 
 def test_duration_reads_like_a_sentence():

@@ -22,7 +22,7 @@ from bot.game.combat import (
     total_crit,
     total_dodge,
 )
-from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS, get_item
+from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS
 from bot.game.health import now_ts
 from bot.game.raid import (
     RAID_SOON,
@@ -32,7 +32,6 @@ from bot.game.raid import (
     RAID_KINDS,
     RaidKind,
     boss_fighter,
-    foe_titles,
     kind_of_boss,
 )
 from bot.game.potions import get_potion
@@ -72,7 +71,7 @@ def boss_scout(
     # Читаем того, с кем этот боец стоит, а не «босса рейда»: в банде у
     # каждого свои повадки, и совет про чужого противника — это не
     # аналитика, а враньё
-    number = session.pairs.get(viewer_id)
+    number = session.aim.get(viewer_id)
     enemy = session.enemies.get(number) if number is not None else None
     if enemy is None:
         return None
@@ -105,7 +104,7 @@ def foe_payload(
     against = next(
         (
             user_id
-            for user_id, mate in session.pairs.items()
+            for user_id, mate in session.aim.items()
             if mate == number and session.fighters[user_id].alive
         ),
         None,
@@ -299,9 +298,12 @@ def raid_payload(
         ],
         # Против кого стоит смотрящий. Пусто — ни против кого: его
         # противника добили, а новый выйдет со следующей волной
+        # Кого смотрящий бьёт сейчас. Пусто — некого: круг обошёл всех,
+        # и все лежат. В казино тоже пусто: там босс один, и говорить
+        # «бьём его» незачем — он и так на всю колонку
         "foe": (
-            foe_payload(session, session.pairs[viewer_id], viewer_id)
-            if viewer_id in session.pairs
+            foe_payload(session, session.aim[viewer_id], viewer_id)
+            if session.gang and viewer_id in session.aim
             else None
         ),
         "party": [
@@ -459,8 +461,6 @@ def preview_cards(player: Player, kind: RaidKind) -> list[dict[str, Any]]:
     крепче; у банды наоборот, лишний боец приводит лишнего гопника.
     """
     levels = [player.level] * max(1, kind.min_party)
-    roster = kind.roster(len(levels))
-    titles = foe_titles(roster)
     return [
         boss_card(
             boss_fighter(
@@ -468,13 +468,12 @@ def preview_cards(player: Player, kind: RaidKind) -> list[dict[str, Any]]:
                 [player.level] if kind.one_on_one else levels,
                 kind.hp_share,
                 level=kind.foe_level,
-                name=titles[index],
             ),
             boss,
             live=False,
             kind=kind,
         )
-        for index, boss in enumerate(roster)
+        for boss in kind.roster(len(levels))
     ]
 
 
@@ -547,10 +546,14 @@ def raid_row(row: dict[str, Any]) -> dict[str, Any]:
     """Строка истории рейдов: с кем ходили, чем кончилось и что унесли."""
     from bot.game.raid import RAID_END_TITLES, RaidEnd, get_boss
 
+    from bot.game.raid import prize_of
+
     end = RaidEnd(row["outcome"])
     boss = get_boss(row["boss"])
     kind = kind_of_boss(row["boss"])
-    prize = get_item(row["prize"]) if row["prize"] else None
+    # Приз бывает и вещью, и склянкой: раньше здесь спрашивали только
+    # вещь, и склянка подвала в историю не попадала вовсе
+    prize = prize_of(row["prize"]) if row["prize"] else None
     allies = row.get("allies") or ""
     with_whom = f" (с {allies})" if allies else ""
     return {
@@ -570,7 +573,8 @@ def raid_row(row: dict[str, Any]) -> dict[str, Any]:
         "waves": row["waves"],
         "damage": row["damage"],
         "alive": bool(row["alive"]),
-        "prize": prize.title if prize else None,
+        "prize": prize[1] if prize else None,
+        "prize_emoji": prize[0] if prize else "",
         "created_at": row["created_at"],
         # День московский: бой в час ночи — это уже новые сутки, а метка в
         # базе лежит в UTC и сама по себе указала бы на вчера

@@ -10,8 +10,8 @@
 настоящий винрейт выше показанного, и насколько — отсюда не видно.
 
 Правила боя берутся не отсюда, а из `RaidService`: прогон дёргает тот же
-`_exchange` и ту же `form_line`, которыми рейд идёт на самом деле. Иначе
-мерили бы копию, а чинили оригинал.
+`_exchange` и тот же круг по банде, которыми рейд идёт на самом деле.
+Иначе мерили бы копию, а чинили оригинал.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def one_raid(service: RaidService, size: int, level: int, fan: bool) -> tuple[st
         session.stances = {
             number: service.rng.randrange(5) for number in session.enemies
         }
-        session.form_line()
+        session.take_aim()
         session.acted = set()
         for user_id in list(session.alive_ids):
             fighter = session.fighters[user_id]

@@ -57,6 +57,7 @@ class Potion:
     strength: int = 0
     agility: int = 0
     intuition: int = 0
+    endurance: int = 0
     hp: int = 0  # прибавка к запасу здоровья на время действия
     seconds: int = 0
     level_required: int = 1
@@ -80,6 +81,7 @@ class Potion:
             strength=self.strength,
             agility=self.agility,
             intuition=self.intuition,
+            endurance=self.endurance,
         )
 
     @property
@@ -187,6 +189,17 @@ POTIONS: tuple[Potion, ...] = (
         note="Два часа знаешь, куда он ударит, раньше него самого.",
         image=potion_art("int"),
         intuition=10,
+        seconds=EFFECT_SECONDS,
+        level_required=5,
+        price=200,
+    ),
+    Potion(
+        "boost_endurance",
+        "Эликсир выносливости",
+        "🪨",
+        PotionKind.BOOST,
+        note="Два часа держишь удар, как будто сам из бетона.",
+        endurance=10,
         seconds=EFFECT_SECONDS,
         level_required=5,
         price=200,
