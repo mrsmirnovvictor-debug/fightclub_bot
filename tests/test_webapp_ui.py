@@ -8690,3 +8690,54 @@ async def test_the_refusal_names_the_purse_the_till_uses(server):
         assert said[1] == "наличными 50 💰"
         assert said[2] == "денег не хватает"
         await browser.close()
+
+
+async def test_an_idle_raid_screen_asks_less_often(server):
+    """Пустой экран рейда опрашивается раз в десять секунд, а не в две.
+
+    Опрос — это девять запросов в базу и двадцать шесть килобайт по
+    мобильной сети. Пока идёт волна или собирается отряд, две секунды
+    оправданы: там всё решается на секундах. На пустом экране это
+    тридцать опросов в минуту ни для чего, и именно такая очередь
+    однажды и уложила игру.
+    """
+    async with async_playwright() as pw:
+        empty = raid_with_gang()
+        empty["raid"] = None
+        browser, page = await open_raid(pw, server, empty)
+
+        rate = await page.evaluate("[raidRate, RAID_POLL_IDLE, RAID_POLL_LIVE]")
+        assert rate == [10000, 10000, 2000], "на пустом экране опрос реже"
+
+        # А как только волна пошла — снова две секунды
+        await page.evaluate(
+            "data => { renderRaid(data); }", raid_with_gang()
+        )
+        assert await page.evaluate("raidRate") == 2000
+        await browser.close()
+
+
+async def test_a_gathering_party_is_watched_closely(server):
+    """Сбор отряда — тоже повод спрашивать часто: он идёт на минуты."""
+    async with async_playwright() as pw:
+        empty = raid_with_gang()
+        empty["raid"] = None
+        browser, page = await open_raid(pw, server, empty)
+        assert await page.evaluate("raidRate") == 10000
+
+        gathering = {**empty, "lobby": {
+            "id": 1, "size": 10, "total": 2, "mine": True, "joined": True,
+            "in_app": True, "seconds_left": 90, "timeout": 180,
+            "can_start": False, "min_party": 3,
+            "raid": empty["kind"], "boss": {
+                "code": "gang_major", "title": "Стычка", "emoji": "🪖",
+                "image": "", "tagline": "",
+            },
+            "members": [
+                {"user_id": 42, "name": "Тайлер", "level": 10},
+                {"user_id": 43, "name": "Марла", "level": 10},
+            ],
+        }}
+        await page.evaluate("data => { renderRaid(data); }", gathering)
+        assert await page.evaluate("raidRate") == 2000
+        await browser.close()

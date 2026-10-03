@@ -3393,6 +3393,7 @@ function fightLog(duel) {
 
 let raidData = null;
 let raidTimer = null;
+let raidRate = 0;
 let raidWasOver = false;
 // Развёрнута ли карточка босса под заголовком
 let bossOpen = false;
@@ -3403,18 +3404,41 @@ let raidPainted = null;
 let raidDraft = { attacks: {}, block: null };
 let raidWave = null;
 
+// Как часто спрашивать состояние рейда. Пока идёт бой или собирается
+// отряд — каждые две секунды: там волна идёт на секундах, и опоздать
+// нельзя. Когда ничего не идёт, спрашивать так же часто незачем: экран
+// всё равно показывает одно и то же, а каждый опрос — это девять
+// запросов в базу и двадцать шесть килобайт по мобильной сети. На
+// пустом экране это тридцать опросов в минуту ни для чего.
+const RAID_POLL_LIVE = 2000;
+const RAID_POLL_IDLE = 10000;
+
+function raidPollRate(data) {
+  return data && (data.raid || data.lobby || (data.lobbies || []).length)
+    ? RAID_POLL_LIVE
+    : RAID_POLL_IDLE;
+}
+
 function startWatchingRaid() {
   if (raidTimer) return;
   loadRaid();
-  raidTimer = setInterval(loadRaid, 2000);
+  armRaidPoll(RAID_POLL_LIVE);
   // Часы тикают чаще, чем ходит опрос: секунда на экране должна быть секундой
   if (!raidClock) raidClock = setInterval(paintClocks, 1000);
+}
+
+function armRaidPoll(rate) {
+  if (raidTimer && raidRate === rate) return;
+  if (raidTimer) clearInterval(raidTimer);
+  raidRate = rate;
+  raidTimer = setInterval(loadRaid, rate);
 }
 
 function stopWatchingRaid() {
   if (!raidTimer) return;
   clearInterval(raidTimer);
   raidTimer = null;
+  raidRate = 0;
   if (raidClock) clearInterval(raidClock);
   raidClock = null;
 }
@@ -3549,6 +3573,10 @@ function renderRaid(data) {
   if (data.raid && data.raid.finished && !raidWasOver) catchUp();
   raidWasOver = Boolean(data.raid && data.raid.finished);
   raidData = data;
+  // Частоту опроса подбираем под то, что на экране: бой идёт — две
+  // секунды, пусто — десять. Делаем это после ответа, а не до: до него
+  // неизвестно, началось ли что-нибудь
+  if (raidTimer) armRaidPoll(raidPollRate(data));
 
   // Ничего не поменялось — не трогаем экран. Опрос идёт каждые две секунды,
   // и перерисовка схлопывала бы под пальцем открытый список, гасила фокус и

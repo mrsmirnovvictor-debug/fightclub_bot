@@ -519,12 +519,46 @@ class Database:
         try:
             self._conn.row_factory = aiosqlite.Row
             await self._conn.execute("PRAGMA foreign_keys = ON")
+            await self._tune()
             await self._conn.executescript(SCHEMA)
             await self._migrate()
             await self._conn.commit()
         except Exception:
             await self.close()
             raise
+
+    async def _tune(self) -> None:
+        """Настроить соединение под диск, на котором живёт база.
+
+        На Railway база лежит на подключённом томе, а не на локальном
+        диске, и там каждый fsync стоит не микросекунды, а десятки
+        миллисекунд. С настройками по умолчанию SQLite пишет журнал
+        откатом и синхронизирует его на каждом коммите — то есть платит
+        этот fsync несколько раз за одну запись.
+
+        `journal_mode = WAL` переводит коммит в дописывание в конец
+        отдельного файла, а читателей перестаёт запирать за писателем.
+        `synchronous = NORMAL` снимает fsync с каждого коммита: в WAL это
+        безопасно — при обрыве питания теряются последние сделки, но база
+        не рушится. Для игры такая цена честная, а разница на сетевом
+        томе — в разы.
+
+        `busy_timeout` нужен на случай, когда в базу смотрит кто-то ещё
+        (миграция, бэкап): лучше подождать пять секунд, чем ответить
+        бойцу «база занята».
+
+        Режим WAL хранится в самом файле и переживает перезапуск, а
+        остальные — свойства соединения, поэтому ставятся каждый раз.
+        Память (`:memory:`) WAL не умеет, и это не беда: у неё и диска
+        нет. Поэтому ответ только пишем в журнал, а не требуем.
+        """
+        await self._conn.execute("PRAGMA busy_timeout = 5000")
+        await self._conn.execute("PRAGMA synchronous = NORMAL")
+        async with self._conn.execute("PRAGMA journal_mode = WAL") as cursor:
+            row = await cursor.fetchone()
+        mode = (row[0] if row else "") or "?"
+        if mode.lower() != "wal":
+            logger.info("Журнал базы: %s — WAL на этом диске недоступен", mode)
 
     async def _migrate(self) -> None:
         """Дописать колонки, которых нет в базе, созданной прошлой версией."""
@@ -1483,36 +1517,53 @@ class Database:
         return taken
 
     async def list_effects(self, user_id: int) -> list[ActiveEffect]:
-        """Действующие эффекты. Просроченные подчищаем тут же — их время вышло."""
-        await self.conn.execute(
-            "DELETE FROM effects WHERE user_id = ? AND until <= ?",
-            (user_id, now_ts()),
-        )
-        await self.conn.commit()
+        """Действующие эффекты. Просроченные подчищаем — но только если есть.
+
+        Сначала читаем, и лишь найдя просроченное, стираем. Раньше
+        `DELETE` шёл всегда, то есть каждое чтение бойца открывало сделку
+        на запись — а бойца читает каждая ручка. На сетевом томе это
+        самая дорогая операция в запросе, и платилась она чаще всего зря:
+        стирать обычно нечего.
+        """
+        moment = now_ts()
         async with self.conn.execute(
             "SELECT code, until FROM effects WHERE user_id = ? ORDER BY until",
             (user_id,),
         ) as cursor:
             rows = await cursor.fetchall()
+        if any(int(row["until"]) <= moment for row in rows):
+            await self.conn.execute(
+                "DELETE FROM effects WHERE user_id = ? AND until <= ?",
+                (user_id, moment),
+            )
+            await self.conn.commit()
         return [
             ActiveEffect(code=row["code"], until=int(row["until"]))
             for row in rows
-            if get_potion(row["code"]) is not None
+            if int(row["until"]) > moment and get_potion(row["code"]) is not None
         ]
 
     # ---------- травмы ----------
 
     async def injury_of(self, user_id: int) -> ActiveInjury | None:
-        """Травма бойца. Отлежавшую своё стираем тут же — как и эффекты."""
-        await self.conn.execute(
-            "DELETE FROM injuries WHERE user_id = ? AND until <= ?",
-            (user_id, now_ts()),
-        )
-        await self.conn.commit()
+        """Травма бойца. Отлежавшую своё стираем — но только если она есть.
+
+        Как и с эффектами: читаем, и лишь найдя отлежавшую, стираем.
+        Безусловный `DELETE` здесь стоил сделки на запись каждому чтению
+        бойца.
+        """
+        moment = now_ts()
         async with self.conn.execute(
             "SELECT code, until FROM injuries WHERE user_id = ?", (user_id,)
         ) as cursor:
             row = await cursor.fetchone()
+        if row is not None and int(row["until"]) <= moment:
+            await self.conn.execute(
+                "DELETE FROM injuries WHERE user_id = ? AND until <= ?",
+                (user_id, moment),
+            )
+            await self.conn.commit()
+            return None
         if row is None or get_injury(row["code"]) is None:
             return None
         return ActiveInjury(code=row["code"], until=int(row["until"]))
