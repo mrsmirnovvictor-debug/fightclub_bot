@@ -27,7 +27,7 @@
 https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/military_base_training_ground.png
 
 - **military_base** — Армейская часть: `394,363  528,370  524,463  395,449`
-- **indoor_training_ground** — Крытый полигон: `356,1436  504,1458  504,1530  355,1503`
+- **indoor_training_ground** — Крытый полигон: `402,826  494,838  494,895  402,880` — переснято: прежняя разметка стояла у нижнего края карты, а проём у этого дома посередине.
 
 
 ## Кадетский городок — `cadet_corps_dormitory.png`
