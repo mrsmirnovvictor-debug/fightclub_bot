@@ -279,8 +279,8 @@ def test_a_locked_potion_is_shown_but_marked():
 
     assert rows["heal_small"]["unlocked"]
     assert not rows["boost_strength"]["unlocked"]
-    # с первого уровня открыты малый эликсир и рейд-пасс
-    assert misc["open"] == 2
+    # с первого уровня открыты малый эликсир и оба пропуска
+    assert misc["open"] == 3
 
 
 def test_the_card_carries_the_bag_of_bottles_and_what_is_running():

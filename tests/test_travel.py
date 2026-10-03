@@ -509,18 +509,18 @@ def test_houses_without_a_trade_are_still_on_the_map():
     from bot.game.locations import LOCATIONS
 
     coming = [place for place in LOCATIONS if not place.works]
-    # Один дом первой очереди и пятнадцать второй: город вырос
-    # картинками раньше, чем правилами, и это нормально — лишь бы в
-    # каждом было сказано, чего в нём ждать. Дома из этого списка
-    # выходят по одному: в больнице лечат, на рынке меняются, в
-    # страховой оформляют полис, в зале тренируются, в банке держат
-    # деньги, в агентстве нанимают
-    assert {"stadium"} <= {place.code for place in coming}
+    # Все пятнадцать — из второй очереди: город вырос картинками раньше,
+    # чем правилами, и это нормально — лишь бы в каждом было сказано,
+    # чего в нём ждать. Дома из этого списка выходят по одному: в
+    # больнице лечат, на рынке меняются, в страховой оформляют полис, в
+    # зале тренируются, в банке держат деньги, в агентстве нанимают, на
+    # стадионе встречают фанатский сектор
+    assert {"mafia_mansion", "car_dealership"} <= {place.code for place in coming}
     assert not {
         "hospital", "market", "insurance_office", "strength_gym", "bank",
-        "office_building",
+        "office_building", "stadium",
     } & {place.code for place in coming}
-    assert len(coming) == 16
+    assert len(coming) == 15
     # Бар и почта — особый случай: за ними уже стоит работа, но обещано
     # сверх неё и другое. У такого дома есть и услуга, и строка «скоро»
     from bot.game.locations import get_location

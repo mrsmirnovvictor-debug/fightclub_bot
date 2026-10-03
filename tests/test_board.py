@@ -223,7 +223,8 @@ async def test_the_open_window_is_announced_and_pinned(bot, db):
 
     posts = board_posts(bot, RAID_THREAD)
     assert len(posts) == 1
-    assert "подвал открыт" in posts[0].lower()
+    assert "ограбление босса казино" in posts[0].lower()
+    assert "открыто" in posts[0].lower()
     # сколько он продлится — в самом объявлении: два часа
     assert f"до {opens + WINDOW_HOURS:02d}:00" in posts[0]
     assert bot.pinned == [(CLUB, bot.sent[0].message_id)]

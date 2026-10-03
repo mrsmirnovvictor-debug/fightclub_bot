@@ -58,12 +58,14 @@ def district_row(district, here: str, limping: bool = False) -> dict:
 
 
 def build_map(
-    player: Player, now: int | None = None, raid: dict | None = None
+    player: Player, now: int | None = None, raids: dict | None = None
 ) -> dict:
     """Город целиком: где боец, куда идёт и что где стоит.
 
-    `raid` — плашка под вывеской казино: её считает сервер, потому что
-    для неё нужна база (свой рейд в этом окне уже пройден или ещё нет).
+    `raids` — плашки под вывесками рейдовых домов, по дому на запись: их
+    считает сервер, потому что для них нужна база (свой рейд в этом окне
+    уже пройден или ещё нет). Домов два, и расписания у них свои, поэтому
+    и плашек две: одна сказала бы под стадионом часы казино.
     """
     here = player.where(now)
     place = get_location(here)
@@ -88,8 +90,8 @@ def build_map(
             if going
             else "",
         },
-        # Отсчёт рейда: пусто — плашки на карте нет
-        "raid": raid or {"state": "", "text": "", "seconds_left": 0},
+        # Отсчёты рейдов по домам: пусто — плашки под этим домом нет
+        "raids": raids or {},
         "districts": [
             district_row(district, here, limping) for district in DISTRICTS
         ],

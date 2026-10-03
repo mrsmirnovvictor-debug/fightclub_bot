@@ -10,7 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from bot.config import Config
 from bot.game.potions import RAID_PASS, get_potion
-from bot.game.raid import BOSS_ID, CELLAR_BOSS, MAX_PARTY
+from bot.game.raid import BOSS_ID, CELLAR_BOSS, CELLAR_RAID, MAX_PARTY
 from bot.webapp.server import create_app
 from tests.test_duel_flow import FakeBot as DuelBot
 from tests.test_raid import make_service
@@ -77,7 +77,7 @@ async def test_a_raid_is_gathered_without_leaving_the_app(cellar):
     assert status == 200
     assert mine["lobby"]["mine"] and mine["lobby"]["total"] == 1
     assert mine["lobby"]["size"] == MAX_PARTY  # мест всегда десять
-    assert mine["lobby"]["boss"]["title"] == CELLAR_BOSS.title
+    assert mine["lobby"]["boss"]["title"] == CELLAR_RAID.title
     assert mine["raid"] is None
     # пропуск ушёл на входе
     assert (await db.get_player(42)).potion_count(RAID_PASS) == 0
@@ -182,7 +182,7 @@ async def test_a_turn_is_sent_as_one_move(cellar):
     """Кнопка «Вперёд!» шлёт удар и блок разом — как в бою."""
     client, raids, _ = cellar
     await start(client, raids)
-    before = raids.raid_of_user(42).enemy.hp
+    before = raids.raid_of_user(42).enemies[BOSS_ID].hp
 
     status, body = await act(client, 42, action="turn", attack="head", block="belt")
 
@@ -234,14 +234,15 @@ async def test_the_result_holds_the_screen_until_it_is_closed(cellar):
     client, raids, _ = cellar
     await start(client, raids)
     session = raids.raid_of_user(42)
-    session.enemy.hp = 1
+    for enemy in session.enemies.values():
+        enemy.hp = 1
 
     await act(client, 42, action="turn", attack="head", block="belt")
 
     raid = (await state(client, 42))["raid"]
     assert raid["finished"] is True
     summary = "\n".join(raid["summary"])
-    assert "Босс повержен" in summary and "Кто сколько набил" in summary
+    assert "Противник повержен" in summary and "Кто сколько набил" in summary
     assert "<b>" not in summary
 
     status, after = await act(client, 42, action="done")
@@ -253,7 +254,8 @@ async def test_the_history_of_raids_is_open_to_read(cellar):
     client, raids, db = cellar
     await start(client, raids)
     session = raids.raid_of_user(42)
-    session.enemy.hp = 1
+    for enemy in session.enemies.values():
+        enemy.hp = 1
     await act(client, 42, action="turn", attack="head", block="belt")
 
     response = await client.get("/api/raids?user_id=42", headers=headers(43))
@@ -264,8 +266,8 @@ async def test_the_history_of_raids_is_open_to_read(cellar):
     assert row["boss"] == CELLAR_BOSS.title
     # В списке боёв важно не «босс повержен», а что вышло у тебя
     assert row["result"] == "win" and row["result_title"] == "Победа"
-    assert row["caption"] == f"Победа (с Марла) — рейд против {CELLAR_BOSS.whom}"
-    assert row["verdict"] == "Босс повержен"
+    assert row["caption"] == f"Победа (с Марла) — {CELLAR_RAID.title}"
+    assert row["verdict"] == "Противник повержен"
     assert row["damage"] > 0 and row["waves"] == 1
 
 
@@ -273,7 +275,7 @@ async def test_a_raid_lands_in_the_list_of_fights(cellar):
     """Рейд стоит в статистике рядом с дуэлями и читается так же."""
     client, raids, db = cellar
     await start(client, raids)
-    raids.raid_of_user(42).enemy.hp = 1
+    raids.raid_of_user(42).enemies[BOSS_ID].hp = 1
     await act(client, 42, action="turn", attack="head", block="belt")
 
     response = await client.get("/api/history?user_id=42", headers=headers(42))
@@ -281,7 +283,7 @@ async def test_a_raid_lands_in_the_list_of_fights(cellar):
 
     row = body["days"][0]["fights"][0]
     assert row["kind"] == "raid"
-    assert row["caption"] == f"Победа (с Марла) — рейд против {CELLAR_BOSS.whom}"
+    assert row["caption"] == f"Победа (с Марла) — {CELLAR_RAID.title}"
     assert row["waves"] == 1 and row["damage"] > 0
     # В списке рейд стоит вместе с дуэлями, а в счёте — отдельно от них
     assert body["total"] == 1
@@ -306,7 +308,7 @@ async def test_the_boss_card_comes_with_the_section(cellar):
     live = (await state(client, 42))["boss"]
 
     assert live["live"] is True
-    assert live["level"] == raids.raid_of_user(42).enemy.level
+    assert live["level"] == raids.raid_of_user(42).enemies[BOSS_ID].level
 
 
 async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
@@ -332,17 +334,20 @@ async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
 
 
 async def test_the_map_brings_the_raid_countdown(cellar):
-    """Плашку под вывеской казино считает сервер: ему видна и база."""
+    """Плашки под вывесками считает сервер: ему видна и база."""
     client, raids, db = cellar
 
     response = await client.get("/api/map", headers=headers(42))
     body = await response.json()
 
     assert response.status == 200
-    # подвал в этих тестах открыт круглосуточно — значит, идёт
-    assert body["raid"]["state"] == "open"
-    assert body["raid"]["text"] == "Рейд закончится через"
-    assert body["raid"]["seconds_left"] > 0
+    # рейды в этих тестах открыты круглосуточно — значит, идут
+    plate = body["raids"]["casino"]
+    assert plate["state"] == "open"
+    assert plate["text"] == "Рейд закончится через"
+    assert plate["seconds_left"] > 0
+    # и у стадиона своя плашка: расписания у домов разные
+    assert body["raids"]["stadium"]["state"] == "open"
 
 
 async def test_the_plate_lights_up_an_hour_before_and_goes_out_after(db):
@@ -398,7 +403,7 @@ async def test_the_analyst_reads_the_boss_for_a_subscriber(cellar):
 
     scout = (await state(client, 42))["raid"]["scout"]
 
-    assert CELLAR_BOSS.whom in scout["title"]
+    assert CELLAR_BOSS.title in scout["title"]
     assert CELLAR_BOSS.manner in scout["title"]
     # Совет — одно действие и одно число, а не два абзаца с процентами
     assert scout["attack_tip"]["move"] and scout["attack_tip"]["why"]
@@ -426,14 +431,14 @@ async def test_the_advice_points_where_the_dice_actually_go(cellar):
 
     rng = random.Random(9)
     session = raids.raid_of_user(42)
-    enemy = session.enemy
+    enemy = session.enemies[BOSS_ID]
     guarded: Counter = Counter()
     swung: Counter = Counter()
     rolls = 4000
     for _ in range(rolls):
         # Тот же характер, что у волны: стойку босс меняет каждую волну,
         # и аналитик читает здешнюю, а не «вообще»
-        action = boss_action(enemy, rng, session.temper)
+        action = boss_action(enemy, rng, session.temper_of(BOSS_ID))
         guarded.update(zone.value for zone in action.block)
         swung.update(zone.value for zone in action.attacks if zone)
 

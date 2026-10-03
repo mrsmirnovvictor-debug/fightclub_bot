@@ -51,10 +51,15 @@ class Config:
     # Передышка после того, как отряд отработал столько ударов
     raid_strikes_per_break: int = 6
     raid_break: int = 0 if RAID_NO_WAITS else 30
-    # Кошель за победу: делится поровну между всеми, кто дошёл до конца
+    # Кошель за победу над боссом казино: делится поровну между всеми,
+    # кто дошёл до конца
     raid_purse: int = 100
     # Насколько босс прибавляет в здоровье с каждым лишним бойцом отряда
     raid_boss_hp_share: float = 0.4
+    # Сколько получает каждый за победу над бандой со стадиона. Не
+    # делится: билет на матч каждый покупает свой. Число то же, что
+    # GANG_PURSE в правилах, и это стережёт тест
+    raid_gang_purse: int = 200
     webapp_url: str = ""
     webapp_host: str = "0.0.0.0"
     webapp_port: int = 8080
@@ -138,6 +143,9 @@ def load_config() -> Config:
         ),
         raid_break=int(os.getenv("RAID_BREAK", str(Config.raid_break))),
         raid_purse=int(os.getenv("RAID_PURSE", str(Config.raid_purse))),
+        raid_gang_purse=int(
+            os.getenv("RAID_GANG_PURSE", str(Config.raid_gang_purse))
+        ),
         raid_boss_hp_share=float(
             os.getenv("RAID_BOSS_HP_SHARE", str(Config.raid_boss_hp_share))
         ),

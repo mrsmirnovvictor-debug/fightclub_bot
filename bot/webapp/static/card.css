@@ -1513,6 +1513,20 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border: 1px solid var(--slot-line);
   margin-top: 4px;
 }
+/* Банда столбиком. Карточек может быть пять и больше, поэтому в
+   многолюдном виде они жмутся: шрифт тот же, воздуха меньше, портретов
+   нет вовсе — пять лиц в колонку не влезают, да и ищут на этом табло не
+   лицо, а своего противника. */
+.gang-board { display: grid; gap: 4px; min-width: 0; }
+.gang-board.gang-many .boss-card { padding: 5px 6px; gap: 1px; }
+/* Свой противник обведён и чуть светлее: на табло из пяти его иначе не
+   найти глазом за те тридцать секунд, что даны на ход */
+.boss-card.mine { border-color: var(--accent); }
+.boss-card.mine .fight-row-note { color: var(--accent); }
+/* Павший остаётся на табло: по вычеркнутым и видно, сколько банды уже
+   легло, — а убери их, и отряд не поймёт, идёт ли дело к концу */
+.boss-card.dropped { opacity: 0.55; }
+.boss-card.dropped .fight-name { text-decoration: line-through; }
 .raid-party { display: grid; gap: 6px; min-width: 0; }
 .raid-member {
   border: 1px solid var(--line);

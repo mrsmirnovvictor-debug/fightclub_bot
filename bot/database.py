@@ -311,13 +311,19 @@ CREATE INDEX IF NOT EXISTS idx_raid_members_user
     ON raid_members(user_id, raid_id DESC);
 
 -- Попытки бойца в одном окне рейда: пропуск тратится один раз на окно, а
--- побеждают в окне тоже один раз. Ключ — боец и начало окна, поэтому
--- повторный заход в то же окно ничего не списывает.
+-- побеждают в окне тоже один раз. Ключ — боец, рейд и начало окна,
+-- поэтому повторный заход в то же окно ничего не списывает.
+--
+-- Рейд в ключе не для красоты: рейдов в городе два, расписания у них
+-- свои, и окна могут начаться в один и тот же час — в среду в полдень
+-- открыты и казино, и стадион. Без кода рейда один билет прошёл бы за
+-- два, а победа на стадионе закрыла бы подвал.
 CREATE TABLE IF NOT EXISTS raid_window (
     user_id   INTEGER NOT NULL,
+    raid      TEXT    NOT NULL DEFAULT 'cellar',
     opened_at INTEGER NOT NULL,  -- начало окна, секунды эпохи
     won       INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (user_id, opened_at)
+    PRIMARY KEY (user_id, raid, opened_at)
 );
 
 CREATE TABLE IF NOT EXISTS battles (
@@ -542,6 +548,7 @@ class Database:
         await self._migrate_inventory()
         await self._migrate_duels()
         await self._migrate_arenas()
+        await self._migrate_raid_windows()
 
     async def _index_migrated_columns(self) -> None:
         """Индексы по колонкам, которых в первой версии базы не было.
@@ -631,6 +638,37 @@ class Database:
         )
         await self.conn.commit()
         logger.info("База обновлена: рейды вынесены из личного счёта бойцов")
+
+    async def _migrate_raid_windows(self) -> None:
+        """В ключ окна добавился рейд — таблицу приходится пересобрать.
+
+        Рейдов в городе стало два, и окна у них могут начаться в один
+        час. Прежний ключ (боец, час) этого не различал, а дописать
+        колонку в первичный ключ SQLite не умеет — только собрать таблицу
+        заново и перелить строки. Всё, что в ней лежало, — подвал казино,
+        поэтому старым строкам ставится его код.
+        """
+        async with self.conn.execute("PRAGMA table_info(raid_window)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if not columns or "raid" in columns:
+            return
+        await self.conn.executescript(
+            """
+            ALTER TABLE raid_window RENAME TO raid_window_old;
+            CREATE TABLE raid_window (
+                user_id   INTEGER NOT NULL,
+                raid      TEXT    NOT NULL DEFAULT 'cellar',
+                opened_at INTEGER NOT NULL,
+                won       INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, raid, opened_at)
+            );
+            INSERT INTO raid_window (user_id, raid, opened_at, won)
+                SELECT user_id, 'cellar', opened_at, won FROM raid_window_old;
+            DROP TABLE raid_window_old;
+            """
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: окна рейдов различаются по рейду")
 
     async def _migrate_duels(self) -> None:
         """Записи боёв прошлой версии — кулачные: другого режима тогда не было."""
@@ -2165,16 +2203,21 @@ class Database:
         )
         await self.conn.commit()
 
-    async def raid_window(self, user_id: int, opened_at: int) -> dict[str, Any] | None:
+    async def raid_window(
+        self, user_id: int, opened_at: int, raid: str = "cellar"
+    ) -> dict[str, Any] | None:
         """Что у бойца в этом окне: тратил ли пропуск и победил ли уже."""
         async with self.conn.execute(
-            "SELECT * FROM raid_window WHERE user_id = ? AND opened_at = ?",
-            (user_id, opened_at),
+            "SELECT * FROM raid_window "
+            "WHERE user_id = ? AND raid = ? AND opened_at = ?",
+            (user_id, raid, opened_at),
         ) as cursor:
             row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def start_raid_window(self, user_id: int, opened_at: int) -> bool:
+    async def start_raid_window(
+        self, user_id: int, opened_at: int, raid: str = "cellar"
+    ) -> bool:
         """Открыть бойцу это окно. True — открыли впервые, пропуск нужен.
 
         Вставка атомарна: если строка уже была, ничего не меняется и мы
@@ -2182,26 +2225,33 @@ class Database:
         пропуск, даже если два нажатия придут разом.
         """
         cursor = await self.conn.execute(
-            "INSERT OR IGNORE INTO raid_window (user_id, opened_at) VALUES (?, ?)",
-            (user_id, opened_at),
+            "INSERT OR IGNORE INTO raid_window (user_id, raid, opened_at) "
+            "VALUES (?, ?, ?)",
+            (user_id, raid, opened_at),
         )
         await self.conn.commit()
         return cursor.rowcount > 0
 
-    async def drop_raid_window(self, user_id: int, opened_at: int) -> None:
+    async def drop_raid_window(
+        self, user_id: int, opened_at: int, raid: str = "cellar"
+    ) -> None:
         """Отпустить окно: вход не состоялся, пропуск не списан."""
         await self.conn.execute(
-            "DELETE FROM raid_window WHERE user_id = ? AND opened_at = ? AND won = 0",
-            (user_id, opened_at),
+            "DELETE FROM raid_window WHERE user_id = ? AND raid = ? "
+            "AND opened_at = ? AND won = 0",
+            (user_id, raid, opened_at),
         )
         await self.conn.commit()
 
-    async def close_raid_window(self, user_id: int, opened_at: int) -> None:
-        """Отметить победу: в этом окне боец в подвал больше не пойдёт."""
+    async def close_raid_window(
+        self, user_id: int, opened_at: int, raid: str = "cellar"
+    ) -> None:
+        """Отметить победу: в это окно боец в этот рейд больше не пойдёт."""
         await self.conn.execute(
-            "INSERT INTO raid_window (user_id, opened_at, won) VALUES (?, ?, 1) "
-            "ON CONFLICT(user_id, opened_at) DO UPDATE SET won = 1",
-            (user_id, opened_at),
+            "INSERT INTO raid_window (user_id, raid, opened_at, won) "
+            "VALUES (?, ?, ?, 1) "
+            "ON CONFLICT(user_id, raid, opened_at) DO UPDATE SET won = 1",
+            (user_id, raid, opened_at),
         )
         await self.conn.commit()
 

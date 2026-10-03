@@ -39,7 +39,7 @@ from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
 from bot.market_service import MarketError, buy_lot, sell_lot, withdraw_lot
 from bot.webapp.battle import build_battle
 from bot.webapp.fight import build_fight_log, build_fights, build_history
-from bot.webapp.raid import build_raid, gate_payload, plate_payload, raid_row
+from bot.webapp.raid import build_raid, gate_payload, plates_payload, raid_row
 from bot.webapp.hospital import build_hospital
 from bot.game.gym import MAX_UPGRADES, moscow_day, schedule_from
 from bot.webapp.gym import build_gym
@@ -58,12 +58,12 @@ from bot.gym_service import visit_of
 from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
 from bot.game.health import format_duration, now_ts
+from bot.game.raid import CELLAR_RAID, RaidKind, kind_at
 from bot.game.locations import (
     SHOP_SERVICES,
     Service,
     get_location,
     service_for,
-    where_to,
 )
 from bot.travel_service import Travel, TravelError, require
 from bot.webapp.citymap import build_map
@@ -249,9 +249,9 @@ async def api_oops(request: web.Request) -> web.Response:
 
 
 async def _city(request: web.Request, player) -> dict:
-    """Карта вместе с отсчётом рейда: плашке нужна база, карте — нет."""
-    plate = await plate_payload(player, request.app.get(RAIDS_KEY))
-    return build_map(player, raid=plate)
+    """Карта вместе с отсчётами рейдов: плашкам нужна база, карте — нет."""
+    plates = await plates_payload(player, request.app.get(RAIDS_KEY))
+    return build_map(player, raids=plates)
 
 
 async def api_map(request: web.Request) -> web.Response:
@@ -1400,16 +1400,38 @@ async def api_trade_action(request: web.Request) -> web.Response:
 # ---------- рейды ----------
 
 
+def _raid_kind(player, raids) -> RaidKind:
+    """Какой рейд собирают для этого бойца.
+
+    Сначала тот, в котором он уже стоит: записался в казино, ушёл гулять
+    — панель всё равно про казино. Иначе тот, что идёт в доме, где он
+    сейчас, а издалека — подвал: про него и рассказывает экран, пока
+    боец никуда не пришёл.
+    """
+    if raids is not None:
+        mine = (
+            raids.raid_of_user(player.user_id)
+            or raids.result_of_user(player.user_id)
+            or raids.lobby_of_user(player.user_id)
+        )
+        if mine is not None:
+            return mine.kind
+    return kind_at(player.where()) or CELLAR_RAID
+
+
 async def _raid_state(request: web.Request, player) -> dict:
-    """Состояние подвала плюс то, на каких условиях туда пустят."""
+    """Состояние рейда плюс то, на каких условиях туда пустят."""
     raids = request.app.get(RAIDS_KEY)
-    body = build_raid(player, raids, request.app[CONFIG_KEY].raid_lobby_timeout)
-    body["gate"] = await gate_payload(player, raids)
-    # Подвал открывается из казино. Состояние отдаём и издалека: по нему
-    # видно, идёт ли рейд, за которым боец записан
+    kind = _raid_kind(player, raids)
+    body = build_raid(
+        player, raids, request.app[CONFIG_KEY].raid_lobby_timeout, kind
+    )
+    body["gate"] = await gate_payload(player, raids, kind)
+    # Рейд открывается из своего дома. Состояние отдаём и издалека: по
+    # нему видно, идёт ли рейд, за который боец записан
     here = get_location(player.where())
     body["here"] = here is not None and here.allows(Service.RAID)
-    body["where"] = (where_to(Service.RAID) or here).title
+    body["where"] = (get_location(kind.house) or here).title
     return body
 
 
@@ -1433,7 +1455,12 @@ async def api_raid_action(request: web.Request) -> web.Response:
         # покупают тут же, в один шаг с согласием
         buy = bool(data.get("buy"))
         if action == "open":
-            await raids.open_raid(None, None, player, buy=buy)
+            # Какой рейд собирают, решает дом: в казино спускаются к
+            # боссу, на стадионе встречают фанатский сектор
+            kind = kind_at(player.where())
+            if kind is None:  # pragma: no cover - ручку сторожит Service.RAID
+                raise RaidError("Здесь рейдов не бывает.")
+            await raids.open_raid(None, None, player, kind, buy=buy)
         elif action == "join":
             await raids.join(_int_field(data, "lobby_id"), player, buy=buy)
         elif action == "leave":

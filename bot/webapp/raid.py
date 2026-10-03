@@ -25,19 +25,17 @@ from bot.game.combat import (
 from bot.game.equipment import LEFT_SLOTS, RIGHT_SLOTS, get_item
 from bot.game.health import now_ts
 from bot.game.raid import (
-    BOSS_ID,
-    BOSS_HP_SHARE,
     RAID_SOON,
     LEVELS_ABOVE,
-    MAX_PARTY,
-    MIN_PARTY,
     Boss,
-    next_window,
-    schedule_text,
-    CELLAR_BOSS,
+    CELLAR_RAID,
+    RAID_KINDS,
+    RaidKind,
     boss_fighter,
+    foe_titles,
+    kind_of_boss,
 )
-from bot.game.potions import RAID_PASS, get_potion
+from bot.game.potions import get_potion
 from bot.game.scout import Move, habits_of_temper, moves_of, trend
 from bot.models import Player
 from bot.webapp.fight import abilities_payload
@@ -71,39 +69,72 @@ def boss_scout(
     fighter = session.fighters.get(viewer_id)
     if not pro or fighter is None or session.finished:
         return None
-    temper = session.temper
+    # Читаем того, с кем этот боец стоит, а не «босса рейда»: в банде у
+    # каждого свои повадки, и совет про чужого противника — это не
+    # аналитика, а враньё
+    number = session.pairs.get(viewer_id)
+    enemy = session.enemies.get(number) if number is not None else None
+    if enemy is None:
+        return None
+    template = session.template_of(number)
+    temper = session.temper_of(number)
     habits = habits_of_temper(
         temper.swings,
         # Сколько зон он закрывает разом, решает его снаряжение: со щитом
         # блок шире, и доли «закрыта ли эта зона» считаются от него
-        temper.covers(session.enemy.block_width),
+        temper.covers(enemy.block_width),
     )
-    moves = moves_of(session.rounds, BOSS_ID)
+    moves = moves_of(session.rounds, number)
     # Ширина блока — того, кто читает: со щитом он держит три зоны, и
     # советовать ему пару значило бы советовать меньше, чем он нажмёт
     advice = trend(habits, moves[-1] if moves else Move(number=0), fighter.block_width)
     return replace(
         advice,
         title=(
-            f"Волна {session.wave}: стойка {session.boss.whom}. "
-            f"{session.boss.manner}"
+            f"Волна {session.wave}: стойка {enemy.name}. {template.manner}"
         ).strip(),
     ).as_dict()
 
 
-def boss_payload(session: RaidSession) -> dict[str, Any]:
-    enemy = session.enemy
+def foe_payload(
+    session: RaidSession, number: int, viewer_id: int = 0
+) -> dict[str, Any]:
+    """Один противник на табло: кто он, сколько в нём осталось и с кем стоит."""
+    enemy = session.enemies[number]
+    template = session.template_of(number)
+    against = next(
+        (
+            user_id
+            for user_id, mate in session.pairs.items()
+            if mate == number and session.fighters[user_id].alive
+        ),
+        None,
+    )
     return {
-        "code": session.boss.code,
+        "number": number,
+        "code": template.code,
         "title": enemy.name,
-        "emoji": session.boss.emoji,
-        "image": session.boss.image,
+        "emoji": template.emoji,
+        "image": template.image,
+        "fclass": enemy.fclass.title,
+        "fclass_emoji": enemy.fclass.emoji,
         "level": enemy.level,
         "hp": enemy.hp,
         "max_hp": enemy.max_hp,
         "percent": round(enemy.hp_percent * 100),
+        "alive": enemy.alive,
         "weapon": enemy.weapon,
+        # С кем он стоит прямо сейчас: по этой подписи боец находит
+        # своего на табло из пяти
+        "against": against,
+        # Твой ли это противник: на табло из пяти своего надо найти глазом
+        "yours": against is not None and against == viewer_id,
     }
+
+
+def boss_payload(session: RaidSession, viewer_id: int = 0) -> dict[str, Any]:
+    """Главный противник для шапки: в казино босс, в банде — её лидер."""
+    return foe_payload(session, session.order[0], viewer_id)
 
 
 def member_payload(session: RaidSession, user_id: int, viewer_id: int) -> dict[str, Any]:
@@ -124,22 +155,24 @@ def member_payload(session: RaidSession, user_id: int, viewer_id: int) -> dict[s
     }
 
 
-def boss_card(enemy: Fighter, boss: Boss, live: bool) -> dict[str, Any]:
-    """Всё про босса, что показывает кнопка «i».
+def boss_card(
+    enemy: Fighter, boss: Boss, live: bool, kind: RaidKind = CELLAR_RAID
+) -> dict[str, Any]:
+    """Всё про противника, что показывает кнопка «i».
 
-    `live` — это настоящий босс идущего рейда. Иначе прикидка: каким он
-    выйдет к бойцу, который смотрит, если тот соберёт отряд прямо сейчас.
+    `live` — это настоящий противник идущего рейда. Иначе прикидка: каким
+    он выйдет к бойцу, который смотрит, если тот соберёт отряд сейчас.
     """
     derived, equipment = enemy.derived, enemy.equipment
     return {
         "code": boss.code,
-        "title": boss.title,
+        "title": enemy.name,
         # Как называется сам рейд: заголовок раздела берётся отсюда, а не
         # склеивается на странице — склонять имена там нечем
-        "raid_name": boss.raid_name,
+        "raid_name": kind.title,
         # Кукла босса собирается тем же кодом, что и карточка бойца: те же
         # слоты, те же подложки под пустыми, тот же аватар в середине
-        "name": boss.title,
+        "name": enemy.name,
         "avatar": {"url": boss.image, "emoji": boss.emoji},
         "slots": {
             "left": [
@@ -153,6 +186,9 @@ def boss_card(enemy: Fighter, boss: Boss, live: bool) -> dict[str, Any]:
         "image": boss.image,
         "tagline": boss.tagline,
         "live": live,
+        # Один он против отряда или в банде: страница этим и объясняет,
+        # откуда в рейде сложность
+        "alone": kind.one_on_one,
         "levels_above": LEVELS_ABOVE,
         "level": enemy.level,
         "fclass": enemy.fclass.title,
@@ -221,12 +257,14 @@ def lobby_payload(
         "timeout": timeout,
         # Отряд уже боеспособен: созвавший может не ждать отсчёта
         "can_start": lobby.can_start,
+        "min_party": lobby.kind.min_party,
+        "raid": kind_row(lobby.kind),
         "boss": {
             "code": lobby.boss.code,
-            "title": lobby.boss.title,
-            "emoji": lobby.boss.emoji,
+            "title": lobby.kind.title,
+            "emoji": lobby.kind.emoji,
             "image": lobby.boss.image,
-            "tagline": lobby.boss.tagline,
+            "tagline": lobby.kind.tagline,
         },
         "members": [
             {"user_id": user_id, "name": name, "level": lobby.levels.get(user_id, 1)}
@@ -252,7 +290,20 @@ def raid_payload(
         "resting": session.resting,
         "finished": session.finished,
         "summary": session.summary,
-        "boss": boss_payload(session),
+        "raid": kind_row(session.kind),
+        "boss": boss_payload(session, viewer_id),
+        # Вся банда по порядку: по ней и видно, сколько ещё стоит на
+        # ногах. В казино в этом списке один человек — сам босс
+        "gang": [
+            foe_payload(session, number, viewer_id) for number in session.order
+        ],
+        # Против кого стоит смотрящий. Пусто — ни против кого: его
+        # противника добили, а новый выйдет со следующей волной
+        "foe": (
+            foe_payload(session, session.pairs[viewer_id], viewer_id)
+            if viewer_id in session.pairs
+            else None
+        ),
         "party": [
             member_payload(session, user_id, viewer_id) for user_id in session.fighters
         ],
@@ -278,24 +329,31 @@ def raid_payload(
     }
 
 
+BLANK_PLATE = {"state": "", "text": "", "seconds_left": 0}
+
+
 async def plate_payload(
-    player: Player, service: RaidService | None, moment: int | None = None
+    player: Player,
+    service: RaidService | None,
+    moment: int | None = None,
+    kind: RaidKind = CELLAR_RAID,
 ) -> dict[str, Any]:
     """Плашка рейда на карте: скоро, идёт или пройден.
 
-    Висит под вывеской казино и живёт по расписанию: за час до окна —
-    отсчёт до начала, в окне — отсчёт до конца, а тому, кто своё уже взял,
-    вместо часов «Рейд завершён». Вне этих часов плашки нет вовсе: карта
-    не место для расписания на сутки вперёд.
+    Висит под вывеской своего дома и живёт по расписанию: за час до окна
+    — отсчёт до начала, в окне — отсчёт до конца, а тому, кто своё уже
+    взял, вместо часов «Рейд завершён». Вне этих часов плашки нет вовсе:
+    карта не место для расписания на неделю вперёд.
     """
     moment = now_ts() if moment is None else moment
-    blank = {"state": "", "text": "", "seconds_left": 0}
     if service is None:  # pragma: no cover - бот без рейдов не живёт
-        return blank
+        return dict(BLANK_PLATE)
 
-    window = service.window_now(moment)
+    window = service.window_now(moment, kind)
     if window is not None:
-        seen = await service.db.raid_window(player.user_id, window.start)
+        seen = await service.db.raid_window(
+            player.user_id, window.start, kind.code
+        )
         if seen and seen["won"]:
             return {"state": "done", "text": "Рейд завершён", "seconds_left": 0}
         return {
@@ -304,10 +362,10 @@ async def plate_payload(
             "seconds_left": window.seconds_left(moment),
         }
 
-    soon = next_window(moment)
+    soon = kind.next_window(moment)
     left = soon.start - moment
     if left > RAID_SOON:
-        return blank
+        return dict(BLANK_PLATE)
     return {
         "state": "soon",
         "text": "Рейд начнётся через",
@@ -315,25 +373,63 @@ async def plate_payload(
     }
 
 
+async def plates_payload(
+    player: Player, service: RaidService | None, moment: int | None = None
+) -> dict[str, dict[str, Any]]:
+    """Плашки всех рейдов города — по дому на запись.
+
+    Рейдов два, и расписания у них свои: одна плашка на карту означала бы,
+    что отсчёт под стадионом показывает часы казино.
+    """
+    return {
+        kind.house: await plate_payload(player, service, moment, kind)
+        for kind in RAID_KINDS
+    }
+
+
+def kind_row(kind: RaidKind) -> dict[str, Any]:
+    """Сам рейд: как называется, где идёт и чем встречает."""
+    gang = kind.roster(kind.min_party)
+    return {
+        "code": kind.code,
+        "title": kind.title,
+        "emoji": kind.emoji,
+        "tagline": kind.tagline,
+        "house": kind.house,
+        "min_party": kind.min_party,
+        "max_party": kind.max_party,
+        "purse": kind.purse,
+        "split": kind.split,
+        "alone": kind.one_on_one,
+        # Сколько противников выходит на минимальный отряд и растёт ли их
+        # число с отрядом: этим рейд и объясняет свою сложность
+        "foes": len(gang),
+        "grows": bool(kind.reserve),
+        "foe_level": kind.foe_level,
+        "schedule": kind.schedule_text(),
+        "next_window": kind.next_window().title,
+    }
+
+
 async def gate_payload(
-    player: Player, service: RaidService | None
+    player: Player, service: RaidService | None, kind: RaidKind = CELLAR_RAID
 ) -> dict[str, Any]:
-    """Пускают ли бойца в подвал прямо сейчас и на что.
+    """Пускают ли бойца в этот рейд прямо сейчас и на что.
 
     Отсюда страница знает, что показать в окне согласия: тратить пропуск
-    из рюкзака, покупать его или вовсе не звать — босс уже повержен.
+    из рюкзака, покупать его или вовсе не звать — своё уже взято.
     """
-    ticket = get_potion(RAID_PASS)
+    ticket = get_potion(kind.pass_code)
     body: dict[str, Any] = {
-        "pass_code": RAID_PASS,
+        "pass_code": kind.pass_code,
         "pass_title": ticket.title,
         "pass_price": ticket.price,
         "pass_emoji": ticket.emoji,
-        "passes": player.potion_count(RAID_PASS),
-        "schedule": schedule_text(),
+        "passes": player.potion_count(kind.pass_code),
+        "schedule": kind.schedule_text(),
         "open": False,
         "window": "",
-        "next_window": next_window().title,
+        "next_window": kind.next_window().title,
         "won": False,
         # Пропуск за это окно уже отдан: заходить можно сколько угодно
         "spent": False,
@@ -342,10 +438,10 @@ async def gate_payload(
     if service is None:  # pragma: no cover - бот без рейдов не живёт
         return body
 
-    window = service.window_now()
+    window = service.window_now(kind=kind)
     if window is None:
         return body
-    seen = await service.db.raid_window(player.user_id, window.start)
+    seen = await service.db.raid_window(player.user_id, window.start, kind.code)
     body.update(
         open=True,
         window=window.title,
@@ -355,27 +451,58 @@ async def gate_payload(
     return body
 
 
+def preview_cards(player: Player, kind: RaidKind) -> list[dict[str, Any]]:
+    """Кого боец встретит, если соберёт отряд прямо сейчас.
+
+    Прикидка, а не настоящая банда: состав берётся на минимальный отряд.
+    Здоровье босса казино тут за одного — с каждым лишним бойцом он
+    крепче; у банды наоборот, лишний боец приводит лишнего гопника.
+    """
+    levels = [player.level] * max(1, kind.min_party)
+    roster = kind.roster(len(levels))
+    titles = foe_titles(roster)
+    return [
+        boss_card(
+            boss_fighter(
+                boss,
+                [player.level] if kind.one_on_one else levels,
+                kind.hp_share,
+                level=kind.foe_level,
+                name=titles[index],
+            ),
+            boss,
+            live=False,
+            kind=kind,
+        )
+        for index, boss in enumerate(roster)
+    ]
+
+
 def build_raid(
-    player: Player, service: RaidService | None, timeout: int = 0
+    player: Player,
+    service: RaidService | None,
+    timeout: int = 0,
+    kind: RaidKind = CELLAR_RAID,
 ) -> dict[str, Any]:
-    """Всё, что нужно разделу «Рейд», одним ответом."""
+    """Всё, что нужно разделу «Рейд», одним ответом.
+
+    Какой это рейд, решает дом, в котором боец стоит, — а если он уже
+    записан, то тот рейд, в который записан. Выбирать из списка не
+    приходится: на стадион и в казино ходят ногами.
+    """
     body: dict[str, Any] = {
         "attacks": [dict(row) for row in ATTACK_BUTTONS],
         "blocks": [dict(row) for row in BLOCK_BUTTONS],
-        "min_party": MIN_PARTY,
-        "max_party": MAX_PARTY,
+        "kind": kind_row(kind),
+        "min_party": kind.min_party,
+        "max_party": kind.max_party,
         "can_fight": player.can_fight(),
         "raid": None,
         "lobby": None,
         "lobbies": [],
-        # Каким босс выйдет на этого бойца, если он соберёт отряд сейчас.
-        # Здоровье тут за одного: с каждым лишним бойцом он крепче.
-        "boss": boss_card(
-            boss_fighter(CELLAR_BOSS, [player.level], BOSS_HP_SHARE),
-            CELLAR_BOSS,
-            live=False,
-        ),
+        "roster": preview_cards(player, kind),
     }
+    body["boss"] = body["roster"][0]
     if service is None:  # pragma: no cover - бот без рейдов не живёт
         return body
 
@@ -383,17 +510,29 @@ def build_raid(
         player.user_id
     )
     if session is not None:
+        body["kind"] = kind_row(session.kind)
         body["raid"] = raid_payload(session, player.user_id, player.is_pro())
-        body["boss"] = boss_card(session.enemy, session.boss, live=True)
+        body["roster"] = [
+            boss_card(
+                session.enemies[number],
+                session.template_of(number),
+                live=True,
+                kind=session.kind,
+            )
+            for number in session.order
+        ]
+        body["boss"] = body["roster"][0]
         return body
 
     own = service.lobby_of_user(player.user_id)
     if own is not None:
         body["lobby"] = lobby_payload(own, player.user_id, timeout)
+    # Чужие сборы — только того же рейда: на стадионе незачем видеть, что
+    # кто-то собирается в казино, туда отсюда всё равно не записаться
     body["lobbies"] = [
         lobby_payload(lobby, player.user_id, timeout)
         for lobby in service.open_lobbies()
-        if player.user_id not in lobby.members
+        if player.user_id not in lobby.members and lobby.kind.code == kind.code
     ]
     return body
 
@@ -410,6 +549,7 @@ def raid_row(row: dict[str, Any]) -> dict[str, Any]:
 
     end = RaidEnd(row["outcome"])
     boss = get_boss(row["boss"])
+    kind = kind_of_boss(row["boss"])
     prize = get_item(row["prize"]) if row["prize"] else None
     allies = row.get("allies") or ""
     with_whom = f" (с {allies})" if allies else ""
@@ -421,8 +561,9 @@ def raid_row(row: dict[str, Any]) -> dict[str, Any]:
         "emoji": HISTORY_MARKS[end.value],
         "result": end.value,
         "result_title": HISTORY_TITLES[end.value],
-        # «Поражение (с Марлой) — рейд против Босса Подвала»
-        "caption": f"{HISTORY_TITLES[end.value]}{with_whom} — рейд против {boss.whom}",
+        # «Поражение (с Марлой) — Ограбление Босса Казино»
+        "caption": f"{HISTORY_TITLES[end.value]}{with_whom} — {kind.title}",
+        "raid_title": kind.title,
         "verdict": RAID_END_TITLES[end.value],
         "allies": allies,
         "boss_level": row["boss_level"],
@@ -438,8 +579,14 @@ def raid_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "boss_card",
     "build_raid",
+    "foe_payload",
     "gate_payload",
+    "kind_row",
+    "plate_payload",
+    "plates_payload",
+    "preview_cards",
     "lobby_payload",
     "plate_payload",
     "boss_scout",

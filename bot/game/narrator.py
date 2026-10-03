@@ -838,7 +838,7 @@ def board_raid(lobby, seconds: int) -> str:
     """Объявление о сборе отряда в подвал."""
     opener = lobby.members.get(lobby.opener_id, "Кто-то")
     return (
-        f"🩸 <b>{esc(opener)}</b> собирает отряд: {esc(lobby.boss.raid_name)}.\n"
+        f"🩸 <b>{esc(opener)}</b> собирает отряд: {esc(lobby.kind.title)}.\n"
         f"В отряде {lobby.total} "
         f"{plural(lobby.total, 'боец', 'бойца', 'бойцов')}, "
         f"сбор идёт ещё {format_duration(seconds)}."
@@ -846,24 +846,26 @@ def board_raid(lobby, seconds: int) -> str:
     )
 
 
-def board_window_open(boss, window) -> str:
-    """Подвал открылся: объявление на всю группу, с закрепом на два часа."""
+def board_window_open(kind, window) -> str:
+    """Окно открылось: объявление на всю группу, с закрепом на всё окно."""
+    hours = (window.end - window.start) // 3600
     return (
-        f"🎲 <b>{esc(boss.raid_name)}</b> — подвал открыт!\n"
-        f"Окно {window.title}: два часа, дальше босс уходит до следующего раза."
-        + _board_link("raid", "Спуститься в подвал")
+        f"🎲 <b>{esc(kind.title)}</b> — открыто!\n"
+        f"Окно {window.title}: {hours} "
+        f"{plural(hours, 'час', 'часа', 'часов')}, дальше до следующего раза."
+        + _board_link("raid", "Собрать отряд")
     )
 
 
-def board_window_over(boss, window) -> str:
+def board_window_over(kind, window) -> str:
     """Окно закрылось — объявление больше не зовёт."""
-    return f"🎲 {esc(boss.raid_name)}. Окно {window.title} закрыто."
+    return f"🎲 {esc(kind.title)}. Окно {window.title} закрыто."
 
 
 def board_raid_over(lobby, started: bool) -> str:
     """Отряд ушёл вниз или разошёлся — объявление больше не зовёт."""
     tail = "Отряд ушёл в подвал." if started else "Отряд не собрался."
-    return f"🩸 {esc(lobby.boss.raid_name)}. {tail}"
+    return f"🩸 {esc(lobby.kind.title)}. {tail}"
 
 
 # ---------- рейды ----------
@@ -876,54 +878,97 @@ def raid_lobby_card(lobby, timeout: int) -> str:
     сообщение каждую секунду, да и лимит чата этого не переживёт. Живой
     отсчёт идёт в карточке, а здесь честная отметка на момент правки.
     """
+    kind = lobby.kind
     names = ", ".join(esc(name) for name in lobby.members.values()) or "—"
     left = lobby.seconds_left(timeout)
     clock = f"выходим через {format_duration(left)}" if left else "время вышло"
+    need = kind.min_party
     return "\n".join(
         [
-            f"{lobby.boss.emoji} <b>Рейд: {esc(lobby.boss.title)}</b>",
+            f"{kind.emoji} <b>{esc(kind.title)}</b>",
             "",
-            esc(lobby.boss.tagline) if lobby.boss.tagline else "",
+            esc(kind.tagline) if kind.tagline else "",
             f"Отряд: <b>{lobby.total}/{lobby.size}</b> · {clock}",
             f"Идут: {names}",
             "",
-            "Уровень не важен — берут любого. Босс подстроится под отряд и "
-            "будет выше него на четыре уровня.",
+            raid_terms(kind),
+            f"Меньше чем {need} "
+            f"{plural(need, 'бойцом', 'бойцами', 'бойцами')} не выйти. "
             "Наберётся полный отряд — выходим сразу, ждать не будем. "
             "Не хочется ждать — созвавший жмёт «Выходим сейчас».",
         ]
     )
 
 
+def raid_terms(kind) -> str:
+    """Чем этот рейд встречает отряд — одной строкой на объявление."""
+    if kind.one_on_one:
+        return (
+            "Уровень не важен — берут любого. Босс подстроится под отряд и "
+            "будет выше него на четыре уровня."
+        )
+    gang = len(kind.roster(kind.min_party))
+    return (
+        f"Против отряда выходит банда: {gang} "
+        f"{plural(gang, 'человек', 'человека', 'человек')} "
+        f"{kind.foe_level}-го уровня, и ещё по одному за каждого бойца "
+        "сверх трёх. Все в фанатском из «Северного Вала»."
+    )
+
+
 def raid_intro(session) -> str:
-    """Кто спустился в подвал и что их там встретило."""
-    enemy = session.enemy
+    """Кто вышел драться и что их встретило."""
     party = ", ".join(
         f"<b>{esc(fighter.name)}</b> [{fighter.level}]"
         for fighter in session.fighters.values()
     )
-    return "\n".join(
-        [
-            f"{session.boss.emoji} <b>{esc(enemy.name)}</b>, "
-            f"{enemy.level} уровень, {enemy.max_hp} здоровья",
-            f"{enemy.fclass.emoji} {enemy.fclass.title} · бьёт {enemy.weapon}",
-            "",
-            f"Отряд ({len(session.fighters)}): {party}",
-            "",
+    lines = []
+    for enemy in session.enemies.values():
+        lines.append(
+            f"{enemy.fclass.emoji} <b>{esc(enemy.name)}</b>, "
+            f"{enemy.level} уровень, {enemy.max_hp} здоровья · "
+            f"бьёт {enemy.weapon}"
+        )
+    if session.gang:
+        lines.insert(0, f"{session.kind.emoji} <b>{esc(session.kind.title)}</b>")
+        lines.insert(1, "")
+    lines += [
+        "",
+        f"Отряд ({len(session.fighters)}): {party}",
+        "",
+    ]
+    if session.gang:
+        lines.append(
+            "Банда дерётся линией: у каждого свой противник, остальные "
+            "ждут и выходят на место упавших. Кто промолчит, тот пропустит "
+            "удар, но получит своё."
+        )
+    else:
+        lines.append(
             "Бьём по очереди или разом — как выйдет. Кто промолчит, тот "
-            "пропустит удар, но получит своё.",
-        ]
-    )
+            "пропустит удар, но получит своё."
+        )
+    return "\n".join(lines)
 
 
 def raid_board(session) -> list[str]:
-    """Табло рейда: сверху босс, под ним отряд по двое в ряд."""
-    enemy = session.enemy
-    lines = [
-        f"{session.boss.emoji} {esc(enemy.name)} [{enemy.level}]",
-        f"[{enemy.hp}/{enemy.max_hp}]  {color_bar(enemy.hp, enemy.max_hp, 10)}",
-        "",
-    ]
+    """Табло рейда: сверху противники, под ними отряд по двое в ряд.
+
+    Банда идёт списком, а не в два столбца, как отряд: против кого стоит
+    боец — видно по имени, и мельчить тут нельзя. Упавшие остаются на
+    табло вычеркнутыми: по ним и видно, сколько банды уже легло.
+    """
+    lines = []
+    for number, enemy in session.enemies.items():
+        if not enemy.alive:
+            lines.append(f"💀 {esc(enemy.name)} — готов")
+            continue
+        against = _raid_against(session, number)
+        lines.append(f"{enemy.fclass.emoji} {esc(enemy.name)} [{enemy.level}]{against}")
+        lines.append(
+            f"[{enemy.hp}/{enemy.max_hp}]  {color_bar(enemy.hp, enemy.max_hp, 10)}"
+        )
+    lines.append("")
     party = list(session.fighters.items())
     for index in range(0, len(party), 2):
         row = party[index : index + 2]
@@ -942,6 +987,20 @@ def raid_board(session) -> list[str]:
             lines.append(columns(heads[0], heads[1], RAID_COLUMN))
             lines.append(columns(bars[0], bars[1], RAID_COLUMN))
     return lines
+
+
+def _raid_against(session, number: int) -> str:
+    """Против кого стоит этот противник. Пусто — против никого.
+
+    В казино босс один и стоит против всех сразу, поэтому там подпись не
+    нужна: она сказала бы то же самое пять раз.
+    """
+    if not session.gang:
+        return ""
+    for user_id, mate in session.pairs.items():
+        if mate == number and session.fighters[user_id].alive:
+            return f" ← {esc(session.fighters[user_id].name)}"
+    return ""
 
 
 def raid_mark(session, user_id: int, fighter) -> str:
@@ -968,15 +1027,24 @@ def raid_panel(session, timeout: int) -> str:
 
 def raid_break(session, seconds: int) -> str:
     """Передышка после шести ударов."""
-    enemy = session.enemy
     alive = len(session.alive_ids)
-    lines = [
-        "<b>😮‍💨 Передышка.</b>",
-        "",
-        f"{session.boss.emoji} {esc(enemy.name)}: {enemy.hp}/{enemy.max_hp}",
-        f"На ногах в отряде: {alive} "
-        f"{plural(alive, 'боец', 'бойца', 'бойцов')}",
-    ]
+    standing = session.standing
+    lines = ["<b>😮‍💨 Передышка.</b>", ""]
+    if session.gang:
+        left = len(standing)
+        lines.append(
+            f"{session.kind.emoji} В банде на ногах: {left} "
+            f"{plural(left, 'человек', 'человека', 'человек')} из "
+            f"{len(session.enemies)}"
+        )
+    else:
+        enemy = session.enemies[session.order[0]]
+        lines.append(
+            f"{session.kind.emoji} {esc(enemy.name)}: {enemy.hp}/{enemy.max_hp}"
+        )
+    lines.append(
+        f"На ногах в отряде: {alive} {plural(alive, 'боец', 'бойца', 'бойцов')}"
+    )
     if seconds:
         lines += ["", f"Следующая волна через {format_duration(seconds)}."]
     return "\n".join(lines)
@@ -989,23 +1057,35 @@ def raid_result(
     """Итог рейда: чем кончилось, кто сколько набил и кому что досталось."""
     from bot.game.potions import get_potion
 
-    enemy = session.enemy
+    whom = (
+        "Банда"
+        if session.gang
+        else esc(session.enemies[session.order[0]].name)
+    )
     lines = [f"{outcome.end.emoji} <b>{outcome.end.title}</b>", ""]
     if outcome.won:
+        verb = "легла" if session.gang else "падает"
         lines.append(
-            f"{esc(enemy.name)} падает на {session.wave}-й волне. "
-            f"Вышли из подвала: {len(outcome.survivors)} из {len(session.fighters)}."
+            f"{whom} {verb} на {session.wave}-й волне. "
+            f"Ушли своими ногами: {len(outcome.survivors)} из "
+            f"{len(session.fighters)}."
         )
     elif outcome.draw:
+        verb = "легла" if session.gang else "рухнул"
         lines.append(
-            f"{esc(enemy.name)} рухнул вместе с последним из отряда. "
-            "Подвал забрал всех."
+            f"{whom} {verb} вместе с последним из отряда. Забрали всех."
         )
     else:
-        lines.append(
-            f"{esc(enemy.name)} остаётся на ногах: {enemy.hp}/{enemy.max_hp}. "
-            "Отряд кончился."
+        left = len(session.standing)
+        standing = (
+            f"{whom} держится: на ногах {left} "
+            f"{plural(left, 'человек', 'человека', 'человек')}"
+            if session.gang
+            else f"{whom} остаётся на ногах: "
+            f"{session.enemies[session.order[0]].hp}/"
+            f"{session.enemies[session.order[0]].max_hp}"
         )
+        lines.append(f"{standing}. Отряд кончился.")
 
     lines += ["", "<b>📊 Кто сколько набил</b>"]
     prizes = prizes or {}
@@ -1026,7 +1106,13 @@ def raid_result(
     if outcome.won:
         purse = sum(shares.values())
         if purse:
-            lines += ["", f"💰 Кошель {purse} 💰 разделили поровну на отряд."]
+            lines += [
+                "",
+                f"💰 Кошель {purse} 💰 разделили поровну на отряд."
+                if session.kind.split
+                else f"💰 По {session.kind.purse} 💰 каждому: билет свой у "
+                "каждого, и доля своя.",
+            ]
         if prizes:
             lines.append("🎁 Набившему больше всех досталась склянка.")
     else:

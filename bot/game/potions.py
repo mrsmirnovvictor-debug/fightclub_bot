@@ -24,6 +24,9 @@ EFFECT_SECONDS = 2 * 60 * 60
 
 # Код обычного рейд-пасса. Премиальный — отдельная задача.
 RAID_PASS = "raid_pass"
+# Пропуск на стычку с фанатами. Пропуск под каждый рейд свой: талон
+# казино на стадионе не спрашивают, и наоборот
+STADIUM_PASS = "stadium_pass"
 
 # Ярлык раздела на витрине: эликсиры лежат отдельно от того, что надевают
 SECTION_CODE = "misc"
@@ -213,6 +216,18 @@ POTIONS: tuple[Potion, ...] = (
         price=10,
         max_wear=1,
     ),
+    Potion(
+        STADIUM_PASS,
+        "Билет на матч",
+        "🎫",
+        PotionKind.PASS,
+        note=(
+            "Корешок билета на трибуну стадиона Vegas City. Необходим для "
+            "запуска и участия в рейде «Стычка с футбольными фанатами»."
+        ),
+        price=50,
+        max_wear=1,
+    ),
 )
 
 BY_CODE: dict[str, Potion] = {potion.code: potion for potion in POTIONS}
@@ -269,6 +284,7 @@ __all__ = [
     "EFFECT_SECONDS",
     "POTIONS",
     "RAID_PASS",
+    "STADIUM_PASS",
     "SECTION_CODE",
     "SECTION_EMOJI",
     "SECTION_TITLE",

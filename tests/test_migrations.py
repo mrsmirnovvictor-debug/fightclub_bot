@@ -221,3 +221,106 @@ def test_the_schema_holds_no_index_over_a_migrated_column():
                 f"индекс по дописанной колонке {column} в SCHEMA: "
                 "на живой базе её ещё нет, и запуск упадёт"
             )
+
+
+# ---------- окна рейдов: в ключ добавился сам рейд ----------
+#
+# Рейдов в городе стало два, и окна у них могут начаться в один час: в
+# среду в полдень открыты и казино, и стадион. Прежний ключ (боец, час)
+# этого не различал, а дописать колонку в первичный ключ SQLite не умеет
+# — таблицу приходится собирать заново и переливать строки. Это та же
+# засада, что с индексом по счёту: на пустой базе новая схема создаётся
+# сразу правильной, и без этих тестов поломку увидел бы только живой бот.
+
+# Схема окон прошлой версии: ключ без рейда
+OLD_RAID_WINDOW = """
+CREATE TABLE raid_window (
+    user_id   INTEGER NOT NULL,
+    opened_at INTEGER NOT NULL,
+    won       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, opened_at)
+);
+"""
+
+
+@pytest.fixture
+def old_windows_path(tmp_path):
+    """База прошлой версии с двумя записями об окнах подвала."""
+    path = tmp_path / "windows.db"
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS raid_window \(.*?\);",
+        "",
+        schema_without(BANK_COLUMNS),
+        flags=re.S,
+    )
+    raw = sqlite3.connect(path)
+    raw.executescript(legacy + OLD_RAID_WINDOW)
+    raw.execute(
+        "INSERT INTO players (user_id, nickname, class_code) "
+        "VALUES (1, 'Тайлер', 'warrior')"
+    )
+    # одно окно отдано пропуском, во втором боец победил
+    raw.execute("INSERT INTO raid_window (user_id, opened_at, won) VALUES (1, 100, 0)")
+    raw.execute("INSERT INTO raid_window (user_id, opened_at, won) VALUES (1, 200, 1)")
+    raw.commit()
+    raw.close()
+    return str(path)
+
+
+async def test_old_raid_windows_become_the_cellars(old_windows_path):
+    """Всё, что лежало в таблице до стадиона, — это подвал казино.
+
+    Терять эти строки нельзя: по ним считается «одна победа на окно», и
+    забытая победа пустила бы бойца в подвал второй раз за то же окно.
+    """
+    db = Database(old_windows_path)
+    await db.connect()
+
+    assert await db.raid_window(1, 100, "cellar") == {
+        "user_id": 1, "raid": "cellar", "opened_at": 100, "won": 0
+    }
+    won = await db.raid_window(1, 200, "cellar")
+    assert won and won["won"] == 1
+    # а на стадионе этих окон нет: там боец ещё не был
+    assert await db.raid_window(1, 200, "hooligans") is None
+    await db.close()
+
+
+async def test_after_the_upgrade_two_raids_share_one_hour(old_windows_path):
+    """Главное, ради чего таблицу и пересобрали: один час, два рейда.
+
+    До пересборки вторая вставка молча проваливалась об первичный ключ, и
+    билет на матч сходил за талон казино.
+    """
+    db = Database(old_windows_path)
+    await db.connect()
+
+    assert await db.start_raid_window(1, 300, "cellar") is True
+    assert await db.start_raid_window(1, 300, "hooligans") is True
+    assert await db.start_raid_window(1, 300, "cellar") is False
+
+    await db.close_raid_window(1, 300, "hooligans")
+    assert (await db.raid_window(1, 300, "hooligans"))["won"] == 1
+    assert (await db.raid_window(1, 300, "cellar"))["won"] == 0
+    await db.close()
+
+
+async def test_the_window_upgrade_runs_once_and_keeps_running(old_windows_path):
+    """Перезапуск не должен ни падать, ни терять переписанное."""
+    for _ in range(3):
+        db = Database(old_windows_path)
+        await db.connect()
+        await db.close()
+
+    db = Database(old_windows_path)
+    await db.connect()
+    assert (await db.raid_window(1, 200, "cellar"))["won"] == 1
+    async with db.conn.execute("PRAGMA table_info(raid_window)") as cursor:
+        columns = {row["name"] for row in await cursor.fetchall()}
+    assert "raid" in columns
+    # и старая таблица за собой не осталась
+    async with db.conn.execute(
+        "SELECT name FROM sqlite_master WHERE name = 'raid_window_old'"
+    ) as cursor:
+        assert await cursor.fetchone() is None
+    await db.close()

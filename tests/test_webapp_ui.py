@@ -378,7 +378,7 @@ BOSS_CARD = {
     "code": "cellar_boss", "title": "Босс Казино", "emoji": "🩸",
     "image": "", "raid_name": "Ограбление Босса Казино",
     "tagline": "Он тут всё построил и всех похоронил.", "live": False,
-    "levels_above": 4, "level": 9, "fclass": "Танк", "fclass_emoji": "🛡️",
+    "alone": True, "levels_above": 4, "level": 9, "fclass": "Танк", "fclass_emoji": "🛡️",
     "max_hp": 304, "weapon": "Кувалда", "weapon_icon": "🔨", "damage": [15, 25],
     "stats": {"strength": 16, "agility": 2, "intuition": 11, "endurance": 33},
     "combat": {
@@ -436,7 +436,16 @@ EMPTY_RAID = {
         {"zone": "chest", "title": "Корпус + Живот"},
     ],
     "min_party": 1, "max_party": 10, "can_fight": True,
+    "kind": {
+        "code": "cellar", "title": "Ограбление Босса Казино", "emoji": "🩸",
+        "tagline": "Он тут всё построил и всех похоронил.", "house": "casino",
+        "min_party": 1, "max_party": 10, "purse": 100, "split": True,
+        "alone": True, "foes": 1, "grows": False, "foe_level": 0,
+        "schedule": "сегодня с 8:00 до 10:00 и с 16:00 до 18:00 мск",
+        "next_window": "с 00:00 до 02:00 мск",
+    },
     "raid": None, "lobby": None, "lobbies": [], "boss": BOSS_CARD,
+    "roster": [BOSS_CARD],
     "gate": {
         "pass_code": "raid_pass", "pass_title": "Рейд-пасс", "pass_price": 10,
         "pass_emoji": "🎟", "passes": 2, "schedule": "0–2, 8–10, 12–14, 16–18, 20–22 мск",
@@ -497,7 +506,9 @@ def city_map(
     if road:
         body["road"] = {**body["road"], **road}
     if raid:
-        body["raid"] = {**body["raid"], **raid}
+        # Плашка под своим домом: у казино и стадиона расписания разные,
+        # и на карте у каждого свой отсчёт
+        body["raids"] = {here if here in ("casino", "stadium") else "casino": raid}
     return body
 
 
@@ -2971,16 +2982,22 @@ async def test_the_end_of_the_fight_shows_the_result(server):
 # ---------- рейд ----------
 
 
+BOSS_IN_WAVE = {
+    "number": -1, "code": "cellar_boss", "title": "Босс Подвала",
+    "emoji": "🩸", "image": "", "fclass": "Танк", "fclass_emoji": "🛡️",
+    "level": 9, "hp": 180, "max_hp": 300, "percent": 60, "alive": True,
+    "weapon": "кувалдой", "against": 42, "yours": True,
+}
+
+
 def raid_with_wave(over=None) -> dict:
     """Ответ подвала: идёт волна, один боец уже отработал."""
     raid = {
         "id": 1, "wave": 2, "in_app": True, "resting": False,
         "finished": False, "summary": [],
-        "boss": {
-            "code": "cellar_boss", "title": "Босс Подвала", "emoji": "🩸",
-            "image": "", "level": 9, "hp": 180, "max_hp": 300, "percent": 60,
-            "weapon": "кувалдой",
-        },
+        "boss": BOSS_IN_WAVE,
+        "gang": [BOSS_IN_WAVE],
+        "foe": BOSS_IN_WAVE,
         "party": [
             {
                 "user_id": 42, "name": "Растафарайчик", "level": 5, "emoji": "⚔️",
@@ -3021,7 +3038,8 @@ def raid_with_wave(over=None) -> dict:
         ],
     }
     raid.update(over or {})
-    return {**EMPTY_RAID, "raid": raid, "boss": {**BOSS_CARD, "live": True}}
+    live = {**BOSS_CARD, "live": True}
+    return {**EMPTY_RAID, "raid": raid, "boss": live, "roster": [live]}
 
 
 async def open_raid(pw, server, raid=None, telegram="", images=False):
@@ -3043,6 +3061,85 @@ async def open_raid(pw, server, raid=None, telegram="", images=False):
     await page.locator(".zone-house").filter(has_text="Казино").click()
     await page.wait_for_selector("#club-raid:not(.hidden)")
     return browser, page
+
+
+def hooligan(number: int, title: str, hp: int, against=None, yours=False) -> dict:
+    """Один гопник на табло, как его отдаёт сервер."""
+    return {
+        "number": number, "code": "gang_rogue", "title": title, "emoji": "🤸",
+        "image": "", "fclass": "Трикстер", "fclass_emoji": "🤸", "level": 10,
+        "hp": hp, "max_hp": 240, "percent": round(hp * 100 / 240),
+        "alive": hp > 0, "weapon": "зонтом", "against": against, "yours": yours,
+    }
+
+
+GANG = [
+    hooligan(-1, "Лидер банды", 300, against=42, yours=True),
+    hooligan(-2, "Трикстер", 0),
+    hooligan(-3, "Воин", 120, against=43),
+    hooligan(-4, "Ассасин №1", 240),
+    hooligan(-5, "Ассасин №2", 240),
+]
+
+
+def raid_with_gang() -> dict:
+    """Та же волна, но против банды из пяти, и один из них уже лёг."""
+    body = raid_with_wave({"gang": GANG, "boss": GANG[0], "foe": GANG[0]})
+    body["kind"] = {
+        **body["kind"], "code": "hooligans", "alone": False,
+        "title": "Стычка с футбольными фанатами", "house": "stadium",
+        "min_party": 3, "foes": 5, "grows": True, "foe_level": 10,
+    }
+    body["roster"] = [{**BOSS_CARD, "live": True, "alone": False}]
+    return body
+
+
+async def test_the_gang_stands_on_the_board_one_card_each(server):
+    """Пятеро противников — пять карточек, и своего видно по рамке.
+
+    Босс казино рисовался одной карточкой во всю колонку с портретом.
+    Банде так нельзя: пять лиц в колонку не влезают, а искать на табло
+    надо не лицо, а того, с кем стоишь сам.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid_with_gang())
+
+        cards = page.locator(".gang-board .boss-card")
+        assert await cards.count() == 5
+        names = await cards.evaluate_all(
+            "nodes => nodes.map(one => one.querySelector('.fight-name').textContent)"
+        )
+        assert "Лидер банды" in names[0] and "Ассасин №2" in names[4]
+
+        # Свой обведён, и подписан — ровно один
+        assert await page.locator(".boss-card.mine").count() == 1
+        assert "твой" in await page.locator(".boss-card.mine").inner_text()
+
+        # Павший остаётся на табло вычеркнутым: по нему и видно, сколько
+        # банды уже легло
+        gone = page.locator(".boss-card.dropped")
+        assert await gone.count() == 1
+        assert "готов" in await gone.inner_text()
+        assert await gone.locator(".fight-bar").count() == 0, "шкалы у него нет"
+
+        # Портретов в банде нет вовсе — ни у кого
+        assert await page.locator(".gang-board .boss-face").count() == 0
+        await browser.close()
+
+
+async def test_the_stadium_tells_the_party_what_it_is_walking_into(server):
+    """Перед сбором экран называет, сколько их и что они не подстроятся."""
+    async with async_playwright() as pw:
+        empty = raid_with_gang()
+        empty["raid"] = None
+        browser, page = await open_raid(pw, server, empty)
+
+        body = await page.locator("#raid-body").inner_text()
+        assert "Стычка с футбольными фанатами" in body
+        assert "выходит 5 человек 10-го уровня" in body
+        assert "за каждого бойца сверх 3" in body
+        assert "Нужно собрать хотя бы 3" in body
+        await browser.close()
 
 
 async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
@@ -3097,8 +3194,8 @@ async def test_an_empty_cellar_asks_for_a_pass(server):
         browser, page = await open_raid(pw, server)
 
         body = await page.locator("#raid-body").inner_text()
-        assert "Подвал открыт с 20:00 до 22:00 мск" in body
-        assert "В инвентаре: 2 шт." in body
+        assert "Открыто с 20:00 до 22:00 мск" in body
+        assert "Рейд-пасс, в инвентаре: 2 шт." in body
         assert await page.locator("#raid-size").count() == 0
 
         async def catch(route):
@@ -3171,9 +3268,12 @@ async def test_the_board_puts_the_party_and_the_boss_side_by_side(server):
         assert await body.locator(".versus").inner_text() == "⚔️"
         order = await body.evaluate(
             "node => Array.from(node.querySelectorAll("
-            "'.raid-party, .versus, .boss-card')).map(one => one.className)"
+            "'.raid-party, .versus, .gang-board, .boss-card'))"
+            ".map(one => one.className)"
         )
-        assert order == ["raid-party", "versus", "boss-card"]
+        # Свой противник обведён: в банде из пяти его ищут глазом, и в
+        # казино метка стоит на том же месте — босс там один и твой
+        assert order == ["raid-party", "versus", "gang-board", "boss-card mine"]
 
         # Три столбца на одной высоте, и ширины 45 / 10 / 45
         board = await body.locator(".raid-board").bounding_box()
@@ -3227,7 +3327,7 @@ async def test_a_beaten_boss_closes_the_window(server):
         browser, page = await open_raid(pw, server, done)
 
         body = await page.locator("#raid-body").inner_text()
-        assert "Босс повержен: в это окно ты своё взял" in body
+        assert "Своё в это окно ты уже взял" in body
         assert "с 00:00 до 02:00 мск" in body
         assert await page.locator("#raid-open").is_disabled()
         await browser.close()
@@ -3242,7 +3342,7 @@ async def test_a_shut_cellar_says_when_it_opens(server):
         browser, page = await open_raid(pw, server, shut)
 
         body = await page.locator("#raid-body").inner_text()
-        assert "Подвал закрыт. Босса бьют 0–2, 8–10, 12–14, 16–18, 20–22 мск." in body
+        assert "Закрыто. Пускают 0–2, 8–10, 12–14, 16–18, 20–22 мск." in body
         assert "Ближайшее окно с 00:00 до 02:00 мск." in body
         assert await page.locator("#raid-open").is_disabled()
         await browser.close()
@@ -4607,25 +4707,25 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
 
 
 async def test_a_house_without_a_trade_says_when_it_opens(server):
-    """Стадион на карте есть, зайти можно, а услуги пока нет.
+    """Особняк мафии на карте есть, зайти можно, а услуги пока нет.
 
     Раньше такой дом отвечал всплывашкой, и боец оставался на карте — то
     есть внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
     записка о том, чего тут ждать.
     """
-    walker = make_player(location="stadium")
+    walker = make_player(location="mafia_mansion")
     card = build_card(walker, TOKEN, viewer_id=walker.user_id)
     async with async_playwright() as pw:
         browser, page = await open_map(
-            pw, server, city_map("stadium"), card, images=True
+            pw, server, city_map("mafia_mansion"), card, images=True
         )
 
-        await page.locator(".zone-house").filter(has_text="Стадион").click()
+        await page.locator(".zone-house").filter(has_text="Особняк мафии").click()
         await page.wait_for_selector("#house:not(.hidden)")
 
-        assert await page.locator("#house-title").inner_text() == "Стадион"
+        assert await page.locator("#house-title").inner_text() == "Особняк мафии"
         note = await page.locator("#house-soon").inner_text()
-        assert "Скоро" in note and "элитный рейд" in note
+        assert "Скоро" in note
         # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
         assert "active" in (await page.locator("#tab-map").get_attribute("class"))
         # Обратно — на карту, кнопкой в углу
@@ -4990,7 +5090,7 @@ async def test_the_casino_and_the_club_share_a_screen_but_not_a_view(server):
     """Один экран на два дома — и у каждого своя картинка."""
     async with async_playwright() as pw:
         browser, page = await open_inside(pw, server, "casino")
-        await page.evaluate("openCasino()")
+        await page.evaluate("openRaidHouse('casino')")
 
         assert (await interior_src(page, "club")).endswith(
             "locations/interiors/underground_casino_interior.jpeg"
@@ -5154,7 +5254,7 @@ async def test_the_casino_counts_the_raid_down_on_the_map(
         assert state in (await plate.get_attribute("class"))
         assert await plate.locator(".plate-word").text_content() == words
         # часы идут часами: 00:34:24, а не 34:24
-        assert await page.locator("#raid-clock").text_content() == "00:34:24"
+        assert await page.locator("#raid-clock-casino").text_content() == "00:34:24"
 
         # плашка стоит под подписью дома, а не поверх неё
         sign = await page.locator(".zone-house.here .zone-sign").bounding_box()
@@ -5163,7 +5263,7 @@ async def test_the_casino_counts_the_raid_down_on_the_map(
 
         # обе строки стоят по центру бокса — и вдоль, и поперёк
         word = await plate.locator(".plate-word").bounding_box()
-        clock = await page.locator("#raid-clock").bounding_box()
+        clock = await page.locator("#raid-clock-casino").bounding_box()
         middle = box["x"] + box["width"] / 2
         for line in (word, clock):
             assert abs(line["x"] + line["width"] / 2 - middle) < 1
@@ -5182,7 +5282,7 @@ async def test_the_casino_counts_the_raid_down_on_the_map(
 
         # секунды тикают сами, без нового запроса
         await page.wait_for_timeout(1100)
-        assert await page.locator("#raid-clock").text_content() == "00:34:23"
+        assert await page.locator("#raid-clock-casino").text_content() == "00:34:23"
         await browser.close()
 
 
@@ -5200,7 +5300,7 @@ async def test_a_finished_raid_shows_green_without_a_clock(server):
         plate = page.locator(".zone-plate")
         assert "done" in (await plate.get_attribute("class"))
         assert await plate.locator(".plate-word").text_content() == "Рейд завершён"
-        assert await page.locator("#raid-clock").count() == 0
+        assert await page.locator("#raid-clock-casino").count() == 0
         # одна строка — ровно посередине плашки
         box = await plate.locator(".plate-box").bounding_box()
         word = await plate.locator(".plate-word").bounding_box()

@@ -2073,7 +2073,9 @@ function plateClock(seconds) {
 }
 
 function raidPlate(place) {
-  const raid = (mapData && mapData.raid) || {};
+  // Плашка своя у каждого рейдового дома: расписания у казино и стадиона
+  // разные, и общая показала бы под одной вывеской часы другой
+  const raid = ((mapData && mapData.raids) || {})[place.code] || {};
   if (!raid.state) return null;
 
   const lines = raid.state === "done" ? 1 : 2;
@@ -2108,7 +2110,9 @@ function raidPlate(place) {
     const clock = svgNode("text", {
       x: middle,
       y: centre + PLATE_LINE / 2,
-      id: "raid-clock",
+      // Часы у каждого дома свои: id с кодом дома, иначе две плашки
+      // спорили бы за один узел и тикала бы только первая
+      id: "raid-clock-" + place.code,
       class: "plate-clock",
       "text-anchor": "middle",
       "dominant-baseline": "central",
@@ -2133,23 +2137,28 @@ function stopRaidClock() {
 }
 
 function tickRaidClock() {
-  const raid = mapData && mapData.raid;
-  if (!raid || !raid.state || raid.state === "done") return;
-  raid.seconds_left -= 1;
-  if (raid.seconds_left <= 0) {
-    // Время вышло: что теперь с подвалом, знает сервер — спрашиваем его,
-    // а не переписываем плашку сами
-    loadMap();
-    return;
+  // Плашек столько, сколько рейдовых домов: тикают все, и у каждой свой
+  // счётчик на карте
+  const plates = (mapData && mapData.raids) || {};
+  for (const house of Object.keys(plates)) {
+    const raid = plates[house];
+    if (!raid || !raid.state || raid.state === "done") continue;
+    raid.seconds_left -= 1;
+    if (raid.seconds_left <= 0) {
+      // Время вышло: что теперь с рейдом, знает сервер — спрашиваем его,
+      // а не переписываем плашку сами
+      loadMap();
+      return;
+    }
+    const shown = el("raid-clock-" + house);
+    if (shown) shown.textContent = plateClock(raid.seconds_left);
   }
-  const shown = el("raid-clock");
-  if (shown) shown.textContent = plateClock(raid.seconds_left);
 }
 
 /** Что открывает дом, если боец уже в нём. */
 const HOUSE_SCREENS = {
   fight: () => openClub(),
-  raid: () => openCasino(),
+  raid: (place) => openRaidHouse(place && place.code),
   weapons: () => openShop(),
   clothes: () => openShop(),
   potions: () => openShop(),
@@ -2188,7 +2197,7 @@ async function enterHouse(place) {
       return;
     }
     const open = HOUSE_SCREENS[place.services[0]];
-    if (open) open();
+    if (open) open(place);
     return;
   }
   if (mapData.road.going) {
@@ -2662,8 +2671,9 @@ function stopWatchingFights() {
 function pickClubSection(name) {
   const house = CLUB_HOUSES[clubHouse];
   const allowed = clubSections().map(([code]) => code);
-  // Рейд открывается только в казино, бои — только в клубе. Пришли не с
-  // тем разделом (например, вернулись из казино) — показываем здешний
+  // Рейд открывается только в рейдовом доме, бои — только в клубе.
+  // Пришли не с тем разделом (например, вернулись из казино) —
+  // показываем здешний
   if (name !== house.start && !allowed.includes(name)) name = house.start;
   clubSection = name;
   ["fights", "battle", "raid", "players", "stats"].forEach((section) => {
@@ -2704,11 +2714,14 @@ function sayNoFightsHere(name) {
 const CLUB_HOUSES = {
   club: { title: "🥊 Бойцовский клуб", start: "fights" },
   casino: { title: "🎲 Казино", start: "raid" },
+  // Второй рейдовый дом. Экран тот же, что у казино, — какой именно
+  // рейд в нём собирают, говорит сервер: он смотрит, где боец стоит
+  stadium: { title: "🏟 Стадион", start: "raid" },
 };
 
 let clubHouse = "club";
 
-function inCasino() {
+function inRaidHouse() {
   return ((myPlace && myPlace.services) || []).includes("raid");
 }
 
@@ -2722,8 +2735,8 @@ function canFightHere() {
 const NO_FIGHTS_HERE = "Бои между игроками недоступны в данной локации.";
 
 function clubSections() {
-  // В казино разделов нет вовсе: там одно дело — рейд
-  if (clubHouse === "casino") return [];
+  // В рейдовом доме разделов нет вовсе: там одно дело — рейд
+  if (RAID_HOUSES.includes(clubHouse)) return [];
   return [
     ["fights", "Бои"],
     ["battle", "Отряд"],
@@ -2737,8 +2750,12 @@ function openClub() {
   showTab("club");
 }
 
-function openCasino() {
-  clubHouse = "casino";
+// Дома, в которых идут рейды. Экран у них общий, различается только
+// вывеска: что именно за рейд, решает сервер по месту бойца
+const RAID_HOUSES = ["casino", "stadium"];
+
+function openRaidHouse(code) {
+  clubHouse = RAID_HOUSES.includes(code) ? code : "casino";
   clubSection = "raid";
   showTab("club");
 }
@@ -3486,7 +3503,11 @@ function raidShape(data) {
     [gate.open, gate.won, gate.spent, gate.passes, gate.window],
     raid && [
       raid.id, raid.wave, raid.resting, raid.finished, raid.acted, raid.alive,
-      raid.boss.hp, raid.log.length,
+      raid.log.length,
+      // Вся банда, а не один босс: пока у неё падает шестой из пяти,
+      // «здоровье босса» не меняется вовсе, и табло замирало бы на
+      // первой волне
+      (raid.gang || [raid.boss]).map((one) => [one.hp, one.alive, one.against]),
       raid.party.map((one) => [one.user_id, one.hp, one.alive, one.acted]),
       // Шкала и заготовки. Без них нажатый приём не доезжал до экрана:
       // сервер честно списывал энергию и клал заготовку, а раздел не
@@ -3534,9 +3555,12 @@ function renderRaid(data) {
   if (shape === raidPainted && body.firstChild) return;
   raidPainted = shape;
   body.textContent = "";
-  if (data.boss) {
-    body.appendChild(raidHead(data.boss));
-    if (bossOpen) body.appendChild(bossStats(data.boss));
+  if (data.kind) {
+    body.appendChild(raidHead(data.kind));
+    // Под «i» — весь состав: в казино один босс, на стадионе вся банда
+    if (bossOpen) (data.roster || []).forEach(
+      (one) => body.appendChild(bossStats(one))
+    );
   }
   if (data.raid) {
     el("raid-note").textContent = "";
@@ -3553,13 +3577,13 @@ function renderRaid(data) {
   }
 }
 
-function raidHead(boss) {
+function raidHead(kind) {
   // «Ограбление Босса Казино (i)» — заголовок и всё о нём
   const box = document.createElement("div");
   box.className = "raid-head";
   const title = document.createElement("h2");
   title.className = "shelf-head";
-  title.textContent = boss.raid_name || "Рейд против " + bossGenitive(boss.title);
+  title.textContent = kind.title;
   box.appendChild(title);
 
   const info = document.createElement("button");
@@ -3567,7 +3591,7 @@ function raidHead(boss) {
   info.className = "info-btn";
   info.id = "boss-info";
   info.textContent = "i";
-  info.title = "Характеристики босса";
+  info.title = kind.alone ? "Характеристики босса" : "Состав банды";
   info.addEventListener("click", () => {
     bossOpen = !bossOpen;
     renderRaid(raidData);
@@ -3576,15 +3600,18 @@ function raidHead(boss) {
   return box;
 }
 
-function bossGenitive(title) {
-  // «Босс Подвала» → «Босса Подвала»: склоняем только то, что знаем сами.
-  // Незнакомое имя оставляем как есть — лучше косо, чем неверно.
-  return title.startsWith("Босс ") ? "Босса " + title.slice(5) : title;
-}
-
 function bossStats(boss) {
   const box = document.createElement("div");
   box.className = "boss-stats";
+
+  // В банде карточек несколько, и без заголовка они слипаются в одну
+  // простыню: чья кукла и чьи числа, видно только по имени
+  if (!boss.alone) {
+    const who = document.createElement("h3");
+    who.className = "shelf-head";
+    who.textContent = boss.emoji + " " + boss.title;
+    box.appendChild(who);
+  }
 
   // Кукла босса — тем же кодом, что и карточка бойца: аватар в середине,
   // слоты по бокам, под пустыми — подложки
@@ -3598,10 +3625,20 @@ function bossStats(boss) {
 
   const note = document.createElement("p");
   note.className = "screen-note";
-  note.textContent = boss.live
-    ? "Это босс идущего рейда."
-    : "Так он выйдет на твой уровень: он всегда на " + boss.levels_above +
+  if (boss.live) {
+    note.textContent = boss.alone
+      ? "Это босс идущего рейда."
+      : "Он в банде, с которой вы дерётесь прямо сейчас.";
+  } else if (boss.alone) {
+    note.textContent =
+      "Так он выйдет на твой уровень: он всегда на " + boss.levels_above +
       " уровня выше отряда, а здоровья набирает с каждым бойцом.";
+  } else {
+    note.textContent =
+      "Он стоит на своём " + boss.level + "-м уровне и под отряд не " +
+      "подстраивается. Сложность в числе: за каждого бойца сверх трёх " +
+      "банда приводит ещё одного.";
+  }
   box.appendChild(note);
 
   const rows = document.createElement("div");
@@ -3681,27 +3718,42 @@ async function raidEnter(gate, what, payload) {
 
 function raidOpenForm(data) {
   const gate = data.gate || {};
+  const kind = data.kind || {};
   const box = document.createElement("div");
   box.className = "fight-open";
 
   const line = document.createElement("p");
   line.className = "fight-line";
   line.textContent = gate.open
-    ? "Подвал открыт " + gate.window + "."
-    : "Подвал закрыт. Босса бьют " + gate.schedule + ".";
+    ? "Открыто " + gate.window + "."
+    : "Закрыто. Пускают " + gate.schedule + ".";
   box.appendChild(line);
 
   const note = document.createElement("p");
   note.className = "fight-row-note";
   note.textContent = gate.won
-    ? "Босс повержен: в это окно ты своё взял. Следующее — " +
-      gate.next_window + "."
+    ? "Своё в это окно ты уже взял. Следующее — " + gate.next_window + "."
     : gate.spent
       ? "Пропуск за это окно отдан — заходи хоть до самого конца."
       : gate.open
-        ? "Вход по пропуску. В инвентаре: " + (gate.passes || 0) + " шт."
+        ? gate.pass_emoji + " " + gate.pass_title + ", в инвентаре: " +
+          (gate.passes || 0) + " шт."
         : "Ближайшее окно " + gate.next_window + ".";
   box.appendChild(note);
+
+  // Чем рейд встречает: сколько противников и растёт ли их число с
+  // отрядом. Без этой строки «сложный» рейд выглядел бы как обычный
+  const terms = document.createElement("p");
+  terms.className = "fight-row-note";
+  terms.textContent = kind.alone
+    ? "Босс подстроится под отряд и будет выше него на четыре уровня."
+    : "Против отряда выходит " + kind.foes + " " +
+      plural(kind.foes, "человек", "человека", "человек") + " " +
+      kind.foe_level + "-го уровня" +
+      (kind.grows ? ", и ещё по одному за каждого бойца сверх " +
+        kind.min_party + "." : ".") +
+      " Нужно собрать хотя бы " + kind.min_party + ".";
+  box.appendChild(terms);
 
   const btn = document.createElement("button");
   btn.type = "button";
@@ -3724,6 +3776,9 @@ function raidLobby(lobby, mine) {
   head.textContent =
     lobby.boss.emoji + " " + lobby.boss.title + " — отряд " +
     lobby.total + "/" + lobby.size;
+  if (lobby.total < lobby.min_party) {
+    head.textContent += " (нужно " + lobby.min_party + ")";
+  }
   box.appendChild(head);
 
   const names = document.createElement("p");
@@ -3816,10 +3871,10 @@ function raidPanel(data) {
   return box;
 }
 
-// Доска боя: отряд слева, босс справа, мечи между ними. Раньше босс
-// стоял сверху во всю ширину, а отряд списком под ним, и на телефоне
-// половина отряда уезжала за край. Бок о бок видно обе стороны разом —
-// а это и есть то, ради чего на экран смотрят.
+// Доска боя: отряд слева, противники справа, мечи между ними. Раньше
+// босс стоял сверху во всю ширину, а отряд списком под ним, и на
+// телефоне половина отряда уезжала за край. Бок о бок видно обе стороны
+// разом — а это и есть то, ради чего на экран смотрят.
 function raidBoard(raid) {
   const box = document.createElement("div");
   box.className = "raid-board";
@@ -3828,24 +3883,58 @@ function raidBoard(raid) {
   swords.className = "versus";
   swords.textContent = "⚔️";
   box.appendChild(swords);
-  box.appendChild(bossCard(raid.boss));
+  box.appendChild(gangBoard(raid));
   return box;
 }
 
-function bossCard(boss) {
+// Противников может быть и один, и дюжина. Один — прежняя карточка во
+// всю колонку, с портретом. Банда — столбик карточек поплоше: портрет
+// пятерым в колонку не влезет, а своего в банде ищут по подписи, а не
+// по лицу, поэтому у него рамка, а у павших — только имя.
+function gangBoard(raid) {
+  const gang = raid.gang || [raid.boss];
+  if (gang.length < 2) {
+    const box = document.createElement("div");
+    box.className = "gang-board";
+    box.appendChild(bossCard(gang[0], true));
+    return box;
+  }
+  const box = document.createElement("div");
+  box.className = "gang-board gang-many";
+  gang.forEach((foe) => box.appendChild(bossCard(foe, false)));
+  return box;
+}
+
+function bossCard(boss, withFace) {
   const box = document.createElement("div");
   box.className = "boss-card";
+  if (!boss.alive) box.classList.add("dropped");
+  // Свой противник обведён: на табло из пяти его иначе не найти
+  if (boss.yours) box.classList.add("mine");
   const name = document.createElement("p");
   name.className = "fight-name";
   name.textContent = boss.emoji + " " + boss.title + " [" + boss.level + "]";
+  box.appendChild(name);
+  if (!boss.alive) {
+    const out = document.createElement("p");
+    out.className = "fight-hp";
+    out.textContent = "💀 готов";
+    box.appendChild(out);
+    return box;
+  }
   const hp = document.createElement("p");
   hp.className = "fight-hp";
   hp.textContent = boss.hp + "/" + boss.max_hp;
-  box.appendChild(name);
   box.appendChild(hp);
   box.appendChild(fightBar(boss));
+  if (boss.yours) {
+    const mine = document.createElement("p");
+    mine.className = "fight-row-note";
+    mine.textContent = "твой";
+    box.appendChild(mine);
+  }
   // Портрет под шкалой: смотрят на здоровье, а не на лицо
-  if (boss.image) {
+  if (withFace && boss.image) {
     const img = document.createElement("img");
     img.className = "boss-face";
     img.src = boss.image;
@@ -8291,9 +8380,9 @@ function watchInteriors() {
 function paintCity(card) {
   if (card.is_self) myPlace = card.place || null;
   paintInterior();
-  // Вышли из казино — подвал закрывается сам: держать его открытым
-  // значит показывать рейд, в который с улицы всё равно не пустят
-  if (!inCasino() && clubHouse === "casino") {
+  // Вышли из рейдового дома — рейд закрывается сам: держать его
+  // открытым значит показывать то, во что с улицы всё равно не пустят
+  if (!inRaidHouse() && RAID_HOUSES.includes(clubHouse)) {
     clubHouse = "club";
     clubSection = "fights";
     if (lastTab === "club") pickClubSection("fights");
@@ -8327,9 +8416,9 @@ const SCREEN_PARAMS = {
     pickClubSection("fights");
   },
   raid: () => {
-    // Из чата зовут в подвал — но спуститься можно только из казино.
-    // Кто не там, попадает на карту: пусть сначала дойдёт
-    if (inCasino()) openCasino();
+    // Из чата зовут в рейд — но выйти можно только из своего дома:
+    // казино или стадиона. Кто не там, попадает на карту: пусть дойдёт
+    if (inRaidHouse()) openRaidHouse(myPlace && myPlace.code);
     else showTab("map");
   },
 };

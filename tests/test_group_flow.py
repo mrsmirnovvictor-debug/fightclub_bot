@@ -527,7 +527,7 @@ async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raid
     """/raid собирает отряд кнопкой, а бьют по боссу уже в карточке."""
     from bot.keyboards import RaidLobbyCB
 
-    from bot.game.raid import CELLAR_BOSS, MAX_PARTY
+    from bot.game.raid import BOSS_ID, CELLAR_RAID, MAX_PARTY
 
     db, _, session = arena
     people = [as_user(900 + i, f"Рейдер{i}") for i in range(2)]
@@ -538,7 +538,7 @@ async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raid
 
     lobby = raids.lobby_of_user(people[0].id)
     assert lobby is not None and lobby.size == MAX_PARTY
-    assert CELLAR_BOSS.title in session.texts[-1]
+    assert CELLAR_RAID.title in session.texts[-1]
 
     await feed_callback(
         people[1],
@@ -572,7 +572,8 @@ async def test_a_raid_is_gathered_in_the_chat_and_fought_in_the_card(arena, raid
     await raids.handle_choice(raid.id, people[0].id, "block", "belt")
 
     assert people[0].id in raid.acted
-    assert raid.enemy.hp < raid.enemy.max_hp or raid.rounds
+    boss = raid.enemies[BOSS_ID]
+    assert boss.hp < boss.max_hp or raid.rounds
 
 
 async def test_the_opener_leads_the_party_out_from_the_chat(arena, raids):

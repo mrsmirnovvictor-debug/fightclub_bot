@@ -120,8 +120,9 @@ async def storm(service, session, players) -> None:
 
 
 def weaken(session, hp: int = 1) -> None:
-    """Оставить боссу на один удар: рейд должен закончиться победой."""
-    session.enemy.hp = hp
+    """Оставить противникам на один удар: рейд должен кончиться победой."""
+    for enemy in session.enemies.values():
+        enemy.hp = hp
 
 
 def toughen(session, hp: int = 5000) -> None:
@@ -282,7 +283,7 @@ def test_the_raid_is_won_while_someone_still_stands():
     boss = make_fighter(BOSS_ID, hp=0)
     party = {1: make_fighter(1, hp=10), 2: make_fighter(2, hp=0)}
 
-    outcome = judge_raid(boss, party)
+    outcome = judge_raid([boss], party)
 
     assert outcome.end is RaidEnd.WIN
     assert outcome.survivors == [1]
@@ -292,18 +293,18 @@ def test_everyone_down_with_the_boss_is_a_draw():
     boss = make_fighter(BOSS_ID, hp=0)
     party = {1: make_fighter(1, hp=0), 2: make_fighter(2, hp=0)}
 
-    assert judge_raid(boss, party).end is RaidEnd.DRAW
+    assert judge_raid([boss], party).end is RaidEnd.DRAW
 
 
 def test_a_standing_boss_over_a_dead_party_is_a_loss():
     boss = make_fighter(BOSS_ID, hp=40)
     party = {1: make_fighter(1, hp=0)}
 
-    assert judge_raid(boss, party).end is RaidEnd.LOSS
+    assert judge_raid([boss], party).end is RaidEnd.LOSS
 
 
 def test_while_both_stand_the_raid_goes_on():
-    assert judge_raid(make_fighter(BOSS_ID, 40), {1: make_fighter(1, 10)}) is None
+    assert judge_raid([make_fighter(BOSS_ID, 40)], {1: make_fighter(1, 10)}) is None
 
 
 def test_the_prize_is_an_elixir_and_not_every_time():
@@ -488,7 +489,7 @@ async def test_the_cellar_is_shut_outside_its_hours(bot, db, monkeypatch):
     ))
     monkeypatch.setattr(rules, "now_ts", lambda: moscow(shut))  # подвал закрыт
 
-    with pytest.raises(RaidError, match="Подвал закрыт"):
+    with pytest.raises(RaidError, match="закрыто"):
         await service.open_raid(CHAT_ID, THREAD_ID, player)
     # пропуск остался в рюкзаке: за закрытую дверь не платят
     assert (await db.get_player(player.user_id)).potion_count(RAID_PASS) == 1
@@ -508,7 +509,7 @@ async def test_one_win_per_window(bot, db):
 
     fresh = await db.get_player(players[0].user_id)
     fresh.potions[RAID_PASS] = await db.add_potion(fresh.user_id, RAID_PASS)
-    with pytest.raises(RaidError, match="Босс уже повержен"):
+    with pytest.raises(RaidError, match="Своё в это окно ты уже взял"):
         await service.open_raid(CHAT_ID, THREAD_ID, fresh)
     assert (await db.get_player(fresh.user_id)).potion_count(RAID_PASS) == 1
 
@@ -607,12 +608,12 @@ async def test_a_press_resolves_that_fighter_at_once(bot, db):
     """Нажал — размен посчитан сразу, остальных не ждём."""
     service = make_service(bot, db)
     players, session = await gather(service, db, 3, size=3)
-    before = session.enemy.hp
+    before = session.enemies[BOSS_ID].hp
 
     await punch(service, session, players[0].user_id)
 
     assert players[0].user_id in session.acted
-    assert session.enemy.hp <= before
+    assert session.enemies[BOSS_ID].hp <= before
     assert len(session.waiting_for()) == 2  # волна ещё идёт
 
 
@@ -707,7 +708,7 @@ async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
 
     raids = await db.raids_of(players[0].user_id)
     assert raids and raids[0]["outcome"] == "win"
-    assert raids[0]["boss_level"] == session.enemy.level
+    assert raids[0]["boss_level"] == session.enemies[BOSS_ID].level
 
 
 async def test_a_lone_raider_takes_the_whole_purse(bot, db):
@@ -752,7 +753,7 @@ async def test_the_result_holds_the_screen_until_it_is_closed(bot, db):
     kept = service.result_of_user(players[0].user_id)
 
     assert kept is session and kept.finished
-    assert any("Босс повержен" in line for line in kept.summary)
+    assert any("Противник повержен" in line for line in kept.summary)
     service.forget_result(players[0].user_id)
     assert service.result_of_user(players[0].user_id) is None
 
@@ -886,7 +887,8 @@ async def test_a_raid_runs_past_thirty_waves_if_everyone_is_still_standing(bot, 
     for _ in range(FATIGUE_WAVES + 5):
         if service.raid_of_user(players[0].user_id) is None:
             break
-        session.enemy.hp = session.enemy.max_hp
+        boss = session.enemies[BOSS_ID]
+        boss.hp = boss.max_hp
         # Подпираем здоровье заново: усталость растёт, и к концу кувалда
         # босса снимает больше, чем у бойца всего здоровья
         toughen(session)
