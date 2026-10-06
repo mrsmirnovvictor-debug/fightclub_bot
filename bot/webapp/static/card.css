@@ -1313,6 +1313,9 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .fight-line { margin: 0 0 8px; font-size: 14px; }
 .fight-panel { display: grid; gap: 10px; }
 .fight-round { margin: 0; font-weight: 600; font-size: 14px; }
+/* Один на один доска осталась прежней: обе половины здесь одинаковой
+   высоты — имя, счёт, шкала и отметка, — и выравнивать по низу нечего.
+   Низ появился там, где стороны разной высоты: в рейде и командном бою */
 .fight-board {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -1485,15 +1488,31 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin: 0;
   font-size: 13px;
 }
-/* Отряд слева, босс справа, мечи между ними: обе стороны видно разом.
-   Сорок пять на десять и сорок пять — так просили; в долях, а не в
-   пикселях, чтобы держалось на любом телефоне */
+/* Доска боя. Верхний ряд — ты, мечи и твой соперник; нижний — стопки
+   остальных. Сорок пять на десять и сорок пять — так просили; в долях, а
+   не в пикселях, чтобы держалось на любом телефоне.
+
+   Верхний ряд выровнен по низу: карточка соперника высокая — в ней
+   портрет, — а твоя в две строки, и по верху они разъезжались так, что
+   твоя шкала оказывалась у него на уровне бровей. По низу обе стоят на
+   одной черте, и прямо под ними начинаются стопки. */
 .raid-board {
   display: grid;
   grid-template-columns: 45fr 10fr 45fr;
-  align-items: start;
-  gap: 4px;
+  align-items: end;
+  gap: 4px 4px;
 }
+.raid-you, .versus, .boss-card { grid-row: 1; }
+.raid-mates, .raid-foes { grid-row: 2; align-self: start; margin-top: 6px; }
+.raid-mates { grid-column: 1; }
+.raid-foes { grid-column: 3; }
+.raid-you {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+.raid-you.down { opacity: 0.55; }
 .boss-card {
   display: grid;
   gap: 2px;
@@ -1503,20 +1522,16 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   padding: 8px;
   min-width: 0;
 }
-/* Портрет под шкалой и во всю ширину столбца: смотрят на здоровье, а
-   лицо здесь для того, чтобы босс не был строкой текста */
+/* Портрет сверху и во всю ширину столбца: на кого смотрят, то и первое,
+   а числа читают уже под ним */
 .boss-face {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
   border-radius: 6px;
   border: 1px solid var(--slot-line);
-  margin-top: 4px;
+  margin-bottom: 4px;
 }
-/* Банда столбиком. Карточек может быть пять и больше, поэтому в
-   многолюдном виде они жмутся: шрифт тот же, воздуха меньше, портретов
-   нет вовсе — пять лиц в колонку не влезают, да и ищут на этом табло не
-   лицо, а своего противника. */
 /* Кого бьём сейчас: строка над кнопками удара. Стоит первой и заметно,
    потому что в банде цель меняется каждый ход — нажать удар, не прочитав
    её, значит ударить не того */
@@ -1530,45 +1545,79 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-weight: 600;
   text-align: center;
 }
-.gang-board { display: grid; gap: 4px; min-width: 0; }
-.gang-board.gang-many .boss-card { padding: 5px 6px; gap: 1px; }
-/* Свой противник обведён и чуть светлее: на табло из пяти его иначе не
-   найти глазом за те тридцать секунд, что даны на ход */
+/* Тот, с кем стоишь сейчас, обведён синим; все прочие в стопке — серым.
+   Рамка заменила подпись «твой»: цвет читается раньше слова, а на ход
+   даётся полминуты */
 .boss-card.mine { border-color: var(--accent); }
-.boss-card.mine .fight-row-note { color: var(--accent); }
-/* Павший остаётся на табло: по вычеркнутым и видно, сколько банды уже
-   легло, — а убери их, и отряд не поймёт, идёт ли дело к концу */
-.boss-card.dropped { opacity: 0.55; }
-.boss-card.dropped .fight-name { text-decoration: line-through; }
-.raid-party { display: grid; gap: 6px; min-width: 0; }
-.raid-member {
+/* Место соперника, когда пары не досталось: карточка пустая, но стоит —
+   иначе доска съезжает, и непонятно, пропал соперник или карточка */
+.boss-card.empty {
+  border-style: dashed;
+  text-align: center;
+  padding: 14px 8px;
+}
+/* Павший остаётся на табло: по нему и видно, сколько банды уже легло, —
+   а убери их, и отряд не поймёт, идёт ли дело к концу */
+.boss-card.dropped, .stack-card.down { opacity: 0.55; }
+.boss-card.dropped .fight-name,
+.stack-card.down .fight-name { text-decoration: line-through; }
+/* Стопка: карточки лежат внахлёст, у каждой видна верхняя часть — имя и
+   шкала. Нахлёст маленький, в несколько пикселей: он не прячет числа, а
+   говорит глазу, что это колода, а не список. Нижняя карточка ложится
+   поверх верхней, поэтому порядок в разметке и порядок в стопке — один.
+
+   `position: relative` здесь обязателен: без него отрицательный отступ
+   сдвинет карточку, но соседка всё равно нарисуется под ней, и нахлёст
+   получится наизнанку. */
+.fight-stack { display: grid; min-width: 0; }
+.stack-card {
+  position: relative;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 6px 8px;
+  background: var(--slot);
+  /* Снизу у карточки запас: он и есть то, что прячет соседка сверху.
+     Без него нахлёст не на чем показать — карточки сошлись бы встык и
+     читались списком, а не колодой */
+  padding: 4px 6px 18px;
   min-width: 0;
 }
-.raid-member.down { opacity: 0.55; }
-/* Хвост отряда: в подвал ходят вдесятером, и списком они выдавливают с
-   экрана кнопки хода. Трое на виду, остальные — по нажатию */
-.party-more { display: grid; gap: 6px; }
-.party-more-head {
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 2px 0;
+/* Нижней карточке прятать нечего — она и так последняя, и запас снизу у
+   неё только съедал бы экран */
+.stack-card:last-child { padding-bottom: 5px; }
+.stack-card + .stack-card {
+  margin-top: -14px;
+  /* Тень по верхней кромке: ею и видно, что карточка лежит поверх, а не
+     нарисована впритык */
+  box-shadow: 0 -2px 3px rgba(0, 0, 0, 0.1);
 }
+.stack-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.stack-head .fight-name { min-width: 0; }
+.stack-head .fight-hp { white-space: nowrap; }
+.stack-card .fight-bar { margin: 3px 0 0; height: 4px; }
+/* В крупных карточках имя переносится: столбец узкий, а к имени тут
+   прибавляется и команда, и «— ты», и в строку это не влезает. Многоточие
+   вместо второй строки прятало ровно то, ради чего на карточку смотрят */
+.raid-you .fight-name, .boss-card > .fight-name { white-space: normal; }
 /* Имя и счёт в узком столбце: переносить их некуда, поэтому мельче */
 .raid-board .fight-name, .raid-board .fight-hp { font-size: 12px; }
 .raid-board .fight-hp { font-size: 11px; }
+.fight-stack .fight-name, .fight-stack .fight-hp { font-size: 11px; }
 .raid-sizes { display: grid; gap: 8px; }
 /* Кнопка, которой нужен воздух: иначе она липнет к соседней снизу */
 .btn.spaced { margin-bottom: 10px; }
-/* Мечи между отрядом и боссом: кто против кого. Стоят по верху, вровень
-   с первой карточкой отряда, а не посередине столбца — столбцы разной
-   высоты, и середина у них гуляет */
+/* Мечи между тобой и соперником: кто против кого. Стоят по низу, на
+   одной черте с обеими карточками, — середина столбца тут не годится,
+   столбцы разной высоты, и середина у них гуляет */
 .versus {
+  /* Эмодзи рисуется с запасом снизу, и ноль здесь ставит его на ту же
+     черту, что и нижние кромки обеих карточек */
   margin: 0;
-  padding-top: 14px;
   text-align: center;
   font-size: 16px;
   line-height: 1;

@@ -3902,94 +3902,59 @@ function raidPanel(data) {
   return box;
 }
 
-// Доска боя: отряд слева, противники справа, мечи между ними. Раньше
-// босс стоял сверху во всю ширину, а отряд списком под ним, и на
-// телефоне половина отряда уезжала за край. Бок о бок видно обе стороны
-// разом — а это и есть то, ради чего на экран смотрят.
+// Доска боя: верхним рядом ты и тот, с кем стоишь сейчас, — лицом к лицу
+// и по нижнему краю. Под ними двумя стопками остальные: слева отряд,
+// справа банда. Так на экране два разных вопроса и два разных ответа:
+// «с кем я дерусь» решается крупно и сразу, «как там остальные» —
+// боковым зрением, по шкалам в стопке.
+//
+// Раньше обе стороны стояли списками во всю высоту, и десять карточек
+// отряда выдавливали с экрана кнопки хода. Стопка показывает каждого, но
+// одной строкой: видна верхняя часть карточки — имя и шкала.
 function raidBoard(raid) {
   const box = document.createElement("div");
   box.className = "raid-board";
-  box.appendChild(partyBoard(raid.party));
+  const party = raid.party || [];
+  const you = party.find((member) => member.you) || party[0] || null;
+  const foes = raid.gang || (raid.boss ? [raid.boss] : []);
+  const foe = currentFoe(raid, foes);
+
+  if (you) box.appendChild(youCard(you));
   const swords = document.createElement("p");
   swords.className = "versus";
   swords.textContent = "⚔️";
   box.appendChild(swords);
-  box.appendChild(gangBoard(raid));
+  if (foe) box.appendChild(bossCard(foe, true));
+
+  box.appendChild(
+    mateStack(party.filter((member) => !samePlace(member, you, "user_id")))
+  );
+  box.appendChild(foeStack(foes, foe));
   return box;
 }
 
-// Противников может быть и один, и дюжина. Один — прежняя карточка во
-// всю колонку, с портретом. Банда — столбик карточек поплоше: портрет
-// пятерым в колонку не влезет, а своего в банде ищут по подписи, а не
-// по лицу, поэтому у него рамка, а у павших — только имя.
-function gangBoard(raid) {
-  const gang = raid.gang || [raid.boss];
-  if (gang.length < 2) {
-    const box = document.createElement("div");
-    box.className = "gang-board";
-    box.appendChild(bossCard(gang[0], true));
-    return box;
-  }
+// Тот же боец, что и в крупной карточке? Сравниваем по номеру, а не по
+// самому объекту: сервер собирает цель и табло по отдельности, и это две
+// разные записи с одинаковым содержимым. По объектам своего соперника
+// видно было бы дважды — и крупно, и в стопке.
+function samePlace(one, other, key) {
+  return Boolean(one) && Boolean(other) && one[key] === other[key];
+}
+
+// С кем смотрящий стоит прямо сейчас. В банде это его цель, и сервер
+// называет её сам; в казино противник один — он и есть текущий. Цель
+// добили, а новая ещё не вышла — показываем первого живого: пустое место
+// на этой половине экрана читалось бы как «рейд кончился».
+function currentFoe(raid, foes) {
+  if (raid.foe) return raid.foe;
+  return foes.find((one) => one.alive) || foes[0] || null;
+}
+
+// Карточка смотрящего: крупная, как и карточка его соперника. Урон тут
+// не для красоты — по нему считают, кому достанется вещь с банды.
+function youCard(member) {
   const box = document.createElement("div");
-  box.className = "gang-board gang-many";
-  gang.forEach((foe) => box.appendChild(bossCard(foe, false)));
-  return box;
-}
-
-function bossCard(boss, withFace) {
-  const box = document.createElement("div");
-  box.className = "boss-card";
-  if (!boss.alive) box.classList.add("dropped");
-  // Свой противник обведён: на табло из пяти его иначе не найти
-  if (boss.yours) box.classList.add("mine");
-  const name = document.createElement("p");
-  name.className = "fight-name";
-  name.textContent = boss.emoji + " " + boss.title + " [" + boss.level + "]";
-  box.appendChild(name);
-  if (!boss.alive) {
-    const out = document.createElement("p");
-    out.className = "fight-hp";
-    out.textContent = "💀 готов";
-    box.appendChild(out);
-    return box;
-  }
-  const hp = document.createElement("p");
-  hp.className = "fight-hp";
-  hp.textContent = boss.hp + "/" + boss.max_hp;
-  box.appendChild(hp);
-  box.appendChild(fightBar(boss));
-  if (boss.yours) {
-    const mine = document.createElement("p");
-    mine.className = "fight-row-note";
-    mine.textContent = "твой";
-    box.appendChild(mine);
-  }
-  // Портрет под шкалой: смотрят на здоровье, а не на лицо
-  if (withFace && boss.image) {
-    const img = document.createElement("img");
-    img.className = "boss-face";
-    img.src = boss.image;
-    img.alt = boss.title;
-    img.loading = "lazy";
-    img.decoding = "async";
-    img.addEventListener("error", () => img.remove());
-    box.appendChild(img);
-  }
-  return box;
-}
-
-// Сколько бойцов отряда видно без нажатия. Остальные — под «ещё N»:
-// в отряде их до десяти, и списком они выдавливают с экрана кнопки хода
-const PARTY_SHOWN = 3;
-
-// Развёрнут ли хвост отряда. Живёт снаружи разметки: экран рейда
-// перерисовывается каждые две секунды, и без этого список захлопывался
-// бы под пальцем
-let partyOpen = false;
-
-function memberCard(member) {
-  const row = document.createElement("div");
-  row.className = "raid-member" + (member.alive ? "" : " down");
+  box.className = "raid-you" + (member.alive ? "" : " down");
   const name = document.createElement("p");
   name.className = "fight-name";
   name.textContent =
@@ -4000,39 +3965,118 @@ function memberCard(member) {
   hp.className = "fight-hp";
   hp.textContent = member.hp + "/" + member.max_hp + " · урона " +
     member.damage_dealt;
-  row.appendChild(name);
-  row.appendChild(hp);
-  row.appendChild(fightBar(member));
-  return row;
+  box.appendChild(name);
+  box.appendChild(hp);
+  box.appendChild(fightBar(member));
+  return box;
 }
 
-function partyBoard(party) {
+// Карточка соперника: сначала лицо, под ним имя и шкала. Порядок именно
+// такой — на кого смотрят, то и сверху, а числа читают уже под ним.
+// Рамка синяя у того, с кем стоишь, серая у всех остальных: подпись
+// «твой» для этого была лишней, рамку видно быстрее слова.
+function bossCard(boss, withFace) {
   const box = document.createElement("div");
-  box.className = "raid-party";
-  // Живые сверху, павшие внизу: помочь можно только тем, кто ещё дерётся.
-  // Порядок внутри каждой половины прежний — сортировка устойчивая
-  const order = party
-    .slice()
-    .sort((one, other) => Number(other.alive) - Number(one.alive));
-  order.slice(0, PARTY_SHOWN).forEach((member) => {
-    box.appendChild(memberCard(member));
-  });
+  box.className = "boss-card";
+  if (!boss.alive) box.classList.add("dropped");
+  if (withFace) box.classList.add("mine");
 
-  const rest = order.slice(PARTY_SHOWN);
-  if (rest.length) {
-    const more = document.createElement("details");
-    more.className = "party-more";
-    more.open = partyOpen;
-    more.addEventListener("toggle", () => {
-      partyOpen = more.open;
-    });
-    const head = document.createElement("summary");
-    head.className = "party-more-head";
-    head.textContent = "ещё " + rest.length;
-    more.appendChild(head);
-    rest.forEach((member) => more.appendChild(memberCard(member)));
-    box.appendChild(more);
+  if (withFace && boss.image) {
+    const img = document.createElement("img");
+    img.className = "boss-face";
+    img.src = boss.image;
+    img.alt = boss.title;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.addEventListener("error", () => img.remove());
+    box.appendChild(img);
   }
+
+  const name = document.createElement("p");
+  name.className = "fight-name";
+  name.textContent = boss.emoji + " " + boss.title + " [" + boss.level + "]";
+  box.appendChild(name);
+  const hp = document.createElement("p");
+  hp.className = "fight-hp";
+  hp.textContent = boss.alive ? boss.hp + "/" + boss.max_hp : "💀 готов";
+  box.appendChild(hp);
+  if (boss.alive) box.appendChild(fightBar(boss));
+  return box;
+}
+
+// Стопка: карточки лежат внахлёст, и у каждой видна верхняя часть — имя
+// и шкала. Больше в стопке и не нужно: по ней смотрят, кто ещё держится,
+// а не чем он одет.
+function fightStack(kind) {
+  const box = document.createElement("div");
+  box.className = "fight-stack " + kind;
+  return box;
+}
+
+// Живые сверху, павшие вниз: помочь можно только тем, кто ещё дерётся, а
+// павший в середине стопки каждый раз сбивает счёт. Сортировка
+// устойчивая, поэтому порядок внутри половины остаётся прежним.
+function byTheLiving(crowd) {
+  return crowd.slice().sort((one, other) => Number(other.alive) - Number(one.alive));
+}
+
+function stackCard(kind, alive) {
+  const card = document.createElement("div");
+  card.className = "stack-card " + kind + (alive ? "" : " down");
+  return card;
+}
+
+// Голова карточки в стопке: имя слева, остаток справа. Двумя строками, а
+// не тремя, — иначе стопка из двенадцати займёт весь экран.
+function stackHead(card, title, note) {
+  const head = document.createElement("div");
+  head.className = "stack-head";
+  const name = document.createElement("p");
+  name.className = "fight-name";
+  name.textContent = title;
+  const hp = document.createElement("p");
+  hp.className = "fight-hp";
+  hp.textContent = note;
+  head.appendChild(name);
+  head.appendChild(hp);
+  card.appendChild(head);
+}
+
+// Готов ли боец к ходу. В рейде это `acted` — удар уже отправлен; в
+// командном бою `ready` — то же самое другим словом
+function mateMark(member) {
+  if (!member.alive) return "💀 ";
+  return (member.acted || member.ready) ? "✅ " : "⏳ ";
+}
+
+function mateStack(party, kind) {
+  const box = fightStack(kind || "raid-mates");
+  byTheLiving(party).forEach((member) => {
+    const card = stackCard("mate", member.alive);
+    stackHead(
+      card,
+      mateMark(member) + member.emoji + " " + member.name,
+      member.alive ? member.hp + "/" + member.max_hp : "выбыл"
+    );
+    card.appendChild(fightBar(member));
+    box.appendChild(card);
+  });
+  return box;
+}
+
+function foeStack(foes, current) {
+  const box = fightStack("raid-foes");
+  const rest = foes.filter((foe) => !samePlace(foe, current, "number"));
+  byTheLiving(rest).forEach((foe) => {
+    const card = stackCard("foe", foe.alive);
+    stackHead(
+      card,
+      (foe.alive ? "" : "💀 ") + foe.emoji + " " + foe.title,
+      foe.alive ? foe.hp + "/" + foe.max_hp : "готов"
+    );
+    card.appendChild(fightBar(foe));
+    box.appendChild(card);
+  });
   return box;
 }
 
@@ -4366,29 +4410,73 @@ function battlePanel(data) {
   return box;
 }
 
+// Табло командного боя: та же доска, что и в рейде. Сверху ты и тот, с
+// кем тебя свела пара этого хода, по нижнему краю и лицом к лицу; под
+// ними стопки — слева свои, справа чужие. В бою «каждый сам за себя»
+// своих нет вовсе, и слева пусто: это честно, там и правда никого.
 function battleBoard(battle) {
   const box = document.createElement("div");
-  box.className = "raid-party";
-  battle.party.forEach((member) => {
-    const row = document.createElement("div");
-    row.className = "raid-member" + (member.alive ? "" : " down");
-    const name = document.createElement("p");
-    name.className = "fight-name";
-    name.textContent =
-      (member.alive ? (member.ready ? "✅ " : "⏳ ") : "💀 ") +
-      member.emoji + " " + member.name + " [" + member.level + "]" +
-      (battle.kind === "team" ? " · " + member.team_title : "") +
-      (member.you ? " — ты" : "");
-    const hp = document.createElement("p");
-    hp.className = "fight-hp";
-    hp.textContent =
-      member.hp + "/" + member.max_hp + " · урона " + member.damage_dealt +
-      (member.rival ? " · против " + member.rival : " · без пары");
-    row.appendChild(name);
-    row.appendChild(hp);
-    row.appendChild(fightBar(member));
-    box.appendChild(row);
-  });
+  box.className = "raid-board";
+  const party = battle.party || [];
+  const you = party.find((member) => member.you) || party[0] || null;
+  const rival =
+    you && you.rival_id != null
+      ? party.find((member) => member.user_id === you.rival_id) || null
+      : null;
+
+  if (you) box.appendChild(battleCard(battle, you, "raid-you"));
+  const swords = document.createElement("p");
+  swords.className = "versus";
+  swords.textContent = "⚔️";
+  box.appendChild(swords);
+  box.appendChild(
+    rival ? battleCard(battle, rival, "boss-card mine") : noRivalCard()
+  );
+
+  const rest = party.filter(
+    (member) => member !== you && member !== rival
+  );
+  const ours = (member) =>
+    battle.kind === "team" && you && member.team === you.team;
+  box.appendChild(mateStack(rest.filter(ours)));
+  box.appendChild(
+    mateStack(rest.filter((member) => !ours(member)), "raid-foes")
+  );
+  return box;
+}
+
+// Крупная карточка командного боя. Имя с командой и уроном: в групповом
+// бою по урону считают, кто вытащил раунд, и прятать его некуда.
+function battleCard(battle, member, kind) {
+  const box = document.createElement("div");
+  box.className = kind + (member.alive ? "" : " down dropped");
+  const name = document.createElement("p");
+  name.className = "fight-name";
+  name.textContent =
+    mateMark(member) + member.emoji + " " + member.name +
+    " [" + member.level + "]" +
+    (battle.kind === "team" ? " · " + member.team_title : "") +
+    (member.you ? " — ты" : "");
+  const hp = document.createElement("p");
+  hp.className = "fight-hp";
+  hp.textContent = member.alive
+    ? member.hp + "/" + member.max_hp + " · урона " + member.damage_dealt
+    : "💀 выбыл";
+  box.appendChild(name);
+  box.appendChild(hp);
+  if (member.alive) box.appendChild(fightBar(member));
+  return box;
+}
+
+// Пары в этом ходу не досталось: место соперника всё равно занято — иначе
+// доска съезжает, и непонятно, пропал соперник или пропала карточка
+function noRivalCard() {
+  const box = document.createElement("div");
+  box.className = "boss-card empty";
+  const said = document.createElement("p");
+  said.className = "fight-hp";
+  said.textContent = "без пары в этом ходу";
+  box.appendChild(said);
   return box;
 }
 

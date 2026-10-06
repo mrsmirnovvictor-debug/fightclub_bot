@@ -3097,35 +3097,63 @@ def raid_with_gang() -> dict:
 
 
 async def test_the_gang_stands_on_the_board_one_card_each(server):
-    """Пятеро противников — пять карточек, и своего видно по рамке.
+    """Твой соперник крупно, остальные стопкой — и у каждого своя шкала.
 
-    Босс казино рисовался одной карточкой во всю колонку с портретом.
-    Банде так нельзя: пять лиц в колонку не влезают, а искать на табло
-    надо не лицо, а того, с кем стоишь сам.
+    Пять портретов в колонку не влезают, да и ищут на этом табло не лицо.
+    Крупно стоит тот, с кем дерёшься сейчас; прочие лежат стопкой, у
+    каждого видна верхняя часть карточки — имя и шкала.
     """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_gang())
 
-        cards = page.locator(".gang-board .boss-card")
-        assert await cards.count() == 5
-        names = await cards.evaluate_all(
+        # Крупная карточка одна, и это твой соперник: рамка синяя
+        big = page.locator(".raid-board > .boss-card")
+        assert await big.count() == 1
+        assert await page.locator(".boss-card.mine").count() == 1
+        assert "Лидер банды" in await big.inner_text()
+        # Подписи «твой» больше нет: рамку видно быстрее слова
+        assert "твой" not in await page.locator("#raid-body").inner_text()
+
+        # Остальные четверо — в стопке, и своего соперника там уже нет
+        rest = page.locator(".raid-foes .stack-card")
+        assert await rest.count() == 4
+        names = await rest.evaluate_all(
             "nodes => nodes.map(one => one.querySelector('.fight-name').textContent)"
         )
-        assert "Лидер банды" in names[0] and "Ассасин №2" in names[4]
+        assert not [one for one in names if "Лидер банды" in one]
+        # Павший опускается вниз стопки сам, где бы сервер его ни прислал
+        assert "💀" in names[-1] and "Трикстер" in names[-1]
+        assert await page.locator(".raid-foes .stack-card.down").count() == 1
+        assert "готов" in await rest.last.inner_text()
 
-        # Свой обведён, и подписан — ровно один
-        assert await page.locator(".boss-card.mine").count() == 1
-        assert "твой" in await page.locator(".boss-card.mine").inner_text()
+        # Портрет только у крупной карточки — в стопке лиц нет
+        assert await page.locator(".raid-foes .boss-face").count() == 0
+        await browser.close()
 
-        # Павший остаётся на табло вычеркнутым: по нему и видно, сколько
-        # банды уже легло
-        gone = page.locator(".boss-card.dropped")
-        assert await gone.count() == 1
-        assert "готов" in await gone.inner_text()
-        assert await gone.locator(".fight-bar").count() == 0, "шкалы у него нет"
 
-        # Портретов в банде нет вовсе — ни у кого
-        assert await page.locator(".gang-board .boss-face").count() == 0
+async def test_the_face_stands_above_the_name_and_the_bar(server):
+    """Сначала лицо, под ним имя и шкала — в таком порядке на него и смотрят.
+
+    Портрет стоял под шкалой: сначала числа, потом лицо. На экране из
+    одной карточки это читалось наоборот — глаз цеплялся за картинку и
+    уходил вверх, мимо имени, которое к ней и относится.
+    """
+    boss = {**BOSS_IN_WAVE, "image": "https://pub-test.r2.dev/bosses/cellar.png"}
+    raid = raid_with_wave({"boss": boss, "gang": [boss]})
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid, images=True)
+        await page.wait_for_selector(".boss-face")
+
+        order = await page.locator(".raid-board > .boss-card").evaluate(
+            "node => Array.from(node.children).map(one => one.className)"
+        )
+        assert order == ["boss-face", "fight-name", "fight-hp", "fight-bar"]
+
+        face = await page.locator(".boss-face").bounding_box()
+        name = await page.locator(".boss-card .fight-name").bounding_box()
+        bar = await page.locator(".boss-card .fight-bar").bounding_box()
+        assert face["y"] + face["height"] <= name["y"], "имя заехало на портрет"
+        assert name["y"] < bar["y"]
         await browser.close()
 
 
@@ -3283,11 +3311,13 @@ async def test_an_empty_pocket_offers_to_buy_a_pass(server):
         await browser.close()
 
 
-async def test_the_board_puts_the_party_and_the_boss_side_by_side(server):
-    """Отряд слева, мечи посередине, босс справа — и всё это в один ряд.
+async def test_the_board_puts_you_and_your_foe_side_by_side(server):
+    """Ты слева, мечи посередине, соперник справа — и всё по нижнему краю.
 
-    Раньше босс стоял сверху во всю ширину, а отряд списком под ним, и на
-    телефоне половина отряда уезжала за край экрана.
+    Раньше здесь стояли два списка во всю высоту, выровненных по верху:
+    карточка босса высокая, в ней портрет, — и твоя шкала оказывалась у
+    него на уровне бровей. По низу обе карточки стоят на одной черте, и
+    прямо под ними начинаются стопки остальных.
     """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
@@ -3296,22 +3326,28 @@ async def test_the_board_puts_the_party_and_the_boss_side_by_side(server):
         assert await body.locator(".versus").inner_text() == "⚔️"
         order = await body.evaluate(
             "node => Array.from(node.querySelectorAll("
-            "'.raid-party, .versus, .gang-board, .boss-card'))"
-            ".map(one => one.className)"
+            "'.raid-board > *')).map(one => one.className)"
         )
-        # Свой противник обведён: в банде из пяти его ищут глазом, и в
-        # казино метка стоит на том же месте — босс там один и твой
-        assert order == ["raid-party", "versus", "gang-board", "boss-card mine"]
+        assert order == [
+            "raid-you", "versus", "boss-card mine", "fight-stack raid-mates",
+            "fight-stack raid-foes",
+        ]
 
-        # Три столбца на одной высоте, и ширины 45 / 10 / 45
+        # Три столбца по нижней черте, и ширины 45 / 10 / 45
         board = await body.locator(".raid-board").bounding_box()
-        party = await body.locator(".raid-party").bounding_box()
+        you = await body.locator(".raid-you").bounding_box()
         swords = await body.locator(".versus").bounding_box()
         boss = await body.locator(".boss-card").bounding_box()
-        assert abs(round(party["y"]) - round(boss["y"])) <= 1, "столбцы разъехались"
-        assert party["x"] < swords["x"] < boss["x"]
-        for box, share in ((party, 0.45), (swords, 0.10), (boss, 0.45)):
+        bottoms = [round(box["y"] + box["height"]) for box in (you, swords, boss)]
+        assert max(bottoms) - min(bottoms) <= 2, f"низ разъехался: {bottoms}"
+        assert you["x"] < swords["x"] < boss["x"]
+        for box, share in ((you, 0.45), (swords, 0.10), (boss, 0.45)):
             assert abs(box["width"] / board["width"] - share) < 0.04, box["width"]
+
+        # Стопки — вторым рядом, под своими карточками и каждая в своём столбце
+        mates = await body.locator(".raid-mates").bounding_box()
+        assert mates["y"] >= bottoms[0] - 1, "стопка залезла на карточку"
+        assert abs(round(mates["x"]) - round(you["x"])) <= 1
         await browser.close()
 
 
@@ -3505,11 +3541,16 @@ async def test_the_wave_shows_the_boss_and_the_whole_party(server):
         boss = await page.locator(".boss-card").inner_text()
         assert "Босс Подвала [9]" in boss and "180/300" in boss
 
-        members = await page.locator(".raid-member").all_inner_texts()
-        assert "⏳ ⚔️ Растафарайчик [5] — ты" in members[0]
-        assert "✅" in members[1]  # Марла отработала волну
-        assert "💀" in members[2]  # Зеваку вынесли
-        assert await page.locator(".raid-member.down").count() == 1
+        # Ты — крупной карточкой, с уроном: по нему считают, кому вещь
+        you = await page.locator(".raid-you").inner_text()
+        assert "⏳ ⚔️ Растафарайчик [5] — ты" in you and "урона 45" in you
+
+        # Остальные — стопкой, по одной карточке на человека
+        mates = await page.locator(".raid-mates .stack-card").all_inner_texts()
+        assert len(mates) == 2
+        assert "✅" in mates[0] and "Марла" in mates[0]  # Марла отработала волну
+        assert "💀" in mates[1] and "Зевака" in mates[1]  # Зеваку вынесли
+        assert await page.locator(".raid-mates .stack-card.down").count() == 1
         await browser.close()
 
 
@@ -3521,9 +3562,10 @@ async def test_the_fallen_sink_to_the_bottom_of_the_party(server):
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid)
 
-        members = await page.locator(".raid-member").all_inner_texts()
-        assert "Растафарайчик" in members[0] and "Марла" in members[1]
-        assert "Зевака" in members[2] and "💀" in members[2]
+        assert "Растафарайчик" in await page.locator(".raid-you").inner_text()
+        mates = await page.locator(".raid-mates .stack-card").all_inner_texts()
+        assert "Марла" in mates[0]
+        assert "Зевака" in mates[1] and "💀" in mates[1]
         await browser.close()
 
 
@@ -3539,34 +3581,34 @@ def crowd(size: int) -> list[dict]:
     ]
 
 
-async def test_a_big_party_hides_all_but_three(server):
-    """В подвал ходят вдесятером: трое на виду, остальные по нажатию.
+async def test_a_big_party_fits_into_the_stack_whole(server):
+    """В подвал ходят вдесятером, и видно всех — стопка на то и стопка.
 
-    Десять карточек списком выдавливают с экрана кнопки хода — то, ради
-    чего в рейд и заходят.
+    Списком десять карточек выдавливали с экрана кнопки хода, и хвост
+    приходилось прятать под «ещё N». В стопке карточки лежат внахлёст, и
+    девятеро занимают меньше, чем занимали трое списком.
     """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave({"party": crowd(10)}))
 
-        shown = page.locator(".raid-party > .raid-member")
-        assert await shown.count() == 3
-        more = page.locator(".party-more")
-        assert "ещё 7" in await more.locator("summary").inner_text()
-        assert await more.locator(".raid-member").count() == 7
-        # Хвост свёрнут, пока его не открыли
-        assert await more.get_attribute("open") is None
-        await more.locator("summary").click()
-        assert await more.locator(".raid-member").first.is_visible()
-        await browser.close()
-
-
-async def test_a_small_party_has_no_tail_at_all(server):
-    """Троих и меньше показываем целиком: сворачивать нечего."""
-    async with async_playwright() as pw:
-        browser, page = await open_raid(pw, server, raid_with_wave())
-
-        assert await page.locator(".raid-member").count() == 3
+        cards = page.locator(".raid-mates .stack-card")
+        assert await cards.count() == 9, "кого-то спрятали"
+        assert await page.locator(".raid-you").count() == 1
+        # Все на виду: прятать больше нечего, и раскрывать нечего
         assert await page.locator(".party-more").count() == 0
+        assert await cards.first.is_visible() and await cards.last.is_visible()
+
+        # Карточки лежат внахлёст: каждая следующая начинается выше, чем
+        # кончилась предыдущая
+        boxes = await cards.evaluate_all(
+            "nodes => nodes.map(one => {"
+            "const box = one.getBoundingClientRect();"
+            "return [box.top, box.bottom];})"
+        )
+        for (_, bottom), (top, _) in zip(boxes, boxes[1:]):
+            assert top < bottom, "карточки сошлись встык, а не стопкой"
+        # И при этом у каждой видно имя со шкалой
+        assert await page.locator(".raid-mates .stack-card .fight-bar").count() == 9
         await browser.close()
 
 
@@ -4241,16 +4283,72 @@ async def test_the_squad_section_offers_both_kinds_of_group_fight(server):
 
 
 async def test_the_group_round_shows_the_board_and_the_pair(server):
+    """Та же доска, что и в рейде: ты и твоя пара крупно, прочие стопкой.
+
+    Строки «против такого-то» на карточке больше нет и не нужно: с кем
+    тебя свёл этот ход, стоит напротив — лицом к лицу и в синей рамке.
+    """
     async with async_playwright() as pw:
         browser, page = await open_squad(pw, server, battle_with_round())
 
         head = await page.locator(".fight-round").inner_text()
         assert "Командный бой — раунд 2" in head
-        board = await page.locator(".raid-party").inner_text()
-        assert "Растафарайчик" in board and "против Марла" in board
-        assert "Красные" in board and "Синие" in board
+
+        you = await page.locator("#club-battle .raid-you").inner_text()
+        assert "Растафарайчик" in you and "Красные" in you and "— ты" in you
+        rival = page.locator("#club-battle .boss-card")
+        assert "Марла" in await rival.inner_text()
+        assert "Синие" in await rival.inner_text()
+        assert "mine" in (await rival.get_attribute("class")), "пара не обведена"
+
+        # В этом бою по одному с каждой стороны — стопки пустые
+        assert await page.locator("#club-battle .stack-card").count() == 0
         # столбцов два: одна рука и блок
         assert await page.locator("#club-battle .zone-list").count() == 2
+        await browser.close()
+
+
+async def test_the_group_board_stacks_everyone_else(server):
+    """Остальные бойцы ложатся стопками: свои слева, чужие справа."""
+    battle = battle_with_round()
+    party = battle["battle"]["party"]
+    battle["battle"]["party"] = party + [
+        {
+            "user_id": 44, "name": "Тайлер", "level": 6, "emoji": "🛡️",
+            "hp": 50, "max_hp": 110, "percent": 45, "damage_dealt": 20,
+            "alive": True, "team": 0, "team_title": "Красные",
+            "rival_id": None, "rival": None, "ready": True, "you": False,
+        },
+        {
+            "user_id": 45, "name": "Зевака", "level": 3, "emoji": "🤸",
+            "hp": 0, "max_hp": 80, "percent": 0, "damage_dealt": 5,
+            "alive": False, "team": 1, "team_title": "Синие",
+            "rival_id": None, "rival": None, "ready": True, "you": False,
+        },
+    ]
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, battle)
+
+        ours = await page.locator("#club-battle .raid-mates .stack-card").all_inner_texts()
+        theirs = await page.locator("#club-battle .raid-foes .stack-card").all_inner_texts()
+        assert len(ours) == 1 and "Тайлер" in ours[0]
+        assert len(theirs) == 1 and "Зевака" in theirs[0] and "💀" in theirs[0]
+        await browser.close()
+
+
+async def test_the_group_board_keeps_the_place_of_a_missing_rival(server):
+    """Пары в этом ходу не досталось — место соперника всё равно занято."""
+    battle = battle_with_round()
+    battle["battle"]["party"][0] = {
+        **battle["battle"]["party"][0], "rival_id": None, "rival": None
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, battle)
+
+        empty = page.locator("#club-battle .boss-card.empty")
+        assert await empty.count() == 1
+        assert "без пары" in await empty.inner_text()
+        assert await page.locator("#club-battle .boss-card.mine").count() == 0
         await browser.close()
 
 
