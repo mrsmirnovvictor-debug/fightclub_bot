@@ -3902,11 +3902,15 @@ function raidPanel(data) {
   return box;
 }
 
-// Доска боя: верхним рядом ты и тот, с кем стоишь сейчас, — лицом к лицу
-// и по нижнему краю. Под ними двумя стопками остальные: слева отряд,
+// Доска боя: нижним рядом ты и тот, с кем стоишь сейчас, — лицом к лицу
+// и по нижнему краю. Над вами двумя стопками остальные: слева отряд,
 // справа банда. Так на экране два разных вопроса и два разных ответа:
-// «с кем я дерусь» решается крупно и сразу, «как там остальные» —
-// боковым зрением, по шкалам в стопке.
+// «с кем я дерусь» решается крупно и у самых кнопок хода, «как там
+// остальные» — боковым зрением, по шкалам в стопке.
+//
+// Стопки сверху нарочно: крупные карточки стоят вплотную к кнопкам, а
+// не через чужие шкалы. Колода и выглядит колодой — карточки ложатся
+// сверху вниз, и крупная оказывается последней, лицом к смотрящему.
 //
 // Раньше обе стороны стояли списками во всю высоту, и десять карточек
 // отряда выдавливали с экрана кнопки хода. Стопка показывает каждого, но
@@ -3919,17 +3923,21 @@ function raidBoard(raid) {
   const foes = raid.gang || (raid.boss ? [raid.boss] : []);
   const foe = currentFoe(raid, foes);
 
+  // Стопки идут первыми: они и лежат первыми — над вами двоими. Порядок
+  // в разметке здесь не формальность, а порядок слоёв: крупная карточка
+  // дописана последней и потому ложится поверх стопки, как верхняя карта
+  // колоды, а не под неё
+  box.appendChild(
+    mateStack(party.filter((member) => !samePlace(member, you, "user_id")))
+  );
+  box.appendChild(foeStack(foes, foe));
+
   if (you) box.appendChild(youCard(you));
   const swords = document.createElement("p");
   swords.className = "versus";
   swords.textContent = "⚔️";
   box.appendChild(swords);
   if (foe) box.appendChild(bossCard(foe, true));
-
-  box.appendChild(
-    mateStack(party.filter((member) => !samePlace(member, you, "user_id")))
-  );
-  box.appendChild(foeStack(foes, foe));
   return box;
 }
 
@@ -4410,8 +4418,8 @@ function battlePanel(data) {
   return box;
 }
 
-// Табло командного боя: та же доска, что и в рейде. Сверху ты и тот, с
-// кем тебя свела пара этого хода, по нижнему краю и лицом к лицу; под
+// Табло командного боя: та же доска, что и в рейде. Внизу ты и тот, с
+// кем тебя свела пара этого хода, по нижнему краю и лицом к лицу; над
 // ними стопки — слева свои, справа чужие. В бою «каждый сам за себя»
 // своих нет вовсе, и слева пусто: это честно, там и правда никого.
 function battleBoard(battle) {
@@ -4424,15 +4432,6 @@ function battleBoard(battle) {
       ? party.find((member) => member.user_id === you.rival_id) || null
       : null;
 
-  if (you) box.appendChild(battleCard(battle, you, "raid-you"));
-  const swords = document.createElement("p");
-  swords.className = "versus";
-  swords.textContent = "⚔️";
-  box.appendChild(swords);
-  box.appendChild(
-    rival ? battleCard(battle, rival, "boss-card mine") : noRivalCard()
-  );
-
   const rest = party.filter(
     (member) => member !== you && member !== rival
   );
@@ -4441,6 +4440,15 @@ function battleBoard(battle) {
   box.appendChild(mateStack(rest.filter(ours)));
   box.appendChild(
     mateStack(rest.filter((member) => !ours(member)), "raid-foes")
+  );
+
+  if (you) box.appendChild(battleCard(battle, you, "raid-you"));
+  const swords = document.createElement("p");
+  swords.className = "versus";
+  swords.textContent = "⚔️";
+  box.appendChild(swords);
+  box.appendChild(
+    rival ? battleCard(battle, rival, "boss-card mine") : noRivalCard()
   );
   return box;
 }

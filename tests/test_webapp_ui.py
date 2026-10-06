@@ -3316,21 +3316,23 @@ async def test_the_board_puts_you_and_your_foe_side_by_side(server):
 
     Раньше здесь стояли два списка во всю высоту, выровненных по верху:
     карточка босса высокая, в ней портрет, — и твоя шкала оказывалась у
-    него на уровне бровей. По низу обе карточки стоят на одной черте, и
-    прямо под ними начинаются стопки остальных.
+    него на уровне бровей. По низу обе карточки стоят на одной черте и у
+    самых кнопок хода, а стопки остальных лежат над ними.
     """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
 
         body = page.locator("#raid-body")
         assert await body.locator(".versus").inner_text() == "⚔️"
+        # Стопки идут первыми: они и лежат первыми — крупная карточка
+        # дописана последней и потому ложится поверх, а не под
         order = await body.evaluate(
             "node => Array.from(node.querySelectorAll("
             "'.raid-board > *')).map(one => one.className)"
         )
         assert order == [
-            "raid-you", "versus", "boss-card mine", "fight-stack raid-mates",
-            "fight-stack raid-foes",
+            "fight-stack raid-mates", "fight-stack raid-foes",
+            "raid-you", "versus", "boss-card mine",
         ]
 
         # Три столбца по нижней черте, и ширины 45 / 10 / 45
@@ -3344,9 +3346,10 @@ async def test_the_board_puts_you_and_your_foe_side_by_side(server):
         for box, share in ((you, 0.45), (swords, 0.10), (boss, 0.45)):
             assert abs(box["width"] / board["width"] - share) < 0.04, box["width"]
 
-        # Стопки — вторым рядом, под своими карточками и каждая в своём столбце
+        # Стопка — над своей карточкой, в своём столбце и вплотную к ней
         mates = await body.locator(".raid-mates").bounding_box()
-        assert mates["y"] >= bottoms[0] - 1, "стопка залезла на карточку"
+        assert mates["y"] + mates["height"] <= you["y"] + 1, "стопка под карточкой"
+        assert you["y"] - (mates["y"] + mates["height"]) < 12, "стопка отвалилась"
         assert abs(round(mates["x"]) - round(you["x"])) <= 1
         await browser.close()
 

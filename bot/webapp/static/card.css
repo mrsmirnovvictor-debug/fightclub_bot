@@ -1488,22 +1488,28 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin: 0;
   font-size: 13px;
 }
-/* Доска боя. Верхний ряд — ты, мечи и твой соперник; нижний — стопки
-   остальных. Сорок пять на десять и сорок пять — так просили; в долях, а
+/* Доска боя. Верхний ряд — стопки остальных, нижний — ты, мечи и твой
+   соперник. Сорок пять на десять и сорок пять — так просили; в долях, а
    не в пикселях, чтобы держалось на любом телефоне.
 
-   Верхний ряд выровнен по низу: карточка соперника высокая — в ней
+   Нижний ряд выровнен по низу: карточка соперника высокая — в ней
    портрет, — а твоя в две строки, и по верху они разъезжались так, что
    твоя шкала оказывалась у него на уровне бровей. По низу обе стоят на
-   одной черте, и прямо под ними начинаются стопки. */
+   одной черте — и у самых кнопок хода.
+
+   Стопки прижаты к ним снизу (`align-self: end`): колода лежит сверху,
+   крупная карточка — её верхняя карта. Между рядами нулевой зазор, и
+   шесть пикселей добираются отступом у стопки: так он один, а не два. */
 .raid-board {
   display: grid;
   grid-template-columns: 45fr 10fr 45fr;
   align-items: end;
-  gap: 4px 4px;
+  gap: 0 4px;
 }
-.raid-you, .versus, .boss-card { grid-row: 1; }
-.raid-mates, .raid-foes { grid-row: 2; align-self: start; margin-top: 6px; }
+.raid-board > .raid-you { grid-column: 1; grid-row: 2; }
+.raid-board > .versus { grid-column: 2; grid-row: 2; }
+.raid-board > .boss-card { grid-column: 3; grid-row: 2; }
+.raid-mates, .raid-foes { grid-row: 1; align-self: end; margin-bottom: 6px; }
 .raid-mates { grid-column: 1; }
 .raid-foes { grid-column: 3; }
 .raid-you {
@@ -1581,8 +1587,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   padding: 4px 6px 18px;
   min-width: 0;
 }
-/* Нижней карточке прятать нечего — она и так последняя, и запас снизу у
-   неё только съедал бы экран */
+/* Нижней карточке прятать нечего: под ней уже не соседка, а крупная
+   карточка. Запас снизу у неё только съедал бы экран */
 .stack-card:last-child { padding-bottom: 5px; }
 .stack-card + .stack-card {
   margin-top: -14px;
