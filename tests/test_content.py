@@ -25,6 +25,7 @@ from bot.game.equipment import (
     SHOWCASE,
     Item,
     Slot,
+    gear_share_cap,
     items_unlocked_at,
     weapon_share_cap,
     weapon_share_floor,
@@ -77,9 +78,11 @@ def test_percent_bonuses_stay_within_their_caps():
     у трикстера с ассасином уворот и крит и без вещей упирались в свой
     потолок, и написанное на оружии в бой просто не доходило.
 
-    Одежда процентами не торгует: её дело — броня и запас. Восемь вещей
-    складывают свои доли, оружие в руках одно, поэтому потолок у одежды
-    прежний и маленький.
+    У одежды полоса своя и держит сумму долей на одной вещи, а не каждую
+    по отдельности: набор воина размазывает проценты по всем четырём
+    парам, и мелкими долями из него собралась бы вещь сильнее крупной.
+    Полоса идёт по уровню, от 5% на втором до 80% на девятом, — это и
+    есть лестница сетов.
 
     Товар мага живёт по своим правилам: он и должен быть заметно сильнее,
     иначе за него не платили бы звёздами. Вещи с ручными числами помечены
@@ -87,16 +90,16 @@ def test_percent_bonuses_stay_within_their_caps():
     """
     for item in SHOWCASE:
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
-        cap = (
-            weapon_share_cap(item.level_required)
-            if item.is_weapon
-            else (
-                EARLY_SHARE_CAP
-                if item.level_required <= EARLY_LEVELS
-                else LATE_SHARE_CAP
+        if item.is_weapon:
+            cap = weapon_share_cap(item.level_required)
+            assert max(shares) <= cap + 1e-9, (
+                f"{item.title}: {max(shares):.0%} > {cap:.0%}"
             )
+            continue
+        cap = gear_share_cap(item.level_required)
+        assert sum(shares) <= cap + 1e-9, (
+            f"{item.title}: всего {sum(shares):.0%} > {cap:.0%}"
         )
-        assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%} > {cap:.0%}"
 
 
 def test_every_weapon_of_its_tier_carries_the_share_of_its_tier():
@@ -326,8 +329,12 @@ def flat_cap(level: int) -> int:
     бою, а +5 к ловкости на вещи первого уровня ничем не режется и
     перебивает всю разницу между классами. На этом круг классов и
     ломался, пока усиленные вещи лежали на прилавке.
+
+    Ступеньку сдвинул пак сетов: футболка в нём только статами и торгует
+    (брони на ней нет вовсе), и на шестом уровне даёт +4 в профильное.
+    Лестница от этого не пропала — просто начинается на ступень выше.
     """
-    return max(1, (level - 1) // 2)
+    return max(1, (level + 2) // 2)
 
 
 def test_flat_bonuses_grow_by_the_ladder():
@@ -432,6 +439,79 @@ def test_every_item_has_a_picture_of_its_own():
         assert item.picture.startswith(ART), f"{item.code}: не из бакета клуба"
         twin = seen.setdefault(item.picture, item.code)
         assert twin == item.code, f"{item.code} и {twin} делят картинку"
+
+
+# ---------- снятое с прилавка ----------
+
+
+def test_the_sets_took_over_the_whole_wardrobe():
+    """Пак закрыл все семь носимых слотов для всех четырёх классов."""
+    from bot.content.items import SET_PIECES
+    from bot.game.equipment import Slot
+
+    assert len(SET_PIECES) == 84
+    wardrobe = {
+        Slot.HEAD, Slot.SHIRT, Slot.BELT, Slot.GLOVES,
+        Slot.JACKET, Slot.PANTS, Slot.BOOTS,
+    }
+    for slot in wardrobe:
+        covered = {
+            code
+            for item in SET_PIECES
+            if item.slot is slot
+            for code in item.for_classes
+        }
+        assert covered == set(FIGHTER_CLASSES), f"{slot.value}: {covered}"
+    for item in SET_PIECES:
+        assert not item.shelf and not item.retired and item.price > 0, item.code
+        assert item.code.startswith("set_"), item.code
+
+
+def test_the_old_wardrobe_left_the_counter_but_not_the_catalogue():
+    """Снятая вещь уходит с витрины и остаётся всюду, где она уже есть.
+
+    Цену у неё никто не отбирал: по ней лавка принимает вещь обратно, по
+    ней же комиссионка держит рамки. Иначе снятие с прилавка тихо
+    превратило бы чужой гардероб в вещи без цены — а их на комиссионке
+    можно просить сколько угодно.
+    """
+    from bot.content.items import RETIRED_GEAR
+    from bot.game.equipment import CATALOGUE, SHOWCASE
+    from bot.game.market import buyback, has_counter_price
+
+    shelf = {item.code for item in SHOWCASE}
+    assert RETIRED_GEAR, "снимать оказалось нечего"
+    for code in RETIRED_GEAR:
+        item = CATALOGUE[code]
+        assert item.retired, code
+        assert code not in shelf, f"{code} остался на витрине"
+        assert not item.is_weapon and not item.is_shield, f"{code}: оружие не снимали"
+        assert has_counter_price(item) and buyback(item) > 0, code
+
+    # Снятого в витрине нет вовсе, и наоборот
+    assert not shelf & RETIRED_GEAR
+    for item in SHOWCASE:
+        assert not item.retired, item.code
+
+
+def test_the_only_old_shirt_left_is_the_one_the_pack_rewrote():
+    """Майку пак не заменил, а переписал: код и картинка прежние."""
+    from bot.game.art import shirt
+    from bot.game.equipment import CATALOGUE, SHOWCASE
+
+    майка = CATALOGUE["wife_beater"]
+    assert майка in SHOWCASE and not майка.retired
+    assert (майка.hp, майка.price, майка.level_required) == (30, 50, 1)
+    assert майка.picture == shirt("wife_beater")
+    assert not майка.for_classes, "майка всем"
+
+    old = [
+        item
+        for item in SHOWCASE
+        if not item.is_weapon and not item.is_shield
+        and not item.code.startswith("set_")
+    ]
+    assert [item.code for item in old] == ["wife_beater"]
 
 
 # ---------- фанатский магазин: свой прилавок ----------

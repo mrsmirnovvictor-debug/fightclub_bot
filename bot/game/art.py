@@ -16,6 +16,10 @@ SLOTS = f"{BUCKET}/slots"
 ITEMS = f"{BUCKET}/items"
 # Футболки — самый молодой раздел, его рисовали отдельным заходом
 SHIRTS = f"{BUCKET}/shirts"
+# Сеты клубной лавки: папка на класс, внутри папка на набор, внутри по
+# файлу на слот — items_new/tank/bouncer/jacket.png. Раскладка чужая, но
+# правило в ней есть, поэтому адрес считается, а не пишется руками
+SETS = f"{BUCKET}/items_new"
 # Рейд-боссы
 BOSSES = f"{BUCKET}/bosses"
 # Товар лавки мага
@@ -68,6 +72,19 @@ def item(code: str) -> str:
     return f"{ITEMS}/{code}.jpeg"
 
 
+def set_piece(line: str, kit: str, slot: str) -> str:
+    """Вещь из сета: items_new/trickster/cardsharp/jacket.png.
+
+    Три части адреса — линия класса, название набора и слот. Линия не
+    всегда совпадает с кодом класса: папку трикстера назвали
+    `trickster`, хотя класс в коде зовётся `rogue`.
+
+    Формат png, а не jpeg: пак рисовали позже остальной лавки и отдали
+    целиком в png.
+    """
+    return f"{SETS}/{line}/{kit}/{slot}.png"
+
+
 def location(code: str, ext: str = "jpeg") -> str:
     """Карта района: locations/main_hub.jpeg.
 
@@ -112,6 +129,7 @@ __all__ = [
     "MAGIC",
     "NEW_INTERIORS",
     "POTIONS",
+    "SETS",
     "SHIRTS",
     "SLOTS",
     "WEAPONS",
@@ -121,6 +139,7 @@ __all__ = [
     "item",
     "location",
     "potion",
+    "set_piece",
     "shirt",
     "slot",
 ]

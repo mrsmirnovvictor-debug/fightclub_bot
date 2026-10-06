@@ -1065,29 +1065,33 @@ def test_the_whole_boss_kit_is_his_own():
         assert item.picture.endswith(f"/{item.code}.jpeg"), "картинка не от кода"
 
 
-def test_the_boss_kit_is_as_strong_as_the_shop_one_it_replaced():
-    """Менялся вид, а не сила: числа скопированы с прилавочных вещей.
+def test_the_boss_wears_nothing_from_the_counter():
+    """Весь комплект босса — его собственный, и прилавок его не двигает.
 
-    Иначе новый комплект тихо поменял бы сложность рейда вместе с
-    картинками, и не понять было бы, от чего именно.
+    Числа в нём когда-то скопировали с прилавочных вещей десятой ступени:
+    менялся вид, а не сила. С тех пор прилавок ушёл вперёд — на нём лежат
+    сеты, — а босс остался где был, и это нарочно: сложность рейда не
+    должна меняться от того, что в лавку завезли новый пак.
+
+    Поэтому проверяем не «совпадает с прилавком», а что совпадать не с чем:
+    босс занял все слоты сам, добирать с витрины нечего. И числа комплекта
+    записаны здесь: уедут — тест расскажет, насколько.
     """
-    from bot.game.classes import get_class
     from bot.game.equipment import Slot
     from bot.game.raid import boss_kit
-    from bot.game.reference import best_kit
 
-    mine = boss_kit(CELLAR_BOSS)
-    shop = dict(best_kit(get_class(CELLAR_BOSS.class_code), MAX_LEVEL))
-    for slot, item in shop.items():
-        if slot is Slot.WEAPON:
-            continue  # оружие у босса своё, в том и смысл
-        was, now = item, mine.items[slot].item
-        assert (now.hp, now.armor_min, now.armor_max) == (
-            was.hp, was.armor_min, was.armor_max
-        ), f"{slot.value}: броня разъехалась"
-        assert (now.strength, now.agility, now.intuition) == (
-            was.strength, was.agility, was.intuition
-        ), f"{slot.value}: характеристики разъехались"
+    kit = boss_kit(CELLAR_BOSS)
+    own = set(CELLAR_BOSS.gear) | {CELLAR_BOSS.weapon}
+    for slot, owned in kit.items.items():
+        assert owned.item.code in own, f"{slot.value}: вещь с прилавка"
+    assert set(kit.items) == set(Slot)
+
+    worn = [owned.item for slot, owned in kit.items.items() if slot is not Slot.WEAPON]
+    assert sum(item.hp for item in worn) == 82
+    assert sum(item.armor_min for item in worn) == 24
+    assert sum(item.armor_max for item in worn) == 39
+    assert kit.bonus.strength == 7
+    assert (kit.bonus.agility, kit.bonus.intuition) == (0, 0)
 
 
 def test_the_boss_is_dressed_by_his_own_step_not_the_partys():

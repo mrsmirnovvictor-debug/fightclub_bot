@@ -30,6 +30,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from bot.game import art
 from bot.game.classes import Stats
 from bot.game.gear import ALL_SLOTS, Item, ItemKind, Slot
@@ -47,7 +49,539 @@ WARRIOR, ROGUE, ASSASSIN, TANK = "warrior", "rogue", "assassin", "tank"
 # своя лестница. Пустой `shelf` — товар клубной лавки
 FAN_SHELF = "fan"
 
-ITEMS: tuple[Item, ...] = (
+# ---------- сеты клубной лавки: шестнадцать наборов на четыре класса ----------
+#
+# Второй заход по одежде: вместо россыпи отдельных вещей — наборы. Четыре
+# линии по классам (`avenger/boxer/army/bouncer` у танка, `plut/croupier/
+# lovkach/cardsharp` у трикстера, `mercenary/strangler/camouflage/killer` у
+# ассасина, `sport/biker/fighter/hero` у воина), в каждой линии четыре
+# ступени, в ступени — вещи на свои слоты.
+#
+# Лестница у пака своя и идёт слотами: на втором уровне открываются голова,
+# куртка и обувь, на третьем — футболка и штаны, на четвёртом — пояс,
+# перчатки и обувь, и так до девятого. Цена растёт с уровнем: 60 кредитов
+# на втором, 500 на девятом — пять уровней дохода за вещь.
+#
+# Проценты здесь крупные и это главное, что вещь даёт: полосу по уровню
+# держит `gear_share_cap`. Пары разведены по классам, как и на оружии:
+# танку антикрит, трикстеру уворот с контрударом, ассасину крит с
+# точностью, воину — всё по чуть-чуть, потому что воин в круге не стоит.
+#
+# Одно число из присланного пака здесь изменено, и вот какое: танку в нём
+# была написана ещё и точность — 25% на девятой ступени, по 5–10% ниже.
+# Точность сбивает уворот, то есть она и есть ответ трикстеру, а трикстер
+# в круге бьёт танка. С ней круг переворачивался: трикстер брал у танка
+# 17% вместо 96%, и ломало его именно это, а не запас здоровья танка
+# (с урезанным на 40% запасом те же 18%). Поэтому точность с девяти
+# танковых вещей снята, остальные числа пака — как присланы. Танку
+# взамен не добавлено ничего: его набор и так самый тяжёлый в лавке —
+# 310 единиц запаса против 135 у трикстера.
+#
+# Старую одежду пак обошёл по всем слотам, поэтому с витрины она ушла
+# (`RETIRED_GEAR` ниже). Из каталога она не ушла: у кого куплена, у того и
+# осталась.
+
+# Папка картинок у пака своя, и линия класса в ней зовётся по-своему:
+# трикстер лежит в `trickster`, хотя класс в коде — `rogue`
+SET_LINES = {TANK: "tank", ROGUE: "trickster", ASSASSIN: "assassin", WARRIOR: "warrior"}
+
+
+def _piece(
+    kit: str,
+    slot: Slot,
+    icon: str,
+    title: str,
+    fclass: str,
+    level: int,
+    price: int,
+    requires: Stats,
+    **gives: int | float,
+) -> Item:
+    """Вещь из набора: код и картинка считаются от набора и слота.
+
+    Код с приставкой `set_` нарочно: половина наборов названа так же, как
+    старые вещи лавки (`bouncer`, `cardsharp`, `army`, `biker`), а код
+    вещи лежит в базе у каждого, кто её купил. Приставка разводит новое
+    со старым, не трогая ни одной купленной вещи.
+    """
+    return Item(
+        f"set_{kit}_{slot.value}",
+        title,
+        slot,
+        icon,
+        image=art.set_piece(SET_LINES[fclass], kit, slot.value),
+        level_required=level,
+        requires=requires,
+        price=price,
+        for_classes=(fclass,),
+        **gives,
+    )
+
+
+SET_PIECES: tuple[Item, ...] = (
+    # head
+    _piece(
+        'avenger', Slot.HEAD, '🧢', 'Бандана мстителя',
+        TANK, 2, 60, Stats(endurance=6),
+        strength=1, armor_min=2, armor_max=3, anticrit=0.05,
+    ),
+    _piece(
+        'mercenary', Slot.HEAD, '🧢', 'Бандана наёмника',
+        ASSASSIN, 2, 60, Stats(intuition=6),
+        intuition=1, armor_min=2, armor_max=3, crit=0.05,
+    ),
+    _piece(
+        'plut', Slot.HEAD, '🧢', 'Бандана плута',
+        ROGUE, 2, 60, Stats(agility=6),
+        agility=1, armor_min=2, armor_max=3, dodge=0.05,
+    ),
+    _piece(
+        'sport', Slot.HEAD, '🧢', 'Спортивная бандана',
+        WARRIOR, 2, 60, Stats(strength=6),
+        strength=1, hp=15, armor_min=2, armor_max=3,
+    ),
+    _piece(
+        'biker', Slot.HEAD, '🧢', 'Байкерский мотошлем',
+        WARRIOR, 5, 100, Stats(strength=15),
+        strength=1, hp=15, armor_min=5, armor_max=7, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _piece(
+        'boxer', Slot.HEAD, '🧢', 'Боксёрский шлем',
+        TANK, 5, 100, Stats(endurance=15),
+        strength=1, hp=15, armor_min=5, armor_max=7, anticrit=0.15,
+    ),
+    _piece(
+        'croupier', Slot.HEAD, '🧢', 'Козырёк крупье',
+        ROGUE, 5, 100, Stats(agility=15),
+        agility=1, hp=10, armor_min=4, armor_max=6, dodge=0.15,
+    ),
+    _piece(
+        'strangler', Slot.HEAD, '🧢', 'Балаклава душителя',
+        ASSASSIN, 5, 100, Stats(intuition=15),
+        intuition=1, hp=10, armor_min=4, armor_max=6, crit=0.15,
+    ),
+    _piece(
+        'army', Slot.HEAD, '🧢', 'Армейская каска',
+        TANK, 7, 300, Stats(endurance=20),
+        strength=2, hp=30, armor_min=8, armor_max=10, anticrit=0.2,
+    ),
+    _piece(
+        'camouflage', Slot.HEAD, '🧢', 'Камуфляжная каска',
+        ASSASSIN, 7, 300, Stats(intuition=20),
+        intuition=2, hp=15, armor_min=7, armor_max=9, crit=0.2,
+    ),
+    _piece(
+        'fighter', Slot.HEAD, '🧢', 'Укреплённый шлем бойца',
+        WARRIOR, 7, 300, Stats(strength=20),
+        strength=2, hp=25, armor_min=8, armor_max=10, dodge=0.1, crit=0.1, anticrit=0.1,
+    ),
+    _piece(
+        'lovkach', Slot.HEAD, '🧢', 'Лёгкий шлем ловкача',
+        ROGUE, 7, 300, Stats(agility=20),
+        agility=2, hp=15, armor_min=7, armor_max=9, dodge=0.2,
+    ),
+    _piece(
+        'bouncer', Slot.HEAD, '🧢', 'Усиленный шлем вышибалы',
+        TANK, 9, 500, Stats(endurance=25),
+        strength=4, hp=60, armor_min=11, armor_max=13, anticrit=0.4,
+    ),
+    _piece(
+        'cardsharp', Slot.HEAD, '🧢', 'Шлем шулера',
+        ROGUE, 9, 500, Stats(agility=25),
+        agility=4, hp=20, armor_min=9, armor_max=11, dodge=0.4, counter=0.25,
+    ),
+    _piece(
+        'hero', Slot.HEAD, '🧢', 'Шлем героя',
+        WARRIOR, 9, 500, Stats(strength=25, endurance=20),
+        strength=2, agility=1, intuition=1, hp=45, armor_min=10, armor_max=12, accuracy=0.2, dodge=0.2, crit=0.2, anticrit=0.2,
+    ),
+    _piece(
+        'killer', Slot.HEAD, '🧢', 'Шлем убийцы',
+        ASSASSIN, 9, 500, Stats(intuition=25),
+        intuition=4, hp=20, armor_min=9, armor_max=11, accuracy=0.25, crit=0.4,
+    ),
+    # shirt
+    _piece(
+        'avenger', Slot.SHIRT, '👕', 'Футболка мстителя',
+        TANK, 3, 70, Stats(endurance=12),
+        strength=2, agility=1, intuition=1, hp=15,
+    ),
+    _piece(
+        'mercenary', Slot.SHIRT, '👕', 'Футболка наёмника',
+        ASSASSIN, 3, 70, Stats(intuition=12),
+        strength=1, agility=1, intuition=2, hp=10,
+    ),
+    _piece(
+        'plut', Slot.SHIRT, '👕', 'Футболка плута',
+        ROGUE, 3, 70, Stats(agility=12),
+        strength=1, agility=2, intuition=1, hp=10,
+    ),
+    _piece(
+        'sport', Slot.SHIRT, '👕', 'Спортивная футболка',
+        WARRIOR, 3, 70, Stats(strength=12),
+        strength=2, agility=1, intuition=1, hp=10,
+    ),
+    _piece(
+        'army', Slot.SHIRT, '👕', 'Кевларовая армейская футболка',
+        TANK, 6, 200, Stats(endurance=17),
+        strength=2, agility=2, intuition=2, hp=60,
+    ),
+    _piece(
+        'camouflage', Slot.SHIRT, '👕', 'Камуфляжная футболка',
+        ASSASSIN, 6, 200, Stats(intuition=17),
+        strength=2, agility=2, intuition=4, hp=20,
+    ),
+    _piece(
+        'fighter', Slot.SHIRT, '👕', 'Компрессионная футболка бойца',
+        WARRIOR, 6, 200, Stats(strength=17),
+        strength=4, agility=2, intuition=2, hp=20,
+    ),
+    _piece(
+        'lovkach', Slot.SHIRT, '👕', 'Футболка ловкача',
+        ROGUE, 6, 200, Stats(agility=17),
+        strength=2, agility=4, intuition=2, hp=20,
+    ),
+    # belt
+    _piece(
+        'biker', Slot.BELT, '🥋', 'Байкерский пояс',
+        WARRIOR, 4, 80, Stats(strength=13),
+        strength=1, armor_min=4, armor_max=6, crit=0.1, anticrit=0.05,
+    ),
+    _piece(
+        'boxer', Slot.BELT, '🥋', 'Боксёрский пояс',
+        TANK, 4, 80, Stats(endurance=13),
+        hp=10, armor_min=4, armor_max=6, anticrit=0.1,
+    ),
+    _piece(
+        'croupier', Slot.BELT, '🥋', 'Строгий пояс крупье',
+        ROGUE, 4, 80, Stats(agility=13),
+        agility=1, armor_min=3, armor_max=5, dodge=0.1, anticrit=0.05,
+    ),
+    _piece(
+        'strangler', Slot.BELT, '🥋', 'Пояс душителя',
+        ASSASSIN, 4, 80, Stats(intuition=13),
+        intuition=1, armor_min=3, armor_max=5, accuracy=0.05, crit=0.1,
+    ),
+    _piece(
+        'bouncer', Slot.BELT, '🥋', 'Усиленный пояс вышибалы',
+        TANK, 8, 400, Stats(endurance=22),
+        strength=2, agility=1, intuition=1, hp=25, armor_min=10, armor_max=12, anticrit=0.3,
+    ),
+    _piece(
+        'cardsharp', Slot.BELT, '🥋', 'Пояс шулера',
+        ROGUE, 8, 400, Stats(agility=22),
+        strength=1, agility=3, hp=15, armor_min=8, armor_max=10, dodge=0.3, anticrit=0.2,
+    ),
+    _piece(
+        'hero', Slot.BELT, '🥋', 'Пояс героя',
+        WARRIOR, 8, 400, Stats(strength=22),
+        strength=2, agility=1, intuition=1, hp=20, armor_min=9, armor_max=11, accuracy=0.15, dodge=0.15, crit=0.15, anticrit=0.05,
+    ),
+    _piece(
+        'killer', Slot.BELT, '🥋', 'Пояс убийцы',
+        ASSASSIN, 8, 400, Stats(intuition=22),
+        strength=1, intuition=3, hp=15, armor_min=8, armor_max=10, accuracy=0.2, crit=0.3,
+    ),
+    # gloves
+    _piece(
+        'biker', Slot.GLOVES, '🧤', 'Байкерские перчатки',
+        WARRIOR, 4, 80, Stats(strength=13),
+        strength=1, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _piece(
+        'boxer', Slot.GLOVES, '🧤', 'Боксёрские перчатки',
+        TANK, 4, 80, Stats(endurance=13),
+        strength=1, hp=15, anticrit=0.15,
+    ),
+    _piece(
+        'croupier', Slot.GLOVES, '🧤', 'Перчатки крупье',
+        ROGUE, 4, 80, Stats(agility=13),
+        agility=1, dodge=0.15,
+    ),
+    _piece(
+        'strangler', Slot.GLOVES, '🧤', 'Перчатки душителя',
+        ASSASSIN, 4, 80, Stats(intuition=13),
+        intuition=1, crit=0.15,
+    ),
+    _piece(
+        'bouncer', Slot.GLOVES, '🧤', 'Боевые перчатки вышибалы',
+        TANK, 9, 500, Stats(endurance=25),
+        strength=4, agility=1, intuition=1, hp=20, anticrit=0.4,
+    ),
+    _piece(
+        'cardsharp', Slot.GLOVES, '🧤', 'Перчатки шулера',
+        ROGUE, 9, 500, Stats(agility=25),
+        strength=2, agility=4, hp=10, accuracy=0.2, dodge=0.4,
+    ),
+    _piece(
+        'hero', Slot.GLOVES, '🧤', 'Перчатки героя',
+        WARRIOR, 9, 500, Stats(strength=25, endurance=20),
+        strength=2, agility=2, intuition=2, hp=15, accuracy=0.2, dodge=0.2, crit=0.2,
+    ),
+    _piece(
+        'killer', Slot.GLOVES, '🧤', 'Перчатки убийцы',
+        ASSASSIN, 9, 500, Stats(intuition=25),
+        strength=2, intuition=4, hp=10, accuracy=0.2, crit=0.4,
+    ),
+    # jacket
+    _piece(
+        'avenger', Slot.JACKET, '🧥', 'Куртка мстителя',
+        TANK, 2, 60, Stats(endurance=6),
+        strength=1, armor_min=2, armor_max=3, anticrit=0.05,
+    ),
+    _piece(
+        'mercenary', Slot.JACKET, '🧥', 'Куртка наёмника',
+        ASSASSIN, 2, 60, Stats(intuition=6),
+        intuition=1, armor_min=2, armor_max=3, crit=0.05,
+    ),
+    _piece(
+        'plut', Slot.JACKET, '🧥', 'Куртка плута',
+        ROGUE, 2, 60, Stats(agility=6),
+        agility=1, armor_min=2, armor_max=3, dodge=0.05,
+    ),
+    _piece(
+        'sport', Slot.JACKET, '🧥', 'Спортивная куртка',
+        WARRIOR, 2, 60, Stats(strength=6),
+        strength=1, hp=15, armor_min=2, armor_max=3,
+    ),
+    _piece(
+        'biker', Slot.JACKET, '🧥', 'Байкерская куртка',
+        WARRIOR, 5, 100, Stats(strength=15),
+        strength=1, hp=15, armor_min=5, armor_max=7, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _piece(
+        'boxer', Slot.JACKET, '🧥', 'Боксёрская защитная куртка',
+        TANK, 5, 100, Stats(endurance=15),
+        strength=1, hp=30, armor_min=5, armor_max=7, anticrit=0.15,
+    ),
+    _piece(
+        'croupier', Slot.JACKET, '🧥', 'Куртка крупье',
+        ROGUE, 5, 100, Stats(agility=15),
+        agility=1, hp=10, armor_min=4, armor_max=6, dodge=0.15,
+    ),
+    _piece(
+        'strangler', Slot.JACKET, '🧥', 'Плащ душителя',
+        ASSASSIN, 5, 100, Stats(intuition=15),
+        intuition=1, hp=10, armor_min=4, armor_max=6, crit=0.15,
+    ),
+    _piece(
+        'army', Slot.JACKET, '🧥', 'Армейская куртка',
+        TANK, 7, 200, Stats(endurance=20),
+        strength=2, hp=60, armor_min=8, armor_max=10, anticrit=0.2,
+    ),
+    _piece(
+        'camouflage', Slot.JACKET, '🧥', 'Камуфляжная куртка',
+        ASSASSIN, 7, 200, Stats(intuition=20),
+        intuition=2, hp=30, armor_min=7, armor_max=9, crit=0.2,
+    ),
+    _piece(
+        'fighter', Slot.JACKET, '🧥', 'Кожаная куртка бойца',
+        WARRIOR, 7, 200, Stats(strength=20),
+        strength=2, hp=50, armor_min=8, armor_max=10, dodge=0.1, crit=0.1, anticrit=0.1,
+    ),
+    _piece(
+        'lovkach', Slot.JACKET, '🧥', 'Лёгкая куртка ловкача',
+        ROGUE, 7, 200, Stats(agility=20),
+        agility=2, hp=30, armor_min=7, armor_max=9, dodge=0.2,
+    ),
+    _piece(
+        'bouncer', Slot.JACKET, '🧥', 'Бронекуртка вышибалы',
+        TANK, 9, 500, Stats(endurance=25),
+        strength=4, agility=2, intuition=2, hp=75, armor_min=12, armor_max=14, anticrit=0.4,
+    ),
+    _piece(
+        'cardsharp', Slot.JACKET, '🧥', 'Куртка шулера',
+        ROGUE, 9, 500, Stats(agility=25),
+        strength=2, agility=4, intuition=2, hp=40, armor_min=10, armor_max=12, dodge=0.4, counter=0.25,
+    ),
+    _piece(
+        'hero', Slot.JACKET, '🧥', 'Куртка героя',
+        WARRIOR, 9, 500, Stats(strength=25, endurance=20),
+        strength=4, agility=2, intuition=2, hp=60, armor_min=11, armor_max=13, accuracy=0.2, dodge=0.2, crit=0.2, anticrit=0.2,
+    ),
+    _piece(
+        'killer', Slot.JACKET, '🧥', 'Куртка убийцы',
+        ASSASSIN, 9, 500, Stats(intuition=25),
+        strength=2, agility=2, intuition=4, hp=40, armor_min=10, armor_max=12, accuracy=0.25, crit=0.4,
+    ),
+    # pants
+    _piece(
+        'avenger', Slot.PANTS, '👖', 'Штаны мстителя',
+        TANK, 3, 70, Stats(endurance=12),
+        hp=15, armor_min=3, armor_max=4, anticrit=0.1,
+    ),
+    _piece(
+        'mercenary', Slot.PANTS, '👖', 'Штаны наёмника',
+        ASSASSIN, 3, 70, Stats(intuition=12),
+        intuition=1, armor_min=3, armor_max=4, crit=0.05, anticrit=0.05,
+    ),
+    _piece(
+        'plut', Slot.PANTS, '👖', 'Штаны плута',
+        ROGUE, 3, 70, Stats(agility=12),
+        agility=1, armor_min=3, armor_max=4, accuracy=0.05, dodge=0.05,
+    ),
+    _piece(
+        'sport', Slot.PANTS, '👖', 'Спортивные штаны',
+        WARRIOR, 3, 70, Stats(strength=12),
+        armor_min=3, armor_max=4, accuracy=0.05, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _piece(
+        'biker', Slot.PANTS, '👖', 'Байкерские штаны',
+        WARRIOR, 5, 100, Stats(strength=15),
+        strength=1, hp=15, armor_min=5, armor_max=7, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _piece(
+        'boxer', Slot.PANTS, '👖', 'Боксёрские тренировочные штаны',
+        TANK, 5, 100, Stats(endurance=15),
+        strength=1, hp=15, armor_min=5, armor_max=7, anticrit=0.15,
+    ),
+    _piece(
+        'croupier', Slot.PANTS, '👖', 'Штаны крупье',
+        ROGUE, 5, 100, Stats(agility=15),
+        agility=1, hp=10, armor_min=4, armor_max=6, dodge=0.15,
+    ),
+    _piece(
+        'strangler', Slot.PANTS, '👖', 'Брюки душителя',
+        ASSASSIN, 5, 100, Stats(intuition=15),
+        intuition=1, hp=10, armor_min=4, armor_max=6, crit=0.15,
+    ),
+    _piece(
+        'bouncer', Slot.PANTS, '👖', 'Усиленные штаны вышибалы',
+        TANK, 8, 400, Stats(endurance=22),
+        strength=2, agility=2, intuition=2, hp=40, armor_min=10, armor_max=12, anticrit=0.3,
+    ),
+    _piece(
+        'cardsharp', Slot.PANTS, '👖', 'Брюки шулера',
+        ROGUE, 8, 400, Stats(agility=22),
+        strength=3, agility=3, hp=20, armor_min=8, armor_max=10, dodge=0.3, anticrit=0.2,
+    ),
+    _piece(
+        'hero', Slot.PANTS, '👖', 'Брюки героя',
+        WARRIOR, 8, 400, Stats(strength=22),
+        strength=3, agility=1, intuition=1, hp=30, armor_min=9, armor_max=11, accuracy=0.15, dodge=0.15, crit=0.15, anticrit=0.05,
+    ),
+    _piece(
+        'killer', Slot.PANTS, '👖', 'Штаны убийцы',
+        ASSASSIN, 8, 400, Stats(intuition=22),
+        strength=3, intuition=3, hp=20, armor_min=8, armor_max=10, accuracy=0.2, crit=0.3,
+    ),
+    # boots
+    _piece(
+        'avenger', Slot.BOOTS, '👟', 'Кеды мстителя',
+        TANK, 2, 60, Stats(endurance=6),
+        strength=1, armor_min=2, armor_max=3, anticrit=0.05,
+    ),
+    _piece(
+        'mercenary', Slot.BOOTS, '👟', 'Кеды наёмника',
+        ASSASSIN, 2, 60, Stats(intuition=6),
+        intuition=1, armor_min=2, armor_max=3, crit=0.05,
+    ),
+    _piece(
+        'plut', Slot.BOOTS, '👟', 'Кеды плута',
+        ROGUE, 2, 60, Stats(agility=6),
+        agility=1, armor_min=2, armor_max=3, dodge=0.05,
+    ),
+    _piece(
+        'sport', Slot.BOOTS, '👟', 'Спортивные кеды',
+        WARRIOR, 2, 60, Stats(strength=6),
+        strength=1, hp=15, armor_min=2, armor_max=3,
+    ),
+    _piece(
+        'biker', Slot.BOOTS, '👟', 'Байкерские кроссовки',
+        WARRIOR, 4, 80, Stats(strength=13),
+        strength=1, hp=10, armor_min=4, armor_max=6, crit=0.1, anticrit=0.05,
+    ),
+    _piece(
+        'boxer', Slot.BOOTS, '👟', 'Боксёрские кроссовки',
+        TANK, 4, 80, Stats(endurance=13),
+        hp=10, armor_min=4, armor_max=6, anticrit=0.05,
+    ),
+    _piece(
+        'croupier', Slot.BOOTS, '👟', 'Лёгкие ботинки крупье',
+        ROGUE, 4, 80, Stats(agility=13),
+        agility=1, hp=10, armor_min=3, armor_max=5, dodge=0.1, anticrit=0.05,
+    ),
+    _piece(
+        'strangler', Slot.BOOTS, '👟', 'Кроссовки душителя',
+        ASSASSIN, 4, 80, Stats(intuition=13),
+        intuition=1, hp=10, armor_min=3, armor_max=5, accuracy=0.05, crit=0.1,
+    ),
+    _piece(
+        'army', Slot.BOOTS, '👟', 'Армейские ботинки',
+        TANK, 6, 200, Stats(endurance=17),
+        strength=1, hp=20, armor_min=7, armor_max=9, anticrit=0.15,
+    ),
+    _piece(
+        'camouflage', Slot.BOOTS, '👟', 'Камуфляжные берцы',
+        ASSASSIN, 6, 200, Stats(intuition=17),
+        intuition=1, hp=10, armor_min=6, armor_max=8, crit=0.15, anticrit=0.05,
+    ),
+    _piece(
+        'fighter', Slot.BOOTS, '👟', 'Кожаные берцы бойца',
+        WARRIOR, 6, 200, Stats(strength=17),
+        strength=1, hp=15, armor_min=7, armor_max=9, accuracy=0.05, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _piece(
+        'lovkach', Slot.BOOTS, '👟', 'Лёгкие берцы ловкача',
+        ROGUE, 6, 200, Stats(agility=17),
+        agility=1, hp=10, armor_min=6, armor_max=8, accuracy=0.05, dodge=0.15,
+    ),
+    _piece(
+        'bouncer', Slot.BOOTS, '👟', 'Усиленные ботинки вышибалы',
+        TANK, 9, 500, Stats(endurance=25),
+        strength=4, hp=30, armor_min=11, armor_max=13, anticrit=0.4,
+    ),
+    _piece(
+        'cardsharp', Slot.BOOTS, '👟', 'Лёгкие сапоги шулера',
+        ROGUE, 9, 500, Stats(agility=25),
+        agility=4, hp=10, armor_min=9, armor_max=11, accuracy=0.25, dodge=0.4,
+    ),
+    _piece(
+        'hero', Slot.BOOTS, '👟', 'Берцы героя',
+        WARRIOR, 9, 500, Stats(strength=25, endurance=20),
+        strength=2, agility=1, intuition=1, hp=25, armor_min=10, armor_max=12, accuracy=0.2, dodge=0.2, crit=0.2, anticrit=0.2,
+    ),
+    _piece(
+        'killer', Slot.BOOTS, '👟', 'Камуфляжные ботинки убийцы',
+        ASSASSIN, 9, 500, Stats(intuition=25),
+        intuition=4, hp=10, armor_min=9, armor_max=11, crit=0.4, anticrit=0.25,
+    ),
+)
+
+# Что пак обошёл: одежда прежней лавки. На витрине её больше нет, в
+# каталоге она осталась — купленное не отбирают. Оружие, щиты и майка
+# сюда не входят: оружия в паке нет вовсе, щиты он не трогает, а майку
+# пак переписал на месте.
+RETIRED_GEAR = frozenset(
+    {
+        # голова
+        "bandana", "moto_helmet", "visor_cap",
+        # футболки
+        "club_tee", "skull_tee", "rashguard", "kevlar_tee",
+        # пояса
+        "wide_belt", "throwing_belt", "buckle_belt", "sheath_belt",
+        "cardsharp_belt", "power_belt", "knuckle_belt",
+        # перчатки
+        "wraps", "leather_bracers", "dealer_bracers", "battered_gloves",
+        "fingerless_gloves", "card_gloves",
+        # куртки
+        "leather_jacket", "shadow_coat", "biker_jacket", "denim_vest",
+        "cardsharp_jacket", "pit_fighter_jacket", "bouncer_armor_jacket",
+        # штаны
+        "canvas_pants", "sheath_pants", "padded_pants", "track_pants",
+        "stash_pants", "bouncer_pants", "assault_fighter_pants",
+        # обувь
+        "sneakers", "army_boots", "runners",
+    }
+)
+
+
+# Снятое с прилавка помечается здесь, одним проходом: иначе про `retired=True`
+# пришлось бы помнить у каждой из тридцати семи вещей, а список выше — и так
+# полный ответ на вопрос «чего в лавке больше нет».
+ITEMS: tuple[Item, ...] = tuple(
+    replace(item, retired=True) if item.code in RETIRED_GEAR else item
+    for item in (
     # ---------- с чего начинают: уровни 1–3 ----------
     Item(
         "wraps",
@@ -153,14 +687,18 @@ ITEMS: tuple[Item, ...] = (
     # у куртки того же уровня: они прикрывают те же корпус и живот, и их
     # брони складываются. Первые две без требований намеренно — слот новый,
     # и на первых уровнях в него должно быть что надеть.
+    # Единственная вещь прежней лавки, которую пак не обошёл, а переписал:
+    # футболка «всем» в нём одна, и это она. Цена и запас — из пака,
+    # картинка и код прежние, поэтому у тех, кто уже носит майку, она просто
+    # стала лучше
     Item(
         "wife_beater",
         "Майка-алкоголичка",
         Slot.SHIRT,
         "🎽",
-        hp=4,
+        hp=30,
         image=art.shirt("wife_beater"),
-        price=35,
+        price=50,
     ),
     Item(
         "club_tee",
@@ -1871,6 +2409,8 @@ ITEMS: tuple[Item, ...] = (
         requires=Stats(strength=10),
         stars=250,
     ),
+    *SET_PIECES,
+    )
 )
 
 CATALOGUE: dict[str, Item] = {item.code: item for item in ITEMS}
@@ -1880,7 +2420,12 @@ CATALOGUE: dict[str, Item] = {item.code: item for item in ITEMS}
 # купить, и висеть на прилавке рядом с кастетом им незачем.
 SHOWCASE: tuple[Item, ...] = tuple(
     sorted(
-        (item for item in ITEMS if not item.is_magic and item.on_sale and not item.shelf),
+        (
+            item
+            for item in ITEMS
+            if not item.is_magic and item.on_sale and not item.shelf
+            and not item.retired
+        ),
         key=lambda item: (ALL_SLOTS.index(item.slot), item.level_required, item.price),
     )
 )

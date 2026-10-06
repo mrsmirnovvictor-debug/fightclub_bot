@@ -671,9 +671,9 @@ async def test_the_clothes_shop_holds_everything_but_weapons(shop_page):
     titles = await visible_titles(shop_page)
     assert "Кастет" not in titles, "оружие торгуют у оружейника"
 
-    # футболки на прилавке: пять штук, часть открыта по уровню
+    # футболки на прилавке: девять штук, часть открыта по уровню
     shirts = next(head for head in heads if "Футболки" in head)
-    assert "из 5" in shirts
+    assert "из 9" in shirts
     assert "Майка-алкоголичка" in titles
 
 

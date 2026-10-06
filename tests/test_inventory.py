@@ -31,8 +31,10 @@ from tests.test_webapp import TOKEN, make_init_data
 
 ARMED = FightMode.ARMED
 KNUCKLES = CATALOGUE["knuckles"]
-SNEAKERS = CATALOGUE["sneakers"]
-WRAPS = CATALOGUE["wraps"]
+# Кеды и бинты пак сетов сменил на «Кеды плута» и байкерские перчатки:
+# покупать здесь нужно то, что сейчас лежит на прилавке
+BOOTS = CATALOGUE["set_plut_boots"]
+GLOVES = CATALOGUE["set_biker_gloves"]
 
 
 class Dice:
@@ -66,7 +68,7 @@ def make_player(user_id: int = 1, credits: int = 500, **kwargs) -> Player:
 
 
 def test_new_item_is_pristine():
-    owned = OwnedItem(item=SNEAKERS)
+    owned = OwnedItem(item=BOOTS)
     assert owned.describe_wear() == f"0/{MAX_WEAR}"
     assert owned.repair_price == 0
     assert not owned.is_worn_out
@@ -83,7 +85,7 @@ def test_only_a_lost_fight_wears_the_gear():
 
     def wears(won, times=2000):
         return sum(
-            apply_fight_wear([OwnedItem(item=SNEAKERS)], won, rng)[0] != []
+            apply_fight_wear([OwnedItem(item=BOOTS)], won, rng)[0] != []
             for _ in range(times)
         )
 
@@ -93,7 +95,7 @@ def test_only_a_lost_fight_wears_the_gear():
 
 
 def test_the_last_point_of_wear_turns_the_item_into_dust():
-    owned = OwnedItem(item=SNEAKERS, wear=MAX_WEAR - 1)
+    owned = OwnedItem(item=BOOTS, wear=MAX_WEAR - 1)
     damaged, broken = apply_fight_wear([owned], won=False, rng=Dice(0.0))
     assert damaged == [owned] and broken == [owned]
     assert owned.wear == MAX_WEAR
@@ -101,7 +103,7 @@ def test_the_last_point_of_wear_turns_the_item_into_dust():
 
 
 def test_repair_costs_a_credit_per_point():
-    owned = OwnedItem(item=SNEAKERS, wear=19)
+    owned = OwnedItem(item=BOOTS, wear=19)
     assert owned.repair_price == 19
     result = repair(owned, 19, Dice(0.99))  # прочность уцелела
     assert (result.points, result.price) == (19, 19)
@@ -111,7 +113,7 @@ def test_repair_costs_a_credit_per_point():
 
 
 def test_each_repair_risks_a_point_of_durability():
-    owned = OwnedItem(item=SNEAKERS, wear=19)
+    owned = OwnedItem(item=BOOTS, wear=19)
     result = repair(owned, 19, Dice(0.0))
     assert result.degraded
     assert owned.max_wear == MAX_WEAR - 1
@@ -119,9 +121,9 @@ def test_each_repair_risks_a_point_of_durability():
 
 def test_repairing_bit_by_bit_kills_the_item_faster():
     """Пять походов к мастеру — пять бросков на прочность, один поход — один."""
-    at_once = OwnedItem(item=SNEAKERS, wear=5)
+    at_once = OwnedItem(item=BOOTS, wear=5)
     repair(at_once, 5, Dice(0.0))
-    piecemeal = OwnedItem(item=SNEAKERS, wear=5)
+    piecemeal = OwnedItem(item=BOOTS, wear=5)
     for _ in range(5):
         repair(piecemeal, 1, Dice(0.0))
 
@@ -131,7 +133,7 @@ def test_repairing_bit_by_bit_kills_the_item_faster():
 
 
 def test_item_crumbles_when_durability_runs_out():
-    owned = OwnedItem(item=SNEAKERS, wear=1, max_wear=1)
+    owned = OwnedItem(item=BOOTS, wear=1, max_wear=1)
     result = repair(owned, 1, Dice(0.0))
     assert result.destroyed
     assert owned.max_wear == 0
@@ -156,21 +158,37 @@ async def test_buying_moves_credits_into_the_backpack(db):
     player = make_player(credits=100)
     await db.save_player(player)
 
-    owned = await buy(db, player, "sneakers")
-    assert player.credits == 100 - SNEAKERS.price
+    owned = await buy(db, player, "set_plut_boots")
+    assert player.credits == 100 - BOOTS.price
     assert owned.id > 0
 
     saved = await db.get_player(player.user_id)
-    assert [item.code for item in saved.backpack] == ["sneakers"]
-    assert saved.credits == 100 - SNEAKERS.price
+    assert [item.code for item in saved.backpack] == ["set_plut_boots"]
+    assert saved.credits == 100 - BOOTS.price
     assert saved.equipment.bonus == Stats()  # лежит в рюкзаке, статов не даёт
+
+
+async def test_the_shop_does_not_sell_what_it_took_off_the_counter(db):
+    """Снятую вещь не купить даже по коду: кнопки на неё нет, а код — есть.
+
+    Старая кнопка живёт в чужой переписке сколько угодно, и нажать её
+    можно через год. Кредиты за это списываться не должны.
+    """
+    player = make_player(credits=500)
+    await db.save_player(player)
+
+    assert CATALOGUE["sneakers"].retired
+    with pytest.raises(InventoryError, match="Такого товара в лавке нет"):
+        await buy(db, player, "sneakers")
+    assert player.credits == 500
+    assert (await db.get_player(player.user_id)).gear == []
 
 
 async def test_shop_refuses_when_credits_run_short(db):
     player = make_player(credits=10)
     await db.save_player(player)
     with pytest.raises(InventoryError, match="Не хватает кредитов"):
-        await buy(db, player, "sneakers")
+        await buy(db, player, "set_plut_boots")
     assert player.credits == 10
     assert (await db.get_player(player.user_id)).gear == []
 
@@ -229,7 +247,7 @@ async def test_a_second_weapon_has_nowhere_to_go(db):
     assert saved.gear_in_slot(Slot.WEAPON).id == offhand.id
     assert [item.id for item in saved.backpack] == [weapon.id]
 
-    boots = await buy(db, player, "sneakers")
+    boots = await buy(db, player, "set_plut_boots")
     with pytest.raises(InventoryError, match="в этот слот не надевается"):
         await equip(db, player, boots.id, Slot.HEAD)
 
@@ -237,7 +255,7 @@ async def test_a_second_weapon_has_nowhere_to_go(db):
 async def test_taking_the_item_off_returns_it_to_the_backpack(db):
     player = make_player()
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     await equip(db, player, owned.id)
 
     await unequip(db, player, Slot.BOOTS)
@@ -252,7 +270,7 @@ async def test_taking_the_item_off_returns_it_to_the_backpack(db):
 async def test_repair_charges_the_credits_and_saves_the_result(db):
     player = make_player(credits=100)
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     owned.wear = 7
     await db.save_gear(owned)
     paid = player.credits
@@ -268,7 +286,7 @@ async def test_repair_charges_the_credits_and_saves_the_result(db):
 async def test_repair_needs_credits_and_something_to_repair(db):
     player = make_player(credits=100)
     await db.save_player(player)
-    owned = await buy(db, player, "wraps")
+    owned = await buy(db, player, "set_biker_gloves")
     player.credits = 3  # кредиты кончились после покупки
     await db.save_player(player)
 
@@ -404,7 +422,7 @@ async def test_the_bag_says_what_the_shop_would_pay(db):
 async def test_a_finished_item_disappears_from_the_bag_for_good(db):
     player = make_player()
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     owned.wear, owned.max_wear = 1, 1
     await db.save_gear(owned)
 
@@ -417,7 +435,7 @@ async def test_a_finished_item_disappears_from_the_bag_for_good(db):
 async def test_wear_after_the_fight_reaches_the_database(db):
     player = make_player()
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     await equip(db, player, owned.id)
 
     broken = await wear_after_fight(db, player, won=False, rng=Dice(0.0))
@@ -429,14 +447,14 @@ async def test_wear_after_the_fight_reaches_the_database(db):
 async def test_gear_worn_to_dust_leaves_both_the_slot_and_the_bag(db):
     player = make_player()
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     await equip(db, player, owned.id)
     owned.wear = MAX_WEAR - 1
     await db.save_gear(owned)
 
     broken = await wear_after_fight(db, player, won=False, rng=Dice(0.0))
 
-    assert [item.code for item in broken] == ["sneakers"]
+    assert [item.code for item in broken] == ["set_plut_boots"]
     saved = await db.get_player(player.user_id)
     assert saved.gear == []
     assert saved.equipment.get(Slot.BOOTS) is None
@@ -445,7 +463,7 @@ async def test_gear_worn_to_dust_leaves_both_the_slot_and_the_bag(db):
 async def test_deleting_a_fighter_takes_the_inventory_with_him(db):
     player = make_player()
     await db.save_player(player)
-    await buy(db, player, "sneakers")
+    await buy(db, player, "set_plut_boots")
 
     await db.delete_player(player.user_id)
 
@@ -487,11 +505,11 @@ def test_strangers_do_not_see_the_backpack():
 
 def test_worn_gear_shows_its_wear_in_the_slot():
     player = make_player()
-    player.gear = [OwnedItem(item=SNEAKERS, id=11, wear=4, slot=Slot.BOOTS)]
+    player.gear = [OwnedItem(item=BOOTS, id=11, wear=4, slot=Slot.BOOTS)]
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     boots = next(s for s in card["slots"]["right"] if s["slot"] == "boots")
     assert boots["item"]["wear"] == 4
-    assert boots["item"]["image"] == SNEAKERS.picture
+    assert boots["item"]["image"] == BOOTS.picture
 
 
 # ---------- ручки мини-аппа ----------
@@ -528,7 +546,7 @@ def headers(user_id: int) -> dict:
 async def test_mini_app_dresses_and_undresses_the_fighter(client, db):
     player = make_player(user_id=42)
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
 
     response = await client.post(
         "/api/equip", json={"item_id": owned.id}, headers=headers(42)
@@ -537,13 +555,13 @@ async def test_mini_app_dresses_and_undresses_the_fighter(client, db):
     card = await response.json()
     assert card["inventory"] == []
     boots = next(s for s in card["slots"]["right"] if s["slot"] == "boots")
-    assert boots["item"]["title"] == "Кеды"
+    assert boots["item"]["title"] == BOOTS.title
 
     response = await client.post(
         "/api/unequip", json={"slot": "boots"}, headers=headers(42)
     )
     card = await response.json()
-    assert [item["title"] for item in card["inventory"]] == ["Кеды"]
+    assert [item["title"] for item in card["inventory"]] == [BOOTS.title]
 
 
 async def test_mini_app_explains_why_the_button_is_grey(client, db):
@@ -561,7 +579,7 @@ async def test_mini_app_explains_why_the_button_is_grey(client, db):
 async def test_mini_app_repairs_for_credits(client, db):
     player = make_player(user_id=42, credits=200, location="workshop")
     await db.save_player(player)
-    owned = await buy(db, player, "sneakers")
+    owned = await buy(db, player, "set_plut_boots")
     owned.wear = 5
     await db.save_gear(owned)
 
@@ -573,7 +591,7 @@ async def test_mini_app_repairs_for_credits(client, db):
     assert body["repair"]["points"] == 5
     assert body["repair"]["price"] == 5
     assert body["card"]["inventory"][0]["wear"] == 0
-    assert body["card"]["record"]["credits"] == 200 - SNEAKERS.price - 5
+    assert body["card"]["record"]["credits"] == 200 - BOOTS.price - 5
     # Мастерская приходит тем же ответом, и починенной вещи в ней уже нет:
     # список чинить нечего, потому что всё снятое стало целым
     assert body["workshop"]["repair"] == []
@@ -583,7 +601,7 @@ async def test_mini_app_repairs_for_credits(client, db):
 async def test_nobody_touches_a_stranger_backpack(client, db):
     owner = make_player(user_id=42)
     await db.save_player(owner)
-    owned = await buy(db, owner, "sneakers")
+    owned = await buy(db, owner, "set_plut_boots")
     await db.save_player(make_player(user_id=43, nickname="Марла"))
 
     response = await client.post(
@@ -608,7 +626,7 @@ async def test_gear_wears_out_over_real_fights(bot_and_db):
     for user_id, name in ((1, "Тайлер"), (2, "Марла")):
         player = make_player(user_id=user_id, nickname=name, credits=500)
         await db.save_player(player)
-        owned = await buy(db, player, "sneakers")
+        owned = await buy(db, player, "set_plut_boots")
         await equip(db, player, owned.id)
 
     for _ in range(3):
@@ -633,7 +651,7 @@ async def test_dust_is_announced_in_the_thread(bot_and_db):
     for user_id, name in ((1, "Тайлер"), (2, "Марла")):
         player = make_player(user_id=user_id, nickname=name, credits=500)
         await db.save_player(player)
-        owned = await buy(db, player, "sneakers")
+        owned = await buy(db, player, "set_plut_boots")
         await equip(db, player, owned.id)
         owned.wear = MAX_WEAR - 1
         await db.save_gear(owned)
@@ -661,7 +679,7 @@ async def test_nobody_changes_clothes_in_the_middle_of_a_fight(db):
     for user_id, name in ((42, "Тайлер"), (43, "Марла")):
         player = make_player(user_id=user_id, nickname=name)
         await db.save_player(player)
-        owned = await buy(db, player, "sneakers")
+        owned = await buy(db, player, "set_plut_boots")
         await equip(db, player, owned.id)
 
     await service.start_duel(-100, 7, await db.get_player(42), await db.get_player(43))
@@ -675,7 +693,7 @@ async def test_nobody_changes_clothes_in_the_middle_of_a_fight(db):
         assert response.status == 409
         assert "Ты на ринге" in (await response.json())["error"]
 
-    assert (await db.get_player(42)).equipped[0].code == "sneakers"
+    assert (await db.get_player(42)).equipped[0].code == "set_plut_boots"
     await service.shutdown()
 
 

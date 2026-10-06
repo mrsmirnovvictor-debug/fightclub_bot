@@ -49,7 +49,7 @@ async def test_showcase_lists_open_goods_by_type(client, dispatcher_env):
     _, _, session = dispatcher_env
     await client.send("/buy")
     text = session.texts[-1]
-    assert "Кеды" in text and str(CATALOGUE["sneakers"].price) in text
+    assert "Кеды плута" in text and str(CATALOGUE["set_plut_boots"].price) in text
     assert "уровень 3, сила 6" in text  # требования кастета
     assert "Оружие" in text and "Обувь" in text  # разложено по типам
     # товар не по уровню на прилавок не выкладывают, но о нём предупреждают
@@ -87,31 +87,31 @@ async def test_level_locked_goods_are_not_sold_in_chat(client, dispatcher_env):
 async def test_buying_takes_credits_and_fills_the_backpack(client, dispatcher_env):
     db, _, session = dispatcher_env
     await client.send("/buy")
-    await client.press(BuyCB(code="sneakers", confirm=1).pack())
+    await client.press(BuyCB(code="set_plut_boots", confirm=1).pack())
 
     player = await client.player()
-    assert player.credits == 300 - CATALOGUE["sneakers"].price
-    assert [item.code for item in player.backpack] == ["sneakers"]
+    assert player.credits == 300 - CATALOGUE["set_plut_boots"].price
+    assert [item.code for item in player.backpack] == ["set_plut_boots"]
     assert "Куплено" in session.texts[-1]
 
 
 async def test_the_chat_asks_before_it_takes_the_credits(client, dispatcher_env):
     """Первое нажатие спрашивает, второе платит, отмена возвращает витрину."""
     _, _, session = dispatcher_env
-    price = CATALOGUE["sneakers"].price
+    price = CATALOGUE["set_plut_boots"].price
     await client.send("/buy")
     shelf = session.calls[-1].reply_markup.inline_keyboard
 
-    await client.press(BuyCB(code="sneakers").pack())
+    await client.press(BuyCB(code="set_plut_boots").pack())
 
-    assert f"Вы приобретаете предмет Кеды за {price} кредитов" in session.alerts[-1]
+    assert f"Вы приобретаете предмет Кеды плута за {price} кредитов" in session.alerts[-1]
     assert (await client.player()).credits == 300  # ничего не списано
     asked = session.method_calls("EditMessageReplyMarkup")[-1]
     labels = [b.text for row in asked.reply_markup.inline_keyboard for b in row]
     assert labels == [f"✅ Подтвердить · {price} 💰", "✖️ Отмена"]
 
     # отмена возвращает на место прежний список товара
-    await client.press(BuyCB(code="sneakers", confirm=2).pack())
+    await client.press(BuyCB(code="set_plut_boots", confirm=2).pack())
     assert session.alerts[-1] == "Отменено."
     back = session.method_calls("EditMessageReplyMarkup")[-1]
     assert [b.text for row in back.reply_markup.inline_keyboard for b in row] == [
@@ -119,7 +119,7 @@ async def test_the_chat_asks_before_it_takes_the_credits(client, dispatcher_env)
     ]
     assert (await client.player()).credits == 300
 
-    await client.press(BuyCB(code="sneakers", confirm=1).pack())
+    await client.press(BuyCB(code="set_plut_boots", confirm=1).pack())
     assert (await client.player()).credits == 300 - price
 
 
@@ -129,7 +129,7 @@ async def test_empty_wallet_stops_the_purchase(client, dispatcher_env):
     player.credits = 5
     await db.save_player(player)
 
-    await client.press(BuyCB(code="sneakers", confirm=1).pack())
+    await client.press(BuyCB(code="set_plut_boots", confirm=1).pack())
 
     assert "Не хватает кредитов" in session.alerts[-1]
     assert (await client.player()).gear == []

@@ -44,7 +44,9 @@ async def buy(
     это не оплошность: у лавки в личке бота адреса нет.
     """
     item: Item | None = get_item(code)
-    if item is None:
+    if item is None or item.retired:
+        # Снятую с прилавка вещь кнопкой не купить — её там нет; но код
+        # приходит от игрока, и старая кнопка в чужой переписке осталась
         raise InventoryError("Такого товара в лавке нет.")
     if player.level < item.level_required:
         raise InventoryError(
