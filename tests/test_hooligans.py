@@ -38,6 +38,7 @@ from bot.game.raid import (
     kind_at,
     kind_of_boss,
     raid_foes,
+    window_of,
 )
 from bot.raid_service import RaidError, RaidService
 from tests.test_duel_flow import FakeBot
@@ -49,6 +50,8 @@ THREAD_ID = 7
 # Среда, 7 октября 2026 года: день, в который фанаты выходят
 WEDNESDAY = date(2026, 10, 7)
 TUESDAY = date(2026, 10, 6)
+# Четверг нужен окну: оно кончается в полночь, то есть уже назавтра
+THURSDAY = date(2026, 10, 8)
 
 
 def moscow(day: date, hour: int, minute: int = 0) -> int:
@@ -171,11 +174,11 @@ async def storm(service, session, players, waves: int = 40) -> None:
 
 
 def test_the_gang_comes_out_on_wednesdays_and_saturdays():
-    """Среда и суббота, с полудня до шести — и больше никогда."""
+    """Среда и суббота, с шести вечера до полуночи — и больше никогда."""
     schedule = HOOLIGAN_RAID.schedule
 
     assert [window.title for window in schedule.windows_on(WEDNESDAY)] == [
-        "с 12:00 до 18:00 мск"
+        "с 18:00 до 00:00 мск"
     ]
     assert schedule.windows_on(date(2026, 10, 10))  # суббота
     for quiet in (5, 6, 8, 9, 11):  # пн, вт, чт, пт, вс
@@ -183,19 +186,33 @@ def test_the_gang_comes_out_on_wednesdays_and_saturdays():
 
 
 def test_the_window_is_six_hours_and_not_a_minute_more():
-    """В 11:59 закрыто, в 12:00 открыто, в 18:00 снова закрыто."""
-    assert HOOLIGAN_RAID.window_now(moscow(WEDNESDAY, 11, 59)) is None
-    assert HOOLIGAN_RAID.window_now(moscow(WEDNESDAY, 12)) is not None
-    assert HOOLIGAN_RAID.window_now(moscow(WEDNESDAY, 17, 59)) is not None
-    assert HOOLIGAN_RAID.window_now(moscow(WEDNESDAY, 18)) is None
+    """В 17:59 закрыто, в 18:00 открыто, в полночь снова закрыто.
+
+    Окно упирается в полночь, и это его единственное место, где день
+    кончается раньше окна. В 23:59 его открыла среда, в 00:00 четверга
+    оно уже кончилось — а четверг своего окна не открывает вовсе.
+    """
+    assert HOOLIGAN_RAID.window_now(moscow(WEDNESDAY, 17, 59)) is None
+    assert HOOLIGAN_RAID.window_now(moscow(WEDNESDAY, 18)) is not None
+    assert HOOLIGAN_RAID.window_now(moscow(WEDNESDAY, 23, 59)) is not None
+    assert HOOLIGAN_RAID.window_now(moscow(THURSDAY, 0)) is None
+    assert HOOLIGAN_RAID.window_now(moscow(THURSDAY, 1)) is None
+
+    # и кончается оно ровно в полночь, а не в двадцать четыре часа среды
+    window = HOOLIGAN_RAID.schedule.windows_on(WEDNESDAY)[0]
+    assert window.end == moscow(THURSDAY, 0)
+    assert window.end - window.start == 6 * 3600
 
 
 def test_the_schedule_is_spoken_once_and_for_all():
     """Жребия тут нет: расписание называется одними и теми же словами."""
     said = HOOLIGAN_RAID.schedule_text(moscow(TUESDAY, 10))
-    assert said == "по средам и субботам с 12:00 до 18:00 мск"
+    assert said == "по средам и субботам с 18:00 до 00:00 мск"
     # и во вторник, и в среду — то же самое: выучить его можно и нужно
     assert HOOLIGAN_RAID.schedule_text(moscow(WEDNESDAY, 13)) == said
+    # и сказано оно так же, как подписано окно в карточке: окно кончается
+    # в полночь, а не в двадцать четыре часа
+    assert HOOLIGAN_RAID.schedule.windows_on(WEDNESDAY)[0].title in said
 
 
 def test_the_next_window_reaches_across_the_quiet_days():
@@ -206,19 +223,44 @@ def test_the_next_window_reaches_across_the_quiet_days():
     «ближайшее окно» упиралось бы в пустоту.
     """
     sunday = moscow(date(2026, 10, 11), 20)
-    assert HOOLIGAN_RAID.next_window(sunday).start == moscow(date(2026, 10, 14), 12)
-    # в среду вечером следующее — суббота
-    after = moscow(WEDNESDAY, 19)
-    assert HOOLIGAN_RAID.next_window(after).start == moscow(date(2026, 10, 10), 12)
+    assert HOOLIGAN_RAID.next_window(sunday).start == moscow(date(2026, 10, 14), 18)
+    # в ночь после матча следующее — суббота
+    after = moscow(THURSDAY, 1)
+    assert HOOLIGAN_RAID.next_window(after).start == moscow(date(2026, 10, 10), 18)
+
+
+def test_a_window_that_crosses_midnight_is_opened_by_the_day_before():
+    """Окно, начавшееся вчера, сегодня всё ещё вчерашнее.
+
+    Стадион упирается в полночь ровно и за неё не переходит, казино
+    кончает в десять вечера, — ни одно нынешнее расписание через полночь
+    не идёт. Но `window_of` смотрит и вчерашний день, и это не лишняя
+    строка, а единственное, на чём держалось бы такое окно: по
+    сегодняшнему расписанию ночь после матча не открыта ничем.
+
+    Проверяем на расписании, которого в игре нет: иначе эту строку
+    снесли бы как мёртвую, а следующее же окно за полночь тихо
+    закрывалось бы в 00:00.
+    """
+    through = Weekly(weekdays=(2,), hour=22, hours=4)
+
+    assert window_of(moscow(WEDNESDAY, 23), through) is not None
+    # час ночи четверга: четверг своего окна не открывает вовсе, и это
+    # окно нашлось только потому, что заглянули во вчера
+    night = window_of(moscow(THURSDAY, 1), through)
+    assert night is not None and night.start == moscow(WEDNESDAY, 22)
+    assert window_of(moscow(THURSDAY, 2), through) is None
 
 
 def test_the_two_raids_keep_their_own_schedules():
     """Расписание казино осталось жребием, а стадиона — твёрдым."""
     assert isinstance(HOOLIGAN_RAID.schedule, Weekly)
     assert not isinstance(CELLAR_RAID.schedule, Weekly)
-    # и в среду в полдень может быть открыто и там, и там
-    noon = moscow(WEDNESDAY, 12, 30)
-    assert HOOLIGAN_RAID.window_now(noon) is not None
+    # и в среду вечером может быть открыто и там, и там: у казино в этот
+    # день выпал слот с восьми, у стадиона окно с шести до полуночи
+    evening = moscow(WEDNESDAY, 20, 30)
+    assert HOOLIGAN_RAID.window_now(evening) is not None
+    assert CELLAR_RAID.window_now(evening) is not None
 
 
 def test_a_six_hour_window_counts_as_one_even_without_a_schedule():
@@ -227,11 +269,11 @@ def test_a_six_hour_window_counts_as_one_even_without_a_schedule():
     При снятом расписании окно нарезается по длине своего: у стадиона она
     шестичасовая, и часовая клетка дала бы шесть побед за вечер.
     """
-    noon = HOOLIGAN_RAID.any_window(moscow(WEDNESDAY, 12, 30))
-    evening = HOOLIGAN_RAID.any_window(moscow(WEDNESDAY, 17, 30))
-    assert noon.start == evening.start
-    assert noon.end - noon.start == 6 * 3600
-    assert HOOLIGAN_RAID.any_window(moscow(WEDNESDAY, 18, 30)).start != noon.start
+    evening = HOOLIGAN_RAID.any_window(moscow(WEDNESDAY, 18, 30))
+    midnight = HOOLIGAN_RAID.any_window(moscow(WEDNESDAY, 23, 30))
+    assert evening.start == midnight.start
+    assert evening.end - evening.start == 6 * 3600
+    assert HOOLIGAN_RAID.any_window(moscow(WEDNESDAY, 17, 30)).start != evening.start
 
 
 # ---------- кто выходит ----------
