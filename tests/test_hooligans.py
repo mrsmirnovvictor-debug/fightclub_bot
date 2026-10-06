@@ -294,57 +294,130 @@ def test_the_gang_is_five_against_three():
     "party,gang,added",
     [
         (3, 5, []),
-        (4, 6, ["rogue"]),
-        (5, 7, ["rogue", "warrior"]),
-        (6, 8, ["rogue", "warrior", "assassin"]),
-        (7, 9, ["rogue", "warrior", "assassin", "rogue"]),
-        (10, 12, ["rogue", "warrior", "assassin"] * 2 + ["rogue"]),
+        (4, 5, []),
+        (5, 5, []),
+        (6, 6, ["rogue"]),
+        (7, 7, ["rogue", "warrior"]),
+        (8, 8, ["rogue", "warrior", "assassin"]),
+        (9, 9, ["rogue", "warrior", "assassin", "rogue"]),
+        (10, 10, ["rogue", "warrior", "assassin", "rogue", "warrior"]),
     ],
 )
-def test_every_extra_fighter_brings_one_more_hooligan(party, gang, added):
-    """За каждого сверх трёх — ещё один, по кругу с трикстера."""
+def test_the_sides_even_out_from_the_sixth_fighter(party, gang, added):
+    """Трое, четверо и пятеро дерутся с пятью; дальше состав ровный.
+
+    Банда выходит впятером и меньше не бывает: на троих это её перевес,
+    на пятерых — поровну. Шестой приводит шестого, и до самого потолка
+    стороны равны — десять на десять.
+
+    Раньше банда прибавляла с четвёртого и вдесятером выходила
+    двенадцатью. Перевес «всегда на двоих» на деле таял: трое против
+    пятерых — это полтора на одного, а десять против двенадцати — один и
+    две десятых, и большой отряд выигрывал не силой, а арифметикой.
+    """
     roster = HOOLIGAN_RAID.roster(party)
 
     assert len(roster) == gang
     assert [one.class_code for one in roster[5:]] == added
 
 
-def test_the_whole_gang_wears_the_fan_shop():
-    """Вся банда — в фанатском из «Северного Вала», своей линией на класс.
+def test_more_than_ten_never_start_the_raid():
+    """Потолок отряда — десять, и банда за него не растёт."""
+    assert HOOLIGAN_RAID.max_party == 10
+    assert len(HOOLIGAN_RAID.roster(HOOLIGAN_RAID.max_party)) == 10
 
-    Фанатских вещей на класс семь: шапка, оружие, футболка, пояс,
-    куртка, штаны и кроссовки. Перчаток и щитов в той линии нет, и
-    пустые слоты добираются клубным — так же, как у игрока, который
-    скупил «Северный Вал» целиком.
+
+def test_the_whole_gang_wears_the_fan_shop_and_nothing_else():
+    """Вся банда — в фанатском, и клубного на ней нет ни единой вещи.
+
+    Это форма сектора, а не гардероб: чего в линии нет, того у гопника
+    нет вовсе. Раньше пустые слоты добирались с клубного прилавка, и
+    банда выходила в сетовых перчатках девятого уровня — вещах, которые
+    она же и роняет побеждённому отряду.
     """
     from bot.game.raid import GANG, boss_kit
 
-    lines = {
-        "tank": "fan_boss_",
-        "rogue": "fan_rogue_",
-        "warrior": "fan_warrior_",
-        "assassin": "fan_assassin_",
-    }
     for one in GANG:
         worn = [owned.item.code for owned in boss_kit(one).items.values()]
-        mine = [code for code in worn if code.startswith(lines[one.class_code])]
-        # У линии лидера есть ещё и щит — восьмая вещь; у остальных семь
-        assert len(mine) == (8 if one.class_code == "tank" else 7), (
-            f"{one.title}: не свой комплект — {worn}"
+        assert all(code.startswith("fan_") for code in worn), (
+            f"{one.title} надел клубное: {worn}"
         )
-        # Из чужой линии — только щит, и только тому, кому он разрешён:
-        # щит в «Северном Вале» один на весь магазин, лежит в линии
-        # лидера, и воину его носить можно
-        foreign = [
-            code
-            for kind, prefix in lines.items()
-            if kind != one.class_code
-            for code in worn
-            if code.startswith(prefix)
-        ]
-        assert set(foreign) <= {"fan_boss_shield"}, (
-            f"{one.title} надел чужую линию: {foreign}"
-        )
+
+
+def test_the_gang_fights_bare_handed():
+    """Перчаток в фанатской линии нет — и слот у гопника пуст."""
+    from bot.game.equipment import Slot
+    from bot.game.raid import GANG, boss_kit
+
+    for one in GANG:
+        assert Slot.GLOVES not in boss_kit(one).items, one.title
+
+
+def test_the_second_hand_is_named_and_not_picked_off_the_counter():
+    """Щит — воину и танку, ножи — ассасину, трикстеру — ничего.
+
+    Вторую руку прилавок наполнял сам, самым дорогим, что в слот лезет,
+    и трикстеру доставался клубный щиток: вещь, которой в его линии нет,
+    а в руках у него зонт. Теперь вторая рука написана у гопника, и
+    написанному прилавок не перечит.
+    """
+    from bot.game.equipment import Slot
+    from bot.game.raid import GANG, boss_kit
+
+    second = {}
+    for one in GANG:
+        worn = boss_kit(one).items.get(Slot.OFFHAND)
+        second.setdefault(one.class_code, set()).add(worn and worn.item.code)
+
+    assert second["tank"] == {"fan_boss_shield"}
+    assert second["warrior"] == {"fan_boss_shield"}
+    # Два складных ножа: тот же нож, что и в первой руке
+    assert second["assassin"] == {"fan_assassin_knife"}
+    # У трикстера зонт, и вторая рука пуста
+    assert second["rogue"] == {None}
+
+
+def test_no_npc_picks_a_second_hand_off_the_counter():
+    """Вторая рука у любого NPC — только по имени, и это не про банду.
+
+    Правило общее: прилавок наполняет слоты «самым дорогим, что лезет», и
+    во вторую руку так попадал щит тем, кому его не положено. Теперь
+    прилавок эту руку не трогает вовсе — ни фанатский, ни клубный.
+    """
+    from dataclasses import replace
+
+    from bot.game.equipment import Slot
+    from bot.game.raid import CELLAR_BOSS, boss_kit
+
+    # Босс казино в клубном, и щит у него выписан своей вещью
+    assert boss_kit(CELLAR_BOSS).items[Slot.OFFHAND].item.code == "boss_shield"
+    # Снимем приписку — и рука останется пустой, а не наполнится с витрины
+    bare = replace(CELLAR_BOSS, gear=tuple(
+        code for code in CELLAR_BOSS.gear if code != "boss_shield"
+    ))
+    assert Slot.OFFHAND not in boss_kit(bare).items
+
+
+def test_two_knives_are_two_strikes_a_turn():
+    """Нож в каждой руке — и бьёт ассасин дважды, а не один раз.
+
+    Второе оружие в игре всегда означало второй удар, и у гопника это
+    работает так же: рейд от этого и стал тяжелее, а не от приписки в
+    описании.
+    """
+    foes = raid_foes(HOOLIGAN_RAID, [GANG_LEVEL] * GANG_PARTY)
+    by_class = {one.fclass.code: one for one in foes.values()}
+
+    assert by_class["assassin"].attacks_per_round == 2
+    assert by_class["assassin"].weapons == ("складным ножом", "складным ножом")
+    for other in ("tank", "warrior", "rogue"):
+        assert by_class[other].attacks_per_round == 1
+
+    # Щит у тех, кому он положен, и блок у них шире
+    assert by_class["tank"].has_shield and by_class["warrior"].has_shield
+    assert not by_class["assassin"].has_shield
+    assert not by_class["rogue"].has_shield
+    assert by_class["tank"].block_width > by_class["rogue"].block_width
 
 
 def test_an_npc_never_wears_what_his_class_cannot():
@@ -394,14 +467,19 @@ def test_gear_named_by_hand_overrides_the_class_rule():
 def test_the_gang_is_dressed_like_fighters_but_not_trained_like_them():
     """Выучка — вот чем рейд держится проходимым, а не одеждой.
 
-    Рядовому гопнику характеристики распределены по седьмому, хотя
-    сам он десятого и одет по-боевому: форма есть, зала нет. Выучи их
-    полностью — и впятером против трёх побед выходит 5%, то есть рейд
-    непроходим. А лидер — боец настоящий, и накачан он по своему уровню.
+    Рядовому гопнику характеристики распределены по третьему, хотя сам
+    он десятого и одет по-боевому: форма есть, зала нет. А лидер — боец
+    настоящий, и накачан он по своему уровню.
+
+    Ступень эта мереная: `scripts/gang_raid.py` гоняет тот же круг и тот
+    же размен, которыми идёт рейд. По седьмому — как было, пока фанатская
+    линия не поднялась над клубными сетами, — отряд берёт рейд в 0.5–11%,
+    то есть почти никогда. По третьему — 9–40%, и это нижняя граница:
+    прогон жмёт наугад, без аналитика, приёмов и склянок.
     """
     from bot.game.raid import GANG_BUILD
 
-    assert GANG_BUILD == 7
+    assert GANG_BUILD == 3
     assert HOOLIGAN_RAID.leader.build_level == 0, "лидер качан по своему уровню"
     for one in (*GANG_ROGUES, *GANG_WARRIORS, *GANG_ASSASSINS):
         assert one.build_level == GANG_BUILD

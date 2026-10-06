@@ -79,6 +79,34 @@ def fan_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
     return kit
 
 
+def fan_only_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
+    """Одна фанатская линия и ничего больше — форма, а не гардероб.
+
+    Этим одевают гопников. Игроку фанатское добирается клубным
+    (`fan_kit`): он ходит в своём и докупает, что приглянулось. Гопник же
+    не покупатель — на нём форма сектора, и если в линии чего-то нет, то
+    у него этого нет вовсе. Перчаток в линии нет — значит, дерётся
+    голыми руками, а не в клубных.
+
+    Вторую руку отсюда всё равно не возьмут: `boss_kit` наполняет её
+    только тем, что написано у самого бойца. Но сюда она попадает — на
+    случай, если этим комплектом однажды оденут не NPC.
+    """
+    return {
+        slot: max(mine, key=lambda item: item.price)
+        for slot in ALL_SLOTS
+        if (
+            mine := [
+                item
+                for item in FAN_ITEMS
+                if item.slot is slot
+                and item.level_required <= level
+                and fclass.code in item.for_classes
+            ]
+        )
+    }
+
+
 def equipment_of(kit: dict[Slot, Item]) -> Equipment:
     """Комплект, надетый по слотам."""
     return Equipment(

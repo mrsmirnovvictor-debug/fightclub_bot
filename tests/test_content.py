@@ -544,19 +544,71 @@ def test_the_fan_shelf_is_a_counter_of_its_own():
         assert not item.stars and not item.reward, item.code
 
 
-def test_the_fan_shelf_keeps_the_same_ceilings():
-    """Потолки процентов и плоских прибавок на фанатском товаре те же.
+def test_the_fan_shelf_has_a_ceiling_of_its_own():
+    """У фанатской одежды полоса своя и на ступень выше клубной.
 
-    Именно они держат круг классов. Тематический магазин выводит вещь
-    из лестницы клуба, но не из баланса: 10% и +4 на десятом уровне.
+    Раньше потолок был общий и маленький — десять процентов на вещь.
+    Пока клубная одежда торговала теми же крохами, это держалось; с
+    паком сетов клубная вещь девятого уровня стала нести до 80%, и
+    фанатская за тысячу с лишним кредитов оказалась слабее сета за
+    пятьсот. Приз с рейда превратился в утешительный.
+
+    Полоса потолком и осталась — просто своя: 1.30 против клубных 0.80.
+    Плоские прибавки по-прежнему считаются по общей лестнице, и
+    выносливости на фанатских вещах нет, как и на всех прочих.
     """
+    from bot.game.equipment import FAN_SHARE_CAP
+
     for item in fan_items():
         shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
-        cap = weapon_share_cap(10) if item.is_weapon else LATE_SHARE_CAP
-        assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%}"
+        if item.is_weapon:
+            cap = weapon_share_cap(10)
+            assert max(shares) <= cap + 1e-9, f"{item.title}: {max(shares):.0%}"
+        else:
+            assert sum(shares) <= FAN_SHARE_CAP + 1e-9, (
+                f"{item.title}: всего {sum(shares):.0%}"
+            )
         for stat in ("strength", "agility", "intuition"):
             assert getattr(item, stat) <= flat_cap(item.level_required), item.title
         assert item.bonus.endurance == 0, item.title
+
+
+def test_the_fan_shelf_beats_the_club_sets_it_costs_twice_as_much_as():
+    """За фанатскую вещь просят вдвое — и она обходит сет девятого.
+
+    Это и есть смысл «Северного Вала»: приз с рейда и цель, ради которой
+    копят. Сравниваем по слоту с тем, что боец этого класса надел бы из
+    клубной лавки, — ни по одному числу фанатская вещь уступать не может.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.reference import best_kit
+
+    # Чья это линия: ассасинскую вещь носит и трикстер, но мерят её по
+    # ассасину — свою линию трикстер и так возьмёт, она дороже
+    primary = {
+        "fan_assassin": "assassin", "fan_rogue": "rogue",
+        "fan_warrior": "warrior", "fan_boss": "tank",
+    }
+    club = {code: best_kit(fclass, 10) for code, fclass in FIGHTER_CLASSES.items()}
+    numbers = (
+        "strength", "agility", "intuition", "hp", "armor_min", "armor_max",
+        "accuracy", "dodge", "crit", "anticrit", "counter",
+    )
+
+    checked = 0
+    for item in fan_items():
+        if item.is_weapon or item.is_shield:
+            continue  # оружию и щиту клубного соперника в паке нет
+        line = next(key for key in primary if item.code.startswith(key))
+        rival = club[primary[line]][item.slot]
+        for name in numbers:
+            assert getattr(item, name) >= getattr(rival, name), (
+                f"{item.title} слабее, чем «{rival.title}», по «{name}»: "
+                f"{getattr(item, name)} против {getattr(rival, name)}"
+            )
+        assert item.price > rival.price * 2, f"{item.code}: дешевле двух сетовых"
+        checked += 1
+    assert checked == 24, "фанатская одежда приехала не целиком"
 
 
 def test_the_fan_shelf_dresses_every_class():
