@@ -3128,9 +3128,11 @@ GANG = [
 ]
 
 
-def raid_with_gang() -> dict:
+def raid_with_gang(over=None) -> dict:
     """Та же волна, но против банды из пяти, и один из них уже лёг."""
-    body = raid_with_wave({"gang": GANG, "boss": GANG[0], "foe": GANG[0]})
+    body = raid_with_wave(
+        {"gang": GANG, "boss": GANG[0], "foe": GANG[0], **(over or {})}
+    )
     body["kind"] = {
         **body["kind"], "code": "hooligans", "alone": False,
         "title": "Стычка с футбольными фанатами", "house": "stadium",
@@ -3198,6 +3200,44 @@ async def test_the_face_stands_above_the_name_and_the_bar(server):
         bar = await page.locator(".boss-card .fight-bar").bounding_box()
         assert face["y"] + face["height"] <= name["y"], "имя заехало на портрет"
         assert name["y"] < bar["y"]
+        await browser.close()
+
+
+async def test_the_foe_deck_turns_with_the_queue(server):
+    """Наверху тот, с кем размен сейчас; за ним — следующий по кругу.
+
+    Круг идёт по порядку, в котором банда выставляет своих, и колода
+    крутится вместе с ним: добили одного — наверх выходит следующий, а
+    тот, с кем только что дрались, уходит в конец. Павшие при этом
+    ложатся глубже всех, где бы их ни застал круг.
+    """
+    gang = raid_with_gang()["raid"]["gang"]
+    # Банда выставляет своих в этом порядке: Лидер, Трикстер (он уже
+    # лёг), Воин, Ассасин №1, Ассасин №2. Прицел смотрящего дошёл до
+    # четвёртого — до «Ассасина №1»
+    aimed = {**gang[3], "against": 42, "yours": True}
+    raid = raid_with_gang({
+        "gang": [*gang[:3], aimed, gang[4]],
+        "foe": aimed,
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server, raid)
+
+        assert "Ассасин №1" in await page.locator(
+            ".raid-board > .boss-card"
+        ).inner_text()
+        names = await page.locator(".raid-foes .stack-card .fight-name").evaluate_all(
+            "nodes => nodes.map(one => one.textContent)"
+        )
+        # Круг пошёл дальше с четвёртого, обошёл конец и вернулся к началу
+        assert [one.split(" ")[-1] for one in names] == [
+            "№2", "банды", "Воин", "Трикстер"
+        ], names
+        # Лидер в колоде ниже «Ассасина №2»: круг дошёл до конца списка и
+        # пошёл сначала, а не прыгнул к первому по порядку
+        assert "Ассасин" in names[0] and "Лидер" in names[1]
+        # Павший — в самом низу колоды, глубже всех
+        assert "💀" in names[-1]
         await browser.close()
 
 
@@ -3355,28 +3395,26 @@ async def test_an_empty_pocket_offers_to_buy_a_pass(server):
         await browser.close()
 
 
-async def test_the_board_puts_you_and_your_foe_side_by_side(server):
-    """Ты слева, мечи посередине, соперник справа — и всё по нижнему краю.
+async def test_the_board_deals_two_decks(server):
+    """Две колоды: верхняя карта во всю величину, остальные под ней.
 
-    Раньше здесь стояли два списка во всю высоту, выровненных по верху:
-    карточка босса высокая, в ней портрет, — и твоя шкала оказывалась у
-    него на уровне бровей. По низу обе карточки стоят на одной черте и у
-    самых кнопок хода, а стопки остальных лежат над ними.
+    Ты и твой соперник — верхние карты своих колод, по нижнему краю на
+    одной черте: карточка босса высокая, в ней портрет, — и по верху они
+    разъезжались так, что твоя шкала оказывалась у него на уровне бровей.
+    Остальные уходят под верхнюю карту, и у каждого виден верхний край.
     """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
 
         body = page.locator("#raid-body")
         assert await body.locator(".versus").inner_text() == "⚔️"
-        # Стопки идут первыми: они и лежат первыми — крупная карточка
-        # дописана последней и потому ложится поверх, а не под
         order = await body.evaluate(
             "node => Array.from(node.querySelectorAll("
             "'.raid-board > *')).map(one => one.className)"
         )
         assert order == [
-            "fight-stack raid-mates", "fight-stack raid-foes",
             "raid-you", "versus", "boss-card mine",
+            "fight-stack raid-mates", "fight-stack raid-foes",
         ]
 
         # Три столбца по нижней черте, и ширины 45 / 10 / 45
@@ -3390,11 +3428,30 @@ async def test_the_board_puts_you_and_your_foe_side_by_side(server):
         for box, share in ((you, 0.45), (swords, 0.10), (boss, 0.45)):
             assert abs(box["width"] / board["width"] - share) < 0.04, box["width"]
 
-        # Стопка — над своей карточкой, в своём столбце и вплотную к ней
+        # Колода идёт вниз от верхней карты и заходит под неё
         mates = await body.locator(".raid-mates").bounding_box()
-        assert mates["y"] + mates["height"] <= you["y"] + 1, "стопка под карточкой"
-        assert you["y"] - (mates["y"] + mates["height"]) < 12, "стопка отвалилась"
+        assert mates["y"] < bottoms[0], "колода не заходит под верхнюю карту"
+        assert mates["y"] > you["y"], "колода уехала выше верхней карты"
         assert abs(round(mates["x"]) - round(you["x"])) <= 1
+
+        # И верхняя карта лежит поверх: имя первой карты колоды она не
+        # закрывает, но край её — под ней
+        first = await body.locator(".raid-mates .stack-card").first.bounding_box()
+        name = await body.locator(
+            ".raid-mates .stack-card .fight-name"
+        ).first.bounding_box()
+        assert first["y"] < bottoms[0] <= name["y"], (first, bottoms[0], name)
+
+        # Проверяем не правило, а что видно: в полосе нахлёста палец
+        # попадает в верхнюю карту, а не в ту, что под ней. Без слоя
+        # («z-index») позиционированная карта колоды рисуется поверх
+        # непозиционированной верхней, и колода ложится не той стороной
+        on_top = await page.evaluate(
+            "point => { const node = document.elementFromPoint(point.x, point.y);"
+            " return node && node.closest('.raid-you, .stack-card').className; }",
+            {"x": round(you["x"] + you["width"] / 2), "y": bottoms[0] - 1},
+        )
+        assert on_top == "raid-you", on_top
         await browser.close()
 
 
