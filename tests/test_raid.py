@@ -1068,14 +1068,9 @@ def test_the_whole_boss_kit_is_his_own():
 def test_the_boss_wears_nothing_from_the_counter():
     """Весь комплект босса — его собственный, и прилавок его не двигает.
 
-    Числа в нём когда-то скопировали с прилавочных вещей десятой ступени:
-    менялся вид, а не сила. С тех пор прилавок ушёл вперёд — на нём лежат
-    сеты, — а босс остался где был, и это нарочно: сложность рейда не
-    должна меняться от того, что в лавку завезли новый пак.
-
-    Поэтому проверяем не «совпадает с прилавком», а что совпадать не с чем:
-    босс занял все слоты сам, добирать с витрины нечего. И числа комплекта
-    записаны здесь: уедут — тест расскажет, насколько.
+    Своих вещей у него восемь, и ни одной с витрины: добирать нечего.
+    Отдельные коды нужны ради картинок — общий код означал бы общую
+    картинку, и арт босса перекрасил бы мотошлем половине клуба.
     """
     from bot.game.equipment import Slot
     from bot.game.raid import boss_kit
@@ -1086,12 +1081,49 @@ def test_the_boss_wears_nothing_from_the_counter():
         assert owned.item.code in own, f"{slot.value}: вещь с прилавка"
     assert set(kit.items) == set(Slot)
 
-    worn = [owned.item for slot, owned in kit.items.items() if slot is not Slot.WEAPON]
-    assert sum(item.hp for item in worn) == 82
-    assert sum(item.armor_min for item in worn) == 24
-    assert sum(item.armor_max for item in worn) == 39
-    assert kit.bonus.strength == 7
-    assert (kit.bonus.agility, kit.bonus.intuition) == (0, 0)
+
+def test_the_boss_set_matches_what_a_tank_buys_at_the_eighth_level():
+    """Комплект босса — это то, что танк носит с прилавка на восьмом.
+
+    Числа в нём не придуманы и не держатся на глаз: каждая вещь босса
+    повторяет ту клубную, которую боец-танк надел бы в этот же слот к
+    восьмому уровню. Так сложность рейда привязана к лавке, а не к
+    случайному числу: завезут новую ступень одежды — и видно будет, что
+    босс от неё отстал, а не «кажется, он слабоват».
+
+    До пака сетов числа были списаны со старой витрины и успели устареть
+    на четыре ступени: шлем держал 14 запаса и 3–5 брони против 30 и 8–10
+    у армейской каски. Щит с тех пор не трогали — он и был штурмовым
+    щитом восьмого уровня, им и остался.
+    """
+    from bot.game.classes import get_class
+    from bot.game.equipment import Slot
+    from bot.game.raid import boss_kit
+    from bot.game.reference import best_kit
+
+    numbers = (
+        "strength", "agility", "intuition", "hp", "armor_min", "armor_max",
+        "accuracy", "dodge", "crit", "anticrit", "counter",
+    )
+    shop = best_kit(get_class(CELLAR_BOSS.class_code), 8)
+    mine = boss_kit(CELLAR_BOSS)
+
+    for slot, item in shop.items():
+        if slot is Slot.WEAPON:
+            continue  # кувалда у босса своя, и она сильнее прилавочной
+        worn = mine.items[slot].item
+        for name in numbers:
+            assert getattr(worn, name) == getattr(item, name), (
+                f"{slot.value}: «{worn.title}» разошлась с «{item.title}» "
+                f"по «{name}» — {getattr(worn, name)} против {getattr(item, name)}"
+            )
+
+    # И кувалда остаётся сильнее того, чем бьёт танк с прилавка
+    shop_weapon = shop[Slot.WEAPON]
+    boss_weapon = mine.items[Slot.WEAPON].item
+    assert (boss_weapon.damage_min + boss_weapon.damage_max) > (
+        shop_weapon.damage_min + shop_weapon.damage_max
+    )
 
 
 def test_the_boss_is_dressed_by_his_own_step_not_the_partys():

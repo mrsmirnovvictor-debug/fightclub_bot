@@ -1,17 +1,24 @@
-"""Оффлайн-прогон стычки с фанатами: насколько она вообще проходима.
+"""Оффлайн-прогон рейда: насколько он вообще проходим.
 
-    python scripts/gang_raid.py              # отряды 3–10 в эталонном комплекте
-    python scripts/gang_raid.py --fan        # отряд в фанатском, как и банда
-    python scripts/gang_raid.py --runs 400   # больше боёв на клетку
+    python scripts/raid_balance.py                   # стычка с фанатами
+    python scripts/raid_balance.py --raid cellar     # подвал казино
+    python scripts/raid_balance.py --level 7         # отряд не десятого уровня
+    python scripts/raid_balance.py --fan             # отряд в фанатском
+    python scripts/raid_balance.py --runs 400        # больше боёв на клетку
 
-Бойцы здесь жмут кнопки наугад: ни аналитика, ни приёмов, ни склянок. Это
+Уровень отряда здесь не для полноты: в подвале он решает всё. Босс встаёт
+на четыре уровня выше отряда, а одет он всегда по десятому — значит, чем
+ниже отряд, тем больше у босса фора в снаряжении, и одной клеткой эту
+разницу не увидеть.
+
+Бойцы жмут кнопки наугад: ни аналитика, ни приёмов, ни склянок. Это
 нижняя граница — то, что получается у отряда, который просто тыкает. У
 живых людей сверху есть и подписка, и заготовки, и лечение, поэтому
 настоящий винрейт выше показанного, и насколько — отсюда не видно.
 
 Правила боя берутся не отсюда, а из `RaidService`: прогон дёргает тот же
-`_exchange` и тот же круг по банде, которыми рейд идёт на самом деле.
-Иначе мерили бы копию, а чинили оригинал.
+`_exchange` и тот же круг, которыми рейд идёт на самом деле. Иначе мерили
+бы копию, а чинили оригинал.
 """
 
 from __future__ import annotations
@@ -27,7 +34,13 @@ from bot.config import Config  # noqa: E402
 from bot.game.classes import FIGHTER_CLASSES  # noqa: E402
 from bot.game.combat import Fighter, random_action  # noqa: E402
 from bot.game.economy import MAX_LEVEL  # noqa: E402
-from bot.game.raid import HOOLIGAN_RAID, RaidEnd, raid_foes  # noqa: E402
+from bot.game.raid import (  # noqa: E402
+    CELLAR_RAID,
+    HOOLIGAN_RAID,
+    RaidEnd,
+    RaidKind,
+    raid_foes,
+)
 from bot.game.reference import (  # noqa: E402
     best_kit,
     developed_stats,
@@ -56,17 +69,17 @@ def party_of(size: int, level: int, fan: bool) -> dict[int, Fighter]:
     return squad
 
 
-def one_raid(service: RaidService, size: int, level: int, fan: bool) -> tuple[str, int]:
+def one_raid(
+    service: RaidService, kind: RaidKind, size: int, level: int, fan: bool
+) -> tuple[str, int]:
     """Один бой до конца. Отдаёт исход и число волн."""
     fighters = party_of(size, level, fan)
     session = RaidSession(
         id=1,
         chat_id=None,
         thread_id=None,
-        kind=HOOLIGAN_RAID,
-        enemies=raid_foes(
-            HOOLIGAN_RAID, [one.level for one in fighters.values()]
-        ),
+        kind=kind,
+        enemies=raid_foes(kind, [one.level for one in fighters.values()]),
         fighters=fighters,
     )
     while True:
@@ -87,25 +100,25 @@ def one_raid(service: RaidService, size: int, level: int, fan: bool) -> tuple[st
             return outcome.end.value, session.wave
 
 
-def sweep(runs: int, level: int, fan: bool, seed: int) -> None:
+def sweep(kind: RaidKind, runs: int, level: int, fan: bool, seed: int) -> None:
     service = RaidService(
         bot=None, db=None, config=Config(bot_token="x"), rng=random.Random(seed)
     )
     dressed = "фанатское" if fan else "эталон"
     print(
-        f"стычка с фанатами: отряд {level}-го уровня в {dressed}, "
+        f"{kind.title.lower()}: отряд {level}-го уровня в {dressed}, "
         f"{runs} боёв на клетку, кнопки наугад\n"
     )
-    print(f"{'отряд':>6} {'банда':>6} {'победа':>8} {'ничья':>7} "
+    print(f"{'отряд':>6} {'враги':>6} {'победа':>8} {'ничья':>7} "
           f"{'провал':>7} {'волн':>6}")
-    for size in range(HOOLIGAN_RAID.min_party, HOOLIGAN_RAID.max_party + 1):
+    for size in range(kind.min_party, kind.max_party + 1):
         tally = {end.value: 0 for end in RaidEnd}
         waves: list[int] = []
         for _ in range(runs):
-            end, count = one_raid(service, size, level, fan)
+            end, count = one_raid(service, kind, size, level, fan)
             tally[end] += 1
             waves.append(count)
-        gang = len(HOOLIGAN_RAID.roster(size))
+        gang = len(kind.roster(size))
         share = {key: value * 100 / runs for key, value in tally.items()}
         print(
             f"{size:>6} {gang:>6} {share['win']:>7.1f}% {share['draw']:>6.1f}% "
@@ -119,8 +132,13 @@ def main() -> None:
     parser.add_argument("--level", type=int, default=MAX_LEVEL)
     parser.add_argument("--fan", action="store_true", help="отряд в фанатском")
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--raid", default="hooligans", choices=("hooligans", "cellar"),
+        help="какой рейд мерить",
+    )
     args = parser.parse_args()
-    sweep(args.runs, args.level, args.fan, args.seed)
+    kind = CELLAR_RAID if args.raid == "cellar" else HOOLIGAN_RAID
+    sweep(kind, args.runs, args.level, args.fan, args.seed)
 
 
 if __name__ == "__main__":
