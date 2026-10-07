@@ -33,6 +33,15 @@ class Slot(str, Enum):
     JACKET = "jacket"
     PANTS = "pants"
     BOOTS = "boots"
+    # Ожерелье висит под головой и своей клеткой шире прочих: клетка у
+    # него в три единицы ширины и в одну высоты, как сама цепь
+    NECKLACE = "necklace"
+    # Три кольца в ряд под перчатками. Слоты названы по месту на руке, а
+    # не по номеру: порядок надевания идёт справа налево, и «первое»
+    # с «третьим» на карточке путались бы между собой
+    RING_RIGHT = "ring_right"
+    RING_MIDDLE = "ring_middle"
+    RING_LEFT = "ring_left"
 
     @property
     def title(self) -> str:
@@ -53,6 +62,19 @@ class Slot(str, Enum):
     def emoji(self) -> str:
         return SLOT_EMOJI[self]
 
+    @property
+    def shape(self) -> str:
+        """Какой клеткой слот рисуется: квадрат, полоса или колечко.
+
+        Форма живёт здесь, а не на странице: клетка ожерелья шире
+        квадратной втрое, а кольцо — втрое у́же, и страница должна знать
+        об этом от сервера. Иначе новый слот приходилось бы заводить в
+        двух местах, и одно из них однажды забыли бы.
+        """
+        if self is Slot.NECKLACE:
+            return "wide"
+        return "ring" if self in RING_SLOTS else "square"
+
 
 # Имя файла подложки, если оно не совпадает с кодом слота. Во второй руке
 # чаще держат щит, им клетка и подписана; клетка «тело» — это футболка с
@@ -60,6 +82,11 @@ class Slot(str, Enum):
 SLOT_ART: dict[Slot, str] = {
     Slot.OFFHAND: "shield.jpeg",
     Slot.JACKET: "shirt.png",
+    # Три клетки колец делят одну подложку: рисовать три одинаковых
+    # колечка под разными именами незачем, кольцо оно и есть кольцо
+    Slot.RING_RIGHT: "ring.png",
+    Slot.RING_MIDDLE: "ring.png",
+    Slot.RING_LEFT: "ring.png",
 }
 
 SLOT_TITLES: dict[Slot, str] = {
@@ -72,6 +99,10 @@ SLOT_TITLES: dict[Slot, str] = {
     Slot.JACKET: "верхняя одежда",
     Slot.PANTS: "штаны",
     Slot.BOOTS: "обувь",
+    Slot.NECKLACE: "ожерелье",
+    Slot.RING_RIGHT: "кольцо",
+    Slot.RING_MIDDLE: "кольцо",
+    Slot.RING_LEFT: "кольцо",
 }
 
 # Тип товара на витрине: это ярлык раздела, а не часть предложения, поэтому
@@ -88,6 +119,10 @@ SLOT_SECTIONS: dict[Slot, str] = {
     Slot.JACKET: "верхняя одежда",
     Slot.PANTS: "ноги",
     Slot.BOOTS: "обувь",
+    Slot.NECKLACE: "ожерелья",
+    Slot.RING_RIGHT: "кольца",
+    Slot.RING_MIDDLE: "кольца",
+    Slot.RING_LEFT: "кольца",
 }
 
 SLOT_EMOJI: dict[Slot, str] = {
@@ -100,6 +135,10 @@ SLOT_EMOJI: dict[Slot, str] = {
     Slot.JACKET: "🧥",
     Slot.PANTS: "👖",
     Slot.BOOTS: "👟",
+    Slot.NECKLACE: "📿",
+    Slot.RING_RIGHT: "💍",
+    Slot.RING_MIDDLE: "💍",
+    Slot.RING_LEFT: "💍",
 }
 
 # Чем бьёт боец без оружия
@@ -120,21 +159,40 @@ SLOT_ZONES: dict[Slot, tuple[Zone, ...]] = {
     Slot.BOOTS: (Zone.LEGS,),
 }
 
-# Слева направо на карточке: две колонки по четыре клетки. Футболки своей
-# клетки не занимают — они надеваются под верхнюю одежду, и обе вещи живут
-# в клетке «тело»: картинкой видно верхнюю, подсказкой — обе.
-LEFT_SLOTS: tuple[Slot, ...] = (Slot.HEAD, Slot.WEAPON, Slot.JACKET, Slot.BELT)
-RIGHT_SLOTS: tuple[Slot, ...] = (Slot.GLOVES, Slot.OFFHAND, Slot.PANTS, Slot.BOOTS)
+# Три клетки колец, в том порядке, в каком они заполняются: справа налево,
+# как кольца и надевают — с мизинца рабочей руки. Порядок здесь не для
+# красоты: по нему `equip` ищет первую свободную клетку, и поменять его
+# местами значит поменять поведение.
+RING_SLOTS: tuple[Slot, ...] = (Slot.RING_RIGHT, Slot.RING_MIDDLE, Slot.RING_LEFT)
+
+# Украшения: ожерелье и кольца. Брони они не дают (их нет в `SLOT_ZONES`),
+# и в обычных магазинах им не место — их товар приедет к ювелиру
+JEWEL_SLOTS: tuple[Slot, ...] = (Slot.NECKLACE, *RING_SLOTS)
+
+# Слева направо на карточке. Футболки своей клетки не занимают — они
+# надеваются под верхнюю одежду, и обе вещи живут в клетке «тело»:
+# картинкой видно верхнюю, подсказкой — обе.
+#
+# Ожерелье стоит сразу под головой, кольца — сразу под перчатками: вещь
+# ищут там, где она и носится, а не в конце списка.
+LEFT_SLOTS: tuple[Slot, ...] = (
+    Slot.HEAD, Slot.NECKLACE, Slot.WEAPON, Slot.JACKET, Slot.BELT
+)
+RIGHT_SLOTS: tuple[Slot, ...] = (
+    Slot.GLOVES, *RING_SLOTS, Slot.OFFHAND, Slot.PANTS, Slot.BOOTS
+)
 # Что лежит в клетке под верхней одеждой
 UNDER_SLOTS: dict[Slot, Slot] = {Slot.JACKET: Slot.SHIRT}
 # Все слоты модели: футболка отдельная, просто без своей клетки на кукле
 ALL_SLOTS: tuple[Slot, ...] = (
     Slot.HEAD,
+    Slot.NECKLACE,
     Slot.WEAPON,
     Slot.OFFHAND,
     Slot.SHIRT,
     Slot.BELT,
     Slot.GLOVES,
+    *RING_SLOTS,
     Slot.JACKET,
     Slot.PANTS,
     Slot.BOOTS,
@@ -372,10 +430,22 @@ class Item:
 
     @property
     def slots(self) -> tuple[Slot, ...]:
-        """Куда вещь можно надеть. Оружие берут и во вторую руку."""
+        """Куда вещь можно надеть. Оружие берут и во вторую руку.
+
+        У кольца таких клеток три, и записано оно в первую из них —
+        правую. Клетки равноправны: кольцо ложится в любую, а в какую
+        именно, решает `equip`, когда надевают.
+        """
         if self.is_weapon:
             return (Slot.WEAPON, Slot.OFFHAND)
+        if self.slot in RING_SLOTS:
+            return RING_SLOTS
         return (self.slot,)
+
+    @property
+    def is_ring(self) -> bool:
+        """Кольцо: вещь, у которой на бойце три равных места."""
+        return self.slot in RING_SLOTS
 
     def describe_bonus(self) -> str:
         parts = []

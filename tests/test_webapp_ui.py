@@ -1587,7 +1587,7 @@ async def test_the_body_cell_holds_the_jacket_and_the_shirt_under_it(server):
         await page.wait_for_selector("#hero:not(.hidden)")
 
         cells = page.locator("#hero-slots-left .slot")
-        body = cells.nth(2)  # голова, оружие, тело, пояс
+        body = cells.nth(3)  # голова, ожерелье, оружие, тело, пояс
         hint = await body.get_attribute("title")
 
         assert "Косуха — верхняя одежда" in hint
@@ -1595,7 +1595,7 @@ async def test_the_body_cell_holds_the_jacket_and_the_shirt_under_it(server):
         assert "empty" not in (await body.get_attribute("class"))
 
         # клетка без вещей называет место, а не вещь
-        empty = await page.locator("#hero-slots-right .slot").nth(1).get_attribute(
+        empty = await page.locator("#hero-slots-right .slot").nth(4).get_attribute(
             "title"
         )
         assert empty == "Пусто: вторая рука"
@@ -1618,14 +1618,14 @@ async def test_only_the_shirt_still_fills_the_body_cell(server):
             asyncio.ensure_future(dialog.dismiss())
 
         page.on("dialog", on_dialog)
-        body = page.locator("#hero-slots-left .slot").nth(2)
+        body = page.locator("#hero-slots-left .slot").nth(3)
 
         assert "empty" not in (await body.get_attribute("class"))
         assert "Клубная футболка — футболка" in await body.get_attribute("title")
 
         # Снимают в инвентаре: на экране персонажа клетка только рассказывает
         await page.locator("#tab-bag").click()
-        await page.locator("#slots-left .slot").nth(2).click()
+        await page.locator("#slots-left .slot").nth(3).click()
         await page.wait_for_selector("#sheet:not(.hidden)")
 
         assert "Клубная футболка" in await page.locator("#sheet-title").inner_text()
@@ -1964,6 +1964,50 @@ async def test_a_slot_tells_what_is_worn_when_you_hover_it(server):
         await browser.close()
 
 
+async def test_the_necklace_is_a_strip_and_the_rings_are_a_row(server):
+    """Ожерелье — полоса втрое шире своей высоты, кольца — три в ряд.
+
+    Форму клетки называет сервер (`Slot.shape`), а страница по ней решает,
+    рисовать клетку одну или собрать три в ряд. Проверяем не классы, а
+    саму геометрию: класс можно поставить и не получить формы.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.set_viewport_size({"width": 400, "height": 1000})
+        await page.wait_for_timeout(200)
+
+        # Ожерелье стоит сразу под головой и той же ширины, что и она
+        head = await page.locator("#hero-slots-left .slot.square").first.bounding_box()
+        chain = await page.locator("#hero-slots-left .slot.wide").bounding_box()
+        assert round(chain["width"]) == round(head["width"])
+        assert abs(chain["width"] / chain["height"] - 3) < 0.15, chain
+        assert chain["y"] > head["y"]
+
+        # Три колечка — одним рядом, слева направо и каждое квадратное
+        rings = page.locator("#hero-slots-right .slot-row.rings .slot.ring")
+        assert await rings.count() == 3
+        boxes = [await rings.nth(number).bounding_box() for number in range(3)]
+        assert len({round(box["y"]) for box in boxes}) == 1, "кольца не в ряд"
+        assert boxes[0]["x"] < boxes[1]["x"] < boxes[2]["x"]
+        for box in boxes:
+            assert abs(box["width"] / box["height"] - 1) < 0.15, box
+        # И ряд целиком не шире обычной клетки
+        row = await page.locator("#hero-slots-right .slot-row.rings").bounding_box()
+        assert round(row["width"]) == round(head["width"])
+
+        # Правая клетка — первая: кольца надеваются справа налево, и
+        # порядок на кукле тот же, что и порядок надевания
+        order = await rings.evaluate_all(
+            "nodes => nodes.map(one => one.title)"
+        )
+        assert all("кольцо" in one for one in order)
+        await browser.close()
+
+
 async def test_an_empty_slot_falls_back_to_its_icon(server):
     """Подложка не доехала — слот гаснет и показывает значок, как раньше."""
     player = make_player()
@@ -1978,8 +2022,8 @@ async def test_an_empty_slot_falls_back_to_its_icon(server):
         await page.wait_for_timeout(300)
 
         empty = page.locator("#bag .slot.empty")
-        assert await empty.count() == 8
-        assert await page.locator("#bag .slot.empty.no-art").count() == 8
+        assert await empty.count() == 12
+        assert await page.locator("#bag .slot.empty.no-art").count() == 12
         assert "🎩" in await page.locator("#slots-left .slot").first.inner_text()
         await browser.close()
 
@@ -2035,9 +2079,9 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         await page.wait_for_selector(".sheet-doll")
 
         assert "Марла [7]" in await page.locator("#sheet-title").inner_text()
-        # в карточке соседа есть и аватар, и все восемь слотов
+        # в карточке соседа есть и аватар, и все двенадцать клеток
         assert await page.locator(".sheet-doll .avatar").count() == 1
-        assert await page.locator(".sheet-doll .slot").count() == 8
+        assert await page.locator(".sheet-doll .slot").count() == 12
 
         # и ничего никуда не наезжает: рамка аватара кончается там, где
         # начинается правый ряд слотов
@@ -2160,7 +2204,7 @@ async def test_the_hero_screen_shows_the_slots_too(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        assert await page.locator("#hero .slot").count() == 8
+        assert await page.locator("#hero .slot").count() == 12
         assert await page.locator("#hero-avatar").is_visible()
         # надетая вещь видна и здесь, и в инвентаре
         assert await page.locator("#hero .slot:not(.empty)").count() == 1

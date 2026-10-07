@@ -23,6 +23,7 @@ from bot.game.combat import (
 from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
 from bot.game.equipment import (
     ALL_SLOTS,
+    JEWEL_SLOTS,
     LEFT_SLOTS,
     UNDER_SLOTS,
     FAN_SHELF,
@@ -144,6 +145,9 @@ def slot_payload(
         "under": worn_payload(under, fclass) if under else None,
         "placeholder": slot.emoji,
         "placeholder_image": slot.placeholder,
+        # Какой клеткой слот рисуется: квадрат, широкая полоса ожерелья
+        # или колечко. Форму решает сервер — см. `Slot.shape`
+        "shape": slot.shape,
         "item": worn_payload(owned, fclass) if owned else None,
     }
 
@@ -611,7 +615,15 @@ WEAPON_SLOTS = (Slot.WEAPON, Slot.OFFHAND)
 
 
 def sells(service: Service, slot: Slot) -> bool:
-    """Торгует ли этот магазин вещами такого слота."""
+    """Торгует ли этот магазин вещами такого слота.
+
+    Украшения не продаёт пока никто: их место у ювелира, а ювелира в
+    городе ещё нет. Полка эта и так пуста — товара для неё не завезли, —
+    но стоит завезти первое кольцо, и без этой строки оно легло бы на
+    прилавок одёжника, между штанами и кроссовками.
+    """
+    if slot in JEWEL_SLOTS:
+        return False
     if service is Service.WEAPONS:
         return slot in WEAPON_SLOTS
     if service is Service.CLOTHES:

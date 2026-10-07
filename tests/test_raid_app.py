@@ -320,10 +320,21 @@ async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
     assert boss["avatar"]["url"].endswith("bosses/cellar_boss.png")
     left = boss["slots"]["left"]
     right = boss["slots"]["right"]
-    assert [row["slot"] for row in left] == ["head", "weapon", "jacket", "belt"]
-    assert [row["slot"] for row in right] == ["gloves", "offhand", "pants", "boots"]
-    # у босса заняты все клетки, но форма слота та же, что у пустого
-    assert all(row["item"] for row in left + right)
+    assert [row["slot"] for row in left] == [
+        "head", "necklace", "weapon", "jacket", "belt"
+    ]
+    assert [row["slot"] for row in right] == [
+        "gloves", "ring_right", "ring_middle", "ring_left",
+        "offhand", "pants", "boots",
+    ]
+    # Клетки украшений у NPC пустые: ювелирной лавки в городе ещё нет, и
+    # взять кольцо боссу неоткуда. Всё остальное на нём надето
+    jewels = {"necklace", "ring_right", "ring_middle", "ring_left"}
+    for row in left + right:
+        if row["slot"] in jewels:
+            assert row["item"] is None, row["slot"]
+        else:
+            assert row["item"], row["slot"]
     assert all(row["placeholder_image"] for row in left + right)
     assert next(row for row in left if row["slot"] == "weapon")["item"]["title"] == (
         "Кувалда Босса"

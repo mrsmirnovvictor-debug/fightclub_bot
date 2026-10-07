@@ -14,6 +14,7 @@ from bot.game.locations import Service
 from bot.game.market import buyback
 from bot.game.equipment import (
     REPAIR_PRICE_PER_POINT,
+    RING_SLOTS,
     Item,
     OwnedItem,
     RepairResult,
@@ -76,6 +77,30 @@ async def settle_gear(db: Database, player: Player) -> list[OwnedItem]:
     return dropped
 
 
+def default_slot(player: Player, item: Item) -> Slot:
+    """В какую клетку вещь пойдёт, если её не назвали.
+
+    У всех вещей клетка одна, и выбирать не из чего: занята — вещь из неё
+    уедет в рюкзак. У кольца клеток три, и это другое дело: кольца носят
+    по нескольку, и новое должно ложиться в свободную, а не сбивать
+    надетое. Заполняются они справа налево — с мизинца рабочей руки.
+
+    Все три заняты — не снимаем ничего молча: боец выбирает сам, с каким
+    кольцом расстаться, а служба говорит, что выбор за ним.
+    """
+    if not item.is_ring:
+        return item.slots[0]
+    free = next(
+        (one for one in RING_SLOTS if player.gear_in_slot(one) is None), None
+    )
+    if free is None:
+        raise InventoryError(
+            "У вас заполнены все слоты колец, сначала снимите одно из них, "
+            "чтобы надеть новое."
+        )
+    return free
+
+
 async def equip(
     db: Database, player: Player, item_id: int, slot: Slot | None = None
 ) -> OwnedItem:
@@ -86,7 +111,7 @@ async def equip(
     if owned.is_equipped:
         raise InventoryError(f"«{owned.title}» уже надета.")
 
-    target = slot or owned.item.slots[0]
+    target = slot or default_slot(player, owned.item)
     if target not in owned.item.slots:
         raise InventoryError(f"«{owned.title}» в этот слот не надевается.")
 

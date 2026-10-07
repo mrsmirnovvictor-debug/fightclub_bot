@@ -283,59 +283,88 @@ function slotHint(slot) {
 // которые игра и получает своё «опять слетело».
 //
 // `own` — своя ли это карточка, `info` — кукла только для показа.
+// Клетки колонки, разложенные по рядам. Обычная клетка — ряд из себя
+// одной; три колечка идут одним рядом, и ряд этот ровно той же ширины,
+// что и квадратная клетка над ним. Группирует страница, а не сервер:
+// серверу довольно сказать, какой формы клетка, — где её рисовать,
+// видно уже по соседям.
+function slotRows(slots) {
+  const rows = [];
+  slots.forEach((slot) => {
+    const last = rows[rows.length - 1];
+    if (slot.shape === "ring" && last && last.shape === "ring") {
+      last.cells.push(slot);
+      return;
+    }
+    rows.push({ shape: slot.shape || "square", cells: [slot] });
+  });
+  return rows;
+}
+
 function renderSlots(container, slots, own, info) {
   container.textContent = "";
-  slots.forEach((slot) => {
-    // Картинкой показываем верхнюю вещь; если её нет, а нижняя есть — нижнюю.
-    // Пустой клетка считается, только когда в ней нет ни одной.
-    const shown = slot.item || slot.under;
-    const box = document.createElement("div");
-    box.className = "slot" + (shown ? "" : " empty");
-    box.title = slotHint(slot);
-    box.appendChild(
-      shown ? slotPicture(shown, slot.placeholder) : emptySlotPicture(slot, box)
-    );
-    // Обводка ступени на надетой вещи. Кукла открыта всем, кто смотрит
-    // карточку, — по цвету рамки соперник и понимает, что вещь не простая
-    if (shown && shown.mod && shown.mod.level) {
-      box.classList.add("tier", "lvl" + shown.mod.level);
+  slotRows(slots).forEach((row) => {
+    let box = container;
+    if (row.shape === "ring") {
+      box = document.createElement("div");
+      box.className = "slot-row rings";
+      container.appendChild(box);
     }
-    // Вещь на исходе видно прямо в клетке: рюкзак открывают не каждый
-    // день, а рассыпается вещь надетой и посреди боя
-    const dying = worstWear(slot);
-    if (dying) {
-      box.classList.add(dying);
-      box.appendChild(wearBadge(dying, worstLeft(slot)));
-    }
-    box.addEventListener("click", () => {
-      haptic((feedback) => feedback.selectionChanged());
-      // В клетке тела вещей две: разбираем ту, что видно
-      const item = slot.item || slot.under;
-      const title = slot.item ? slot.title : slot.under_title;
-      if (!item) {
-        popup("Слот пуст", "Сюда надевается: " + slot.cell_title + ".");
-        return;
-      }
-      if (info) {
-        openWorn(item, title, slot);
-        return;
-      }
-      if (!own) {
-        // Чужая кукла внутри всплывающей карточки: открывать над ней
-        // вторую створку некуда, и вещь рассказывает о себе запиской
-        popup(item.title, slotHint(slot));
-        return;
-      }
-      // Клик по надетой вещи возвращает её в инвентарь, но не молча:
-      // промахнуться по слоту легко, а вещь при этом слетает. Спрашиваем
-      // не голым «вы уверены?», а той же створкой со свойствами: перед
-      // тем как снять, полезно увидеть, что именно теряешь
-      openWorn(item, title, slot, () =>
-        act("api/unequip", { slot: item.slot || slot.slot })
-      );
-    });
-    container.appendChild(box);
+    row.cells.forEach((slot) => renderSlot(box, slot, own, info));
   });
+}
+
+function renderSlot(container, slot, own, info) {
+  // Картинкой показываем верхнюю вещь; если её нет, а нижняя есть — нижнюю.
+  // Пустой клетка считается, только когда в ней нет ни одной.
+  const shown = slot.item || slot.under;
+  const box = document.createElement("div");
+  box.className =
+    "slot " + (slot.shape || "square") + (shown ? "" : " empty");
+  box.title = slotHint(slot);
+  box.appendChild(
+    shown ? slotPicture(shown, slot.placeholder) : emptySlotPicture(slot, box)
+  );
+  // Обводка ступени на надетой вещи. Кукла открыта всем, кто смотрит
+  // карточку, — по цвету рамки соперник и понимает, что вещь не простая
+  if (shown && shown.mod && shown.mod.level) {
+    box.classList.add("tier", "lvl" + shown.mod.level);
+  }
+  // Вещь на исходе видно прямо в клетке: рюкзак открывают не каждый
+  // день, а рассыпается вещь надетой и посреди боя
+  const dying = worstWear(slot);
+  if (dying) {
+    box.classList.add(dying);
+    box.appendChild(wearBadge(dying, worstLeft(slot)));
+  }
+  box.addEventListener("click", () => {
+    haptic((feedback) => feedback.selectionChanged());
+    // В клетке тела вещей две: разбираем ту, что видно
+    const item = slot.item || slot.under;
+    const title = slot.item ? slot.title : slot.under_title;
+    if (!item) {
+      popup("Слот пуст", "Сюда надевается: " + slot.cell_title + ".");
+      return;
+    }
+    if (info) {
+      openWorn(item, title, slot);
+      return;
+    }
+    if (!own) {
+      // Чужая кукла внутри всплывающей карточки: открывать над ней
+      // вторую створку некуда, и вещь рассказывает о себе запиской
+      popup(item.title, slotHint(slot));
+      return;
+    }
+    // Клик по надетой вещи возвращает её в инвентарь, но не молча:
+    // промахнуться по слоту легко, а вещь при этом слетает. Спрашиваем
+    // не голым «вы уверены?», а той же створкой со свойствами: перед
+    // тем как снять, полезно увидеть, что именно теряешь
+    openWorn(item, title, slot, () =>
+      act("api/unequip", { slot: item.slot || slot.slot })
+    );
+  });
+  container.appendChild(box);
 }
 
 function worstWear(slot) {

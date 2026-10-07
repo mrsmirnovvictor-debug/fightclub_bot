@@ -934,11 +934,15 @@ def test_shop_sections_are_named_after_body_parts():
 
     assert [slot.section for slot in ALL_SLOTS] == [
         "голова",
+        "ожерелья",
         "оружие",
         "щиты",
         "футболки",
         "пояс",
         "перчатки",
+        "кольца",
+        "кольца",
+        "кольца",
         "верхняя одежда",
         "ноги",
         "обувь",
@@ -970,6 +974,143 @@ def test_a_look_can_override_its_picture():
     assert custom.picture == "https://example.com/one.png"
 
 
+# ---------- украшения: ожерелье и три кольца ----------
+
+
+def ring(code: str = "test_ring", **extra):
+    """Кольцо для проверок: своего товара у ювелира ещё нет.
+
+    Лавка ювелира приедет отдельно, а правила клеток готовы уже сейчас, и
+    проверять их на пустом месте нечем. Поэтому кольцо здесь своё — ровно
+    такое, каким его заведут в каталоге: слот правой клетки, а дальше
+    `Item.slots` сам раздаёт ему все три.
+    """
+    from bot.game.equipment import Item
+
+    return Item(code, "Кольцо " + code[-1], Slot.RING_RIGHT, "💍", price=100, **extra)
+
+
+def with_rings(player: Player, how_many: int) -> list[OwnedItem]:
+    """Выдать бойцу колец в рюкзак — надетыми они станут сами."""
+    owned = []
+    for number in range(how_many):
+        one = OwnedItem(item=ring(f"test_ring_{number}"), id=100 + number)
+        player.gear.append(one)
+        owned.append(one)
+    return owned
+
+
+def test_a_ring_fits_any_of_its_three_cells():
+    """Клетки колец равноправны: кольцо лежит в любой из трёх."""
+    from bot.game.equipment import RING_SLOTS
+
+    one = ring()
+    assert one.is_ring
+    assert one.slots == RING_SLOTS == (
+        Slot.RING_RIGHT, Slot.RING_MIDDLE, Slot.RING_LEFT
+    )
+    # Прочие вещи своей клеткой и ограничены
+    assert not CATALOGUE["set_plut_boots"].is_ring
+    assert CATALOGUE["set_plut_boots"].slots == (Slot.BOOTS,)
+
+
+async def test_rings_fill_up_from_the_right(db):
+    """Первое кольцо — в правую клетку, второе в среднюю, третье в левую."""
+    player = make_player()
+    await db.save_player(player)
+    rings = with_rings(player, 3)
+    for one in rings:
+        await equip(db, player, one.id)
+    assert [
+        player.gear_in_slot(slot).id
+        for slot in (Slot.RING_RIGHT, Slot.RING_MIDDLE, Slot.RING_LEFT)
+    ] == [rings[0].id, rings[1].id, rings[2].id]
+
+
+async def test_a_freed_cell_is_the_one_that_fills_next(db):
+    """Сняли среднее — туда и ляжет следующее, а края не трогаются."""
+    player = make_player()
+    await db.save_player(player)
+    rings = with_rings(player, 4)
+    for one in rings[:3]:
+        await equip(db, player, one.id)
+
+    await unequip(db, player, Slot.RING_MIDDLE)
+    assert player.gear_in_slot(Slot.RING_MIDDLE) is None
+
+    await equip(db, player, rings[3].id)
+    assert player.gear_in_slot(Slot.RING_MIDDLE).id == rings[3].id
+    assert player.gear_in_slot(Slot.RING_RIGHT).id == rings[0].id
+    assert player.gear_in_slot(Slot.RING_LEFT).id == rings[2].id
+
+
+async def test_the_fourth_ring_waits_until_one_comes_off(db):
+    """Все три клетки заняты — четвёртое кольцо не надевается молча.
+
+    Снять что-нибудь само служба не вправе: какое из трёх колец бойцу
+    дороже, знает только он. Поэтому вместо тихой подмены — отказ словами.
+    """
+    player = make_player()
+    await db.save_player(player)
+    rings = with_rings(player, 4)
+    for one in rings[:3]:
+        await equip(db, player, one.id)
+
+    with pytest.raises(InventoryError, match="заполнены все слоты колец"):
+        await equip(db, player, rings[3].id)
+
+    # И ни одно из надетых при этом не слетело
+    assert all(
+        player.gear_in_slot(slot) is not None
+        for slot in (Slot.RING_RIGHT, Slot.RING_MIDDLE, Slot.RING_LEFT)
+    )
+    assert rings[3].slot is None
+
+
+async def test_a_named_cell_still_wins(db):
+    """Клетку можно назвать руками — тогда кольцо ляжет именно в неё."""
+    player = make_player()
+    await db.save_player(player)
+    rings = with_rings(player, 2)
+
+    await equip(db, player, rings[0].id, Slot.RING_LEFT)
+    assert player.gear_in_slot(Slot.RING_LEFT).id == rings[0].id
+    assert player.gear_in_slot(Slot.RING_RIGHT) is None
+
+    # Названная занятая клетка освобождается, как и у всех прочих вещей
+    await equip(db, player, rings[1].id, Slot.RING_LEFT)
+    assert player.gear_in_slot(Slot.RING_LEFT).id == rings[1].id
+    assert rings[0].slot is None
+
+
+def test_no_shop_in_town_sells_jewellery_yet(monkeypatch):
+    """Кольцо на прилавок одёжника не ложится: его место у ювелира.
+
+    Полка украшений и так пуста — товара для неё не завезли. Но ювелир
+    приедет, а правило «одёжник торгует всем, кроме оружия» подхватило бы
+    кольца молча: они не оружие. Подкладываем кольцо в каталог руками и
+    смотрим, что ни один из нынешних магазинов его не выставил.
+    """
+    from bot.game.locations import Service
+    from bot.webapp.card import sells
+    from bot.game.equipment import JEWEL_SLOTS
+
+    for service in (Service.CLOTHES, Service.WEAPONS):
+        for slot in JEWEL_SLOTS:
+            assert not sells(service, slot), f"{service.value}: {slot.value}"
+
+    # И то же самое на живой витрине, с настоящей вещью на полке
+    import bot.content.items as content
+
+    jewel = ring("test_shop_ring")
+    monkeypatch.setattr(content, "SHOWCASE", content.SHOWCASE + (jewel,))
+    player = make_player(level=10, credits=1000)
+    for service in (Service.CLOTHES, Service.WEAPONS):
+        shop = build_shop(player, service)
+        shown = [row["code"] for one in shop["sections"] for row in one["items"]]
+        assert jewel.code not in shown, service.value
+
+
 def test_empty_slots_carry_their_own_placeholder():
     """У пустого слота своя подложка — по коду слота, как у аватаров."""
     from bot.game.art import SLOTS
@@ -987,7 +1128,13 @@ def test_empty_slots_carry_their_own_placeholder():
         assert row["placeholder_image"] == Slot(row["slot"]).placeholder
         assert row["placeholder_image"].startswith(f"{SLOTS}/")
         assert row["placeholder"], "значок остаётся запасным вариантом"
-    assert len({row["placeholder_image"] for row in rows}) == len(rows)
+    # Подложка у каждой клетки своя — кроме трёх колец: кольцо оно и есть
+    # кольцо, и рисовать три одинаковых колечка под разными именами незачем
+    pictures = [row["placeholder_image"] for row in rows]
+    assert len(set(pictures)) == len(rows) - 2
+    rings = [row for row in rows if row["slot"].startswith("ring_")]
+    assert len(rings) == 3
+    assert len({row["placeholder_image"] for row in rings}) == 1
 
 
 def test_two_cells_borrow_a_placeholder_from_a_neighbour():
@@ -1000,10 +1147,14 @@ def test_two_cells_borrow_a_placeholder_from_a_neighbour():
     from bot.game.art import SLOTS
     from bot.game.equipment import ALL_SLOTS
 
+    from bot.game.equipment import RING_SLOTS
+
     assert Slot.OFFHAND.placeholder == f"{SLOTS}/shield.jpeg"
     assert Slot.JACKET.placeholder == f"{SLOTS}/shirt.png"
+    for slot in RING_SLOTS:
+        assert slot.placeholder == f"{SLOTS}/ring.png"
     for slot in ALL_SLOTS:
-        if slot in (Slot.OFFHAND, Slot.JACKET):
+        if slot in (Slot.OFFHAND, Slot.JACKET, *RING_SLOTS):
             continue
         assert slot.placeholder == f"{SLOTS}/{slot.value}.png"
 

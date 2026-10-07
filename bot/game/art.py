@@ -12,7 +12,9 @@ WEAPONS = f"{BUCKET}/weapons"
 # Второй заход по недостающим позициям лёг в отдельную папку
 ADDED = f"{BUCKET}/add"
 AVATARS = f"{BUCKET}/avatars"
-SLOTS = f"{BUCKET}/slots"
+# Подложки пустых слотов. Папку переименовали в `placeholders`: «слоты»
+# в бакете путались со слотами зала, а подложка — это и есть плейсхолдер
+SLOTS = f"{BUCKET}/placeholders"
 ITEMS = f"{BUCKET}/items"
 # Футболки — самый молодой раздел, его рисовали отдельным заходом
 SHIRTS = f"{BUCKET}/shirts"
@@ -42,7 +44,7 @@ def avatar(code: str) -> str:
 
 
 def slot(name: str) -> str:
-    """Подложка пустого слота по имени файла: slots/weapon.png.
+    """Подложка пустого слота по имени файла: placeholders/weapon.png.
 
     Обычно имя совпадает с кодом слота, но не всегда: клетка второй руки
     рисуется щитом, а клетка «тело» — силуэтом футболки. Поэтому сюда
