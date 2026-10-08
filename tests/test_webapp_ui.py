@@ -3143,34 +3143,36 @@ def raid_with_gang(over=None) -> dict:
 
 
 async def test_the_gang_stands_on_the_board_one_card_each(server):
-    """Твой соперник крупно, остальные стопкой — и у каждого своя шкала.
+    """Твой соперник — верхняя карта колоды, прочие под ним.
 
     Пять портретов в колонку не влезают, да и ищут на этом табло не лицо.
-    Крупно стоит тот, с кем дерёшься сейчас; прочие лежат стопкой, у
-    каждого видна верхняя часть карточки — имя и шкала.
+    Во всю величину лежит тот, с кем дерёшься сейчас; прочие уходят в
+    колоду, и у каждого видна верхняя часть карты — имя и шкала.
     """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_gang())
 
         # Крупная карточка одна, и это твой соперник: рамка синяя
-        big = page.locator(".raid-board > .boss-card")
+        big = page.locator(".raid-foes > .boss-card")
         assert await big.count() == 1
         assert await page.locator(".boss-card.mine").count() == 1
         assert "Лидер банды" in await big.inner_text()
         # Подписи «твой» больше нет: рамку видно быстрее слова
         assert "твой" not in await page.locator("#raid-body").inner_text()
 
-        # Остальные четверо — в стопке, и своего соперника там уже нет
+        # Остальные четверо — в колоде, и своего соперника там уже нет
         rest = page.locator(".raid-foes .stack-card")
         assert await rest.count() == 4
+        # В разметке колода идёт снизу вверх, поэтому читаем с конца
         names = await rest.evaluate_all(
-            "nodes => nodes.map(one => one.querySelector('.fight-name').textContent)"
+            "nodes => nodes.map(one => one.querySelector('.fight-name')"
+            ".textContent).reverse()"
         )
         assert not [one for one in names if "Лидер банды" in one]
-        # Павший опускается вниз стопки сам, где бы сервер его ни прислал
+        # Павший уходит на дно колоды сам, где бы сервер его ни прислал
         assert "💀" in names[-1] and "Трикстер" in names[-1]
         assert await page.locator(".raid-foes .stack-card.down").count() == 1
-        assert "готов" in await rest.last.inner_text()
+        assert "готов" in await rest.first.inner_text()
 
         # Портрет только у крупной карточки — в стопке лиц нет
         assert await page.locator(".raid-foes .boss-face").count() == 0
@@ -3190,7 +3192,7 @@ async def test_the_face_stands_above_the_name_and_the_bar(server):
         browser, page = await open_raid(pw, server, raid, images=True)
         await page.wait_for_selector(".boss-face")
 
-        order = await page.locator(".raid-board > .boss-card").evaluate(
+        order = await page.locator(".raid-foes > .boss-card").evaluate(
             "node => Array.from(node.children).map(one => one.className)"
         )
         assert order == ["boss-face", "fight-name", "fight-hp", "fight-bar"]
@@ -3224,10 +3226,13 @@ async def test_the_foe_deck_turns_with_the_queue(server):
         browser, page = await open_raid(pw, server, raid)
 
         assert "Ассасин №1" in await page.locator(
-            ".raid-board > .boss-card"
+            ".raid-foes > .boss-card"
         ).inner_text()
+        # В разметке колода идёт снизу вверх: первой стоит самая глубокая
+        # карта, последней — ближайшая к верхней. Читаем снизу вверх, то
+        # есть в порядке самой колоды
         names = await page.locator(".raid-foes .stack-card .fight-name").evaluate_all(
-            "nodes => nodes.map(one => one.textContent)"
+            "nodes => nodes.map(one => one.textContent).reverse()"
         )
         # Круг пошёл дальше с четвёртого, обошёл конец и вернулся к началу
         assert [one.split(" ")[-1] for one in names] == [
@@ -3236,8 +3241,11 @@ async def test_the_foe_deck_turns_with_the_queue(server):
         # Лидер в колоде ниже «Ассасина №2»: круг дошёл до конца списка и
         # пошёл сначала, а не прыгнул к первому по порядку
         assert "Ассасин" in names[0] and "Лидер" in names[1]
-        # Павший — в самом низу колоды, глубже всех
+        # Павший — глубже всех, то есть в самом верху экрана
         assert "💀" in names[-1]
+        top = await page.locator(".raid-foes .stack-card").first.bounding_box()
+        rest = await page.locator(".raid-foes .stack-card").nth(1).bounding_box()
+        assert top["y"] < rest["y"], "павший не ушёл наверх"
         await browser.close()
 
 
@@ -3396,12 +3404,12 @@ async def test_an_empty_pocket_offers_to_buy_a_pass(server):
 
 
 async def test_the_board_deals_two_decks(server):
-    """Две колоды: верхняя карта во всю величину, остальные под ней.
+    """Две колоды на нижнем краю: верхняя карта внизу, глубокие — выше.
 
-    Ты и твой соперник — верхние карты своих колод, по нижнему краю на
-    одной черте: карточка босса высокая, в ней портрет, — и по верху они
-    разъезжались так, что твоя шкала оказывалась у него на уровне бровей.
-    Остальные уходят под верхнюю карту, и у каждого виден верхний край.
+    Верхняя карта колоды — та, что ближе всех к смотрящему: слева ты,
+    справа твой соперник. Лежит она у самого низа и во всю величину, а
+    каждая следующая карта колоды выглядывает из-под неё сверху — видно
+    только верхний край с именем и шкалой.
     """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
@@ -3412,12 +3420,9 @@ async def test_the_board_deals_two_decks(server):
             "node => Array.from(node.querySelectorAll("
             "'.raid-board > *')).map(one => one.className)"
         )
-        assert order == [
-            "raid-you", "versus", "boss-card mine",
-            "fight-stack raid-mates", "fight-stack raid-foes",
-        ]
+        assert order == ["raid-deck raid-mates", "versus", "raid-deck raid-foes"]
 
-        # Три столбца по нижней черте, и ширины 45 / 10 / 45
+        # Обе колоды и мечи между ними стоят на одной нижней черте
         board = await body.locator(".raid-board").bounding_box()
         you = await body.locator(".raid-you").bounding_box()
         swords = await body.locator(".versus").bounding_box()
@@ -3428,28 +3433,35 @@ async def test_the_board_deals_two_decks(server):
         for box, share in ((you, 0.45), (swords, 0.10), (boss, 0.45)):
             assert abs(box["width"] / board["width"] - share) < 0.04, box["width"]
 
-        # Колода идёт вниз от верхней карты и заходит под неё
-        mates = await body.locator(".raid-mates").bounding_box()
-        assert mates["y"] < bottoms[0], "колода не заходит под верхнюю карту"
-        assert mates["y"] > you["y"], "колода уехала выше верхней карты"
-        assert abs(round(mates["x"]) - round(you["x"])) <= 1
+        # Верхняя карта — последняя в колоде и самая нижняя на экране
+        deck = page.locator(".raid-mates > *")
+        assert "raid-you" in (await deck.last.get_attribute("class"))
+        cards = [
+            await deck.nth(number).bounding_box()
+            for number in range(await deck.count())
+        ]
+        tops = [round(box["y"]) for box in cards]
+        assert tops == sorted(tops), f"колода не идёт сверху вниз: {tops}"
+        assert cards[-1]["y"] + cards[-1]["height"] == pytest.approx(
+            bottoms[0], abs=2
+        )
 
-        # И верхняя карта лежит поверх: имя первой карты колоды она не
-        # закрывает, но край её — под ней
-        first = await body.locator(".raid-mates .stack-card").first.bounding_box()
+        # Карты лежат внахлёст, и видно у каждой верхний край
+        for over, under in zip(cards, cards[1:]):
+            assert under["y"] < over["y"] + over["height"], "карты сошлись встык"
         name = await body.locator(
             ".raid-mates .stack-card .fight-name"
-        ).first.bounding_box()
-        assert first["y"] < bottoms[0] <= name["y"], (first, bottoms[0], name)
+        ).last.bounding_box()
+        assert name["y"] + name["height"] <= cards[-1]["y"] + 1, "имя закрыто"
 
         # Проверяем не правило, а что видно: в полосе нахлёста палец
-        # попадает в верхнюю карту, а не в ту, что под ней. Без слоя
+        # попадает в верхнюю карту, а не в ту, что лежит под ней. Без слоя
         # («z-index») позиционированная карта колоды рисуется поверх
         # непозиционированной верхней, и колода ложится не той стороной
         on_top = await page.evaluate(
             "point => { const node = document.elementFromPoint(point.x, point.y);"
             " return node && node.closest('.raid-you, .stack-card').className; }",
-            {"x": round(you["x"] + you["width"] / 2), "y": bottoms[0] - 1},
+            {"x": round(you["x"] + you["width"] / 2), "y": round(you["y"]) + 2},
         )
         assert on_top == "raid-you", on_top
         await browser.close()
@@ -3649,8 +3661,11 @@ async def test_the_wave_shows_the_boss_and_the_whole_party(server):
         you = await page.locator(".raid-you").inner_text()
         assert "⏳ ⚔️ Растафарайчик [5] — ты" in you and "урона 45" in you
 
-        # Остальные — стопкой, по одной карточке на человека
-        mates = await page.locator(".raid-mates .stack-card").all_inner_texts()
+        # Остальные — в колоде, по карте на человека. В разметке она идёт
+        # снизу вверх, поэтому читаем с конца — в порядке самой колоды
+        mates = list(reversed(
+            await page.locator(".raid-mates .stack-card").all_inner_texts()
+        ))
         assert len(mates) == 2
         assert "✅" in mates[0] and "Марла" in mates[0]  # Марла отработала волну
         assert "💀" in mates[1] and "Зевака" in mates[1]  # Зеваку вынесли
@@ -3658,8 +3673,13 @@ async def test_the_wave_shows_the_boss_and_the_whole_party(server):
         await browser.close()
 
 
-async def test_the_fallen_sink_to_the_bottom_of_the_party(server):
-    """Живые сверху, павшие внизу: помочь можно только тем, кто дерётся."""
+async def test_the_fallen_sink_to_the_bottom_of_the_deck(server):
+    """Павший уходит на дно колоды — то есть в самый верх экрана.
+
+    Помочь и добить можно только живых, а павший посреди колоды каждый
+    раз сбивает счёт. Сервер прислал его первым — на дно он ляжет всё
+    равно.
+    """
     party = raid_with_wave()["raid"]["party"]
     # Зеваку вынесли, и в ответе сервера он идёт первым
     raid = raid_with_wave({"party": [party[2], party[0], party[1]]})
@@ -3667,9 +3687,15 @@ async def test_the_fallen_sink_to_the_bottom_of_the_party(server):
         browser, page = await open_raid(pw, server, raid)
 
         assert "Растафарайчик" in await page.locator(".raid-you").inner_text()
-        mates = await page.locator(".raid-mates .stack-card").all_inner_texts()
+        cards = page.locator(".raid-mates .stack-card")
+        mates = list(reversed(await cards.all_inner_texts()))
         assert "Марла" in mates[0]
         assert "Зевака" in mates[1] and "💀" in mates[1]
+
+        # И на экране павший выше всех — глубже в колоде некуда
+        boxes = [await cards.nth(number).bounding_box() for number in range(2)]
+        assert boxes[0]["y"] < boxes[1]["y"]
+        assert "Зевака" in await cards.first.inner_text()
         await browser.close()
 
 

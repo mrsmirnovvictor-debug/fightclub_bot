@@ -3931,19 +3931,21 @@ function raidPanel(data) {
   return box;
 }
 
-// Доска боя — две колоды, по колоде на сторону. Верхняя карта колоды
-// лежит лицом вверх и во всю величину: слева это ты, справа тот, с кем
-// ты дерёшься сейчас. Остальные уходят под неё, и у каждого виден
-// верхний край своей карты — имя и шкала. Так обе колоды и читаются
-// сверху вниз: кто сейчас, кто следующий, кто за ним.
+// Доска боя — две колоды, по колоде на сторону, и обе лежат на нижнем
+// краю. Верхняя карта колоды — та, что ближе всех к смотрящему, — лежит
+// у самого низа и во всю величину: слева это ты, справа тот, с кем ты
+// дерёшься сейчас. Следующая карта колоды выглядывает из-под неё сверху,
+// за ней третья, и так вверх по экрану: чем глубже карта в колоде, тем
+// выше она стоит и тем меньше её видно — только верхний край с именем и
+// шкалой.
 //
-// Колода противников крутится вместе с очередью: наверх выходит тот, с
-// кем размен идёт сейчас, за ним — следующий по кругу, и так до конца
-// колоды, после чего круг начинается заново. Порядок в разметке — это и
-// есть порядок карт в колоде.
+// Колода противников крутится вместе с очередью: верхней становится тот,
+// с кем размен идёт сейчас, за ним — следующий по кругу, и так до конца
+// колоды, после чего круг начинается заново.
 //
-// Павшие ложатся в самый низ, глубже всех: помочь и добить можно только
-// живых, а павший посреди колоды каждый раз сбивает счёт.
+// Павшие ложатся глубже всех, то есть в самом верху экрана: помочь и
+// добить можно только живых, а павший посреди колоды каждый раз сбивает
+// счёт.
 //
 // Раньше обе стороны стояли списками во всю высоту, и десять карточек
 // отряда выдавливали с экрана кнопки хода. Колода показывает каждого, но
@@ -3956,21 +3958,21 @@ function raidBoard(raid) {
   const foes = raid.gang || (raid.boss ? [raid.boss] : []);
   const foe = currentFoe(raid, foes);
 
-  // Крупные карточки идут первыми: они и есть верхние карты. Накрывать
-  // соседку снизу им помогает не порядок в разметке, а слой (`z-index`
-  // в стилях) — у карт колоды он свой, и без этого верхняя карта
-  // оказалась бы под той, что должна лежать под ней
-  if (you) box.appendChild(youCard(you));
+  const mates = party.filter((member) => !samePlace(member, you, "user_id"));
+  box.appendChild(
+    deckOf("raid-mates", mateCards(mates), you ? youCard(you) : null)
+  );
   const swords = document.createElement("p");
   swords.className = "versus";
   swords.textContent = "⚔️";
   box.appendChild(swords);
-  if (foe) box.appendChild(bossCard(foe, true));
-
   box.appendChild(
-    mateStack(party.filter((member) => !samePlace(member, you, "user_id")))
+    deckOf(
+      "raid-foes",
+      foeCards(inTurnOrder(foes, foe)),
+      foe ? bossCard(foe, true) : null
+    )
   );
-  box.appendChild(foeStack(inTurnOrder(foes, foe)));
   return box;
 }
 
@@ -4062,9 +4064,20 @@ function bossCard(boss, withFace) {
 // Стопка: карточки лежат внахлёст, и у каждой видна верхняя часть — имя
 // и шкала. Больше в стопке и не нужно: по ней смотрят, кто ещё держится,
 // а не чем он одет.
-function fightStack(kind) {
+// Колода одной стороны: карты снизу вверх. Верхняя карта колоды лежит у
+// самого низа и во всю величину, под ней (то есть выше на экране) вторая,
+// за ней третья — и чем глубже карта в колоде, тем выше она на экране.
+//
+// Поэтому список карт и разворачивается: в разметке первой идёт самая
+// глубокая. Порядок в разметке — это и порядок слоёв: каждая следующая
+// карта рисуется поверх предыдущей и прячет у неё низ, оставляя на виду
+// верхний край с именем и шкалой. Положи их в прямом порядке — и колода
+// ляжет лицом вниз: прятался бы верх карты, а не низ.
+function deckOf(kind, peeks, top) {
   const box = document.createElement("div");
-  box.className = "fight-stack " + kind;
+  box.className = "raid-deck " + kind;
+  peeks.slice().reverse().forEach((card) => box.appendChild(card));
+  if (top) box.appendChild(top);
   return box;
 }
 
@@ -4104,9 +4117,10 @@ function mateMark(member) {
   return (member.acted || member.ready) ? "✅ " : "⏳ ";
 }
 
-function mateStack(party, kind) {
-  const box = fightStack(kind || "raid-mates");
-  byTheLiving(party).forEach((member) => {
+// Карты отряда, в порядке колоды: сразу за верхней идёт ближайший
+// союзник, павшие ложатся глубже всех
+function mateCards(party) {
+  return byTheLiving(party).map((member) => {
     const card = stackCard("mate", member.alive);
     stackHead(
       card,
@@ -4114,14 +4128,12 @@ function mateStack(party, kind) {
       member.alive ? member.hp + "/" + member.max_hp : "выбыл"
     );
     card.appendChild(fightBar(member));
-    box.appendChild(card);
+    return card;
   });
-  return box;
 }
 
-function foeStack(foes) {
-  const box = fightStack("raid-foes");
-  byTheLiving(foes).forEach((foe) => {
+function foeCards(foes) {
+  return byTheLiving(foes).map((foe) => {
     const card = stackCard("foe", foe.alive);
     stackHead(
       card,
@@ -4129,9 +4141,8 @@ function foeStack(foes) {
       foe.alive ? foe.hp + "/" + foe.max_hp : "готов"
     );
     card.appendChild(fightBar(foe));
-    box.appendChild(card);
+    return card;
   });
-  return box;
 }
 
 // Шкала и заготовки, пока ход уже сделан: смотреть можно, нажимать
@@ -4464,8 +4475,8 @@ function battlePanel(data) {
   return box;
 }
 
-// Табло командного боя: та же доска, что и в рейде. Сверху ты и тот, с
-// кем тебя свела пара этого хода, — верхние карты своих колод; под ними
+// Табло командного боя: та же доска, что и в рейде. Внизу ты и тот, с
+// кем тебя свела пара этого хода, — верхние карты своих колод; выше
 // остальные: слева свои, справа чужие. В бою «каждый сам за себя» своих
 // нет вовсе, и слева пусто: это честно, там и правда никого.
 function battleBoard(battle) {
@@ -4478,23 +4489,29 @@ function battleBoard(battle) {
       ? party.find((member) => member.user_id === you.rival_id) || null
       : null;
 
-  if (you) box.appendChild(battleCard(battle, you, "raid-you"));
-  const swords = document.createElement("p");
-  swords.className = "versus";
-  swords.textContent = "⚔️";
-  box.appendChild(swords);
-  box.appendChild(
-    rival ? battleCard(battle, rival, "boss-card mine") : noRivalCard()
-  );
-
   const rest = party.filter(
     (member) => member !== you && member !== rival
   );
   const ours = (member) =>
     battle.kind === "team" && you && member.team === you.team;
-  box.appendChild(mateStack(rest.filter(ours)));
+
   box.appendChild(
-    mateStack(rest.filter((member) => !ours(member)), "raid-foes")
+    deckOf(
+      "raid-mates",
+      mateCards(rest.filter(ours)),
+      you ? battleCard(battle, you, "raid-you") : null
+    )
+  );
+  const swords = document.createElement("p");
+  swords.className = "versus";
+  swords.textContent = "⚔️";
+  box.appendChild(swords);
+  box.appendChild(
+    deckOf(
+      "raid-foes",
+      mateCards(rest.filter((member) => !ours(member))),
+      rival ? battleCard(battle, rival, "boss-card mine") : noRivalCard()
+    )
   );
   return box;
 }
