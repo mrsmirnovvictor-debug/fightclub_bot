@@ -100,6 +100,35 @@ https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/mafia_mansion.png
 
 - **mafia_mansion** — Особняк мафии: `449,455  528,462  529,554  448,544`
 
+## Тюрьма и таксопарк — `prison_taxi_park_v3.png`
+
+https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/prison_taxi_park_v3.png
+
+- **prison** — Тюрьма: `404,649  568,649  565,768  404,768`
+- **taxi_depot** — Таксопарк: `215,1058  237,1054  237,1107  216,1110` — отдельная подсвеченная пешеходная дверь с голубой панелью в левом корпусе; ремонтные боксы в hotspot не входят.
+
+
+## HR и ювелирный — `hr_jewelry_district_v3.png`
+
+https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/hr_jewelry_district_v3.png
+
+- **hr_agency** — HR-агентство: `403,435  523,435  522,536  407,536`
+- **jewelry_store** — Ювелирный магазин: `402,1105  628,1105  628,1239  404,1237`
+
+
+## Университетский кампус — `university_campus_v3.png`
+
+https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/university_campus_v3.png
+
+- **university** — Университет: `421,510  577,510  577,594  421,594` — центральная группа дверей наверху парадной лестницы.
+
+
+## Администрация города — `city_administration_v3.png`
+
+https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/locations/city_administration_v3.png
+
+- **city_administration** — Администрация: `421,659  522,659  521,793  420,793` — стеклянные двери внутри золотого портала, без наружной рамы.
+
 ## Жилой квартал: четыре дома и один вид изнутри
 
 На карте квартала нарисованы четыре дома, и дверь у каждого своя —
