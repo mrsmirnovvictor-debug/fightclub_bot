@@ -34,7 +34,7 @@ from dataclasses import replace
 
 from bot.game import art
 from bot.game.classes import Stats
-from bot.game.gear import ALL_SLOTS, Item, ItemKind, Slot
+from bot.game.gear import ALL_SLOTS, RING_SLOTS, Item, ItemKind, Slot
 
 # Папки картинок в R2: у старых файлов адрес задан явно
 ART = art.BUCKET
@@ -547,6 +547,298 @@ SET_PIECES: tuple[Item, ...] = (
         intuition=4, hp=10, armor_min=9, armor_max=11, crit=0.4, anticrit=0.25,
     ),
 )
+
+# ---------- прилавок ювелира: кольца и ожерелья ----------
+#
+# Украшения продаются только здесь: ни в клубной лавке, ни у одёжника их
+# не бывает — слоты под них у бойца есть с самого начала, а товара не
+# было вовсе. Прилавок свой, как у «Северного Вала»: в витрину клуба он
+# не входит и эталонного бойца за собой не тянет — круг классов считается
+# по клубной лестнице, и украшения его не перекашивают.
+#
+# Товар двух видов, и это те самые две полки: ожерелья и кольца.
+#
+# Ожерелье идёт линиями наборов — по вещи на ступень на каждый класс, от
+# третьего уровня до девятого, цена от 70 до 500 кредитов. Проценты на
+# нём крупные, как у сетов, и держит их та же полоса `gear_share_cap`:
+# 20% на третьем уровне, 80% на девятом. Броня есть только на старших
+# кулонах — ожерелье носят на груди, грудь оно и прикрывает.
+#
+# Кольца тоже идут линиями, но мельче: одна доля на вещь и никакой
+# брони — кольцо не прикрывает ничего. Зато носить их можно сразу три, и
+# в этом вся их цена: 20 кредитов за простое кольцо первого уровня,
+# 200 — за кольцо девятого. Четыре простых кольца открывают игру (сила,
+# ловкость, интуиция, жизни), три сильных её закрывают.
+#
+# Одно число пака здесь изменено: «кольцу защиты» девятого уровня была
+# написана броня 5–10. Броня в клубе приходит в зону, которую вещь
+# прикрывает, а кольцо не прикрывает ни одной — такое число не сложилось
+# бы ни с чем и осталось бы надписью на карточке. Поэтому у кольца
+# осталось то, что оно и правда даёт: запас здоровья. Остальные числа —
+# как присланы.
+JEWEL_SHELF = "jewel"
+
+
+def _jewel(
+    kit: str,
+    slot: Slot,
+    title: str,
+    fclass: str,
+    level: int,
+    price: int,
+    requires: Stats,
+    **gives: int | float,
+) -> Item:
+    """Украшение из линии набора: своя клетка, свой прилавок.
+
+    Картинка лежит рядом с остальным набором, но под именем украшения, а
+    не под кодом клетки: кольцо в линии одно, а клеток под него три, и
+    `ring_right.png` в бакете никто не рисовал.
+    """
+    worn = "ring" if slot in RING_SLOTS else slot.value
+    return Item(
+        f"set_{kit}_{worn}",
+        title,
+        slot,
+        image=art.set_piece(SET_LINES[fclass], kit, worn),
+        level_required=level,
+        requires=requires,
+        price=price,
+        for_classes=(fclass,),
+        shelf=JEWEL_SHELF,
+        **gives,
+    )
+
+
+def _plain_ring(
+    code: str,
+    kit: str,
+    picture: str,
+    title: str,
+    level: int,
+    price: int,
+    requires: Stats,
+    for_classes: tuple[str, ...],
+    **gives: int | float,
+) -> Item:
+    """Кольцо вне линий: простое с первого уровня или сильное с девятого.
+
+    Картинка приходит именем файла: партия назвала их по тому, что
+    кольцо даёт (`strength.png`, `health.png`), и у «кольца баланса»
+    название своё, а файл общий с партией.
+    """
+    return Item(
+        code,
+        title,
+        Slot.RING_RIGHT,
+        image=art.plain_ring(kit, picture),
+        level_required=level,
+        requires=requires,
+        price=price,
+        for_classes=for_classes,
+        shelf=JEWEL_SHELF,
+        **gives,
+    )
+
+
+JEWEL_PIECES: tuple[Item, ...] = (
+    # ---------- кольца: простые, с первого уровня ----------
+    _plain_ring(
+        'ring_strength', 'starter', 'strength', 'Кольцо силы',
+        1, 20, Stats(), (WARRIOR,), strength=1,
+    ),
+    _plain_ring(
+        'ring_agility', 'starter', 'agility', 'Кольцо ловкости',
+        1, 20, Stats(), (ROGUE,), agility=1,
+    ),
+    _plain_ring(
+        'ring_intuition', 'starter', 'intuition', 'Кольцо интуиции',
+        1, 20, Stats(), (ASSASSIN,), intuition=1,
+    ),
+    _plain_ring(
+        'ring_health', 'starter', 'health', 'Кольцо жизней',
+        1, 20, Stats(), (TANK,), hp=10,
+    ),
+    # ---------- кольца: линии наборов, со второго уровня ----------
+    _jewel(
+        'avenger', Slot.RING_RIGHT, 'Кольцо мстителя',
+        TANK, 2, 30, Stats(endurance=6),
+        anticrit=0.05,
+    ),
+    _jewel(
+        'plut', Slot.RING_RIGHT, 'Кольцо плута',
+        ROGUE, 2, 30, Stats(agility=6),
+        dodge=0.05,
+    ),
+    _jewel(
+        'mercenary', Slot.RING_RIGHT, 'Кольцо наёмника',
+        ASSASSIN, 2, 30, Stats(intuition=6),
+        crit=0.05,
+    ),
+    _jewel(
+        'sport', Slot.RING_RIGHT, 'Спортивное кольцо',
+        WARRIOR, 2, 30, Stats(strength=6),
+        hp=15,
+    ),
+    _jewel(
+        'boxer', Slot.RING_RIGHT, 'Боксёрское кольцо',
+        TANK, 4, 50, Stats(endurance=13),
+        hp=10, anticrit=0.1,
+    ),
+    _jewel(
+        'biker', Slot.RING_RIGHT, 'Байкерская печатка',
+        WARRIOR, 4, 50, Stats(strength=13),
+        crit=0.1,
+    ),
+    _jewel(
+        'croupier', Slot.RING_RIGHT, 'Кольцо крупье',
+        ROGUE, 4, 50, Stats(agility=13),
+        dodge=0.1,
+    ),
+    _jewel(
+        'strangler', Slot.RING_RIGHT, 'Кольцо душителя',
+        ASSASSIN, 4, 50, Stats(intuition=13),
+        crit=0.1,
+    ),
+    _jewel(
+        'army', Slot.RING_RIGHT, 'Армейское кольцо',
+        TANK, 6, 80, Stats(endurance=17),
+        hp=20, anticrit=0.15,
+    ),
+    _jewel(
+        'fighter', Slot.RING_RIGHT, 'Кольцо бойца',
+        WARRIOR, 6, 80, Stats(strength=17),
+        accuracy=0.05, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _jewel(
+        'lovkach', Slot.RING_RIGHT, 'Кольцо ловкача',
+        ROGUE, 6, 80, Stats(agility=17),
+        dodge=0.15,
+    ),
+    _jewel(
+        'camouflage', Slot.RING_RIGHT, 'Камуфляжное кольцо',
+        ASSASSIN, 6, 80, Stats(intuition=17),
+        crit=0.15,
+    ),
+    _jewel(
+        'bouncer', Slot.RING_RIGHT, 'Кольцо вышибалы',
+        TANK, 8, 150, Stats(endurance=22),
+        anticrit=0.25,
+    ),
+    _jewel(
+        'hero', Slot.RING_RIGHT, 'Кольцо героя',
+        WARRIOR, 8, 150, Stats(strength=22),
+        dodge=0.15, crit=0.15,
+    ),
+    _jewel(
+        'cardsharp', Slot.RING_RIGHT, 'Кольцо шулера',
+        ROGUE, 8, 150, Stats(agility=22),
+        dodge=0.25,
+    ),
+    _jewel(
+        'killer', Slot.RING_RIGHT, 'Кольцо убийцы',
+        ASSASSIN, 8, 150, Stats(intuition=22),
+        crit=0.25,
+    ),
+    # ---------- кольца: сильные, с девятого уровня ----------
+    _plain_ring(
+        'ring_balance', 'advanced', 'intuition', 'Кольцо баланса',
+        9, 200, Stats(strength=20, endurance=20), (WARRIOR, TANK),
+        strength=2, agility=2, intuition=2, hp=25,
+    ),
+    _plain_ring(
+        'ring_guard', 'advanced', 'health', 'Кольцо защиты',
+        9, 200, Stats(strength=20, endurance=20), (WARRIOR, TANK),
+        hp=25,
+    ),
+    _plain_ring(
+        'ring_luck', 'advanced', 'agility', 'Кольцо удачи',
+        9, 200, Stats(intuition=20, agility=20), (ASSASSIN, ROGUE),
+        dodge=0.3, crit=0.3,
+    ),
+    # ---------- ожерелья: линии наборов, с третьего уровня ----------
+    _jewel(
+        'avenger', Slot.NECKLACE, 'Ожерелье мстителя',
+        TANK, 3, 70, Stats(endurance=12),
+        hp=15, anticrit=0.1,
+    ),
+    _jewel(
+        'plut', Slot.NECKLACE, 'Ожерелье плута',
+        ROGUE, 3, 70, Stats(agility=12),
+        agility=1, accuracy=0.05, dodge=0.05,
+    ),
+    _jewel(
+        'mercenary', Slot.NECKLACE, 'Ожерелье наёмника',
+        ASSASSIN, 3, 70, Stats(intuition=12),
+        intuition=1, crit=0.05, anticrit=0.05,
+    ),
+    _jewel(
+        'sport', Slot.NECKLACE, 'Спортивное ожерелье',
+        WARRIOR, 3, 70, Stats(strength=12),
+        accuracy=0.05, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _jewel(
+        'boxer', Slot.NECKLACE, 'Боксёрский кулон',
+        TANK, 5, 100, Stats(endurance=15),
+        strength=1, hp=15, anticrit=0.15,
+    ),
+    _jewel(
+        'croupier', Slot.NECKLACE, 'Ожерелье крупье',
+        ROGUE, 5, 100, Stats(agility=15),
+        agility=1, hp=10, dodge=0.15,
+    ),
+    _jewel(
+        'biker', Slot.NECKLACE, 'Байкерский кулон',
+        WARRIOR, 5, 100, Stats(strength=15),
+        strength=1, hp=15, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _jewel(
+        'strangler', Slot.NECKLACE, 'Ожерелье душителя',
+        ASSASSIN, 5, 100, Stats(intuition=15),
+        intuition=1, hp=10, crit=0.15,
+    ),
+    _jewel(
+        'army', Slot.NECKLACE, 'Армейский кулон',
+        TANK, 7, 200, Stats(endurance=20),
+        strength=2, hp=30, anticrit=0.2,
+    ),
+    _jewel(
+        'lovkach', Slot.NECKLACE, 'Ожерелье ловкача',
+        ROGUE, 7, 200, Stats(agility=20),
+        agility=2, hp=20, dodge=0.2,
+    ),
+    _jewel(
+        'camouflage', Slot.NECKLACE, 'Камуфляжный кулон',
+        ASSASSIN, 7, 200, Stats(intuition=20),
+        intuition=2, hp=20, crit=0.2,
+    ),
+    _jewel(
+        'fighter', Slot.NECKLACE, 'Кулон бойца',
+        WARRIOR, 7, 200, Stats(strength=20),
+        strength=2, hp=25, dodge=0.1, crit=0.1, anticrit=0.1,
+    ),
+    _jewel(
+        'bouncer', Slot.NECKLACE, 'Кулон вышибалы',
+        TANK, 9, 500, Stats(endurance=25),
+        strength=4, hp=30, armor_min=11, armor_max=13, accuracy=0.25, anticrit=0.4,
+    ),
+    _jewel(
+        'hero', Slot.NECKLACE, 'Кулон героя',
+        WARRIOR, 9, 500, Stats(strength=25, endurance=20),
+        strength=2, agility=1, intuition=1, hp=25, armor_min=10, armor_max=12, accuracy=0.2, dodge=0.2, crit=0.2, anticrit=0.2,
+    ),
+    _jewel(
+        'cardsharp', Slot.NECKLACE, 'Ожерелье шулера',
+        ROGUE, 9, 500, Stats(agility=25),
+        agility=4, hp=10, armor_min=9, armor_max=11, accuracy=0.25, dodge=0.4,
+    ),
+    _jewel(
+        'killer', Slot.NECKLACE, 'Кулон убийцы',
+        ASSASSIN, 9, 500, Stats(intuition=25),
+        intuition=4, hp=10, armor_min=9, armor_max=11, crit=0.4, anticrit=0.25,
+    ),
+)
+
 
 # Что пак обошёл: одежда прежней лавки. На витрине её больше нет, в
 # каталоге она осталась — купленное не отбирают. Оружие, щиты и майка
@@ -2499,6 +2791,7 @@ ITEMS: tuple[Item, ...] = tuple(
         stars=250,
     ),
     *SET_PIECES,
+    *JEWEL_PIECES,
     )
 )
 
@@ -2529,6 +2822,15 @@ FAN_ITEMS: tuple[Item, ...] = tuple(
     )
 )
 
+# Прилавок ювелира: кольца и ожерелья, и ничего кроме них. Полок здесь
+# ровно две — `shop_sections` разложит товар по клеткам сам
+JEWEL_ITEMS: tuple[Item, ...] = tuple(
+    sorted(
+        (item for item in ITEMS if item.shelf == JEWEL_SHELF and item.on_sale),
+        key=lambda item: (ALL_SLOTS.index(item.slot), item.level_required, item.price),
+    )
+)
+
 # Прилавок мага: только за звёзды
 MAGIC_ITEMS: tuple[Item, ...] = tuple(
     sorted(
@@ -2538,9 +2840,16 @@ MAGIC_ITEMS: tuple[Item, ...] = tuple(
 )
 
 
+# Тематические прилавки по именам: у каждого свой товар и своя лестница
+SHELVES: dict[str, tuple[Item, ...]] = {
+    FAN_SHELF: FAN_ITEMS,
+    JEWEL_SHELF: JEWEL_ITEMS,
+}
+
+
 def shelf_of(shelf: str = "") -> tuple[Item, ...]:
     """Товар названного прилавка: пусто — клубная витрина."""
-    return FAN_ITEMS if shelf == FAN_SHELF else SHOWCASE
+    return SHELVES.get(shelf, SHOWCASE)
 
 
 def shop_sections(shelf: str = "") -> list[tuple[Slot, tuple[Item, ...]]]:

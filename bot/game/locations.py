@@ -45,6 +45,7 @@ class Service(str, Enum):
     HEAL = "heal"  # больница: здоровье за кредиты
     PREMIUM = "premium"  # элитный магазин, за звёзды
     FAN = "fan"  # фанатский магазин: экипировка своей команды
+    JEWEL = "jewel"  # ювелирный магазин: кольца и ожерелья
     MARKET = "market"  # комиссионка: торговля между бойцами
     TRADE = "trade"  # рынок: обмен из рук в руки
     INSURANCE = "insurance"  # страховая: полис страхования жизни и здоровья
@@ -68,6 +69,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.HEAL: "лечиться",
     Service.PREMIUM: "покупать за звёзды",
     Service.FAN: "покупать фанатскую экипировку",
+    Service.JEWEL: "выбирать украшения",
     Service.MARKET: "торговать с бойцами",
     Service.TRADE: "меняться из рук в руки",
     Service.INSURANCE: "страховаться",
@@ -992,7 +994,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.523911, 0.642344), (0.718385, 0.661483),
             (0.715197, 0.75), (0.522848, 0.726675),
         ),
-        soon="кольца и ожерелья",
+        services=(Service.JEWEL,),
         genitive="ювелирного",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -1056,6 +1058,7 @@ SHOP_SERVICES: tuple[Service, ...] = (
     Service.POTIONS,
     Service.PREMIUM,
     Service.FAN,
+    Service.JEWEL,
 )
 
 
@@ -1065,7 +1068,7 @@ def service_for(code: str) -> Service:
     По коду, а не по слоту: склянки слота не имеют вовсе, а на прилавке
     стоят наравне с вещами.
     """
-    from bot.game.equipment import FAN_SHELF, Slot, get_item
+    from bot.game.equipment import FAN_SHELF, JEWEL_SHELF, Slot, get_item
     from bot.game.potions import get_potion
 
     if get_potion(code) is not None:
@@ -1079,6 +1082,8 @@ def service_for(code: str) -> Service:
     # биту можно только там, хотя слот у неё оружейный
     if item.shelf == FAN_SHELF:
         return Service.FAN
+    if item.shelf == JEWEL_SHELF:
+        return Service.JEWEL
     return (
         Service.WEAPONS
         if item.slot in (Slot.WEAPON, Slot.OFFHAND)

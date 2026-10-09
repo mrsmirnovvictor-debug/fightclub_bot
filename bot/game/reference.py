@@ -13,6 +13,8 @@ from bot.game.economy import MICRO_UPS_PER_LEVEL
 from bot.game.equipment import (
     ALL_SLOTS,
     FAN_ITEMS,
+    JEWEL_ITEMS,
+    RING_SLOTS,
     SHOWCASE,
     Equipment,
     Item,
@@ -105,6 +107,38 @@ def fan_only_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
             ]
         )
     }
+
+
+def jewel_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
+    """Клубный гардероб плюс украшения: ожерелье и три одинаковых кольца.
+
+    У ювелира прилавок свой, и в эталон он не идёт: клетки под украшения
+    пустуют у каждого, кто к ювелиру не заходил. Но заходить будут, и
+    против такого же одетого круг классов обязан держаться — украшения
+    торгуют теми же процентами, что и сеты, а кольцо надевается трижды.
+    Этим комплектом круг и проверяется.
+
+    Кольцо берётся одно и то же во все три клетки: так носить их и будут —
+    кольца не уникальны, и лучшее своё кольцо боец купит трижды, а не
+    станет собирать набор послабее.
+    """
+    kit = best_kit(fclass, level)
+    mine = [
+        item
+        for item in JEWEL_ITEMS
+        if item.level_required <= level and fclass.code in item.for_classes
+    ]
+    def best(shelf: list[Item]) -> Item:
+        return max(shelf, key=lambda item: (item.level_required, item.price))
+
+    necklaces = [item for item in mine if item.slot is Slot.NECKLACE]
+    rings = [item for item in mine if item.is_ring]
+    if necklaces:
+        kit[Slot.NECKLACE] = best(necklaces)
+    if rings:
+        for slot in RING_SLOTS:
+            kit[slot] = best(rings)
+    return kit
 
 
 def equipment_of(kit: dict[Slot, Item]) -> Equipment:

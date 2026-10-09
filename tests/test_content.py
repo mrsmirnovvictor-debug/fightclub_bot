@@ -22,6 +22,7 @@ from bot.game.equipment import (
     ITEMS,
     LATE_SHARE_CAP,
     MAGIC_ITEMS,
+    RING_SLOTS,
     SHOWCASE,
     Item,
     Slot,
@@ -46,10 +47,30 @@ def test_catalogue_items_know_their_slot_and_price():
         )
         assert item.slot in item.slots
         assert isinstance(item, Item)
-        # второе место есть только у оружия: его берут во вторую руку
-        assert item.slots == (
-            (Slot.WEAPON, Slot.OFFHAND) if item.is_weapon else (item.slot,)
-        )
+        # Мест у вещи больше одного ровно в двух случаях: оружие берут во
+        # вторую руку, а кольцо ложится в любую из трёх клеток под кольца
+        if item.is_weapon:
+            places = (Slot.WEAPON, Slot.OFFHAND)
+        elif item.is_ring:
+            places = RING_SLOTS
+        else:
+            places = (item.slot,)
+        assert item.slots == places, item.code
+
+
+def test_no_two_items_share_a_code():
+    """Код — ключ вещи и в каталоге, и в базе у каждого, кто её купил.
+
+    Каталог собирается словарём, и двойник не ссорится, а молча затирает
+    первую запись: у купленной вещи меняются числа, картинка и название,
+    а в лавке одной вещи просто не оказывается. Коды у новых паков
+    считаются от набора и слота (`set_<набор>_<слот>`), так что столкнуть
+    два набора — дело одной опечатки.
+    """
+    codes = [item.code for item in ITEMS]
+    doubles = sorted({code for code in codes if codes.count(code) > 1})
+    assert not doubles, f"код на две вещи: {doubles}"
+    assert len(CATALOGUE) == len(ITEMS)
 
 
 def test_the_magic_counter_is_kept_out_of_the_club_shop():
@@ -651,3 +672,148 @@ def test_the_fan_shelf_is_drawn_and_not_shared():
         assert item.picture.startswith(ART), item.code
         assert item.picture not in seen, f"{item.code} делит картинку с витриной"
         seen.add(item.picture)
+
+
+# ---------- ювелир: кольца и ожерелья ----------
+#
+# У ювелира свой прилавок, как у «Северного Вала»: в витрину клуба он не
+# входит, лестницу цен за собой не тянет и эталонного бойца не трогает —
+# круг классов считается по клубной лавке. Потолки процентов и плоских
+# прибавок на украшениях при этом клубные: именно они держат круг.
+
+
+def jewels():
+    from bot.game.equipment import JEWEL_ITEMS
+
+    return JEWEL_ITEMS
+
+
+def test_the_jeweller_is_a_counter_of_its_own():
+    """Украшения лежат у ювелира и больше нигде."""
+    from bot.game.equipment import JEWEL_SHELF, JEWEL_SLOTS, SHOWCASE
+
+    assert len(jewels()) == 39, "пак приехал не целиком"
+    shelf = {item.code for item in SHOWCASE}
+    for item in jewels():
+        assert item.shelf == JEWEL_SHELF, item.code
+        assert item.code not in shelf, f"{item.code} попал на витрину клуба"
+        assert item.slot in JEWEL_SLOTS, item.code
+        assert item.price > 0 and not item.stars and not item.reward, item.code
+        assert not item.retired, item.code
+
+
+def test_the_jeweller_opens_exactly_two_shelves():
+    """Полок ровно две — кольца и ожерелья, как их и просили.
+
+    Клетки под кольца три, а полка одна: кольцо записано в правую и само
+    раздаёт себе остальные две. Три полки «Кольца» рядом были бы ошибкой
+    раскладки, а не выбором.
+    """
+    from bot.game.equipment import JEWEL_SHELF, Slot, shop_sections
+
+    full = [(slot, items) for slot, items in shop_sections(JEWEL_SHELF) if items]
+    assert [slot for slot, _ in full] == [Slot.NECKLACE, Slot.RING_RIGHT]
+    assert [len(items) for _, items in full] == [16, 23]
+    assert [slot.section for slot, _ in full] == ["ожерелья", "кольца"]
+
+
+def test_the_jeweller_keeps_to_the_club_ceilings():
+    """Потолки на украшениях клубные: по ним и держится круг классов.
+
+    Полосу процентов пак прошёл как есть: кольцо несёт одну долю, кулон
+    девятого уровня — до 80%, ровно столько же, сколько сет того же
+    уровня. Выносливости на украшениях нет, как и на всех прочих вещах.
+    """
+    for item in jewels():
+        shares = (item.accuracy, item.dodge, item.crit, item.anticrit, item.counter)
+        cap = gear_share_cap(item.level_required)
+        assert sum(shares) <= cap + 1e-9, (
+            f"{item.title}: всего {sum(shares):.0%} > {cap:.0%}"
+        )
+        for stat in ("strength", "agility", "intuition"):
+            assert getattr(item, stat) <= flat_cap(item.level_required), item.title
+        assert item.bonus.endurance == 0, item.title
+
+
+def test_only_the_necklace_holds_a_blow():
+    """Броня есть на старших кулонах, и она приходит в грудь.
+
+    Кольцо не прикрывает ничего, и броня на нём осталась бы надписью:
+    в бою она складывается по зонам, а у кольца зоны нет. Поэтому числа
+    брони у ювелира живут только на ожерельях — и только там, где ей есть
+    куда прийти.
+    """
+    from bot.game.classes import Zone
+    from bot.game.equipment import RING_SLOTS, Slot
+
+    armoured = [item for item in jewels() if item.armor_max]
+    assert {item.slot for item in armoured} == {Slot.NECKLACE}
+    assert len(armoured) == 4, "броня осталась только на старших кулонах"
+    for item in armoured:
+        assert item.zones == (Zone.CHEST,), item.code
+        assert item.level_required == 9, item.code
+    for item in jewels():
+        if item.slot in RING_SLOTS:
+            assert not item.armor_max and not item.armor_min, item.code
+
+
+def test_the_jeweller_dresses_every_class():
+    """На каждой ступени есть украшение под каждый класс.
+
+    Иначе полка превращается в полку одного класса: кольца носят сразу по
+    три, и класс, которому брать нечего, отстаёт втройне.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.equipment import Slot
+
+    for slot in (Slot.NECKLACE, Slot.RING_RIGHT):
+        shelf = [item for item in jewels() if item.slot is slot]
+        tiers: dict[int, set[str]] = {}
+        for item in shelf:
+            tiers.setdefault(item.level_required, set()).update(item.for_classes)
+        for level, covered in sorted(tiers.items()):
+            assert covered == set(FIGHTER_CLASSES), (
+                f"{slot.value}, {level} уровень: обошли {set(FIGHTER_CLASSES) - covered}"
+            )
+
+
+def test_the_jewels_are_drawn_and_not_shared():
+    """У каждого украшения своя картинка в общем бакете.
+
+    Адрес у них задан строкой, и это не оплошность: кольцо линии лежит
+    под именем украшения (`ring.png`), а клеток под кольцо три — по коду
+    клетки файла в бакете нет вовсе.
+    """
+    from bot.game.art import SETS
+    from bot.game.equipment import SHOWCASE
+
+    seen = {item.picture for item in SHOWCASE}
+    for item in jewels():
+        assert item.picture.startswith(f"{SETS}/"), item.code
+        assert item.picture not in seen, f"{item.code} делит картинку"
+        seen.add(item.picture)
+
+
+def test_the_jewelled_kit_fills_all_four_cells():
+    """Комплект с украшениями надевает ожерелье и три кольца, а не одно.
+
+    Кольцо в нём одно и то же во все три клетки: кольца не уникальны, и
+    лучшее своё боец купит трижды. Клубный гардероб при этом остаётся —
+    украшения его не вытесняют.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.equipment import RING_SLOTS, Slot
+    from bot.game.reference import best_kit, jewel_kit
+
+    for fclass in FIGHTER_CLASSES.values():
+        bare, dressed = best_kit(fclass, 9), jewel_kit(fclass, 9)
+        rings = [dressed[slot] for slot in RING_SLOTS]
+        assert len(set(rings)) == 1, fclass.code
+        assert rings[0].is_ring and rings[0].level_required == 9, fclass.code
+        necklace = dressed[Slot.NECKLACE]
+        assert necklace.slot is Slot.NECKLACE and necklace.level_required == 9
+        for code in (necklace.code, rings[0].code):
+            assert code not in {item.code for item in bare.values()}
+        # Клубное на месте: украшения добавились, а не заменили
+        for slot, item in bare.items():
+            assert dressed[slot] == item, slot.value

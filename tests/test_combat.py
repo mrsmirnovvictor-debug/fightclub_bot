@@ -49,6 +49,7 @@ from bot.game.reference import (
     developed_stats,
     equipment_of,
     fan_kit,
+    jewel_kit,
     reference_equipment,
 )
 from bot.game.stats import (
@@ -1039,6 +1040,59 @@ def fan_share(first: str, second: str, runs: int, seed: int) -> float:
         elif result.winner_id is None:
             wins += 0.5
     return wins / runs
+
+
+def jewel_share(first: str, second: str, level: int, runs: int, seed: int) -> float:
+    """То же, но с украшениями: клубный гардероб, ожерелье и три кольца."""
+    rng = random.Random(seed)
+    wins = 0.0
+    for _ in range(runs):
+        fighters = []
+        for index, code in enumerate((first, second), start=1):
+            fclass = FIGHTER_CLASSES[code]
+            equipment = equipment_of(jewel_kit(fclass, level))
+            stats = developed_stats(fclass, level).merge(equipment.bonus)
+            fighters.append(
+                Fighter(index, fclass.title, fclass, stats, level, equipment=equipment)
+            )
+        a, b = fighters
+        number = 1
+        while True:
+            result = resolve_round(
+                a, random_action(a, rng), b, random_action(b, rng), number, rng
+            )
+            if result.finished:
+                break
+            number += 1
+        if result.winner_id == 1:
+            wins += 1
+        elif result.winner_id is None:
+            wins += 0.5
+    return wins / runs
+
+
+@pytest.mark.parametrize(
+    "winner,loser",
+    [("rogue", "tank"), ("tank", "assassin"), ("assassin", "rogue")],
+)
+@pytest.mark.parametrize("level", [3, 10])
+def test_the_circle_holds_in_jewels(winner, loser, level):
+    """Круг держится и в украшениях — на обоих краях лестницы.
+
+    Ювелир торгует теми же процентами, что и клубные сеты, а кольцо
+    надевается трижды: три кольца убийцы — это крит сверх того, что уже
+    даёт набор. Проверяем третий уровень и десятый: на третьем перевес в
+    круге самый узкий (у ассасина он тает с 71% до 62% — украшения в этой
+    паре помогают трикстеру), на десятом числа самые крупные.
+    """
+    share = sum(
+        jewel_share(winner, loser, level=level, runs=400, seed=seed + level)
+        for seed in (2024, 4048, 6072, 8096)
+    ) / 4
+    assert share > 0.5, (
+        f"{FIGHTER_CLASSES[winner].title} против {FIGHTER_CLASSES[loser].title} "
+        f"в украшениях: {share:.0%} на {level} уровне"
+    )
 
 
 @pytest.mark.parametrize(

@@ -27,6 +27,7 @@ from bot.game.equipment import (
     LEFT_SLOTS,
     UNDER_SLOTS,
     FAN_SHELF,
+    JEWEL_SHELF,
     MAGIC_ITEMS,
     RIGHT_SLOTS,
     Equipment,
@@ -613,15 +614,23 @@ def build_magic(
 # стоят в аптеке. Один прилавок на всё был, пока магазин был вкладкой.
 WEAPON_SLOTS = (Slot.WEAPON, Slot.OFFHAND)
 
+# Чей прилавок у магазина свой. Остальные торгуют клубной витриной, и
+# она же решает, что стои́т на прилавке у одёжника с оружейником
+SHELVES: dict[Service, str] = {
+    Service.FAN: FAN_SHELF,
+    Service.JEWEL: JEWEL_SHELF,
+}
+
 
 def sells(service: Service, slot: Slot) -> bool:
     """Торгует ли этот магазин вещами такого слота.
 
-    Украшения не продаёт пока никто: их место у ювелира, а ювелира в
-    городе ещё нет. Полка эта и так пуста — товара для неё не завезли, —
-    но стоит завезти первое кольцо, и без этой строки оно легло бы на
-    прилавок одёжника, между штанами и кроссовками.
+    Украшения продаёт один ювелир, и только их: кольцо не ляжет на
+    прилавок одёжника между штанами и кроссовками, хотя оружием оно и не
+    является, — а штаны не попадут к ювелиру.
     """
+    if service is Service.JEWEL:
+        return slot in JEWEL_SLOTS
     if slot in JEWEL_SLOTS:
         return False
     if service is Service.WEAPONS:
@@ -645,8 +654,8 @@ def build_shop(
         mine[owned.code] = mine.get(owned.code, 0) + 1
 
     sections = []
-    # У фанатского магазина свой прилавок: клубной витрины там нет вовсе
-    shelf = FAN_SHELF if service is Service.FAN else ""
+    # У тематического магазина свой прилавок: клубной витрины там нет вовсе
+    shelf = SHELVES.get(service, "")
     for slot, items in shop_sections(shelf):
         if not items or not sells(service, slot):
             continue  # пустой раздел — пустая полка: показывать нечего

@@ -594,6 +594,13 @@ async def fan_page(db):
 
 
 @pytest.fixture
+async def jewel_page(db):
+    """Прилавок ювелира: две полки — ожерелья и кольца."""
+    async for page in shop_screen(db, Service.JEWEL):
+        yield page
+
+
+@pytest.fixture
 async def pharmacy_page(db):
     """Прилавок аптеки: склянки."""
     async for page in shop_screen(db, Service.POTIONS):
@@ -702,6 +709,18 @@ async def test_the_fan_shop_shows_its_own_line(fan_page):
     note = await fan_page.locator("#shop-note").inner_text()
     assert "десятый уровень" in note
     assert "Бита с гвоздями" not in await visible_titles(fan_page)
+
+
+async def test_the_jeweller_shows_two_shelves(jewel_page):
+    """У ювелира ровно две полки, и кольца на одной: клеток три, полка одна."""
+    heads = await shelves(jewel_page)
+    assert [head.split("\n")[0] for head in heads] == ["Ожерелья", "Кольца"]
+    assert await jewel_page.locator("#shop-title").inner_text() == (
+        "💍 Ювелирный магазин"
+    )
+    titles = await visible_titles(jewel_page)
+    assert "Кольцо силы" in titles  # открыто с первого уровня
+    assert "Кулон героя" not in titles  # девятый уровень, лежит под кнопкой
 
 
 async def test_an_empty_shelf_says_the_goods_are_coming(server):

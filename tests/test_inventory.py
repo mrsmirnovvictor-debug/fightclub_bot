@@ -1083,21 +1083,23 @@ async def test_a_named_cell_still_wins(db):
     assert rings[0].slot is None
 
 
-def test_no_shop_in_town_sells_jewellery_yet(monkeypatch):
+def test_only_the_jeweller_sells_jewellery(monkeypatch):
     """Кольцо на прилавок одёжника не ложится: его место у ювелира.
 
-    Полка украшений и так пуста — товара для неё не завезли. Но ювелир
-    приедет, а правило «одёжник торгует всем, кроме оружия» подхватило бы
-    кольца молча: они не оружие. Подкладываем кольцо в каталог руками и
-    смотрим, что ни один из нынешних магазинов его не выставил.
+    Правило «одёжник торгует всем, кроме оружия» подхватило бы кольца
+    молча: они не оружие. Поэтому у ювелира полки свои, а у остальных
+    украшений не бывает — даже если кольцо попадёт на клубную витрину,
+    как здесь, подложенное руками.
     """
-    from bot.game.locations import Service
+    from bot.game.locations import Service, service_for, where_to
     from bot.webapp.card import sells
     from bot.game.equipment import JEWEL_SLOTS
 
-    for service in (Service.CLOTHES, Service.WEAPONS):
+    for service in (Service.CLOTHES, Service.WEAPONS, Service.FAN):
         for slot in JEWEL_SLOTS:
             assert not sells(service, slot), f"{service.value}: {slot.value}"
+    for slot in Slot:
+        assert sells(Service.JEWEL, slot) is (slot in JEWEL_SLOTS), slot.value
 
     # И то же самое на живой витрине, с настоящей вещью на полке
     import bot.content.items as content
@@ -1109,6 +1111,29 @@ def test_no_shop_in_town_sells_jewellery_yet(monkeypatch):
         shop = build_shop(player, service)
         shown = [row["code"] for one in shop["sections"] for row in one["items"]]
         assert jewel.code not in shown, service.value
+
+    # А настоящее кольцо спрашивают у ювелира: и купить, и сдать его можно
+    # только там, и дом этот в городе один
+    assert service_for("ring_luck") == Service.JEWEL
+    assert service_for("set_hero_necklace") == Service.JEWEL
+    assert where_to(Service.JEWEL).code == "jewelry_store"
+
+
+def test_the_jeweller_lays_out_two_shelves():
+    """У ювелира на прилавке ровно две полки: ожерелья и кольца."""
+    from bot.game.locations import Service
+
+    shop = build_shop(make_player(level=10, credits=5000), Service.JEWEL)
+    assert [one["title"] for one in shop["sections"]] == ["Ожерелья", "Кольца"]
+    assert [len(one["items"]) for one in shop["sections"]] == [16, 23]
+    rings = shop["sections"][1]
+    assert rings["slot"] == Slot.RING_RIGHT.value
+    # Кольцо первого уровня открыто всем и стоит двадцать кредитов: с него
+    # и начинают, а дальше по уровню
+    first = rings["items"][0]
+    assert (first["title"], first["price"], first["unlocked"]) == (
+        "Кольцо силы", 20, True
+    )
 
 
 def test_empty_slots_carry_their_own_placeholder():

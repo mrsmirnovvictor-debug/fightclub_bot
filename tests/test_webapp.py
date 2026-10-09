@@ -554,3 +554,37 @@ async def test_a_crash_report_survives_junk_instead_of_json(client):
     """Отчёт присылают из упавшего скрипта — там может прийти что угодно."""
     assert (await client.post("/api/oops", data=b"not json")).status == 200
     assert (await client.post("/api/oops", json=["не", "объект"])).status == 200
+
+
+def test_the_page_knows_every_shop_and_every_house_in_town():
+    """Новый магазин на карте — новая строка на странице, и обе рядом.
+
+    Дом на карте открывает экран по своей услуге, а прилавок подписан по
+    ней же. Заводится услуга в правилах, а не на странице, и забыть там
+    строку легко: дом тогда открывается молча ничем, а прилавок — «Лавкой»
+    без имени. Поэтому карты услуг страницы сверяем с городом.
+    """
+    import re
+
+    from bot.game.locations import LOCATIONS, SHOP_SERVICES
+    from bot.webapp.server import STATIC_DIR
+
+    page = (STATIC_DIR / "card.js").read_text(encoding="utf-8")
+
+    def keys(name: str) -> set[str]:
+        body = page.split(f"{name} = {{", 1)[1].split("\n};", 1)[0]
+        return set(re.findall(r"^  (\w+):", body, re.M))
+
+    titles, screens = keys("const SHOP_TITLES"), keys("const HOUSE_SCREENS")
+    # Дом открывается по первой своей услуге: у каждой работающей двери в
+    # городе должна быть строка, иначе дверь откроет молча ничего
+    doors = {place.services[0].value for place in LOCATIONS if place.works}
+    assert doors <= screens, doors - screens
+    # Прилавок подписан по услуге. Элитный магазин сюда не входит: он
+    # открывает не прилавок, а вкладку товара за звёзды, и зовётся там сам
+    counters = set(
+        re.findall(r"^  (\w+): \(\) => openShop\(\),", page, re.M)
+    )
+    assert {one.value for one in SHOP_SERVICES} & counters <= titles
+    assert counters <= titles, counters - titles
+    assert "jewel" in counters, "ювелира страница за магазин не считает"

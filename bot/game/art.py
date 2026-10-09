@@ -87,6 +87,18 @@ def set_piece(line: str, kit: str, slot: str) -> str:
     return f"{SETS}/{line}/{kit}/{slot}.png"
 
 
+def plain_ring(kit: str, name: str) -> str:
+    """Кольцо вне наборов: items_new/rings/starter/strength.png.
+
+    Четыре простых кольца первого уровня и три сильных девятого линиям
+    классов не принадлежат, и папка у них своя: не `items_new/<класс>`, а
+    `items_new/rings/<партия>`. Имя файла называет, что кольцо даёт, —
+    `strength`, `health`, — поэтому оно приходит сюда, а не считается от
+    кода вещи: у «кольца баланса» код свой, а картинка общая с партией.
+    """
+    return f"{SETS}/rings/{kit}/{name}.png"
+
+
 def location(code: str, ext: str = "jpeg") -> str:
     """Карта района: locations/main_hub.jpeg.
 
@@ -140,6 +152,7 @@ __all__ = [
     "interior",
     "item",
     "location",
+    "plain_ring",
     "potion",
     "set_piece",
     "shirt",

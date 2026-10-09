@@ -1406,6 +1406,7 @@ const SHOP_TITLES = {
   clothes: "👕 Магазин одежды",
   potions: "💊 Аптека",
   fan: "🧣 Магазин «Северный Вал»",
+  jewel: "💍 Ювелирный магазин",
   market: "🤝 Комиссионный магазин",
 };
 
@@ -2192,6 +2193,7 @@ const HOUSE_SCREENS = {
   clothes: () => openShop(),
   potions: () => openShop(),
   fan: () => openShop(),
+  jewel: () => openShop(),
   premium: () => showTab("magic"),
   market: () => {
     pickShopSection("market");

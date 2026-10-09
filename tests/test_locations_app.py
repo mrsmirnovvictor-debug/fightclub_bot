@@ -396,6 +396,55 @@ async def test_the_fan_line_is_bought_and_handed_in_at_its_own_counter(client, d
     assert "Северный Вал" in (await refused.json())["error"]
 
 
+# ---------- ювелирный магазин ----------
+
+
+async def test_the_jeweller_sells_rings_and_necklaces(client, db):
+    """У ювелира две полки своего товара, и клубной витрины там нет."""
+    from bot.game.equipment import JEWEL_ITEMS
+
+    await db.save_player(make_player(location="jewelry_store"))
+
+    body = await (await client.get("/api/shop", headers=headers())).json()
+
+    assert body["service"] == "jewel"
+    codes = {row["code"] for section in body["sections"] for row in section["items"]}
+    assert codes == {item.code for item in JEWEL_ITEMS}
+    assert [row["slot"] for row in body["sections"]] == ["necklace", "ring_right"]
+
+
+async def test_a_ring_is_bought_and_handed_in_at_the_jeweller(client, db):
+    """Купить кольцо можно у ювелира, и сдать его — туда же."""
+    player = make_player(location="clothes_shop")
+    player.level, player.credits = 9, 1000
+    await db.save_player(player)
+
+    refused = await client.post(
+        "/api/buy", json={"code": "ring_luck"}, headers=headers()
+    )
+    assert refused.status == 409
+    assert "Ювелирный магазин" in (await refused.json())["error"]
+
+    at_shop = make_player(location="jewelry_store")
+    at_shop.level, at_shop.credits = 9, 1000
+    await db.save_player(at_shop)
+    bought = await client.post(
+        "/api/buy", json={"code": "ring_luck"}, headers=headers()
+    )
+    assert bought.status == 200
+    owned = (await db.get_player(42)).gear
+    assert [one.code for one in owned] == ["ring_luck"]
+
+    away = make_player(location="clothes_shop")
+    away.level, away.credits = 9, 1000
+    await db.save_player(away)
+    back = await client.post(
+        "/api/handin", json={"item_id": owned[0].id}, headers=headers()
+    )
+    assert back.status == 409
+    assert "Ювелирный магазин" in (await back.json())["error"]
+
+
 # ---------- мастерская ----------
 
 
