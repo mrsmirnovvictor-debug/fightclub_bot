@@ -53,7 +53,7 @@ from bot.work_service import (
 from tests.test_inventory import FakeBot
 from tests.test_webapp import TOKEN, make_init_data
 
-HR = "office_building"
+HR = "hr_agency"
 BAR = "bar"
 
 
@@ -109,12 +109,25 @@ async def client(db):
 # ---------- дома на карте ----------
 
 
-def test_the_office_became_an_hr_agency():
+def test_the_hiring_moved_to_the_agency_of_its_own():
+    """Наём стоит в HR-агентстве, а Бизнес-центру вернули его имя.
+
+    Раньше наём приписали офисному зданию в «Деловом углу» — за
+    неимением своего дома. Теперь такой дом есть: HR-агентство в районе
+    «HR и ювелирный». Код прежнего дома при этом не трогали: у тех, кто
+    уже работает, место работы считается по услуге, а не по дому.
+    """
     place = get_location(HR)
 
     assert place.title == "HR-агентство"
+    assert place.district == "hr_jewelry_district_v3"
     assert place.allows(Service.HIRE)
     assert where_to(Service.HIRE) is place
+
+    office = get_location("office_building")
+    assert office.title == "Бизнес-центр"
+    assert not office.allows(Service.HIRE)
+    assert office.soon, "дому без дела нужно сказать, чего в нём ждать"
 
 
 def test_every_vacancy_has_a_house_that_takes_workers():

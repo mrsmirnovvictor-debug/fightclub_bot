@@ -319,13 +319,16 @@ def city_grid() -> dict[str, tuple[int, int]]:
     return at
 
 
-def test_the_city_is_a_grid_four_by_four():
+def test_the_city_is_a_grid_four_wide_and_five_tall():
     """Город — сетка, и по ней же считается дорога.
 
     Раньше связи писались от руки и расходились с рисунком: жилой
     квартал и кадетский городок стояли в одной клетке, справа от
     торгового квартала, — то есть один и тот же шаг вёл в два разных
     места.
+
+    Третья очередь легла рядом сверху: четыре района над прежним верхним
+    рядом, и сетка из четыре-на-четыре стала четыре-на-пять.
     """
     from bot.game.locations import DISTRICTS
 
@@ -334,8 +337,36 @@ def test_the_city_is_a_grid_four_by_four():
     assert len(at) == len(DISTRICTS), "до какого-то района не дошли от центра"
     xs = {x for x, _ in at.values()}
     ys = {y for _, y in at.values()}
-    assert (len(xs), len(ys)) == (4, 4)
+    assert (len(xs), len(ys)) == (4, 5)
     assert len(set(at.values())) == len(at), "два района в одной клетке"
+
+
+def test_the_new_row_stands_above_the_old_one():
+    """Администрация над банком, ювелирный над Валом, кампус над
+    стадионом, тюрьма над армейской частью — ровно так и просили.
+
+    Проверяем не записанные связи, а разложенную сетку: связь можно
+    написать и в одну сторону, а в сетке район встанет туда, куда
+    действительно ведут шаги.
+    """
+    at = city_grid()
+
+    for above, below in (
+        ("city_administration_v3", "bank_market_post"),
+        ("hr_jewelry_district_v3", "northern_wall_premium"),
+        ("university_campus_v3", "stadium_bar"),
+        ("prison_taxi_park_v3", "military_base_training_ground"),
+    ):
+        top, bottom = at[above], at[below]
+        assert top[0] == bottom[0], f"{above} не над {below}: {top} и {bottom}"
+        assert top[1] == bottom[1] - 1, f"{above} не на ряд выше {below}"
+
+    # И весь новый ряд — самый северный: выше него ничего нет
+    north = min(y for _, y in at.values())
+    assert {code for code, (_, y) in at.items() if y == north} == {
+        "city_administration_v3", "hr_jewelry_district_v3",
+        "university_campus_v3", "prison_taxi_park_v3",
+    }
 
 
 def test_neighbours_on_the_grid_are_always_connected():
@@ -386,7 +417,59 @@ def test_every_house_stands_on_a_drawn_district():
         assert place.district in DISTRICT_BY_CODE, f"{place.code}: район не нарисован"
 
 
-def test_every_district_map_is_named_as_the_bucket_named_it():
+def doors_from_the_markup() -> dict[str, tuple[str, list[tuple[int, int]]]]:
+    """Что снято с картинок: код дома → карта и четыре угла в пикселях.
+
+    Разметку снимают с самих картинок и записывают в `docs/doors.md`, а
+    в справочник она попадает руками — долями, посчитанными скриптом.
+    Между этими двумя шагами и теряются двери: цифра не та, дом не тот.
+    """
+    import re
+    from pathlib import Path
+
+    text = Path(__file__).resolve().parents[1].joinpath("docs/doors.md").read_text(
+        encoding="utf-8"
+    )
+    doors: dict[str, tuple[str, list[tuple[int, int]]]] = {}
+    card = ""
+    for line in text.splitlines():
+        head = re.match(r"^## .+ — `([\w./-]+\.png)`", line)
+        if head:
+            card = head.group(1)
+            continue
+        door = re.match(
+            r"^- \*\*(\w+)\*\* — [^:]+: `([\d,\s]+)`", line
+        )
+        if door and card:
+            numbers = [int(one) for one in re.findall(r"\d+", door.group(2))]
+            corners = list(zip(numbers[::2], numbers[1::2]))
+            doors[door.group(1)] = (card, corners)
+    return doors
+
+
+def test_every_door_came_from_the_map_it_is_drawn_on():
+    """Дверь стоит на той карте, с которой её сняли, и там же, где сняли.
+
+    Разметку снимают с картинки, а в справочник переносят руками. Дом,
+    приписанный не к тому району, подсветит дверь на карте, где такой
+    двери нет вовсе; съехавшая цифра уведёт подсветку на стену. Ни того,
+    ни другого с экрана не видно, пока не ткнёшь пальцем, — поэтому
+    сверяем справочник с разметкой целиком.
+    """
+    from bot.game.locations import DISTRICT_BY_CODE, get_location
+
+    doors = doors_from_the_markup()
+    assert len(doors) >= 19, f"разметка прочиталась не целиком: {len(doors)}"
+
+    for code, (card, corners) in doors.items():
+        place = get_location(code)
+        assert place is not None, f"{code}: дом размечен, а в справочнике его нет"
+        district = DISTRICT_BY_CODE[place.district]
+        assert district.image.endswith("/" + card), (
+            f"{code} стоит в районе {place.district}, а дверь снята с {card}"
+        )
+        ours = [(round(x * 941), round(y * 1672)) for x, y in place.entrance]
+        assert ours == corners, f"{code}: дверь уехала с размеченного места"
     """Имена карт списаны с хранилища, а не придуманы по правилу.
 
     Стройной привычки в них нет: где-то на конце «_district», где-то
@@ -405,6 +488,10 @@ def test_every_district_map_is_named_as_the_bucket_named_it():
         "police_school_medical_college.png", "military_base_training_ground.png",
         "cadet_corps_dormitory.png", "fight_tournament_stadium.png",
         "residential_district.png", "mafia_mansion.png",
+        # Третья очередь: суффикс `_v3` — часть имени объекта в бакете,
+        # и убрать его из адреса нельзя
+        "city_administration_v3.png", "hr_jewelry_district_v3.png",
+        "university_campus_v3.png", "prison_taxi_park_v3.png",
     }
     ours = {district.image.rsplit("/", 1)[-1] for district in DISTRICTS}
 
@@ -509,18 +596,21 @@ def test_houses_without_a_trade_are_still_on_the_map():
     from bot.game.locations import LOCATIONS
 
     coming = [place for place in LOCATIONS if not place.works]
-    # Все пятнадцать — из второй очереди: город вырос картинками раньше,
-    # чем правилами, и это нормально — лишь бы в каждом было сказано,
-    # чего в нём ждать. Дома из этого списка выходят по одному: в
-    # больнице лечат, на рынке меняются, в страховой оформляют полис, в
+    # Двадцать один дом второй и третьей очереди: город вырос картинками
+    # раньше, чем правилами, и это нормально — лишь бы в каждом было
+    # сказано, чего в нём ждать. Дома из этого списка выходят по одному:
+    # в больнице лечат, на рынке меняются, в страховой оформляют полис, в
     # зале тренируются, в банке держат деньги, в агентстве нанимают, на
     # стадионе встречают фанатский сектор
     assert {"mafia_mansion", "car_dealership"} <= {place.code for place in coming}
     assert not {
         "hospital", "market", "insurance_office", "strength_gym", "bank",
-        "office_building", "stadium",
+        "hr_agency", "stadium",
     } & {place.code for place in coming}
-    assert len(coming) == 15
+    # Бизнес-центр в этот список вернулся: наём уехал к кадровикам, а
+    # своего дела у него пока нет
+    assert "office_building" in {place.code for place in coming}
+    assert len(coming) == 21
     # Бар и почта — особый случай: за ними уже стоит работа, но обещано
     # сверх неё и другое. У такого дома есть и услуга, и строка «скоро»
     from bot.game.locations import get_location

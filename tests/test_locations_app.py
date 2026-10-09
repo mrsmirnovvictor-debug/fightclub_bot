@@ -51,7 +51,7 @@ async def test_the_map_shows_the_city_and_where_you_stand(client, db):
     body = await (await client.get("/api/map", headers=headers())).json()
 
     assert body["here"] == FIGHT_CLUB
-    assert len(body["districts"]) == 16
+    assert len(body["districts"]) == 20
     centre = next(one for one in body["districts"] if one["code"] == "main_hub")
     assert centre["here"] is True
     assert centre["image"].endswith("locations/main_hub.jpeg")
@@ -71,7 +71,7 @@ async def test_houses_without_a_trade_say_so(client, db):
         for place in district["places"]
     }
 
-    assert len(houses) == 33
+    assert len(houses) == 39
     assert houses["mafia_mansion"]["works"] is False
     assert (
         houses["mafia_mansion"]["soon"]
@@ -113,14 +113,24 @@ TWINS = {
 }
 
 
+# Дома третьей очереди: вид изнутри им ещё не рисовали. Адрес у них всё
+# равно считается — по коду, как у всех, — и появится файл под этим
+# именем, дом подхватит его сам. Пока файла нет, экран обходится без
+# рамки: страница снимает её, когда картинка не доехала.
+UNDRAWN = frozenset({
+    "city_administration", "hr_agency", "jewelry_store",
+    "university", "prison", "taxi_depot",
+})
+
+
 def test_every_house_has_a_view_from_within():
-    """Все тридцать три дома, и ни одного без картинки."""
+    """Все тридцать девять домов, и ни одного без адреса картинки."""
     from bot.game.locations import LOCATIONS
 
-    assert len(LOCATIONS) == 33
+    assert len(LOCATIONS) == 39
     seen = {place.indoors for place in LOCATIONS}
     # Своя картинка у каждого дома, кроме жилых близнецов: они делят одну
-    assert len(seen) == 33 - len(TWINS)
+    assert len(seen) == 39 - len(TWINS)
     for place in LOCATIONS:
         if place.code in TWINS:
             continue
@@ -130,6 +140,25 @@ def test_every_house_has_a_view_from_within():
         # кода дома, и это здесь главное
         folder = "/interiors" if place.interior_folder else "/locations/interiors"
         assert place.indoors.endswith(f"{folder}/{name}.jpeg")
+
+
+def test_the_newest_houses_are_waiting_for_their_view():
+    """У шести новых домов картинки ещё нет, и это записано здесь.
+
+    Адрес у них считается по общему правилу, так что нарисуют файл под
+    этим именем — дом подхватит его сам, править будет нечего. А пока
+    экран обходится без рамки: страница снимает её, когда картинка не
+    доехала. Список нужен, чтобы «у каждого дома есть вид изнутри» не
+    читалось обещанием там, где вида пока нет.
+    """
+    from bot.game.locations import LOCATIONS, get_location
+
+    drawn = {place.code for place in LOCATIONS} - UNDRAWN
+    assert len(drawn) == 33, "список недорисованных разошёлся с городом"
+    for code in UNDRAWN:
+        place = get_location(code)
+        assert place is not None, code
+        assert place.indoors.endswith(f"/interiors/{code}_interior.jpeg")
 
 
 def test_the_four_identical_houses_share_one_view():
