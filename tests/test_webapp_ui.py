@@ -1673,6 +1673,58 @@ async def test_only_the_shirt_still_fills_the_body_cell(server):
         await browser.close()
 
 
+async def test_a_ring_asks_which_cell_instead_of_three_buttons(server):
+    """У кольца одна кнопка «Надеть», а клетку выбирают в окне.
+
+    Клеток под кольцо три, и они равноправны. Три кнопки подряд ничего об
+    этом не говорили: вторая и третья звались «Во вторую руку» — подпись
+    от оружия, к кольцу не имеющая отношения. Теперь кнопка одна, а окно
+    показывает все три клетки и то, что в них лежит: пустую видно пустой,
+    занятую — с её кольцом, и нажатие на такую кольцо меняет.
+    """
+    player = make_player()
+    worn = CATALOGUE["set_sport_ring"]
+    # Одно кольцо уже на бойце, второе лежит в рюкзаке
+    player.gear.append(OwnedItem(item=worn, id=2, slot=Slot.RING_MIDDLE))
+    player.gear.append(OwnedItem(item=CATALOGUE["ring_strength"], id=3))
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    calls = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+
+        async def equip(route):
+            calls.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(card)
+            )
+
+        await page.route("**/api/equip", equip)
+
+        # Кнопка одна, и она ничего не надевает сама
+        row = page.locator("#bag-list .thing", has_text="Кольцо силы")
+        buttons = row.locator(".thing-buttons .btn")
+        assert await buttons.nth(0).inner_text() == "Надеть"
+        await buttons.nth(0).click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert not calls, "кольцо надели, не спросив клетку"
+
+        assert "В какой слот?" in await page.locator("#sheet-title").inner_text()
+        cells = page.locator(".ring-cell")
+        assert await cells.count() == 3
+        names = await page.locator(".ring-cell-name").all_inner_texts()
+        # Средняя клетка занята, две другие пусты — и это видно
+        assert names == ["Пусто", worn.title, "Пусто"]
+
+        # Нажатие на занятую клетку меняет кольцо именно в ней
+        await cells.nth(1).click()
+        await page.locator("#sheet").wait_for(state="hidden")
+        assert calls == [{"item_id": 3, "slot": "ring_middle"}]
+        await browser.close()
+
+
 async def test_the_character_doll_tells_about_a_thing_instead_of_undressing(server):
     """На экране персонажа клетка рассказывает о вещи, а не снимает её.
 

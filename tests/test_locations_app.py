@@ -349,10 +349,11 @@ async def test_the_fan_shop_sells_its_own_line(client, db):
     assert body["service"] == "fan"
     codes = {row["code"] for section in body["sections"] for row in section["items"]}
     assert codes == {item.code for item in FAN_ITEMS}
-    # одевает целиком: и бита, и кроссовки одной команды
-    assert {"weapon", "boots"} <= {row["slot"] for row in body["sections"]}
-    # перчаток в этой линии нет — пустой полки на экране тоже
-    assert "gloves" not in {row["slot"] for row in body["sections"]}
+    # одевает целиком: и бита, и кроссовки, и перчатки одной команды.
+    # Перчатки приехали последними — до них слот у линии пустовал
+    assert {"weapon", "boots", "gloves"} <= {row["slot"] for row in body["sections"]}
+    # Пустых полок на экране нет: пак закрыл все слоты
+    assert all(section["items"] for section in body["sections"])
 
 
 async def test_the_fan_line_is_not_sold_anywhere_else(client, db):

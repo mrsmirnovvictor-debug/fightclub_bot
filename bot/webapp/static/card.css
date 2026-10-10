@@ -535,6 +535,38 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin-top: 4px;
 }
 
+/* Выбор клетки под кольцо: три клетки в ряд, под каждой — что в ней
+   лежит. Клетка здесь крупнее, чем в кукле: там она у́же вдвое, потому
+   что стоит в ряду с другими, а здесь по ней надо попасть пальцем */
+.ring-pick {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+.ring-cell {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+.ring-cell .slot { aspect-ratio: 1; border-radius: 6px; }
+.ring-cell-name {
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+/* Занятая клетка подписана своим кольцом, и подпись у неё не блёклая:
+   это не подсказка, а то, что игрок сейчас сменит */
+.ring-cell.busy .ring-cell-name { color: var(--ink); font-weight: 600; }
+.ring-cell:active .slot { transform: scale(0.95); }
+
 /* ---------- инвентарь ---------- */
 
 .bag { margin-top: 16px; }

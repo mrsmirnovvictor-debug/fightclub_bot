@@ -721,17 +721,30 @@ function thingCard(item, credits, shop, bare) {
     return box;
   }
 
-  item.slots.forEach((slot, index) => {
-    const text = index === 0 ? "Надеть" : "Во вторую руку";
+  // У кольца клеток три, и они равноправны: кнопка одна, а клетку
+  // выбирают в окне — там видно, какая свободна, а какую новое кольцо
+  // сменит. Три кнопки «надеть» подряд не сказали бы об этом ничего
+  if (item.shape === "ring") {
     buttons.appendChild(
-      button(text, {
-        secondary: index > 0,
+      button("Надеть", {
         disabled: !item.can_equip,
         hint: "Нужно подрасти: " + requirementText(item),
-        onClick: () => act("api/equip", { item_id: item.id, slot: slot.slot }),
+        onClick: () => askRingSlot(item),
       })
     );
-  });
+  } else {
+    item.slots.forEach((slot, index) => {
+      const text = index === 0 ? "Надеть" : "Во вторую руку";
+      buttons.appendChild(
+        button(text, {
+          secondary: index > 0,
+          disabled: !item.can_equip,
+          hint: "Нужно подрасти: " + requirementText(item),
+          onClick: () => act("api/equip", { item_id: item.id, slot: slot.slot }),
+        })
+      );
+    });
+  }
 
   // Кнопки починки здесь больше нет: чинят у мастера, а не на ходу
   // Сдать можно любую вещь с прилавка, хоть разбитую: износ на выплату
@@ -748,6 +761,56 @@ function thingCard(item, credits, shop, bare) {
 
   box.appendChild(body);
   return box;
+}
+
+// Три клетки колец с карточки — в том порядке, в каком они на бойце.
+// Берём их из последней отрисованной карточки: что в какой клетке лежит,
+// знает она, а не строка рюкзака
+function ringCells() {
+  if (!cardData) return [];
+  return cardData.slots.left
+    .concat(cardData.slots.right)
+    .filter((cell) => cell.shape === "ring");
+}
+
+// Окно выбора клетки под кольцо. Клетки равноправны, поэтому решает
+// игрок: пустую видно пустой, занятую — с тем кольцом, которое в ней
+// стоит, и нажатие на неё кольцо меняет.
+function askRingSlot(item) {
+  const cells = ringCells();
+  if (!cells.length) {
+    // Карточка ещё не пришла — надеваем как раньше, в первую клетку:
+    // лучше надеть, чем показать пустое окно
+    act("api/equip", { item_id: item.id, slot: item.slots[0].slot });
+    return;
+  }
+  openSheet("В какой слот?", "Занятую клетку кольцо сменит: прежнее уйдёт в рюкзак.", true);
+  const row = document.createElement("div");
+  row.className = "ring-pick";
+  cells.forEach((cell) => {
+    const box = document.createElement("button");
+    box.type = "button";
+    box.className = "ring-cell" + (cell.item ? " busy" : "");
+
+    const pic = document.createElement("div");
+    pic.className = "slot ring" + (cell.item ? "" : " empty");
+    pic.appendChild(
+      cell.item ? slotPicture(cell.item, cell.placeholder) : emptySlotPicture(cell, pic)
+    );
+
+    const name = document.createElement("span");
+    name.className = "ring-cell-name";
+    name.textContent = cell.item ? cell.item.title : "Пусто";
+
+    box.append(pic, name);
+    box.addEventListener("click", () => {
+      haptic((feedback) => feedback.selectionChanged());
+      closeSheet();
+      act("api/equip", { item_id: item.id, slot: cell.slot });
+    });
+    row.appendChild(box);
+  });
+  el("sheet-list").appendChild(row);
 }
 
 function requirementText(item) {
