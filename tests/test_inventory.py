@@ -1124,6 +1124,44 @@ def test_only_the_jeweller_and_the_fan_shop_sell_jewellery(monkeypatch):
     assert where_to(Service.JEWEL).code == "jewelry_store"
 
 
+def test_a_worn_thing_carries_the_shape_of_its_cell():
+    """Надетая вещь знает форму клетки, в которой лежит.
+
+    По нажатию на клетку куклы её карточку рисует тот же код, что и
+    строку рюкзака, и форму он берёт из вещи. Без этого поля ожерелье в
+    карточке показывалось квадратом — в самой клетке полосой, а в
+    карточке квадратом, и это выглядело двумя разными вещами.
+
+    Форма берётся у клетки, а не у предмета: кольцо записано в правую, а
+    надето может быть в любой из трёх.
+    """
+    player = make_player(level=10)
+    player.strength = player.agility = player.intuition = player.endurance = 25
+    player.gear.append(
+        OwnedItem(item=CATALOGUE["set_bouncer_necklace"], id=5, slot=Slot.NECKLACE)
+    )
+    player.gear.append(
+        OwnedItem(item=CATALOGUE["ring_balance"], id=6, slot=Slot.RING_MIDDLE)
+    )
+    # Ещё одно ожерелье лежит в рюкзаке, ненадетое
+    player.gear.append(OwnedItem(item=CATALOGUE["set_cardsharp_necklace"], id=7))
+    player.gear.append(OwnedItem(item=KNUCKLES, id=8))
+
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    rows = {
+        row["slot"]: row for row in card["slots"]["left"] + card["slots"]["right"]
+    }
+
+    chain = rows["necklace"]
+    assert chain["shape"] == "wide" and chain["item"]["shape"] == "wide"
+    ring = rows["ring_middle"]
+    assert ring["shape"] == "ring" and ring["item"]["shape"] == "ring"
+    # И в рюкзаке у ожерелья форма та же: строку рисует тот же код
+    bag = {row["code"]: row for row in card["inventory"]}
+    assert bag["set_cardsharp_necklace"]["shape"] == "wide"
+    assert bag["knuckles"]["shape"] == "square"
+
+
 def test_the_jeweller_lays_out_two_shelves():
     """У ювелира на прилавке ровно две полки: ожерелья и кольца."""
     from bot.game.locations import Service

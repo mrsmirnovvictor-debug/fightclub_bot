@@ -123,6 +123,12 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
         "wear": owned.wear,
         "max_wear": owned.max_wear,
         "wear_text": owned.describe_wear(),
+        # Форма клетки, в которой вещь надета: по нажатию на клетку её
+        # карточку рисует тот же код, что и строку рюкзака, и без этого
+        # поля ожерелье в карточке показывалось квадратом, хотя в самой
+        # клетке лежало полосой. Берём её у клетки, а не у предмета:
+        # кольцо знает свою правую, а надето может быть в любой из трёх
+        "shape": (owned.slot or owned.item.slot).shape,
         "mod": mod_mark(owned),
     }
 

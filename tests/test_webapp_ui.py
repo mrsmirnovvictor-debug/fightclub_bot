@@ -9219,3 +9219,52 @@ async def test_the_station_hands_the_licence_and_then_shows_it(server):
         assert "Бессрочно" in said
         assert await page.locator("#police-body .btn").count() == 0
         await browser.close()
+
+
+async def test_a_necklace_keeps_its_strip_everywhere_it_is_shown(server):
+    """Ожерелье — полоса 3:1 и в клетке, и в карточке, и в рюкзаке.
+
+    Клетка куклы была полосой с самого начала, строка рюкзака стала ею
+    вместе с прилавком, а вот карточка вещи — та, что открывается
+    нажатием на клетку, — оставалась квадратной: форму она берёт у самой
+    вещи, а в надетой вещи её не было. Выходило, что в кукле у бойца
+    цепь, а в карточке та же цепь квадратом.
+    """
+    player = make_player()
+    player.gear.append(
+        OwnedItem(item=CATALOGUE["set_avenger_necklace"], id=2, slot=Slot.NECKLACE)
+    )
+    player.gear.append(OwnedItem(item=CATALOGUE["set_plut_necklace"], id=3))
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    def wide(box):
+        return round(box["width"] / box["height"], 1)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Клетка на экране персонажа
+        cell = page.locator("#hero-slots-left .slot.wide")
+        assert await cell.count() == 1
+        assert wide(await cell.bounding_box()) == 3.0
+
+        # Карточка, которая открывается нажатием на эту клетку
+        await page.locator("#hero-slots-left .slot.wide").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Ожерелье мстителя" in await page.locator("#sheet-title").inner_text()
+        assert wide(await page.locator("#sheet .thing-pic").bounding_box()) == 3.0
+        await page.locator("#sheet-close").click()
+
+        # Рюкзак: и клетка куклы, и строка ненадетого ожерелья
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#bag-list .thing")
+        assert wide(await page.locator("#slots-left .slot.wide").bounding_box()) == 3.0
+        row = page.locator("#bag-list .thing", has_text="Ожерелье плута")
+        assert wide(await row.locator(".thing-pic").bounding_box()) == 3.0
+
+        # И карточка от клетки рюкзачной куклы — та же полоса
+        await page.locator("#slots-left .slot.wide").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert wide(await page.locator("#sheet .thing-pic").bounding_box()) == 3.0
+        await browser.close()
