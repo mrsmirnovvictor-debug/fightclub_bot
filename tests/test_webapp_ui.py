@@ -724,6 +724,25 @@ async def test_the_jeweller_shows_two_shelves(jewel_page):
     assert "Кулон героя" not in titles  # девятый уровень, лежит под кнопкой
 
 
+async def test_the_necklace_lies_in_a_wide_cell_on_the_counter(jewel_page):
+    """Ожерелье и на прилавке полоса 3:1, а не квадрат.
+
+    Картинка цепи втрое шире своей высоты, и в квадратной клетке её
+    срезало с боков: на витрине было не разглядеть, что покупаешь. Клетка
+    теперь та же, что в кукле, и форму ей задаёт слот, а не страница.
+    """
+    shelf = jewel_page.locator("#shop-club .shelf").nth(0)
+    assert "Ожерелья" in await shelf.locator(".shelf-head").inner_text()
+    chain = await shelf.locator(".thing-pic").nth(0).bounding_box()
+    assert chain["width"] / chain["height"] == pytest.approx(3, abs=0.15)
+
+    # А кольцо осталось квадратным: клетка под него одна единица на одну
+    rings = jewel_page.locator("#shop-club .shelf").nth(1)
+    assert "Кольца" in await rings.locator(".shelf-head").inner_text()
+    ring = await rings.locator(".thing-pic").nth(0).bounding_box()
+    assert ring["width"] / ring["height"] == pytest.approx(1, abs=0.05)
+
+
 async def test_an_empty_shelf_says_the_goods_are_coming(server):
     """Пустой раздел с прилавка не пропадает: видно, что его готовят."""
     empty = {

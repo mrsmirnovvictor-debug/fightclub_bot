@@ -218,6 +218,10 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "kind": item.kind.value,
         "slot": item.slot.value,
         "slot_title": item.slot.section.capitalize(),
+        # Какой клеткой вещь рисуется: ожерелье втрое шире квадрата, кольцо
+        # втрое у́же. Форму держит слот (`Slot.shape`), и страница берёт её
+        # отсюда — и для куклы, и для прилавка, и для рюкзака
+        "shape": item.slot.shape,
         "slots": [
             {"slot": slot.value, "title": slot.title} for slot in item.slots
         ],
@@ -423,6 +427,7 @@ def goods_payload(
         "kind": item.kind.value,
         "slot": item.slot.value,
         "slot_title": item.slot.section.capitalize(),
+        "shape": item.slot.shape,
         "price": price,
         "full_price": item.price,
         "off": item.price - price,
@@ -749,6 +754,7 @@ def lot_payload(player: Player, lot: dict, now: int = 0) -> dict:
         "image": item.picture,
         "slot": item.slot.value,
         "slot_title": item.slot.section.capitalize(),
+        "shape": item.slot.shape,
         "price": price,
         # Продавцу видно, сколько дойдёт до него, покупателю — сколько отдать
         "payout": payout(price),
@@ -781,6 +787,7 @@ def sellable_payload(player: Player, owned: OwnedItem) -> dict:
         "image": owned.image,
         "slot": owned.item.slot.value,
         "slot_title": owned.item.slot.section.capitalize(),
+        "shape": owned.item.slot.shape,
         "wear": owned.wear,
         "max_wear": owned.max_wear,
         "wear_text": owned.describe_wear(),

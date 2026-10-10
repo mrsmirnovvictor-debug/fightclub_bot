@@ -454,12 +454,22 @@ function undressButtons(takeOff) {
   return row;
 }
 
+// Клетка картинки у строки с вещью. Форму задаёт слот, а не страница:
+// ожерелье рисуется полосой 3:1 — такой же, как в кукле, — иначе квадрат
+// срезает цепь с боков, и на прилавке не разглядеть, что покупаешь.
+// Кольцо остаётся квадратным: в кукле оно у́же, но в списке товара
+// колечко размером с ноготь не разглядел бы никто
+function thingPic(item) {
+  const pic = document.createElement("div");
+  pic.className = "thing-pic" + (item.shape === "wide" ? " wide" : "");
+  return pic;
+}
+
 function wornCard(item) {
   const box = document.createElement("div");
   box.className = "thing";
 
-  const pic = document.createElement("div");
-  pic.className = "thing-pic";
+  const pic = thingPic(item);
   if (item.mod && item.mod.level) pic.classList.add("tier", "lvl" + item.mod.level);
   pic.appendChild(slotPicture(item, item.icon));
   box.appendChild(pic);
@@ -567,8 +577,7 @@ function thingCard(item, credits, shop, bare) {
   const box = document.createElement("div");
   box.className = "thing" + (shop && !item.unlocked ? " locked" : "");
 
-  const pic = document.createElement("div");
-  pic.className = "thing-pic";
+  const pic = thingPic(item);
   // Модифицированную вещь обводим цветом ступени — так же, как в кукле
   if (item.mod && item.mod.level) pic.classList.add("tier", "lvl" + item.mod.level);
   pic.appendChild(slotPicture(item, item.icon));
@@ -1646,8 +1655,7 @@ function sellCard(row) {
   const box = document.createElement("div");
   box.className = "thing";
 
-  const pic = document.createElement("div");
-  pic.className = "thing-pic";
+  const pic = thingPic(row);
   pic.appendChild(slotPicture(row, row.icon));
   box.appendChild(pic);
 
@@ -1717,8 +1725,7 @@ function lotCard(lot) {
   const box = document.createElement("div");
   box.className = "thing" + (lot.mine ? " mine" : "");
 
-  const pic = document.createElement("div");
-  pic.className = "thing-pic";
+  const pic = thingPic(lot);
   pic.appendChild(slotPicture(lot, lot.icon));
   box.appendChild(pic);
 
