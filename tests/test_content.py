@@ -562,7 +562,7 @@ def test_the_fan_shelf_is_a_counter_of_its_own():
     """
     from bot.game.equipment import FAN_SHELF, JEWEL_SLOTS, SHOWCASE
 
-    assert len(fan_items()) == 38, "пак приехал не целиком"
+    assert len(fan_items()) == 42, "пак приехал не целиком"
     shelf = {item.code for item in SHOWCASE}
     for item in fan_items():
         assert item.shelf == FAN_SHELF, item.code
@@ -642,7 +642,7 @@ def test_the_fan_shelf_beats_the_club_sets_it_costs_twice_as_much_as():
             )
         assert item.price > rival.price * 2, f"{item.code}: дешевле двух сетовых"
         checked += 1
-    assert checked == 24, "фанатская одежда приехала не целиком"
+    assert checked == 28, "фанатская одежда приехала не целиком"
 
 
 def test_the_fan_jewels_are_the_jewellers_ninth_step():
@@ -687,6 +687,47 @@ def test_the_fan_jewels_are_the_jewellers_ninth_step():
         # Кольцо лежит в правой клетке и раздаёт себе остальные две,
         # кулон — в своей: иначе на гопнике оно не наденется втрое
         assert item.slot in (Slot.NECKLACE, Slot.RING_RIGHT), item.code
+
+
+def test_the_fan_gloves_close_the_last_empty_slot():
+    """Перчатки закрыли последний пустой слот линии — по паре на класс.
+
+    Брони на них нет и быть не может: кулак не зона удара, и число брони
+    на перчатке никуда не пришло бы. Поэтому берут они статами и долями —
+    и, как вся линия, обходят клубные перчатки девятого уровня, иначе за
+    них незачем платить вдвое.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.equipment import CATALOGUE, Slot
+
+    pairs = {
+        "fan_boss_gloves": ("tank", "set_bouncer_gloves"),
+        "fan_warrior_gloves": ("warrior", "set_hero_gloves"),
+        "fan_assassin_gloves": ("assassin", "set_killer_gloves"),
+        "fan_rogue_gloves": ("rogue", "set_cardsharp_gloves"),
+    }
+    mine = [item for item in fan_items() if item.slot is Slot.GLOVES]
+    assert {item.code for item in mine} == set(pairs), "перчаток не четыре"
+    assert {code for item in mine for code in item.for_classes} == set(FIGHTER_CLASSES)
+
+    for item in mine:
+        fclass, rival_code = pairs[item.code]
+        assert item.for_classes == (fclass,), item.code
+        assert not item.armor_min and not item.armor_max, (
+            f"{item.code}: броня на перчатке никуда не приходит"
+        )
+        assert not item.zones, item.code
+        rival = CATALOGUE[rival_code]
+        for name in ("strength", "agility", "intuition", "hp",
+                     "accuracy", "dodge", "crit", "anticrit", "counter"):
+            assert getattr(item, name) >= getattr(rival, name), (
+                f"{item.title}: «{name}» слабее клубных перчаток"
+            )
+        assert item.price > rival.price * 2, f"{item.code}: дешевле двух клубных"
+    # Танку точности не писать: ею сбивается уворот, то есть это ответ
+    # трикстеру, который по кругу танка и бьёт. На клубных танковых вещах
+    # её нет по той же причине
+    assert not CATALOGUE["fan_boss_gloves"].accuracy
 
 
 def test_the_light_shield_is_the_tricksters_own():
@@ -739,12 +780,29 @@ def test_fan_weapons_are_worth_their_price():
 
 
 def test_the_fan_shelf_is_drawn_and_not_shared():
-    """У каждой фанатской вещи своя картинка в общем бакете."""
+    """У каждой фанатской вещи своя картинка в общем бакете.
+
+    Адрес у фанатской вещи считается от кода — кроме тех, что переехали,
+    когда бакет стали разбирать по рейдам: они лежат в папке своей линии
+    (`bosses/raid2_items/<линия>/items/`), и файла под старым адресом у
+    них нет вовсе. Таким адрес написан строкой, и написан он сюда же:
+    переехала вещь — видно, что переехала, а не потерялась.
+    """
+    from bot.game.art import RAID_ITEMS
     from bot.game.equipment import SHOWCASE
 
     seen = {item.picture for item in SHOWCASE}
+    moved = {item.code for item in fan_items() if item.image}
+    assert moved == {
+        "fan_boss_gloves", "fan_warrior_gloves",
+        "fan_assassin_gloves", "fan_rogue_gloves",
+    }, moved
     for item in fan_items():
-        assert not item.image, f"{item.code}: адрес картинки задан руками"
+        if item.code in moved:
+            assert item.picture.startswith(f"{RAID_ITEMS}/"), item.code
+            assert item.picture.endswith(f"/items/{item.code}.png"), item.code
+        else:
+            assert not item.image, f"{item.code}: адрес картинки задан руками"
         assert item.picture.startswith(ART), item.code
         assert item.picture not in seen, f"{item.code} делит картинку с витриной"
         seen.add(item.picture)

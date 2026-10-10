@@ -369,13 +369,21 @@ def test_the_whole_gang_wears_a_chain_and_three_rings():
         assert chain.item.code == f"fan_{line}_necklace", one.title
 
 
-def test_the_gang_fights_bare_handed():
-    """Перчаток в фанатской линии нет — и слот у гопника пуст."""
+def test_the_gang_came_back_in_gloves():
+    """Перчатки в линии появились — и голых рук в банде не осталось.
+
+    Раньше слот пустовал: перчаток в паке не было вовсе, а клубные
+    гопнику не положены — на нём форма сектора, а не гардероб. Теперь
+    перчатки у линии свои, и надеты они у каждого, своей линии.
+    """
     from bot.game.equipment import Slot
     from bot.game.raid import GANG, boss_kit
 
     for one in GANG:
-        assert Slot.GLOVES not in boss_kit(one).items, one.title
+        worn = boss_kit(one).items.get(Slot.GLOVES)
+        assert worn is not None, f"{one.title} без перчаток"
+        line = one.class_code if one.class_code != "tank" else "boss"
+        assert worn.item.code == f"fan_{line}_gloves", one.title
 
 
 def test_the_second_hand_is_named_and_not_picked_off_the_counter():

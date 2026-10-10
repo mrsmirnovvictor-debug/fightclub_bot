@@ -2406,6 +2406,33 @@ ITEMS: tuple[Item, ...] = tuple(
         for_classes=(TANK,),
         shelf=FAN_SHELF,
     ),
+    # Перчатки линии. Их в паке не было вовсе — гопники дрались голыми
+    # руками, — и приехали они позже остальной формы, когда бакет стали
+    # разбирать по рейдам. Поэтому адрес у них задан строкой: лежат они
+    # не в общей папке вещей, а в папке своей линии.
+    #
+    # Брони на перчатках нет и быть не может: кулак — не зона удара, и
+    # число брони на них никуда не пришло бы. Своё они берут статами и
+    # долями, на ступень выше клубных перчаток девятого уровня: у танка
+    # антикрит, у ассасина крит с точностью, у трикстера уворот с
+    # контрударом, у воина всего понемногу.
+    Item(
+        "fan_boss_gloves",
+        "Тяжёлые перчатки",
+        Slot.GLOVES,
+        "🧤",
+        image=art.raid_gear("fan_boss", "fan_boss_gloves"),
+        strength=5,
+        agility=2,
+        intuition=2,
+        hp=25,
+        anticrit=0.5,
+        level_required=10,
+        requires=Stats(strength=14, endurance=24),
+        price=1200,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
 # ---------- украшения фанатского прилавка ----------
 #
 # Девятая ступень ювелирной лестницы в фанатском виде: числа у них те
@@ -2587,6 +2614,26 @@ ITEMS: tuple[Item, ...] = tuple(
         shelf=FAN_SHELF,
     ),
     Item(
+        "fan_warrior_gloves",
+        "Беспалые перчатки",
+        Slot.GLOVES,
+        "🧤",
+        image=art.raid_gear("fan_warrior", "fan_warrior_gloves"),
+        strength=3,
+        agility=3,
+        intuition=3,
+        hp=20,
+        accuracy=0.25,
+        dodge=0.25,
+        crit=0.25,
+        anticrit=0.05,
+        level_required=10,
+        requires=Stats(strength=22),
+        price=1200,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
         "fan_warrior_ring",
         "Печатка с гербом",
         Slot.RING_RIGHT,
@@ -2748,6 +2795,23 @@ ITEMS: tuple[Item, ...] = tuple(
         shelf=FAN_SHELF,
     ),
     Item(
+        "fan_assassin_gloves",
+        "Тонкие перчатки",
+        Slot.GLOVES,
+        "🧤",
+        image=art.raid_gear("fan_assassin", "fan_assassin_gloves"),
+        strength=3,
+        intuition=5,
+        hp=15,
+        accuracy=0.25,
+        crit=0.5,
+        level_required=10,
+        requires=Stats(endurance=18),
+        price=1200,
+        for_classes=(ASSASSIN,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
         "fan_assassin_ring",
         "Чёрное кольцо",
         Slot.RING_RIGHT,
@@ -2899,6 +2963,24 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=10,
         requires=Stats(endurance=18),
         price=1100,
+        for_classes=(ROGUE,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_rogue_gloves",
+        "Модные перчатки",
+        Slot.GLOVES,
+        "🧤",
+        image=art.raid_gear("fan_trickster", "fan_rogue_gloves"),
+        strength=3,
+        agility=5,
+        hp=15,
+        accuracy=0.25,
+        dodge=0.5,
+        counter=0.05,
+        level_required=10,
+        requires=Stats(endurance=18),
+        price=1300,
         for_classes=(ROGUE,),
         shelf=FAN_SHELF,
     ),

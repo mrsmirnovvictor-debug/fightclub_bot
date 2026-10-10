@@ -130,6 +130,17 @@ def boss(code: str) -> str:
     return f"{BOSSES}/{code}.png"
 
 
+def raid_gear(line: str, code: str) -> str:
+    """Вещь рейдовой линии: bosses/raid2_items/fan_boss/items/<код>.png.
+
+    Бакет разбирают по рейдам, и вещи стычки переезжают в папку своей
+    линии. Папка линии не всегда зовётся как приставка кода: трикстерская
+    называется `fan_trickster`, а вещи в ней — `fan_rogue_*`. Поэтому
+    линия приходит отдельным словом, а не берётся из кода.
+    """
+    return f"{RAID_ITEMS}/{line}/items/{code}.png"
+
+
 def raid_item(name: str) -> str:
     """Вещь рейда: bosses/raid2_items/match_ticket.png.
 
@@ -167,6 +178,7 @@ __all__ = [
     "location",
     "plain_ring",
     "potion",
+    "raid_gear",
     "raid_item",
     "set_piece",
     "shirt",
