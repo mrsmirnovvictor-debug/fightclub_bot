@@ -412,13 +412,26 @@ async def test_a_reset_takes_the_bottles_and_the_buffs_with_it(db):
 
 
 def test_every_potion_is_drawn_and_no_two_share_a_bottle():
-    """Каждая склянка нарисована, и все шесть картинок разные."""
+    """Каждая склянка нарисована, и все картинки разные.
+
+    Склянки лежат в своей папке и под своим кодом. Пропуска — нет: их не
+    пьют, и рисовали их вместе с рейдом, а не с аптекой. Билет на матч
+    приехал из папки стычки под собственным именем, поэтому адрес у него
+    задан строкой — файла `potions/stadium_pass.jpeg` в бакете нет вовсе.
+    """
     from bot.game import art
+    from bot.game.potions import PotionKind
 
     for potion in POTIONS:
+        if potion.kind is PotionKind.PASS and potion.image:
+            assert potion.picture.startswith(f"{art.RAID_ITEMS}/"), potion.code
+            assert potion.picture.endswith(".png"), potion.code
+            continue
         assert potion.picture.startswith(f"{art.POTIONS}/"), potion.code
         assert potion.picture.endswith(".jpeg"), potion.code
     assert len({potion.picture for potion in POTIONS}) == len(POTIONS)
+    # Билет на матч — именно тот файл, что прислали со стычкой
+    assert get_potion("stadium_pass").picture == art.raid_item("match_ticket")
 
 
 def test_the_shop_row_carries_the_potion_picture():

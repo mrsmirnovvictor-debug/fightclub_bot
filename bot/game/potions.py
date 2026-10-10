@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from bot.game.art import potion as potion_art
+from bot.game.art import raid_item
 from bot.game.classes import ALL_STATS, Stats
 from bot.game.health import now_ts
 
@@ -238,6 +239,9 @@ POTIONS: tuple[Potion, ...] = (
             "Корешок билета на трибуну стадиона Vegas City. Необходим для "
             "запуска и участия в рейде «Стычка с футбольными фанатами»."
         ),
+        # Билет рисовали вместе со стычкой, и лежит он в папке рейда, а не
+        # в аптечной: имя файла своё, под код вещи его никто не переименует
+        image=raid_item("match_ticket"),
         price=50,
         max_wear=1,
     ),

@@ -24,6 +24,9 @@ SHIRTS = f"{BUCKET}/shirts"
 SETS = f"{BUCKET}/items_new"
 # Рейд-боссы
 BOSSES = f"{BUCKET}/bosses"
+# Вещи рейдов: билеты, пропуска и прочее, что рисовали вместе с боссом, а
+# не с лавкой. Папка легла рядом с портретами и зовётся по очереди рейдов
+RAID_ITEMS = f"{BOSSES}/raid2_items"
 # Товар лавки мага
 MAGIC = f"{BUCKET}/magic"
 POTIONS = f"{BUCKET}/potions"
@@ -127,6 +130,15 @@ def boss(code: str) -> str:
     return f"{BOSSES}/{code}.png"
 
 
+def raid_item(name: str) -> str:
+    """Вещь рейда: bosses/raid2_items/match_ticket.png.
+
+    Имя файла приходит сюда, а не считается от кода: билет на матч лежит
+    под своим названием, а пропуск в игре зовётся `stadium_pass`.
+    """
+    return f"{RAID_ITEMS}/{name}.png"
+
+
 def potion(code: str) -> str:
     """Склянка лежит под кодом эликсира: potions/heal_small.jpeg."""
     return f"{POTIONS}/{code}.jpeg"
@@ -143,6 +155,7 @@ __all__ = [
     "MAGIC",
     "NEW_INTERIORS",
     "POTIONS",
+    "RAID_ITEMS",
     "SETS",
     "SHIRTS",
     "SLOTS",
@@ -154,6 +167,7 @@ __all__ = [
     "location",
     "plain_ring",
     "potion",
+    "raid_item",
     "set_piece",
     "shirt",
     "slot",
