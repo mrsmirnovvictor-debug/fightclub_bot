@@ -32,6 +32,9 @@ MAGIC = f"{BUCKET}/magic"
 POTIONS = f"{BUCKET}/potions"
 # Карты районов города: по карте на район
 LOCATIONS = f"{BUCKET}/locations"
+# Картинки к вопросам билета ПДД. Бакет у них свой, не клубный: билет
+# прислали отдельной выгрузкой, и перекладывать её к вещам не наше дело
+PDD = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/pdd2"
 # Виды изнутри: по картинке на дом. Папки две, и это не наша прихоть —
 # первые четырнадцать домов выгрузили в locations/interiors, следующие
 # шестнадцать легли рядом с корнем. Переименовывать чужой бакет не наше
@@ -130,6 +133,15 @@ def boss(code: str) -> str:
     return f"{BOSSES}/{code}.png"
 
 
+def pdd(number: int) -> str:
+    """Картинка к вопросу билета: pdd2/7.png.
+
+    Номер, а не код: вопросы в билете идут по порядку, и файлы названы
+    этим же порядком — так их и прислали.
+    """
+    return f"{PDD}/{number}.png"
+
+
 def raid_gear(line: str, code: str) -> str:
     """Вещь рейдовой линии: bosses/raid2_items/fan_boss/items/<код>.png.
 
@@ -165,6 +177,7 @@ __all__ = [
     "LOCATIONS",
     "MAGIC",
     "NEW_INTERIORS",
+    "PDD",
     "POTIONS",
     "RAID_ITEMS",
     "SETS",
@@ -177,6 +190,7 @@ __all__ = [
     "item",
     "location",
     "plain_ring",
+    "pdd",
     "potion",
     "raid_gear",
     "raid_item",

@@ -175,6 +175,51 @@ def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> d
     return build_work(player, moment)
 
 
+def school_state(stage: str = "new", wrong: int = 0, seconds: int = 900) -> dict:
+    """Экран автошколы в нужном шаге — тем же сборщиком, что и в бою."""
+    from bot.game.driving import EXAM_SECONDS, School
+    from bot.game.health import now_ts
+    from bot.webapp.driving import build_school
+
+    moment = now_ts()
+    player = make_player("driving_school")
+    player.credits = 1000
+    if stage == "study":
+        player.school = School(course_at=moment)
+    elif stage == "ready":
+        player.school = School(course_at=moment - 4 * 24 * 3600)
+    elif stage == "exam":
+        player.school = School(
+            course_at=moment - 4 * 24 * 3600,
+            exam_until=moment + seconds,
+            wrong=wrong,
+        )
+    elif stage == "passed":
+        player.school = School(passed_at=moment)
+    body = build_school(player, moment)
+    # Часы приёма в прогоне настоящие, а экран нужен открытым: иначе
+    # половина проверок зависела бы от того, среда сегодня или четверг
+    if stage in ("ready", "exam"):
+        body["open"] = True
+    assert body["stage"] == stage or stage == "new", body["stage"]
+    assert seconds == EXAM_SECONDS or stage != "exam" or body["seconds_left"]
+    return body
+
+
+def police_state(passed: bool = True, licence: bool = False) -> dict:
+    from bot.game.driving import School
+    from bot.game.health import now_ts
+    from bot.webapp.driving import build_police
+
+    moment = now_ts()
+    player = make_player("vcpd")
+    player.school = School(
+        passed_at=moment if passed or licence else 0,
+        licence_at=moment if licence else 0,
+    )
+    return build_police(player, moment)
+
+
 def bank_state(
     account: bool = True,
     card: bool = True,
@@ -516,8 +561,8 @@ async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
     battle=None, city=None, workshop=None, hospital=None, trade=None,
-    insurance=None, gym=None, bank=None, hr=None, work=None,
-    images=False, telegram="",
+    insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
+    police=None, images=False, telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -552,6 +597,8 @@ async def open_page(
     # `/api/workshop`, а перехват в Playwright выигрывает последний — и
     # мастерская начинала получать ответ рабочего места
     await page.route("**/api/work", canned(work or work_state()))
+    await page.route("**/api/school", canned(school or school_state()))
+    await page.route("**/api/police", canned(police or police_state()))
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
@@ -9059,4 +9106,116 @@ async def test_a_gathering_party_is_watched_closely(server):
         }}
         await page.evaluate("data => { renderRaid(data); }", gathering)
         assert await page.evaluate("raidRate") == 2000
+        await browser.close()
+
+
+# ---------- автошкола ----------
+
+
+async def open_school(pw, server, stage="new", wrong=0):
+    player = make_player("driving_school")
+    browser, page = await open_page(
+        pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+        build_shop(player), school=school_state(stage, wrong), images=True,
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "school")
+    await page.wait_for_selector("#school:not(.hidden)")
+    return browser, page
+
+
+async def test_the_school_offers_the_course_and_its_price(server):
+    """Первый заход: цена курса, срок учёбы и расписание экзамена."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server)
+        await page.wait_for_selector(".shelf")
+
+        said = await page.locator("#school-body").inner_text()
+        assert "300 💰" in said
+        assert "16 вопросов, 15 минут" in said
+        assert "по средам и субботам с 12:00 до 15:00 мск" in said
+        button = page.locator("#school-body .btn").first
+        assert "Записаться" in await button.inner_text()
+        await browser.close()
+
+
+async def test_the_course_counts_the_days_down_and_hides_the_exam(server):
+    """Пока идут три дня, на экзамен не записывают — и сказано, сколько ждать."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server, stage="study")
+        await page.wait_for_selector(".shelf")
+
+        said = await page.locator("#school-body").inner_text()
+        assert "До экзамена: 3 дня" in said
+        assert await page.locator("#school-body .btn").count() == 0
+        await browser.close()
+
+
+async def test_the_ticket_shows_one_question_with_its_picture(server):
+    """Билет идёт по одному вопросу: картинка, варианты и кнопка ответа."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server, stage="exam")
+        await page.wait_for_selector(".exam")
+
+        head = await page.locator(".exam-head").inner_text()
+        assert "Вопрос 1 из 16" in head
+        assert await page.locator(".exam-pic").count() == 1
+        assert await page.locator(".exam .answer").count() == 4
+
+        # Ответить нельзя, пока вариант не выбран: выбор и подтверждение —
+        # два разных действия, и промах по варианту ещё не ответ
+        confirm = page.locator(".quiz-buttons .btn")
+        assert await confirm.is_disabled()
+        await page.locator(".exam .answer").nth(1).click()
+        assert "on" in (await page.locator(".exam .answer").nth(1).get_attribute("class"))
+        assert not await confirm.is_disabled()
+        await browser.close()
+
+
+async def test_the_first_mistake_is_shown_on_the_ticket(server):
+    """Ошибка на счету одна, и видно её сразу, а не в конце."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server, stage="exam")
+        assert "Ошибок нет" in await page.locator(".exam-wrong").inner_text()
+        await browser.close()
+
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server, stage="exam", wrong=1)
+        wrong = page.locator(".exam-wrong")
+        assert "Ошибка: 1 из 2" in await wrong.inner_text()
+        assert "on" in (await wrong.get_attribute("class"))
+        await browser.close()
+
+
+async def test_the_station_hands_the_licence_and_then_shows_it(server):
+    """В участке кнопка одна — и та только тому, кто сдал."""
+    player = make_player("vcpd")
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), police=police_state(passed=True),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector("#police:not(.hidden)")
+
+        button = page.locator("#police-body .btn")
+        assert await button.count() == 1
+        assert "Получить права" in await button.inner_text()
+        await browser.close()
+
+    # Права на руках — кнопки нет, есть бланк
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
+            build_shop(player), police=police_state(licence=True),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector(".paper")
+
+        said = await page.locator("#police-body").inner_text()
+        assert "Водительское удостоверение" in said
+        assert "Бессрочно" in said
+        assert await page.locator("#police-body .btn").count() == 0
         await browser.close()

@@ -34,6 +34,7 @@ from bot.game.bank import (
     YEAR_SECONDS,
     price_for,
 )
+from bot.game.driving import School
 from bot.game.insurance import Policy
 from bot.game.health import (
     HealthState,
@@ -133,6 +134,10 @@ class Player:
     # Страховой полис. Просроченный остаётся здесь же: документ не
     # исчезает, у него кончается срок
     policy: Policy | None = None
+    # Автошкола: курс, попытка экзамена и права. Пустая запись — в школу
+    # боец не ходил. Пустая, а не `None`: у школы пять чисел и ни одного
+    # обязательного, и «не записан» — это те же нули, что и «не сдавал»
+    school: School = field(default_factory=School)
     # До какого часа абонемент в зал. 0 — его не было. Лежит на бойце, а
     # не в службе зала, потому что это второй документ: его показывают в
     # карточке, а она собирается без похода в базу

@@ -86,6 +86,14 @@ from bot.work_service import quit_job as work_quit
 from bot.work_service import quiz_payload
 from bot.work_service import settle as work_settle
 from bot.work_service import start_shift, vacancies
+from bot.driving_service import (
+    SchoolError,
+    answer as school_answer,
+    enroll as school_enroll,
+    start_exam as school_exam,
+    take_licence as school_licence,
+)
+from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
     build_market,
     build_card,
@@ -1236,6 +1244,100 @@ async def _hr_state(request: web.Request, player, said: str = "") -> web.Respons
     return web.json_response(body)
 
 
+# ---------- автошкола и участок ----------
+
+
+async def _school_state(
+    request: web.Request, player, said: str = "", attempt: dict | None = None
+) -> web.Response:
+    config = request.app[CONFIG_KEY]
+    body = build_school(player)
+    body["said"] = said
+    # Чем кончился ответ: верен ли он и не кончился ли билет. Это
+    # единственное, что страница узнаёт про ответы, — верного варианта
+    # среди этого нет
+    body["attempt"] = attempt or {}
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_school(request: web.Request) -> web.Response:
+    """Автошкола: курс, обратный отсчёт учёбы и билет."""
+    player = await _at(request, Service.SCHOOL)
+    return await _school_state(request, player)
+
+
+async def api_school_action(request: web.Request) -> web.Response:
+    """Записаться на курс, сесть за билет или ответить на вопрос."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.SCHOOL)
+    attempt: dict | None = None
+    try:
+        if action == "enroll":
+            await school_enroll(db, player)
+            said = (
+                "Ты записан на курс. Три дня на правила — и приходи "
+                "на экзамен."
+            )
+        elif action == "exam":
+            await school_exam(db, player)
+            said = "Билет открыт. Пятнадцать минут пошли."
+        elif action == "answer":
+            done = await school_answer(db, player, int(data.get("option", -1)))
+            attempt = {
+                "right": done.right,
+                "done": done.done,
+                "passed": done.passed,
+                "wrong": done.wrong,
+                "step": done.step,
+            }
+            if done.done and done.passed:
+                said = (
+                    f"Экзамен сдан: ошибок {done.wrong}. "
+                    "За правами — в полицейский участок."
+                )
+            elif done.done:
+                said = "Две ошибки — экзамен не сдан. Приходи на пересдачу."
+            else:
+                said = ""
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except SchoolError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _school_state(request, fresh, said, attempt)
+
+
+async def api_police(request: web.Request) -> web.Response:
+    """Участок: готов ли бланк прав."""
+    player = await _at(request, Service.POLICE)
+    config = request.app[CONFIG_KEY]
+    body = build_police(player)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_licence(request: web.Request) -> web.Response:
+    """Получить права: бланк выдают в участке и один раз."""
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.POLICE)
+    try:
+        await school_licence(db, player)
+    except SchoolError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    config = request.app[CONFIG_KEY]
+    fresh = await db.get_player(player.user_id) or player
+    body = build_police(fresh)
+    body["said"] = "Права выданы. Бланк лежит в документах."
+    body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
+    return web.json_response(body)
+
+
 async def api_hr(request: web.Request) -> web.Response:
     """Доска агентства: пять мест города и что с ними у этого бойца."""
     player, said = await _worker(request, Service.HIRE)
@@ -1819,6 +1921,10 @@ def create_app(
             web.get("/api/bank", api_bank),
             web.post("/api/bank", api_bank_action),
             web.post("/api/purse", api_purse),
+            web.get("/api/school", api_school),
+            web.post("/api/school", api_school_action),
+            web.get("/api/police", api_police),
+            web.post("/api/licence", api_licence),
             web.get("/api/hr", api_hr),
             web.post("/api/hr", api_hr_action),
             web.get("/api/work", api_work),

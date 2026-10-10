@@ -1854,7 +1854,7 @@ function lotCard(lot) {
 
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
-  "bank", "hr", "work", "trade", "house", "bag", "hero",
+  "bank", "hr", "work", "school", "police", "trade", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли
@@ -1862,7 +1862,7 @@ const TABS = ["club", "map", "bag", "hero"];
 const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
-  house: "map",
+  school: "map", police: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1894,6 +1894,11 @@ function showTab(name) {
   else stopGymClock();
   if (name === "bank") loadBank();
   if (name === "hr") loadHr();
+  // Часы билета идут, только пока на экзамен смотрят: ушёл с экрана —
+  // время всё равно течёт, его держит сервер, а стрелки рисовать некому
+  if (name === "school") loadSchool();
+  else stopExamClock();
+  if (name === "police") loadPolice();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2277,6 +2282,8 @@ const HOUSE_SCREENS = {
   bank: () => showTab("bank"),
   hire: () => showTab("hr"),
   work: () => showTab("work"),
+  school: () => showTab("school"),
+  police: () => showTab("police"),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -8602,6 +8609,322 @@ function stopTradeWatch() {
   tradeClock = null;
 }
 
+// ---------- автошкола и участок ----------
+//
+// Один экран на весь путь: запись на курс, три дня учёбы, билет и то,
+// чем он кончился. Какой шаг показывать, решает сервер — страница рисует
+// тот, который ей назвали, и ничего не досчитывает сама. Верного ответа
+// на странице нет вовсе: вопрос приходит по одному, ответ сверяет сервер.
+
+let schoolData = null;
+let schoolBusy = false;
+let examTimer = null;
+// Что выбрано в текущем вопросе. Подтверждают кнопкой: нажатие на
+// вариант — это выбор, а не ответ, и передумать до подтверждения можно
+let examPick = null;
+
+async function loadSchool() {
+  try {
+    const response = await fetch("api/school", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("school-note").textContent = "Автошкола не открылась.";
+      return;
+    }
+    renderSchool(await response.json());
+  } catch (error) {
+    el("school-note").textContent = error.message;
+  }
+}
+
+async function schoolAction(payload) {
+  if (schoolBusy) return;
+  schoolBusy = true;
+  try {
+    const response = await fetch("api/school", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Автошкола", data.error || "Не получилось.");
+      await loadSchool();
+      return;
+    }
+    haptic((feedback) => feedback.impactOccurred("light"));
+    if (data.card) render(data.card, true);
+    examPick = null;
+    renderSchool(data);
+    // Итог экзамена говорим всплывашкой: это событие, а не строка на
+    // экране, и пропустить его нельзя
+    if (data.attempt && data.attempt.done) {
+      popup(
+        data.attempt.passed ? "Экзамен сдан" : "Экзамен не сдан",
+        data.said
+      );
+    }
+  } catch (error) {
+    popup("Автошкола", "Сервер не ответил.");
+  } finally {
+    schoolBusy = false;
+  }
+}
+
+function renderSchool(data) {
+  schoolData = data;
+  el("shop-purse-school").textContent = "";
+  el("shop-purse-school").appendChild(purse(data.credits));
+  el("school-note").textContent = data.said || data.note;
+
+  const body = el("school-body");
+  body.textContent = "";
+  stopExamClock();
+
+  // Идёт билет — на экране только он: уходить с половины экзамена
+  // некуда, а доска с ценой курса под вопросом отвлекала бы
+  if (data.stage === "exam" && data.question && data.question.text) {
+    body.appendChild(examBox(data));
+    startExamClock(data);
+    return;
+  }
+  body.appendChild(courseBox(data));
+}
+
+/** Курс: цена, обратный отсчёт учёбы и запись на экзамен. */
+function courseBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Курс на права";
+  box.appendChild(head);
+
+  const rows = [
+    ["Курс", data.full_price + " 💰"],
+    ["Самостоятельная учёба", data.study_days + " дня"],
+    ["Экзамен", data.schedule],
+    ["Билет", data.questions + " вопросов, " + data.minutes + " минут"],
+    ["Ошибки", "прощается " + data.mistakes],
+  ];
+  box.appendChild(sheetRows(rows));
+
+  if (data.stage === "study") {
+    const left = document.createElement("p");
+    left.className = "screen-note";
+    left.textContent =
+      "До экзамена: " + studySpell(data.study_left) + " (с " + data.study_until + ")";
+    box.appendChild(left);
+  }
+  if (data.stage === "ready" && !data.open) {
+    const when = document.createElement("p");
+    when.className = "screen-note";
+    when.textContent = "Ближайший экзамен: " + data.next_exam;
+    box.appendChild(when);
+  }
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (data.stage === "new") {
+    buttons.appendChild(
+      button("Записаться · " + data.price + " 💰", {
+        onClick: () => schoolAction({ action: "enroll" }),
+      })
+    );
+  } else if (data.stage === "ready") {
+    buttons.appendChild(
+      button(data.open ? "Записаться на экзамен" : "Экзамен закрыт", {
+        disabled: !data.open,
+        hint: "Экзамен принимают " + data.schedule,
+        onClick: () => schoolAction({ action: "exam" }),
+      })
+    );
+  } else if (data.stage === "passed") {
+    const where = document.createElement("p");
+    where.className = "screen-note";
+    where.textContent =
+      "Экзамен сдан " + data.passed_at + ". Права выдают в полицейском участке.";
+    box.appendChild(where);
+  }
+  if (buttons.children.length) box.appendChild(buttons);
+  return box;
+}
+
+/** Билет: вопрос, картинка, варианты и кнопка подтверждения. */
+function examBox(data) {
+  const one = data.question;
+  const box = document.createElement("section");
+  box.className = "exam";
+
+  const head = document.createElement("div");
+  head.className = "exam-head";
+  const count = document.createElement("span");
+  count.textContent = "Вопрос " + one.number + " из " + one.total;
+  const clock = document.createElement("span");
+  clock.id = "exam-clock";
+  clock.className = "exam-clock";
+  clock.textContent = clockText(data.seconds_left);
+  head.append(count, clock);
+  box.appendChild(head);
+
+  // Ошибка на счету одна: показываем её сразу, а не в конце
+  const mistakes = document.createElement("div");
+  mistakes.className = "exam-wrong" + (data.wrong ? " on" : "");
+  mistakes.textContent = data.wrong
+    ? "Ошибка: " + data.wrong + " из " + (data.mistakes + 1)
+    : "Ошибок нет";
+  box.appendChild(mistakes);
+
+  const text = document.createElement("div");
+  text.className = "question-text";
+  text.textContent = one.text;
+  box.appendChild(text);
+
+  if (one.image) {
+    const pic = document.createElement("img");
+    pic.className = "exam-pic";
+    pic.src = one.image;
+    pic.alt = "";
+    box.appendChild(pic);
+  }
+
+  one.options.forEach((option, at) => {
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "answer" + (examPick === at ? " on" : "");
+    pick.textContent = option;
+    pick.addEventListener("click", () => {
+      examPick = at;
+      renderSchool(schoolData);
+    });
+    box.appendChild(pick);
+  });
+
+  const row = document.createElement("div");
+  row.className = "quiz-buttons";
+  row.appendChild(
+    button("Ответить", {
+      disabled: examPick === null,
+      hint: "Сначала выбери вариант.",
+      onClick: () => schoolAction({ action: "answer", option: examPick }),
+    })
+  );
+  box.appendChild(row);
+  return box;
+}
+
+// «2 дня 4 часа» — для долгого ожидания: в часах трое суток читаются
+// как «71 час», а человек ждёт дни
+function studySpell(seconds) {
+  const whole = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(whole / 86400);
+  const hours = Math.floor((whole % 86400) / 3600);
+  const parts = [];
+  if (days) parts.push(days + " " + plural(days, "день", "дня", "дней"));
+  if (hours) parts.push(hours + " " + plural(hours, "час", "часа", "часов"));
+  return parts.length ? parts.join(" ") : longSpell(whole);
+}
+
+function clockText(seconds) {
+  const left = Math.max(0, seconds);
+  const minutes = Math.floor(left / 60);
+  return minutes + ":" + String(left % 60).padStart(2, "0");
+}
+
+// Часы билета идут на странице, а решает время сервер: истёкшая попытка
+// отказывает в ответе, даже если стрелки на экране ещё не дошли
+function startExamClock(data) {
+  stopExamClock();
+  let left = data.seconds_left;
+  examTimer = setInterval(() => {
+    left -= 1;
+    const clock = el("exam-clock");
+    if (!clock) {
+      stopExamClock();
+      return;
+    }
+    clock.textContent = clockText(left);
+    if (left <= 0) {
+      stopExamClock();
+      loadSchool();
+    }
+  }, 1000);
+}
+
+function stopExamClock() {
+  if (examTimer) clearInterval(examTimer);
+  examTimer = null;
+}
+
+// ---------- участок: выдача прав ----------
+
+let policeBusy = false;
+
+async function loadPolice() {
+  try {
+    const response = await fetch("api/police", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("police-note").textContent = "Участок не открылся.";
+      return;
+    }
+    renderPolice(await response.json());
+  } catch (error) {
+    el("police-note").textContent = error.message;
+  }
+}
+
+async function takeLicence() {
+  if (policeBusy) return;
+  policeBusy = true;
+  try {
+    const response = await fetch("api/licence", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: "{}",
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Участок", data.error || "Не получилось.");
+      await loadPolice();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderPolice(data);
+    popup("🪪 Права получены", data.said);
+  } catch (error) {
+    popup("Участок", "Сервер не ответил.");
+  } finally {
+    policeBusy = false;
+  }
+}
+
+function renderPolice(data) {
+  el("police-note").textContent = data.said || data.note;
+  const body = el("police-body");
+  body.textContent = "";
+
+  if (data.licence && data.licence.title) {
+    body.appendChild(paperCard(data.licence));
+  }
+  if (!data.can_take) return;
+
+  const row = document.createElement("div");
+  row.className = "thing-buttons";
+  row.appendChild(button("Получить права", { onClick: () => takeLicence() }));
+  body.appendChild(row);
+}
+
 // ---------- вид изнутри ----------
 //
 // С карты у дома видно одну дверь, а всё остальное время боец проводит
@@ -8610,7 +8933,7 @@ function stopTradeWatch() {
 // показывать, знает только то место, где боец сейчас стоит.
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
-  "hr", "work", "trade", "house",
+  "hr", "work", "school", "police", "trade", "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -8751,7 +9074,7 @@ el("sheet-back").addEventListener("click", closeSheet);
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
-  "shop", "magic", "workshop", "club",
+  "school", "police", "shop", "magic", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

@@ -302,6 +302,40 @@
     <div id="work-body"></div>
   </main>
 
+  <!-- ---------- 3b6. Автошкола: курс, билет и экзамен ---------- -->
+  <!-- Один экран на весь путь: запись, обратный отсчёт учёбы, билет и
+       то, чем он кончился. Шаг решает сервер (`stage`) — страница только
+       рисует тот, который ей назвали. -->
+  <main id="school" class="screen hidden">
+    <figure class="interior hidden" id="school-interior">
+      <img class="interior-pic" id="school-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="school-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-school"></span>
+    </header>
+    <h1 class="screen-title">🚗 Автошкола</h1>
+    <p class="screen-note" id="school-note"></p>
+
+    <div id="school-body"></div>
+  </main>
+
+  <!-- ---------- 3b7. Полицейский участок: выдача прав ---------- -->
+  <main id="police" class="screen hidden">
+    <figure class="interior hidden" id="police-interior">
+      <img class="interior-pic" id="police-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="police-back">← На карту</button>
+    </header>
+    <h1 class="screen-title">🚓 Полицейский участок</h1>
+    <p class="screen-note" id="police-note"></p>
+
+    <div id="police-body"></div>
+  </main>
+
   <!-- ---------- 3c. Рынок: обмен между бойцами ---------- -->
   <!-- Стол общий, и это главное свойство экрана: страница здесь ничего
        не помнит и ничего не досчитывает. Всё, что видно, — последний

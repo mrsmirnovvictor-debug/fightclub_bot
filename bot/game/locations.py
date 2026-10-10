@@ -46,6 +46,8 @@ class Service(str, Enum):
     PREMIUM = "premium"  # элитный магазин, за звёзды
     FAN = "fan"  # фанатский магазин: экипировка своей команды
     JEWEL = "jewel"  # ювелирный магазин: кольца и ожерелья
+    SCHOOL = "school"  # автошкола: курс ПДД и экзамен на права
+    POLICE = "police"  # полицейский участок: там выдают права
     MARKET = "market"  # комиссионка: торговля между бойцами
     TRADE = "trade"  # рынок: обмен из рук в руки
     INSURANCE = "insurance"  # страховая: полис страхования жизни и здоровья
@@ -70,6 +72,8 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.PREMIUM: "покупать за звёзды",
     Service.FAN: "покупать фанатскую экипировку",
     Service.JEWEL: "выбирать украшения",
+    Service.SCHOOL: "учиться на права",
+    Service.POLICE: "получать документы",
     Service.MARKET: "торговать с бойцами",
     Service.TRADE: "меняться из рук в руки",
     Service.INSURANCE: "страховаться",
@@ -720,6 +724,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.412327, 0.241029), (0.5983, 0.244019),
             (0.5983, 0.308612), (0.41339, 0.305024),
         ),
+        services=(Service.POLICE,),
         soon="дежурная часть и розыск",
         genitive="полицейского участка",
         interior_folder=art.NEW_INTERIORS,
@@ -744,7 +749,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.302869, 0.226077), (0.431456, 0.212919),
             (0.42508, 0.271531), (0.30712, 0.285287),
         ),
-        soon="права и первая машина",
+        services=(Service.SCHOOL,),
         genitive="автошколы",
         interior_folder=art.NEW_INTERIORS,
     ),

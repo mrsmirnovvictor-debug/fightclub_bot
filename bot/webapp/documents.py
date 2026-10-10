@@ -1,8 +1,8 @@
 """Документы бойца: то, что у него на руках, а не на плечах.
 
 Раздел заведён под то, что будет копиться: страховой полис и абонемент в
-зал первыми, за ними пойдут права из автошколы, пропуска и всё прочее,
-что выдают конторы города. Поэтому наружу отдаётся **список**, а не
+зал первыми, за ними карта банка и права из автошколы, а дальше пропуска
+и всё прочее, что выдают конторы города. Поэтому наружу отдаётся **список**, а не
 «полис в карточке» — страница рисует документы одной вёрсткой и не
 знает, сколько их.
 
@@ -182,12 +182,15 @@ def card_document(player: Player, moment: int) -> dict[str, Any]:
 def build_documents(player: Player, now: int | None = None) -> dict[str, Any]:
     """Раздел «Документы» целиком."""
     moment = now_ts() if now is None else now
+    from bot.webapp.driving import licence_document
+
     papers = [
         row
         for row in (
             policy_document(player, moment),
             gym_document(player, moment),
             card_document(player, moment),
+            licence_document(player, moment),
         )
         if row
     ]
@@ -199,7 +202,7 @@ def build_documents(player: Player, now: int | None = None) -> dict[str, Any]:
         "empty_note": (
             "Пока ни одного документа. Полис страхования оформляют в "
             "страховой компании, абонемент — в тренажёрном зале, "
-            "карту — в Vegas Банке."
+            "карту — в Vegas Банке, а права сдают в автошколе."
         ),
     }
 

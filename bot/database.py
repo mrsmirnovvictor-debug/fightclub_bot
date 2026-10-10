@@ -16,6 +16,7 @@ from bot.game.economy import RATING_START
 from bot.game.locations import FIGHT_CLUB
 from bot.game.abilities import Loadout
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
+from bot.game.driving import School
 from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, get_injury
 from bot.game.insurance import Policy
@@ -214,6 +215,20 @@ CREATE TABLE IF NOT EXISTS policies (
     issued      INTEGER NOT NULL,
     until       INTEGER NOT NULL,
     auto_renew  INTEGER NOT NULL DEFAULT 1
+);
+
+-- Автошкола: курс, попытка экзамена и выданные права. Одна строка на
+-- бойца, как у полиса: это документ, а не характеристика, и в players
+-- ему места нет. Попытка живёт здесь же — она короткая, пятнадцать
+-- минут, и держать под неё вторую таблицу незачем
+CREATE TABLE IF NOT EXISTS driving (
+    user_id    INTEGER PRIMARY KEY,
+    course_at  INTEGER NOT NULL DEFAULT 0,
+    exam_until INTEGER NOT NULL DEFAULT 0,
+    step       INTEGER NOT NULL DEFAULT 0,
+    wrong      INTEGER NOT NULL DEFAULT 0,
+    passed_at  INTEGER NOT NULL DEFAULT 0,
+    licence_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS rings (
@@ -829,6 +844,7 @@ class Database:
         player.effects = await self.list_effects(player.user_id)
         player.injury = await self.injury_of(player.user_id)
         player.policy = await self.policy_of(player.user_id)
+        player.school = await self.school_of(player.user_id)
         player.gym_until = await self.gym_pass_of(player.user_id)
         player.loadout = await self.list_abilities(player.user_id)
         return player
@@ -1767,6 +1783,57 @@ class Database:
             until=int(row["until"]),
             auto_renew=bool(row["auto_renew"]),
         )
+
+    # ---------- документы: автошкола и права ----------
+
+    async def school_of(self, user_id: int) -> School:
+        """Что у бойца с автошколой. Пустая запись — он туда не ходил."""
+        async with self.conn.execute(
+            """
+            SELECT course_at, exam_until, step, wrong, passed_at, licence_at
+            FROM driving WHERE user_id = ?
+            """,
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return School()
+        return School(
+            course_at=int(row["course_at"]),
+            exam_until=int(row["exam_until"]),
+            step=int(row["step"]),
+            wrong=int(row["wrong"]),
+            passed_at=int(row["passed_at"]),
+            licence_at=int(row["licence_at"]),
+        )
+
+    async def set_school(self, user_id: int, school: School) -> None:
+        """Записать состояние автошколы: запись, попытку или выданные права."""
+        await self.conn.execute(
+            """
+            INSERT INTO driving (
+                user_id, course_at, exam_until, step, wrong, passed_at, licence_at
+            )
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                course_at  = excluded.course_at,
+                exam_until = excluded.exam_until,
+                step       = excluded.step,
+                wrong      = excluded.wrong,
+                passed_at  = excluded.passed_at,
+                licence_at = excluded.licence_at
+            """,
+            (
+                user_id,
+                school.course_at,
+                school.exam_until,
+                school.step,
+                school.wrong,
+                school.passed_at,
+                school.licence_at,
+            ),
+        )
+        await self.conn.commit()
 
     async def set_policy(self, user_id: int, policy: Policy) -> None:
         """Записать полис. Продление ложится поверх прежнего."""
