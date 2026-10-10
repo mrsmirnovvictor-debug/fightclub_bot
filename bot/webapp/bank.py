@@ -186,6 +186,7 @@ def card_payload(player: Player, moment: int) -> dict[str, Any]:
 PLACE_TITLES: dict[Service, str] = {
     Service.CLOTHES: "Магазин одежды",
     Service.FAN: "Фанатская экипировка",
+    Service.JEWEL: "Ювелирный магазин",
     Service.WEAPONS: "Оружейный магазин",
     Service.POTIONS: "Аптека",
     Service.HEAL: "Больница",

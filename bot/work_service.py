@@ -43,7 +43,8 @@ from bot.game.work import (
     Vacancy,
     get_vacancy,
     hours_of,
-    moscow_day,
+    day_is_over,
+    work_day,
     shift_fits,
     vacancy_at,
     week_is_over,
@@ -237,11 +238,9 @@ async def start_shift(db: Database, player: Player, now: int | None = None) -> i
     if player.on_shift(moment):
         raise WorkError("Смена уже идёт.")
     if not shift_fits(_today_minutes(player, moment)):
-        raise WorkError(
-            f"На сегодня хватит: в сутки работают не больше {DAY_HOURS} часов."
-        )
+        raise WorkError(day_is_over(moment, DAY_HOURS))
 
-    today = moscow_day(moment).isoformat()
+    today = work_day(moment)
     # Часы записываем сразу, а не по окончании смены: уйти со смены
     # нельзя — боец заперт, — и досчитывать по факту нечего
     player.shift_until = moment + SHIFT_SECONDS
@@ -256,8 +255,12 @@ async def start_shift(db: Database, player: Player, now: int | None = None) -> i
 
 
 def _today_minutes(player: Player, now: int) -> int:
-    """Сколько отработано сегодня. Новые сутки — счёт с нуля."""
-    if player.shift_day != moscow_day(now).isoformat():
+    """Сколько отработано в этот рабочий день. Новый день — счёт с нуля.
+
+    Рабочий день меняется в полночь, а в понедельник ещё и в девять утра,
+    когда закрывается неделя: `work_day` держит оба перехода.
+    """
+    if player.shift_day != work_day(now):
         return 0
     return player.shift_minutes
 

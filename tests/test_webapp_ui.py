@@ -157,7 +157,7 @@ def hr_state(job: str = "", taken=(), blocked=()) -> dict:
 def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> dict:
     """Рабочее место, как его отдаёт сервер."""
     from bot.game.health import now_ts
-    from bot.game.work import get_vacancy, moscow_day
+    from bot.game.work import get_vacancy, work_day
     from bot.webapp.work import build_work
 
     moment = now_ts()
@@ -168,7 +168,7 @@ def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> d
         player.job_since = moment - 3 * 24 * 60 * 60
         player.job_week = moment - 2 * 24 * 60 * 60
         player.job_minutes = 6 * 60
-        player.shift_day = moscow_day(moment).isoformat()
+        player.shift_day = work_day(moment)
         player.shift_minutes = today
         if shift:
             player.shift_until = moment + 1_800

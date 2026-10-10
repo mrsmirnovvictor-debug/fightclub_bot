@@ -148,6 +148,7 @@ def test_what_is_not_a_number_is_refused(said):
 def test_the_card_discounts_are_the_ones_the_bank_promised():
     assert discount_of(Service.CLOTHES) == 10
     assert discount_of(Service.FAN) == 10
+    assert discount_of(Service.JEWEL) == 10
     assert discount_of(Service.WEAPONS) == 5
     assert discount_of(Service.POTIONS) == 15
     assert discount_of(Service.HEAL) == 10
@@ -161,6 +162,27 @@ def test_where_the_bank_promised_nothing_there_is_no_discount():
     assert discount_of(Service.MARKET) == 0
     assert discount_of(Service.PREMIUM) == 0
     assert discount_of(None) == 0
+
+
+def test_every_discount_is_named_in_the_price_list_and_promised_on_the_card():
+    """Скидка, о которой не сказано, — скидка, о которой никто не узнает.
+
+    Прайс на вкладке банка собирается из той же таблицы, по которой
+    считается цена, а вот обещания на карточке написаны словами, и
+    разойтись с таблицей им легче лёгкого: завели скидку у ювелира —
+    будьте добры сказать о ней там, где её ищут.
+    """
+    from bot.game.bank import CARD_BENEFITS, DISCOUNTS
+    from bot.webapp.bank import PLACE_TITLES, discounts_payload
+
+    for service in DISCOUNTS:
+        assert service in PLACE_TITLES, service.value
+
+    rows = {row["title"]: row["percent"] for row in discounts_payload()}
+    assert rows["Ювелирный магазин"] == 10
+    assert rows["Магазин одежды"] == 10
+    promised = " ".join(CARD_BENEFITS)
+    assert "украшени" in promised, "про скидку у ювелира на карточке молчат"
 
 
 def test_the_discount_rounds_in_the_fighters_favour():

@@ -25,11 +25,12 @@ from bot.game.work import (
     SHIFT_HOURS,
     VACANCIES,
     Vacancy,
+    day_is_over,
     hours_of,
-    moscow_day,
     payday_after,
     shift_fits,
     vacancy_at,
+    work_day,
 )
 from bot.models import Player
 
@@ -92,9 +93,7 @@ def job_payload(player: Player, moment: int) -> dict[str, Any]:
         return {}
     worked = hours_of(player.job_minutes)
     today = (
-        player.shift_minutes
-        if player.shift_day == moscow_day(moment).isoformat()
-        else 0
+        player.shift_minutes if player.shift_day == work_day(moment) else 0
     )
     body = vacancy_payload(one)
     body.update(
@@ -165,25 +164,25 @@ def build_work(player: Player, now: int | None = None) -> dict[str, Any]:
         # ещё не отработаны
         "can_start": bool(mine) and not shift and not job.get("day_full", False),
         "shift_hours": SHIFT_HOURS,
-        "note": _work_note(player, mine, bool(shift), job, at_work, here),
+        "note": _work_note(mine, bool(shift), job, at_work, here, moment),
         "said": "",
     }
 
 
 def _work_note(
-    player: Player,
     mine: bool,
     on_shift: bool,
     job: dict,
     at_work: Vacancy | None,
     here,
+    moment: int,
 ) -> str:
     """Строка сверху экрана: что тут сейчас можно."""
     if on_shift:
         return "Смена идёт. Из дома не выйти, пока она не кончится."
     if mine:
         if job.get("day_full"):
-            return f"На сегодня хватит: в сутки работают {DAY_HOURS} часа."
+            return day_is_over(moment, DAY_HOURS)
         return "Можно встать на смену — два часа."
     if at_work is not None:
         where = at_work.title

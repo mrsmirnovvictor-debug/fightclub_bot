@@ -460,6 +460,64 @@ def test_a_week_is_over_only_after_its_monday():
     assert week_is_over(start, moment_at(day=12, hour=9)) is True
 
 
+async def test_monday_holds_two_shifts_one_for_each_week(db):
+    """В понедельник работают дважды: ночную смену и дневную.
+
+    В девять утра понедельника закрывается неделя и приходит жалованье.
+    Ночная смена до девяти идёт в зачёт прошлой неделе, дневная после
+    девяти — новой, и запирать бойца на сутки после ночной значило бы
+    отнимать у него первый день недели, за который ему же и платят.
+    """
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=7))
+    # Неделя почти отработана: восемь часов из десяти, и ночная смена её
+    # закроет. Иначе в девять утра бойца уволят за норму, а не за часы
+    player.job_minutes = 8 * 60
+    night = moment_at(day=12, hour=3)  # 12 октября 2026 — понедельник
+
+    await start_shift(db, player, night)
+    assert player.job_minutes == 10 * 60, "ночная смена пошла в прошлую неделю"
+
+    # До девяти второй раз не встать: ночь — всё тот же рабочий день
+    with pytest.raises(WorkError, match="хватит"):
+        await start_shift(db, player, moment_at(day=12, hour=6))
+
+    # А в девять неделя закрылась: часы ушли в жалованье, день начался заново
+    await start_shift(db, player, moment_at(day=12, hour=10))
+    assert player.job_minutes == SHIFT_HOURS * 60, (
+        "часы ночной смены не ушли в прошлую неделю"
+    )
+
+    # И третью смену в тот же понедельник уже не отработать
+    with pytest.raises(WorkError, match="хватит"):
+        await start_shift(db, player, moment_at(day=12, hour=14))
+
+
+def test_the_night_before_payday_says_when_the_shift_opens_again():
+    """В ночь на понедельник отказ говорит про девять утра, а не про завтра."""
+    from bot.game.work import day_is_over
+
+    night = day_is_over(moment_at(day=12, hour=3), DAY_HOURS)
+    assert "хватит" in night and "9:00" in night and "жалованье" in night
+
+    # В остальные дни — обычный отказ, без обещания смены к утру
+    usual = day_is_over(moment_at(day=13, hour=3), DAY_HOURS)
+    assert "хватит" in usual and "9:00" not in usual
+
+
+def test_the_work_day_splits_monday_and_nothing_else():
+    """Рабочий день меняется в полночь, а в понедельник ещё и в девять."""
+    from bot.game.work import work_day
+
+    # Понедельник: ночь и день — разные рабочие дни
+    assert work_day(moment_at(day=12, hour=3)) != work_day(moment_at(day=12, hour=10))
+    # Вторник: что три часа ночи, что три дня — день один
+    assert work_day(moment_at(day=13, hour=3)) == work_day(moment_at(day=13, hour=15))
+    # Полночь день меняет всегда
+    assert work_day(moment_at(day=13, hour=23)) != work_day(moment_at(day=14, hour=1))
+    # В девять утра вторника ничего не происходит: неделя та же
+    assert work_day(moment_at(day=13, hour=8)) == work_day(moment_at(day=13, hour=9))
+
+
 def test_the_norm_pays_in_full_and_overtime_adds_nothing():
     bartender = get_vacancy("bartender")
 
