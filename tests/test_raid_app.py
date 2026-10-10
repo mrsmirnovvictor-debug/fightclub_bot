@@ -301,7 +301,8 @@ async def test_the_boss_card_comes_with_the_section(cellar):
     assert idle["title"] == CELLAR_BOSS.title
     assert idle["level"] > 0 and idle["max_hp"] > 0
     assert idle["weapon"] == "Кувалда Босса"
-    assert len(idle["kit"]) == 9  # девять слотов, включая вторую руку
+    # Тринадцать клеток: девять по одежде с оружием, цепь и три перстня
+    assert len(idle["kit"]) == 13
     assert idle["combat"]["resist"] > 0
 
     await start(client, raids)
@@ -327,14 +328,15 @@ async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
         "gloves", "ring_right", "ring_middle", "ring_left",
         "offhand", "pants", "boots",
     ]
-    # Клетки украшений у NPC пустые: ювелирной лавки в городе ещё нет, и
-    # взять кольцо боссу неоткуда. Всё остальное на нём надето
-    jewels = {"necklace", "ring_right", "ring_middle", "ring_left"}
+    # Пустых клеток у босса нет вовсе: с рейдовыми украшениями на нём и
+    # цепь, и три перстня — перстень у него один на все три клетки
     for row in left + right:
-        if row["slot"] in jewels:
-            assert row["item"] is None, row["slot"]
-        else:
-            assert row["item"], row["slot"]
+        assert row["item"], row["slot"]
+    rings = [row for row in right if row["slot"].startswith("ring_")]
+    assert {row["item"]["title"] for row in rings} == {"Перстень Босса"}
+    assert next(
+        row for row in left if row["slot"] == "necklace"
+    )["item"]["title"] == "Цепь Босса"
     assert all(row["placeholder_image"] for row in left + right)
     assert next(row for row in left if row["slot"] == "weapon")["item"]["title"] == (
         "Кувалда Босса"

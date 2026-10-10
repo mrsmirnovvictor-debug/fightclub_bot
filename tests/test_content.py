@@ -552,17 +552,28 @@ def fan_items():
 
 
 def test_the_fan_shelf_is_a_counter_of_its_own():
-    """Фанатский товар не лежит на витрине клуба и не путается с ней."""
-    from bot.game.equipment import FAN_SHELF, SHOWCASE
+    """Фанатский товар не лежит на витрине клуба и не путается с ней.
 
-    assert len(fan_items()) == 29, "пак приехал не целиком"
+    Одежда с оружием тут десятого уровня и от тысячи кредитов — ступень
+    выше клубной и цена вдвое. Украшения — исключение, и оно нарочное:
+    числа у них ровно те же, что у ювелира на девятой ступени, поэтому и
+    уровень с ценой ювелирные. Платят за вид и за то, что это падает с
+    рейда, а не за силу.
+    """
+    from bot.game.equipment import FAN_SHELF, JEWEL_SLOTS, SHOWCASE
+
+    assert len(fan_items()) == 38, "пак приехал не целиком"
     shelf = {item.code for item in SHOWCASE}
     for item in fan_items():
         assert item.shelf == FAN_SHELF, item.code
         assert item.code not in shelf, f"{item.code} попал на витрину клуба"
+        assert not item.stars and not item.reward, item.code
+        if item.slot in JEWEL_SLOTS:
+            assert item.level_required == 9, item.code
+            assert item.price in (200, 500), f"{item.code}: не ювелирная цена"
+            continue
         assert item.price >= 1000, f"{item.code}: {item.price} — не фанатская цена"
         assert item.level_required == 10, item.code
-        assert not item.stars and not item.reward, item.code
 
 
 def test_the_fan_shelf_has_a_ceiling_of_its_own():
@@ -621,6 +632,8 @@ def test_the_fan_shelf_beats_the_club_sets_it_costs_twice_as_much_as():
         if item.is_weapon or item.is_shield:
             continue  # оружию и щиту клубного соперника в паке нет
         line = next(key for key in primary if item.code.startswith(key))
+        if item.slot not in club[primary[line]]:
+            continue  # украшения — своя лестница, их проверяет тест ниже
         rival = club[primary[line]][item.slot]
         for name in numbers:
             assert getattr(item, name) >= getattr(rival, name), (
@@ -630,6 +643,69 @@ def test_the_fan_shelf_beats_the_club_sets_it_costs_twice_as_much_as():
         assert item.price > rival.price * 2, f"{item.code}: дешевле двух сетовых"
         checked += 1
     assert checked == 24, "фанатская одежда приехала не целиком"
+
+
+def test_the_fan_jewels_are_the_jewellers_ninth_step():
+    """Фанатское украшение — та же девятая ступень, только в своём виде.
+
+    Числа заданы владельцем: «ровно 9-я ступень ювелира». Значит, каждое
+    из восьми повторяет украшение ювелира — кулон свой по классу, кольцо
+    из трёх сильных, — и сверить это можно числом к числу, а не на глаз.
+    Разойдутся — фанатская полка начнёт тихо обгонять ювелира, и приз с
+    рейда перестанет быть равным обмену, каким его задумали.
+    """
+    from bot.game.equipment import JEWEL_ITEMS, JEWEL_SLOTS, Slot
+
+    # Чей кулон и какое из сильных колец повторяет эта линия
+    same = {
+        "fan_boss_necklace": "set_bouncer_necklace",
+        "fan_warrior_necklace": "set_hero_necklace",
+        "fan_assassin_necklace": "set_killer_necklace",
+        "fan_rogue_necklace": "set_cardsharp_necklace",
+        "fan_boss_ring": "ring_guard",
+        "fan_warrior_ring": "ring_balance",
+        "fan_assassin_ring": "ring_luck",
+        "fan_rogue_ring": "ring_luck",
+    }
+    jeweller = {item.code: item for item in JEWEL_ITEMS}
+    numbers = (
+        "strength", "agility", "intuition", "hp", "armor_min", "armor_max",
+        "accuracy", "dodge", "crit", "anticrit", "counter",
+    )
+
+    mine = [item for item in fan_items() if item.slot in JEWEL_SLOTS]
+    assert {item.code for item in mine} == set(same), "украшений на полке не восемь"
+    for item in mine:
+        twin = jeweller[same[item.code]]
+        assert twin.level_required == 9, twin.code
+        for name in numbers:
+            assert getattr(item, name) == getattr(twin, name), (
+                f"{item.title}: «{name}» {getattr(item, name)} против "
+                f"{getattr(twin, name)} у «{twin.title}»"
+            )
+        assert item.price == twin.price, f"{item.code}: цена не ювелирная"
+        # Кольцо лежит в правой клетке и раздаёт себе остальные две,
+        # кулон — в своей: иначе на гопнике оно не наденется втрое
+        assert item.slot in (Slot.NECKLACE, Slot.RING_RIGHT), item.code
+
+
+def test_the_light_shield_is_the_tricksters_own():
+    """Лёгкий щит: уворот и броня вдвое меньше, чем у доски лидера.
+
+    Щит в фанатской линии был один — тяжёлый, танковый, и трикстер
+    дрался с пустой рукой. Этот его: блок всё равно на три зоны, но
+    носить его можно, не теряя уворота, — он сам его и прибавляет.
+    """
+    from bot.game.equipment import CATALOGUE, ItemKind, Slot
+
+    light, heavy = CATALOGUE["fan_rogue_shield"], CATALOGUE["fan_boss_shield"]
+
+    assert light.kind is ItemKind.SHIELD and light.slot is Slot.OFFHAND
+    assert light.for_classes == ("rogue",)
+    assert light.dodge > 0 and light.armor_min > 0
+    assert light.armor_max < heavy.armor_max, "лёгкий щит не легче тяжёлого"
+    assert not heavy.dodge, "у доски лидера уворота не было и нет"
+    assert light.zones and light.price < heavy.price
 
 
 def test_the_fan_shelf_dresses_every_class():
@@ -735,26 +811,29 @@ def test_the_jeweller_keeps_to_the_club_ceilings():
         assert item.bonus.endurance == 0, item.title
 
 
-def test_only_the_necklace_holds_a_blow():
-    """Броня есть на старших кулонах, и она приходит в грудь.
+def test_jewels_hold_a_blow_with_the_whole_body():
+    """Броня украшений прикрывает все зоны сразу, как у щита.
 
-    Кольцо не прикрывает ничего, и броня на нём осталась бы надписью:
-    в бою она складывается по зонам, а у кольца зоны нет. Поэтому числа
-    брони у ювелира живут только на ожерельях — и только там, где ей есть
-    куда прийти.
+    Так решил владелец, и это делает кольцо с бронёй вещью заметной: три
+    клетки складывают её втрое и на каждую зону. Удар она всё равно гасит
+    не больше чем на свою долю (`MAX_ARMOR_SHARE`), поэтому бой от трёх
+    колец не останавливается.
     """
-    from bot.game.classes import Zone
-    from bot.game.equipment import RING_SLOTS, Slot
+    from bot.game.classes import ALL_ZONES
+    from bot.game.equipment import JEWEL_SLOTS, Slot
 
     armoured = [item for item in jewels() if item.armor_max]
-    assert {item.slot for item in armoured} == {Slot.NECKLACE}
-    assert len(armoured) == 4, "броня осталась только на старших кулонах"
+    assert len(armoured) == 5, "броня на старших кулонах и кольце защиты"
+    assert {item.slot for item in armoured} == {Slot.NECKLACE, Slot.RING_RIGHT}
     for item in armoured:
-        assert item.zones == (Zone.CHEST,), item.code
+        assert item.zones == ALL_ZONES, item.code
         assert item.level_required == 9, item.code
-    for item in jewels():
-        if item.slot in RING_SLOTS:
-            assert not item.armor_max and not item.armor_min, item.code
+    # И это правило слота, а не вещи: броня на любом украшении пойдёт
+    # всем зонам, и наоборот — ни одно из них не прикрывает одну зону
+    from bot.game.equipment import SLOT_ZONES
+
+    for slot in JEWEL_SLOTS:
+        assert SLOT_ZONES[slot] == ALL_ZONES, slot.value
 
 
 def test_the_jeweller_dresses_every_class():
@@ -817,3 +896,14 @@ def test_the_jewelled_kit_fills_all_four_cells():
         # Клубное на месте: украшения добавились, а не заменили
         for slot, item in bare.items():
             assert dressed[slot] == item, slot.value
+
+    # Фанатский комплект носит свои украшения и тоже в три кольца: на
+    # одной клетке он считал бы треть прибавки, и каждый расчёт на нём
+    # врал бы в пользу того, кто кольца не надел
+    from bot.game.reference import fan_kit
+
+    for fclass in FIGHTER_CLASSES.values():
+        kit = fan_kit(fclass, 10)
+        rings = {kit[slot].code for slot in RING_SLOTS}
+        assert len(rings) == 1 and rings.pop().startswith("fan_"), fclass.code
+        assert kit[Slot.NECKLACE].code.startswith("fan_"), fclass.code

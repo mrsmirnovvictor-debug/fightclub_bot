@@ -78,7 +78,7 @@ def fan_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
         # даже если в его слоте пусто, — он донашивает клубное
         if mine:
             kit[slot] = max(mine, key=lambda item: item.price)
-    return kit
+    return with_three_rings(kit)
 
 
 def fan_only_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
@@ -109,6 +109,23 @@ def fan_only_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
     }
 
 
+def with_three_rings(kit: dict[Slot, Item]) -> dict[Slot, Item]:
+    """Разложить кольцо по всем трём клеткам.
+
+    Кольцо в лавке одно, а мест под него три, и носить их будут все три:
+    кольца не уникальны, и лучшее своё боец купит трижды, а не станет
+    собирать разные послабее. Комплект, у которого занята одна клетка,
+    считал бы треть прибавки — и каждый расчёт на нём врал бы в пользу
+    того, кто кольца не надел. Так же одеты и NPC: `boss_kit` кладёт их
+    перстень во все три клетки.
+    """
+    ring = kit.get(Slot.RING_RIGHT)
+    if ring is not None:
+        for slot in RING_SLOTS:
+            kit[slot] = ring
+    return kit
+
+
 def jewel_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
     """Клубный гардероб плюс украшения: ожерелье и три одинаковых кольца.
 
@@ -136,9 +153,8 @@ def jewel_kit(fclass: FighterClass, level: int) -> dict[Slot, Item]:
     if necklaces:
         kit[Slot.NECKLACE] = best(necklaces)
     if rings:
-        for slot in RING_SLOTS:
-            kit[slot] = best(rings)
-    return kit
+        kit[Slot.RING_RIGHT] = best(rings)
+    return with_three_rings(kit)
 
 
 def equipment_of(kit: dict[Slot, Item]) -> Equipment:

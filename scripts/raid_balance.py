@@ -42,17 +42,23 @@ from bot.game.raid import (  # noqa: E402
     raid_foes,
 )
 from bot.game.reference import (  # noqa: E402
-    best_kit,
     developed_stats,
     equipment_of,
     fan_kit,
+    jewel_kit,
 )
 from bot.raid_service import RaidService, RaidSession  # noqa: E402
 
 
 def party_of(size: int, level: int, fan: bool) -> dict[int, Fighter]:
-    """Отряд: по кругу классов, чтобы ни один не красил результат один."""
-    shelf = fan_kit if fan else best_kit
+    """Отряд: по кругу классов, чтобы ни один не красил результат один.
+
+    Эталон здесь с украшениями (`jewel_kit`): цепь и три кольца стоят у
+    ювелира дешевле любой одной вещи из комплекта, и к рейду их наденет
+    кто угодно. Мерить рейд отрядом без украшений значило бы мерить
+    отряд, которого в игре не будет, — тем более что банда свои носит.
+    """
+    shelf = fan_kit if fan else jewel_kit
     codes = list(FIGHTER_CLASSES)
     squad: dict[int, Fighter] = {}
     for index in range(size):
@@ -104,7 +110,7 @@ def sweep(kind: RaidKind, runs: int, level: int, fan: bool, seed: int) -> None:
     service = RaidService(
         bot=None, db=None, config=Config(bot_token="x"), rng=random.Random(seed)
     )
-    dressed = "фанатское" if fan else "эталон"
+    dressed = "фанатское" if fan else "эталон с украшениями"
     print(
         f"{kind.title.lower()}: отряд {level}-го уровня в {dressed}, "
         f"{runs} боёв на клетку, кнопки наугад\n"

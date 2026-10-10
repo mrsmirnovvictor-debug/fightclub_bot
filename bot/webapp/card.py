@@ -625,10 +625,15 @@ SHELVES: dict[Service, str] = {
 def sells(service: Service, slot: Slot) -> bool:
     """Торгует ли этот магазин вещами такого слота.
 
-    Украшения продаёт один ювелир, и только их: кольцо не ляжет на
-    прилавок одёжника между штанами и кроссовками, хотя оружием оно и не
-    является, — а штаны не попадут к ювелиру.
+    Украшения продают двое: ювелир — одни их, и «Северный Вал», где
+    фанатская линия лежит целиком, от биты до перстня. У одёжника с
+    оружейником украшений не бывает: кольцо не ляжет между штанами и
+    кроссовками, хотя оружием оно и не является.
     """
+    # Фанатский магазин одевает целиком: там и бита, и кроссовки, и цепь
+    # одной команды. Делить его незачем — прилавок и так свой
+    if service is Service.FAN:
+        return True
     if service is Service.JEWEL:
         return slot in JEWEL_SLOTS
     if slot in JEWEL_SLOTS:
@@ -637,10 +642,6 @@ def sells(service: Service, slot: Slot) -> bool:
         return slot in WEAPON_SLOTS
     if service is Service.CLOTHES:
         return slot not in WEAPON_SLOTS
-    # Фанатский магазин одевает целиком: там и бита, и кроссовки одной
-    # команды. Делить его надвое незачем — прилавок и так свой
-    if service is Service.FAN:
-        return True
     return False
 
 

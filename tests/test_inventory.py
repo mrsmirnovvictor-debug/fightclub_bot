@@ -1083,23 +1083,26 @@ async def test_a_named_cell_still_wins(db):
     assert rings[0].slot is None
 
 
-def test_only_the_jeweller_sells_jewellery(monkeypatch):
+def test_only_the_jeweller_and_the_fan_shop_sell_jewellery(monkeypatch):
     """Кольцо на прилавок одёжника не ложится: его место у ювелира.
 
     Правило «одёжник торгует всем, кроме оружия» подхватило бы кольца
-    молча: они не оружие. Поэтому у ювелира полки свои, а у остальных
-    украшений не бывает — даже если кольцо попадёт на клубную витрину,
-    как здесь, подложенное руками.
+    молча: они не оружие. Поэтому украшения продают двое — ювелир, у
+    которого только они, и «Северный Вал», где фанатская линия лежит
+    целиком, от биты до перстня. У одёжника с оружейником их нет, даже
+    если кольцо попадёт на клубную витрину, как здесь, подложенное
+    руками.
     """
     from bot.game.locations import Service, service_for, where_to
     from bot.webapp.card import sells
     from bot.game.equipment import JEWEL_SLOTS
 
-    for service in (Service.CLOTHES, Service.WEAPONS, Service.FAN):
+    for service in (Service.CLOTHES, Service.WEAPONS):
         for slot in JEWEL_SLOTS:
             assert not sells(service, slot), f"{service.value}: {slot.value}"
     for slot in Slot:
         assert sells(Service.JEWEL, slot) is (slot in JEWEL_SLOTS), slot.value
+        assert sells(Service.FAN, slot), f"Вал не торгует {slot.value}"
 
     # И то же самое на живой витрине, с настоящей вещью на полке
     import bot.content.items as content
@@ -1112,10 +1115,12 @@ def test_only_the_jeweller_sells_jewellery(monkeypatch):
         shown = [row["code"] for one in shop["sections"] for row in one["items"]]
         assert jewel.code not in shown, service.value
 
-    # А настоящее кольцо спрашивают у ювелира: и купить, и сдать его можно
-    # только там, и дом этот в городе один
+    # А настоящее кольцо спрашивают по его прилавку: ювелирное — у
+    # ювелира, фанатское — на Валу, и дом у каждого свой
     assert service_for("ring_luck") == Service.JEWEL
     assert service_for("set_hero_necklace") == Service.JEWEL
+    assert service_for("fan_rogue_ring") == Service.FAN
+    assert service_for("fan_boss_necklace") == Service.FAN
     assert where_to(Service.JEWEL).code == "jewelry_store"
 
 

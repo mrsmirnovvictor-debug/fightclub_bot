@@ -38,6 +38,7 @@ from bot.game.equipment import (
     Equipment,
     FAN_SHELF,
     OwnedItem,
+    RING_SLOTS,
     Slot,
     get_item,
     shelf_of,
@@ -650,6 +651,8 @@ BOSSES: tuple[Boss, ...] = (
             "boss_jacket",
             "boss_pants",
             "boss_boots",
+            "boss_ring",
+            "boss_necklace",
         ),
         genitive="Босса Казино",
         tagline="Он тут всё построил и всех похоронил.",
@@ -792,9 +795,11 @@ def _hooligan(code: str, nick: str, kind: str) -> Boss:
     запоминается с первого боя.
     """
     look = {
-        # Трикстер выходит с зонтом и пустой второй рукой: щит он в руки
-        # не возьмёт, а второго зонта у него нет
-        "rogue": ("🤸", "fan_rogue", "fan_rogue_umbrella", "", ROGUE_TEMPER,
+        # Трикстер выходит с зонтом и лёгким щитом: доску лидера он не
+        # поднимет, а щиток под руку — его вес. Блок от щитка всё равно
+        # на три зоны, и пустая рука у трикстера кончилась
+        "rogue": ("🤸", "fan_rogue", "fan_rogue_umbrella", ROGUE_SHIELD,
+                  ROGUE_TEMPER,
                   "Метит по ногам и сам закрывается низко."),
         # Воину щит положен — тот же, что и лидеру: в фанатской линии он
         # один на двоих
@@ -822,9 +827,11 @@ def _hooligan(code: str, nick: str, kind: str) -> Boss:
     )
 
 
-# Щит в фанатской линии один, и носят его только двое: лидер и воины.
-# Трикстеру с ассасином щита не положено — у одного зонт, у другого ножи
+# Тяжёлый щит в фанатской линии один, и носят его двое: лидер и воины.
+# У трикстера свой, лёгкий; без щита остаётся один ассасин — у него в
+# каждой руке нож, и вторая рука занята
 FAN_SHIELD = "fan_boss_shield"
+ROGUE_SHIELD = "fan_rogue_shield"
 
 GANG_LEADER = Boss(
     code="gang_major",
@@ -1118,6 +1125,13 @@ def boss_kit(boss: Boss, level: int = BOSS_GEAR_LEVEL) -> Equipment:
     weapon = get_item(boss.weapon)
     if weapon is not None:
         kit[Slot.WEAPON] = weapon
+    # Колец у NPC три, а перстень в линии один: раскладываем его по всем
+    # клеткам. Живой игрок носит так же — лучшее своё кольцо он купит
+    # трижды, а не станет собирать разные послабее
+    ring = kit.get(Slot.RING_RIGHT)
+    if ring is not None:
+        for slot in RING_SLOTS:
+            kit[slot] = ring
     return Equipment(
         items={slot: OwnedItem(item=item, slot=slot) for slot, item in kit.items()}
     )

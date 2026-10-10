@@ -344,6 +344,31 @@ def test_the_whole_gang_wears_the_fan_shop_and_nothing_else():
         )
 
 
+def test_the_whole_gang_wears_a_chain_and_three_rings():
+    """Украшения на банде есть у каждого: цепь и три перстня своей линии.
+
+    Кольцо в линии одно, а клеток под него три, и надеть его нужно во
+    все: иначе половина прибавки, за которой украшения и завели, просто
+    не доедет до боя. Чужой линии при этом на гопнике не бывает — на нём
+    форма сектора, как и вся остальная одежда.
+    """
+    from bot.game.equipment import RING_SLOTS, Slot
+    from bot.game.raid import GANG, boss_kit
+
+    for one in GANG:
+        kit = boss_kit(one).items
+        chain = kit.get(Slot.NECKLACE)
+        assert chain is not None, f"{one.title} без цепи"
+        rings = {kit[slot].item.code for slot in RING_SLOTS if slot in kit}
+        assert len(rings) == 1, f"{one.title}: колец {len(rings)} вида"
+        ring = rings.pop()
+        assert len([slot for slot in RING_SLOTS if slot in kit]) == 3, one.title
+        # Линия у украшений своя, как у остальной формы
+        line = one.class_code if one.class_code != "tank" else "boss"
+        assert ring == f"fan_{line}_ring", f"{one.title}: {ring}"
+        assert chain.item.code == f"fan_{line}_necklace", one.title
+
+
 def test_the_gang_fights_bare_handed():
     """Перчаток в фанатской линии нет — и слот у гопника пуст."""
     from bot.game.equipment import Slot
@@ -354,12 +379,12 @@ def test_the_gang_fights_bare_handed():
 
 
 def test_the_second_hand_is_named_and_not_picked_off_the_counter():
-    """Щит — воину и танку, ножи — ассасину, трикстеру — ничего.
+    """Тяжёлый щит — воину и танку, лёгкий — трикстеру, ножи — ассасину.
 
     Вторую руку прилавок наполнял сам, самым дорогим, что в слот лезет,
-    и трикстеру доставался клубный щиток: вещь, которой в его линии нет,
-    а в руках у него зонт. Теперь вторая рука написана у гопника, и
-    написанному прилавок не перечит.
+    и трикстеру доставался клубный щиток: вещь, которой в его линии нет.
+    Теперь вторая рука написана у гопника, и написанному прилавок не
+    перечит. Своего щита трикстер дождался — лёгкого, из своей линии.
     """
     from bot.game.equipment import Slot
     from bot.game.raid import GANG, boss_kit
@@ -373,8 +398,8 @@ def test_the_second_hand_is_named_and_not_picked_off_the_counter():
     assert second["warrior"] == {"fan_boss_shield"}
     # Два складных ножа: тот же нож, что и в первой руке
     assert second["assassin"] == {"fan_assassin_knife"}
-    # У трикстера зонт, и вторая рука пуста
-    assert second["rogue"] == {None}
+    # У трикстера зонт в одной руке и лёгкий щит в другой
+    assert second["rogue"] == {"fan_rogue_shield"}
 
 
 def test_no_npc_picks_a_second_hand_off_the_counter():
@@ -413,11 +438,12 @@ def test_two_knives_are_two_strikes_a_turn():
     for other in ("tank", "warrior", "rogue"):
         assert by_class[other].attacks_per_round == 1
 
-    # Щит у тех, кому он положен, и блок у них шире
+    # Щит у трёх из четырёх, и блок у них шире, чем у ассасина с ножами
     assert by_class["tank"].has_shield and by_class["warrior"].has_shield
+    assert by_class["rogue"].has_shield, "лёгкий щит трикстера не надет"
     assert not by_class["assassin"].has_shield
-    assert not by_class["rogue"].has_shield
-    assert by_class["tank"].block_width > by_class["rogue"].block_width
+    assert by_class["tank"].block_width > by_class["assassin"].block_width
+    assert by_class["rogue"].block_width == by_class["tank"].block_width
 
 
 def test_an_npc_never_wears_what_his_class_cannot():

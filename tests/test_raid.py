@@ -149,15 +149,17 @@ def test_the_boss_stands_four_levels_above_the_party():
 
 def test_the_boss_comes_dressed_and_shielded():
     """Все слоты заняты, в руке оружие этого босса, во второй — щит."""
-    from bot.game.equipment import ALL_SLOTS, JEWEL_SLOTS, get_item
+    from bot.game.equipment import ALL_SLOTS, RING_SLOTS, Slot, get_item
 
     enemy = boss_fighter(CELLAR_BOSS, [6, 6], hp_share=0)
 
     kit = {slot.value: owned.code for slot, owned in enemy.equipment.items.items()}
 
-    # Пустых слотов нет — кроме украшений: ни ожерелья, ни колец у NPC
-    # пока не бывает, ювелирной лавки в городе ещё нет
-    assert len(kit) == len(ALL_SLOTS) - len(JEWEL_SLOTS)
+    # Пустых слотов нет вовсе: с украшениями рейда босс носит и цепь, и
+    # три перстня — кольцо у него одно, и лежит оно во всех трёх клетках
+    assert len(kit) == len(ALL_SLOTS)
+    assert kit[Slot.NECKLACE.value] == "boss_necklace"
+    assert {kit[slot.value] for slot in RING_SLOTS} == {"boss_ring"}
     assert kit["weapon"] == CELLAR_BOSS.weapon
     # щит: блок в три зоны и броня по всему телу
     shield = get_item(kit["offhand"])
@@ -1059,7 +1061,8 @@ def test_the_whole_boss_kit_is_his_own():
 
     kit = boss_kit(CELLAR_BOSS)
 
-    assert len(kit.items) == 9, "у босса не все слоты заняты"
+    # Тринадцать клеток: девять по одежде с оружием, цепь и три перстня
+    assert len(kit.items) == 13, "у босса не все слоты заняты"
     for slot, owned in kit.items.items():
         item = owned.item
         assert item.code.startswith("boss_"), f"{slot.value} не его: {item.code}"
@@ -1081,10 +1084,9 @@ def test_the_boss_wears_nothing_from_the_counter():
     own = set(CELLAR_BOSS.gear) | {CELLAR_BOSS.weapon}
     for slot, owned in kit.items.items():
         assert owned.item.code in own, f"{slot.value}: вещь с прилавка"
-    # Украшения у босса пусты: ювелирной лавки в городе ещё нет
-    from bot.game.equipment import JEWEL_SLOTS
-
-    assert set(kit.items) == set(Slot) - set(JEWEL_SLOTS)
+    # Теперь занято всё, включая украшения: перстень с цепью у него тоже
+    # свои, и на прилавке их не бывает
+    assert set(kit.items) == set(Slot)
 
 
 def test_the_boss_set_matches_what_a_tank_buys_at_the_eighth_level():

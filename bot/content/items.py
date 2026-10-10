@@ -561,21 +561,19 @@ SET_PIECES: tuple[Item, ...] = (
 # Ожерелье идёт линиями наборов — по вещи на ступень на каждый класс, от
 # третьего уровня до девятого, цена от 70 до 500 кредитов. Проценты на
 # нём крупные, как у сетов, и держит их та же полоса `gear_share_cap`:
-# 20% на третьем уровне, 80% на девятом. Броня есть только на старших
-# кулонах — ожерелье носят на груди, грудь оно и прикрывает.
+# 20% на третьем уровне, 80% на девятом. Броня есть на старших кулонах —
+# и прикрывает она, как у щита, все зоны сразу.
 #
-# Кольца тоже идут линиями, но мельче: одна доля на вещь и никакой
-# брони — кольцо не прикрывает ничего. Зато носить их можно сразу три, и
-# в этом вся их цена: 20 кредитов за простое кольцо первого уровня,
-# 200 — за кольцо девятого. Четыре простых кольца открывают игру (сила,
-# ловкость, интуиция, жизни), три сильных её закрывают.
+# Кольца тоже идут линиями, но мельче: одна доля на вещь. Зато носить их
+# можно сразу три, и в этом вся их цена: 20 кредитов за простое кольцо
+# первого уровня, 200 — за кольцо девятого. Четыре простых кольца
+# открывают игру (сила, ловкость, интуиция, жизни), три сильных её
+# закрывают. У «кольца защиты» есть и броня — тоже на все зоны, и в три
+# клетки она складывается втрое. Так решил владелец; удар броня всё
+# равно гасит не больше чем на `MAX_ARMOR_SHARE`, и бесконечным бой от
+# трёх колец не становится.
 #
-# Одно число пака здесь изменено: «кольцу защиты» девятого уровня была
-# написана броня 5–10. Броня в клубе приходит в зону, которую вещь
-# прикрывает, а кольцо не прикрывает ни одной — такое число не сложилось
-# бы ни с чем и осталось бы надписью на карточке. Поэтому у кольца
-# осталось то, что оно и правда даёт: запас здоровья. Остальные числа —
-# как присланы.
+# Числа у всех украшений — как присланы.
 JEWEL_SHELF = "jewel"
 
 
@@ -749,7 +747,7 @@ JEWEL_PIECES: tuple[Item, ...] = (
     _plain_ring(
         'ring_guard', 'advanced', 'health', 'Кольцо защиты',
         9, 200, Stats(strength=20, endurance=20), (WARRIOR, TANK),
-        hp=25,
+        hp=25, armor_min=5, armor_max=10,
     ),
     _plain_ring(
         'ring_luck', 'advanced', 'agility', 'Кольцо удачи',
@@ -1956,6 +1954,37 @@ ITEMS: tuple[Item, ...] = tuple(
         reward=True,
         for_classes=(TANK,),
     ),
+    # Украшения Босса Казино: перстень и цепь. Числа — шестая ступень
+    # ювелирной лестницы, как просил владелец: на кольце доля и запас
+    # здоровья, на цепи то же плюс сила. Брони на них нет — у ювелира её
+    # на этой ступени тоже нет, а броня украшений идёт на все зоны сразу
+    # и на шестой ступени перевесила бы весь его доспех.
+    #
+    # Колец у босса три, и перстень у него один: `boss_kit` кладёт его во
+    # все три клетки — так одеты все NPC клуба.
+    Item(
+        "boss_ring",
+        "Перстень Босса",
+        Slot.RING_RIGHT,
+        hp=20,
+        anticrit=0.15,
+        level_required=10,
+        requires=Stats(endurance=15),
+        reward=True,
+        for_classes=(TANK,),
+    ),
+    Item(
+        "boss_necklace",
+        "Цепь Босса",
+        Slot.NECKLACE,
+        strength=2,
+        hp=25,
+        anticrit=0.2,
+        level_required=10,
+        requires=Stats(endurance=15),
+        reward=True,
+        for_classes=(TANK,),
+    ),
     Item(
         "hidden_blade",
         "Клинок ассасина",
@@ -2377,6 +2406,46 @@ ITEMS: tuple[Item, ...] = tuple(
         for_classes=(TANK,),
         shelf=FAN_SHELF,
     ),
+# ---------- украшения фанатского прилавка ----------
+#
+# Девятая ступень ювелирной лестницы в фанатском виде: числа у них те
+# же, что у украшений ювелира девятого уровня, — так решил владелец. И
+# цена поэтому ювелирная, а не валовская: кольцо 200, кулон 500. Платят
+# тут не за силу, а за вид — и ещё за то, что это падает с рейда: полка
+# «Северного Вала» и есть добыча со стычки.
+#
+# Броня на кулонах прикрывает все зоны, как щит, а кольцо носится в три
+# клетки — поэтому на гопнике кольцо складывается втрое. Это и есть
+# главная прибавка банде за этот заход.
+    Item(
+        "fan_boss_ring",
+        "Тяжёлая печатка",
+        Slot.RING_RIGHT,
+        hp=25,
+        armor_min=5,
+        armor_max=10,
+        level_required=9,
+        requires=Stats(strength=20, endurance=20),
+        price=200,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_boss_necklace",
+        "Толстая цепь",
+        Slot.NECKLACE,
+        strength=4,
+        hp=30,
+        armor_min=11,
+        armor_max=13,
+        accuracy=0.25,
+        anticrit=0.4,
+        level_required=9,
+        requires=Stats(endurance=25),
+        price=500,
+        for_classes=(TANK,),
+        shelf=FAN_SHELF,
+    ),
     Item(
         "fan_warrior_bat",
         "Бейсбольная бита",
@@ -2518,6 +2587,40 @@ ITEMS: tuple[Item, ...] = tuple(
         shelf=FAN_SHELF,
     ),
     Item(
+        "fan_warrior_ring",
+        "Печатка с гербом",
+        Slot.RING_RIGHT,
+        strength=2,
+        agility=2,
+        intuition=2,
+        hp=25,
+        level_required=9,
+        requires=Stats(strength=20, endurance=20),
+        price=200,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_warrior_necklace",
+        "Цепь с гербом",
+        Slot.NECKLACE,
+        strength=2,
+        agility=1,
+        intuition=1,
+        hp=25,
+        armor_min=10,
+        armor_max=12,
+        accuracy=0.2,
+        dodge=0.2,
+        crit=0.2,
+        anticrit=0.2,
+        level_required=9,
+        requires=Stats(strength=25, endurance=20),
+        price=500,
+        for_classes=(WARRIOR,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
         "fan_assassin_knife",
         "Складной нож",
         Slot.WEAPON,
@@ -2644,6 +2747,34 @@ ITEMS: tuple[Item, ...] = tuple(
         for_classes=(ASSASSIN, ROGUE),
         shelf=FAN_SHELF,
     ),
+    Item(
+        "fan_assassin_ring",
+        "Чёрное кольцо",
+        Slot.RING_RIGHT,
+        dodge=0.3,
+        crit=0.3,
+        level_required=9,
+        requires=Stats(agility=20, intuition=20),
+        price=200,
+        for_classes=(ASSASSIN,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_assassin_necklace",
+        "Шнурок с клыком",
+        Slot.NECKLACE,
+        intuition=4,
+        hp=10,
+        armor_min=9,
+        armor_max=11,
+        crit=0.4,
+        anticrit=0.25,
+        level_required=9,
+        requires=Stats(intuition=25),
+        price=500,
+        for_classes=(ASSASSIN,),
+        shelf=FAN_SHELF,
+    ),
     # Линия трикстера: та же лёгкая мода, но собранная под уворот. У
     # ассасина в этом магазине крит, у трикстера — уворот на каждой вещи:
     # оба носят лёгкое, а держат удар по-разному.
@@ -2768,6 +2899,54 @@ ITEMS: tuple[Item, ...] = tuple(
         level_required=10,
         requires=Stats(endurance=18),
         price=1100,
+        for_classes=(ROGUE,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_rogue_ring",
+        "Узкое кольцо",
+        Slot.RING_RIGHT,
+        dodge=0.3,
+        crit=0.3,
+        level_required=9,
+        requires=Stats(agility=20, intuition=20),
+        price=200,
+        for_classes=(ROGUE,),
+        shelf=FAN_SHELF,
+    ),
+    Item(
+        "fan_rogue_necklace",
+        "Цепочка с подвеской",
+        Slot.NECKLACE,
+        agility=4,
+        hp=10,
+        armor_min=9,
+        armor_max=11,
+        accuracy=0.25,
+        dodge=0.4,
+        level_required=9,
+        requires=Stats(agility=25),
+        price=500,
+        for_classes=(ROGUE,),
+        shelf=FAN_SHELF,
+    ),
+    # Лёгкий щит трикстера: не доска лидера, а щиток под руку. Брони
+    # вдвое меньше, зато он не мешает уворачиваться и сам в уворот
+    # добавляет. Блок от него всё равно на три зоны — щит он и есть щит,
+    # и этим ценен на гопнике, который иначе дрался с пустой рукой
+    Item(
+        "fan_rogue_shield",
+        "Лёгкий щит",
+        Slot.OFFHAND,
+        "🛡",
+        kind=ItemKind.SHIELD,
+        hp=10,
+        armor_min=8,
+        armor_max=11,
+        dodge=0.3,
+        level_required=10,
+        requires=Stats(agility=24),
+        price=1300,
         for_classes=(ROGUE,),
         shelf=FAN_SHELF,
     ),
