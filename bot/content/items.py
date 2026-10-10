@@ -548,6 +548,135 @@ SET_PIECES: tuple[Item, ...] = (
     ),
 )
 
+
+# ---------- щиты наборов: двенадцать, по одному на набор ----------
+#
+# Пак доехал до второй руки: двенадцать щитов, по одному на набор трёх
+# линий. Ассасинских в нём нет — их не рисовали вовсе, и это честно:
+# ассасин бьёт первым и насмерть, щит ему не по роли.
+#
+# Трём остальным щит достался по весу линии: танку тяжёлый, воину
+# средний, трикстеру лёгкий — так их и прислали. Броня с запасом
+# здоровья у танка самые толстые, а доля — антикрит, потому что крит по
+# кругу гасит он; у трикстера брони меньше, зато щит прибавляет уворот,
+# который обычно щитом теряют; воину, как везде в паке, по чуть-чуть от
+# каждой пары.
+#
+# Вторая ступень вышла нарочно лёгкой, и вот почему. `for_classes` —
+# подсказка витрины, а не замок: щит наденет кто угодно, и эталонный
+# ассасин в слоте без своей вещи берёт чужую. Тяжёлый щит на второй
+# ступени доставался и ему — а брони у ассасина нет вовсе, и прибавка
+# ему шла впрок больше, чем танку: клетка «танк бьёт ассасина»
+# проваливалась с 56% до 51%. С лёгким щитом круг стоит, как стоял.
+#
+# Лестница у щитов та же, что у наборов: вторая ступень, пятая, седьмая
+# и девятая. А вот цена идёт не по набору, а по слоту: в этой руке уже
+# стоят крышка от бочки, щиток, дорожный знак и штурмовой щит за
+# 70–220 кредитов, и лестница цен считается внутри слота. Поэтому щит
+# седьмой ступени стоит 220, а не 300, как остальная седьмая ступень:
+# дороже штурмового щита восьмого уровня ему быть нельзя.
+#
+# Старые щиты с прилавка не ушли. Одежду пак снял, потому что закрыл все
+# слоты всем классам, — а здесь у ассасина своей вещи так и нет, и
+# крышка от бочки со щитком остаются тем, что ему предлагает витрина.
+
+
+def _shield(
+    kit: str,
+    title: str,
+    fclass: str,
+    level: int,
+    price: int,
+    requires: Stats,
+    **gives: int | float,
+) -> Item:
+    """Щит из набора: та же папка, что у одежды, и файл `shield.png`.
+
+    Код считается от набора, как у одежды, но по слову `shield`, а не по
+    имени слота: слот зовётся второй рукой, а в бакете лежит щит.
+    """
+    return Item(
+        f"set_{kit}_shield",
+        title,
+        Slot.OFFHAND,
+        "🛡",
+        kind=ItemKind.SHIELD,
+        image=art.set_piece(SET_LINES[fclass], kit, "shield"),
+        level_required=level,
+        requires=requires,
+        price=price,
+        for_classes=(fclass,),
+        **gives,
+    )
+
+
+SET_SHIELDS: tuple[Item, ...] = (
+    # ---------- 2 ступень ----------
+    _shield(
+        'avenger', 'Щит мстителя',
+        TANK, 2, 60, Stats(endurance=6),
+        strength=1, hp=10, armor_min=3, armor_max=4, anticrit=0.05,
+    ),
+    _shield(
+        'sport', 'Спортивный щит',
+        WARRIOR, 2, 60, Stats(strength=6),
+        strength=1, hp=10, armor_min=3, armor_max=4,
+    ),
+    _shield(
+        'plut', 'Щит плута',
+        ROGUE, 2, 60, Stats(agility=6),
+        agility=1, hp=5, armor_min=2, armor_max=3, dodge=0.05,
+    ),
+    # ---------- 5 ступень ----------
+    _shield(
+        'boxer', 'Боксёрский щит',
+        TANK, 5, 100, Stats(endurance=15),
+        strength=1, hp=25, armor_min=6, armor_max=8, anticrit=0.2,
+    ),
+    _shield(
+        'biker', 'Байкерский щит',
+        WARRIOR, 5, 100, Stats(strength=15),
+        strength=1, hp=20, armor_min=6, armor_max=8, dodge=0.05, crit=0.05, anticrit=0.05,
+    ),
+    _shield(
+        'croupier', 'Щит крупье',
+        ROGUE, 5, 100, Stats(agility=15),
+        agility=1, hp=10, armor_min=5, armor_max=7, dodge=0.2,
+    ),
+    # ---------- 7 ступень ----------
+    _shield(
+        'army', 'Армейский щит',
+        TANK, 7, 220, Stats(endurance=20),
+        strength=2, hp=40, armor_min=9, armor_max=12, anticrit=0.3,
+    ),
+    _shield(
+        'fighter', 'Укреплённый щит бойца',
+        WARRIOR, 7, 220, Stats(strength=20),
+        strength=2, hp=35, armor_min=9, armor_max=12, dodge=0.1, crit=0.1, anticrit=0.1,
+    ),
+    _shield(
+        'lovkach', 'Лёгкий щит ловкача',
+        ROGUE, 7, 220, Stats(agility=20),
+        agility=2, hp=20, armor_min=8, armor_max=10, dodge=0.3,
+    ),
+    # ---------- 9 ступень ----------
+    _shield(
+        'bouncer', 'Усиленный щит вышибалы',
+        TANK, 9, 500, Stats(endurance=25),
+        strength=4, hp=70, armor_min=13, armor_max=16, anticrit=0.5,
+    ),
+    _shield(
+        'hero', 'Щит героя',
+        WARRIOR, 9, 500, Stats(strength=25, endurance=20),
+        strength=2, agility=1, intuition=1, hp=55, armor_min=12, armor_max=15, accuracy=0.15, dodge=0.15, crit=0.15, anticrit=0.15,
+    ),
+    _shield(
+        'cardsharp', 'Щит шулера',
+        ROGUE, 9, 500, Stats(agility=25),
+        agility=4, hp=30, armor_min=11, armor_max=14, dodge=0.45, counter=0.25,
+    ),
+)
+
 # ---------- прилавок ювелира: кольца и ожерелья ----------
 #
 # Украшения продаются только здесь: ни в клубной лавке, ни у одёжника их
@@ -2294,10 +2423,17 @@ ITEMS: tuple[Item, ...] = tuple(
         Slot.OFFHAND,
         "🛡",
         kind=ItemKind.SHIELD,
-        hp=24,
-        armor_min=12,
-        armor_max=16,
-        anticrit=0.09,
+        # Числа подняты вместе с приездом сетовых щитов: до них в этой
+        # руке лежал штурмовой щит за 220 кредитов, и 24 жизней с
+        # девятью процентами антикрита хватало, чтобы приз с рейда был
+        # приза достоин. Сетовый щит вышибалы за 500 обходил его
+        # вчетверо — а фанатская вещь за 1400 слабее клубной за 500 ломает
+        # весь смысл «Северного Вала»
+        strength=5,
+        hp=80,
+        armor_min=14,
+        armor_max=18,
+        anticrit=0.6,
         level_required=10,
         requires=Stats(strength=15, endurance=24),
         price=1400,
@@ -3022,10 +3158,14 @@ ITEMS: tuple[Item, ...] = tuple(
         Slot.OFFHAND,
         "🛡",
         kind=ItemKind.SHIELD,
-        hp=10,
-        armor_min=8,
-        armor_max=11,
-        dodge=0.3,
+        # Подняты по той же причине, что и у доски лидера: щит шулера из
+        # клубного сета обходил этот по всем числам, а стоил вдвое меньше
+        agility=5,
+        hp=35,
+        armor_min=12,
+        armor_max=15,
+        dodge=0.55,
+        counter=0.3,
         level_required=10,
         requires=Stats(agility=24),
         price=1300,
@@ -3052,6 +3192,7 @@ ITEMS: tuple[Item, ...] = tuple(
         stars=250,
     ),
     *SET_PIECES,
+    *SET_SHIELDS,
     *JEWEL_PIECES,
     )
 )

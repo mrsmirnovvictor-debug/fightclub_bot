@@ -488,6 +488,93 @@ def test_the_sets_took_over_the_whole_wardrobe():
         assert item.code.startswith("set_"), item.code
 
 
+def test_the_pack_reached_the_second_hand_with_twelve_shields():
+    """Двенадцать щитов: по одному на набор трёх линий, по четыре на класс.
+
+    Ассасинских в паке нет, и это не пропуск: ассасин бьёт первым и
+    насмерть, щит ему не по роли. Надеть он его всё равно может —
+    `for_classes` подсказывает витрине, кому вещь в первую очередь, а не
+    запирает её, — поэтому старые щиты лавки с прилавка не ушли: своей
+    вещи в этой руке у ассасина так и нет, и витрина предлагает ему
+    крышку от бочки со щитком.
+    """
+    from bot.content.items import SET_SHIELDS
+    from bot.game.art import set_piece
+    from bot.game.equipment import ItemKind
+
+    # Чей это щит и в какой папке бакета лежит его картинка
+    lines = {
+        "tank": ("avenger", "boxer", "army", "bouncer"),
+        "warrior": ("sport", "biker", "fighter", "hero"),
+        "trickster": ("plut", "croupier", "lovkach", "cardsharp"),
+    }
+    classes = {"tank": "tank", "warrior": "warrior", "trickster": "rogue"}
+
+    assert len(SET_SHIELDS) == 12
+    by_kit = {item.code.split("_")[1]: item for item in SET_SHIELDS}
+    assert set(by_kit) == {kit for kits in lines.values() for kit in kits}
+
+    for line, kits in lines.items():
+        for kit in kits:
+            item = by_kit[kit]
+            assert item.code == f"set_{kit}_shield"
+            assert item.slot is Slot.OFFHAND and item.kind is ItemKind.SHIELD
+            assert item.for_classes == (classes[line],), item.code
+            assert item.picture == set_piece(line, kit, "shield"), item.code
+            # Щит стоит на клубном прилавке и за кредиты
+            assert not item.shelf and not item.retired and item.price > 0
+
+    # Ступени те же, что у наборов, и на каждой — все три класса
+    tiers: dict[int, set[str]] = {}
+    for item in SET_SHIELDS:
+        tiers.setdefault(item.level_required, set()).update(item.for_classes)
+    assert sorted(tiers) == [2, 5, 7, 9]
+    for level, covered in tiers.items():
+        assert covered == {"tank", "warrior", "rogue"}, level
+    assert "assassin" not in {code for item in SET_SHIELDS for code in item.for_classes}
+
+    # Старые щиты остались на витрине: ассасину витрина предлагает только их
+    shelf = {item.code for item in SHOWCASE}
+    assert {"bar_lid", "buckler", "road_sign", "riot_shield"} <= shelf
+
+
+def test_the_shields_weigh_what_their_class_weighs():
+    """Танку тяжёлый, воину средний, трикстеру лёгкий — так их и прислали.
+
+    Вес считается бронёй и запасом здоровья: на каждой ступени у танка
+    их больше, чем у воина, а у воина — чем у трикстера. Доля у каждого
+    своя: танку антикрит (крит по кругу гасит он), трикстеру уворот,
+    который щитом обычно теряют, воину — по чуть-чуть от каждой пары.
+
+    Точности на танковом щите нет, как и на остальных танковых вещах: ею
+    сбивается уворот, то есть это ответ трикстеру, а трикстер по кругу
+    танка и бьёт.
+    """
+    from bot.content.items import SET_SHIELDS
+
+    mine = {
+        level: {
+            item.for_classes[0]: item
+            for item in SET_SHIELDS
+            if item.level_required == level
+        }
+        for level in (2, 5, 7, 9)
+    }
+    for level, kit in mine.items():
+        tank, warrior, rogue = kit["tank"], kit["warrior"], kit["rogue"]
+        for heavy, light in ((tank, warrior), (warrior, rogue)):
+            assert heavy.armor_max >= light.armor_max, level
+            assert heavy.hp >= light.hp, level
+        assert tank.armor_max > rogue.armor_max and tank.hp > rogue.hp, level
+
+        assert tank.anticrit and not tank.accuracy and not tank.dodge, level
+        assert rogue.dodge and not rogue.anticrit, level
+        # Воину — по чуть-чуть от каждой пары, начиная с пятой ступени:
+        # на второй у всего пака доля всего одна, пять процентов
+        if level > 2:
+            assert warrior.dodge and warrior.crit and warrior.anticrit, level
+
+
 def test_the_old_wardrobe_left_the_counter_but_not_the_catalogue():
     """Снятая вещь уходит с витрины и остаётся всюду, где она уже есть.
 
@@ -611,6 +698,12 @@ def test_the_fan_shelf_beats_the_club_sets_it_costs_twice_as_much_as():
     Это и есть смысл «Северного Вала»: приз с рейда и цель, ради которой
     копят. Сравниваем по слоту с тем, что боец этого класса надел бы из
     клубной лавки, — ни по одному числу фанатская вещь уступать не может.
+
+    Щиты сюда приехали позже одежды: пока в клубной лавке в этой руке
+    лежал штурмовой щит за 220 кредитов, фанатский обходил его и без
+    проверки. С сетовыми щитами у него появился соперник за 500, который
+    обходил его вчетверо, — и числа фанатских щитов подняли. Оружие
+    по-прежнему мимо: своего в паке сетов нет вовсе.
     """
     from bot.game.classes import FIGHTER_CLASSES
     from bot.game.reference import best_kit
@@ -629,8 +722,8 @@ def test_the_fan_shelf_beats_the_club_sets_it_costs_twice_as_much_as():
 
     checked = 0
     for item in fan_items():
-        if item.is_weapon or item.is_shield:
-            continue  # оружию и щиту клубного соперника в паке нет
+        if item.is_weapon:
+            continue  # оружию клубного соперника в паке нет
         line = next(key for key in primary if item.code.startswith(key))
         if item.slot not in club[primary[line]]:
             continue  # украшения — своя лестница, их проверяет тест ниже
@@ -642,7 +735,7 @@ def test_the_fan_shelf_beats_the_club_sets_it_costs_twice_as_much_as():
             )
         assert item.price > rival.price * 2, f"{item.code}: дешевле двух сетовых"
         checked += 1
-    assert checked == 28, "фанатская одежда приехала не целиком"
+    assert checked == 30, "фанатская одежда приехала не целиком"
 
 
 def test_the_fan_jewels_are_the_jewellers_ninth_step():
@@ -731,10 +824,10 @@ def test_the_fan_gloves_close_the_last_empty_slot():
 
 
 def test_the_light_shield_is_the_tricksters_own():
-    """Лёгкий щит: уворот и броня вдвое меньше, чем у доски лидера.
+    """Лёгкий щит: брони меньше, чем у доски лидера, зато он даёт уворот.
 
     Щит в фанатской линии был один — тяжёлый, танковый, и трикстер
-    дрался с пустой рукой. Этот его: блок всё равно на три зоны, но
+    дрался с пустой рукой. Этот его: блок всё равно на все зоны, но
     носить его можно, не теряя уворота, — он сам его и прибавляет.
     """
     from bot.game.equipment import CATALOGUE, ItemKind, Slot
