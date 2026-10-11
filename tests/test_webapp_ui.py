@@ -819,13 +819,14 @@ async def test_type_filter_leaves_one_shelf(weapon_page):
 
     # значков в заголовках полок нет: тип и так назван словом
     assert [head.split("\n")[0] for head in await shelves(weapon_page)] == ["Оружие"]
-    assert all(
-        title
-        in ("Кастет", "Деревянная бита", "Выкидуха", "Строительный нож",
-            "Монтировка", "Нож", "Дубинка бойца", "Трость шулера",
-            "Кувалда вышибалы")
-        for title in await visible_titles(weapon_page)
-    )
+    # На полке остаётся только оружие — и ничего, кроме него. Список
+    # берём из витрины, а не переписываем сюда: оружия в лавке два
+    # десятка, и каждый новый пак дописывал бы его в тест
+    from bot.game.equipment import SHOWCASE
+
+    weapons = {item.title for item in SHOWCASE if item.is_weapon}
+    titles = await visible_titles(weapon_page)
+    assert titles and set(titles) <= weapons, set(titles) - weapons
 
 
 async def test_buying_asks_before_it_spends(shop_page):
@@ -9267,4 +9268,51 @@ async def test_a_necklace_keeps_its_strip_everywhere_it_is_shown(server):
         await page.locator("#slots-left .slot.wide").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
         assert wide(await page.locator("#sheet .thing-pic").bounding_box()) == 3.0
+        await browser.close()
+
+
+async def test_the_set_line_stands_under_the_weapon_and_turns_green(server):
+    """Строка комплекта видна на вещи: сколько надето и сколько даёт.
+
+    Пока набор не собран, строка серая — это подсказка, за чем идти в
+    лавку. С первой ступени она зелёная: это уже не совет, а прибавка в
+    бою, и в карточке оружия она стоит под его числами.
+    """
+    player = make_player()
+    player.class_code = "tank"
+    player.level = 10
+    player.gear = [
+        OwnedItem(item=CATALOGUE["set_bouncer_weapon"], id=1, slot=Slot.WEAPON),
+        OwnedItem(item=CATALOGUE["set_bouncer_head"], id=2, slot=Slot.HEAD),
+        OwnedItem(item=CATALOGUE["set_bouncer_jacket"], id=3, slot=Slot.JACKET),
+        OwnedItem(item=CATALOGUE["set_bouncer_boots"], id=4, slot=Slot.BOOTS),
+        OwnedItem(item=CATALOGUE["set_cardsharp_weapon"], id=5),
+    ]
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Четыре вещи вышибалы — строка зелёная и обещает седьмую ступень.
+        # Клетка оружия в левом столбце третья: голова, ожерелье, рука
+        await page.locator("#hero-slots-left .slot").nth(2).click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        line = page.locator("#sheet .thing-kit")
+        text = await line.inner_text()
+        assert "Вышибала" in text and "120%" in text and "135%" in text
+        assert "strong" in (await line.get_attribute("class"))
+        # И числа в карточке — те, с которыми оружие работает на бойце:
+        # 19–23 из лавки на четырёх вещах превращаются в 23–28
+        gains = await page.locator("#sheet .thing-gain").inner_text()
+        assert "23–28" in gains and "19–23" not in gains
+        await page.locator("#sheet-close").click()
+
+        # А кинжал чужого набора лежит в рюкзаке один — строка серая
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#bag-list .thing")
+        row = page.locator("#bag-list .thing", has_text="Кинжал с пикой")
+        alone = row.locator(".thing-kit")
+        assert "100%" in await alone.inner_text()
+        assert "strong" not in (await alone.get_attribute("class"))
         await browser.close()

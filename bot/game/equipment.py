@@ -26,6 +26,7 @@ from bot.content.items import (
     JEWEL_SHELF,
     MAGIC_ITEMS,
     ROGUE,
+    SET_TITLES,
     SHOWCASE,
     TANK,
     WARRIOR,
@@ -75,12 +76,25 @@ from bot.game.gear import (
     repair_points,
     roll_fight_wear,
 )
+from bot.game.sets import BASE_POWER, amplified, next_step, power_percent, set_power
 
 @dataclass
 class Equipment:
     """Что на бойце надето: слот → надетый экземпляр."""
 
     items: dict[Slot, OwnedItem] = field(default_factory=dict)
+    # Сколько вещей каждого набора надето и во что это превращает оружие.
+    # Считается один раз: экипировка живёт на бойце весь бой, а урон с
+    # неё спрашивают на каждый удар
+    _kits: dict[str, int] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    # Слот → (предмет, каким его отдал экземпляр, он же с комплектом).
+    # Первое поле — пропуск кэша: мастерская точит уже надетую вещь, и
+    # экземпляр после этого отдаёт другой предмет
+    _grown: dict[Slot, tuple[Item, Item]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         # Позволяем собрать экипировку из «голых» предметов каталога:
@@ -88,6 +102,61 @@ class Equipment:
         for slot, value in list(self.items.items()):
             if isinstance(value, Item):
                 self.items[slot] = OwnedItem(item=value, slot=slot)
+
+    # ---------- наборы ----------
+
+    @property
+    def kits(self) -> dict[str, int]:
+        """Сколько вещей каждого набора на бойце.
+
+        Считаются вещи, а не слоты: кольцо набора ложится в три клетки и
+        идёт за три вещи, два одинаковых оружия в двух руках — за две.
+        """
+        if self._kits is None:
+            counted: dict[str, int] = {}
+            for owned in self.items.values():
+                kit = owned.item.kit
+                if kit:
+                    counted[kit] = counted.get(kit, 0) + 1
+            self._kits = counted
+        return self._kits
+
+    def kit_worn(self, kit: str) -> int:
+        """Сколько вещей этого набора надето. Без набора — ноль."""
+        return self.kits.get(kit, 0) if kit else 0
+
+    def kit_power(self, kit: str) -> float:
+        """Во сколько работает оружие этого набора при нынешнем комплекте."""
+        return set_power(self.kit_worn(kit))
+
+    def power(self, owned: OwnedItem) -> float:
+        """Во сколько работает эта вещь на этом бойце.
+
+        Лестницу комплекта тянет только оружие: остальные вещи набора
+        работают как написано, а их дело — считаться.
+        """
+        item = owned.item
+        if not item.kit or not item.is_weapon:
+            return BASE_POWER
+        return set_power(self.kit_worn(item.kit))
+
+    def grown(self, owned: OwnedItem) -> Item:
+        """Вещь, как она работает на бойце: с модификацией и комплектом.
+
+        Всё, что считает экипировку — урон, доли, прибавки, броня, —
+        спрашивает вещь здесь, а не у самого предмета: иначе половина
+        счёта знала бы про комплект, а половина нет.
+        """
+        real = owned.real
+        slot = owned.slot
+        if slot is None:  # pragma: no cover - в экипировке лежит только надетое
+            return amplified(real, self.power(owned))
+        ready = self._grown.get(slot)
+        if ready is not None and ready[0] is real:
+            return ready[1]
+        grown = amplified(real, self.power(owned))
+        self._grown[slot] = (real, grown)
+        return grown
 
     @classmethod
     def from_codes(cls, codes: dict[str, str] | None) -> "Equipment":
@@ -176,49 +245,50 @@ class Equipment:
     @property
     def bonus(self) -> Stats:
         total = Stats()
-        for item in self.items.values():
-            total = total.merge(item.bonus)
+        for owned in self.items.values():
+            total = total.merge(self.grown(owned).bonus)
         return total
 
     @property
     def hp_bonus(self) -> int:
-        return sum(item.hp for item in self.items.values())
+        return sum(self.grown(owned).hp for owned in self.items.values())
 
     @property
     def accuracy(self) -> float:
-        return sum(item.real.accuracy for item in self.items.values())
+        return sum(self.grown(owned).accuracy for owned in self.items.values())
 
     @property
     def anticrit(self) -> float:
-        return sum(item.real.anticrit for item in self.items.values())
+        return sum(self.grown(owned).anticrit for owned in self.items.values())
 
     @property
     def dodge(self) -> float:
-        return sum(item.real.dodge for item in self.items.values())
+        return sum(self.grown(owned).dodge for owned in self.items.values())
 
     @property
     def crit(self) -> float:
-        return sum(item.real.crit for item in self.items.values())
+        return sum(self.grown(owned).crit for owned in self.items.values())
 
     @property
     def counter(self) -> float:
-        return sum(item.real.counter for item in self.items.values())
+        return sum(self.grown(owned).counter for owned in self.items.values())
 
     def armor_range(self, zone: Zone) -> tuple[int, int]:
         """Сколько брони прикрывает эту зону: сумма по всем вещам."""
         low = high = 0
         for owned in self.items.values():
-            if zone in owned.real.zones:
-                low += owned.real.armor_min
-                high += owned.real.armor_max
+            real = self.grown(owned)
+            if zone in real.zones:
+                low += real.armor_min
+                high += real.armor_max
         return low, high
 
     def roll_armor(self, zone: Zone, rng: random.Random | None = None) -> int:
         """Бросок брони на пропущенный удар в эту зону."""
         return sum(
-            owned.real.roll_armor(rng)
+            self.grown(owned).roll_armor(rng)
             for owned in self.items.values()
-            if zone in owned.real.zones
+            if zone in self.grown(owned).zones
         )
 
     @property
@@ -226,13 +296,16 @@ class Equipment:
         """Прибавка к урону от оружия основной руки. Без оружия — ничего."""
         if not self.weapon:
             return (0, 0)
-        return (self.weapon.real.damage_min, self.weapon.real.damage_max)
+        real = self.grown(self.weapon)
+        return (real.damage_min, real.damage_max)
 
     @property
     def weapon_damages(self) -> tuple[tuple[int, int], ...]:
         """Прибавка к урону от каждой руки — по порядку ударов."""
         return tuple(
-            (hand.real.damage_min, hand.real.damage_max) if hand else (0, 0)
+            (self.grown(hand).damage_min, self.grown(hand).damage_max)
+            if hand
+            else (0, 0)
             for hand in self.weapons
         )
 
@@ -245,12 +318,12 @@ class Equipment:
     ) -> int:
         """Что добавит оружие этой руки. Кулак не добавляет ничего."""
         hand = self.hand(index)
-        return hand.real.roll_damage(rng) if hand else 0
+        return self.grown(hand).roll_damage(rng) if hand else 0
 
     def weapon_damage_max(self, index: int = 0) -> int:
         """Потолок прибавки этой руки — без броска."""
         hand = self.hand(index)
-        return hand.real.damage_max if hand else 0
+        return self.grown(hand).damage_max if hand else 0
 
     def __bool__(self) -> bool:
         return bool(self.items)
@@ -259,6 +332,11 @@ class Equipment:
 # Модуль — общий вход: наружу видно и правила из gear, и каталог из content
 __all__ = [
     "ADDED_ART",
+    "BASE_POWER",
+    "amplified",
+    "next_step",
+    "power_percent",
+    "set_power",
     "ALL_SLOTS",
     "ART",
     "ASSASSIN",
@@ -293,6 +371,7 @@ __all__ = [
     "RING_SLOTS",
     "ROGUE",
     "RepairResult",
+    "SET_TITLES",
     "SHOWCASE",
     "SLOT_ART",
     "SLOT_EMOJI",

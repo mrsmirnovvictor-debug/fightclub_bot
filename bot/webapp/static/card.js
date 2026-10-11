@@ -503,6 +503,8 @@ function wornCard(item) {
     hands.textContent = item.in_hands;
     body.appendChild(hands);
   }
+  const worn_kit = kitNote(item);
+  if (worn_kit) body.appendChild(worn_kit);
 
   box.appendChild(body);
   return box;
@@ -521,6 +523,17 @@ function requirementList(item) {
     list.appendChild(li);
   });
   return list;
+}
+
+// Строка комплекта: сколько вещей набора надето и во что это превращает
+// его оружие. Текст приходит с сервера целиком — лестницу считает он, а
+// не страница: иначе два места считали бы одно и то же по-разному
+function kitNote(item) {
+  if (!item.kit || !item.kit.code) return null;
+  const note = document.createElement("div");
+  note.className = "thing-kit" + (item.kit.power > 100 ? " strong" : "");
+  note.textContent = item.kit.text;
+  return note;
 }
 
 function bonusList(item) {
@@ -671,6 +684,8 @@ function thingCard(item, credits, shop, bare) {
     gainLabel.textContent = item.gain_title || "Даёт надетой";
     body.append(gainLabel, bonusList(item));
   }
+  const kit = kitNote(item);
+  if (kit) body.appendChild(kit);
 
   if (shop) {
     const buy = document.createElement("div");

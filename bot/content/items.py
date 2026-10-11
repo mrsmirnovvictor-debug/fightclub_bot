@@ -86,6 +86,29 @@ FAN_SHELF = "fan"
 SET_LINES = {TANK: "tank", ROGUE: "trickster", ASSASSIN: "assassin", WARRIOR: "warrior"}
 
 
+# Как набор зовётся по-человечески: это название видно в карточке вещи и
+# в строке комплекта («Набор «Вышибала»: 8 вещей»). Коды наборов —
+# латиницей, потому что по ним считается адрес картинки в бакете
+SET_TITLES: dict[str, str] = {
+    "avenger": "Мститель",
+    "boxer": "Боксёр",
+    "army": "Армейский",
+    "bouncer": "Вышибала",
+    "sport": "Спортсмен",
+    "biker": "Байкер",
+    "fighter": "Боец",
+    "hero": "Герой",
+    "plut": "Плут",
+    "croupier": "Крупье",
+    "lovkach": "Ловкач",
+    "cardsharp": "Шулер",
+    "mercenary": "Наёмник",
+    "strangler": "Душитель",
+    "camouflage": "Камуфляж",
+    "killer": "Убийца",
+}
+
+
 def _piece(
     kit: str,
     slot: Slot,
@@ -114,6 +137,7 @@ def _piece(
         requires=requires,
         price=price,
         for_classes=(fclass,),
+        kit=kit,
         **gives,
     )
 
@@ -606,6 +630,7 @@ def _shield(
         requires=requires,
         price=price,
         for_classes=(fclass,),
+        kit=kit,
         **gives,
     )
 
@@ -677,6 +702,162 @@ SET_SHIELDS: tuple[Item, ...] = (
     ),
 )
 
+
+# ---------- оружие наборов: шестнадцать, по одному на набор ----------
+#
+# Последняя клетка пака — рука. Оружие есть у всех шестнадцати наборов,
+# включая ассасинские: прикрываться ассасину нечем, а бить есть чем.
+#
+# Уровень у оружия — по старшей вещи набора: третий, пятый, седьмой и
+# девятый. Разброс — по характеру класса, как и на остальном оружии
+# лавки: у ассасина рвано́е, у танка ровное, у воина с трикстером
+# середина. Средний урон внутри ступени у всех четверых один: разводим
+# разброс, а не силу.
+#
+# **В одиночку сетовое оружие клубного не обходит.** Средний урон у него
+# ровно клубной ступени (21 на девятой, как у секиры), а доля — по низу
+# полосы, а не по верху: 38% точности против 43% у секиры. Так и
+# задумано: платят за комплект, а не за вещь. Третья ступень — на
+# полступени выше единственного клубного соседа (3.5 против 3 у кастета):
+# на сумме в шесть единиц четырёх разных разбросов не выходит, нижний
+# упирается в «3–3».
+#
+# Собранный комплект возвращает это с лихвой: на полутора ставках 38%
+# превращаются в 57%, а 19–23 — в 29–35, и такого в лавке не купить ни за
+# какие деньги. Потолок удара босса подвала при этом остаётся выше
+# потолка одетого по прилавку игрока — эталон собирает комплект на
+# 135%, и кувалда его перебивает. С полным комплектом и украшениями
+# (150%) игрок босса обгоняет, и это решение владельца: девятая ступень
+# пака — вершина лавки, а снаряжение босса стоит на месте с самого
+# первого рейда.
+#
+# **А вот сила оружия зависит от комплекта.** До трёх вещей набора оно
+# работает как написано, с четвёртой — на 120%, с седьмой — на 135%, с
+# девятой — на 150%; само оружие в счёт входит. Лестницу считает
+# `bot/game/sets.py`, а складывает её в бой `Equipment.grown` — через
+# него же она попадает и в карточку.
+#
+# Цена: 120, 180, 300 и 500 кредитов. Как и у щитов, она считается по
+# слоту, а не по паку: в руке уже стоит лестница клубного оружия, и
+# седьмая ступень сетового упирается в тесак восьмого уровня за 300.
+
+
+def _weapon(
+    kit: str,
+    title: str,
+    icon: str,
+    instrumental: str,
+    fclass: str,
+    level: int,
+    price: int,
+    requires: Stats,
+    **gives: int | float,
+) -> Item:
+    """Оружие набора: картинка из папки набора, файл `weapon.png`."""
+    return Item(
+        f"set_{kit}_weapon",
+        title,
+        Slot.WEAPON,
+        icon,
+        kind=ItemKind.WEAPON,
+        instrumental=instrumental,
+        image=art.set_piece(SET_LINES[fclass], kit, "weapon"),
+        level_required=level,
+        requires=requires,
+        price=price,
+        for_classes=(fclass,),
+        kit=kit,
+        **gives,
+    )
+
+
+SET_WEAPONS: tuple[Item, ...] = (
+    # ---------- 3 ступень: средний урон 4 ----------
+    _weapon(
+        'avenger', 'Молот с фениксом', '🔨', 'молотом с фениксом',
+        TANK, 3, 120, Stats(endurance=12),
+        strength=1, damage_min=3, damage_max=4, anticrit=0.05,
+    ),
+    _weapon(
+        'sport', 'Серебристо-синяя бита', '🏏', 'серебристо-синей битой',
+        WARRIOR, 3, 120, Stats(strength=12),
+        strength=1, damage_min=2, damage_max=5, accuracy=0.05,
+    ),
+    _weapon(
+        'plut', 'Булава с маской шута', '🔨', 'булавой с маской шута',
+        ROGUE, 3, 120, Stats(agility=12),
+        agility=1, damage_min=2, damage_max=5, dodge=0.05,
+    ),
+    _weapon(
+        'mercenary', 'Кукри с волком', '🗡', 'кукри с волком',
+        ASSASSIN, 3, 120, Stats(intuition=12),
+        intuition=1, damage_min=1, damage_max=6, crit=0.05,
+    ),
+    # ---------- 5 ступень: средний урон 8 ----------
+    _weapon(
+        'boxer', 'Бронзовый кастет', '🔩', 'бронзовым кастетом',
+        TANK, 5, 180, Stats(endurance=15),
+        strength=1, damage_min=6, damage_max=8, accuracy=0.11, anticrit=0.11,
+    ),
+    _weapon(
+        'biker', 'Топор с крылатым черепом', '🪓', 'топором с крылатым черепом',
+        WARRIOR, 5, 180, Stats(strength=15),
+        strength=1, damage_min=5, damage_max=9, accuracy=0.11, anticrit=0.08,
+    ),
+    _weapon(
+        'croupier', 'Трость с рулеткой', '🦯', 'тростью с рулеткой',
+        ROGUE, 5, 180, Stats(agility=15),
+        agility=1, damage_min=5, damage_max=9, dodge=0.11, anticrit=0.06,
+    ),
+    _weapon(
+        'strangler', 'Цепь с рукоятями', '⛓', 'цепью с рукоятями',
+        ASSASSIN, 5, 180, Stats(intuition=15),
+        intuition=1, damage_min=3, damage_max=11, accuracy=0.11, crit=0.08,
+    ),
+    # ---------- 7 ступень: средний урон 14 ----------
+    _weapon(
+        'army', 'Кувалда со звездой', '🔨', 'кувалдой со звездой',
+        TANK, 7, 300, Stats(endurance=20),
+        strength=2, damage_min=11, damage_max=14, accuracy=0.24, anticrit=0.24,
+    ),
+    _weapon(
+        'fighter', 'Стальной кастет', '🔩', 'стальным кастетом',
+        WARRIOR, 7, 300, Stats(strength=20),
+        strength=2, damage_min=9, damage_max=16, accuracy=0.24, anticrit=0.2,
+    ),
+    _weapon(
+        'lovkach', 'Складной нож с лисой', '🔪', 'складным ножом с лисой',
+        ROGUE, 7, 300, Stats(agility=20),
+        agility=2, damage_min=9, damage_max=16, dodge=0.24, anticrit=0.12,
+    ),
+    _weapon(
+        'camouflage', 'Нож со змеёй', '🔪', 'ножом со змеёй',
+        ASSASSIN, 7, 300, Stats(intuition=20),
+        intuition=2, damage_min=5, damage_max=20, accuracy=0.24, crit=0.2,
+    ),
+    # ---------- 9 ступень: средний урон 23 ----------
+    _weapon(
+        'bouncer', 'Дубинка с бульдогом', '🏏', 'дубинкой с бульдогом',
+        TANK, 9, 500, Stats(endurance=25),
+        strength=4, damage_min=19, damage_max=23, accuracy=0.38, anticrit=0.38,
+    ),
+    _weapon(
+        'hero', 'Длинный меч героя', '⚔️', 'длинным мечом героя',
+        WARRIOR, 9, 500, Stats(strength=25, endurance=20),
+        strength=4, damage_min=17, damage_max=25, accuracy=0.38, anticrit=0.34,
+    ),
+    _weapon(
+        'cardsharp', 'Кинжал с пикой', '🗡', 'кинжалом с пикой',
+        ROGUE, 9, 500, Stats(agility=25),
+        agility=4, damage_min=17, damage_max=25, dodge=0.38, anticrit=0.19,
+    ),
+    _weapon(
+        'killer', 'Рубиновый кинжал', '🗡', 'рубиновым кинжалом',
+        ASSASSIN, 9, 500, Stats(intuition=25),
+        intuition=4, damage_min=11, damage_max=31, accuracy=0.38, crit=0.34,
+    ),
+)
+
 # ---------- прилавок ювелира: кольца и ожерелья ----------
 #
 # Украшения продаются только здесь: ни в клубной лавке, ни у одёжника их
@@ -733,6 +914,7 @@ def _jewel(
         price=price,
         for_classes=(fclass,),
         shelf=JEWEL_SHELF,
+        kit=kit,
         **gives,
     )
 
@@ -3193,6 +3375,7 @@ ITEMS: tuple[Item, ...] = tuple(
     ),
     *SET_PIECES,
     *SET_SHIELDS,
+    *SET_WEAPONS,
     *JEWEL_PIECES,
     )
 )

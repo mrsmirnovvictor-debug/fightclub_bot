@@ -684,6 +684,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    видеть, какая его часть пришла с модификацией */
 .thing-gain .gain-plus { color: var(--hp-green); font-weight: 700; }
 .thing-label { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+/* Строка комплекта. Пока набор не собран, она серая, как подсказка; с
+   первой ступени — зелёная: это уже не совет, а прибавка в бою */
+.thing-kit { color: var(--muted); font-size: 12.5px; margin-top: 6px; line-height: 1.35; }
+.thing-kit.strong { color: var(--hp-green); font-weight: 600; }
 
 .thing-buttons {
   display: flex;

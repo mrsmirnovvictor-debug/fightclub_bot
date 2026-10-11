@@ -30,11 +30,15 @@ from bot.game.equipment import (
     JEWEL_SHELF,
     MAGIC_ITEMS,
     RIGHT_SLOTS,
+    SET_TITLES,
     Equipment,
     Item,
     OwnedItem,
     Slot,
     get_item,
+    next_step,
+    power_percent,
+    set_power,
     shop_sections,
 )
 from bot.game.abilities import MAX_ABILITIES, TIER_COST
@@ -49,7 +53,7 @@ from bot.game.health import (
 from bot.game.locations import Service, get_location
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
-from bot.game.presence import is_online, presence_text
+from bot.game.presence import is_online, plural, presence_text
 from bot.game.pro import PRO_BADGE, current_offer
 from bot.game.potions import (
     POTIONS,
@@ -92,7 +96,54 @@ def format_birthday(created_at: str | None) -> str:
 CELL_TITLES: dict[Slot, str] = {Slot.JACKET: "тело"}
 
 
-def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
+def kit_payload(item: Item, equipment: Equipment | None = None) -> dict:
+    """Строка комплекта: сколько вещей набора надето и что это даёт.
+
+    Пусто — вещь не из набора. Лестницу силы тянет только оружие, но
+    строка стоит на каждой вещи набора: по ней и видно, сколько собрано
+    и сколько осталось до следующей ступени.
+
+    Без экипировки (на прилавке у чужой вещи) счёт нулевой, а ступени
+    всё равно показываем: покупатель должен понимать, за что платит.
+    """
+    if not item.kit:
+        return {}
+    worn = equipment.kit_worn(item.kit) if equipment is not None else 0
+    power = set_power(worn)
+    step = next_step(worn)
+    title = SET_TITLES.get(item.kit, item.kit)
+    whose = "оружие" if item.is_weapon else "оружие набора"
+    text = (
+        f"Набор «{title}»: надето {worn} "
+        f"{plural(worn, 'вещь', 'вещи', 'вещей')} — "
+        f"{whose} работает на {power_percent(power)}%."
+    )
+    if step is not None:
+        need = step[0] - worn
+        text += (
+            f" Ещё {need} {plural(need, 'вещь', 'вещи', 'вещей')} — "
+            f"и {power_percent(step[1])}%."
+        )
+    return {
+        "code": item.kit,
+        "title": title,
+        "worn": worn,
+        "power": power_percent(power),
+        "weapon": item.is_weapon,
+        "next": (
+            {"need": step[0], "power": power_percent(step[1])}
+            if step is not None
+            else {}
+        ),
+        "text": text,
+    }
+
+
+def worn_payload(
+    owned: OwnedItem,
+    fclass: FighterClass | None = None,
+    equipment: Equipment | None = None,
+) -> dict:
     """Надетая вещь так, как её показывает клетка куклы.
 
     Свойства вещи идут сюда целиком, а не одной строкой: по нажатию на
@@ -105,8 +156,17 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
     здесь стоял слот предмета, нажатие на вторую руку снимало оружие из
     первой — а второе нажатие отвечало «слот и так пуст», хотя в клетке
     оружие было видно.
+
+    **Числа — те, с которыми вещь работает на этом бойце.** Не только с
+    модификацией, но и с комплектом: оружие собранного набора бьёт
+    сильнее, чем написано в лавке, и в строке урона внизу карточки стоит
+    именно это число. Показывать в клетке лавочное значило бы спорить с
+    самим собой — так уже было с ожерельем, которое в кукле лежало
+    полосой, а в карточке квадратом.
     """
-    in_hands = weapon_in_hands(owned.real, fclass)
+    # Вещь, как она работает на бойце: с заточкой и с комплектом
+    shown = equipment.grown(owned) if equipment is not None else owned.real
+    in_hands = weapon_in_hands(shown, fclass)
     return {
         "id": owned.id,
         "slot": (owned.slot or owned.item.slot).value,
@@ -114,8 +174,8 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
         "title": owned.title,
         "icon": owned.emoji,
         "image": owned.image,
-        "bonus": owned.describe_bonus(),
-        "bonuses": bonuses_payload(owned.real, fclass, owned),
+        "bonus": shown.describe_bonus(),
+        "bonuses": bonuses_payload(shown, fclass, owned),
         # Класс меняет урон оружия — говорим об этом там же, где число
         "in_hands": f"У {fclass.title.lower()}а в руках: {in_hands}"
         if in_hands
@@ -129,6 +189,9 @@ def worn_payload(owned: OwnedItem, fclass: FighterClass | None = None) -> dict:
         # клетке лежало полосой. Берём её у клетки, а не у предмета:
         # кольцо знает свою правую, а надето может быть в любой из трёх
         "shape": (owned.slot or owned.item.slot).shape,
+        # Комплект: сколько вещей набора на бойце и во что это
+        # превращает его оружие
+        "kit": kit_payload(owned.item, equipment),
         "mod": mod_mark(owned),
     }
 
@@ -149,13 +212,13 @@ def slot_payload(
         # Название клетки: у тела оно своё, потому что вещей в ней две
         "cell_title": CELL_TITLES.get(slot, slot.title),
         "under_title": under_slot.title if under_slot else "",
-        "under": worn_payload(under, fclass) if under else None,
+        "under": worn_payload(under, fclass, equipment) if under else None,
         "placeholder": slot.emoji,
         "placeholder_image": slot.placeholder,
         # Какой клеткой слот рисуется: квадрат, широкая полоса ожерелья
         # или колечко. Форму решает сервер — см. `Slot.shape`
         "shape": slot.shape,
-        "item": worn_payload(owned, fclass) if owned else None,
+        "item": worn_payload(owned, fclass, equipment) if owned else None,
     }
 
 
@@ -241,6 +304,7 @@ def item_payload(player: Player, owned: OwnedItem) -> dict:
         "can_equip": player.can_equip(item),
         "bonus": item.describe_bonus(),
         "bonuses": bonuses_payload(item, player.fclass, owned),
+        "kit": kit_payload(owned.item, player.equipment),
         # Модификация: звёздочка ступени и что она дала
         "mod": mod_mark(owned),
     }
@@ -444,6 +508,7 @@ def goods_payload(
         "owned": owned,
         "requirements": requirements_payload(player, item),
         "bonuses": bonuses_payload(item, player.fclass),
+        "kit": kit_payload(item, player.equipment),
         "suits": suits_payload(item),
     }
 

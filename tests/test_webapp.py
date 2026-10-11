@@ -588,3 +588,56 @@ def test_the_page_knows_every_shop_and_every_house_in_town():
     assert {one.value for one in SHOP_SERVICES} & counters <= titles
     assert counters <= titles, counters - titles
     assert "jewel" in counters, "ювелира страница за магазин не считает"
+
+
+async def test_the_card_carries_the_set_line_everywhere_the_thing_is_shown():
+    """Строка комплекта едет с вещью в куклу, в рюкзак и на прилавок.
+
+    Считает её сервер, а не страница: число вещей набора известно только
+    ему — а значит, и во сколько работает оружие. На прилавке чужая
+    вещь приходит с нулём, но с лестницей: покупатель должен понимать,
+    за что платит.
+    """
+    from bot.game.locations import Service
+    from bot.webapp.card import build_shop
+
+    player = make_player(level=10, class_code="tank", strength=25, endurance=25)
+    worn = {
+        Slot.WEAPON: "set_bouncer_weapon",
+        Slot.HEAD: "set_bouncer_head",
+        Slot.JACKET: "set_bouncer_jacket",
+        Slot.BOOTS: "set_bouncer_boots",
+    }
+    for number, (slot, code) in enumerate(worn.items(), start=1):
+        player.gear.append(
+            OwnedItem(item=CATALOGUE[code], id=number, slot=slot)
+        )
+    # И одна вещь набора в рюкзаке: она тоже знает про комплект
+    player.gear.append(OwnedItem(item=CATALOGUE["set_bouncer_belt"], id=9))
+
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    cells = {
+        row["slot"]: row for row in card["slots"]["left"] + card["slots"]["right"]
+    }
+    hand = cells["weapon"]["item"]["kit"]
+    assert hand["worn"] == 4 and hand["power"] == 120
+    assert hand["next"] == {"need": 7, "power": 135}
+    assert "Вышибала" in hand["text"]
+    # Шлем — не оружие, и строка у него про оружие набора
+    assert cells["head"]["item"]["kit"]["power"] == 120
+    assert cells["head"]["item"]["kit"]["weapon"] is False
+
+    bag = {row["code"]: row for row in card["inventory"]}
+    assert bag["set_bouncer_belt"]["kit"]["worn"] == 4
+
+    # На прилавке — та же строка: у своего набора с числом, у чужого с нулём
+    shelf = build_shop(player, Service.WEAPONS)
+    goods = {
+        row["code"]: row
+        for section in shelf["sections"]
+        for row in section["items"]
+    }
+    assert goods["set_bouncer_weapon"]["kit"]["worn"] == 4
+    assert goods["set_army_weapon"]["kit"]["worn"] == 0
+    assert goods["set_army_weapon"]["kit"]["power"] == 100
+    assert goods["viking_axe"]["kit"] == {}

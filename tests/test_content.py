@@ -575,6 +575,122 @@ def test_the_shields_weigh_what_their_class_weighs():
             assert warrior.dodge and warrior.crit and warrior.anticrit, level
 
 
+def test_the_pack_reached_the_hand_with_sixteen_weapons():
+    """Шестнадцать оружий: по одному на каждый набор, включая ассасинские.
+
+    Щита ассасину не нарисовали, а оружие нарисовали всем: прикрываться
+    ему нечем, а бить есть чем. Уровень у оружия — по старшей вещи
+    набора, и это не выдумка теста: по ней набор и собирают.
+    """
+    from bot.content.items import SET_PIECES, SET_SHIELDS, SET_TITLES, SET_WEAPONS
+    from bot.game.art import set_piece
+    from bot.game.equipment import ItemKind, JEWEL_ITEMS
+
+    lines = {"tank": "tank", "warrior": "warrior", "rogue": "trickster",
+             "assassin": "assassin"}
+    assert len(SET_WEAPONS) == 16
+    assert {item.kit for item in SET_WEAPONS} == set(SET_TITLES)
+
+    # Старшая вещь набора — по ней считается уровень оружия
+    top: dict[str, int] = {}
+    for item in list(SET_PIECES) + list(SET_SHIELDS) + list(JEWEL_ITEMS):
+        if item.kit:
+            top[item.kit] = max(top.get(item.kit, 0), item.level_required)
+
+    prices = {3: 120, 5: 180, 7: 300, 9: 500}
+    for item in SET_WEAPONS:
+        kit = item.kit
+        fclass = item.for_classes[0]
+        assert item.code == f"set_{kit}_weapon"
+        assert item.slot is Slot.WEAPON and item.kind is ItemKind.WEAPON
+        assert len(item.for_classes) == 1
+        assert item.picture == set_piece(lines[fclass], kit, "weapon"), item.code
+        assert item.instrumental, f"{item.code}: нечем бить в тексте боя"
+        assert item.level_required == top[kit], (
+            f"{item.code}: {item.level_required} уровень при наборе до {top[kit]}"
+        )
+        assert item.price == prices[item.level_required], item.code
+        # Оружие набора лежит на клубном прилавке и за кредиты
+        assert not item.shelf and not item.retired and not item.reward
+
+    # Четыре ступени, и на каждой все четыре класса
+    tiers: dict[int, set[str]] = {}
+    for item in SET_WEAPONS:
+        tiers.setdefault(item.level_required, set()).update(item.for_classes)
+    assert sorted(tiers) == [3, 5, 7, 9]
+    for level, covered in tiers.items():
+        assert covered == set(FIGHTER_CLASSES), level
+
+
+def test_a_set_weapon_alone_does_not_beat_the_club_one():
+    """В одиночку сетовое оружие клубного не обходит — платят за комплект.
+
+    Средний урон у него ровно клубной ступени, а доля — по низу полосы,
+    а не по верху: 38% против 43% у секиры девятого уровня. Третья
+    ступень — исключение на полступени: там клубный сосед один, кастет
+    новичка, и на сумме в шесть единиц четырёх разных разбросов не
+    выходит.
+    """
+    from bot.content.items import SET_WEAPONS
+
+    def middle(item):
+        return (item.damage_min + item.damage_max) / 2
+
+    shares = lambda item: (  # noqa: E731
+        item.accuracy, item.dodge, item.crit, item.anticrit, item.counter
+    )
+    club: dict[int, list] = {}
+    for item in SHOWCASE:
+        if item.is_weapon and not item.kit:
+            club.setdefault(item.level_required, []).append(item)
+
+    for item in SET_WEAPONS:
+        level = item.level_required
+        rivals = club[level]
+        if level > 3:
+            assert middle(item) == max(middle(one) for one in rivals), item.code
+        else:
+            assert middle(item) == max(middle(one) for one in rivals) + 0.5
+        cap = weapon_share_cap(level)
+        floor = weapon_share_floor(level)
+        assert max(shares(item)) <= cap + 1e-9, item.code
+        if floor:
+            # Доля есть, и она в полосе — но у самого её низа
+            assert floor - 1e-9 <= max(shares(item)) <= floor + 0.015, item.code
+            assert max(shares(item)) < max(
+                max(shares(one)) for one in rivals
+            ), f"{item.code}: доля не ниже клубной"
+
+    # Средний урон внутри ступени у всех четверых один: разводим разброс
+    for level in (3, 5, 7, 9):
+        tier = [item for item in SET_WEAPONS if item.level_required == level]
+        assert len({middle(item) for item in tier}) == 1, level
+        spread = {
+            item.for_classes[0]: (item.damage_max - item.damage_min)
+            for item in tier
+        }
+        assert spread["assassin"] > spread["warrior"] > spread["tank"], level
+        assert spread["assassin"] > spread["rogue"] > spread["tank"], level
+
+
+def test_every_thing_of_a_set_knows_its_set():
+    """У вещи набора записан сам набор, а не только приставка в коде.
+
+    По этому полю считается комплект на бойце (`Equipment.kits`), и если
+    вещь о своём наборе не знает, она тихо перестаёт в него входить —
+    оружие при этом работает на 100%, и заметить это глазом нельзя.
+    """
+    from bot.content.items import SET_TITLES
+
+    for item in CATALOGUE.values():
+        if item.code.startswith("set_"):
+            assert item.kit, f"{item.code}: вещь набора без набора"
+            assert item.code.startswith(f"set_{item.kit}_"), item.code
+            assert item.kit in SET_TITLES, f"{item.kit}: набор без названия"
+        else:
+            assert not item.kit, f"{item.code}: набор у вещи вне наборов"
+
+
 def test_the_old_wardrobe_left_the_counter_but_not_the_catalogue():
     """Снятая вещь уходит с витрины и остаётся всюду, где она уже есть.
 
