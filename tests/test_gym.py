@@ -1003,3 +1003,27 @@ async def test_without_a_limit_the_record_is_kept(db):
         await db.start_gym_visit(user_id, slot.id, "strength", now + 900)
 
     assert await db.gym_slot_crowd(slot.id) == 10
+
+
+async def test_nobody_leaves_the_gym_in_the_middle_of_a_set(db):
+    """С тренировки не уходят: пятнадцать минут боец в зале, а не в дороге.
+
+    Замок держит сервер, а не спрятанная кнопка: дорога по городу
+    открывается запросом мимо интерфейса, и раньше боец уходил из зала
+    прямо посреди подхода — тренировка при этом шла себе дальше и
+    доставалась ему на другом конце города.
+    """
+    from bot.travel_service import LockedError, Travel
+
+    now = at_slot(0, shift=60)
+    player = await with_pass(db, now)
+    await join(db, player, now)
+
+    with pytest.raises(LockedError, match="на тренировке"):
+        await Travel(db).go(player, "fight_club", now + 60)
+    assert player.location == GYM
+
+    # Подход кончился — иди куда хочешь, даже не забрав результат
+    await Travel(db).go(player, "fight_club", now + TRAINING_SECONDS)
+    assert player.travel_to == "fight_club"
+    assert await visit_of(db, player) is not None, "результат остался при бойце"
