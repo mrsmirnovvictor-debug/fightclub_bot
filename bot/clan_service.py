@@ -5,10 +5,11 @@
 бойца, выгнать, назначить приближённого и передать дела.
 
 Места проверяются здесь, а не на странице: спрятанная кнопка обходится
-запросом мимо интерфейса. Заводят клан, подают заявку и уходят из семьи
-в Особняке мафии — туда и надо дойти ногами. А вот дела внутри семьи
-(заявки, приглашения, чины) решают откуда угодно: вкладка «Клан» у
-бойца с собой, и бежать ради этого через весь город незачем.
+запросом мимо интерфейса. Заводят клан, подают заявку, уходят из семьи и
+ведут её имущество в Особняке мафии — туда и надо дойти ногами: общий
+карман лежит в доме, а не в кармане на ходу. А вот дела внутри семьи
+(заявки, приглашения, чины) решают откуда угодно: состав у бойца в
+карточке, и бежать ради чина через весь город незачем.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from bot.game.clans import (
     MAX_CAPOS,
     RENAME_DAYS,
     RENAME_PRICE,
+    VAULT_SLOTS,
     Clan,
     Petition,
     Rank,
@@ -31,6 +33,7 @@ from bot.game.clans import (
     name_problem,
     sign_problem,
 )
+from bot.game.equipment import get_item
 from bot.game.health import format_duration
 from bot.game.health import now_ts
 from bot.game.locations import Service
@@ -410,6 +413,95 @@ async def handover(
     return f"Дела переданы. Ты теперь {mine.title.lower()}."
 
 
+# ---------- имущество семьи ----------
+
+
+async def deposit(
+    db: Database, player: Player, amount: int, now: int | None = None
+) -> str:
+    """Положить кредиты в сейф клана. Кладут все, кто в семье."""
+    moment = now_ts() if now is None else now
+    _at_mansion(player, moment, "Открыть сейф")
+    standing = _standing(player)
+    if amount <= 0:
+        raise ClanError("Сколько положить-то? Напиши число.")
+    if not player.can_afford(amount, moment, Service.MAFIA):
+        raise ClanError(
+            f"В сейф нужно {amount} 💰, а "
+            f"{player.purse_note(moment, Service.MAFIA)}."
+        )
+    # Сперва сейф, потом карман: если сейфа уже нет, с бойца и не снято
+    if not await db.move_vault(standing.clan.id, amount):  # pragma: no cover
+        raise ClanError("Такого клана нет.")
+    player.pay(amount, moment, Service.MAFIA)
+    await db.save_player(player)
+    await _refresh(db, player)
+    logger.info("Боец %s положил %s в сейф клана %s", player.user_id, amount,
+                standing.clan.id)
+    return f"В сейф семьи легло {amount} 💰."
+
+
+async def withdraw_vault(
+    db: Database, player: Player, amount: int, now: int | None = None
+) -> str:
+    """Взять кредиты из сейфа. Берут только Дон и приближённые."""
+    moment = now_ts() if now is None else now
+    _at_mansion(player, moment, "Открыть сейф")
+    standing = _admin(player)
+    if amount <= 0:
+        raise ClanError("Сколько взять-то? Напиши число.")
+    if not await db.move_vault(standing.clan.id, -amount):
+        clan = await db.clan_by_id(standing.clan.id)
+        have = clan.vault if clan else 0
+        raise ClanError(f"В сейфе {have} 💰 — столько не взять.")
+    player.credits += amount
+    await db.save_player(player)
+    await _refresh(db, player)
+    logger.info("Боец %s взял %s из сейфа клана %s", player.user_id, amount,
+                standing.clan.id)
+    return f"Из сейфа взято {amount} 💰 наличными."
+
+
+async def stash(
+    db: Database, player: Player, item_id: int, now: int | None = None
+) -> str:
+    """Положить вещь в хранилище семьи. Кладут все, кто в семье."""
+    moment = now_ts() if now is None else now
+    _at_mansion(player, moment, "Положить вещь на полку")
+    standing = _standing(player)
+    owned = player.find_gear(item_id)
+    if owned is None:
+        raise ClanError("Такой вещи у тебя нет.")
+    if owned.is_equipped:
+        raise ClanError("Сперва сними вещь — надетое на полку не кладут.")
+    if not await db.stash_gear(
+        item_id, player.user_id, standing.clan.id, VAULT_SLOTS, moment
+    ):
+        raise ClanError(f"В хранилище {VAULT_SLOTS} полок, и все заняты.")
+    player.drop_gear(owned)
+    logger.info("Боец %s положил вещь %s в хранилище клана %s", player.user_id,
+                item_id, standing.clan.id)
+    return f"«{owned.item.title}» лежит в хранилище семьи."
+
+
+async def take(
+    db: Database, player: Player, stored_id: int, now: int | None = None
+) -> str:
+    """Забрать вещь из хранилища. Берут только Дон и приближённые."""
+    moment = now_ts() if now is None else now
+    _at_mansion(player, moment, "Взять вещь с полки")
+    standing = _admin(player)
+    code = await db.take_clan_item(stored_id, standing.clan.id, player.user_id)
+    if not code:
+        raise ClanError("Этой вещи в хранилище уже нет.")
+    player.gear = await db.list_gear(player.user_id)
+    item = get_item(code)
+    logger.info("Боец %s забрал вещь %s из хранилища клана %s", player.user_id,
+                stored_id, standing.clan.id)
+    title = item.title if item else code
+    return f"«{title}» теперь у тебя в рюкзаке."
+
+
 # ---------- уйти ----------
 
 
@@ -423,7 +515,7 @@ async def leave(db: Database, player: Player, now: int | None = None) -> str:
         raise ClanError("Такого клана нет.")
     if standing.is_don and clan.members > 1:
         raise ClanError(
-            "Дон уходит, только передав дела: выбери преемника во вкладке «Клан»."
+            "Дон уходит, только передав дела: выбери преемника в составе семьи."
         )
     await db.remove_member(player.user_id)
     said = f"Ты больше не в клане «{clan.name}»."
@@ -443,6 +535,7 @@ __all__ = [
     "approve",
     "decline",
     "demote",
+    "deposit",
     "expel",
     "found",
     "handover",
@@ -451,5 +544,8 @@ __all__ = [
     "promote",
     "rename",
     "refuse",
+    "stash",
+    "take",
     "withdraw",
+    "withdraw_vault",
 ]

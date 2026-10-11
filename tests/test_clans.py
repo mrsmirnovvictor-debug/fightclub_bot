@@ -9,8 +9,10 @@
 3. **Две дороги в семью.** Заявка бойца и приглашение старших, и обе
    кончаются одним: одной записью в клане и ни одной лишней заявкой.
 4. **Знак клана.** Квадратная картинка png или jpeg — и ничего больше.
-5. **Место.** Заводят клан, стучатся и уходят в особняке; дела семьи
-   решают откуда угодно.
+5. **Место.** Заводят клан, стучатся, уходят и ведут дела сейфа в
+   особняке; чины и заявки решают откуда угодно.
+6. **Общий карман.** В сейф и на полки кладут все, берут только Дон и
+   приближённые, и полок ровно двенадцать.
 """
 
 import pytest
@@ -24,6 +26,7 @@ from bot.clan_service import (
     approve,
     decline,
     demote,
+    deposit,
     expel,
     found,
     handover,
@@ -31,7 +34,10 @@ from bot.clan_service import (
     leave,
     promote,
     refuse,
+    stash,
+    take,
     withdraw,
+    withdraw_vault,
 )
 from bot.config import Config
 from bot.database import Database
@@ -44,6 +50,7 @@ from bot.game.clans import (
     MAX_MEMBERS,
     RENAME_COOLDOWN,
     RENAME_PRICE,
+    VAULT_SLOTS,
     Petition,
     Rank,
     clean_name,
@@ -52,7 +59,7 @@ from bot.game.clans import (
 )
 from bot.game.locations import Service, get_location, where_to
 from bot.models import Player
-from bot.webapp.clans import build_clan, build_mansion
+from bot.webapp.clans import build_clan, build_estate, build_mansion
 from bot.webapp.server import create_app
 from tests.test_inventory import FakeBot
 from tests.test_webapp import TOKEN, make_init_data
@@ -547,9 +554,11 @@ async def test_the_clan_screen_sorts_the_family_by_rank(db):
     assert row["fclass"]["emoji"] and row["emblem"] == get_sign(SIGN).picture
     assert row["clan"] == "Коза Ностра" and row["rank_title"] == "Мафиози"
     assert row["can_expel"] and row["can_promote"] and not row["can_demote"]
-    # Себя Дон не выгоняет и дела себе не передаёт
+    # Себя Дон не выгоняет, а вот передача прав стоит именно на его
+    # строке: отдаёт дела он, и преемника выбирает списком в окне
     own = body["ranks"][0]["members"][0]
-    assert not own["can_expel"] and not own["can_crown"]
+    assert not own["can_expel"] and own["can_handover"]
+    assert not row["can_handover"], "права передают с дона, а не на мафиози"
 
     # Мафиози тех же людей видит, а кнопок и заявок — нет
     plain = build_clan(soldier, roster, requests, [], TOKEN)
@@ -562,7 +571,7 @@ async def test_the_clan_screen_sorts_the_family_by_rank(db):
     chief = second["ranks"][0]["members"][0]
     assert chief["nickname"] == "Тайлер"
     assert not chief["can_expel"] and not chief["can_demote"]
-    assert not chief["can_crown"], "дела передаёт Дон, а не приближённый"
+    assert not chief["can_handover"], "дела передаёт Дон, а не приближённый"
     assert second["ranks"][2]["members"][0]["can_expel"]
 
 
@@ -715,3 +724,190 @@ async def test_the_name_changes_in_the_mansion_and_nowhere_else(db):
     don.location = CLUB
     with pytest.raises(ClanError, match="Особняке мафии"):
         await rename(db, don, "Чёрная рука")
+
+
+# ---------- имущество семьи ----------
+
+
+async def stock(db: Database, player: Player, code: str = "bandana") -> int:
+    """Положить бойцу вещь в рюкзак и вернуть её номер."""
+    owned = await db.add_gear(player.user_id, code)
+    player.gear = await db.list_gear(player.user_id)
+    return owned.id
+
+
+async def test_everyone_fills_the_safe_and_only_elders_empty_it(db):
+    """Сейф: кладут все, кто в семье, берут Дон и приближённые."""
+    don, (capo, soldier) = await family(db, members=2)
+    await promote(db, don, capo.user_id)
+    capo.clan = await db.standing_of(capo.user_id)
+    soldier.credits = 500
+    await db.save_player(soldier)
+
+    said = await deposit(db, soldier, 300)
+    assert "300" in said and soldier.credits == 200
+    assert (await db.clan_by_id(don.clan.clan.id)).vault == 300
+
+    # Остаток видит вся семья — он лежит в ответе особняка у каждого
+    soldier.clan = await db.standing_of(soldier.user_id)
+    assert build_estate(soldier, [])["vault"] == 300
+    assert build_estate(soldier, [])["can_take"] is False
+
+    with pytest.raises(ClanError, match="Дон и приближённые"):
+        await withdraw_vault(db, soldier, 100)
+    assert (await db.clan_by_id(don.clan.clan.id)).vault == 300
+
+    said = await withdraw_vault(db, capo, 200)
+    assert "200" in said and capo.credits == 200
+    assert (await db.clan_by_id(don.clan.clan.id)).vault == 100
+
+    # Больше, чем лежит, не взять — и остаток от этого не меняется
+    with pytest.raises(ClanError, match="столько не взять"):
+        await withdraw_vault(db, don, 101)
+    assert (await db.clan_by_id(don.clan.clan.id)).vault == 100
+
+
+async def test_the_safe_takes_nothing_from_an_empty_pocket(db):
+    """Пустой карман сейф не наполняет: отказ до списания."""
+    don, _ = await family(db)
+    don.credits = 10
+
+    with pytest.raises(ClanError, match="наличными 10"):
+        await deposit(db, don, 50)
+    with pytest.raises(ClanError, match="Напиши число"):
+        await deposit(db, don, 0)
+    assert don.credits == 10
+    assert (await db.clan_by_id(don.clan.clan.id)).vault == 0
+
+
+async def test_the_safe_is_in_the_mansion(db):
+    """Общий карман лежит в доме семьи: до него доходят ногами."""
+    don, _ = await family(db)
+    don.credits = 100
+    don.location = CLUB
+
+    with pytest.raises(ClanError, match="Особняке мафии"):
+        await deposit(db, don, 50)
+    with pytest.raises(ClanError, match="Особняке мафии"):
+        await withdraw_vault(db, don, 50)
+    with pytest.raises(ClanError, match="Особняке мафии"):
+        await stash(db, don, 1)
+    with pytest.raises(ClanError, match="Особняке мафии"):
+        await take(db, don, 1)
+
+
+async def test_a_loner_has_no_safe(db):
+    """Своего сейфа у одиночки нет — и общего тоже."""
+    loner = await enlist(db, 60, "Один")
+    loner.credits = 100
+    with pytest.raises(ClanError, match="не в клане"):
+        await deposit(db, loner, 50)
+    empty = build_estate(loner, [])
+    assert empty["in_clan"] is False and empty["vault"] == 0
+
+
+async def test_things_go_on_the_shelves_and_elders_take_them_off(db):
+    """Хранилище: кладут все, забирают Дон и приближённые."""
+    don, (soldier,) = await family(db, members=1)
+    item_id = await stock(db, soldier)
+
+    said = await stash(db, soldier, item_id)
+    assert "Бандана" in said
+    assert await db.list_gear(soldier.user_id) == [] and soldier.gear == []
+    shelf = await db.clan_items(don.clan.clan.id)
+    assert [one.code for one in shelf] == ["bandana"]
+    assert shelf[0].by_name == "Боец-0"
+
+    # Мафиози с полки не берёт — даже своё
+    with pytest.raises(ClanError, match="Дон и приближённые"):
+        await take(db, soldier, shelf[0].id)
+    assert len(await db.clan_items(don.clan.clan.id)) == 1
+
+    said = await take(db, don, shelf[0].id)
+    assert "Бандана" in said
+    assert [one.code for one in don.gear] == ["bandana"]
+    assert await db.clan_items(don.clan.clan.id) == []
+    with pytest.raises(ClanError, match="уже нет"):
+        await take(db, don, shelf[0].id)
+
+
+async def test_the_shelves_hold_twelve_things_and_not_a_thirteenth(db):
+    """Полок двенадцать: тринадцатую вещь положить некуда."""
+    don, _ = await family(db)
+    for _ in range(VAULT_SLOTS):
+        await stash(db, don, await stock(db, don))
+    extra = await stock(db, don)
+
+    with pytest.raises(ClanError, match=f"{VAULT_SLOTS} полок"):
+        await stash(db, don, extra)
+    assert len(await db.clan_items(don.clan.clan.id)) == VAULT_SLOTS
+    assert [one.id for one in don.gear] == [extra], "вещь осталась у бойца"
+
+
+async def test_the_worn_thing_goes_nowhere(db):
+    """Надетое на полку не кладут: сперва его снимают."""
+    don, _ = await family(db)
+    item_id = await stock(db, don)
+    owned = don.gear[0]
+    owned.slot = owned.item.slot
+    await db.save_gear(owned)
+    don.gear = await db.list_gear(don.user_id)
+
+    with pytest.raises(ClanError, match="сними вещь"):
+        await stash(db, don, item_id)
+    with pytest.raises(ClanError, match="Такой вещи"):
+        await stash(db, don, item_id + 100)
+    assert await db.clan_items(don.clan.clan.id) == []
+
+
+async def test_the_mansion_shows_the_family_and_the_estate(client, db):
+    """Особняк отвечает тремя вкладками: кланы, состав и имущество."""
+    don, (soldier,) = await family(db, members=1)
+    don.credits = 500
+    await db.save_player(don)
+    item_id = await stock(db, don)
+
+    answer = await client.post(
+        "/api/mafia", headers=headers(), json={"action": "deposit", "amount": 400}
+    )
+    assert answer.status == 200, await answer.text()
+    body = await answer.json()
+    assert body["estate"]["vault"] == 400 and body["estate"]["can_take"] is True
+    assert body["estate"]["slots"] == VAULT_SLOTS
+    assert [one["title"] for one in body["estate"]["bag"]] == ["Бандана"]
+    # Состав едет тем же ответом: по нему и рисуется вкладка «Состав»
+    assert [one["nickname"] for one in body["family"]["members"]] == [
+        "Тайлер", "Боец-0"
+    ]
+
+    answer = await client.post(
+        "/api/mafia", headers=headers(), json={"action": "stash", "item": item_id}
+    )
+    assert answer.status == 200, await answer.text()
+    body = await answer.json()
+    stored = body["estate"]["items"]
+    assert [one["title"] for one in stored] == ["Бандана"]
+    assert stored[0]["by"] == "Тайлер" and body["estate"]["free"] == VAULT_SLOTS - 1
+    assert body["estate"]["bag"] == []
+
+    # Мафиози видит и сейф, и полки, а кнопок «взять» у него нет
+    body = await (await client.get("/api/mafia", headers=headers(100))).json()
+    assert body["estate"]["vault"] == 400 and body["estate"]["can_take"] is False
+
+    answer = await client.post(
+        "/api/mafia",
+        headers=headers(100),
+        json={"action": "take", "item": stored[0]["id"]},
+    )
+    assert answer.status == 409
+    assert "Дон и приближённые" in (await answer.json())["error"]
+
+    answer = await client.post(
+        "/api/mafia",
+        headers=headers(),
+        json={"action": "take", "item": stored[0]["id"]},
+    )
+    assert answer.status == 200, await answer.text()
+    body = await answer.json()
+    assert body["estate"]["items"] == []
+    assert [one["title"] for one in body["estate"]["bag"]] == ["Бандана"]

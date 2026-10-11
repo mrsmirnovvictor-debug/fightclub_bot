@@ -336,9 +336,12 @@
     <div id="police-body"></div>
   </main>
 
-  <!-- ---------- 3b8. Особняк мафии: кланы города ---------- -->
-  <!-- Здесь заводят свою семью и стучатся в чужие. Дела внутри семьи —
-       на вкладке «Клан»: она с бойцом везде, а особняк стоит на месте -->
+  <!-- ---------- 3b8. Особняк мафии: дом всех семей города ---------- -->
+  <!-- Три вкладки одного дома: «Кланы» — весь город, свою семью заводят
+       и выбирают здесь; «Состав» — чины и заявки; «Имущество» — сейф и
+       хранилище. Быстрая правка состава есть и в карточке, под
+       местоположением: за чином через полгорода не ходят, а вот за
+       общим карманом — ногами, он лежит в доме -->
   <main id="mafia" class="screen hidden">
     <figure class="interior hidden" id="mafia-interior">
       <img class="interior-pic" id="mafia-pic" alt="">
@@ -351,18 +354,11 @@
     <h1 class="screen-title">🎩 Особняк мафии</h1>
     <p class="screen-note" id="mafia-note"></p>
 
-    <div id="mafia-body"></div>
-  </main>
+    <div class="bubbles" id="mafia-tabs"></div>
 
-  <!-- ---------- 3b9. Своя семья: чины, заявки и приглашения ---------- -->
-  <main id="clan" class="screen hidden">
-    <header class="screen-head">
-      <span class="shop-purse" id="clan-head"></span>
-    </header>
-    <h1 class="screen-title" id="clan-title">🎩 Клан</h1>
-    <p class="screen-note" id="clan-note"></p>
-
-    <div id="clan-body"></div>
+    <section id="mafia-clans"></section>
+    <section id="mafia-family" class="hidden"></section>
+    <section id="mafia-estate" class="hidden"></section>
   </main>
 
   <!-- ---------- 3c. Рынок: обмен между бойцами ---------- -->
@@ -472,6 +468,11 @@
 
     <div class="city" id="hero-city"></div>
 
+    <!-- Имя своей семьи под местоположением: нажатие открывает её состав
+         — поднять, разжаловать или выгнать, не идя в особняк. У чужой
+         карточки строки нет: чужой семьёй не распоряжаются -->
+    <button type="button" class="clan-line hidden" id="hero-clan-line"></button>
+
     <!-- Приёмы — про самого бойца, а не про его поклажу, и стоят рядом с
          характеристиками. В инвентаре их видел только хозяин карточки:
          рюкзак чужим не показывают, а приёмы соперника — то, что стоит
@@ -542,11 +543,6 @@
     </button>
     <button type="button" class="bar-tab active" id="tab-hero">
       <span class="bar-icon">🪪</span><span class="bar-label">Персонаж</span>
-    </button>
-    <!-- Вкладка семьи появляется только у тех, кто в клане: одиночке
-         открывать в ней нечего -->
-    <button type="button" class="bar-tab hidden" id="tab-clan">
-      <span class="bar-icon">🎩</span><span class="bar-label">Клан</span>
     </button>
   </nav>
 

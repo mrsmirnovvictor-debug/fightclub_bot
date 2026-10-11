@@ -4,11 +4,15 @@
 `bot.game.clans`, действия — в `bot.clan_service`, хранение — в
 `bot.database`.
 
-Два экрана и одна строка. Экран особняка — про весь город: завести клан,
-посмотреть чужие, постучаться. Вкладка «Клан» — про свою семью: чины,
-заявки и кнопки старших. А строка одна на оба и на все прочие списки
-города: класс, знак мафии, знак клана, ник, премиум, уровень — ровно в
-этом порядке, и собирает её `member_row`.
+Один экран, три вкладки и одна строка. Особняк — про весь город:
+«Кланы» заводят и выбирают семью, «Состав» разбирает чины и заявки,
+«Имущество» держит сейф и хранилище. Тот же состав едет отдельным
+ответом в карточку бойца: под местоположением стоит имя клана, и по
+нему открывается то же окно — чтобы поднять или выгнать бойца, не
+переходя через полгорода.
+
+А строка одна на все списки города: класс, знак клана, ник, премиум,
+уровень — ровно в этом порядке, и собирает её `member_row`.
 """
 
 from __future__ import annotations
@@ -24,12 +28,16 @@ from bot.game.clans import (
     NAME_MIN,
     RENAME_DAYS,
     RENAME_PRICE,
+    VAULT_SLOTS,
     Clan,
     Knock,
     Member,
     Rank,
     Roster,
+    Stored,
 )
+from bot.game.equipment import get_item
+from bot.game.gear import OwnedItem
 from bot.game.classes import get_class
 from bot.game.clock import club_moment
 from bot.game.health import now_ts
@@ -136,7 +144,10 @@ def member_row(
         "can_expel": boss,
         "can_promote": boss and member.rank is Rank.SOLDIER,
         "can_demote": boss and member.rank is Rank.CAPO,
-        "can_crown": bool(don and member.user_id != viewer.user_id),
+        # Передача дел стоит на строке самого Дона: отдаёт он их, а не
+        # получает, и выбирает преемника списком в окне. На чужой строке
+        # такой кнопки нет — иначе их было бы столько же, сколько людей
+        "can_handover": bool(don and member.user_id == viewer.user_id),
     }
 
 
@@ -192,11 +203,17 @@ def build_mansion(
     knocks: list[Knock],
     bot_token: str,
     now: int | None = None,
+    family: dict[str, Any] | None = None,
+    estate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Экран особняка: завести свой клан, посмотреть чужие, постучаться.
+    """Экран особняка тремя вкладками: кланы, состав и имущество.
 
     `knocks` — заявки самого бойца: по ним в списке и видно, куда он уже
-    стучался и что можно отозвать.
+    стучался и что можно отозвать. `family` и `estate` — две внутренние
+    вкладки: их собирают `build_clan` и `build_estate`, а здесь они
+    только складываются в один ответ, чтобы страница не ходила за
+    особняком трижды. Пусто — боец ни в какой семье, и показывать там
+    нечего.
     """
     moment = now_ts() if now is None else now
     standing = player.clan
@@ -232,6 +249,13 @@ def build_mansion(
             )
             for clan in clans
         ],
+        # Две внутренние вкладки одним ответом: «Состав» и «Имущество»
+        "family": family
+        if family is not None
+        else build_clan(player, None, [], [], bot_token, moment),
+        "estate": estate
+        if estate is not None
+        else build_estate(player, [], moment),
         "note": mansion_note(player),
         "said": "",
     }
@@ -260,13 +284,88 @@ def mansion_note(player: Player) -> str:
         )
     if standing.is_don:
         return (
-            f"Ты Дон клана «{standing.clan.name}». Дела семьи — во вкладке "
-            "«Клан»; уйти можно, только передав их другому."
+            f"Ты Дон клана «{standing.clan.name}». Состав и имущество — на "
+            "соседних вкладках; уйти можно, только передав дела другому."
         )
     return (
         f"Ты в клане «{standing.clan.name}», чин — "
-        f"{standing.rank.title.lower()}. Дела семьи — во вкладке «Клан»."
+        f"{standing.rank.title.lower()}. Состав и имущество — на соседних "
+        "вкладках."
     )
+
+
+def stored_row(player: Player, stored: Stored, moment: int) -> dict[str, Any]:
+    """Вещь с полки хранилища: та же строка, что в рюкзаке, плюс чья она.
+
+    Строку собирает рюкзачный `item_payload`: вещь на полке — та же
+    вещь, и показывать её вторым способом значило бы рассказывать про
+    износ и требования дважды. Зовётся он отсюда, а не сверху файла:
+    карточка сама берёт у этого модуля знак клана, и встречный импорт
+    закольцевал бы оба.
+    """
+    from bot.webapp.card import item_payload
+
+    item = get_item(stored.code)
+    if item is None:  # pragma: no cover - вещь выкинули из раздачи
+        return {}
+    owned = OwnedItem(
+        item=item,
+        id=stored.id,
+        wear=stored.wear,
+        max_wear=stored.max_wear,
+        mod=stored.mod,
+        mod_value=stored.mod_value,
+    )
+    row = item_payload(player, owned)
+    row["by"] = stored.by_name
+    row["by_id"] = stored.by_id
+    row["when"] = club_moment(stored.put_at) if stored.put_at else ""
+    return row
+
+
+def build_estate(
+    player: Player, items: list[Stored], now: int | None = None
+) -> dict[str, Any]:
+    """Вкладка «Имущество»: сейф с кредитами и двенадцать полок.
+
+    Остаток сейфа видит вся семья — общий карман тем и общий, что в него
+    видно. А брать из него и с полок дают только старшим, и это решает
+    не страница: кнопки она прячет по `can_take`, но отказывает сервер.
+    """
+    from bot.webapp.card import item_payload
+
+    moment = now_ts() if now is None else now
+    standing = player.clan
+    if standing is None:
+        return {
+            "in_clan": False,
+            "vault": 0,
+            "slots": VAULT_SLOTS,
+            "free": VAULT_SLOTS,
+            "can_take": False,
+            "items": [],
+            "bag": [],
+        }
+    rows = [
+        row
+        for row in (stored_row(player, one, moment) for one in items)
+        if row
+    ]
+    return {
+        "in_clan": True,
+        "clan": standing.clan.name,
+        "vault": standing.clan.vault,
+        "slots": VAULT_SLOTS,
+        "free": max(0, VAULT_SLOTS - len(rows)),
+        # Класть можно всем, брать — только Дону и приближённым
+        "can_take": standing.can_admin,
+        "credits": player.credits,
+        "purse": purse_payload(player, moment, Service.MAFIA),
+        "items": rows,
+        # Что боец может положить: снятое из рюкзака. Надетое на полку не
+        # ложится — сперва его снимают в инвентаре
+        "bag": [item_payload(player, owned) for owned in player.backpack],
+    }
 
 
 def build_clan(
@@ -348,6 +447,7 @@ def invites_payload(
 
 __all__ = [
     "build_clan",
+    "build_estate",
     "build_mansion",
     "clan_payload",
     "fighter_badges",
@@ -358,4 +458,5 @@ __all__ = [
     "sign_payload",
     "sign_picture",
     "signs_payload",
+    "stored_row",
 ]

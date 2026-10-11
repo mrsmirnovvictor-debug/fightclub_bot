@@ -16,7 +16,16 @@ from bot.game.economy import RATING_START
 from bot.game.locations import FIGHT_CLUB
 from bot.game.abilities import Loadout
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
-from bot.game.clans import Clan, Knock, Member, Petition, Rank, Roster, Standing
+from bot.game.clans import (
+    Clan,
+    Knock,
+    Member,
+    Petition,
+    Rank,
+    Roster,
+    Standing,
+    Stored,
+)
 from bot.game.driving import School
 from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, get_injury
@@ -457,6 +466,7 @@ CREATE TABLE IF NOT EXISTS clans (
     sign        TEXT    NOT NULL,
     created_at  INTEGER NOT NULL DEFAULT 0,
     renamed_at  INTEGER NOT NULL DEFAULT 0,
+    vault       INTEGER NOT NULL DEFAULT 0,
     don         INTEGER NOT NULL
 );
 
@@ -494,6 +504,23 @@ CREATE TABLE IF NOT EXISTS clan_petitions (
 );
 
 CREATE INDEX IF NOT EXISTS clan_petitions_user ON clan_petitions(user_id);
+
+-- Хранилище семьи: двенадцать вещей на клан. Вещь не копируется — она
+-- переезжает сюда из инвентаря целиком, со своим износом и своей
+-- модификацией, и так же возвращается обратно
+CREATE TABLE IF NOT EXISTS clan_items (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    clan_id   INTEGER NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
+    code      TEXT    NOT NULL,
+    wear      INTEGER NOT NULL DEFAULT 0,
+    max_wear  INTEGER NOT NULL DEFAULT 20,
+    mod       TEXT    NOT NULL DEFAULT '',
+    mod_value INTEGER NOT NULL DEFAULT 0,
+    put_by    INTEGER NOT NULL DEFAULT 0,
+    put_at    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS clan_items_clan ON clan_items(clan_id);
 
 -- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
 -- ничего не задваивает, а новая группа получает всё с начала.
@@ -647,6 +674,23 @@ class Database:
         await self._migrate_duels()
         await self._migrate_arenas()
         await self._migrate_raid_windows()
+        await self._migrate_clans()
+
+    async def _migrate_clans(self) -> None:
+        """Дописать сейф в уже заведённые кланы.
+
+        Кланы появились раньше имущества, и на живой базе `CREATE TABLE
+        IF NOT EXISTS` колонку не добавит: таблица уже есть.
+        """
+        async with self.conn.execute("PRAGMA table_info(clans)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if not columns or "vault" in columns:
+            return
+        await self.conn.execute(
+            "ALTER TABLE clans ADD COLUMN vault INTEGER NOT NULL DEFAULT 0"
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: добавлена колонка clans.vault")
 
     async def _index_migrated_columns(self) -> None:
         """Индексы по колонкам, которых в первой версии базы не было.
@@ -1104,7 +1148,7 @@ class Database:
         async with self.conn.execute(
             f"""
             SELECT m.user_id, m.rank, m.joined_at,
-                   c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+                   c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at, c.vault,
                    (SELECT COUNT(*) FROM clan_members k WHERE k.clan_id = c.id)
                        AS members
             FROM clan_members m JOIN clans c ON c.id = m.clan_id
@@ -1883,6 +1927,7 @@ class Database:
             sign=str(row["sign"]),
             members=int(row["members"] if "members" in row.keys() else 0),
             renamed_at=int(row["renamed_at"]),
+            vault=int(row["vault"]),
         )
 
     async def create_clan(
@@ -1936,7 +1981,7 @@ class Database:
     async def clan_by_id(self, clan_id: int) -> Clan | None:
         async with self.conn.execute(
             """
-            SELECT c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+            SELECT c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at, c.vault,
                    (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id)
                        AS members
             FROM clans c WHERE c.id = ?
@@ -1950,7 +1995,7 @@ class Database:
         """Клан по имени, не глядя на регистр: имя одно на город."""
         async with self.conn.execute(
             """
-            SELECT c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+            SELECT c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at, c.vault,
                    (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id)
                        AS members
             FROM clans c WHERE c.name_key = ?
@@ -1964,7 +2009,7 @@ class Database:
         """Все кланы города: сперва большие, при равенстве — старшие."""
         async with self.conn.execute(
             """
-            SELECT c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+            SELECT c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at, c.vault,
                    (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id)
                        AS members
             FROM clans c
@@ -1994,7 +2039,7 @@ class Database:
         async with self.conn.execute(
             """
             SELECT m.rank, m.joined_at,
-                   c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+                   c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at, c.vault,
                    (SELECT COUNT(*) FROM clan_members k WHERE k.clan_id = c.id)
                        AS members
             FROM clan_members m JOIN clans c ON c.id = m.clan_id
@@ -2102,6 +2147,140 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
         return int(row["n"]) if row else 0
+
+    # ---------- имущество семьи: сейф и хранилище ----------
+
+    async def move_vault(self, clan_id: int, amount: int) -> bool:
+        """Положить в сейф или взять из него. False — в сейфе столько нет.
+
+        Проверка стоит в самом запросе: между «посмотрели остаток» и
+        «списали» успевает пройти чужая рука, и ловить это питоном
+        значило бы ловить с опозданием.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE clans SET vault = vault + ? WHERE id = ? AND vault + ? >= 0",
+            (amount, clan_id, amount),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def clan_items(self, clan_id: int) -> list[Stored]:
+        """Что лежит в хранилище семьи, сперва положенное раньше."""
+        async with self.conn.execute(
+            """
+            SELECT i.id, i.code, i.wear, i.max_wear, i.mod, i.mod_value,
+                   i.put_by, i.put_at,
+                   (SELECT nickname FROM players WHERE user_id = i.put_by) AS by_name
+            FROM clan_items i WHERE i.clan_id = ? ORDER BY i.put_at, i.id
+            """,
+            (clan_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            Stored(
+                id=int(row["id"]),
+                code=str(row["code"]),
+                wear=int(row["wear"]),
+                max_wear=int(row["max_wear"]),
+                mod=str(row["mod"]),
+                mod_value=int(row["mod_value"]),
+                by_id=int(row["put_by"]),
+                by_name=str(row["by_name"] or ""),
+                put_at=int(row["put_at"]),
+            )
+            for row in rows
+        ]
+
+    async def stash_gear(
+        self, item_id: int, user_id: int, clan_id: int, limit: int, now: int
+    ) -> bool:
+        """Переложить вещь из рюкзака в хранилище клана.
+
+        False — вещи у бойца нет, она надета или в хранилище нет места.
+        Вещь не копируется: сначала её забирают из инвентаря и только
+        потом кладут на полку, и если забрать не вышло, класть нечего.
+        """
+        async with self.conn.execute(
+            """
+            SELECT code, wear, max_wear, mod, mod_value FROM inventory
+            WHERE id = ? AND user_id = ? AND slot IS NULL
+            """,
+            (item_id, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return False
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM clan_items WHERE clan_id = ?", (clan_id,)
+        ) as cursor:
+            crowd = await cursor.fetchone()
+        if int(crowd["n"]) >= limit:
+            return False
+        cursor = await self.conn.execute(
+            "DELETE FROM inventory WHERE id = ? AND user_id = ? AND slot IS NULL",
+            (item_id, user_id),
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - вещь увели между двумя запросами
+            await self.conn.commit()
+            return False
+        await self.conn.execute(
+            """
+            INSERT INTO clan_items
+                (clan_id, code, wear, max_wear, mod, mod_value, put_by, put_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                clan_id,
+                str(row["code"]),
+                int(row["wear"]),
+                int(row["max_wear"]),
+                str(row["mod"]),
+                int(row["mod_value"]),
+                user_id,
+                now,
+            ),
+        )
+        await self.conn.commit()
+        return True
+
+    async def take_clan_item(
+        self, stored_id: int, clan_id: int, user_id: int
+    ) -> str:
+        """Забрать вещь с полки себе в рюкзак. Пусто — её там уже нет.
+
+        Возвращает код вещи: по нему службе есть что сказать бойцу.
+        """
+        async with self.conn.execute(
+            "SELECT code, wear, max_wear, mod, mod_value FROM clan_items "
+            "WHERE id = ? AND clan_id = ?",
+            (stored_id, clan_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return ""
+        cursor = await self.conn.execute(
+            "DELETE FROM clan_items WHERE id = ? AND clan_id = ?",
+            (stored_id, clan_id),
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - вещь забрали между запросами
+            await self.conn.commit()
+            return ""
+        await self.conn.execute(
+            """
+            INSERT INTO inventory (user_id, code, wear, max_wear, mod, mod_value)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (
+                user_id,
+                str(row["code"]),
+                int(row["wear"]),
+                int(row["max_wear"]),
+                str(row["mod"]),
+                int(row["mod_value"]),
+            ),
+        )
+        await self.conn.commit()
+        return str(row["code"])
 
     # ---------- заявки и приглашения ----------
 

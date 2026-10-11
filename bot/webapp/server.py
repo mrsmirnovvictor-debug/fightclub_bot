@@ -73,6 +73,7 @@ from bot.clan_service import (
     approve as clan_approve,
     decline as clan_decline,
     demote as clan_demote,
+    deposit as clan_deposit,
     expel as clan_expel,
     found as clan_found,
     handover as clan_handover,
@@ -81,7 +82,10 @@ from bot.clan_service import (
     promote as clan_promote,
     refuse as clan_refuse,
     rename as clan_rename,
+    stash as clan_stash,
+    take as clan_take,
     withdraw as clan_withdraw,
+    withdraw_vault as clan_cash,
 )
 from bot.game.clans import Petition
 from bot.webapp.citymap import build_map
@@ -111,7 +115,12 @@ from bot.driving_service import (
     start_exam as school_exam,
     take_licence as school_licence,
 )
-from bot.webapp.clans import build_clan, build_mansion, invites_payload
+from bot.webapp.clans import (
+    build_clan,
+    build_estate,
+    build_mansion,
+    invites_payload,
+)
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
     build_market,
@@ -1853,20 +1862,38 @@ async def _mansion_state(
     config = request.app[CONFIG_KEY]
     clans = await db.all_clans()
     knocks = await db.petitions_of_user(player.user_id, Petition.REQUEST)
-    body = build_mansion(player, clans, knocks, config.bot_token)
+    # Две внутренние вкладки особняка: состав семьи и её имущество.
+    # Одиночке там нечего смотреть, и база за ними не ходит
+    family = build_clan(player, *await _family(db, player), config.bot_token)
+    items = (
+        await db.clan_items(player.clan.clan.id) if player.clan is not None else []
+    )
+    body = build_mansion(
+        player,
+        clans,
+        knocks,
+        config.bot_token,
+        family=family,
+        estate=build_estate(player, items),
+    )
     body["said"] = said
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)
 
 
 async def api_mansion(request: web.Request) -> web.Response:
-    """Особняк мафии: свой клан, чужие кланы и кнопка завести свой."""
+    """Особняк мафии: кланы города, состав своей семьи и её имущество."""
     player = await _at(request, Service.MAFIA)
     return await _mansion_state(request, player)
 
 
 async def api_mansion_action(request: web.Request) -> web.Response:
-    """Завести клан, постучаться в чужой, отозвать заявку или уйти."""
+    """Дела особняка: завести клан, постучаться, уйти, сейф и хранилище.
+
+    Сейф и полки — тоже дела особняка: общий карман лежит в доме семьи, и
+    дойти до него надо ногами. Чины и заявки решают из карточки, и они
+    остались на `/api/clan`.
+    """
     data = await _payload(request)
     action = str(data.get("action") or "")
     db = request.app[DB_KEY]
@@ -1888,6 +1915,14 @@ async def api_mansion_action(request: web.Request) -> web.Response:
             said = await clan_withdraw(db, player, int(data.get("clan", 0)))
         elif action == "leave":
             said = await clan_leave(db, player)
+        elif action == "deposit":
+            said = await clan_deposit(db, player, int(data.get("amount", 0)))
+        elif action == "cash":
+            said = await clan_cash(db, player, int(data.get("amount", 0)))
+        elif action == "stash":
+            said = await clan_stash(db, player, int(data.get("item", 0)))
+        elif action == "take":
+            said = await clan_take(db, player, int(data.get("item", 0)))
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except ClanError as error:
@@ -1898,19 +1933,29 @@ async def api_mansion_action(request: web.Request) -> web.Response:
     return await _mansion_state(request, fresh, said)
 
 
+async def _family(db, player) -> tuple:
+    """Состав семьи, заявки и приглашения — то, из чего собран «Состав».
+
+    Заявки и приглашения спрашиваем только у старших: мафиози эти списки
+    не решает, и тащить из базы чужие ники ради него незачем.
+    """
+    if player.clan is None:
+        return None, [], []
+    clan_id = player.clan.clan.id
+    roster = await db.roster_of(clan_id)
+    if not player.clan.can_admin:
+        return roster, [], []
+    return (
+        roster,
+        await db.petitions_of_clan(clan_id, Petition.REQUEST),
+        await db.petitions_of_clan(clan_id, Petition.INVITE),
+    )
+
+
 async def _clan_state(request: web.Request, player, said: str = "") -> web.Response:
     db = request.app[DB_KEY]
     config = request.app[CONFIG_KEY]
-    roster = None
-    requests: list = []
-    invites: list = []
-    if player.clan is not None:
-        clan_id = player.clan.clan.id
-        roster = await db.roster_of(clan_id)
-        if player.clan.can_admin:
-            requests = await db.petitions_of_clan(clan_id, Petition.REQUEST)
-            invites = await db.petitions_of_clan(clan_id, Petition.INVITE)
-    body = build_clan(player, roster, requests, invites, config.bot_token)
+    body = build_clan(player, *await _family(db, player), config.bot_token)
     body["said"] = said
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)

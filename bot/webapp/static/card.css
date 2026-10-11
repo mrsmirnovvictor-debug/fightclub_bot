@@ -1030,6 +1030,68 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    уже есть, — но взять его нельзя */
 .sign.taken { opacity: 0.35; cursor: default; }
 
+/* Имя своей семьи в карточке, под местоположением: это вход в состав,
+   поэтому строка выглядит кнопкой — знак, имя, чин */
+.clan-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  margin: -8px 0 14px;
+  padding: 7px 10px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.clan-line-name { font-weight: 700; }
+.clan-line-rank { color: var(--muted); font-size: 12.5px; }
+
+/* Шапка вкладки «Состав»: знак слева, имя и размер семьи справа */
+.clan-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.clan-head-text { min-width: 0; }
+.clan-head-name { font-weight: 700; font-size: 15px; }
+
+/* Сейф: остаток одним числом — его видит вся семья */
+.vault-sum {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  margin: 2px 0 6px;
+}
+
+/* Хранилище: двенадцать полок, и пустые тоже видно — по ним и понятно,
+   сколько места осталось. Клетка та же, что у знаков: квадрат с рамкой */
+.shelf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.shelf-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  padding: 4px;
+  border: 1px solid var(--slot-line);
+  border-radius: 8px;
+  background: var(--slot);
+  color: inherit;
+  font-size: 22px;
+  cursor: pointer;
+}
+.shelf-slot img { width: 100%; height: 100%; object-fit: contain; }
+.shelf-slot.free { color: var(--muted); border-style: dashed; }
+.shelf-slot.tier { border-color: var(--accent); }
+
+/* Поля в окне стоят друг под другом: передача прав спрашивает двумя
+   списками, сейф — одним числом, и слипаться им незачем */
+#sheet-list .field-input { margin-bottom: 8px; }
+
 /* Смена имени: поле и кнопка в строку, на узком экране — в столбик */
 .clan-rename { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .clan-rename .field-input { flex: 1 1 140px; min-width: 0; }

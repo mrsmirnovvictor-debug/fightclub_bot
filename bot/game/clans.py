@@ -28,6 +28,11 @@
 сменить за 200 кредитов, но не чаще раза в полгода: имя семьи — не
 вывеска на один вечер.
 
+**Имущество у семьи общее.** В сейфе лежат кредиты, в хранилище —
+двенадцать вещей. Кладут туда все, кто в клане; берут только Дон и
+приближённые. Так общий карман остаётся общим: мафиози несёт в семью, а
+распоряжается семьёй старший.
+
 Здесь только правила: что можно, кому и в каких границах. Сами действия
 — в `bot.clan_service`, хранение — в `bot.database`, экраны — в
 `bot.webapp.clans`.
@@ -60,6 +65,10 @@ NAME_ALLOWED = re.compile(r"^[0-9A-Za-zА-Яа-яЁё №\"'«».,!?\-–—()]+
 RENAME_PRICE = 200
 RENAME_DAYS = 182
 RENAME_COOLDOWN = RENAME_DAYS * 24 * 60 * 60
+
+# Имущество семьи: сейф с кредитами и хранилище на двенадцать вещей.
+# Кладут все, берут только старшие — в этом и смысл общего кармана
+VAULT_SLOTS = 12
 
 
 class Rank(str, Enum):
@@ -122,6 +131,8 @@ class Clan:
     # Когда имя меняли в последний раз. 0 — не меняли ни разу, и первая
     # смена доступна сразу
     renamed_at: int = 0
+    # Сколько кредитов в сейфе семьи
+    vault: int = 0
 
     @property
     def full(self) -> bool:
@@ -181,6 +192,21 @@ class Member:
     # по нему. Самого значка здесь нет — это уже дело экрана
     pro_until: int = 0
     joined_at: int = 0
+
+
+@dataclass(frozen=True)
+class Stored:
+    """Вещь в хранилище клана: чья она была и когда её положили."""
+
+    id: int
+    code: str
+    wear: int = 0
+    max_wear: int = 0
+    mod: str = ""
+    mod_value: int = 0
+    by_id: int = 0
+    by_name: str = ""
+    put_at: int = 0
 
 
 @dataclass(frozen=True)
@@ -281,6 +307,7 @@ __all__ = [
     "RENAME_COOLDOWN",
     "RENAME_DAYS",
     "RENAME_PRICE",
+    "VAULT_SLOTS",
     "Clan",
     "Knock",
     "Member",
@@ -288,6 +315,7 @@ __all__ = [
     "Rank",
     "Roster",
     "Standing",
+    "Stored",
     "clean_name",
     "name_problem",
     "sign_problem",

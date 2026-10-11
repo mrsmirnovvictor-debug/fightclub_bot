@@ -216,16 +216,15 @@ def mansion_state(**changes) -> dict:
     return body
 
 
-def clan_state(**changes) -> dict:
-    """Ответ вкладки «Клан»: семья, какой её видит Дон."""
+def a_family(vault: int = 0) -> tuple:
+    """Семья для экранов: Дон, приближённая и мафиози — и её сейф."""
     from bot.game.clans import Clan, Member, Rank, Roster
     from bot.game.health import now_ts
-    from bot.webapp.clans import build_clan
 
     moment = now_ts()
     clan = Clan(
         id=1, name="Коза Ностра", don=42, created_at=moment,
-        sign="black_ravens", members=3,
+        sign="black_ravens", members=3, vault=vault,
     )
     don = make_player("mafia_mansion")
     don.clan = Standing(clan=clan, rank=Rank.DON, joined_at=moment)
@@ -246,7 +245,49 @@ def clan_state(**changes) -> dict:
             ),
         ],
     )
+    return don, roster
+
+
+def clan_state(**changes) -> dict:
+    """Ответ `api/clan`: семья, какой её видит Дон в окне из карточки."""
+    from bot.webapp.clans import build_clan
+
+    don, roster = a_family()
     body = build_clan(don, roster, [], [], TOKEN)
+    body.update(changes)
+    return body
+
+
+def stored_things(*codes: str) -> list:
+    """Вещи на полках хранилища: по одной на каждый код."""
+    from bot.game.clans import Stored
+
+    return [
+        Stored(
+            id=number + 1, code=code, max_wear=20, by_id=43, by_name="Марла",
+            put_at=now_ts(),
+        )
+        for number, code in enumerate(codes)
+    ]
+
+
+def don_mansion(vault: int = 400, items=(), bag=("bandana",), **changes) -> dict:
+    """Особняк глазами Дона: все три вкладки одним ответом."""
+    from bot.webapp.clans import build_clan, build_estate, build_mansion
+
+    don, roster = a_family(vault)
+    don.gear = [
+        OwnedItem(item=CATALOGUE[code], id=number + 1)
+        for number, code in enumerate(bag)
+    ]
+    body = build_mansion(
+        don,
+        [roster.clan],
+        [],
+        TOKEN,
+        family=build_clan(don, roster, [], [], TOKEN),
+        estate=build_estate(don, list(items)),
+    )
     body.update(changes)
     return body
 
@@ -1374,8 +1415,8 @@ async def test_the_bottom_bar_switches_four_screens(server):
     Магазинов на панели больше нет — они дома на карте, и лавка мага тоже
     (теперь это элитный магазин). Панель стала короче ровно настолько.
 
-    Пятая кнопка на панели есть, но стоит скрытой: вкладка «Клан» —
-    только для тех, кто в семье, и у одиночки её не видно.
+    Клана на панели нет: состав и имущество семьи лежат в особняке, а
+    быстрая правка состава открывается окном из карточки.
     """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -1386,7 +1427,7 @@ async def test_the_bottom_bar_switches_four_screens(server):
 
         assert await page.locator("#bar").is_visible()
         assert await page.locator(".bar-tab:visible").count() == 4
-        assert await page.locator("#tab-clan").is_hidden()
+        assert await page.locator("#tab-clan").count() == 0
         # открывается карточка персонажа, её вкладка и подсвечена
         assert await page.locator("#tab-hero").get_attribute("class") == "bar-tab active"
 
@@ -9374,7 +9415,7 @@ async def test_the_school_and_the_mansion_show_the_wallet(server):
         ).first.inner_text()
 
         await open_screen(page, "mafia")
-        await page.wait_for_selector("#mafia-body .shelf")
+        await page.wait_for_selector("#mafia-clans .shelf")
         assert await page.locator("#mafia .wallet-pick").count() == 2
         await browser.close()
 
@@ -9452,9 +9493,9 @@ async def test_the_mansion_offers_a_clan_and_lists_the_families(server):
         browser, page = await open_page(pw, server, card, mafia=mafia)
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "mafia")
-        await page.wait_for_selector("#mafia-body .shelf")
+        await page.wait_for_selector("#mafia-clans .shelf")
 
-        heads = await page.locator("#mafia-body .shelf-head").all_inner_texts()
+        heads = await page.locator("#mafia-clans .shelf-head").all_inner_texts()
         assert heads == ["Завести свой клан", "Кланы города · 2"]
         assert await page.locator("#clan-name").count() == 1
         # Знаки лежат решёткой: занятые видно, но взять их нельзя
@@ -9462,7 +9503,7 @@ async def test_the_mansion_offers_a_clan_and_lists_the_families(server):
         assert await signs.count() == 17
         assert await page.locator("#sign-grid .sign.taken").count() == 2
         assert await signs.nth(1).is_disabled()
-        buttons = await page.locator("#mafia-body .btn").all_inner_texts()
+        buttons = await page.locator("#mafia-clans .btn").all_inner_texts()
         assert "1000 💰" in buttons[0]
 
         # Выбрали знак — он подсветился, а его имя встало в поле
@@ -9484,11 +9525,12 @@ async def test_the_mansion_offers_a_clan_and_lists_the_families(server):
         await browser.close()
 
 
-async def test_the_clan_tab_belongs_to_the_family_alone(server):
-    """Вкладка «Клан» горит только у того, кто в семье.
+async def test_the_clan_line_in_the_card_opens_the_family(server):
+    """Имя семьи стоит в карточке под местоположением и открывает состав.
 
-    Одиночке в ней нечего открывать, и пятая кнопка внизу у него не
-    стоит вовсе. Знаки у ника появляются там же и тогда же.
+    Своей вкладки у клана нет: одиночке её открывать нечего, а тому, кто
+    в семье, чин соседа нужен под рукой — не через полгорода в особняк.
+    Поэтому строка в карточке, а по ней — окно с составом.
     """
     player = make_player()
     alone = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -9502,30 +9544,53 @@ async def test_the_clan_tab_belongs_to_the_family_alone(server):
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, alone, clan=clan_state())
         await page.wait_for_selector("#hero:not(.hidden)")
-        assert await page.locator("#tab-clan").is_hidden()
+        assert await page.locator("#hero-clan-line").is_hidden()
         assert await page.locator("#hero-clan .clan-sign").count() == 0
         await browser.close()
 
-        # Тот же боец, но уже при семье: вкладка встала на панель, а
+        # Тот же боец, но уже при семье: строка встала под город, а
         # знаки — у ника
         browser, page = await open_page(pw, server, mafioso, clan=clan_state())
         await page.wait_for_selector("#hero:not(.hidden)")
-        assert await page.locator("#tab-clan").is_visible()
+        line = page.locator("#hero-clan-line")
+        assert await line.is_visible()
+        assert "Коза Ностра" in await line.inner_text()
+        assert await line.locator(".clan-sign").count() == 1
         assert await page.locator("#hero-clan .clan-sign").count() == 1
 
-        await page.locator("#tab-clan").click()
-        await page.wait_for_selector("#clan:not(.hidden)")
-        assert "Коза Ностра" in await page.locator("#clan-title").inner_text()
+        # По строке открывается окно состава: три чина и кнопки старших
+        await line.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Коза Ностра" in await page.locator("#sheet-title").inner_text()
+        heads = await page.locator("#sheet-list .shelf-head").all_inner_texts()
+        assert heads == ["Заявки · 0", "Дон", "Приближённые · 1 из 3", "Мафиози"]
+
+        # Кнопки в окне правят состав: ответ уходит той же ручкой
+        await page.evaluate(
+            """() => {
+                window.clanAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        soldier = page.locator("#sheet-list .clan-row", has_text="Ангел")
+        await soldier.locator(".btn", has_text="Приблизить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "promote", "user": 44
+        }
         await browser.close()
 
 
 async def test_the_family_stands_in_three_rows_with_its_marks(server):
-    """Вкладка клана: Дон, приближённые, мафиози — и знаки у каждого.
+    """Вкладка «Состав» в особняке: Дон, приближённые, мафиози.
 
-    Порядок знаков в строке один на весь город: класс, знак мафии, знак
-    клана, ник, премиум, уровень.
+    Порядок знаков в строке один на весь город: класс, знак клана, ник,
+    премиум, уровень. Права Дон передаёт со своей строки — выпадающим
+    списком, а не кнопкой у каждого бойца: в семье их до двадцати пяти.
     """
-    player = make_player()
+    player = make_player("mafia_mansion")
     player.clan = Standing(
         clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
                   sign="black_ravens", members=3),
@@ -9534,52 +9599,146 @@ async def test_the_family_stands_in_three_rows_with_its_marks(server):
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     async with async_playwright() as pw:
-        browser, page = await open_page(pw, server, card, clan=clan_state())
+        browser, page = await open_page(pw, server, card, mafia=don_mansion())
         await page.wait_for_selector("#hero:not(.hidden)")
-        await open_screen(page, "clan")
-        await page.wait_for_selector("#clan-body .shelf")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
 
-        heads = await page.locator("#clan-body .shelf-head").all_inner_texts()
+        # Три вкладки одного дома, и своя семья в списке с галочкой
+        assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
+            "🎩 Кланы", "👔 Состав", "💼 Имущество"
+        ]
+        assert "✅ Коза Ностра" in await page.locator(".clan-card").inner_text()
+
+        await page.locator("#mafia-tabs .chip", has_text="Состав").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+        heads = await page.locator("#mafia-family .shelf-head").all_inner_texts()
         assert heads == ["Заявки · 0", "Дон", "Приближённые · 1 из 3",
                          "Мафиози", "Позвать в семью"]
 
-        # Строка приближённого: класс, знак мафии, знак клана, ник с
-        # премиумом, уровень
-        capo = page.locator(".clan-row", has_text="Марла")
+        # Строка приближённой: класс, знак клана, ник с премиумом, уровень
+        capo = page.locator("#mafia-family .clan-row", has_text="Марла")
         assert await capo.locator(".fighter-class").inner_text() == "🤸"
         assert await capo.locator(".clan-sign").count() == 1
         assert await capo.locator(".fighter-name").inner_text() == "Марла 💎"
         assert await capo.locator(".fighter-level").inner_text() == "[7]"
-        # Дон видит кнопки на каждом, кроме себя
         assert await capo.locator(".btn").all_inner_texts() == [
-            "Разжаловать", "Передать дела", "Выгнать"
+            "Разжаловать", "Выгнать"
         ]
-        don = page.locator(".clan-row", has_text="Растафарайчик")
-        assert await don.locator(".btn").count() == 0
+        # А на себе у Дона одна кнопка — передача прав
+        don = page.locator("#mafia-family .clan-row", has_text="Растафарайчик")
+        assert await don.locator(".btn").all_inner_texts() == ["Передать права"]
 
-        # Передача дел спрашивает дважды: кому и кем остаться самому —
-        # прежний Дон выбирает свой чин сам
+        # Окно передачи прав: список семьи, свой чин и две кнопки
         await page.evaluate(
             """() => {
-                window.asked = [];
-                window.askConfirm = (title) => {
-                    window.asked.push(title);
-                    return Promise.resolve(true);
-                };
                 window.clanAction = (payload) => {
                     window.sent = payload;
                     return Promise.resolve();
                 };
             }"""
         )
-        await capo.locator(".btn", has_text="Передать дела").click()
+        await don.locator(".btn", has_text="Передать права").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        heirs = await page.locator("#handover-heir option").all_inner_texts()
+        assert heirs == ["Марла · Приближённый", "Ангел · Мафиози"]
+        await page.select_option("#handover-heir", "44")
+        await page.select_option("#handover-keep", "soldier")
+        await page.locator("#sheet-list .btn", has_text="Подтвердить").click()
         await page.wait_for_function("() => window.sent")
-        assert await page.evaluate("window.asked") == [
-            "Передать дела?", "Кем остаёшься?"
-        ]
         assert await page.evaluate("window.sent") == {
-            "action": "handover", "user": 43, "keep": "capo"
+            "action": "handover", "user": 44, "keep": "soldier"
         }
+        await browser.close()
+
+
+async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
+    """Вкладка «Имущество»: сейф с остатком и двенадцать полок.
+
+    Остаток видит вся семья, и это главное свойство экрана: карман общий.
+    Кладут в него все, забирают Дон и приближённые, и каждое действие —
+    через окно: деньги и вещи мимо вопроса не уходят.
+    """
+    player = make_player("mafia_mansion")
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3, vault=400),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    mafia = don_mansion(vault=400, items=stored_things("pipe"))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, mafia=mafia)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+
+        await page.locator("#mafia-tabs .chip", has_text="Имущество").click()
+        await page.wait_for_selector("#mafia-estate:not(.hidden)")
+        assert await page.locator(".vault-sum").inner_text() == "400 💰"
+        heads = await page.locator("#mafia-estate .shelf-head").all_inner_texts()
+        assert heads == ["Сейф семьи", "Хранилище · 1 из 12"]
+        # Полок двенадцать: занятые с картинкой, свободные с плюсом
+        assert await page.locator("#shelf-grid .shelf-slot").count() == 12
+        assert await page.locator("#shelf-grid .shelf-slot.free").count() == 11
+
+        await page.evaluate(
+            """() => {
+                window.mafiaAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        # Сейф: «Внести» спрашивает сумму окном
+        await page.locator("#mafia-estate .btn", has_text="Внести").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.fill("#vault-sum", "250")
+        await page.locator("#sheet-list .btn", has_text="Подтвердить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "deposit", "amount": 250
+        }
+
+        # Вещь с полки забирают тем же окном, и в нём сказано, чья она
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#shelf-grid .shelf-slot:not(.free)").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Марла" in await page.locator("#sheet-note").inner_text()
+        await page.locator("#sheet-list .btn", has_text="Забрать себе").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "take", "item": 1}
+
+        # А на свободную полку кладут из своего рюкзака
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#shelf-grid .shelf-slot.free").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Свободных полок: 11" in await page.locator(
+            "#sheet-note"
+        ).inner_text()
+        await page.locator("#sheet-list .btn", has_text="Положить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "stash", "item": 1}
+        await browser.close()
+
+
+async def test_a_loner_sees_only_the_clans_tab(server):
+    """У одиночки в особняке одна вкладка: состав и сейф чужой семьи не его."""
+    player = make_player("mafia_mansion")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+
+        assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
+            "🎩 Кланы"
+        ]
+        assert await page.locator("#mafia-family").is_hidden()
+        assert await page.locator("#mafia-estate").is_hidden()
         await browser.close()
 
 
