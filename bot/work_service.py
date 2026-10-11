@@ -79,6 +79,10 @@ class Payslip:
     hours: float
     paid: int
     fired: bool
+    # Переработка: часы сверх нормы и что за них доплатили. Ноль —
+    # неделя в норму уложилась
+    overtime: float = 0.0
+    extra: int = 0
 
 
 # ---------- кто где работает ----------
@@ -285,6 +289,11 @@ async def settle(db: Database, player: Player, now: int | None = None) -> str:
         f"Жалованье за неделю: {slip.paid} 💰 за {slip.hours:g} ч "
         f"из {vacancy.hours}."
     )
+    if slip.extra:
+        said += (
+            f" Из них оклад {vacancy.salary} 💰 и сверхурочные "
+            f"{slip.extra} 💰 за {slip.overtime:g} ч сверх нормы."
+        )
     if slip.fired:
         await _release(db, player, vacancy, moment, "fired")
         said += (
@@ -306,6 +315,7 @@ async def _pay(
     """
     hours = hours_of(player.job_minutes)
     paid = vacancy.payout(hours)
+    extra = vacancy.overtime_pay(hours)
     dismissed = vacancy.fires(hours) if fired is None else fired
 
     if paid:
@@ -317,13 +327,16 @@ async def _pay(
     player.job_week = week_of(now)
     await db.save_player(player)
     logger.info(
-        "Жалованье бойцу %s: %s за %s ч (%s)",
+        "Жалованье бойцу %s: %s за %s ч (%s), сверхурочных %s",
         player.user_id,
         paid,
         hours,
         "увольнение" if dismissed else "работает дальше",
+        extra,
     )
-    return Payslip(vacancy, hours, paid, dismissed)
+    return Payslip(
+        vacancy, hours, paid, dismissed, vacancy.overtime(hours), extra
+    )
 
 
 async def _release(

@@ -7286,6 +7286,9 @@ function myJobBox(job) {
     + num(job.payout) + " 💰 · выплата " + job.payday;
   box.appendChild(pay);
 
+  const extra = overtimeLine(job);
+  if (extra) box.appendChild(extra);
+
   if (!job.safe) {
     const warn = document.createElement("p");
     warn.className = "job-warn";
@@ -7302,6 +7305,22 @@ function myJobBox(job) {
     })
   );
   return box;
+}
+
+/** Строка про переработку. Пусто — неделя в норму уложилась.
+ *
+ * Считает её сервер: сколько часов сверх нормы и сколько за них
+ * доплатят. Страница только пишет — делить жалованье на часы в двух
+ * местах значило бы однажды разойтись с кассой.
+ */
+function overtimeLine(job) {
+  if (!job.overtime) return null;
+  const row = document.createElement("p");
+  row.className = "job-extra";
+  row.textContent =
+    "Сверхурочные: " + job.overtime + " ч сверх нормы по " +
+    num(job.hour_rate) + " 💰 — это " + num(job.overtime_pay) + " 💰 сверху";
+  return row;
 }
 
 function hoursBar(job) {
@@ -7672,11 +7691,15 @@ function dayBox(data) {
 }
 
 function payBox(job) {
-  const box = document.createElement("p");
-  box.className = "job-pay";
-  box.textContent =
+  const box = document.createElement("div");
+  const line = document.createElement("p");
+  line.className = "job-pay";
+  line.textContent =
     "Набежало " + num(job.payout) + " 💰 · выплата " + job.payday
     + " на счёт в банке";
+  box.appendChild(line);
+  const extra = overtimeLine(job);
+  if (extra) box.appendChild(extra);
   return box;
 }
 

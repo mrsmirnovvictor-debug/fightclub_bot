@@ -518,11 +518,52 @@ def test_the_work_day_splits_monday_and_nothing_else():
     assert work_day(moment_at(day=13, hour=8)) == work_day(moment_at(day=13, hour=9))
 
 
-def test_the_norm_pays_in_full_and_overtime_adds_nothing():
-    bartender = get_vacancy("bartender")
+def test_the_norm_pays_in_full_and_overtime_pays_double():
+    """Норма — весь оклад, а каждый час сверх неё стоит две ставки.
+
+    Пример владельца: норма десять часов, оклад триста. Ставка часа —
+    тридцать, отработано двенадцать, значит триста оклада плюс два часа
+    по шестьдесят.
+    """
+    bartender = get_vacancy("bartender")  # 250 за 10 часов
 
     assert bartender.payout(10) == 250
-    assert bartender.payout(12) == 250, "переработка не прибавляет"
+    assert bartender.overtime(10) == 0 and bartender.overtime_pay(10) == 0
+    # Ставка 25 в час, сверхурочная — 50
+    assert bartender.overtime(12) == 2
+    assert bartender.overtime_pay(12) == 100
+    assert bartender.payout(12) == 350
+
+    trainer = get_vacancy("trainer")  # 300 за 10 часов — пример владельца
+    assert trainer.hour_rate == 30
+    assert trainer.overtime_pay(12) == 120
+    assert trainer.payout(12) == 420
+    # И дальше растёт ровно так же: восемь смен за неделю — шесть часов сверх
+    assert trainer.payout(16) == 300 + 6 * 60
+
+    # У почты норма восемь часов при двухстах: ставка двадцать пять
+    postman = get_vacancy("postman")
+    assert postman.hour_rate == 25 and postman.payout(10) == 300
+
+
+def test_the_overtime_rate_is_the_exact_one_not_the_one_on_the_board():
+    """Сверхурочные считают по точной ставке, а не по витринной.
+
+    `per_hour` округлена до десятых — ею сравнивают вакансии на доске.
+    Если считать деньги по ней, расчёт разойдётся с обещанным: у места
+    с нормой в три часа и жалованьем в двести ставка 66.(6), витрина
+    показывает 66.7, и на шести часах переработки лишний кредит берётся
+    из воздуха.
+    """
+    from bot.game.work import Vacancy
+
+    odd = Vacancy("odd", "Странное место", "🙃", salary=200, hours=3, place="bar")
+
+    assert odd.per_hour == 66.7, "витрина округляет до десятых"
+    assert odd.hour_rate == pytest.approx(200 / 3)
+    # Три часа сверх нормы по двойной ставке — ровно четыреста
+    assert odd.overtime_pay(6) == 400
+    assert odd.payout(6) == 600
 
 
 def test_less_than_the_norm_is_paid_pro_rata_rounded_up():
@@ -580,6 +621,28 @@ async def test_the_week_is_settled_on_monday_and_the_money_goes_to_the_account(d
     assert player.credits == 500, "жалованье ушло в наличные вместо счёта"
     assert player.job_minutes == 0, "часы не обнулились"
     assert player.job_code == "bartender", "уволили при выполненной норме"
+
+
+async def test_overtime_is_paid_double_on_monday(db):
+    """Переработка приходит в понедельник отдельной строкой расчёта.
+
+    Шесть смен за неделю — двенадцать часов при норме в десять. Платят
+    оклад и два часа по двойной ставке; в расчёте это сказано словами,
+    чтобы боец видел, за что ему пришло больше обычного.
+    """
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=5))
+    # Шесть смен по два часа: пять дней подряд и ночная смена понедельника
+    for day in range(5, 11):
+        await start_shift(db, player, moment_at(day=day, hour=12))
+    assert player.job_minutes == 720
+
+    said = await settle(db, player, moment_at(day=12, hour=9))
+
+    # 250 оклада и 2 часа по 50 — ставка часа 25, сверхурочная вдвое
+    assert player.account_balance == 350
+    assert "350" in said and "сверхурочные 100" in said
+    assert "2 ч сверх нормы" in said
+    assert player.job_code == "bartender"
 
 
 async def test_half_the_norm_keeps_the_job_and_pays_half(db):
@@ -745,6 +808,31 @@ async def test_the_workplace_offers_the_shift_by_the_handle(client, db):
     assert body["shift"]["seconds_left"] > 0
     assert body["can_start"] is False
     assert (await db.get_player(42)).shift_until > 0
+
+
+async def test_the_screen_counts_the_overtime_before_payday(client, db):
+    """Переработку видно на экране работы, а не только в расчёте.
+
+    Боец должен понимать, за что ему придёт больше обычного, ещё до
+    понедельника: часы сверх нормы, ставка такого часа и сама прибавка.
+    """
+    player = make_player(location=BAR)
+    await hired(db, player, now=moment_at(day=5))
+    for day in range(5, 11):  # шесть смен — двенадцать часов при норме в десять
+        await start_shift(db, player, moment_at(day=day, hour=12))
+
+    body = await (await client.get("/api/work", headers=headers())).json()
+
+    job = body["job"]
+    assert job["worked"] == 12 and job["overtime"] == 2
+    assert job["hour_rate"] == 50, "час сверх нормы стоит две ставки"
+    assert job["overtime_pay"] == 100 and job["payout"] == 350
+
+    # А пока норма не перейдена, переработки нет вовсе
+    player.job_minutes = 600
+    await db.save_player(player)
+    body = await (await client.get("/api/work", headers=headers())).json()
+    assert body["job"]["overtime"] == 0 and body["job"]["overtime_pay"] == 0
 
 
 async def test_the_workplace_of_a_stranger_says_where_jobs_are_taken(client, db):

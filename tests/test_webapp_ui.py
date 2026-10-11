@@ -127,7 +127,7 @@ EMPTY_HISTORY = {
 }
 
 
-def hr_state(job: str = "", taken=(), blocked=()) -> dict:
+def hr_state(job: str = "", taken=(), blocked=(), minutes: int = 6 * 60) -> dict:
     """Агентство, как его отдаёт сервер: доска из пяти мест."""
     from bot.game.health import now_ts
     from bot.webapp.work import build_hr
@@ -139,7 +139,7 @@ def hr_state(job: str = "", taken=(), blocked=()) -> dict:
         player.job_code = job
         player.job_since = moment - 3 * 24 * 60 * 60
         player.job_week = moment - 2 * 24 * 60 * 60
-        player.job_minutes = 6 * 60
+        player.job_minutes = minutes
         player.account_number = "VB-1234-5678-9012"
     rows = [
         {
@@ -8929,6 +8929,33 @@ async def test_my_job_shows_the_week_and_the_payday(server):
         assert "Бармен" in await page.locator(".job-title").inner_text()
         assert "Отработано 6 из 10 ч" in await page.locator(".hours-text").inner_text()
         assert "150" in await page.locator(".job-pay").inner_text()
+        await browser.close()
+
+
+async def test_overtime_shows_up_as_a_line_of_its_own(server):
+    """Переработка видна отдельной строкой: часы, ставка и прибавка.
+
+    Это не предупреждение, а прибавка, и строка у неё своя — зелёная,
+    под строкой жалованья. Пока норма не перейдена, её нет вовсе.
+    """
+    async with async_playwright() as pw:
+        # Двенадцать часов при норме в десять: два часа сверх
+        browser, page = await open_hr(
+            pw, server, hr=hr_state(job="bartender", minutes=12 * 60)
+        )
+        await page.wait_for_selector(".job")
+
+        extra = await page.locator(".job-extra").inner_text()
+        assert "2 ч сверх нормы" in extra
+        assert "50 💰" in extra and "100 💰 сверху" in extra
+        await browser.close()
+
+        # Ровно норма — строки нет
+        browser, page = await open_hr(
+            pw, server, hr=hr_state(job="bartender", minutes=10 * 60)
+        )
+        await page.wait_for_selector(".job")
+        assert await page.locator(".job-extra").count() == 0
         await browser.close()
 
 

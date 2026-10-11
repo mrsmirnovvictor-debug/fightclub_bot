@@ -25,6 +25,7 @@ from bot.game.work import (
     SHIFT_HOURS,
     VACANCIES,
     Vacancy,
+    OVERTIME_RATE,
     day_is_over,
     hours_of,
     payday_after,
@@ -107,8 +108,12 @@ def job_payload(player: Player, moment: int) -> dict[str, Any]:
             "day_hours": DAY_HOURS,
             "day_full": not shift_fits(today),
             "payday": club_moment(payday_after(moment)),
-            # Сколько заплатят, если неделя кончится прямо сейчас
+            # Сколько заплатят, если неделя кончится прямо сейчас, и
+            # сколько из этого придёт за переработку
             "payout": one.payout(worked),
+            "overtime": one.overtime(worked),
+            "overtime_pay": one.overtime_pay(worked),
+            "hour_rate": round(one.hour_rate * OVERTIME_RATE, 1),
             "safe": not one.fires(worked),
         }
     )
@@ -141,7 +146,8 @@ def build_hr(player: Player, rows: list[dict], now: int | None = None) -> dict[s
         "note": (
             "Работа одна на бойца, и место — одно на город. "
             "При приёме открывают счёт в банке: жалованью надо куда-то "
-            "приходить. Карту при этом не выпускают."
+            "приходить. Карту при этом не выпускают. Час сверх недельной "
+            "нормы оплачивают вдвойне."
         ),
         "said": "",
     }
