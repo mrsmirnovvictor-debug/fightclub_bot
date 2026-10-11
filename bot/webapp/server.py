@@ -66,6 +66,24 @@ from bot.game.locations import (
     service_for,
 )
 from bot.travel_service import Travel, TravelError, require
+from bot.clan_service import (
+    ClanError,
+    accept as clan_accept,
+    apply as clan_apply,
+    approve as clan_approve,
+    decline as clan_decline,
+    demote as clan_demote,
+    expel as clan_expel,
+    found as clan_found,
+    handover as clan_handover,
+    invite as clan_invite,
+    leave as clan_leave,
+    promote as clan_promote,
+    refuse as clan_refuse,
+    rename as clan_rename,
+    withdraw as clan_withdraw,
+)
+from bot.game.clans import Petition
 from bot.webapp.citymap import build_map
 from bot.bank_service import (
     BankError,
@@ -93,6 +111,7 @@ from bot.driving_service import (
     start_exam as school_exam,
     take_licence as school_licence,
 )
+from bot.webapp.clans import build_clan, build_mansion, invites_payload
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
     build_market,
@@ -323,6 +342,19 @@ async def api_card(request: web.Request) -> web.Response:
         card["said"] = said
     if visit is not None:
         card["daily"] = daily_payload(visit)
+    # Приглашения в клан показывают всплывающим окном при входе в игру —
+    # значит, приезжают они с карточкой, и только своей: чужие
+    # приглашения не наше дело. Бойцу при клане их не шлют вовсе
+    if player.user_id == viewer.user_id and player.clan is None:
+        knocks = await db.petitions_of_user(player.user_id, Petition.INVITE)
+        clans = {
+            knock.clan_id: await db.clan_by_id(knock.clan_id) for knock in knocks
+        }
+        card["invites"] = invites_payload(
+            knocks,
+            {key: value for key, value in clans.items() if value is not None},
+            config.bot_token,
+        )
     return web.json_response(card)
 
 
@@ -846,7 +878,10 @@ async def api_club(request: web.Request) -> web.Response:
     """Список клуба: все записанные бойцы с короткими карточками."""
     viewer = await _viewer(request)
     players = await request.app[DB_KEY].all_players()
-    return web.json_response(build_club(players, viewer.user_id))
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        build_club(players, viewer.user_id, config.bot_token)
+    )
 
 
 # ---------- бои ----------
@@ -1808,6 +1843,126 @@ async def api_invoice(request: web.Request) -> web.Response:
     )
 
 
+# ---------- мафия: особняк и своя семья ----------
+
+
+async def _mansion_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    clans = await db.all_clans()
+    knocks = await db.petitions_of_user(player.user_id, Petition.REQUEST)
+    body = build_mansion(player, clans, knocks, config.bot_token)
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_mansion(request: web.Request) -> web.Response:
+    """Особняк мафии: свой клан, чужие кланы и кнопка завести свой."""
+    player = await _at(request, Service.MAFIA)
+    return await _mansion_state(request, player)
+
+
+async def api_mansion_action(request: web.Request) -> web.Response:
+    """Завести клан, постучаться в чужой, отозвать заявку или уйти."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.MAFIA)
+    try:
+        if action == "found":
+            clan = await clan_found(
+                db,
+                player,
+                str(data.get("name") or ""),
+                str(data.get("sign") or ""),
+            )
+            said = f"Клан «{clan.name}» заведён. Ты — Дон."
+        elif action == "rename":
+            said = await clan_rename(db, player, str(data.get("name") or ""))
+        elif action == "apply":
+            said = await clan_apply(db, player, int(data.get("clan", 0)))
+        elif action == "withdraw":
+            said = await clan_withdraw(db, player, int(data.get("clan", 0)))
+        elif action == "leave":
+            said = await clan_leave(db, player)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except ClanError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _mansion_state(request, fresh, said)
+
+
+async def _clan_state(request: web.Request, player, said: str = "") -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    roster = None
+    requests: list = []
+    invites: list = []
+    if player.clan is not None:
+        clan_id = player.clan.clan.id
+        roster = await db.roster_of(clan_id)
+        if player.clan.can_admin:
+            requests = await db.petitions_of_clan(clan_id, Petition.REQUEST)
+            invites = await db.petitions_of_clan(clan_id, Petition.INVITE)
+    body = build_clan(player, roster, requests, invites, config.bot_token)
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_clan(request: web.Request) -> web.Response:
+    """Вкладка «Клан»: кто в семье, кто стучится и кого позвали.
+
+    Места здесь нет нарочно: вкладка у бойца с собой, и бежать ради
+    заявки через весь город в особняк незачем.
+    """
+    player = await _own_player(request)
+    return await _clan_state(request, player)
+
+
+async def api_clan_action(request: web.Request) -> web.Response:
+    """Дела семьи: заявки, приглашения, чины и передача дел."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    try:
+        if action == "approve":
+            said = await clan_approve(db, player, int(data.get("user", 0)))
+        elif action == "decline":
+            said = await clan_decline(db, player, int(data.get("user", 0)))
+        elif action == "invite":
+            said = await clan_invite(db, player, str(data.get("nickname") or ""))
+        elif action == "expel":
+            said = await clan_expel(db, player, int(data.get("user", 0)))
+        elif action == "promote":
+            said = await clan_promote(db, player, int(data.get("user", 0)))
+        elif action == "demote":
+            said = await clan_demote(db, player, int(data.get("user", 0)))
+        elif action == "handover":
+            said = await clan_handover(
+                db, player, int(data.get("user", 0)), str(data.get("keep") or "capo")
+            )
+        elif action == "accept":
+            said = await clan_accept(db, player, int(data.get("clan", 0)))
+        elif action == "refuse":
+            said = await clan_refuse(db, player, int(data.get("clan", 0)))
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except ClanError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _clan_state(request, fresh, said)
+
+
 async def avatar(request: web.Request) -> web.StreamResponse:
     """Отдать фото бойца. Ссылка подписана и живёт час."""
     config = request.app[CONFIG_KEY]
@@ -1947,6 +2102,10 @@ def create_app(
             web.post("/api/look", api_look),
             web.get("/api/topup", api_topup),
             web.post("/api/invoice", api_invoice),
+            web.get("/api/mafia", api_mansion),
+            web.post("/api/mafia", api_mansion_action),
+            web.get("/api/clan", api_clan),
+            web.post("/api/clan", api_clan_action),
             web.get("/avatar/{user_id}", avatar),
             web.get("/healthz", healthz),
             web.static("/static", STATIC_DIR),

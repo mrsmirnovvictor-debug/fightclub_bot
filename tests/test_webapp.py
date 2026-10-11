@@ -485,8 +485,12 @@ async def test_club_lists_every_fighter(client, db):
     me = next(row for row in body["fighters"] if row["user_id"] == 42)
     assert me["is_self"] and me["level"] == 4
     assert me["fclass"]["title"] == "Воин"
-    # всё остальное — аватар, слоты, счёт — приезжает из /api/card по кнопке «i»
-    assert set(me) == {"user_id", "nickname", "level", "pro", "is_self", "fclass"}
+    # всё остальное — аватар, слоты, счёт — приезжает из /api/card по кнопке «i».
+    # Клан — исключение: его знаки стоят в самой строке, рядом с ником
+    assert set(me) == {
+        "user_id", "nickname", "level", "pro", "is_self", "fclass", "clan"
+    }
+    assert me["clan"] == {}, "боец без клана знаков не носит"
 
 
 async def test_the_club_list_needs_a_signature(client):

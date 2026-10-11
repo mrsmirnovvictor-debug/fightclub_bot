@@ -336,6 +336,35 @@
     <div id="police-body"></div>
   </main>
 
+  <!-- ---------- 3b8. Особняк мафии: кланы города ---------- -->
+  <!-- Здесь заводят свою семью и стучатся в чужие. Дела внутри семьи —
+       на вкладке «Клан»: она с бойцом везде, а особняк стоит на месте -->
+  <main id="mafia" class="screen hidden">
+    <figure class="interior hidden" id="mafia-interior">
+      <img class="interior-pic" id="mafia-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="mafia-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-mafia"></span>
+    </header>
+    <h1 class="screen-title">🎩 Особняк мафии</h1>
+    <p class="screen-note" id="mafia-note"></p>
+
+    <div id="mafia-body"></div>
+  </main>
+
+  <!-- ---------- 3b9. Своя семья: чины, заявки и приглашения ---------- -->
+  <main id="clan" class="screen hidden">
+    <header class="screen-head">
+      <span class="shop-purse" id="clan-head"></span>
+    </header>
+    <h1 class="screen-title" id="clan-title">🎩 Клан</h1>
+    <p class="screen-note" id="clan-note"></p>
+
+    <div id="clan-body"></div>
+  </main>
+
   <!-- ---------- 3c. Рынок: обмен между бойцами ---------- -->
   <!-- Стол общий, и это главное свойство экрана: страница здесь ничего
        не помнит и ничего не досчитывает. Всё, что видно, — последний
@@ -381,6 +410,9 @@
   <main id="bag" class="screen hidden">
     <header class="head">
       <span class="head-class" id="bag-class"></span>
+      <!-- Знаки мафии: общий знак семьи и свой знак клана. Стоят между
+           классом и ником — в том же порядке, что и в любом списке -->
+      <span class="head-clan" id="bag-clan"></span>
       <h1 class="head-name" id="bag-name"></h1>
       <span class="head-level" id="bag-level"></span>
     </header>
@@ -418,6 +450,9 @@
   <main id="hero" class="screen hidden">
     <header class="head">
       <span class="head-class" id="hero-class"></span>
+      <!-- Знаки мафии: общий знак семьи и свой знак клана. Стоят между
+           классом и ником — в том же порядке, что и в любом списке -->
+      <span class="head-clan" id="hero-clan"></span>
       <h1 class="head-name" id="hero-name"></h1>
       <span class="head-level" id="hero-level"></span>
     </header>
@@ -508,6 +543,11 @@
     <button type="button" class="bar-tab active" id="tab-hero">
       <span class="bar-icon">🪪</span><span class="bar-label">Персонаж</span>
     </button>
+    <!-- Вкладка семьи появляется только у тех, кто в клане: одиночке
+         открывать в ней нечего -->
+    <button type="button" class="bar-tab hidden" id="tab-clan">
+      <span class="bar-icon">🎩</span><span class="bar-label">Клан</span>
+    </button>
   </nav>
 
   <!-- Награда за вход стоит поверх любого экрана: её показывают сразу, а
@@ -519,6 +559,16 @@
       <div class="daily-ladder" id="daily-ladder"></div>
       <p class="daily-pick" id="daily-pick"></p>
       <div class="daily-buttons" id="daily-buttons"></div>
+    </section>
+  </div>
+
+  <!-- Приглашение в клан: окно встаёт поверх любого экрана при входе в
+       игру — позвали однажды, и ответить надо один раз -->
+  <div class="daily-veil hidden" id="invite-veil">
+    <section class="daily" id="invite-box">
+      <h2 class="daily-head" id="invite-head"></h2>
+      <p class="daily-note" id="invite-note"></p>
+      <div class="daily-buttons" id="invite-buttons"></div>
     </section>
   </div>
 

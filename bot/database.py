@@ -16,6 +16,7 @@ from bot.game.economy import RATING_START
 from bot.game.locations import FIGHT_CLUB
 from bot.game.abilities import Loadout
 from bot.game.equipment import MAX_WEAR, OwnedItem, Slot, get_item
+from bot.game.clans import Clan, Knock, Member, Petition, Rank, Roster, Standing
 from bot.game.driving import School
 from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, get_injury
@@ -446,6 +447,54 @@ CREATE TABLE IF NOT EXISTS noticeboards (
     title     TEXT NOT NULL DEFAULT ''
 );
 
+-- Кланы мафии. Клан заводят в особняке за тысячу кредитов, и у него
+-- свой знак — один из нарисованных (`bot/content/clans.py`). Знак
+-- достаётся одной семье: отсюда и уникальный индекс по нему
+CREATE TABLE IF NOT EXISTS clans (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL,
+    name_key    TEXT    NOT NULL,
+    sign        TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL DEFAULT 0,
+    renamed_at  INTEGER NOT NULL DEFAULT 0,
+    don         INTEGER NOT NULL
+);
+
+-- Знак один на клан: двух семей под одной картинкой в городе не бывает
+CREATE UNIQUE INDEX IF NOT EXISTS clans_sign ON clans(sign);
+
+-- Имя клана одно на город, и регистр тут ни при чём: «Коза Ностра» и
+-- «коза ностра» — один и тот же клан. Ключ считает питон, а не база:
+-- sqlite складывает регистр только у латиницы, и для кириллицы
+-- `COLLATE NOCASE` не работает вовсе
+CREATE UNIQUE INDEX IF NOT EXISTS clans_name ON clans(name_key);
+
+-- Кто в клане и каким чином. Один клан на бойца — отсюда и первичный
+-- ключ по бойцу: в двух семьях сразу не состоят
+CREATE TABLE IF NOT EXISTS clan_members (
+    user_id   INTEGER PRIMARY KEY,
+    clan_id   INTEGER NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
+    rank      TEXT    NOT NULL DEFAULT 'soldier',
+    joined_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS clan_members_clan ON clan_members(clan_id);
+
+-- Заявки и приглашения: одна таблица на обе дороги в семью. `kind`
+-- говорит, кто сделал первый шаг, `by_id` — кто позвал (у заявки ноль).
+-- Пара «клан и боец» одна: позвали в тот же клан, куда боец и так
+-- стучался, — это по-прежнему одна запись
+CREATE TABLE IF NOT EXISTS clan_petitions (
+    clan_id    INTEGER NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL,
+    kind       TEXT    NOT NULL DEFAULT 'request',
+    created_at INTEGER NOT NULL DEFAULT 0,
+    by_id      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (clan_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS clan_petitions_user ON clan_petitions(user_id);
+
 -- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
 -- ничего не задваивает, а новая группа получает всё с начала.
 CREATE TABLE IF NOT EXISTS announcements (
@@ -845,6 +894,7 @@ class Database:
         player.injury = await self.injury_of(player.user_id)
         player.policy = await self.policy_of(player.user_id)
         player.school = await self.school_of(player.user_id)
+        player.clan = await self.standing_of(player.user_id)
         player.gym_until = await self.gym_pass_of(player.user_id)
         player.loadout = await self.list_abilities(player.user_id)
         return player
@@ -1037,7 +1087,40 @@ class Database:
             (limit,),
         ) as cursor:
             rows = await cursor.fetchall()
-        return [_to_player(row) for row in rows]
+        players = [_to_player(row) for row in rows]
+        # Клан дочитываем одним запросом на весь список: знак мафии стоит
+        # у ника в каждой строке, а спрашивать про каждого по отдельности
+        # — это двести запросов на один экран
+        standings = await self.standings_in([one.user_id for one in players])
+        for player in players:
+            player.clan = standings.get(player.user_id)
+        return players
+
+    async def standings_in(self, user_ids: list[int]) -> dict[int, Standing]:
+        """Чины всех этих бойцов разом: для списков, где строк много."""
+        if not user_ids:
+            return {}
+        holes = ",".join("?" * len(user_ids))
+        async with self.conn.execute(
+            f"""
+            SELECT m.user_id, m.rank, m.joined_at,
+                   c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+                   (SELECT COUNT(*) FROM clan_members k WHERE k.clan_id = c.id)
+                       AS members
+            FROM clan_members m JOIN clans c ON c.id = m.clan_id
+            WHERE m.user_id IN ({holes})
+            """,
+            tuple(user_ids),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {
+            int(row["user_id"]): Standing(
+                clan=self._clan(row),
+                rank=Rank(str(row["rank"])),
+                joined_at=int(row["joined_at"]),
+            )
+            for row in rows
+        }
 
     # ---------- инвентарь ----------
 
@@ -1783,6 +1866,356 @@ class Database:
             until=int(row["until"]),
             auto_renew=bool(row["auto_renew"]),
         )
+
+    # ---------- кланы: семьи мафии ----------
+    #
+    # Клан живёт в трёх таблицах: сам клан со знаком, кто в нём и каким
+    # чином, и заявки с приглашениями. Знак лежит в базе двоичным полем —
+    # приносит его игрок, и класть его в бакет некому.
+
+    @staticmethod
+    def _clan(row) -> Clan:
+        return Clan(
+            id=int(row["id"]),
+            name=str(row["name"]),
+            don=int(row["don"]),
+            created_at=int(row["created_at"]),
+            sign=str(row["sign"]),
+            members=int(row["members"] if "members" in row.keys() else 0),
+            renamed_at=int(row["renamed_at"]),
+        )
+
+    async def create_clan(
+        self,
+        name: str,
+        don: int,
+        sign: str,
+        now: int | None = None,
+    ) -> Clan:
+        """Завести клан и посадить в него Дона.
+
+        Имя или знак заняты — IntegrityError: и то и другое держит база,
+        а не питон. Двое, нажавшие «завести» в одну секунду, иначе оба
+        прошли бы проверку.
+
+        Клан и его первый человек появляются одной сделкой: клан без Дона
+        был бы семьёй без главы, и показывать его в особняке было бы
+        нечего.
+        """
+        moment = now_ts() if now is None else now
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO clans (name, name_key, sign, created_at, don)
+            VALUES (?,?,?,?,?)
+            """,
+            (name, name.lower(), sign, moment, don),
+        )
+        clan_id = int(cursor.lastrowid)
+        await self.conn.execute(
+            """
+            INSERT INTO clan_members (user_id, clan_id, rank, joined_at)
+            VALUES (?,?,?,?)
+            """,
+            (don, clan_id, Rank.DON.value, moment),
+        )
+        # Старые заявки основателя больше не нужны: он уже при семье
+        await self.conn.execute(
+            "DELETE FROM clan_petitions WHERE user_id = ?", (don,)
+        )
+        await self.conn.commit()
+        logger.info("Заведён клан %s (%s), Дон %s", name, clan_id, don)
+        return Clan(
+            id=clan_id,
+            name=name,
+            don=don,
+            created_at=moment,
+            sign=sign,
+            members=1,
+        )
+
+    async def clan_by_id(self, clan_id: int) -> Clan | None:
+        async with self.conn.execute(
+            """
+            SELECT c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+                   (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id)
+                       AS members
+            FROM clans c WHERE c.id = ?
+            """,
+            (clan_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._clan(row) if row else None
+
+    async def clan_by_name(self, name: str) -> Clan | None:
+        """Клан по имени, не глядя на регистр: имя одно на город."""
+        async with self.conn.execute(
+            """
+            SELECT c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+                   (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id)
+                       AS members
+            FROM clans c WHERE c.name_key = ?
+            """,
+            (name.lower(),),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._clan(row) if row else None
+
+    async def all_clans(self) -> list[Clan]:
+        """Все кланы города: сперва большие, при равенстве — старшие."""
+        async with self.conn.execute(
+            """
+            SELECT c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+                   (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id)
+                       AS members
+            FROM clans c
+            ORDER BY members DESC, c.created_at ASC
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._clan(row) for row in rows]
+
+    async def taken_signs(self) -> set[str]:
+        """Знаки, которые уже разобрали: свободные и считаются по ним."""
+        async with self.conn.execute("SELECT sign FROM clans") as cursor:
+            rows = await cursor.fetchall()
+        return {str(row["sign"]) for row in rows}
+
+    async def rename_clan(self, clan_id: int, name: str, now: int) -> None:
+        """Сменить имя клана и запомнить час смены: следующая — через полгода."""
+        await self.conn.execute(
+            "UPDATE clans SET name = ?, name_key = ?, renamed_at = ? WHERE id = ?",
+            (name, name.lower(), now, clan_id),
+        )
+        await self.conn.commit()
+        logger.info("Клан %s переименован в %s", clan_id, name)
+
+    async def standing_of(self, user_id: int) -> Standing | None:
+        """В каком клане боец и каким чином. None — он сам по себе."""
+        async with self.conn.execute(
+            """
+            SELECT m.rank, m.joined_at,
+                   c.id, c.name, c.don, c.created_at, c.sign, c.renamed_at,
+                   (SELECT COUNT(*) FROM clan_members k WHERE k.clan_id = c.id)
+                       AS members
+            FROM clan_members m JOIN clans c ON c.id = m.clan_id
+            WHERE m.user_id = ?
+            """,
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return Standing(
+            clan=self._clan(row),
+            rank=Rank(str(row["rank"])),
+            joined_at=int(row["joined_at"]),
+        )
+
+    async def roster_of(self, clan_id: int) -> Roster | None:
+        """Клан со всеми, кто в нём: чины, ники, уровни и подписка."""
+        clan = await self.clan_by_id(clan_id)
+        if clan is None:
+            return None
+        async with self.conn.execute(
+            """
+            SELECT m.user_id, m.rank, m.joined_at,
+                   p.nickname, p.level, p.class_code, p.pro_until
+            FROM clan_members m JOIN players p ON p.user_id = m.user_id
+            WHERE m.clan_id = ?
+            ORDER BY m.joined_at ASC
+            """,
+            (clan_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return Roster(
+            clan=clan,
+            members=[
+                Member(
+                    user_id=int(row["user_id"]),
+                    rank=Rank(str(row["rank"])),
+                    nickname=str(row["nickname"]),
+                    level=int(row["level"]),
+                    class_code=str(row["class_code"]),
+                    pro_until=int(row["pro_until"]),
+                    joined_at=int(row["joined_at"]),
+                )
+                for row in rows
+            ],
+        )
+
+    async def add_member(
+        self, user_id: int, clan_id: int, rank: Rank, now: int | None = None
+    ) -> None:
+        """Принять бойца в клан и снять все его заявки разом.
+
+        Заявки снимаются все, а не только та, по которой приняли: боец
+        может стучаться в три семьи сразу, и после приёма в одну
+        остальные превращаются в обещание, которого он уже не сдержит.
+        """
+        moment = now_ts() if now is None else now
+        await self.conn.execute(
+            """
+            INSERT INTO clan_members (user_id, clan_id, rank, joined_at)
+            VALUES (?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                clan_id   = excluded.clan_id,
+                rank      = excluded.rank,
+                joined_at = excluded.joined_at
+            """,
+            (user_id, clan_id, rank.value, moment),
+        )
+        await self.conn.execute(
+            "DELETE FROM clan_petitions WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
+
+    async def set_rank(self, user_id: int, rank: Rank) -> None:
+        await self.conn.execute(
+            "UPDATE clan_members SET rank = ? WHERE user_id = ?",
+            (rank.value, user_id),
+        )
+        await self.conn.commit()
+
+    async def set_don(self, clan_id: int, user_id: int) -> None:
+        """Записать нового Дона в сам клан. Чины меняет вызывающий."""
+        await self.conn.execute(
+            "UPDATE clans SET don = ? WHERE id = ?", (user_id, clan_id)
+        )
+        await self.conn.commit()
+
+    async def remove_member(self, user_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM clan_members WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
+
+    async def delete_clan(self, clan_id: int) -> None:
+        """Распустить клан. Люди и заявки уходят за ним по внешнему ключу."""
+        await self.conn.execute("DELETE FROM clans WHERE id = ?", (clan_id,))
+        await self.conn.commit()
+        logger.info("Клан %s распущен", clan_id)
+
+    async def count_rank(self, clan_id: int, rank: Rank) -> int:
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM clan_members WHERE clan_id = ? AND rank = ?",
+            (clan_id, rank.value),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["n"]) if row else 0
+
+    # ---------- заявки и приглашения ----------
+
+    async def add_petition(
+        self,
+        clan_id: int,
+        user_id: int,
+        kind: Petition,
+        by_id: int = 0,
+        now: int | None = None,
+    ) -> None:
+        """Записать заявку или приглашение. Повторное — поверх прежнего."""
+        moment = now_ts() if now is None else now
+        await self.conn.execute(
+            """
+            INSERT INTO clan_petitions (clan_id, user_id, kind, created_at, by_id)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(clan_id, user_id) DO UPDATE SET
+                kind       = excluded.kind,
+                created_at = excluded.created_at,
+                by_id      = excluded.by_id
+            """,
+            (clan_id, user_id, kind.value, moment, by_id),
+        )
+        await self.conn.commit()
+
+    async def petition(self, clan_id: int, user_id: int) -> Knock | None:
+        async with self.conn.execute(
+            """
+            SELECT clan_id, user_id, kind, created_at, by_id
+            FROM clan_petitions WHERE clan_id = ? AND user_id = ?
+            """,
+            (clan_id, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return Knock(
+            clan_id=int(row["clan_id"]),
+            user_id=int(row["user_id"]),
+            kind=Petition(str(row["kind"])),
+            created_at=int(row["created_at"]),
+            by_id=int(row["by_id"]),
+        )
+
+    async def drop_petition(self, clan_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM clan_petitions WHERE clan_id = ? AND user_id = ?",
+            (clan_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def petitions_of_clan(self, clan_id: int, kind: Petition) -> list[Knock]:
+        """Что лежит у семьи: заявки к ней или её же приглашения."""
+        async with self.conn.execute(
+            """
+            SELECT k.clan_id, k.user_id, k.kind, k.created_at, k.by_id,
+                   p.nickname, p.level, p.class_code, p.pro_until
+            FROM clan_petitions k JOIN players p ON p.user_id = k.user_id
+            WHERE k.clan_id = ? AND k.kind = ?
+            ORDER BY k.created_at ASC
+            """,
+            (clan_id, kind.value),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            Knock(
+                clan_id=int(row["clan_id"]),
+                user_id=int(row["user_id"]),
+                kind=Petition(str(row["kind"])),
+                created_at=int(row["created_at"]),
+                by_id=int(row["by_id"]),
+                nickname=str(row["nickname"]),
+                level=int(row["level"]),
+                class_code=str(row["class_code"]),
+                pro_until=int(row["pro_until"]),
+            )
+            for row in rows
+        ]
+
+    async def petitions_of_user(self, user_id: int, kind: Petition) -> list[Knock]:
+        """Что лежит у бойца: его заявки или зовущие его приглашения."""
+        async with self.conn.execute(
+            """
+            SELECT k.clan_id, k.user_id, k.kind, k.created_at, k.by_id,
+                   c.name AS clan_name, c.sign,
+                   (SELECT nickname FROM players WHERE user_id = k.by_id)
+                       AS by_name
+            FROM clan_petitions k JOIN clans c ON c.id = k.clan_id
+            WHERE k.user_id = ? AND k.kind = ?
+            ORDER BY k.created_at ASC
+            """,
+            (user_id, kind.value),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            Knock(
+                clan_id=int(row["clan_id"]),
+                user_id=int(row["user_id"]),
+                kind=Petition(str(row["kind"])),
+                created_at=int(row["created_at"]),
+                by_id=int(row["by_id"]),
+                clan_name=str(row["clan_name"]),
+                clan_sign=str(row["sign"]),
+                by_name=str(row["by_name"] or ""),
+            )
+            for row in rows
+        ]
+
+    async def drop_petitions_of(self, user_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM clan_petitions WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
 
     # ---------- документы: автошкола и права ----------
 

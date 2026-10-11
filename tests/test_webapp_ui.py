@@ -20,6 +20,7 @@ from bot.game.equipment import CATALOGUE, OwnedItem, Slot
 from bot.game.health import now_ts
 from bot.game.potions import ActiveEffect
 from bot.game.store import PACKS
+from bot.game.clans import Clan, Rank, Standing
 from bot.models import Player
 from bot.game.locations import Service
 from bot.webapp.card import build_card, build_magic, build_shop, build_topup
@@ -203,6 +204,50 @@ def school_state(stage: str = "new", wrong: int = 0, seconds: int = 900) -> dict
         body["open"] = True
     assert body["stage"] == stage or stage == "new", body["stage"]
     assert seconds == EXAM_SECONDS or stage != "exam" or body["seconds_left"]
+    return body
+
+
+def mansion_state(**changes) -> dict:
+    """Ответ особняка: цена, свои заявки и кланы города."""
+    from bot.webapp.clans import build_mansion
+
+    body = build_mansion(make_player("mafia_mansion"), [], [], TOKEN)
+    body.update(changes)
+    return body
+
+
+def clan_state(**changes) -> dict:
+    """Ответ вкладки «Клан»: семья, какой её видит Дон."""
+    from bot.game.clans import Clan, Member, Rank, Roster
+    from bot.game.health import now_ts
+    from bot.webapp.clans import build_clan
+
+    moment = now_ts()
+    clan = Clan(
+        id=1, name="Коза Ностра", don=42, created_at=moment,
+        sign="black_ravens", members=3,
+    )
+    don = make_player("mafia_mansion")
+    don.clan = Standing(clan=clan, rank=Rank.DON, joined_at=moment)
+    roster = Roster(
+        clan=clan,
+        members=[
+            Member(
+                user_id=42, rank=Rank.DON, nickname="Растафарайчик", level=5,
+                class_code="warrior", joined_at=moment,
+            ),
+            Member(
+                user_id=43, rank=Rank.CAPO, nickname="Марла", level=7,
+                class_code="rogue", pro_until=moment + 600, joined_at=moment,
+            ),
+            Member(
+                user_id=44, rank=Rank.SOLDIER, nickname="Ангел", level=2,
+                class_code="tank", joined_at=moment,
+            ),
+        ],
+    )
+    body = build_clan(don, roster, [], [], TOKEN)
+    body.update(changes)
     return body
 
 
@@ -562,7 +607,7 @@ async def open_page(
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
     battle=None, city=None, workshop=None, hospital=None, trade=None,
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
-    police=None, images=False, telegram="",
+    police=None, mafia=None, clan=None, images=False, telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -599,6 +644,10 @@ async def open_page(
     await page.route("**/api/work", canned(work or work_state()))
     await page.route("**/api/school", canned(school or school_state()))
     await page.route("**/api/police", canned(police or police_state()))
+    await page.route("**/api/mafia", canned(mafia or mansion_state()))
+    await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
+                                                    "ranks": [], "said": ""}))
+
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
     # Обычно телеграмовского скрипта нет вовсе — страница умеет и без него.
@@ -1324,6 +1373,9 @@ async def test_the_bottom_bar_switches_four_screens(server):
 
     Магазинов на панели больше нет — они дома на карте, и лавка мага тоже
     (теперь это элитный магазин). Панель стала короче ровно настолько.
+
+    Пятая кнопка на панели есть, но стоит скрытой: вкладка «Клан» —
+    только для тех, кто в семье, и у одиночки её не видно.
     """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -1333,7 +1385,8 @@ async def test_the_bottom_bar_switches_four_screens(server):
         await page.wait_for_selector("#hero:not(.hidden)")
 
         assert await page.locator("#bar").is_visible()
-        assert await page.locator(".bar-tab").count() == 4
+        assert await page.locator(".bar-tab:visible").count() == 4
+        assert await page.locator("#tab-clan").is_hidden()
         # открывается карточка персонажа, её вкладка и подсвечена
         assert await page.locator("#tab-hero").get_attribute("class") == "bar-tab active"
 
@@ -5102,23 +5155,24 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
 
 
 async def test_a_house_without_a_trade_says_when_it_opens(server):
-    """Особняк мафии на карте есть, зайти можно, а услуги пока нет.
+    """Автосалон на карте есть, зайти можно, а услуги пока нет.
 
     Раньше такой дом отвечал всплывашкой, и боец оставался на карте — то
     есть внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
-    записка о том, чего тут ждать.
+    записка о том, чего тут ждать. Особняк мафии из этого списка вышел:
+    в нём завелись кланы.
     """
-    walker = make_player(location="mafia_mansion")
+    walker = make_player(location="car_dealership")
     card = build_card(walker, TOKEN, viewer_id=walker.user_id)
     async with async_playwright() as pw:
         browser, page = await open_map(
-            pw, server, city_map("mafia_mansion"), card, images=True
+            pw, server, city_map("car_dealership"), card, images=True
         )
 
-        await page.locator(".zone-house").filter(has_text="Особняк мафии").click()
+        await page.locator(".zone-house").filter(has_text="Автосалон").click()
         await page.wait_for_selector("#house:not(.hidden)")
 
-        assert await page.locator("#house-title").inner_text() == "Особняк мафии"
+        assert await page.locator("#house-title").inner_text() == "Автосалон"
         note = await page.locator("#house-soon").inner_text()
         assert "Скоро" in note
         # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
@@ -9315,4 +9369,229 @@ async def test_the_set_line_stands_under_the_weapon_and_turns_green(server):
         alone = row.locator(".thing-kit")
         assert "100%" in await alone.inner_text()
         assert "strong" not in (await alone.get_attribute("class"))
+        await browser.close()
+
+
+# ---------- мафия: особняк, своя семья и приглашение ----------
+
+
+async def test_the_mansion_offers_a_clan_and_lists_the_families(server):
+    """Особняк: форма на свой клан и список чужих с заявкой в каждую.
+
+    Экран один на весь город, и по нему видно и цену входа, и то, куда
+    боец уже стучался: вторую заявку в ту же дверь подавать незачем.
+    """
+    from bot.game.clans import Clan, Knock, Petition
+    from bot.webapp.clans import build_mansion
+
+    nostra = Clan(id=1, name="Коза Ностра", don=7, created_at=now_ts(),
+                  sign="black_ravens", members=3)
+    full = Clan(id=2, name="Полная семья", don=8, created_at=now_ts(),
+                sign="silver_wolves", members=25)
+    player = make_player("mafia_mansion")
+    # Во вторую семью боец уже стучался: в списке у неё «отозвать»
+    knock = Knock(clan_id=2, user_id=player.user_id, kind=Petition.REQUEST)
+    mafia = build_mansion(player, [nostra, full], [knock], TOKEN)
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, mafia=mafia)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-body .shelf")
+
+        heads = await page.locator("#mafia-body .shelf-head").all_inner_texts()
+        assert heads == ["Завести свой клан", "Кланы города · 2"]
+        assert await page.locator("#clan-name").count() == 1
+        # Знаки лежат решёткой: занятые видно, но взять их нельзя
+        signs = page.locator("#sign-grid .sign")
+        assert await signs.count() == 17
+        assert await page.locator("#sign-grid .sign.taken").count() == 2
+        assert await signs.nth(1).is_disabled()
+        buttons = await page.locator("#mafia-body .btn").all_inner_texts()
+        assert "1000 💰" in buttons[0]
+
+        # Выбрали знак — он подсветился, а его имя встало в поле
+        free = page.locator("#sign-grid .sign:not(.taken)").first
+        await free.click()
+        assert await page.locator("#sign-grid .sign.picked").count() == 1
+        assert await page.locator("#clan-name").input_value() == "Кровавые черепа"
+
+        # В первую семью можно постучаться, во второй уже лежит заявка
+        cards = page.locator(".clan-card")
+        assert await cards.count() == 2
+        assert "Коза Ностра" in await cards.nth(0).inner_text()
+        assert "В семье 3 из 25" in await cards.nth(0).inner_text()
+        buttons = await cards.nth(0).locator(".btn").all_inner_texts()
+        assert buttons == ["Подать заявку"]
+        assert await cards.nth(1).locator(".btn").all_inner_texts() == [
+            "Отозвать заявку"
+        ]
+        await browser.close()
+
+
+async def test_the_clan_tab_belongs_to_the_family_alone(server):
+    """Вкладка «Клан» горит только у того, кто в семье.
+
+    Одиночке в ней нечего открывать, и пятая кнопка внизу у него не
+    стоит вовсе. Знаки у ника появляются там же и тогда же.
+    """
+    player = make_player()
+    alone = build_card(player, TOKEN, viewer_id=player.user_id)
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    mafioso = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, alone, clan=clan_state())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        assert await page.locator("#tab-clan").is_hidden()
+        assert await page.locator("#hero-clan .clan-sign").count() == 0
+        await browser.close()
+
+        # Тот же боец, но уже при семье: вкладка встала на панель, а
+        # знаки — у ника
+        browser, page = await open_page(pw, server, mafioso, clan=clan_state())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        assert await page.locator("#tab-clan").is_visible()
+        assert await page.locator("#hero-clan .clan-sign").count() == 1
+
+        await page.locator("#tab-clan").click()
+        await page.wait_for_selector("#clan:not(.hidden)")
+        assert "Коза Ностра" in await page.locator("#clan-title").inner_text()
+        await browser.close()
+
+
+async def test_the_family_stands_in_three_rows_with_its_marks(server):
+    """Вкладка клана: Дон, приближённые, мафиози — и знаки у каждого.
+
+    Порядок знаков в строке один на весь город: класс, знак мафии, знак
+    клана, ник, премиум, уровень.
+    """
+    player = make_player()
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, clan=clan_state())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "clan")
+        await page.wait_for_selector("#clan-body .shelf")
+
+        heads = await page.locator("#clan-body .shelf-head").all_inner_texts()
+        assert heads == ["Заявки · 0", "Дон", "Приближённые · 1 из 3",
+                         "Мафиози", "Позвать в семью"]
+
+        # Строка приближённого: класс, знак мафии, знак клана, ник с
+        # премиумом, уровень
+        capo = page.locator(".clan-row", has_text="Марла")
+        assert await capo.locator(".fighter-class").inner_text() == "🤸"
+        assert await capo.locator(".clan-sign").count() == 1
+        assert await capo.locator(".fighter-name").inner_text() == "Марла 💎"
+        assert await capo.locator(".fighter-level").inner_text() == "[7]"
+        # Дон видит кнопки на каждом, кроме себя
+        assert await capo.locator(".btn").all_inner_texts() == [
+            "Разжаловать", "Передать дела", "Выгнать"
+        ]
+        don = page.locator(".clan-row", has_text="Растафарайчик")
+        assert await don.locator(".btn").count() == 0
+
+        # Передача дел спрашивает дважды: кому и кем остаться самому —
+        # прежний Дон выбирает свой чин сам
+        await page.evaluate(
+            """() => {
+                window.asked = [];
+                window.askConfirm = (title) => {
+                    window.asked.push(title);
+                    return Promise.resolve(true);
+                };
+                window.clanAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await capo.locator(".btn", has_text="Передать дела").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.asked") == [
+            "Передать дела?", "Кем остаёшься?"
+        ]
+        assert await page.evaluate("window.sent") == {
+            "action": "handover", "user": 43, "keep": "capo"
+        }
+        await browser.close()
+
+
+async def test_the_invite_window_stands_over_the_game(server):
+    """Приглашение показывают окном при входе — ответить надо один раз."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["invites"] = [
+        {
+            "clan_id": 7,
+            "user_id": player.user_id,
+            "kind": "invite",
+            "clan": "Коза Ностра",
+            "emblem": "",
+            "by": "Марла",
+            "when": "11.10.26 12:00",
+        }
+    ]
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#invite-veil:not(.hidden)")
+        assert "зовут в семью" in await page.locator("#invite-head").inner_text()
+        note = await page.locator("#invite-note").inner_text()
+        assert "Марла" in note and "Коза Ностра" in note
+        assert await page.locator("#invite-buttons .btn").all_inner_texts() == [
+            "Вступить", "Отказаться"
+        ]
+
+        # Отказ закрывает окно и больше за сеанс его не поднимает
+        await page.locator("#invite-buttons .btn").nth(1).click()
+        await page.locator("#invite-veil").wait_for(state="hidden")
+        await page.evaluate("card => showInvites(card.invites)", card)
+        assert await page.locator("#invite-veil").is_hidden()
+        await browser.close()
+
+
+async def test_the_club_list_wears_the_marks_of_the_family(server):
+    """Знак мафии стоит у ника и в списке клуба — там его и видят чужие."""
+    from bot.webapp.card import build_club
+
+    player = make_player()
+    mafioso = make_player()
+    mafioso.user_id = 43
+    mafioso.nickname = "Марла"
+    mafioso.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=43, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    club = build_club([player, mafioso], player.user_id, TOKEN)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, club=club)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        # вкладка открывается на боях: за списком идём в «Игроки»
+        await page.get_by_role("button", name="Игроки", exact=True).click()
+        await page.wait_for_selector(".fighter")
+
+        mine = page.locator(".fighter", has_text="Растафарайчик")
+        assert await mine.locator(".clan-sign").count() == 0
+        theirs = page.locator(".fighter", has_text="Марла")
+        assert await theirs.locator(".clan-sign").count() == 1
+        assert "Коза Ностра" in await theirs.locator(".clan-sign").get_attribute(
+            "title"
+        )
         await browser.close()

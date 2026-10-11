@@ -1869,15 +1869,17 @@ function lotCard(lot) {
 
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
-  "bank", "hr", "work", "school", "police", "trade", "house", "bag", "hero",
+  "bank", "hr", "work", "school", "police", "mafia", "trade", "house", "bag",
+  "hero", "clan",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
-// Пока в них стоишь, горит «Карта» — оттуда в них и пришли
-const TABS = ["club", "map", "bag", "hero"];
+// Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
+// «Клан» — вкладка, но не у всех: у одиночки её нет вовсе
+const TABS = ["club", "map", "bag", "hero", "clan"];
 const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
-  school: "map", police: "map", house: "map",
+  school: "map", police: "map", mafia: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1914,6 +1916,10 @@ function showTab(name) {
   if (name === "school") loadSchool();
   else stopExamClock();
   if (name === "police") loadPolice();
+  // Особняк и своя семья: оба экрана перечитываем при каждом заходе —
+  // заявки и чины меняются чужими руками
+  if (name === "mafia") loadMafia();
+  if (name === "clan") loadClan();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2299,6 +2305,7 @@ const HOUSE_SCREENS = {
   work: () => showTab("work"),
   school: () => showTab("school"),
   police: () => showTab("police"),
+  mafia: () => showTab("mafia"),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -2593,7 +2600,11 @@ function fighterRow(fighter) {
 
   const name = document.createElement("span");
   name.className = "fighter-name";
-  name.textContent = fighter.nickname;
+  // Порядок знаков в строке один на весь город: класс, знак мафии, знак
+  // клана, ник, премиум, уровень
+  name.textContent = fighter.pro
+    ? fighter.nickname + " 💎"
+    : fighter.nickname;
 
   const level = document.createElement("span");
   level.className = "fighter-level";
@@ -2610,7 +2621,7 @@ function fighterRow(fighter) {
   info.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
   info.addEventListener("click", () => showFighter(fighter));
 
-  box.append(face, name, level, info);
+  box.append(face, ...clanMarks(fighter.clan), name, level, info);
   return box;
 }
 
@@ -6029,6 +6040,7 @@ function render(card, keepTab) {
   renderSlots(el("hero-slots-left"), card.slots.left, card.is_self, true);
   renderSlots(el("hero-slots-right"), card.slots.right, card.is_self, true);
   renderSkills(card);
+  renderClanMarks(card);
   renderDaily(card);
   renderPapers(card);
   renderBag(card);
@@ -8946,9 +8958,691 @@ function renderPolice(data) {
 // внутри. Картинку вешает не вёрстка, а локация: один экран обслуживает
 // по несколько домов — клуб и казино, пять разных прилавков, — и что
 // показывать, знает только то место, где боец сейчас стоит.
+
+// ---------- мафия: особняк и своя семья ----------
+//
+// Два экрана и одно окно. Особняк — про весь город: завести клан,
+// посмотреть чужие, постучаться. Вкладка «Клан» — про свою семью:
+// чины, заявки и кнопки старших. Окно — про приглашение: его показывают
+// при входе в игру, потому что позвали однажды, и ответить надо один раз.
+//
+// Страница здесь ничего не решает и ничего не досчитывает: кого можно
+// выгнать, кого назначить и сколько осталось мест — всё приходит с
+// сервера готовым. Спрятанная кнопка обходится запросом мимо интерфейса,
+// поэтому прятать её — не защита, а вежливость.
+
+let mafiaBusy = false;
+let clanBusy = false;
+// Знак, выбранный в форме создания, и имя, если игрок его уже написал:
+// подставлять имя знака поверх набранного нельзя
+let signPicked = "";
+let nameTyped = "";
+// Последний ответ особняка: по нему перерисовывается решётка знаков
+let mansionData = null;
+// Какое приглашение показываем в окне: их может лежать несколько
+let inviteShown = "";
+// Своя семья: по ней зажигается вкладка. Чужая карточка её не трогает
+let myClan = null;
+
+/** Знак клана для строки — один на всю страницу.
+ *
+ * Берём его у того, что пришло с сервера: и у строки списка клуба, где
+ * семья лежит отдельным полем, и у строки самого клана, где знак стоит
+ * в ней же. Признак один на оба случая: есть картинка — есть и семья.
+ */
+function clanMarks(mark) {
+  const marks = [];
+  if (!mark || !mark.emblem) return marks;
+  const name = mark.name || mark.clan || "";
+  const sign = document.createElement("img");
+  sign.className = "clan-sign";
+  sign.src = mark.emblem;
+  sign.alt = name || "Знак клана";
+  sign.title = name ? "Клан «" + name + "»" : "Клан";
+  marks.push(sign);
+  return marks;
+}
+
+/** Строка бойца в списках клана: класс, знаки, ник, премиум, уровень. */
+function clanMemberRow(member, actions) {
+  const box = document.createElement("div");
+  box.className = "fighter clan-row" + (member.is_self ? " me" : "");
+
+  const face = document.createElement("span");
+  face.className = "fighter-class";
+  face.textContent = member.fclass ? member.fclass.emoji : "";
+  box.appendChild(face);
+  clanMarks(member).forEach((mark) => box.appendChild(mark));
+
+  const name = document.createElement("span");
+  name.className = "fighter-name";
+  name.textContent = member.pro
+    ? member.nickname + " " + (member.pro_badge || "💎")
+    : member.nickname;
+  box.appendChild(name);
+
+  const level = document.createElement("span");
+  level.className = "fighter-level";
+  level.textContent = "[" + member.level + "]";
+  box.appendChild(level);
+
+  if (actions && actions.length) {
+    const tools = document.createElement("div");
+    tools.className = "clan-tools";
+    actions.forEach((one) => tools.appendChild(one));
+    box.appendChild(tools);
+  }
+  return box;
+}
+
+// ---------- особняк ----------
+
+async function loadMafia() {
+  try {
+    const response = await fetch("api/mafia", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("mafia-note").textContent = "Особняк не открылся.";
+      return;
+    }
+    renderMafia(await response.json());
+  } catch (error) {
+    el("mafia-note").textContent = error.message;
+  }
+}
+
+async function mafiaAction(payload) {
+  if (mafiaBusy) return;
+  mafiaBusy = true;
+  try {
+    haptic((feedback) => feedback.impactOccurred("light"));
+    const response = await fetch("api/mafia", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Особняк мафии", data.error || "Не получилось.");
+      return;
+    }
+    signPicked = "";
+    nameTyped = "";
+    renderMafia(data);
+    if (data.card) render(data.card, true);
+  } catch (error) {
+    popup("Особняк мафии", error.message);
+  } finally {
+    mafiaBusy = false;
+  }
+}
+
+function renderMafia(data) {
+  mansionData = data;
+  el("shop-purse-mafia").textContent = "";
+  el("shop-purse-mafia").appendChild(purse(data.credits));
+  el("mafia-note").textContent = data.said || data.note;
+
+  const body = el("mafia-body");
+  body.textContent = "";
+  if (!data.in_clan) body.appendChild(foundBox(data));
+  body.appendChild(clansBox(data));
+}
+
+/** Форма создания клана: имя, знак и тысяча кредитов. */
+function foundBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Завести свой клан";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Цена — " + data.price + " 💰. Имя от " + data.name_min + " до " +
+    data.name_max + " знаков, и его потом можно сменить за " +
+    data.rename_price + " 💰, но не чаще раза в " + data.rename_days +
+    " дней. Знак выбирается один раз и достаётся только твоей семье. " +
+    "Ты станешь Доном.";
+  box.appendChild(note);
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.className = "field-input";
+  name.id = "clan-name";
+  name.maxLength = data.name_max;
+  name.placeholder = "Имя клана";
+  if (signPicked) {
+    const chosen = data.signs.find((one) => one.code === signPicked);
+    if (chosen) name.value = nameTyped || chosen.title;
+  }
+  name.addEventListener("input", () => {
+    nameTyped = name.value;
+  });
+  box.appendChild(name);
+
+  box.appendChild(signsGrid(data));
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Завести клан · " + data.price + " 💰", {
+      disabled: !data.can_pay || !data.free_signs,
+      hint: data.free_signs
+        ? "Кредитов не хватает."
+        : "Все знаки разобраны: свободного для новой семьи нет.",
+      onClick: () => foundClan(),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Решётка знаков: занятые подписаны чужим именем и не выбираются. */
+function signsGrid(data) {
+  const grid = document.createElement("div");
+  grid.className = "sign-grid";
+  grid.id = "sign-grid";
+  data.signs.forEach((sign) => {
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className =
+      "sign" + (sign.taken ? " taken" : "") +
+      (sign.code === signPicked ? " picked" : "");
+    cell.title = sign.taken ? sign.title + " · у клана «" + sign.owner + "»"
+                            : sign.title;
+    cell.disabled = Boolean(sign.taken);
+    const pic = document.createElement("img");
+    pic.src = sign.picture;
+    pic.alt = sign.title;
+    cell.appendChild(pic);
+    cell.addEventListener("click", () => pickSign(sign));
+    grid.appendChild(cell);
+  });
+  return grid;
+}
+
+/** Выбрать знак: он же подставляет имя, пока игрок не написал своё. */
+function pickSign(sign) {
+  haptic((feedback) => feedback.selectionChanged());
+  signPicked = sign.code;
+  const field = el("clan-name");
+  if (field && !nameTyped) field.value = sign.title;
+  if (mansionData) renderMafia(mansionData);
+}
+
+function foundClan() {
+  const field = el("clan-name");
+  const name = field ? field.value.trim() : "";
+  if (!name) {
+    popup("Особняк мафии", "У клана должно быть имя.");
+    return;
+  }
+  if (!signPicked) {
+    popup("Особняк мафии", "Выбери знак клана — он будет только твоим.");
+    return;
+  }
+  mafiaAction({ action: "found", name: name, sign: signPicked });
+}
+
+/** Поле смены имени: его показывают Дону прямо в карточке своей семьи.
+ *
+ * Полем, а не всплывающим окном с вводом: такого окна в мини-аппе нет
+ * вовсе, а `prompt` в телеграмовском вебвью не открывается.
+ */
+function renameBox(clan, data) {
+  const box = document.createElement("div");
+  box.className = "clan-rename";
+
+  const field = document.createElement("input");
+  field.type = "text";
+  field.className = "field-input";
+  field.id = "clan-rename";
+  field.maxLength = data.name_max;
+  field.placeholder = "Новое имя клана";
+  field.disabled = !clan.can_rename;
+  box.appendChild(field);
+
+  box.appendChild(
+    button("Сменить имя · " + data.rename_price + " 💰", {
+      secondary: true,
+      disabled: !clan.can_rename,
+      hint:
+        "Имя меняют не чаще раза в " + data.rename_days + " дней." +
+        (clan.rename_at ? " Следующая смена — " + clan.rename_at + "." : ""),
+      onClick: () => {
+        const name = el("clan-rename").value.trim();
+        if (!name) {
+          popup("Особняк мафии", "Напиши новое имя клана.");
+          return;
+        }
+        mafiaAction({ action: "rename", name: name });
+      },
+    })
+  );
+  return box;
+}
+
+/** Список кланов города: свой сверху, остальные по размеру. */
+function clansBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Кланы города · " + data.clans.length;
+  box.appendChild(head);
+
+  if (!data.clans.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent = "Ни одной семьи. Заведи первую.";
+    box.appendChild(empty);
+    return box;
+  }
+  data.clans.forEach((clan) => box.appendChild(clanCard(clan, data)));
+  return box;
+}
+
+function clanCard(clan, data) {
+  const box = document.createElement("div");
+  box.className = "thing clan-card" + (clan.mine ? " me" : "");
+
+  const pic = document.createElement("div");
+  pic.className = "thing-pic";
+  if (clan.emblem) {
+    const sign = document.createElement("img");
+    sign.src = clan.emblem;
+    sign.alt = clan.name;
+    pic.appendChild(sign);
+  } else {
+    pic.textContent = "🖤";
+  }
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "thing-body";
+
+  const title = document.createElement("div");
+  title.className = "thing-title";
+  title.textContent = clan.name;
+  body.appendChild(title);
+
+  const size = document.createElement("div");
+  size.className = "thing-note";
+  size.textContent =
+    "В семье " + clan.members + " из " + clan.max_members +
+    (clan.founded ? " · с " + clan.founded : "");
+  body.appendChild(size);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (clan.mine) {
+    buttons.appendChild(
+      button("Вкладка «Клан»", {
+        secondary: true,
+        onClick: () => showTab("clan"),
+      })
+    );
+
+    buttons.appendChild(
+      button("Выйти из клана", {
+        onClick: async () => {
+          const ok = await askConfirm(
+            data.is_don ? "Распустить клан?" : "Выйти из клана?",
+            data.is_don
+              ? "Дон уходит последним: если в семье есть люди, сперва передай дела."
+              : "Вернуться можно будет только по новой заявке.",
+            "Уйти"
+          );
+          if (ok) mafiaAction({ action: "leave" });
+        },
+      })
+    );
+  } else if (clan.asked) {
+    buttons.appendChild(
+      button("Отозвать заявку", {
+        secondary: true,
+        onClick: () => mafiaAction({ action: "withdraw", clan: clan.id }),
+      })
+    );
+  } else if (!data.in_clan) {
+    buttons.appendChild(
+      button(clan.full ? "Мест нет" : "Подать заявку", {
+        disabled: clan.full,
+        hint: "В этой семье все места заняты.",
+        onClick: () => mafiaAction({ action: "apply", clan: clan.id }),
+      })
+    );
+  }
+  if (buttons.children.length) body.appendChild(buttons);
+  // Имя семьи меняет Дон, и меняет он его здесь же: за него платят, а
+  // платят в особняке
+  if (clan.mine && data.is_don) body.appendChild(renameBox(clan, data));
+
+  box.appendChild(body);
+  return box;
+}
+
+// ---------- своя семья ----------
+
+async function loadClan() {
+  try {
+    const response = await fetch("api/clan", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("clan-note").textContent = "Клан не открылся.";
+      return;
+    }
+    renderClan(await response.json());
+  } catch (error) {
+    el("clan-note").textContent = error.message;
+  }
+}
+
+async function clanAction(payload) {
+  if (clanBusy) return;
+  clanBusy = true;
+  try {
+    haptic((feedback) => feedback.impactOccurred("light"));
+    const response = await fetch("api/clan", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Клан", data.error || "Не получилось.");
+      return;
+    }
+    renderClan(data);
+    if (data.card) render(data.card, true);
+  } catch (error) {
+    popup("Клан", error.message);
+  } finally {
+    clanBusy = false;
+  }
+}
+
+function renderClan(data) {
+  const head = el("clan-head");
+  head.textContent = "";
+  const body = el("clan-body");
+  body.textContent = "";
+
+  if (!data.in_clan) {
+    el("clan-title").textContent = "🎩 Клан";
+    el("clan-note").textContent =
+      "Ты не в клане. Семью заводят и выбирают в Особняке мафии.";
+    return;
+  }
+  const clan = data.clan;
+  el("clan-title").textContent = clan.name;
+  el("clan-note").textContent =
+    data.said ||
+    "В семье " + clan.members + " из " + clan.max_members +
+      " · твой чин: " + clan.rank_title +
+      (clan.founded ? " · семья с " + clan.founded : "");
+  if (clan.emblem) {
+    const sign = document.createElement("img");
+    sign.className = "clan-sign big";
+    sign.src = clan.emblem;
+    sign.alt = clan.name;
+    head.appendChild(sign);
+  }
+  if (!data.in_clan) return;
+
+  if (data.can_admin) body.appendChild(requestsBox(data));
+  data.ranks.forEach((rank) => {
+    if (!rank.members.length && rank.code !== "capo") return;
+    body.appendChild(rankBox(rank, data));
+  });
+  if (data.can_admin) body.appendChild(inviteBox(data));
+}
+
+/** Ряд одного чина: Дон, приближённые или мафиози. */
+function rankBox(rank, data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent =
+    rank.title +
+    (rank.limit
+      ? " · " + rank.members.length + " из " + rank.limit
+      : rank.members.length > 1 ? " · " + rank.members.length : "");
+  box.appendChild(head);
+
+  if (!rank.members.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent = "Пока никого.";
+    box.appendChild(empty);
+    return box;
+  }
+  rank.members.forEach((member) => {
+    const tools = [];
+    if (member.can_promote) {
+      tools.push(
+        button("Приблизить", {
+          secondary: true,
+          disabled: !data.free_capo_seats,
+          hint: "Приближённых уже " + data.max_capos + ".",
+          onClick: () => clanAction({ action: "promote", user: member.user_id }),
+        })
+      );
+    }
+    if (member.can_demote) {
+      tools.push(
+        button("Разжаловать", {
+          secondary: true,
+          onClick: () => clanAction({ action: "demote", user: member.user_id }),
+        })
+      );
+    }
+    if (member.can_crown) {
+      tools.push(
+        button("Передать дела", {
+          secondary: true,
+          onClick: () => handOver(member),
+        })
+      );
+    }
+    if (member.can_expel) {
+      tools.push(
+        button("Выгнать", {
+          onClick: async () => {
+            const ok = await askConfirm(
+              "Выгнать из семьи?",
+              member.nickname + " покинет клан.",
+              "Выгнать"
+            );
+            if (ok) clanAction({ action: "expel", user: member.user_id });
+          },
+        })
+      );
+    }
+    box.appendChild(clanMemberRow(member, tools));
+  });
+  return box;
+}
+
+/** Передача дел в два вопроса: кому и кем остаться самому.
+ *
+ * Вторым вопросом нельзя пренебречь: прежний Дон остаётся в семье, и
+ * кем именно — его выбор, а не наш. Спрашиваем согласием, а не списком:
+ * оно есть и в телеграме, и в голом браузере.
+ */
+async function handOver(member) {
+  const ok = await askConfirm(
+    "Передать дела?",
+    member.nickname + " станет Доном семьи. Твой чин выберешь следующим шагом.",
+    "Передать"
+  );
+  if (!ok) return;
+  const stay = await askConfirm(
+    "Кем остаёшься?",
+    "«Приближённым» — останешься среди старших. «Отмена» — уйдёшь в мафиози.",
+    "Приближённым"
+  );
+  clanAction({
+    action: "handover",
+    user: member.user_id,
+    keep: stay ? "capo" : "soldier",
+  });
+}
+
+/** Заявки в семью: их разбирают старшие. */
+function requestsBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Заявки · " + data.requests.length;
+  box.appendChild(head);
+
+  if (!data.requests.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent = "Заявок нет.";
+    box.appendChild(empty);
+  }
+  data.requests.forEach((knock) => {
+    box.appendChild(
+      clanMemberRow(knock, [
+        button("Принять", {
+          onClick: () => clanAction({ action: "approve", user: knock.user_id }),
+        }),
+        button("Отклонить", {
+          secondary: true,
+          onClick: () => clanAction({ action: "decline", user: knock.user_id }),
+        }),
+      ])
+    );
+  });
+
+  if (data.invites.length) {
+    const sent = document.createElement("p");
+    sent.className = "thing-note";
+    sent.textContent =
+      "Позваны и думают: " +
+      data.invites.map((one) => one.nickname).join(", ") + ".";
+    box.appendChild(sent);
+  }
+  return box;
+}
+
+/** Позвать бойца по нику: ответит он сам, окном при входе. */
+function inviteBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Позвать в семью";
+  box.appendChild(head);
+
+  const field = document.createElement("input");
+  field.type = "text";
+  field.className = "field-input";
+  field.id = "clan-invite";
+  field.placeholder = "Ник бойца";
+  box.appendChild(field);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Позвать", {
+      onClick: () => {
+        const who = el("clan-invite").value.trim();
+        if (!who) {
+          popup("Клан", "Напиши ник того, кого зовёшь.");
+          return;
+        }
+        clanAction({ action: "invite", nickname: who });
+      },
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+// ---------- приглашение: окно при входе ----------
+
+/** Показать первое приглашение, которое ждёт ответа. */
+function showInvites(invites) {
+  const veil = el("invite-veil");
+  if (!invites || !invites.length) {
+    veil.classList.add("hidden");
+    return;
+  }
+  const knock = invites[0];
+  // Одно и то же приглашение не навязываем дважды за сеанс: ответить на
+  // него можно и позже, а окно поверх экрана мешает играть
+  if (inviteShown === String(knock.clan_id)) return;
+  inviteShown = String(knock.clan_id);
+
+  el("invite-head").textContent = "Тебя зовут в семью";
+  el("invite-note").textContent =
+    (knock.by ? knock.by + " зовёт тебя " : "Тебя зовут ") +
+    "в клан «" + knock.clan + "»." +
+    (knock.when ? " Позвали " + knock.when + "." : "");
+  const buttons = el("invite-buttons");
+  buttons.textContent = "";
+  buttons.appendChild(
+    button("Вступить", {
+      onClick: () => answerInvite({ action: "accept", clan: knock.clan_id }),
+    })
+  );
+  buttons.appendChild(
+    button("Отказаться", {
+      secondary: true,
+      onClick: () => answerInvite({ action: "refuse", clan: knock.clan_id }),
+    })
+  );
+  veil.classList.remove("hidden");
+}
+
+async function answerInvite(payload) {
+  el("invite-veil").classList.add("hidden");
+  await clanAction(payload);
+  await catchUp();
+}
+
+/** Вкладка «Клан» и знаки у ника: и то и другое есть только у мафии. */
+function renderClanMarks(card) {
+  const clan = card.clan || {};
+  // Вкладку зажигает своя карточка, а не та, что открыта: чужую
+  // открывают из списка клуба, и прятать из-за неё свою семью нельзя
+  if (card.is_self) myClan = clan.emblem ? clan : null;
+  el("tab-clan").classList.toggle("hidden", !myClan);
+  // А знаки у ника — того бойца, чья карточка перед глазами
+  ["hero-", "bag-"].forEach((prefix) => {
+    const box = el(prefix + "clan");
+    if (!box) return;
+    box.textContent = "";
+    clanMarks(clan).forEach((mark) => box.appendChild(mark));
+  });
+  // Ушёл из семьи, стоя на её вкладке, — уводим с пустого экрана
+  if (!myClan && lastTab === "clan") showTab("hero");
+}
+
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
-  "hr", "work", "school", "police", "trade", "house",
+  "hr", "work", "school", "police", "mafia", "trade", "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -9068,6 +9762,7 @@ async function load() {
     }
     const card = await response.json();
     render(card);
+    showInvites(card.invites);
     const screen = wantedScreen();
     if (card.is_self && screen) SCREEN_PARAMS[screen]();
   } catch (error) {
@@ -9089,7 +9784,7 @@ el("sheet-back").addEventListener("click", closeSheet);
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
-  "school", "police", "shop", "magic", "workshop", "club",
+  "school", "police", "mafia", "shop", "magic", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

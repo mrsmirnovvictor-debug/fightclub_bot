@@ -69,6 +69,7 @@ from bot.game.stats import derive
 from bot.game.store import PACKS
 from bot.models import Player
 from bot.webapp.auth import sign_avatar
+from bot.webapp.clans import fighter_badges
 from bot.webapp.bank import purse_payload
 from bot.webapp.documents import build_documents
 
@@ -918,12 +919,17 @@ def avatar_payload(player: Player, avatar_url: str) -> dict:
     }
 
 
-def fighter_row(player: Player, viewer_id: int | None) -> dict:
+def fighter_row(
+    player: Player, viewer_id: int | None, bot_token: str = ""
+) -> dict:
     """Строка списка клуба: только то, что видно в самой строке.
 
     Карточку по кнопке «i» отдаёт /api/card — там уже есть и аватар, и слоты,
     и счёт. Тянуть всё это в список значило бы читать экипировку каждого
     бойца ради строчки из трёх слов.
+
+    Клан — исключение: его знаки стоят в самой строке, рядом с ником, и
+    без них строка списка врала бы, показывая мафиози одиночкой.
     """
     return {
         "user_id": player.user_id,
@@ -936,13 +942,18 @@ def fighter_row(player: Player, viewer_id: int | None) -> dict:
             "title": player.fclass.title,
             "emoji": player.fclass.emoji,
         },
+        "clan": fighter_badges(player, bot_token),
     }
 
 
-def build_club(players: list[Player], viewer_id: int | None) -> dict:
+def build_club(
+    players: list[Player], viewer_id: int | None, bot_token: str = ""
+) -> dict:
     """Список клуба: кто записан, какого уровня и что у него в карточке."""
     return {
-        "fighters": [fighter_row(player, viewer_id) for player in players],
+        "fighters": [
+            fighter_row(player, viewer_id, bot_token) for player in players
+        ],
         "total": len(players),
     }
 
@@ -1045,6 +1056,9 @@ def build_card(
         "name": player.nickname,
         "level": player.level,
         "is_self": is_self,
+        # Клан: по нему страница ставит знаки у ника и зажигает вкладку
+        # «Клан». Пусто — боец сам по себе, и вкладки у него нет
+        "clan": fighter_badges(player, bot_token, moment),
         "pro": {
             "active": player.is_pro(moment),
             "seconds_left": player.pro_left(moment),

@@ -34,6 +34,7 @@ from bot.game.bank import (
     YEAR_SECONDS,
     price_for,
 )
+from bot.game.clans import Standing
 from bot.game.driving import School
 from bot.game.insurance import Policy
 from bot.game.health import (
@@ -138,6 +139,10 @@ class Player:
     # боец не ходил. Пустая, а не `None`: у школы пять чисел и ни одного
     # обязательного, и «не записан» — это те же нули, что и «не сдавал»
     school: School = field(default_factory=School)
+    # В каком клане боец и каким чином. None — он сам по себе. Читается
+    # вместе с бойцом, потому что знак мафии стоит у ника везде, где ник
+    # показывают, — а карточка собирается без второго похода в базу
+    clan: Standing | None = None
     # До какого часа абонемент в зал. 0 — его не было. Лежит на бойце, а
     # не в службе зала, потому что это второй документ: его показывают в
     # карточке, а она собирается без похода в базу

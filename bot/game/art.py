@@ -42,11 +42,18 @@ PDD = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/pdd2"
 INTERIORS = f"{LOCATIONS}/interiors"
 # Районы второй очереди: участок, больница, казармы и всё остальное
 NEW_INTERIORS = f"{BUCKET}/interiors"
+# Знаки кланов: по картинке на знак, и знак один на клан
+CLANS = f"{BUCKET}/clans"
 
 
 def avatar(code: str) -> str:
     """Картинка образа лежит под его же кодом: avatars/rookie.jpeg."""
     return f"{AVATARS}/{code}.jpeg"
+
+
+def clan_sign(code: str) -> str:
+    """Знак клана лежит под своим кодом: clans/black_ravens.png."""
+    return f"{CLANS}/{code}.png"
 
 
 def slot(name: str) -> str:
