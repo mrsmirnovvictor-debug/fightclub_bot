@@ -36,6 +36,7 @@ from bot.game.health import now_ts
 from bot.game.locations import Service
 from bot.game.pro import PRO_BADGE
 from bot.models import Player
+from bot.webapp.bank import purse_payload
 
 
 def sign_payload(code: str) -> dict[str, Any]:
@@ -206,7 +207,8 @@ def build_mansion(
         "price": price,
         "full_price": CLAN_PRICE,
         "credits": player.credits,
-        "purse": player.purse_note(moment, Service.MAFIA),
+        # Чем платят за клан: наличные или счёт, как в лавке
+        "purse": purse_payload(player, moment, Service.MAFIA),
         "can_pay": player.can_afford(price, moment, Service.MAFIA),
         "max_members": MAX_MEMBERS,
         "max_capos": MAX_CAPOS,

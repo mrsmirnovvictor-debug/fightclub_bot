@@ -8743,6 +8743,9 @@ function renderSchool(data) {
     return;
   }
   body.appendChild(courseBox(data));
+  // Чем платить за курс — выбирают здесь же, как в лавке: за ним иначе
+  // пришлось бы идти в банк и возвращаться
+  if (data.stage === "new") body.appendChild(walletBar(data.purse, loadSchool));
 }
 
 /** Курс: цена, обратный отсчёт учёбы и запись на экзамен. */
@@ -9113,6 +9116,8 @@ function renderMafia(data) {
   const body = el("mafia-body");
   body.textContent = "";
   if (!data.in_clan) body.appendChild(foundBox(data));
+  // Чем платить за клан и за смену имени: тот же выбор, что в лавке
+  body.appendChild(walletBar(data.purse, loadMafia));
   body.appendChild(clansBox(data));
 }
 

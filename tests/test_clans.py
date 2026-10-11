@@ -498,6 +498,10 @@ async def test_the_mansion_screen_shows_the_city_and_the_price(db):
 
     assert body["price"] == CLAN_PRICE and body["in_clan"] is False
     assert body["max_members"] == MAX_MEMBERS
+    # Чем платить, видно здесь же: наличные, счёт и что выбрано сейчас
+    assert body["purse"]["cash"] == guest.credits
+    assert body["purse"]["purse"] in ("cash", "card")
+    assert body["purse"]["titles"] and body["purse"]["note"]
     row = body["clans"][0]
     assert row["name"] == "Коза Ностра" and row["asked"] is True
     assert row["members"] == 1 and row["sign"] == SIGN

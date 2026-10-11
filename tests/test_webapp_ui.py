@@ -9352,6 +9352,33 @@ async def test_a_necklace_keeps_its_strip_everywhere_it_is_shown(server):
         await browser.close()
 
 
+async def test_the_school_and_the_mansion_show_the_wallet(server):
+    """Кошелёк виден и в автошколе, и в особняке: там платят.
+
+    Переключатель наличных и карты стоял в лавках, но не на этих двух
+    экранах — а курс и клан стоят денег, и выбирать, откуда они уйдут,
+    приходилось в банке.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        await open_screen(page, "school")
+        await page.wait_for_selector("#school-body .shelf")
+        assert await page.locator("#school .wallet-pick").count() == 2
+        assert "Наличные" in await page.locator(
+            "#school .wallet-pick"
+        ).first.inner_text()
+
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-body .shelf")
+        assert await page.locator("#mafia .wallet-pick").count() == 2
+        await browser.close()
+
+
 async def test_the_set_line_stands_under_the_weapon_and_turns_green(server):
     """Строка комплекта видна на вещи: сколько надето и сколько даёт.
 

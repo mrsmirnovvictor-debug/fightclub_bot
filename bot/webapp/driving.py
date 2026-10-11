@@ -34,6 +34,7 @@ from bot.game.driving import (
 from bot.game.health import now_ts
 from bot.game.locations import Service
 from bot.models import Player
+from bot.webapp.bank import purse_payload
 
 # Какой шаг пути боец прошёл. По нему страница и решает, что показывать:
 # цену курса, обратный отсчёт учёбы, кнопку «на экзамен» или сам билет
@@ -74,7 +75,10 @@ def build_school(player: Player, now: int | None = None) -> dict[str, Any]:
         "price": player.price_here(COURSE_PRICE, moment, Service.SCHOOL),
         "full_price": COURSE_PRICE,
         "credits": player.credits,
-        "purse": purse_line(player, moment),
+        # Чем платят за курс: тот же выбор наличных и карты, что в
+        # лавке. Раньше сюда уезжала одна строка текста, и переключить
+        # кошелёк на этом экране было нельзя — приходилось идти в банк
+        "purse": purse_payload(player, moment, Service.SCHOOL),
         "study_days": STUDY_DAYS,
         "study_left": school.study_left(moment) if school.enrolled else 0,
         "study_until": (
@@ -125,11 +129,6 @@ def school_note(stage: str, school, moment: int, open_now: bool) -> str:
     if stage == PASSED:
         return "Экзамен сдан. За правами — в полицейский участок."
     return "Права получены и лежат в документах."
-
-
-def purse_line(player: Player, moment: int) -> str:
-    """Чем боец здесь платит — одной строкой, как в лавке."""
-    return player.purse_note(moment, Service.SCHOOL)
 
 
 def build_police(player: Player, now: int | None = None) -> dict[str, Any]:

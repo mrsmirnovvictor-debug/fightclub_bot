@@ -235,6 +235,28 @@ async def test_there_is_no_second_course_for_the_same_fighter(db):
     assert player.credits == 1000 - COURSE_PRICE
 
 
+async def test_the_school_screen_lets_you_pick_the_purse(db):
+    """Чем платить за курс, выбирают на самом экране школы.
+
+    Раньше сюда уезжала одна строка текста, и переключателя кошелька на
+    экране не было вовсе: боец шёл в банк, менял источник оплаты и
+    возвращался. Со счётом и картой это тот же выбор, что в лавке.
+    """
+    player = make_player()
+    player.account_number = "VB-1234-5678-9012"
+    player.account_balance = COURSE_PRICE
+    player.card_at = moment_at() - 60
+    player.card_paid_until = moment_at() + 60 * 60
+    player.pay_from = "card"
+
+    body = build_school(player, moment_at())
+
+    purse = body["purse"]
+    assert purse["purse"] == "card" and purse["balance"] == COURSE_PRICE
+    assert purse["cash"] == player.credits and purse["takes_card"] is True
+    assert purse["titles"]["card"] and purse["emoji"]["cash"]
+
+
 async def test_an_empty_purse_leaves_the_course_unsigned(db):
     player = make_player(credits=COURSE_PRICE - 1)
     player.pay_from = "cash"
