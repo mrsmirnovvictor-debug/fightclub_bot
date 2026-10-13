@@ -34,7 +34,7 @@ from bot.game.clans import (
     sign_problem,
 )
 from bot.game.equipment import get_item
-from bot.game.health import format_duration
+from bot.game.health import format_term
 from bot.game.health import now_ts
 from bot.game.locations import Service
 from bot.models import Player
@@ -139,7 +139,7 @@ async def rename(
     if clan is None:  # pragma: no cover - клан не исчезает на ходу
         raise ClanError("Такого клана нет.")
     if not clan.can_rename(moment):
-        left = format_duration(clan.rename_left(moment))
+        left = format_term(clan.rename_left(moment))
         raise ClanError(
             f"Имя меняют не чаще раза в {RENAME_DAYS} дней — ждать ещё {left}."
         )
@@ -465,9 +465,9 @@ async def withdraw_vault(
 async def stash(
     db: Database, player: Player, item_id: int, now: int | None = None
 ) -> str:
-    """Положить вещь в хранилище семьи. Кладут все, кто в семье."""
+    """Положить вещь на склад семьи. Кладут все, кто в семье."""
     moment = now_ts() if now is None else now
-    _at_mansion(player, moment, "Положить вещь на полку")
+    _at_mansion(player, moment, "Положить вещь на склад")
     standing = _standing(player)
     owned = player.find_gear(item_id)
     if owned is None:
@@ -477,26 +477,26 @@ async def stash(
     if not await db.stash_gear(
         item_id, player.user_id, standing.clan.id, VAULT_SLOTS, moment
     ):
-        raise ClanError(f"В хранилище {VAULT_SLOTS} полок, и все заняты.")
+        raise ClanError(f"На складе {VAULT_SLOTS} полок, и все заняты.")
     player.drop_gear(owned)
-    logger.info("Боец %s положил вещь %s в хранилище клана %s", player.user_id,
+    logger.info("Боец %s положил вещь %s на склад клана %s", player.user_id,
                 item_id, standing.clan.id)
-    return f"«{owned.item.title}» лежит в хранилище семьи."
+    return f"«{owned.item.title}» лежит на складе семьи."
 
 
 async def take(
     db: Database, player: Player, stored_id: int, now: int | None = None
 ) -> str:
-    """Забрать вещь из хранилища. Берут только Дон и приближённые."""
+    """Забрать вещь со склада. Берут только Дон и приближённые."""
     moment = now_ts() if now is None else now
-    _at_mansion(player, moment, "Взять вещь с полки")
+    _at_mansion(player, moment, "Взять вещь со склада")
     standing = _admin(player)
     code = await db.take_clan_item(stored_id, standing.clan.id, player.user_id)
     if not code:
-        raise ClanError("Этой вещи в хранилище уже нет.")
+        raise ClanError("Этой вещи на складе уже нет.")
     player.gear = await db.list_gear(player.user_id)
     item = get_item(code)
-    logger.info("Боец %s забрал вещь %s из хранилища клана %s", player.user_id,
+    logger.info("Боец %s забрал вещь %s со склада клана %s", player.user_id,
                 stored_id, standing.clan.id)
     title = item.title if item else code
     return f"«{title}» теперь у тебя в рюкзаке."

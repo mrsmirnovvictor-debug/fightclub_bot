@@ -87,6 +87,17 @@ from bot.clan_service import (
     withdraw as clan_withdraw,
     withdraw_vault as clan_cash,
 )
+from bot.estate_service import (
+    EstateError,
+    deposit as flat_deposit,
+    extend as flat_extend,
+    move_out as flat_move_out,
+    rent as flat_rent,
+    stash as flat_stash,
+    sweep as flat_sweep,
+    take as flat_take,
+    withdraw as flat_withdraw,
+)
 from bot.game.clans import Petition
 from bot.webapp.citymap import build_map
 from bot.bank_service import (
@@ -121,6 +132,7 @@ from bot.webapp.clans import (
     build_mansion,
     invites_payload,
 )
+from bot.webapp.estate import build_house
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
     build_market,
@@ -2008,6 +2020,64 @@ async def api_clan_action(request: web.Request) -> web.Response:
     return await _clan_state(request, fresh, said)
 
 
+# ---------- жильё: квартира, сейф и кладовая ----------
+
+
+async def _house_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    house = player.where(now_ts())
+    # Просрочку сводим на входе: неделя прошла — квартира освобождается, и
+    # в списке она должна стоять свободной уже сейчас, а не через заход
+    await flat_sweep(db, player, now_ts())
+    items = (
+        await db.flat_items(player.flat.id) if player.flat is not None else []
+    )
+    body = build_house(player, house, await db.leases_in(house), items)
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_house_flats(request: web.Request) -> web.Response:
+    """Жилой дом: подъезд, своя квартира, сейф и кладовая."""
+    player = await _at(request, Service.ESTATE)
+    return await _house_state(request, player)
+
+
+async def api_house_action(request: web.Request) -> web.Response:
+    """Дела жильца: снять, продлить, выселиться, сейф и кладовая."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.ESTATE)
+    try:
+        if action == "rent":
+            said = await flat_rent(db, player, int(data.get("flat", 0)))
+        elif action == "extend":
+            said = await flat_extend(db, player)
+        elif action == "leave":
+            said = await flat_move_out(db, player)
+        elif action == "deposit":
+            said = await flat_deposit(db, player, int(data.get("amount", 0)))
+        elif action == "cash":
+            said = await flat_withdraw(db, player, int(data.get("amount", 0)))
+        elif action == "stash":
+            said = await flat_stash(db, player, int(data.get("item", 0)))
+        elif action == "take":
+            said = await flat_take(db, player, int(data.get("item", 0)))
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except EstateError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _house_state(request, fresh, said)
+
+
 async def avatar(request: web.Request) -> web.StreamResponse:
     """Отдать фото бойца. Ссылка подписана и живёт час."""
     config = request.app[CONFIG_KEY]
@@ -2151,6 +2221,8 @@ def create_app(
             web.post("/api/mafia", api_mansion_action),
             web.get("/api/clan", api_clan),
             web.post("/api/clan", api_clan_action),
+            web.get("/api/flats", api_house_flats),
+            web.post("/api/flats", api_house_action),
             web.get("/avatar/{user_id}", avatar),
             web.get("/healthz", healthz),
             web.static("/static", STATIC_DIR),

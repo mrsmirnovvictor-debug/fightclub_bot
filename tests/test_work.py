@@ -23,6 +23,7 @@ from bot.content.work_quiz import QUIZZES, grade, pass_mark, quiz_for
 from bot.database import Database
 from bot.game.classes import Stats
 from bot.game.clock import MOSCOW
+from bot.game.health import now_ts
 from bot.game.locations import Service, get_location, where_to
 from bot.game.work import (
     COOLDOWN_SECONDS,
@@ -41,6 +42,7 @@ from bot.game.work import (
 from bot.models import Player
 from bot.travel_service import LockedError, Travel
 from bot.webapp.server import create_app
+from bot.webapp.work import build_work
 from bot.work_service import (
     WorkError,
     apply,
@@ -794,8 +796,11 @@ async def test_hiring_through_the_handle_takes_the_vacancy(client, db):
 
 
 async def test_the_workplace_offers_the_shift_by_the_handle(client, db):
+    # Нанимаем этим часом, а не октябрьским: ручка читает настоящие
+    # часы, и боец, нанятый в прошлую неделю, к первому же запросу
+    # оказался бы уволен расчётом за невыполненную норму
     player = make_player(location=BAR)
-    await hired(db, player)
+    await hired(db, player, now=now_ts())
 
     body = await (await client.get("/api/work", headers=headers())).json()
     assert body["job"]["code"] == "bartender"
@@ -821,9 +826,11 @@ async def test_the_screen_counts_the_overtime_before_payday(client, db):
     for day in range(5, 11):  # шесть смен — двенадцать часов при норме в десять
         await start_shift(db, player, moment_at(day=day, hour=12))
 
-    body = await (await client.get("/api/work", headers=headers())).json()
-
-    job = body["job"]
+    # Экран собираем тем же часом той же недели, а не настоящим: иначе
+    # к этой строке неделя успевала бы кончиться, расчёт — пройти, а
+    # бойца с невыполненной нормой — уволить
+    end = moment_at(day=11, hour=12)
+    job = build_work(await db.get_player(42), end)["job"]
     assert job["worked"] == 12 and job["overtime"] == 2
     assert job["hour_rate"] == 50, "час сверх нормы стоит две ставки"
     assert job["overtime_pay"] == 100 and job["payout"] == 350
@@ -831,8 +838,8 @@ async def test_the_screen_counts_the_overtime_before_payday(client, db):
     # А пока норма не перейдена, переработки нет вовсе
     player.job_minutes = 600
     await db.save_player(player)
-    body = await (await client.get("/api/work", headers=headers())).json()
-    assert body["job"]["overtime"] == 0 and body["job"]["overtime_pay"] == 0
+    job = build_work(await db.get_player(42), end)["job"]
+    assert job["overtime"] == 0 and job["overtime_pay"] == 0
 
 
 async def test_the_workplace_of_a_stranger_says_where_jobs_are_taken(client, db):

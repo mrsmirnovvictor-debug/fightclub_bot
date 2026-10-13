@@ -361,6 +361,29 @@
     <section id="mafia-estate" class="hidden"></section>
   </main>
 
+  <!-- ---------- 3b9. Жилой дом: аренда квартиры ---------- -->
+  <!-- Две вкладки одного подъезда: «Подъезд» — этажи с квартирами, что
+       свободно и кем занято; «Моя квартира» — срок, сейф и кладовая. У
+       бездомного вторая не показывается вовсе, а у того, чьё жильё в
+       другом доме, здесь только список: квартира на бойца одна -->
+  <main id="flats" class="screen hidden">
+    <figure class="interior hidden" id="flats-interior">
+      <img class="interior-pic" id="flats-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="flats-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-flats"></span>
+    </header>
+    <h1 class="screen-title" id="flats-title">🏠 Жилой дом</h1>
+    <p class="screen-note" id="flats-note"></p>
+
+    <div class="bubbles" id="flats-tabs"></div>
+
+    <section id="flats-stairs"></section>
+    <section id="flats-home" class="hidden"></section>
+  </main>
+
   <!-- ---------- 3c. Рынок: обмен между бойцами ---------- -->
   <!-- Стол общий, и это главное свойство экрана: страница здесь ничего
        не помнит и ничего не досчитывает. Всё, что видно, — последний

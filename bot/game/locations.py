@@ -53,6 +53,7 @@ class Service(str, Enum):
     INSURANCE = "insurance"  # страховая: полис страхования жизни и здоровья
     TRAIN = "train"  # тренажёрный зал: тренировки на характеристики
     MAFIA = "mafia"  # Особняк мафии: кланы, заявки и приём в семью
+    ESTATE = "estate"  # жилой дом: аренда квартиры, сейф и кладовая
 
     @property
     def title(self) -> str:
@@ -80,6 +81,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.TRADE: "меняться из рук в руки",
     Service.INSURANCE: "страховаться",
     Service.TRAIN: "тренироваться",
+    Service.ESTATE: "снимать жильё",
 }
 
 
@@ -868,8 +870,9 @@ LOCATIONS: tuple[Location, ...] = (
 
     # На карте жилого квартала нарисованы четыре дома, и дверь у каждого
     # своя. Домов четыре, а вид изнутри один на всех: внутри они
-    # одинаковые, и заводить четыре одинаковые картинки незачем. Работать
-    # они тоже будут одинаково — когда своё жильё вообще появится.
+    # одинаковые, и заводить четыре одинаковые картинки незачем. Сдают в
+    # них тоже одинаково, а вот планировка разная: в первых трёх по
+    # четыре этажа, в четвёртом три (`bot.game.estate`).
     Location(
         "residential_apartment",
         "Жилой дом №1",
@@ -879,7 +882,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.332625, 0.242225), (0.418704, 0.227871),
             (0.418704, 0.274522), (0.331562, 0.288278),
         ),
-        soon="своё жильё",
+        services=(Service.ESTATE,),
         genitive="жилого дома",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -892,7 +895,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.723698, 0.276914), (0.807651, 0.293062),
             (0.802338, 0.339115), (0.724761, 0.322368),
         ),
-        soon="своё жильё",
+        services=(Service.ESTATE,),
         genitive="жилого дома",
         interior="residential_apartment_interior",
         interior_folder=art.NEW_INTERIORS,
@@ -906,7 +909,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.11796, 0.551435), (0.215728, 0.532297),
             (0.215728, 0.589115), (0.11796, 0.608852),
         ),
-        soon="своё жильё",
+        services=(Service.ESTATE,),
         genitive="жилого дома",
         interior="residential_apartment_interior",
         interior_folder=art.NEW_INTERIORS,
@@ -920,7 +923,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.785335, 0.57177), (0.873539, 0.601675),
             (0.872476, 0.656699), (0.785335, 0.626794),
         ),
-        soon="своё жильё",
+        services=(Service.ESTATE,),
         genitive="жилого дома",
         interior="residential_apartment_interior",
         interior_folder=art.NEW_INTERIORS,

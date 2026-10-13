@@ -1088,6 +1088,51 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .shelf-slot.free { color: var(--muted); border-style: dashed; }
 .shelf-slot.tier { border-color: var(--accent); }
 
+/* ---------- жилой дом ---------- */
+
+/* Что сдают: комнатность слева, свободные места и цена справа. Строка в
+   три колонки, и на узком экране они не рвутся — цена короткая */
+.offer-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 2px;
+  font-size: 13.5px;
+}
+.offer-title { flex: 1 1 auto; min-width: 0; }
+.offer-free { color: var(--muted); font-size: 12.5px; flex: none; }
+.offer-price { font-weight: 700; flex: none; }
+
+/* Квартира в подъезде — строка, а не карточка: номер, комнатность и
+   одна кнопка справа. Шестнадцать карточек на дом читались бы простынёй */
+.flat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.flat-row.me { border-color: var(--accent); }
+.flat-no { font-weight: 700; flex: none; }
+.flat-kind {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flat-row .btn { flex: none; padding: 6px 12px; font-size: 13px; }
+.flat-tenant { color: var(--muted); font-size: 12.5px; flex: none; }
+
+/* Срок аренды: пока оплачена — обычная строка, кончилась — тревожная */
+.lease-term { margin: 4px 0 8px; font-weight: 700; font-size: 13.5px; }
+.lease-term.late { color: var(--hp-red); }
+
 /* Поля в окне стоят друг под другом: передача прав спрашивает двумя
    списками, сейф — одним числом, и слипаться им незачем */
 #sheet-list .field-input { margin-bottom: 8px; }

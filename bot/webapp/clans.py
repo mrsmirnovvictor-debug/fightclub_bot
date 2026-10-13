@@ -326,7 +326,7 @@ def stored_row(player: Player, stored: Stored, moment: int) -> dict[str, Any]:
 def build_estate(
     player: Player, items: list[Stored], now: int | None = None
 ) -> dict[str, Any]:
-    """Вкладка «Имущество»: сейф с кредитами и двенадцать полок.
+    """Вкладка «Имущество»: сейф с кредитами и склад на тридцать вещей.
 
     Остаток сейфа видит вся семья — общий карман тем и общий, что в него
     видно. А брать из него и с полок дают только старшим, и это решает

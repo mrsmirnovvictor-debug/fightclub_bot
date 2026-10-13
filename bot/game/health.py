@@ -107,3 +107,26 @@ def format_duration(seconds: int) -> str:
     if minutes:
         return f"{minutes} мин"
     return f"{rest} сек"
+
+
+def format_term(seconds: int) -> str:
+    """Длинный срок: «29 дней», «22 часа», «40 мин».
+
+    Для сроков в сутки и месяцы `format_duration` не годится: месяц
+    аренды он называет «43200 мин», и это не читается вовсе. Единица
+    здесь одна, самая крупная из подходящих: до минуты на сроке в месяц
+    никто не считает, а строка должна помещаться в строку.
+    """
+    from bot.game.presence import plural
+
+    seconds = max(0, int(seconds))
+    days, rest = divmod(seconds, 24 * 60 * 60)
+    if days:
+        return f"{days} {plural(days, 'день', 'дня', 'дней')}"
+    hours, rest = divmod(rest, 60 * 60)
+    if hours:
+        return f"{hours} {plural(hours, 'час', 'часа', 'часов')}"
+    minutes = rest // 60
+    if minutes:
+        return f"{minutes} мин"
+    return format_duration(seconds)

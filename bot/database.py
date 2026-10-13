@@ -27,6 +27,7 @@ from bot.game.clans import (
     Stored,
 )
 from bot.game.driving import School
+from bot.game.estate import Kept, Lease
 from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, get_injury
 from bot.game.insurance import Policy
@@ -505,7 +506,7 @@ CREATE TABLE IF NOT EXISTS clan_petitions (
 
 CREATE INDEX IF NOT EXISTS clan_petitions_user ON clan_petitions(user_id);
 
--- Хранилище семьи: двенадцать вещей на клан. Вещь не копируется — она
+-- Склад семьи: тридцать вещей на клан. Вещь не копируется — она
 -- переезжает сюда из инвентаря целиком, со своим износом и своей
 -- модификацией, и так же возвращается обратно
 CREATE TABLE IF NOT EXISTS clan_items (
@@ -521,6 +522,40 @@ CREATE TABLE IF NOT EXISTS clan_items (
 );
 
 CREATE INDEX IF NOT EXISTS clan_items_clan ON clan_items(clan_id);
+
+-- Снятая квартира. Строка есть — квартира занята; свободные в базе не
+-- лежат вовсе, их считает планировка (`bot.game.estate`). Один боец —
+-- одна квартира, и это держит сама база, а не проверка в службе
+CREATE TABLE IF NOT EXISTS flats (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    house      TEXT    NOT NULL,
+    number     INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL UNIQUE REFERENCES players(user_id) ON DELETE CASCADE,
+    rooms      INTEGER NOT NULL,
+    rented_at  INTEGER NOT NULL DEFAULT 0,
+    paid_until INTEGER NOT NULL DEFAULT 0,
+    vault      INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (house, number)
+);
+
+CREATE INDEX IF NOT EXISTS flats_house ON flats(house);
+
+-- Кладовая квартиры: шесть вещей на комнату. Вещь переезжает сюда из
+-- инвентаря целиком, со своим износом и модификацией, и так же
+-- возвращается — и при выселении, и когда квартиру освобождают за
+-- неуплату
+CREATE TABLE IF NOT EXISTS flat_items (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    flat_id   INTEGER NOT NULL REFERENCES flats(id) ON DELETE CASCADE,
+    code      TEXT    NOT NULL,
+    wear      INTEGER NOT NULL DEFAULT 0,
+    max_wear  INTEGER NOT NULL DEFAULT 20,
+    mod       TEXT    NOT NULL DEFAULT '',
+    mod_value INTEGER NOT NULL DEFAULT 0,
+    put_at    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS flat_items_flat ON flat_items(flat_id);
 
 -- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
 -- ничего не задваивает, а новая группа получает всё с начала.
@@ -939,6 +974,7 @@ class Database:
         player.policy = await self.policy_of(player.user_id)
         player.school = await self.school_of(player.user_id)
         player.clan = await self.standing_of(player.user_id)
+        player.flat = await self.lease_of(player.user_id)
         player.gym_until = await self.gym_pass_of(player.user_id)
         player.loadout = await self.list_abilities(player.user_id)
         return player
@@ -2281,6 +2317,281 @@ class Database:
         )
         await self.conn.commit()
         return str(row["code"])
+
+    # ---------- жильё: квартиры, сейф и кладовая ----------
+    #
+    # Свободные квартиры в базе не лежат: их считает планировка, а здесь
+    # только снятые. Нет строки — квартира свободна, и ключ `(house,
+    # number)` не даёт сдать её дважды.
+
+    @staticmethod
+    def _lease(row) -> Lease:
+        return Lease(
+            id=int(row["id"]),
+            user_id=int(row["user_id"]),
+            house=str(row["house"]),
+            number=int(row["number"]),
+            rooms=int(row["rooms"]),
+            rented_at=int(row["rented_at"]),
+            paid_until=int(row["paid_until"]),
+            vault=int(row["vault"]),
+        )
+
+    async def lease_of(self, user_id: int) -> Lease | None:
+        """Квартира бойца. None — живёт где придётся."""
+        async with self.conn.execute(
+            "SELECT * FROM flats WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._lease(row) if row else None
+
+    async def lease_at(self, house: str, number: int) -> Lease | None:
+        """Кто снимает эту квартиру. None — свободна."""
+        async with self.conn.execute(
+            "SELECT * FROM flats WHERE house = ? AND number = ?", (house, number)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._lease(row) if row else None
+
+    async def leases_in(self, house: str) -> dict[int, dict]:
+        """Кто живёт в этом доме: {номер квартиры: жилец}.
+
+        Ник жильца едет той же строкой: список квартир показывают всем, и
+        по нему видно, свободна дверь или за ней уже живут.
+        """
+        async with self.conn.execute(
+            """
+            SELECT f.number, f.user_id, f.paid_until, f.rooms,
+                   (SELECT nickname FROM players WHERE user_id = f.user_id)
+                       AS nickname
+            FROM flats f WHERE f.house = ?
+            """,
+            (house,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {
+            int(row["number"]): {
+                "user_id": int(row["user_id"]),
+                "nickname": str(row["nickname"] or ""),
+                "paid_until": int(row["paid_until"]),
+                "rooms": int(row["rooms"]),
+            }
+            for row in rows
+        }
+
+    async def rent_flat(
+        self, user_id: int, house: str, number: int, rooms: int,
+        paid_until: int, now: int,
+    ) -> Lease:
+        """Снять квартиру. IntegrityError — её уже сняли или у бойца есть своя."""
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO flats
+                (house, number, user_id, rooms, rented_at, paid_until, vault)
+            VALUES (?,?,?,?,?,?,0)
+            """,
+            (house, number, user_id, rooms, now, paid_until),
+        )
+        await self.conn.commit()
+        logger.info("Боец %s снял %s кв. %s", user_id, house, number)
+        return Lease(
+            id=int(cursor.lastrowid or 0),
+            user_id=user_id,
+            house=house,
+            number=number,
+            rooms=rooms,
+            rented_at=now,
+            paid_until=paid_until,
+        )
+
+    async def extend_lease(self, lease_id: int, paid_until: int) -> None:
+        """Продлить срок аренды до этого часа."""
+        await self.conn.execute(
+            "UPDATE flats SET paid_until = ? WHERE id = ?", (paid_until, lease_id)
+        )
+        await self.conn.commit()
+
+    async def move_flat_vault(self, lease_id: int, amount: int) -> bool:
+        """Положить в сейф квартиры или взять оттуда. False — столько нет.
+
+        Проверка стоит в самом запросе — по той же причине, что и у
+        клановой: между «посмотрели остаток» и «списали» проходит время.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE flats SET vault = vault + ? WHERE id = ? AND vault + ? >= 0",
+            (amount, lease_id, amount),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def flat_items(self, lease_id: int) -> list[Kept]:
+        """Что лежит в кладовой, сперва положенное раньше."""
+        async with self.conn.execute(
+            """
+            SELECT id, code, wear, max_wear, mod, mod_value, put_at
+            FROM flat_items WHERE flat_id = ? ORDER BY put_at, id
+            """,
+            (lease_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            Kept(
+                id=int(row["id"]),
+                code=str(row["code"]),
+                wear=int(row["wear"]),
+                max_wear=int(row["max_wear"]),
+                mod=str(row["mod"]),
+                mod_value=int(row["mod_value"]),
+                put_at=int(row["put_at"]),
+            )
+            for row in rows
+        ]
+
+    async def stash_in_flat(
+        self, item_id: int, user_id: int, lease_id: int, limit: int, now: int
+    ) -> bool:
+        """Переложить вещь из рюкзака в кладовую.
+
+        False — вещи у бойца нет, она надета или в кладовой нет места.
+        Вещь не копируется: сперва её забирают из инвентаря и только
+        потом кладут на полку.
+        """
+        async with self.conn.execute(
+            """
+            SELECT code, wear, max_wear, mod, mod_value FROM inventory
+            WHERE id = ? AND user_id = ? AND slot IS NULL
+            """,
+            (item_id, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return False
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM flat_items WHERE flat_id = ?", (lease_id,)
+        ) as cursor:
+            crowd = await cursor.fetchone()
+        if int(crowd["n"]) >= limit:
+            return False
+        cursor = await self.conn.execute(
+            "DELETE FROM inventory WHERE id = ? AND user_id = ? AND slot IS NULL",
+            (item_id, user_id),
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - вещь увели между запросами
+            await self.conn.commit()
+            return False
+        await self.conn.execute(
+            """
+            INSERT INTO flat_items
+                (flat_id, code, wear, max_wear, mod, mod_value, put_at)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            (
+                lease_id,
+                str(row["code"]),
+                int(row["wear"]),
+                int(row["max_wear"]),
+                str(row["mod"]),
+                int(row["mod_value"]),
+                now,
+            ),
+        )
+        await self.conn.commit()
+        return True
+
+    async def take_flat_item(
+        self, kept_id: int, lease_id: int, user_id: int
+    ) -> str:
+        """Забрать вещь из кладовой в рюкзак. Пусто — её там уже нет."""
+        async with self.conn.execute(
+            "SELECT code, wear, max_wear, mod, mod_value FROM flat_items "
+            "WHERE id = ? AND flat_id = ?",
+            (kept_id, lease_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return ""
+        cursor = await self.conn.execute(
+            "DELETE FROM flat_items WHERE id = ? AND flat_id = ?",
+            (kept_id, lease_id),
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - вещь забрали между запросами
+            await self.conn.commit()
+            return ""
+        await self.conn.execute(
+            """
+            INSERT INTO inventory (user_id, code, wear, max_wear, mod, mod_value)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (
+                user_id,
+                str(row["code"]),
+                int(row["wear"]),
+                int(row["max_wear"]),
+                str(row["mod"]),
+                int(row["mod_value"]),
+            ),
+        )
+        await self.conn.commit()
+        return str(row["code"])
+
+    async def release_flat(self, lease_id: int) -> tuple[int, int, int]:
+        """Освободить квартиру, вернув хозяину всё, что в ней лежало.
+
+        Возвращает (боец, кредиты из сейфа, сколько вещей вернулось).
+        Имущество не пропадает ни при выселении, ни при неуплате: вещи
+        едут в рюкзак, кредиты — в наличные. Пустой ответ (0, 0, 0) —
+        квартиры уже нет.
+
+        Кредиты дописываются запросом, а не через `save_player`: хозяина
+        может не быть в сети вовсе, и собирать его целиком ради одного
+        числа незачем.
+        """
+        async with self.conn.execute(
+            "SELECT user_id, vault FROM flats WHERE id = ?", (lease_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:  # pragma: no cover - квартиру освободили дважды
+            return 0, 0, 0
+        user_id = int(row["user_id"])
+        money = int(row["vault"])
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM flat_items WHERE flat_id = ?", (lease_id,)
+        ) as cursor:
+            counted = await cursor.fetchone()
+        things = int(counted["n"])
+        await self.conn.execute(
+            """
+            INSERT INTO inventory (user_id, code, wear, max_wear, mod, mod_value)
+            SELECT ?, code, wear, max_wear, mod, mod_value
+            FROM flat_items WHERE flat_id = ?
+            """,
+            (user_id, lease_id),
+        )
+        await self.conn.execute("DELETE FROM flat_items WHERE flat_id = ?", (lease_id,))
+        if money:
+            await self.conn.execute(
+                "UPDATE players SET credits = credits + ? WHERE user_id = ?",
+                (money, user_id),
+            )
+        await self.conn.execute("DELETE FROM flats WHERE id = ?", (lease_id,))
+        await self.conn.commit()
+        logger.info(
+            "Квартира %s освобождена: бойцу %s вернулось %s вещей и %s кредитов",
+            lease_id, user_id, things, money,
+        )
+        return user_id, money, things
+
+    async def overdue_leases(self, before: int) -> list[Lease]:
+        """Квартиры, оплаченные только до этого часа и раньше.
+
+        Час сюда передают уже со скидкой на просрочку: неделю после
+        конца срока квартира ждёт хозяина, и освобождать её рано.
+        """
+        async with self.conn.execute(
+            "SELECT * FROM flats WHERE paid_until < ? ORDER BY id", (before,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._lease(row) for row in rows]
 
     # ---------- заявки и приглашения ----------
 

@@ -36,6 +36,7 @@ from bot.game.bank import (
 )
 from bot.game.clans import Standing
 from bot.game.driving import School
+from bot.game.estate import Lease
 from bot.game.insurance import Policy
 from bot.game.health import (
     HealthState,
@@ -143,6 +144,10 @@ class Player:
     # вместе с бойцом, потому что знак мафии стоит у ника везде, где ник
     # показывают, — а карточка собирается без второго похода в базу
     clan: Standing | None = None
+    # Снятая квартира. None — боец живёт где придётся. Читается вместе с
+    # бойцом: срок у сейфа и кладовой должен быть известен в ту же
+    # минуту, в какую боец входит в дом, — и без второго похода в базу
+    flat: Lease | None = None
     # До какого часа абонемент в зал. 0 — его не было. Лежит на бойце, а
     # не в службе зала, потому что это второй документ: его показывают в
     # карточке, а она собирается без похода в базу

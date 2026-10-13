@@ -21,6 +21,7 @@ from bot.game.health import now_ts
 from bot.game.potions import ActiveEffect
 from bot.game.store import PACKS
 from bot.game.clans import Clan, Rank, Standing
+from bot.game.estate import Lease
 from bot.models import Player
 from bot.game.locations import Service
 from bot.webapp.card import build_card, build_magic, build_shop, build_topup
@@ -288,6 +289,51 @@ def don_mansion(vault: int = 400, items=(), bag=("bandana",), **changes) -> dict
         family=build_clan(don, roster, [], [], TOKEN),
         estate=build_estate(don, list(items)),
     )
+    body.update(changes)
+    return body
+
+
+def flats_state(
+    number: int = 0, vault: int = 0, kept=(), bag=("bandana",), paid: bool = True,
+    **changes,
+) -> dict:
+    """Ответ жилого дома: подъезд, а при `number` — ещё и своя квартира."""
+    from bot.game.estate import GRACE_SECONDS, Kept, RENT_SECONDS, flat_at
+    from bot.webapp.estate import build_house
+
+    moment = now_ts()
+    player = make_player("residential_apartment")
+    player.credits = 2000
+    player.gear = [
+        OwnedItem(item=CATALOGUE[code], id=index + 1)
+        for index, code in enumerate(bag)
+    ]
+    taken = {
+        2: {
+            "user_id": 43, "nickname": "Марла", "paid_until": moment, "rooms": 1,
+        }
+    }
+    items = [
+        Kept(id=index + 1, code=code, max_wear=20, put_at=moment)
+        for index, code in enumerate(kept)
+    ]
+    if number:
+        flat = flat_at("residential_apartment", number)
+        # Просроченная квартира заперта, но из списка не уходит: неделя
+        # у хозяина ещё есть
+        until = (
+            moment + RENT_SECONDS if paid else moment - GRACE_SECONDS // 2
+        )
+        player.flat = Lease(
+            id=1, user_id=player.user_id, house="residential_apartment",
+            number=number, rooms=flat.rooms, rented_at=moment - RENT_SECONDS,
+            paid_until=until, vault=vault,
+        )
+        taken[number] = {
+            "user_id": player.user_id, "nickname": "Растафарайчик",
+            "paid_until": until, "rooms": flat.rooms,
+        }
+    body = build_house(player, "residential_apartment", taken, items)
     body.update(changes)
     return body
 
@@ -648,7 +694,7 @@ async def open_page(
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
     battle=None, city=None, workshop=None, hospital=None, trade=None,
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
-    police=None, mafia=None, clan=None, images=False, telegram="",
+    police=None, mafia=None, clan=None, flats=None, images=False, telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -686,6 +732,7 @@ async def open_page(
     await page.route("**/api/school", canned(school or school_state()))
     await page.route("**/api/police", canned(police or police_state()))
     await page.route("**/api/mafia", canned(mafia or mansion_state()))
+    await page.route("**/api/flats", canned(flats or flats_state()))
     await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
                                                     "ranks": [], "said": ""}))
 
@@ -9653,7 +9700,7 @@ async def test_the_family_stands_in_three_rows_with_its_marks(server):
 
 
 async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
-    """Вкладка «Имущество»: сейф с остатком и двенадцать полок.
+    """Вкладка «Имущество»: сейф с остатком и тридцать полок склада.
 
     Остаток видит вся семья, и это главное свойство экрана: карман общий.
     Кладут в него все, забирают Дон и приближённые, и каждое действие —
@@ -9678,10 +9725,10 @@ async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
         await page.wait_for_selector("#mafia-estate:not(.hidden)")
         assert await page.locator(".vault-sum").inner_text() == "400 💰"
         heads = await page.locator("#mafia-estate .shelf-head").all_inner_texts()
-        assert heads == ["Сейф семьи", "Хранилище · 1 из 12"]
-        # Полок двенадцать: занятые с картинкой, свободные с плюсом
-        assert await page.locator("#shelf-grid .shelf-slot").count() == 12
-        assert await page.locator("#shelf-grid .shelf-slot.free").count() == 11
+        assert heads == ["Сейф семьи", "Склад семьи · 1 из 30"]
+        # Полок тридцать: занятые с картинкой, свободные с плюсом
+        assert await page.locator("#shelf-grid .shelf-slot").count() == 30
+        assert await page.locator("#shelf-grid .shelf-slot.free").count() == 29
 
         await page.evaluate(
             """() => {
@@ -9714,7 +9761,7 @@ async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
         await page.evaluate("() => { window.sent = null; }")
         await page.locator("#shelf-grid .shelf-slot.free").first.click()
         await page.wait_for_selector("#sheet:not(.hidden)")
-        assert "Свободных полок: 11" in await page.locator(
+        assert "Свободных полок: 29" in await page.locator(
             "#sheet-note"
         ).inner_text()
         await page.locator("#sheet-list .btn", has_text="Положить").click()
@@ -9739,6 +9786,184 @@ async def test_a_loner_sees_only_the_clans_tab(server):
         ]
         assert await page.locator("#mafia-family").is_hidden()
         assert await page.locator("#mafia-estate").is_hidden()
+        await browser.close()
+
+
+async def test_the_stairwell_shows_what_is_free_and_what_is_taken(server):
+    """Подъезд: этажи, цены, занятые двери с ником жильца.
+
+    Экран один на все четыре дома, и по нему сразу видно и что сдаётся,
+    и к какой двери стучаться бессмысленно.
+    """
+    player = make_player("residential_apartment")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.wait_for_selector("#flats-stairs .shelf")
+
+        assert "Жилой дом №1" in await page.locator("#flats-title").inner_text()
+        # Вкладка своей квартиры не стоит вовсе: бездомному в ней нечего
+        assert await page.locator("#flats-tabs .chip").all_inner_texts() == [
+            "🚪 Подъезд"
+        ]
+        heads = await page.locator("#flats-stairs .shelf-head").all_inner_texts()
+        assert heads[0] == "4 этажа · квартир 16 · месяц 30 дней"
+        assert heads[1:] == ["1-й этаж", "2-й этаж", "3-й этаж", "4-й этаж"]
+
+        # Что сдают: три строки с ценой и свободными местами
+        offers = await page.locator(".offer-row").all_inner_texts()
+        assert "300 💰/мес" in offers[0] and "6 вещей" in offers[0]
+        assert "свободно 7 из 8" in offers[0], "одну однокомнатную уже сняли"
+        assert "500 💰/мес" in offers[2] and "18 вещей" in offers[2]
+
+        # Первый этаж: две однокомнатные, двушка и трёшка
+        floor = page.locator("#flats-stairs .shelf", has_text="1-й этаж")
+        rows = await floor.locator(".flat-row .flat-kind").all_inner_texts()
+        assert rows == [
+            "однокомнатная · 6 вещей", "однокомнатная · 6 вещей",
+            "двухкомнатная · 12 вещей", "трёхкомнатная · 18 вещей",
+        ]
+        # Вторая квартира занята, и видно кем
+        taken = floor.locator(".flat-row", has_text="кв. 2")
+        assert await taken.locator(".flat-tenant").inner_text() == "Марла"
+        assert await taken.locator(".btn").count() == 0
+
+        # А свободную снимают с вопросом и за свои
+        await page.evaluate(
+            """() => {
+                window.asked = [];
+                window.askConfirm = (title) => {
+                    window.asked.push(title);
+                    return Promise.resolve(true);
+                };
+                window.flatAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        free = floor.locator(".flat-row", has_text="кв. 4")
+        assert await free.locator(".btn").inner_text() == "Снять · 500 💰"
+        await free.locator(".btn").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.asked") == ["Снять кв. 4?"]
+        assert await page.evaluate("window.sent") == {"action": "rent", "flat": 4}
+        await browser.close()
+
+
+async def test_the_tenant_gets_a_safe_and_a_pantry(server):
+    """Своя квартира: срок, сейф и кладовая на шесть мест за комнату."""
+    player = make_player("residential_apartment")
+    player.flat = Lease(
+        id=1, user_id=player.user_id, house="residential_apartment",
+        number=3, rooms=2, paid_until=now_ts() + 1000,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    flats = flats_state(number=3, vault=700, kept=("pipe",))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, flats=flats)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.wait_for_selector("#flats-stairs .shelf")
+
+        assert await page.locator("#flats-tabs .chip").all_inner_texts() == [
+            "🚪 Подъезд", "🏠 Моя квартира"
+        ]
+        # Своя дверь в подъезде помечена галочкой и ведёт на свою вкладку
+        mine = page.locator(".flat-row", has_text="кв. 3")
+        assert "✅ кв. 3" in await mine.inner_text()
+        await mine.locator(".btn", has_text="Моя").click()
+        await page.wait_for_selector("#flats-home:not(.hidden)")
+
+        heads = await page.locator("#flats-home .shelf-head").all_inner_texts()
+        assert heads == [
+            "кв. 3 · двухкомнатная", "Сейф квартиры", "Кладовая · 1 из 12"
+        ]
+        assert await page.locator(".vault-sum").inner_text() == "700 💰"
+        assert "Оплачена до" in await page.locator(".lease-term").inner_text()
+        # Полок двенадцать: одна занята, остальные свободны
+        assert await page.locator("#pantry-grid .shelf-slot").count() == 12
+        assert await page.locator("#pantry-grid .shelf-slot.free").count() == 11
+
+        await page.evaluate(
+            """() => {
+                window.askConfirm = () => Promise.resolve(true);
+                window.flatAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        # Сейф спрашивает сумму окном
+        await page.locator("#flats-home .btn", has_text="Внести").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.fill("#vault-sum", "250")
+        await page.locator("#sheet-list .btn", has_text="Подтвердить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "deposit", "amount": 250
+        }
+
+        # Вещь с полки забирают тем же окном
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#pantry-grid .shelf-slot:not(.free)").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.locator("#sheet-list .btn", has_text="Забрать себе").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "take", "item": 1}
+
+        # А на свободную полку кладут из рюкзака
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#pantry-grid .shelf-slot.free").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "Свободных мест: 11" in await page.locator("#sheet-note").inner_text()
+        await page.locator("#sheet-list .btn", has_text="Положить").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "stash", "item": 1}
+
+        # И выселение спрашивает подтверждение
+        await page.evaluate("() => { window.sent = null; }")
+        await page.locator("#flats-home .btn", has_text="Выселиться").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "leave"}
+        await browser.close()
+
+
+async def test_the_overdue_flat_is_locked_but_still_his(server):
+    """Срок вышел — строка тревожная, а сейф и кладовая не открываются."""
+    player = make_player("residential_apartment")
+    player.flat = Lease(
+        id=1, user_id=player.user_id, house="residential_apartment",
+        number=3, rooms=2, paid_until=now_ts() - 100,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    flats = flats_state(number=3, vault=700, kept=("pipe",), paid=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, flats=flats)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.wait_for_selector("#flats-stairs .shelf")
+        await page.locator("#flats-tabs .chip", has_text="Моя квартира").click()
+        await page.wait_for_selector("#flats-home:not(.hidden)")
+
+        term = page.locator(".lease-term")
+        assert "Аренда кончилась" in await term.inner_text()
+        assert "late" in (await term.get_attribute("class"))
+        assert "освободят через" in await term.inner_text()
+
+        # Кнопки сейфа стоят, но не нажимаются
+        safe = page.locator("#flats-home .shelf", has_text="Сейф квартиры")
+        assert await safe.locator(".btn", has_text="Внести").is_disabled()
+        assert await safe.locator(".btn", has_text="Снять").is_disabled()
+        # Продлить — можно: за этим сюда и приходят
+        assert not await page.locator(
+            "#flats-home .btn", has_text="Продлить"
+        ).is_disabled()
         await browser.close()
 
 

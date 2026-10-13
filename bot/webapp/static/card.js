@@ -1869,8 +1869,8 @@ function lotCard(lot) {
 
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
-  "bank", "hr", "work", "school", "police", "mafia", "trade", "house", "bag",
-  "hero",
+  "bank", "hr", "work", "school", "police", "mafia", "flats", "trade", "house",
+  "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1880,7 +1880,7 @@ const TABS = ["club", "map", "bag", "hero"];
 const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
-  school: "map", police: "map", mafia: "map", house: "map",
+  school: "map", police: "map", mafia: "map", flats: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1920,6 +1920,8 @@ function showTab(name) {
   // Особняк перечитываем при каждом заходе: заявки, чины и сейф
   // меняются чужими руками
   if (name === "mafia") loadMafia();
+  // И подъезд тоже: квартиры снимают и освобождают без нас
+  if (name === "flats") loadFlats();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2303,6 +2305,7 @@ const HOUSE_SCREENS = {
   bank: () => showTab("bank"),
   hire: () => showTab("hr"),
   work: () => showTab("work"),
+  estate: () => showTab("flats"),
   school: () => showTab("school"),
   police: () => showTab("police"),
   mafia: () => showTab("mafia"),
@@ -9075,6 +9078,407 @@ function clanMemberRow(member, actions) {
   return box;
 }
 
+// ---------- жилой дом: аренда квартиры ----------
+//
+// Экран один на все четыре дома и держит две вкладки: подъезд и свою
+// квартиру. Подъезд видят все — по нему и понятно, что свободно; вкладка
+// своей квартиры появляется только у того, кто снимает её здесь. Сейф и
+// кладовая рисуются теми же кусками, что склад семьи: устроены они
+// одинаково, а слова у них свои.
+
+let flatsData = null;
+let flatsBusy = false;
+let flatsTab = "stairs";
+const FLATS_TABS = [
+  ["stairs", "🚪 Подъезд"],
+  ["home", "🏠 Моя квартира"],
+];
+
+async function loadFlats() {
+  try {
+    const response = await fetch("api/flats", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("flats-note").textContent = "Дом не открылся.";
+      return;
+    }
+    renderFlats(await response.json());
+  } catch (error) {
+    el("flats-note").textContent = error.message;
+  }
+}
+
+async function flatAction(payload) {
+  if (flatsBusy) return;
+  flatsBusy = true;
+  try {
+    haptic((feedback) => feedback.impactOccurred("light"));
+    const response = await fetch("api/flats", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Жилой дом", data.error || "Не получилось.");
+      return;
+    }
+    // Сняли квартиру — показываем её: за этим и шли
+    if (payload.action === "rent") flatsTab = "home";
+    if (payload.action === "leave") flatsTab = "stairs";
+    renderFlats(data);
+    if (data.card) render(data.card, true);
+  } catch (error) {
+    popup("Жилой дом", error.message);
+  } finally {
+    flatsBusy = false;
+  }
+}
+
+function pickFlatsTab(name) {
+  flatsTab = name;
+  if (flatsData) renderFlats(flatsData);
+  else paintFlatsTabs();
+}
+
+function paintFlatsTabs() {
+  FLATS_TABS.forEach(([code]) => {
+    el("flats-" + code).classList.toggle("hidden", code !== flatsTab);
+  });
+}
+
+function renderFlats(data) {
+  flatsData = data;
+  el("shop-purse-flats").textContent = "";
+  el("shop-purse-flats").appendChild(purse(data.credits));
+  el("flats-title").textContent = "🏠 " + data.title;
+  el("flats-note").textContent = data.said || data.note;
+
+  // Вкладка своей квартиры есть только у здешнего жильца: чужую семью и
+  // чужой сейф никто не смотрит
+  const home = Boolean(data.mine && data.mine.number);
+  if (!home && flatsTab !== "stairs") flatsTab = "stairs";
+  const tabs = el("flats-tabs");
+  tabs.textContent = "";
+  FLATS_TABS.forEach(([code, label]) => {
+    if (code === "home" && !home) return;
+    tabs.appendChild(chip(label, flatsTab === code, () => pickFlatsTab(code)));
+  });
+  paintFlatsTabs();
+
+  renderStairs(data);
+  renderHome(data);
+}
+
+/** Подъезд: этажи с квартирами, цена и кто за дверью. */
+function renderStairs(data) {
+  const body = el("flats-stairs");
+  body.textContent = "";
+  body.appendChild(walletBar(data.purse, loadFlats));
+  body.appendChild(offerBox(data));
+  if (data.elsewhere && data.elsewhere.number) {
+    body.appendChild(elsewhereBox(data.elsewhere));
+  }
+  (data.levels || []).forEach((level) => body.appendChild(floorBox(level, data)));
+}
+
+/** Что сдают в этом доме: цена, вместимость и сколько свободно. */
+function offerBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent =
+    data.floors + " этажа · квартир " + data.flats + " · месяц " +
+    data.rent_days + " дней";
+  box.appendChild(head);
+
+  (data.rooms || []).forEach((kind) => {
+    const row = document.createElement("div");
+    row.className = "offer-row";
+    const title = document.createElement("span");
+    title.className = "offer-title";
+    title.textContent =
+      kind.title.charAt(0).toUpperCase() + kind.title.slice(1) +
+      " · " + kind.slots + " вещей";
+    const free = document.createElement("span");
+    free.className = "offer-free";
+    free.textContent = "свободно " + kind.free + " из " + kind.total;
+    const price = document.createElement("span");
+    price.className = "offer-price";
+    price.textContent = num(kind.price) + " 💰/мес";
+    row.append(title, free, price);
+    box.appendChild(row);
+  });
+  return box;
+}
+
+/** Своя квартира в другом доме: здесь можно только посмотреть. */
+function elsewhereBox(mine) {
+  const box = document.createElement("div");
+  box.className = "thing";
+  const body = document.createElement("div");
+  body.className = "thing-body";
+
+  const title = document.createElement("div");
+  title.className = "thing-title";
+  title.textContent = "🏠 " + mine.house_title + ", " + mine.title;
+  body.appendChild(title);
+
+  const note = document.createElement("div");
+  note.className = "thing-note";
+  note.textContent = mine.paid
+    ? "Оплачена ещё " + mine.left + ". Квартира на бойца одна."
+    : "Аренда кончилась. Освободят через " + mine.grace_left + ".";
+  body.appendChild(note);
+
+  box.appendChild(body);
+  return box;
+}
+
+/** Этаж: его квартиры по порядку номеров. */
+function floorBox(level, data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = level.level + "-й этаж";
+  box.appendChild(head);
+
+  level.flats.forEach((flat) => box.appendChild(flatRow(flat, data)));
+  return box;
+}
+
+function flatRow(flat, data) {
+  // Строка, а не карточка: квартир в подъезде шестнадцать, и каждая
+  // карточкой превращала бы дом в простыню. Номер, комнатность и одна
+  // кнопка — больше про дверь сказать нечего
+  const box = document.createElement("div");
+  box.className = "flat-row" + (flat.mine ? " me" : "");
+
+  const number = document.createElement("span");
+  number.className = "flat-no";
+  number.textContent = (flat.mine ? "✅ " : "") + flat.title;
+  box.appendChild(number);
+
+  const kind = document.createElement("span");
+  kind.className = "flat-kind";
+  kind.textContent = flat.rooms_title + " · " + flat.slots + " вещей";
+  box.appendChild(kind);
+
+  if (flat.mine) {
+    box.appendChild(
+      button("Моя", { secondary: true, onClick: () => pickFlatsTab("home") })
+    );
+  } else if (flat.taken) {
+    const who = document.createElement("span");
+    who.className = "flat-tenant";
+    who.textContent = flat.tenant || "занята";
+    box.appendChild(who);
+  } else {
+    box.appendChild(
+      button("Снять · " + num(flat.price) + " 💰", {
+        disabled: !flat.can_rent || flat.price > spendable(data),
+        hint: flat.can_rent
+          ? "Не хватает кредитов на месяц."
+          : "Квартира на бойца одна: сперва выселись из своей.",
+        onClick: () => rentFlat(flat),
+      })
+    );
+  }
+  return box;
+}
+
+async function rentFlat(flat) {
+  const ok = await askConfirm(
+    "Снять " + flat.title + "?",
+    flat.rooms_title.charAt(0).toUpperCase() + flat.rooms_title.slice(1) +
+      ", " + flat.floor + "-й этаж. Спишется " + flat.price +
+      " 💰 за месяц вперёд.",
+    "Снять"
+  );
+  if (ok) flatAction({ action: "rent", flat: flat.number });
+}
+
+/** Моя квартира: срок, сейф и кладовая. */
+function renderHome(data) {
+  const body = el("flats-home");
+  body.textContent = "";
+  const mine = data.mine || {};
+  if (!mine.number) return;
+  body.appendChild(leaseBox(mine, data));
+  body.appendChild(flatVaultBox(data.pantry, data));
+  body.appendChild(pantryBox(data.pantry));
+}
+
+/** Карточка съёма: адрес, срок и две кнопки — продлить и выселиться. */
+function leaseBox(mine, data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = mine.title + " · " + mine.rooms_title;
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    mine.floor + "-й этаж · снята " + mine.rented +
+    " · кладовая на " + mine.slots + " вещей";
+  box.appendChild(note);
+
+  const term = document.createElement("p");
+  term.className = mine.paid ? "lease-term" : "lease-term late";
+  term.textContent = mine.paid
+    ? "Оплачена до " + mine.paid_until + " · осталось " + mine.left
+    : "Аренда кончилась " + mine.paid_until + " · освободят через " +
+      mine.grace_left;
+  box.appendChild(term);
+
+  box.appendChild(walletBar(data.purse, loadFlats));
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Продлить · " + num(mine.price) + " 💰", {
+      disabled: mine.price > spendable(data),
+      hint: "Не хватает кредитов на месяц.",
+      onClick: () => flatAction({ action: "extend" }),
+    })
+  );
+  buttons.appendChild(
+    button("Выселиться", {
+      secondary: true,
+      onClick: async () => {
+        const ok = await askConfirm(
+          "Выселиться из " + mine.title + "?",
+          "Вещи из кладовой вернутся в рюкзак, кредиты из сейфа — на руки. " +
+            "Квартиру сдадут другому.",
+          "Подтвердить"
+        );
+        if (ok) flatAction({ action: "leave" });
+      },
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Сейф квартиры: кладёт и берёт только хозяин. */
+function flatVaultBox(pantry, data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Сейф квартиры";
+  box.appendChild(head);
+  box.appendChild(vaultSum(pantry.vault));
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = pantry.locked
+    ? "Квартира заперта: пока аренда не продлена, сейф не открыть."
+    : "Деньги в сейфе лежат отдельно от наличных и ждут тебя здесь.";
+  box.appendChild(note);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Внести", {
+      disabled: pantry.locked,
+      hint: "Сперва продли аренду.",
+      onClick: () =>
+        openMoneySheet({
+          title: "Внести в сейф",
+          note:
+            "Из того кошелька, которым ты платишь здесь: " +
+            num(spendable(data)) + " 💰",
+          max: spendable(data),
+          hint: "Платить нечем.",
+          onSum: (amount) => flatAction({ action: "deposit", amount: amount }),
+        }),
+    })
+  );
+  buttons.appendChild(
+    button("Снять", {
+      secondary: true,
+      disabled: pantry.locked || !pantry.vault,
+      hint: pantry.locked ? "Сперва продли аренду." : "Сейф пуст.",
+      onClick: () =>
+        openMoneySheet({
+          title: "Снять из сейфа",
+          note: "В сейфе " + num(pantry.vault) + " 💰. Снятое ляжет наличными",
+          max: pantry.vault,
+          hint: "Сейф пуст.",
+          onSum: (amount) => flatAction({ action: "cash", amount: amount }),
+        }),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Кладовая: шесть мест на комнату, и пустые тоже видно. */
+function pantryBox(pantry) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent =
+    "Кладовая · " + pantry.items.length + " из " + pantry.slots;
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = pantry.locked
+    ? "Квартира заперта: вещи лежат на месте, но достать их можно только " +
+      "после продления."
+    : "Кладут и забирают здесь же: вещи из кладовой в бой не берут.";
+  box.appendChild(note);
+
+  box.appendChild(
+    shelfGrid({
+      id: "pantry-grid",
+      slots: pantry.slots,
+      items: pantry.items,
+      title: (one) => one.title + (one.when ? " · положено " + one.when : ""),
+      onThing: (one) =>
+        openThingSheet({
+          thing: one,
+          note: one.when ? "Лежит с " + one.when : "Лежит в кладовой",
+          onTake: pantry.locked
+            ? null
+            : (thing) => flatAction({ action: "take", item: thing.id }),
+          denial: "Квартира заперта: сперва продли аренду.",
+        }),
+      onFree: () => {
+        if (pantry.locked) {
+          popup("Кладовая", "Квартира заперта: сперва продли аренду.");
+          return;
+        }
+        openPickSheet({
+          bag: pantry.bag,
+          free: pantry.free,
+          note: "Свободных мест: " + pantry.free,
+          onPick: (one) => flatAction({ action: "stash", item: one.id }),
+        });
+      },
+    })
+  );
+  return box;
+}
+
+// ---------- мафия: особняк и своя семья ----------
+
 // ---------- особняк ----------
 
 async function loadMafia() {
@@ -9205,76 +9609,28 @@ function familyHead(family) {
   return box;
 }
 
-// ---------- имущество семьи ----------
+// ---------- сейф и полки: общее у семьи и у квартиры ----------
 //
-// Общий карман: кладут в него все, берут Дон и приближённые. Кнопки
-// страница прячет по `can_take`, но отказывает сервер — спрятанная
-// кнопка обходится запросом мимо интерфейса.
+// Устроены они одинаково: остаток одним числом, кнопки «внести» и
+// «снять», решётка полок и три окна — сумма, вещь с полки и выбор вещи
+// из рюкзака. Разница между складом семьи и кладовой квартиры — в прозе
+// и в том, кому дают брать; поэтому здесь механика, а слова приходят с
+// вызовом. Кнопки страница прячет по тому же признаку, по которому
+// сервер отказывает, но решает всё равно сервер: спрятанная кнопка
+// обходится запросом мимо интерфейса.
 
-/** Вкладка «Имущество»: сейф с кредитами и двенадцать полок. */
-function renderEstateTab(estate) {
-  const body = el("mafia-estate");
-  body.textContent = "";
-  if (!estate.in_clan) return;
-  body.appendChild(vaultBox(estate));
-  body.appendChild(shelfBox(estate));
-}
-
-/** Сейф: остаток видит вся семья, берут из него только старшие. */
-function vaultBox(estate) {
-  const box = document.createElement("section");
-  box.className = "shelf";
-
-  const head = document.createElement("h2");
-  head.className = "shelf-head";
-  head.textContent = "Сейф семьи";
-  box.appendChild(head);
-
+/** Остаток сейфа одним числом. */
+function vaultSum(money) {
   const sum = document.createElement("div");
   sum.className = "vault-sum";
-  sum.textContent = num(estate.vault) + " 💰";
-  box.appendChild(sum);
-
-  const note = document.createElement("p");
-  note.className = "thing-note";
-  note.textContent = estate.can_take
-    ? "Кладут все, кто в семье. Брать можно тебе — ты из старших."
-    : "Кладут все, кто в семье. Берут только Дон и приближённые.";
-  box.appendChild(note);
-
-  // Чем вносить: тот же выбор кошелька, что в лавке
-  box.appendChild(walletBar(estate.purse, loadMafia));
-
-  const buttons = document.createElement("div");
-  buttons.className = "thing-buttons";
-  buttons.appendChild(
-    button("Внести", { onClick: () => openVaultSheet("deposit", estate) })
-  );
-  if (estate.can_take) {
-    buttons.appendChild(
-      button("Снять", {
-        secondary: true,
-        disabled: !estate.vault,
-        hint: "Сейф пуст.",
-        onClick: () => openVaultSheet("cash", estate),
-      })
-    );
-  }
-  box.appendChild(buttons);
-  return box;
+  sum.textContent = num(money) + " 💰";
+  return sum;
 }
 
-/** Окно сейфа: сколько внести или снять. */
-function openVaultSheet(action, estate) {
-  const giving = action === "deposit";
-  const money = giving ? spendable(estate) : estate.vault;
-  openSheet(
-    giving ? "Внести в сейф" : "Снять из сейфа",
-    giving
-      ? "Из того кошелька, которым ты платишь здесь: " + num(money) + " 💰"
-      : "В сейфе " + num(estate.vault) + " 💰. Снятое ляжет наличными",
-    true
-  );
+/** Окно суммы: сколько внести или снять. `opts.onSum(amount)`. */
+function openMoneySheet(opts) {
+  const money = Math.max(0, opts.max || 0);
+  openSheet(opts.title, opts.note, true);
   const list = el("sheet-list");
 
   const field = document.createElement("input");
@@ -9292,15 +9648,15 @@ function openVaultSheet(action, estate) {
   buttons.appendChild(
     button("Подтвердить", {
       disabled: !money,
-      hint: giving ? "Платить нечем." : "Сейф пуст.",
+      hint: opts.hint,
       onClick: () => {
         const amount = Math.floor(Number(el("vault-sum").value) || 0);
         if (amount <= 0) {
-          popup("Сейф", "Напиши, сколько " + (giving ? "внести" : "снять") + ".");
+          popup(opts.title, "Напиши число больше нуля.");
           return;
         }
         closeSheet();
-        mafiaAction({ action: action, amount: amount });
+        opts.onSum(amount);
       },
     })
   );
@@ -9310,7 +9666,168 @@ function openVaultSheet(action, estate) {
   list.appendChild(buttons);
 }
 
-/** Хранилище: двенадцать полок, и пустые тоже видно. */
+/** Решётка полок: занятые с картинкой, свободные с плюсом. */
+function shelfGrid(opts) {
+  const grid = document.createElement("div");
+  grid.className = "shelf-grid";
+  grid.id = opts.id || "shelf-grid";
+  for (let place = 0; place < (opts.slots || 0); place += 1) {
+    const thing = opts.items[place];
+    const cell = document.createElement("button");
+    cell.type = "button";
+    if (thing) {
+      cell.className =
+        "shelf-slot" + (thing.mod && thing.mod.level ? " tier" : "");
+      cell.title = opts.title ? opts.title(thing) : thing.title;
+      cell.appendChild(slotPicture(thing, thing.icon));
+      cell.addEventListener("click", () => opts.onThing(thing));
+    } else {
+      cell.className = "shelf-slot free";
+      cell.title = "Свободная полка";
+      cell.textContent = "＋";
+      cell.addEventListener("click", () => opts.onFree());
+    }
+    grid.appendChild(cell);
+  }
+  return grid;
+}
+
+/** Окно вещи с полки: что это и можно ли её забрать. */
+function openThingSheet(opts) {
+  const thing = opts.thing;
+  openSheet(thing.title, opts.note || "", true);
+  const list = el("sheet-list");
+  list.appendChild(thingCard(thing, 0, false, true));
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (opts.onTake) {
+    buttons.appendChild(
+      button(opts.label || "Забрать себе", {
+        onClick: () => {
+          closeSheet();
+          opts.onTake(thing);
+        },
+      })
+    );
+  } else if (opts.denial) {
+    const no = document.createElement("p");
+    no.className = "thing-note";
+    no.textContent = opts.denial;
+    list.appendChild(no);
+  }
+  buttons.appendChild(
+    button("Закрыть", { secondary: true, onClick: () => closeSheet() })
+  );
+  list.appendChild(buttons);
+}
+
+/** Окно «что положить»: снятое из своего рюкзака. */
+function openPickSheet(opts) {
+  openSheet("Что положить", opts.note || "");
+  const list = el("sheet-list");
+  if (!opts.bag.length) {
+    const empty = document.createElement("p");
+    empty.className = "sheet-note";
+    empty.textContent = "Рюкзак пуст. Надетое сначала снимают в инвентаре.";
+    list.appendChild(empty);
+    return;
+  }
+  opts.bag.forEach((one) => {
+    const row = thingCard(one, 0, false, true);
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Положить", {
+        disabled: !opts.free,
+        hint: "Свободных полок нет.",
+        onClick: () => {
+          closeSheet();
+          opts.onPick(one);
+        },
+      })
+    );
+    row.querySelector(".thing-body").appendChild(buttons);
+    list.appendChild(row);
+  });
+}
+
+// ---------- имущество семьи ----------
+//
+// Общий карман: кладут в него все, берут Дон и приближённые. Кнопки
+// страница прячет по `can_take`, но отказывает сервер — спрятанная
+// кнопка обходится запросом мимо интерфейса.
+
+/** Вкладка «Имущество»: сейф с кредитами и склад на тридцать вещей. */
+function renderEstateTab(estate) {
+  const body = el("mafia-estate");
+  body.textContent = "";
+  if (!estate.in_clan) return;
+  body.appendChild(vaultBox(estate));
+  body.appendChild(shelfBox(estate));
+}
+
+/** Сейф: остаток видит вся семья, берут из него только старшие. */
+function vaultBox(estate) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Сейф семьи";
+  box.appendChild(head);
+  box.appendChild(vaultSum(estate.vault));
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = estate.can_take
+    ? "Кладут все, кто в семье. Брать можно тебе — ты из старших."
+    : "Кладут все, кто в семье. Берут только Дон и приближённые.";
+  box.appendChild(note);
+
+  // Чем вносить: тот же выбор кошелька, что в лавке
+  box.appendChild(walletBar(estate.purse, loadMafia));
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Внести", {
+      onClick: () =>
+        openMoneySheet({
+          title: "Внести в сейф",
+          note:
+            "Из того кошелька, которым ты платишь здесь: " +
+            num(spendable(estate)) + " 💰",
+          max: spendable(estate),
+          hint: "Платить нечем.",
+          onSum: (amount) => mafiaAction({ action: "deposit", amount: amount }),
+        }),
+    })
+  );
+  if (estate.can_take) {
+    buttons.appendChild(
+      button("Снять", {
+        secondary: true,
+        disabled: !estate.vault,
+        hint: "Сейф пуст.",
+        onClick: () =>
+          openMoneySheet({
+            title: "Снять из сейфа",
+            note:
+              "В сейфе " + num(estate.vault) +
+              " 💰. Снятое ляжет наличными",
+            max: estate.vault,
+            hint: "Сейф пуст.",
+            onSum: (amount) => mafiaAction({ action: "cash", amount: amount }),
+          }),
+      })
+    );
+  }
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Склад семьи: все его полки, и пустые тоже видно. */
 function shelfBox(estate) {
   const box = document.createElement("section");
   box.className = "shelf";
@@ -9318,7 +9835,7 @@ function shelfBox(estate) {
   const head = document.createElement("h2");
   head.className = "shelf-head";
   head.textContent =
-    "Хранилище · " + estate.items.length + " из " + estate.slots;
+    "Склад семьи · " + estate.items.length + " из " + estate.slots;
   box.appendChild(head);
 
   const note = document.createElement("p");
@@ -9328,100 +9845,32 @@ function shelfBox(estate) {
     : "Кладут все, кто в семье. Забирают только Дон и приближённые.";
   box.appendChild(note);
 
-  const grid = document.createElement("div");
-  grid.className = "shelf-grid";
-  grid.id = "shelf-grid";
-  for (let place = 0; place < estate.slots; place += 1) {
-    const stored = estate.items[place];
-    grid.appendChild(stored ? shelfCell(stored, estate) : emptyCell(estate));
-  }
-  box.appendChild(grid);
+  box.appendChild(
+    shelfGrid({
+      slots: estate.slots,
+      items: estate.items,
+      title: (one) => one.title + (one.by ? " · положил " + one.by : ""),
+      onThing: (one) =>
+        openThingSheet({
+          thing: one,
+          note:
+            (one.by ? "Положил " + one.by : "Общая вещь семьи") +
+            (one.when ? " · " + one.when : ""),
+          onTake: estate.can_take
+            ? (thing) => mafiaAction({ action: "take", item: thing.id })
+            : null,
+          denial: "Забирают с полок только Дон и приближённые.",
+        }),
+      onFree: () =>
+        openPickSheet({
+          bag: estate.bag,
+          free: estate.free,
+          note: "Свободных полок: " + estate.free,
+          onPick: (one) => mafiaAction({ action: "stash", item: one.id }),
+        }),
+    })
+  );
   return box;
-}
-
-function shelfCell(stored, estate) {
-  const cell = document.createElement("button");
-  cell.type = "button";
-  cell.className = "shelf-slot" + (stored.mod && stored.mod.level ? " tier" : "");
-  cell.title = stored.title + (stored.by ? " · положил " + stored.by : "");
-  cell.appendChild(slotPicture(stored, stored.icon));
-  cell.addEventListener("click", () => openStoredSheet(stored, estate));
-  return cell;
-}
-
-function emptyCell(estate) {
-  const cell = document.createElement("button");
-  cell.type = "button";
-  cell.className = "shelf-slot free";
-  cell.title = "Свободная полка";
-  cell.textContent = "＋";
-  cell.addEventListener("click", () => openStashSheet(estate));
-  return cell;
-}
-
-/** Вещь с полки: чья она была и можно ли её забрать. */
-function openStoredSheet(stored, estate) {
-  openSheet(
-    stored.title,
-    (stored.by ? "Положил " + stored.by : "Общая вещь семьи") +
-      (stored.when ? " · " + stored.when : ""),
-    true
-  );
-  const list = el("sheet-list");
-  const card = thingCard(stored, 0, false, true);
-  list.appendChild(card);
-
-  const buttons = document.createElement("div");
-  buttons.className = "thing-buttons";
-  if (estate.can_take) {
-    buttons.appendChild(
-      button("Забрать себе", {
-        onClick: () => {
-          closeSheet();
-          mafiaAction({ action: "take", item: stored.id });
-        },
-      })
-    );
-  } else {
-    const note = document.createElement("p");
-    note.className = "thing-note";
-    note.textContent = "Забирают с полок только Дон и приближённые.";
-    list.appendChild(note);
-  }
-  buttons.appendChild(
-    button("Закрыть", { secondary: true, onClick: () => closeSheet() })
-  );
-  list.appendChild(buttons);
-}
-
-/** Что положить на полку: снятое из своего рюкзака. */
-function openStashSheet(estate) {
-  openSheet("Что положить", "Свободных полок: " + estate.free);
-  const list = el("sheet-list");
-  if (!estate.bag.length) {
-    const empty = document.createElement("p");
-    empty.className = "sheet-note";
-    empty.textContent = "Рюкзак пуст. Надетое сначала снимают в инвентаре.";
-    list.appendChild(empty);
-    return;
-  }
-  estate.bag.forEach((one) => {
-    const row = thingCard(one, 0, false, true);
-    const buttons = document.createElement("div");
-    buttons.className = "thing-buttons";
-    buttons.appendChild(
-      button("Положить", {
-        disabled: !estate.free,
-        hint: "Свободных полок нет.",
-        onClick: () => {
-          closeSheet();
-          mafiaAction({ action: "stash", item: one.id });
-        },
-      })
-    );
-    row.querySelector(".thing-body").appendChild(buttons);
-    list.appendChild(row);
-  });
 }
 
 /** Форма создания клана: имя, знак и тысяча кредитов. */
@@ -10052,7 +10501,7 @@ function paintClanLine() {
 
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
-  "hr", "work", "school", "police", "mafia", "trade", "house",
+  "hr", "work", "school", "police", "mafia", "flats", "trade", "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -10196,7 +10645,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
-  "school", "police", "mafia", "shop", "magic", "workshop", "club",
+  "school", "police", "mafia", "flats", "shop", "magic", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });
