@@ -62,7 +62,7 @@ async def buy(
             f"а {player.purse_note(moment, service)}."
         )
 
-    player.pay(price, moment, service)
+    player.pay(price, moment, service, about=f"Покупка {item.title}")
     await db.save_player(player)
     owned = await db.add_gear(player.user_id, item.code)
     player.gear.append(owned)
@@ -184,7 +184,7 @@ async def repair_item(
         player.price_here(result.price, moment, service),
         moment,
         service,
-        note="Починка вещи",
+        about=f"Починка {owned.title}",
     )
     await db.save_player(player)
     if result.destroyed:

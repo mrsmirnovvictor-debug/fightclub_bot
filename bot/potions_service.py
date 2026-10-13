@@ -102,7 +102,7 @@ async def buy_potion(
             f"а {player.purse_note(moment, service)}."
         )
 
-    player.pay(price, moment, service)
+    player.pay(price, moment, service, about=f"Покупка {potion.title}")
     await db.save_player(player)
     player.potions[potion.code] = await db.add_potion(player.user_id, potion.code)
     return potion

@@ -3,6 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- Телефон в сумме «+1 031 💰» видит телефонный номер: плюс, единица
+       кода страны и цифры через пробел, — и заворачивает её в tel-ссылку.
+       В выписке таких сумм целый столбец, да и дат с адресами на странице
+       хватает, поэтому распознавание выключено целиком: деньги здесь
+       деньги, а не способ кому-то позвонить -->
+  <meta name="format-detection"
+        content="telephone=no, date=no, address=no, email=no">
   <title>Карточка бойца</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="stylesheet" href="static/card.css">

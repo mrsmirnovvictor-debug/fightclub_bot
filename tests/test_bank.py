@@ -808,8 +808,8 @@ async def test_the_statement_remembers_everything_the_card_did(db):
     player.pay(price, NOW, Service.CLOTHES)
     await db.save_player(player)
 
-    # Контора со своим словом подписывается сама
-    player.pay(60, NOW, Service.MAFIA, note="Создание клана")
+    # Контора называет само действие — оно идёт комментарием
+    player.pay(60, NOW, Service.MAFIA, about="Создание клана")
     await db.save_player(player)
 
     # А наличными — мимо выписки: банк их не видит
@@ -820,9 +820,12 @@ async def test_the_statement_remembers_everything_the_card_did(db):
     moves = await db.card_log(player.user_id)
     # Выпуска карты в выписке нет: за неё заплатили наличными — на счету
     # в тот час было пусто
+    # Заголовок строки — всегда дом: по нему боец и вспоминает операцию
     assert [one.note for one in moves] == [
-        "Создание клана", "Магазин одежды", "Внесение наличных",
+        "Особняк мафии", "Магазин одежды", "Внесение наличных",
     ], "новые операции идут первыми"
+    # А за что заплачено — рядом, комментарием
+    assert [one.about for one in moves] == ["Создание клана", "", ""]
     assert [one.amount for one in moves] == [-60, -price, 500]
     # Остаток рядом с суммой: выписку можно сверить глазами
     assert moves[0].balance == 500 - price - 60
@@ -830,6 +833,29 @@ async def test_the_statement_remembers_everything_the_card_did(db):
 
     income, spent = await db.card_turnover(player.user_id)
     assert income == 500 and spent == price + 60
+
+
+async def test_a_purchase_names_the_thing_it_bought(db):
+    """«Ювелирный магазин» — где, «Покупка Кольцо силы» — за что.
+
+    Сам дом боец вспомнит и так; а вот за что он там оставил полторы
+    сотни — нет, и выписка из одних домов ничего ему не объясняет.
+    """
+    from bot.inventory_service import buy
+    from bot.potions_service import buy_potion
+
+    player = await with_card(db, make_player(credits=5_000))
+    await deposit(db, player, 4_000, NOW)
+    player.pay_from = CARD
+
+    await buy(db, player, "ring_strength", Service.JEWEL, now=NOW)
+    await buy_potion(db, player, "heal_small", Service.POTIONS, now=NOW)
+
+    moves = await db.card_log(player.user_id)
+    assert [(one.note, one.about) for one in moves][:2] == [
+        ("Аптека", "Покупка Эликсир восстановления"),
+        ("Ювелирный магазин", "Покупка Кольцо силы"),
+    ]
 
 
 async def test_the_statement_takes_both_sides_of_a_transfer(db):
@@ -957,7 +983,13 @@ async def test_every_place_signs_the_statement_in_its_own_words(db):
     player.location = "post_office"
     await post_send(db, player, owned.id, "Марла", 0, "long", now=NOW)
 
-    notes = [one.note for one in await db.card_log(player.user_id)]
-    assert notes[:3] == ["Отправка посылки", "Аренда квартиры", "Создание клана"]
+    moves = await db.card_log(player.user_id)
+    # Заголовок — дом, комментарий — дело: «Почта» и «Отправка посылки»
+    assert [one.note for one in moves][:3] == [
+        "Почта", "Аренда жилья", "Особняк мафии",
+    ]
+    assert [one.about for one in moves][:3] == [
+        "Отправка посылки", "Аренда квартиры", "Создание клана",
+    ]
     amounts = [one.amount for one in await db.card_log(player.user_id)]
     assert amounts[:3] == [-SEND_PRICE, -300, -CLAN_PRICE]

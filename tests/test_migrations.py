@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
+import aiosqlite
 import pytest
 
 from bot.bank_service import deposit, issue_card, open_account
@@ -174,6 +175,51 @@ async def test_a_fighter_saved_by_the_new_code_keeps_his_bank_row(old_db_path):
     assert fresh.account_balance == 1_234
     assert fresh.card_paid_until == 1_900_000_000
     assert fresh.pay_from == "cash"
+    await db.close()
+
+
+async def test_the_statement_gains_a_comment_without_losing_old_rows(tmp_path):
+    """Комментарий дописан к живой выписке, а старые строки остались.
+
+    Выписка появилась раньше комментария: на базе прошлой версии таблица
+    уже есть, и `CREATE TABLE IF NOT EXISTS` колонку в неё не добавит.
+    """
+    path = str(tmp_path / "old_log.db")
+    old = await aiosqlite.connect(path)
+    old.row_factory = aiosqlite.Row
+    await old.execute(
+        """
+        CREATE TABLE card_log (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            at      INTEGER NOT NULL,
+            amount  INTEGER NOT NULL,
+            kind    TEXT    NOT NULL,
+            note    TEXT    NOT NULL DEFAULT '',
+            balance INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    await old.execute(
+        "INSERT INTO card_log (user_id, at, amount, kind, note, balance) "
+        "VALUES (1, 1700000000, -120, 'pay', 'Магазин одежды', 880)"
+    )
+    await old.commit()
+    await old.close()
+
+    db = Database(path)
+    await db.connect()
+    moves = await db.card_log(1)
+    # Старая строка на месте, и комментарий у неё пустой: дорисовать его
+    # задним числом не из чего
+    assert len(moves) == 1
+    assert moves[0].note == "Магазин одежды" and moves[0].about == ""
+
+    # А новая операция комментарий уже несёт
+    await db.log_card(1, -135, "pay", "Ювелирный магазин", 745,
+                      1700000100, about="Покупка Кольцо силы")
+    fresh = await db.card_log(1)
+    assert fresh[0].about == "Покупка Кольцо силы"
     await db.close()
 
 

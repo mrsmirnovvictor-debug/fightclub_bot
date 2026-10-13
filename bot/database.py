@@ -591,7 +591,9 @@ CREATE TABLE IF NOT EXISTS card_log (
     amount  INTEGER NOT NULL,
     kind    TEXT    NOT NULL,
     note    TEXT    NOT NULL DEFAULT '',
-    balance INTEGER NOT NULL DEFAULT 0
+    balance INTEGER NOT NULL DEFAULT 0,
+    -- За что именно: «Покупка Кольцо силы». `note` отвечает «где»
+    about   TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS card_log_user ON card_log(user_id, at);
@@ -766,6 +768,25 @@ class Database:
         await self._migrate_arenas()
         await self._migrate_raid_windows()
         await self._migrate_clans()
+        await self._migrate_card_log()
+
+    async def _migrate_card_log(self) -> None:
+        """Дописать комментарий к уже записанным операциям по карте.
+
+        Выписка появилась раньше комментария, и на живой базе `CREATE
+        TABLE IF NOT EXISTS` колонку не добавит: таблица уже есть. У
+        старых строк комментарий пустой — экран такую строку рисует
+        одним заголовком, как рисовал всегда.
+        """
+        async with self.conn.execute("PRAGMA table_info(card_log)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if not columns or "about" in columns:
+            return
+        await self.conn.execute(
+            "ALTER TABLE card_log ADD COLUMN about TEXT NOT NULL DEFAULT ''"
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: добавлена колонка card_log.about")
 
     async def _migrate_clans(self) -> None:
         """Дописать сейф в уже заведённые кланы.
@@ -2731,15 +2752,18 @@ class Database:
 
     async def log_card(
         self, user_id: int, amount: int, kind: str, note: str,
-        balance: int, now: int | None = None,
+        balance: int, now: int | None = None, about: str = "",
     ) -> None:
         """Записать одну операцию по счёту."""
         await self.conn.execute(
             """
-            INSERT INTO card_log (user_id, at, amount, kind, note, balance)
-            VALUES (?,?,?,?,?,?)
+            INSERT INTO card_log (user_id, at, amount, kind, note, balance, about)
+            VALUES (?,?,?,?,?,?,?)
             """,
-            (user_id, now_ts() if now is None else now, amount, kind, note, balance),
+            (
+                user_id, now_ts() if now is None else now, amount, kind,
+                note, balance, about,
+            ),
         )
         await self.conn.commit()
 
@@ -2754,11 +2778,14 @@ class Database:
             return
         await self.conn.executemany(
             """
-            INSERT INTO card_log (user_id, at, amount, kind, note, balance)
-            VALUES (?,?,?,?,?,?)
+            INSERT INTO card_log (user_id, at, amount, kind, note, balance, about)
+            VALUES (?,?,?,?,?,?,?)
             """,
             [
-                (player.user_id, one.at, one.amount, one.kind, one.note, one.balance)
+                (
+                    player.user_id, one.at, one.amount, one.kind, one.note,
+                    one.balance, one.about,
+                )
                 for one in moves
             ],
         )
@@ -2786,7 +2813,7 @@ class Database:
         args.append(limit)
         async with self.conn.execute(
             f"""
-            SELECT at, amount, kind, note, balance FROM card_log
+            SELECT at, amount, kind, note, balance, about FROM card_log
             WHERE {" AND ".join(where)}
             ORDER BY at DESC, id DESC LIMIT ?
             """,
@@ -2800,6 +2827,7 @@ class Database:
                 kind=str(row["kind"]),
                 note=str(row["note"]),
                 balance=int(row["balance"]),
+                about=str(row["about"] or ""),
             )
             for row in rows
         ]

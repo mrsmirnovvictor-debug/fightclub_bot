@@ -461,7 +461,7 @@ async def on_respec(
         await callback.answer("Кредитов больше не хватает.", show_alert=True)
         return
 
-    player.pay(PRICE_RESPEC)
+    player.pay(PRICE_RESPEC, about="Сброс характеристик")
     returned = player.reset_stats()
     await db.save_player(player)
     # Характеристики просели до базы: часть надетого могла стать не по плечу
@@ -501,7 +501,7 @@ async def cmd_rename(message: Message, command: CommandObject, db: Database) -> 
         return
 
     old = player.nickname
-    player.pay(PRICE_APPEARANCE)
+    player.pay(PRICE_APPEARANCE, about="Смена имени")
     player.nickname = nickname
     await db.save_player(player)
     await message.answer(
@@ -557,7 +557,7 @@ async def _charge_appearance(
         await state.clear()
         await callback.answer("Кредитов не хватает.", show_alert=True)
         return None
-    player.pay(PRICE_APPEARANCE)
+    player.pay(PRICE_APPEARANCE, about="Смена внешности")
     await state.clear()
     return player
 
@@ -599,7 +599,7 @@ async def on_class_change(
         return
 
     old = player.fclass
-    player.pay(PRICE_CLASS_CHANGE)
+    player.pay(PRICE_CLASS_CHANGE, about="Смена класса")
     returned = player.switch_class(new_class.code)
     await db.save_player(player)
     dropped = await settle_gear(db, player)

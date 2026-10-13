@@ -6780,11 +6780,13 @@ function statementTab(data) {
   const sums = document.createElement("div");
   sums.className = "log-sums";
   [
-    ["Приход", log.income, "plus"],
-    ["Расход", log.spent, "minus"],
+    ["Поступления", log.income, "plus"],
+    ["Списания", log.spent, "minus"],
   ].forEach(([title, money, mark]) => {
     const cell = document.createElement("div");
-    cell.className = "log-sum " + mark;
+    // `log-plus`, а не `plus`: голым словом `plus` зовётся круглая синяя
+    // кнопка кошелька, и сумма прихода надевала её одежду
+    cell.className = "log-sum log-" + mark;
     const name = document.createElement("span");
     name.className = "log-sum-title";
     name.textContent = title;
@@ -6821,12 +6823,21 @@ function logRow(row) {
   when.className = "log-when";
   when.textContent = row.when + " · " + row.kind_title;
   left.append(note, when);
+  // За что платили. Старым строкам комментария взять негде: до него
+  // выписка помнила только дом, и дорисовывать его задним числом не из
+  // чего — такая строка остаётся в две строки
+  if (row.about) {
+    const about = document.createElement("div");
+    about.className = "log-about";
+    about.textContent = row.about;
+    left.appendChild(about);
+  }
   box.appendChild(left);
 
   const right = document.createElement("div");
   right.className = "log-money";
   const sum = document.createElement("div");
-  sum.className = "log-sum-value " + (row.plus ? "plus" : "minus");
+  sum.className = "log-sum-value " + (row.plus ? "log-plus" : "log-minus");
   sum.textContent = (row.plus ? "+" : "−") + num(Math.abs(row.amount)) + " 💰";
   const rest = document.createElement("div");
   rest.className = "log-rest";

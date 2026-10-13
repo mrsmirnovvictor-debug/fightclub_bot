@@ -444,9 +444,14 @@ def statement_state(rows=(), days: int = 30, **changes) -> dict:
     from bot.webapp.bank import statement_payload
 
     moment = now_ts()
+    # Строка — четвёркой, а с комментарием пятёркой: у старых операций
+    # комментария нет вовсе, и такую строку экран тоже должен нарисовать
     moves = [
-        CardMove(moment - (index + 1) * 3_600, amount, kind, note, balance)
-        for index, (amount, kind, note, balance) in enumerate(rows)
+        CardMove(
+            moment - (index + 1) * 3_600, row[0], row[1], row[2], row[3],
+            about=row[4] if len(row) > 4 else "",
+        )
+        for index, row in enumerate(rows)
     ]
     income = sum(one.amount for one in moves if one.amount > 0)
     spent = -sum(one.amount for one in moves if one.amount < 0)
@@ -10465,7 +10470,7 @@ async def test_the_statement_lists_the_card_and_its_period(server):
     bank = bank_state()
     bank["statement"] = statement_state(
         rows=(
-            (-120, "pay", "Магазин одежды", 1_880),
+            (-120, "pay", "Магазин одежды", 1_880, "Покупка Кожаная куртка"),
             (900, "wage", "Жалованье: Бармен", 2_000),
             (-250, "sent", "Перевод: Марла", 1_100),
         )
@@ -10488,13 +10493,48 @@ async def test_the_statement_lists_the_card_and_its_period(server):
             "#bank-body .shelf-head"
         ).inner_text()
 
+        titles = await page.locator(".log-sum-title").all_inner_texts()
+        assert titles == ["Поступления", "Списания"]
         sums = await page.locator(".log-sum-money").all_inner_texts()
         assert sums == ["+900 💰", "−370 💰"]
 
+        # Итог прихода — не кнопка кошелька: голым словом `plus` в этом
+        # апе зовётся круглая синяя «пополнить», и сумма носила её одежду
+        plus = page.locator(".log-sum.log-plus")
+        assert await plus.count() == 1
+        assert await page.locator(".log-sum.plus").count() == 0
+        look = await plus.locator(".log-sum-money").evaluate(
+            """node => {
+                const style = getComputedStyle(node);
+                return {round: style.borderTopLeftRadius, wide: style.width};
+            }"""
+        )
+        assert look["round"] == "0px", "сумма прикинулась круглой кнопкой"
+        # А сама плитка — выше заголовка: сумма стоит внутри рамки
+        tall = await plus.evaluate(
+            "node => node.getBoundingClientRect().height"
+        )
+        assert tall > 40, f"рамка схлопнулась до заголовка: {tall}"
+
+        # И страница просит не искать в суммах телефонных номеров:
+        # «+1 031 💰» телефон читает как номер с кодом страны
+        assert "telephone=no" in await page.locator(
+            'meta[name="format-detection"]'
+        ).get_attribute("content")
+        assert await page.locator('a[href^="tel:"]').count() == 0
+
         rows = page.locator(".log-row")
         assert await rows.count() == 3
-        assert "Магазин одежды" in await rows.nth(0).inner_text()
-        assert "Оплата" in await rows.nth(0).inner_text()
+        # Три строки сверху вниз: где, когда, за что
+        assert await rows.nth(0).locator(".log-note").inner_text() == (
+            "Магазин одежды"
+        )
+        assert "Оплата" in await rows.nth(0).locator(".log-when").inner_text()
+        assert await rows.nth(0).locator(".log-about").inner_text() == (
+            "Покупка Кожаная куртка"
+        )
+        # А у операции без комментария третьей строки нет вовсе
+        assert await rows.nth(1).locator(".log-about").count() == 0
         assert await rows.nth(0).locator(".log-sum-value").inner_text() == "−120 💰"
         assert await rows.nth(0).locator(".log-rest").inner_text() == (
             "остаток " + num_space("1 880") + " 💰"

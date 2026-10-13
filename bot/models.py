@@ -92,8 +92,12 @@ class CardMove:
     at: int
     amount: int
     kind: str
-    note: str
+    note: str  # заголовок строки: где это было — «Ювелирный магазин»
     balance: int
+    # Комментарий: что именно случилось — «Покупка Кольцо силы». Заголовок
+    # отвечает «где», комментарий «за что»; без второго выписка через
+    # неделю читается как список домов, в которые боец заходил
+    about: str = ""
 
 
 @dataclass
@@ -729,7 +733,7 @@ class Player:
         return self.purse_money(self.purse_for(now, service)) >= price
 
     def note_card(
-        self, amount: int, kind: str, note: str, now: int = 0
+        self, amount: int, kind: str, note: str, now: int = 0, about: str = ""
     ) -> CardMove:
         """Записать движение по счёту — в выписку, а не в базу.
 
@@ -742,29 +746,31 @@ class Player:
             kind=kind,
             note=note,
             balance=self.account_balance,
+            about=about,
         )
         self.card_moves.append(move)
         return move
 
-    def pay(self, price: int, now: int = 0, service=None, note: str = "") -> str:
+    def pay(self, price: int, now: int = 0, service=None, about: str = "") -> str:
         """Снять цену с того кошелька, которым боец здесь платит.
 
         Цену сюда передают уже посчитанную: скидку считают там, где её
         показывают, — иначе на витрине стояло бы одно число, а с кошелька
         уходило другое.
 
-        Заплатили картой — операция попадает в выписку. `note` — своё
-        слово места: лавка подписывается домом, а контора, у которой
-        действий несколько, называет само действие.
+        Заплатили картой — операция попадает в выписку. Заголовком в ней
+        встаёт сам дом, а `about` — то, за что платили: «Покупка Кольцо
+        силы», «Создание клана», «Лечение травмы». Дом боец вспомнит и
+        так, а вот за что он там оставил полторы сотни — нет.
         """
-        from bot.game.bank import PAY, pay_note
+        from bot.game.bank import PAY, place_note
 
         purse = self.purse_for(now, service)
         if self.purse_money(purse) < price:
             raise ValueError("Недостаточно кредитов")
         if purse == CARD:
             self.account_balance -= price
-            self.note_card(-price, PAY, pay_note(service, note), now)
+            self.note_card(-price, PAY, place_note(service), now, about)
         else:
             self.credits -= price
         return purse

@@ -804,7 +804,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   .foot { grid-area: foot; }
 }
 
-
 /* ---------- выдвижной лист: выбор образа ---------- */
 
 .sheet { position: fixed; inset: 0; z-index: 20; }
@@ -899,7 +898,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .look-tag { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
 .look-tag.on { color: var(--accent); font-weight: 700; }
 .look-tag.poor { color: var(--hp-red); }
-
 
 /* ---------- общая шапка экрана ---------- */
 
@@ -1320,8 +1318,13 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .log-sum-title { color: var(--muted); font-size: 12.5px; }
 .log-sum-money { font-weight: 800; font-size: 16px; white-space: nowrap; }
-.log-sum.plus .log-sum-money { color: var(--hp-green); }
-.log-sum.minus .log-sum-money { color: var(--hp-red); }
+/* Не `.plus` и не `.minus`: голым словом `plus` в этом апе зовётся
+   круглая синяя кнопка «пополнить» у кошелька — 22 пикселя и
+   `border-radius: 50%`. Выписка носила то же слово, и сумма прихода
+   получала её одежду: синий кружок вместо знака, число наружу, а рамка
+   «Поступлений» схлопывалась до заголовка — внутри неё лежал кружок */
+.log-sum.log-plus .log-sum-money { color: var(--hp-green); }
+.log-sum.log-minus .log-sum-money { color: var(--hp-red); }
 
 /* Строка выписки: слева за что и когда, справа сумма и остаток после */
 .log-list { display: grid; gap: 6px; }
@@ -1342,10 +1345,21 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   white-space: nowrap;
 }
 .log-when { color: var(--muted); font-size: 12px; }
+/* Комментарий: за что именно платили. Висит под строкой состояния и
+   набран мельче заголовка — заголовок отвечает «где», он «за что» */
+.log-about {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .log-money { flex: none; text-align: right; white-space: nowrap; }
 .log-sum-value { font-weight: 700; }
-.log-sum-value.plus { color: var(--hp-green); }
-.log-sum-value.minus { color: var(--hp-red); }
+.log-sum-value.log-plus { color: var(--hp-green); }
+.log-sum-value.log-minus { color: var(--hp-red); }
 .log-rest { color: var(--muted); font-size: 12px; }
 
 /* ---------- почта ---------- */

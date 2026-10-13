@@ -119,7 +119,7 @@ async def rent(
         # ловить с опозданием
         raise EstateError("Квартиру только что сняли. Выбери другую.") from error
 
-    player.pay(price, moment, Service.ESTATE, note="Аренда квартиры")
+    player.pay(price, moment, Service.ESTATE, about="Аренда квартиры")
     await db.save_player(player)
     player.flat = lease
     logger.info("Боец %s снял %s кв. %s за %s", player.user_id, house, number, price)
@@ -148,7 +148,7 @@ async def extend(db: Database, player: Player, now: int | None = None) -> str:
         )
     paid_until = extended(lease.paid_until, moment)
     await db.extend_lease(lease.id, paid_until)
-    player.pay(price, moment, Service.ESTATE, note="Продление аренды")
+    player.pay(price, moment, Service.ESTATE, about="Продление аренды")
     await db.save_player(player)
     await _refresh(db, player)
     logger.info("Боец %s продлил квартиру до %s", player.user_id, paid_until)
@@ -198,7 +198,7 @@ async def deposit(
     # Сперва сейф, потом карман: если квартиры уже нет, с бойца и не снято
     if not await db.move_flat_vault(lease.id, amount):  # pragma: no cover
         raise EstateError("Квартира больше не твоя.")
-    player.pay(amount, moment, Service.ESTATE, note="Взнос в сейф квартиры")
+    player.pay(amount, moment, Service.ESTATE, about="Взнос в сейф квартиры")
     await db.save_player(player)
     fresh = await _refresh(db, player)
     return f"В сейфе квартиры теперь {fresh.vault if fresh else amount} 💰."

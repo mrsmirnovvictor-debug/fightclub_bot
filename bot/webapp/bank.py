@@ -260,6 +260,9 @@ def statement_payload(
                 "kind": one.kind,
                 "kind_title": MOVE_TITLES.get(one.kind, "Операция"),
                 "note": one.note,
+                # За что платили. У старых строк пусто — экран их рисует
+                # одним заголовком, как рисовал до комментария
+                "about": one.about,
                 "balance": one.balance,
             }
             for one in moves

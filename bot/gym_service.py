@@ -193,7 +193,7 @@ async def buy_pass(
     # Продлевается с конца, а не с сегодняшнего дня: купивший второй месяц
     # заранее получает два месяца, а не один
     start = was if has_pass(was, moment) else moment
-    player.pay(price, moment, Service.TRAIN, note="Абонемент в зал")
+    player.pay(price, moment, Service.TRAIN, about="Абонемент в зал")
     await db.save_player(player)
     until = start + ticket.days * 24 * 60 * 60
     await db.set_gym_pass(player.user_id, until)
@@ -288,7 +288,7 @@ async def join(db: Database, player: Player, now: int | None = None) -> Visit:
 
     # Платим после записи: не записались — не списали
     if price:
-        player.pay(price, moment, Service.TRAIN, note="Тренировка")
+        player.pay(price, moment, Service.TRAIN, about="Тренировка")
         await db.save_player(player)
     logger.info(
         "Боец %s встал на тренировку %s в слоте %s за %s",

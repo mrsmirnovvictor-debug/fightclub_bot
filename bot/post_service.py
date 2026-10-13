@@ -107,7 +107,7 @@ async def send(
     if parcel is None:  # pragma: no cover - вещь увели между двумя запросами
         raise PostError("Вещь исчезла из рюкзака. Попробуй ещё раз.")
 
-    player.pay(cost, moment, Service.POST, note="Отправка посылки")
+    player.pay(cost, moment, Service.POST, about="Отправка посылки")
     await db.save_player(player)
     player.drop_gear(owned)
     logger.info(
@@ -146,7 +146,7 @@ async def collect(
         raise PostError("Эту посылку уже выдали.")
     if due:
         # Деньги уходят отправителю наличными, и ждать его в сети незачем
-        player.pay(due, moment, Service.POST, note="Посылка наложенным платежом")
+        player.pay(due, moment, Service.POST, about="Посылка наложенным платежом")
         await db.pay_cash(parcel.from_id, due)
         await db.save_player(player)
     player.gear = await db.list_gear(player.user_id)

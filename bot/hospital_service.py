@@ -67,7 +67,7 @@ async def heal(
             f"а {player.purse_note(moment, Service.HEAL)}."
         )
 
-    player.pay(price, moment, Service.HEAL, note="Лечение в больнице")
+    player.pay(price, moment, Service.HEAL, about="Лечение в больнице")
     player.set_hp(current + healed, moment)
     await db.save_player(player)
     logger.info(

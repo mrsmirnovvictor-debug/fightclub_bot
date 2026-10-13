@@ -114,7 +114,7 @@ async def buy_lot(
     if not await db.take_lot(lot_id):
         raise MarketError("Этот лот уже разобрали.")
 
-    player.pay(price, moment, Service.MARKET)
+    player.pay(price, moment, Service.MARKET, about=f"Покупка {item.title}")
     await db.save_player(player)
     owned = await db.add_gear(
         player.user_id, lot["code"], max_wear=lot["max_wear"], wear=lot["wear"]
