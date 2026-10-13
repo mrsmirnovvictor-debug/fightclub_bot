@@ -98,6 +98,14 @@ from bot.estate_service import (
     take as flat_take,
     withdraw as flat_withdraw,
 )
+from bot.study_service import (
+    StudyError,
+    attend as study_attend,
+    enrol as study_enrol,
+    leave as study_leave,
+    pass_exam as study_pass,
+    start_exam as study_start_exam,
+)
 from bot.quest_service import (
     QuestError,
     answer as quest_answer,
@@ -155,6 +163,8 @@ from bot.webapp.clans import (
 from bot.webapp.estate import build_house
 from bot.webapp.post import build_post
 from bot.webapp.bar import build_bar, quests_payload
+from bot.game.study import EXAM_SIZE, PASS_MARK
+from bot.webapp.study import build_study, exam_payload
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
     build_market,
@@ -2230,6 +2240,81 @@ async def api_post_action(request: web.Request) -> web.Response:
     return await _post_state(request, fresh, said)
 
 
+# ---------- учёба: корпус, колледж, академия и университет ----------
+
+
+async def _study_state(
+    request: web.Request, player, said: str = "", extra: dict | None = None
+) -> web.Response:
+    config = request.app[CONFIG_KEY]
+    body = build_study(player, now_ts(), said)
+    if extra:
+        body.update(extra)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_study(request: web.Request) -> web.Response:
+    """Учёба: приёмная этого дома, свой курс и идущее занятие."""
+    player = await _at(request, Service.STUDY)
+    return await _study_state(request, player)
+
+
+async def api_study_action(request: web.Request) -> web.Response:
+    """Записаться, встать на занятие, взять билет или сдать его."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.STUDY)
+    extra: dict | None = None
+    try:
+        if action == "enrol":
+            said = await study_enrol(db, player, str(data.get("course") or ""))
+        elif action == "leave":
+            said = await study_leave(db, player)
+        elif action == "attend":
+            until = await study_attend(db, player)
+            left = format_duration(max(0, until - now_ts()))
+            said = f"Занятие пошло: {left} на месте, уйти нельзя."
+        elif action == "exam":
+            # Билет не меняет состояния: его берут посмотреть, а
+            # попытку засчитывают только по ответам
+            course, questions = await study_start_exam(db, player)
+            return await _study_state(
+                request, player, "", {"exam": exam_payload(questions, course)}
+            )
+        elif action == "pass":
+            answers = [int(one) for one in data.get("answers") or []]
+            course, right, won = await study_pass(db, player, answers)
+            extra = {
+                "attempt": {
+                    "right": right,
+                    "total": EXAM_SIZE,
+                    "need": PASS_MARK,
+                    "passed": won,
+                    "title": course.diploma_title,
+                }
+            }
+            said = (
+                f"Экзамен сдан: {right} из {EXAM_SIZE}. "
+                f"Ты получаешь документ — {course.diploma_title}."
+                if won
+                else (
+                    f"Не сдал: {right} из {EXAM_SIZE}, а нужно {PASS_MARK}. "
+                    "Пересдача через неделю."
+                )
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except StudyError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _study_state(request, fresh, said, extra)
+
+
 # ---------- бар: бармен и его задания ----------
 
 
@@ -2442,6 +2527,8 @@ def create_app(
             web.post("/api/flats", api_house_action),
             web.get("/api/post", api_post),
             web.post("/api/post", api_post_action),
+            web.get("/api/study", api_study),
+            web.post("/api/study", api_study_action),
             web.get("/api/bar", api_bar),
             web.post("/api/bar", api_bar_action),
             web.get("/api/quests", api_quests),

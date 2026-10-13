@@ -56,6 +56,7 @@ class Service(str, Enum):
     ESTATE = "estate"  # жилой дом: аренда квартиры, сейф и кладовая
     POST = "post"  # почта: посылки между бойцами
     TAVERN = "tavern"  # бар: бармен и его задания
+    STUDY = "study"  # учёба: запись на курс, занятия и выпускной экзамен
 
     @property
     def title(self) -> str:
@@ -86,6 +87,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.ESTATE: "снимать жильё",
     Service.POST: "отправлять посылки",
     Service.TAVERN: "брать задания у бармена",
+    Service.STUDY: "учиться и сдавать экзамен",
 }
 
 
@@ -821,6 +823,9 @@ LOCATIONS: tuple[Location, ...] = (
             (0.427205, 0.494019), (0.524973, 0.501196),
             (0.524973, 0.535287), (0.427205, 0.526316),
         ),
+        # Сюда ходят на занятия кадеты. Своих курсов у полигона нет —
+        # записывают в корпусе, — а стрельба и спарринги ещё впереди
+        services=(Service.STUDY,),
         soon="стрельба и спарринги",
         genitive="полигона",
         interior_folder=art.NEW_INTERIORS,
@@ -833,7 +838,9 @@ LOCATIONS: tuple[Location, ...] = (
             (0.454835, 0.226675), (0.582359, 0.226077),
             (0.582359, 0.279306), (0.453773, 0.278708),
         ),
-        soon="школа для новичков",
+        # Записывают здесь, а строят на полигоне: за партой учат уставу,
+        # всему остальному — на плацу
+        services=(Service.STUDY,),
         genitive="корпуса",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -859,7 +866,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.431456, 0.248804), (0.536663, 0.243421),
             (0.536663, 0.302033), (0.432519, 0.307416),
         ),
-        soon="путь в полицию",
+        services=(Service.STUDY,),
         genitive="полицейской академии",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -871,7 +878,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.4644, 0.646531), (0.61424, 0.654306),
             (0.612115, 0.703947), (0.463337, 0.694378),
         ),
-        soon="ремесло лекаря",
+        services=(Service.STUDY,),
         genitive="колледжа",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -1025,7 +1032,8 @@ LOCATIONS: tuple[Location, ...] = (
             (0.436769, 0.276914), (0.687566, 0.312799),
             (0.685441, 0.339713), (0.435707, 0.30323),
         ),
-        soon="лекции и дипломы",
+        # Четыре специальности на один дом: приёмная одна, а курсы разные
+        services=(Service.STUDY,),
         genitive="университета",
         interior_folder=art.NEW_INTERIORS,
     ),

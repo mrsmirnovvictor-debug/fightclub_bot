@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS players (
     shift_until     INTEGER NOT NULL DEFAULT 0,
     shift_day       TEXT    NOT NULL DEFAULT '',
     shift_minutes   INTEGER NOT NULL DEFAULT 0,
+    -- Учёба: курс один на бойца, как и работа, и живёт там же.
+    -- `diplomas` — коды сданных курсов через запятую: их бывает семь, и
+    -- таблица под семь слов дороже самих слов
+    study_code      TEXT    NOT NULL DEFAULT '',
+    study_since     INTEGER NOT NULL DEFAULT 0,
+    study_lessons   INTEGER NOT NULL DEFAULT 0,
+    study_day       TEXT    NOT NULL DEFAULT '',
+    study_exam_at   INTEGER NOT NULL DEFAULT 0,
+    study_tries     INTEGER NOT NULL DEFAULT 0,
+    lesson_until    INTEGER NOT NULL DEFAULT 0,
+    diplomas        TEXT    NOT NULL DEFAULT '',
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -633,7 +644,9 @@ PLAYER_COLUMNS = (
     "city, birthplace, pro_until, gender, created_at, "
     "account_number, account_balance, card_at, card_paid_until, pay_from, "
     "job_code, job_since, job_week, job_minutes, shift_until, "
-    "shift_day, shift_minutes"
+    "shift_day, shift_minutes, "
+    "study_code, study_since, study_lessons, study_day, study_exam_at, "
+    "study_tries, lesson_until, diplomas"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -674,6 +687,15 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("shift_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — смена не идёт
     ("shift_day", "TEXT NOT NULL DEFAULT ''"),  # какие это сутки по Москве
     ("shift_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за сутки
+    # Учёба. Курс один на бойца, и лежит он там же, где работа
+    ("study_code", "TEXT NOT NULL DEFAULT ''"),  # пусто — не учится
+    ("study_since", "INTEGER NOT NULL DEFAULT 0"),
+    ("study_lessons", "INTEGER NOT NULL DEFAULT 0"),  # отстояно занятий
+    ("study_day", "TEXT NOT NULL DEFAULT ''"),  # сутки последнего занятия
+    ("study_exam_at", "INTEGER NOT NULL DEFAULT 0"),  # час последней попытки
+    ("study_tries", "INTEGER NOT NULL DEFAULT 0"),
+    ("lesson_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — занятие не идёт
+    ("diplomas", "TEXT NOT NULL DEFAULT ''"),  # коды сданных курсов
 )
 
 
@@ -1071,9 +1093,11 @@ class Database:
                 city, birthplace, pro_until, gender, created_at,
                 account_number, account_balance, card_at, card_paid_until, pay_from,
                 job_code, job_since, job_week, job_minutes,
-                shift_until, shift_day, shift_minutes
+                shift_until, shift_day, shift_minutes,
+                study_code, study_since, study_lessons, study_day,
+                study_exam_at, study_tries, lesson_until, diplomas
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      ?,?,?,?,?,?,?,?,?,?,?,?)
+                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -1117,7 +1141,15 @@ class Database:
                 job_minutes     = excluded.job_minutes,
                 shift_until     = excluded.shift_until,
                 shift_day       = excluded.shift_day,
-                shift_minutes   = excluded.shift_minutes
+                shift_minutes   = excluded.shift_minutes,
+                study_code      = excluded.study_code,
+                study_since     = excluded.study_since,
+                study_lessons   = excluded.study_lessons,
+                study_day       = excluded.study_day,
+                study_exam_at   = excluded.study_exam_at,
+                study_tries     = excluded.study_tries,
+                lesson_until    = excluded.lesson_until,
+                diplomas        = excluded.diplomas
             """,
             (
                 player.user_id,
@@ -1165,6 +1197,14 @@ class Database:
                 player.shift_until,
                 player.shift_day,
                 player.shift_minutes,
+                player.study_code,
+                player.study_since,
+                player.study_lessons,
+                player.study_day,
+                player.study_exam_at,
+                player.study_tries,
+                player.lesson_until,
+                ",".join(player.diplomas),
             ),
         )
         await self.conn.commit()
@@ -4087,6 +4127,11 @@ class Database:
 
 def _to_player(row: Iterable[Any]) -> Player:
     data = dict(row)  # type: ignore[arg-type]
+    # Дипломы лежат строкой через запятую, а у бойца это список: семь
+    # слов не стоят своей таблицы, но и строкой по коду ходить незачем
+    data["diplomas"] = [
+        one for one in str(data.get("diplomas") or "").split(",") if one
+    ]
     return Player(**data)
 
 

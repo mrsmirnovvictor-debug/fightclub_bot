@@ -399,6 +399,23 @@ def quests_state(done=("ring",), taken: str = "", marks=()) -> dict:
     }
 
 
+def study_state(house: str = "university", course: str = "", lessons: int = 0,
+                **changes) -> dict:
+    """Ответ учёбы: приёмная этого дома и свой курс, если он есть."""
+    from bot.webapp.study import build_study
+
+    moment = now_ts()
+    player = make_player(house)
+    player.credits = 5_000
+    if course:
+        player.study_code = course
+        player.study_since = moment
+        player.study_lessons = lessons
+    body = build_study(player, moment)
+    body.update(changes)
+    return body
+
+
 def post_state(inbox=(), outbox=(), bag=("bandana",), **changes) -> dict:
     """Ответ почты: рюкзак на отправку и обе полки посылок."""
     from bot.webapp.post import build_post
@@ -817,7 +834,7 @@ async def open_page(
     battle=None, city=None, workshop=None, hospital=None, trade=None,
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
-    quests=None, images=False,
+    quests=None, study=None, images=False,
     telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
@@ -860,6 +877,7 @@ async def open_page(
     await page.route("**/api/post", canned(post or post_state()))
     await page.route("**/api/bar", canned(bar or bar_state()))
     await page.route("**/api/quests", canned(quests or quests_state()))
+    await page.route("**/api/study", canned(study or study_state()))
     await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
                                                     "ranks": [], "said": ""}))
 
@@ -10870,4 +10888,227 @@ async def test_the_quests_tab_lists_all_ten_with_their_marks(server):
         )
         # Награда кредитами стоит рядом с опытом
         assert "+100 💰" in await rows.nth(2).locator(".quest-prize").inner_text()
+        await browser.close()
+
+
+async def test_the_university_shows_four_specialities_with_their_price(server):
+    """Приёмная: четыре курса, цена, срок и диплом в конце.
+
+    Карточка курса устроена как бланк: по ней и видно, во что боец
+    вписывается, — две недели по два часа и экзамен в десять вопросов.
+    """
+    player = make_player("university")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .course")
+
+        assert await page.locator("#study-title").inner_text() == "🎓 Университет"
+        titles = await page.locator(".course-title").all_inner_texts()
+        assert [one.split(" ", 1)[1] for one in titles] == [
+            "Банковское дело", "Информационные технологии",
+            "Менеджмент", "Государственное управление",
+        ]
+        prices = await page.locator(".course-price").all_inner_texts()
+        assert prices == [
+            num_space("2 000") + " 💰", num_space("2 000") + " 💰",
+            num_space("1 800") + " 💰", num_space("2 500") + " 💰",
+        ]
+
+        first = page.locator(".course").first
+        rows = await first.locator(".paper-rows li").all_inner_texts()
+        assert any("2 недели" in one and "10 занятий" in one for one in rows)
+        assert any("по будням с 8:00 до 16:00" in one for one in rows)
+        assert any("10 вопросов, нужно 8" in one for one in rows)
+        assert any("экономическом образовании" in one for one in rows)
+        # В университете учатся там же, где записывают: строки «Где» нет
+        assert not any(one.startswith("Где") for one in rows)
+
+        # Запись спрашивает подтверждение и уходит кодом курса
+        await page.evaluate(
+            """() => {
+                window.askConfirm = () => Promise.resolve(true);
+                window.studyAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await first.locator(".btn").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "enrol", "course": "banking"
+        }
+        await browser.close()
+
+
+async def test_the_cadet_card_says_the_lessons_are_elsewhere(server):
+    """У кадетов занятия на полигоне, и бланк говорит это до оплаты."""
+    player = make_player("cadet_corps")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, study=study_state("cadet_corps")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .course")
+
+        assert await page.locator(".course").count() == 1
+        rows = await page.locator(".course .paper-rows li").all_inner_texts()
+        assert any("Где" in one and "Крытый полигон" in one for one in rows)
+        assert any("неделя" in one and "5 занятий" in one for one in rows)
+        await browser.close()
+
+
+async def test_the_own_course_counts_the_lessons_and_waits_for_the_window(server):
+    """Свой курс: полоса занятий, где учиться и почему не сейчас."""
+    player = make_player("cadet_corps")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    study = study_state("cadet_corps", course="cadet", lessons=3)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, study=study)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .shelf")
+
+        assert "Ты учишься: Кадетский корпус" in await page.locator(
+            "#study-body .shelf-head"
+        ).first.inner_text()
+        assert await page.locator(".hours-text").inner_text() == "Занятий 3 из 5"
+        # Боец в корпусе, а занятия на полигоне: кнопка не нажимается и
+        # говорит, куда идти
+        attend = page.locator(".btn", has_text="Пойти на занятие")
+        assert await attend.is_disabled()
+        assert "Крытый полигон" in await page.locator(
+            "#study-body .screen-note"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_the_learned_course_offers_the_exam(server):
+    """Отучил всё — вместо занятия кнопка экзамена."""
+    player = make_player("cadet_corps")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    study = study_state("cadet_corps", course="cadet", lessons=5)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, study=study)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .shelf")
+
+        assert "курс отучен" in await page.locator(".hours-text").inner_text()
+        assert await page.locator(".btn", has_text="Пойти на занятие").count() == 0
+
+        await page.evaluate(
+            """() => {
+                window.studyAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await page.locator(".btn", has_text="Сдавать экзамен").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "exam"}
+        await browser.close()
+
+
+async def test_the_exam_ticket_holds_ten_questions_and_one_button(server):
+    """Билет: десять вопросов на экране и «Сдать», пока не ответил на все."""
+    from bot.content.exams import ticket
+    from bot.game.study import EXAM_SIZE, get_course
+    from bot.webapp.study import exam_payload
+
+    player = make_player("cadet_corps")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    study = study_state("cadet_corps", course="cadet", lessons=5)
+    course = get_course("cadet")
+    study["exam"] = exam_payload(
+        ticket(course.quiz, player.user_id, 0, EXAM_SIZE), course
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, study=study)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .shelf")
+        # Билет приезжает ответом на действие — раскладываем его так же
+        await page.evaluate(
+            """(body) => {
+                studyExam = {
+                    course: body.exam.course, title: body.exam.title,
+                    subject: body.exam.subject, need: body.exam.pass_mark,
+                    questions: body.exam.questions, chosen: [],
+                };
+                renderStudy(body);
+            }""",
+            study,
+        )
+        await page.wait_for_selector("#study-body .quiz")
+
+        assert await page.locator(".question").count() == 10
+        assert "Нужно 8 верных" in await page.locator(
+            "#study-body .quiz .screen-note"
+        ).inner_text()
+        # Пока не ответил на все — кнопка не нажимается
+        send = page.locator(".quiz-buttons .btn", has_text="Сдать")
+        assert await send.is_disabled()
+
+        for index in range(10):
+            await page.locator(".question").nth(index).locator(
+                ".answer"
+            ).first.click()
+        assert not await send.is_disabled()
+
+        await page.evaluate(
+            """() => {
+                window.studyAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await send.click()
+        await page.wait_for_function("() => window.sent")
+        sent = await page.evaluate("window.sent")
+        assert sent["action"] == "pass" and len(sent["answers"]) == 10
+        await browser.close()
+
+
+async def test_the_diploma_lies_in_the_papers_without_a_pro_note(server):
+    """Диплом — бланк в документах, и подписки он никому не обещает.
+
+    Записка про PRO стояла на условии «нечего переключать», а переключать
+    нечего и абонементу, и карте, и правам, и диплому: всем четырём бланк
+    обещал подписку, которая их не держит.
+    """
+    player = make_player()
+    player.diplomas = ["cadet"]
+    player.gym_until = now_ts() + 86_400
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
+        await page.wait_for_selector(".paper")
+
+        diploma = page.locator(".paper", has_text="Диплом кадетского училища")
+        assert await diploma.count() == 1
+        assert "Кадетский корпус" in await diploma.locator(
+            ".paper-issuer"
+        ).inner_text()
+        rows = await diploma.locator(".paper-rows li").all_inner_texts()
+        assert any("Бессрочно" in one for one in rows)
+        # Пустых полей на бланке нет: покрытия у диплома не бывает
+        assert not any(one.strip().endswith("Покрытие") for one in rows)
+        # И ни один бланк не обещает чужую подписку
+        assert await page.locator(".paper-held").count() == 0
         await browser.close()

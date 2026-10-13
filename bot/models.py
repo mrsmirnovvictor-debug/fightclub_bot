@@ -200,6 +200,20 @@ class Player:
     shift_until: int = 0  # 0 — смена не идёт
     shift_day: str = ""  # какие это сутки по Москве, в виде «2026-09-30»
     shift_minutes: int = 0
+    # Учёба. Курс один на бойца, как и работа: пусто — не учится.
+    # `study_lessons` — сколько занятий отстоял, `study_day` — в какие
+    # сутки было последнее (занятие одно в сутки), `study_exam_at` —
+    # когда последний раз пробовал экзамен (отсюда и пересдача)
+    study_code: str = ""
+    study_since: int = 0
+    study_lessons: int = 0
+    study_day: str = ""
+    study_exam_at: int = 0
+    study_tries: int = 0
+    lesson_until: int = 0  # 0 — занятие не идёт
+    # Сданные курсы: коды дипломов. Диплом не отбирают и не продлевают,
+    # поэтому ничего, кроме кода, у него нет — всё прочее знает курс
+    diplomas: list[str] = field(default_factory=list)
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
@@ -648,6 +662,26 @@ class Player:
 
     def shift_left(self, now: int) -> int:
         return max(0, self.shift_until - now)
+
+    # ---------- учёба ----------
+
+    def on_lesson(self, now: int) -> bool:
+        """Идёт ли занятие прямо сейчас.
+
+        Пока идёт, боец заперт в учебном доме — ровно как на смене:
+        учёба это про отсидеть два часа, а не про отметиться.
+        """
+        return self.lesson_until > now
+
+    def lesson_left(self, now: int) -> int:
+        return max(0, self.lesson_until - now)
+
+    @property
+    def studies(self) -> bool:
+        return bool(self.study_code)
+
+    def has_diploma(self, code: str) -> bool:
+        return code in self.diplomas
 
     # ---------- два кошелька ----------
 

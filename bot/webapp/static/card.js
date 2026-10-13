@@ -1885,7 +1885,7 @@ function lotCard(lot) {
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
-  "trade", "house", "bag", "hero",
+  "study", "trade", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1896,7 +1896,7 @@ const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
-  tavern: "map", house: "map",
+  tavern: "map", study: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1942,6 +1942,11 @@ function showTab(name) {
   if (name === "post") loadPost();
   // Бар: у бармена могло появиться дело, пока нас не было
   if (name === "tavern") loadBar();
+  // Учёба: занятие могло кончиться, пока на неё не смотрели.
+  // Часы занятия идут, только пока экран открыт — время всё равно
+  // считает сервер, а стрелки рисовать некому
+  if (name === "study") loadStudy();
+  else stopStudyClock();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2328,6 +2333,7 @@ const HOUSE_SCREENS = {
   estate: () => showTab("flats"),
   post: () => showTab("post"),
   tavern: () => showTab("tavern"),
+  study: () => showTab("study"),
   school: () => showTab("school"),
   police: () => showTab("police"),
   mafia: () => showTab("mafia"),
@@ -8115,9 +8121,15 @@ function paperCard(paper, bare) {
   // На экране страховой бланк показывают вместе с кнопками; в документах
   // он сам по себе, и переключатель продления — единственное, что с ним
   // делают, не выходя из карточки. У полиса подписки переключать нечего:
-  // им распоряжается не боец, а срок его PRO
-  if (!bare && paper.switchable) box.appendChild(renewSwitch(paper));
-  if (!bare && !paper.switchable) box.appendChild(proHeldNote(paper));
+  // им распоряжается не боец, а срок его PRO.
+  //
+  // И то и другое — дело полиса. Раньше условие стояло на одном
+  // `switchable`, а его нет ни у абонемента, ни у карты, ни у прав: всем
+  // троим бланк обещал подписку, которая их не держит, а правам ещё и
+  // «до » с пустотой вместо срока
+  if (!bare && paper.kind === "insurance") {
+    box.appendChild(paper.switchable ? renewSwitch(paper) : proHeldNote(paper));
+  }
   return box;
 }
 
@@ -8134,7 +8146,11 @@ function proHeldNote(paper) {
 function paperRows(pairs) {
   const list = document.createElement("ul");
   list.className = "rows paper-rows";
-  pairs.forEach(([label, value]) => list.appendChild(row(label, value)));
+  // Пустое поле — это не поле: у диплома нет покрытия, и строка
+  // «Покрытие» с пустотой после неё выглядела бы потерянной
+  pairs
+    .filter(([, value]) => value)
+    .forEach(([label, value]) => list.appendChild(row(label, value)));
   return list;
 }
 
@@ -9551,6 +9567,361 @@ function renderQuests(data) {
   const list = el("quests-list");
   list.textContent = "";
   (data.quests || []).forEach((one) => list.appendChild(questCard(one)));
+}
+
+// ---------- учёба: приёмная, занятие и выпускной билет ----------
+//
+// Экран один на пять домов. Что он покажет, решает не страница, а
+// сервер: `courses` — что читают здесь, `study` — на чём стоит боец,
+// `lesson` — идёт ли занятие прямо сейчас. Любой из трёх бывает пустым,
+// и пустой означает ровно одно — этого тут нет.
+
+let studyData = null;
+let studyBusy = false;
+let studyTimer = null;
+// Открытый билет: вопросы с сервера и то, что боец уже выбрал. Верных
+// ответов здесь нет — их знает только сервер
+let studyExam = null;
+
+async function loadStudy() {
+  try {
+    const response = await fetch("api/study", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("study-note").textContent = "Сюда не попасть.";
+      return;
+    }
+    renderStudy(await response.json());
+  } catch (error) {
+    el("study-note").textContent = error.message;
+  }
+}
+
+async function studyAction(payload) {
+  if (studyBusy) return;
+  studyBusy = true;
+  try {
+    const response = await fetch("api/study", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Учёба", data.error || "Не получилось.");
+      await loadStudy();
+      return;
+    }
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    // Билет приехал — раскладываем его и держим до ответа. Пришёл
+    // результат — билет убираем: попытка кончилась
+    if (data.exam) {
+      studyExam = {
+        course: data.exam.course,
+        title: data.exam.title,
+        subject: data.exam.subject,
+        need: data.exam.pass_mark,
+        questions: data.exam.questions,
+        chosen: [],
+      };
+    } else if (data.attempt) {
+      studyExam = null;
+    }
+    renderStudy(data);
+    if (data.said) popup("Учёба", data.said);
+  } catch (error) {
+    popup("Учёба", "Сервер не ответил.");
+  } finally {
+    studyBusy = false;
+  }
+}
+
+function renderStudy(data) {
+  studyData = data;
+  el("study-title").textContent = "🎓 " + (data.title || "Учёба");
+  el("shop-purse-study").textContent = "";
+  el("shop-purse-study").appendChild(purse(data.credits || 0));
+  el("study-note").textContent = data.said || data.note || "";
+
+  const body = el("study-body");
+  body.textContent = "";
+
+  // Занятие идёт — всё остальное подождёт: боец заперт на два часа, и
+  // показывать ему приёмную с кнопками бессмысленно
+  if (data.lesson && data.lesson.seconds_left) {
+    body.appendChild(lessonBox(data));
+    startStudyClock();
+    return;
+  }
+  stopStudyClock();
+
+  if (studyExam) {
+    body.appendChild(examBox());
+    return;
+  }
+  if (data.study && data.study.code) body.appendChild(myCourseBox(data.study));
+  (data.courses || []).forEach((one) => body.appendChild(courseCard(one, data)));
+}
+
+/** Строка приёмной: курс, цена, срок и кнопка записи. */
+function courseCard(one, data) {
+  const box = document.createElement("article");
+  box.className = "course" + (one.done ? " done" : "");
+
+  const head = document.createElement("header");
+  head.className = "course-head";
+  const title = document.createElement("h3");
+  title.className = "course-title";
+  title.textContent = one.emoji + " " + one.title;
+  const price = document.createElement("span");
+  price.className = "course-price";
+  price.textContent = one.done ? "✅ сдан" : num(one.price) + " 💰";
+  head.append(title, price);
+  box.appendChild(head);
+
+  if (one.note) {
+    const note = document.createElement("p");
+    note.className = "course-note";
+    note.textContent = one.note;
+    box.appendChild(note);
+  }
+
+  box.appendChild(
+    paperRows([
+      ["Учиться", one.weeks_text + " · " + one.lessons + " занятий"],
+      ["Занятие", one.lesson_hours + " ч, по будням " + one.window],
+      // Где учиться, говорим только если это другой дом: иначе строка
+      // повторяет заголовок экрана
+      ["Где", one.elsewhere ? one.place_title : ""],
+      ["Экзамен", one.exam_size + " вопросов, нужно " + one.pass_mark],
+      ["Диплом", one.diploma_title],
+    ])
+  );
+
+  if (one.done) return box;
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Записаться · " + num(one.price) + " 💰", {
+      disabled: !one.open || one.price > (data.credits || 0),
+      hint: one.open
+        ? "Не хватает кредитов."
+        : "Сперва доучись то, на чём стоишь.",
+      onClick: () =>
+        askConfirm(
+          "Записаться на «" + one.title + "»?",
+          "Спишется " + num(one.price) + " 💰. Деньги за учёбу не возвращают."
+        ).then((ok) => {
+          if (ok) studyAction({ action: "enrol", course: one.code });
+        }),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Свой курс: сколько отстояно, что дальше и где это дальше. */
+function myCourseBox(mine) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Ты учишься: " + mine.title;
+  box.appendChild(head);
+
+  const bar = document.createElement("div");
+  bar.className = "hours";
+  const line = document.createElement("div");
+  line.className = "hours-line";
+  const fill = document.createElement("div");
+  fill.className = "hours-fill";
+  fill.style.width = mine.percent + "%";
+  line.appendChild(fill);
+  const text = document.createElement("div");
+  text.className = "hours-text";
+  text.textContent =
+    "Занятий " + mine.lessons_done + " из " + mine.lessons
+    + (mine.learned ? " — курс отучен" : "");
+  bar.append(line, text);
+  box.appendChild(bar);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = studyHint(mine);
+  box.appendChild(note);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (!mine.learned) {
+    buttons.appendChild(
+      button("Пойти на занятие · " + mine.lesson_hours + " ч", {
+        disabled: !mine.can_attend,
+        hint: studyHint(mine),
+        onClick: () => studyAction({ action: "attend" }),
+      })
+    );
+  } else {
+    buttons.appendChild(
+      button("Сдавать экзамен", {
+        disabled: !mine.exam_open || !mine.at_house,
+        hint: mine.at_house
+          ? "Пересдача раз в неделю: " + mine.retry_at
+          : "Экзамен принимают в приёмной.",
+        onClick: () => studyAction({ action: "exam" }),
+      })
+    );
+  }
+  buttons.appendChild(
+    button("Бросить курс", {
+      secondary: true,
+      onClick: () =>
+        askConfirm(
+          "Бросить «" + mine.title + "»?",
+          "Деньги за учёбу не возвращают, занятия обнулятся."
+        ).then((ok) => {
+          if (ok) studyAction({ action: "leave" });
+        }),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Почему кнопка занятия не нажимается — одной строкой. */
+function studyHint(mine) {
+  if (mine.learned) {
+    return mine.exam_open
+      ? "Курс отучен. Экзамен принимают в приёмной: " + mine.exam_size
+        + " вопросов, нужно " + mine.pass_mark + "."
+      : "Экзамен не сдан. Пересдача " + mine.retry_at + ".";
+  }
+  if (!mine.at_place) return "Занятия идут в другом доме: " + mine.place_title + ".";
+  if (mine.today) return "На сегодня занятие отстояно. Приходи завтра.";
+  if (!mine.open_now) return "Сейчас не учебное время. По будням " + mine.window + ".";
+  if (!mine.fits) return "До конца приёма меньше двух часов. Приходи завтра.";
+  return "Занятие идёт " + mine.lesson_hours + " часа. Уйти с него нельзя.";
+}
+
+/** Идёт занятие: часы тикают на странице, время считает сервер. */
+function lessonBox(data) {
+  const box = document.createElement("section");
+  box.className = "shift";
+  const head = document.createElement("div");
+  head.className = "shift-head";
+  head.textContent = "Занятие идёт";
+  const clock = document.createElement("div");
+  clock.className = "shift-clock";
+  clock.id = "study-clock";
+  box.append(head, clock);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Занятие уже засчитано. Из дома не выйти, пока оно не кончится — "
+    + "ты на учёбе.";
+  box.appendChild(note);
+  return box;
+}
+
+function startStudyClock() {
+  stopStudyClock();
+  studyTimer = setInterval(tickStudy, 1000);
+  tickStudy();
+}
+
+function stopStudyClock() {
+  if (studyTimer) clearInterval(studyTimer);
+  studyTimer = null;
+}
+
+function tickStudy() {
+  const shown = el("study-clock");
+  if (!shown || !studyData || !studyData.lesson) return;
+  const left = Math.max(
+    0,
+    studyData.lesson.until - Math.floor(Date.now() / 1000)
+  );
+  if (!left) {
+    stopStudyClock();
+    loadStudy();
+    return;
+  }
+  const minutes = Math.floor(left / 60);
+  const seconds = left % 60;
+  shown.textContent =
+    "Осталось " + minutes + ":" + String(seconds).padStart(2, "0");
+}
+
+/** Выпускной билет: десять вопросов на одном экране и одна кнопка. */
+function examBox() {
+  const box = document.createElement("section");
+  box.className = "quiz";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = studyExam.title;
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    studyExam.questions.length + " вопросов про " + studyExam.subject
+    + ". Нужно " + studyExam.need + " верных. Пересдача через неделю.";
+  box.appendChild(note);
+
+  studyExam.questions.forEach((question, index) => {
+    box.appendChild(examQuestion(question, index));
+  });
+
+  const row = document.createElement("div");
+  row.className = "quiz-buttons";
+  row.appendChild(
+    button("Сдать", {
+      disabled: studyExam.chosen.filter((one) => one !== undefined).length
+        < studyExam.questions.length,
+      hint: "Ответь на все вопросы.",
+      onClick: () =>
+        studyAction({ action: "pass", answers: studyExam.chosen }),
+    })
+  );
+  row.appendChild(
+    button("Передумал", {
+      secondary: true,
+      onClick: () => {
+        studyExam = null;
+        renderStudy(studyData);
+      },
+    })
+  );
+  box.appendChild(row);
+  return box;
+}
+
+function examQuestion(question, index) {
+  const box = document.createElement("div");
+  box.className = "question";
+  const text = document.createElement("div");
+  text.className = "question-text";
+  text.textContent = index + 1 + ". " + question.text;
+  box.appendChild(text);
+
+  question.options.forEach((option, at) => {
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "answer" + (studyExam.chosen[index] === at ? " on" : "");
+    pick.textContent = option;
+    pick.addEventListener("click", () => {
+      studyExam.chosen[index] = at;
+      renderStudy(studyData);
+    });
+    box.appendChild(pick);
+  });
+  return box;
 }
 
 // ---------- почта: посылки между бойцами ----------
@@ -11428,8 +11799,8 @@ function paintClanLine() {
 
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
-  "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "trade",
-  "house",
+  "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
+  "trade", "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -11580,7 +11951,8 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
-  "school", "police", "mafia", "flats", "post", "tavern", "shop", "magic",
+  "school", "police", "mafia", "flats", "post", "tavern", "study", "shop",
+  "magic",
   "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));

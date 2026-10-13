@@ -160,6 +160,7 @@ PLACE_NOTES: dict[Service, str] = {
     Service.MAFIA: "Особняк мафии",
     Service.ESTATE: "Аренда жилья",
     Service.POST: "Почта",
+    Service.STUDY: "Учебное заведение",
 }
 
 

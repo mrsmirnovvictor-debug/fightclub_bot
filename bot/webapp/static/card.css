@@ -1269,6 +1269,30 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .talk-replies { display: grid; gap: 8px; margin-top: 12px; }
 
+/* ---------- учёба: приёмная и курсы ---------- */
+
+/* Карточка курса устроена как бланк документа: заголовок с ценой, строки
+   полей и кнопка. Это нарочно — курс и есть будущий документ, и смотрят
+   на него так же */
+.course {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.course-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.course-title { margin: 0; font-size: 15px; }
+.course-price { font-weight: 800; white-space: nowrap; }
+.course-note { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+/* Сданный курс притушен и кнопки не носит: второй раз на него не идут */
+.course.done { opacity: 0.65; }
+
 /* ---------- журнал заданий ---------- */
 
 .quest-list { display: grid; gap: 8px; }

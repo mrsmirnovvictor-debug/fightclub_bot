@@ -183,6 +183,7 @@ def build_documents(player: Player, now: int | None = None) -> dict[str, Any]:
     """Раздел «Документы» целиком."""
     moment = now_ts() if now is None else now
     from bot.webapp.driving import licence_document
+    from bot.webapp.study import diploma_documents
 
     papers = [
         row
@@ -194,6 +195,9 @@ def build_documents(player: Player, now: int | None = None) -> dict[str, Any]:
         )
         if row
     ]
+    # Дипломов бывает несколько, и идут они последними: бланк на всю
+    # жизнь, который не продлевают и не теряют
+    papers.extend(diploma_documents(player))
     return {
         "documents": papers,
         "total": len(papers),
@@ -202,7 +206,8 @@ def build_documents(player: Player, now: int | None = None) -> dict[str, Any]:
         "empty_note": (
             "Пока ни одного документа. Полис страхования оформляют в "
             "страховой компании, абонемент — в тренажёрном зале, "
-            "карту — в Vegas Банке, а права сдают в автошколе."
+            "карту — в Vegas Банке, права сдают в автошколе, а дипломы "
+            "получают в корпусе, колледже, академии и университете."
         ),
     }
 
