@@ -69,6 +69,9 @@ from bot.inventory_service import wear_after_fight
 from bot.keyboards import LobbyCB, lobby_keyboard
 from bot.messaging import Announcer
 from bot.models import Player, ProgressReport
+# Квесты слушают город: службы зовут `notice` и больше о них
+# ничего не знают
+from bot.quest_service import notice
 
 logger = logging.getLogger(__name__)
 
@@ -738,6 +741,8 @@ class BattleService:
 
             if won:
                 player.wins += 1
+                # Победа — событие для бармена: с неё начинается город
+                await notice(self.db, player, "fight")
                 exp = win_exp(fighter.damage_dealt, levels[user_id], rival_level)
             elif outcome.draw:
                 player.draws += 1

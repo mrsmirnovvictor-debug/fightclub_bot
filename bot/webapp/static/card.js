@@ -1884,8 +1884,8 @@ function lotCard(lot) {
 
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
-  "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "trade",
-  "house", "bag", "hero",
+  "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
+  "trade", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1896,7 +1896,7 @@ const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
-  house: "map",
+  tavern: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1940,6 +1940,8 @@ function showTab(name) {
   if (name === "flats") loadFlats();
   // Почта: посылки кладут и забирают чужими руками
   if (name === "post") loadPost();
+  // Бар: у бармена могло появиться дело, пока нас не было
+  if (name === "tavern") loadBar();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2325,6 +2327,7 @@ const HOUSE_SCREENS = {
   work: () => showTab("work"),
   estate: () => showTab("flats"),
   post: () => showTab("post"),
+  tavern: () => showTab("tavern"),
   school: () => showTab("school"),
   police: () => showTab("police"),
   mafia: () => showTab("mafia"),
@@ -7947,6 +7950,7 @@ function paintWorkEntry(screen) {
 
 const HERO_TABS = [
   ["stats", "Характеристики"],
+  ["quests", "Квесты"],
   ["papers", "Документы"],
 ];
 let heroTab = "stats";
@@ -7956,6 +7960,9 @@ function pickHeroTab(name) {
   HERO_TABS.forEach(([code]) => {
     el("hero-" + code).classList.toggle("hidden", code !== name);
   });
+  // Журнал заданий перечитываем при каждом заходе: бармен мог принять
+  // работу, пока вкладка была закрыта
+  if (name === "quests") loadQuests();
   paintHeroTabs();
 }
 
@@ -7993,15 +8000,19 @@ function paintHeroTabs() {
   });
   // Награды — кнопка того же вида, но не раздел: она открывает окно и
   // потому никогда не горит выбранной. Нечего показывать — её нет вовсе
-  if (!dailyState) return;
-  const btn = heroAct(
-    "Награды",
-    false,
-    openDaily,
-    Boolean(dailyState.fresh || dailyState.waiting.length)
-  );
-  btn.id = "hero-daily";
-  tabs.appendChild(btn);
+  if (dailyState) {
+    const btn = heroAct(
+      "Награды",
+      false,
+      openDaily,
+      Boolean(dailyState.fresh || dailyState.waiting.length)
+    );
+    btn.id = "hero-daily";
+    tabs.appendChild(btn);
+  }
+  // Четвёртая кнопка в ряд не встаёт: «Характеристики» обрезались бы
+  // многоточием. Четыре — складываем в два этажа по две
+  tabs.classList.toggle("folded", tabs.children.length > 3);
 }
 
 let papers = [];
@@ -9251,6 +9262,284 @@ function clanMemberRow(member, actions) {
     box.appendChild(tools);
   }
   return box;
+}
+
+// ---------- бар: бармен и его задания ----------
+//
+// Бармен стоит на картинке интерьера — png с прозрачным фоном, сам себе
+// кнопка. Значок над ним говорит, есть ли дело, и по нему видно, стоит
+// ли подходить: «!» — предлагает, часы — ждёт, галочка — принимает.
+//
+// Разговор собирает сервер: страница рисует его текст и кнопки ответов,
+// не зная ни одного правила. Какую реплику показать, решает журнал
+// заданий, а не браузер.
+
+let barData = null;
+let barBusy = false;
+// Разговор раскрыт: у бармена, которому нечего сказать, он свёрнут в
+// строку — бар всё-таки место, а не диалоговое окно
+let barTalking = false;
+// На какое дело разговор уже раскрывался сам. Нужно, чтобы «Отойти»
+// держалось: без этого бармен с делом на руках раскрывал бы разговор
+// заново на той же перерисовке, и отойти от него было бы нельзя
+let barSeen = "";
+
+async function loadBar() {
+  // Заходим в бар заново — бармен заговаривает первым, даже если в
+  // прошлый раз от него отошли
+  barSeen = "";
+  try {
+    const response = await fetch("api/bar", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("tavern-note").textContent = "Бар не открылся.";
+      return;
+    }
+    renderBar(await response.json());
+  } catch (error) {
+    el("tavern-note").textContent = error.message;
+  }
+}
+
+async function barAction(payload) {
+  if (barBusy) return;
+  barBusy = true;
+  try {
+    haptic((feedback) => feedback.impactOccurred("light"));
+    const response = await fetch("api/bar", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Бар", data.error || "Не получилось.");
+      return;
+    }
+    // «Отойти» сворачивает разговор, всё прочее его продолжает
+    barTalking = payload.action !== "bye";
+    renderBar(data);
+    if (data.card) render(data.card, true);
+  } catch (error) {
+    popup("Бар", error.message);
+  } finally {
+    barBusy = false;
+  }
+}
+
+function renderBar(data) {
+  barData = data;
+  el("shop-purse-tavern").textContent = "";
+  el("shop-purse-tavern").appendChild(purse(data.credits || 0));
+  el("tavern-note").textContent =
+    data.said || "Задания бармена: " + data.done + " из " + data.total + ".";
+
+  paintBarman(data.npc || {});
+
+  const body = el("tavern-body");
+  body.textContent = "";
+  // К бармену с делом подходят сами: разговор раскрыт, когда ему есть
+  // что сказать, и свёрнут, когда он просто протирает стакан
+  const kind = (data.talk || {}).kind;
+  // Предложение, вопрос и приёмка раскрываются сами: бармен заговорил
+  // первым, и прятать его слова за кнопкой «подойти» незачем. Но ровно
+  // один раз на дело: отошёл — значит отошёл
+  if (kind !== barSeen && ["offer", "quiz", "ready"].includes(kind)) {
+    barTalking = true;
+  }
+  barSeen = kind;
+  if (barTalking) body.appendChild(talkBox(data));
+  else body.appendChild(approachBox(data));
+  const current = (data.quests || []).find((one) => one.state === "taken");
+  if (current) body.appendChild(taskBox(current));
+}
+
+/** Сам бармен: картинка поверх интерьера и значок дела над ней. */
+function paintBarman(npc) {
+  const box = el("tavern-npc");
+  if (!box) return;
+  const pic = el("tavern-npc-pic");
+  if (npc.picture && pic.getAttribute("src") !== npc.picture) {
+    pic.src = npc.picture;
+    pic.alt = npc.name || "Бармен";
+  }
+  box.classList.toggle("hidden", !npc.picture);
+  box.title = npc.hint || npc.name || "Бармен";
+  const mark = el("tavern-npc-mark");
+  mark.textContent = npc.mark || "";
+  mark.classList.toggle("hidden", !npc.mark);
+}
+
+/** Свёрнутый разговор: одна строка и кнопка. */
+function approachBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = (data.npc || {}).title || "Бармен";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = (data.npc || {}).hint || "Бармен не прочь поговорить.";
+  box.appendChild(note);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Подойти к стойке", {
+      onClick: () => {
+        barTalking = true;
+        renderBar(barData);
+      },
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Сам разговор: реплика бармена и ответы бойца. */
+function talkBox(data) {
+  const talk = data.talk || {};
+  const box = document.createElement("section");
+  box.className = "talk";
+
+  const who = document.createElement("div");
+  who.className = "talk-who";
+  who.textContent = (data.npc || {}).title || "Бармен";
+  box.appendChild(who);
+
+  const text = document.createElement("p");
+  text.className = "talk-text";
+  text.textContent = talk.text || "";
+  box.appendChild(text);
+
+  // Вопрос с номером: по нему видно, сколько ещё осталось
+  if (talk.kind === "quiz") {
+    const step = document.createElement("p");
+    step.className = "talk-step";
+    step.textContent = "Вопрос " + (talk.step + 1) + " из " + talk.total;
+    box.appendChild(step);
+  }
+  if (talk.kind === "offer" && talk.quest) {
+    box.appendChild(questPrize(talk.quest));
+  }
+
+  const replies = document.createElement("div");
+  replies.className = "talk-replies";
+  (talk.replies || []).forEach((one) => {
+    replies.appendChild(
+      button(one.text, {
+        secondary: one.code === "bye" || one.code === "later",
+        onClick: () => sayToBarman(one),
+      })
+    );
+  });
+  box.appendChild(replies);
+  return box;
+}
+
+/** Что обещано за задание: строка под предложением. */
+function questPrize(quest) {
+  const note = document.createElement("p");
+  note.className = "talk-prize";
+  const prize = ["+" + quest.exp + " опыта"];
+  if (quest.credits) prize.push("+" + num(quest.credits) + " 💰");
+  note.textContent = quest.task + " · " + prize.join(", ");
+  return note;
+}
+
+function sayToBarman(reply) {
+  if (reply.code === "bye" || reply.code === "later") {
+    barTalking = false;
+    barAction({ action: reply.code });
+    return;
+  }
+  barAction({
+    action: reply.code,
+    quest: reply.quest,
+    step: reply.step,
+    option: reply.option,
+  });
+}
+
+/** Что сейчас на руках: задание одной карточкой. */
+function taskBox(quest) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Сейчас на руках";
+  box.appendChild(head);
+  box.appendChild(questCard(quest));
+  return box;
+}
+
+/** Строка задания: значок состояния, название и что делать. */
+function questCard(quest) {
+  const box = document.createElement("div");
+  box.className = "quest quest-" + quest.state + (quest.ready ? " ready" : "");
+
+  const mark = document.createElement("span");
+  mark.className = "quest-mark";
+  mark.textContent = quest.mark || quest.number;
+  box.appendChild(mark);
+
+  const body = document.createElement("div");
+  body.className = "quest-body";
+
+  const title = document.createElement("div");
+  title.className = "quest-title";
+  title.textContent = quest.title;
+  body.appendChild(title);
+
+  const task = document.createElement("div");
+  task.className = "quest-task";
+  task.textContent = quest.task;
+  body.appendChild(task);
+
+  const prize = document.createElement("div");
+  prize.className = "quest-prize";
+  const parts = ["+" + quest.exp + " опыта"];
+  if (quest.credits) parts.push("+" + num(quest.credits) + " 💰");
+  if (quest.ready) parts.push("готово — к бармену");
+  prize.textContent = parts.join(" · ");
+  body.appendChild(prize);
+
+  box.appendChild(body);
+  return box;
+}
+
+// ---------- журнал заданий в карточке ----------
+
+let questsData = null;
+
+async function loadQuests() {
+  try {
+    const response = await fetch("api/quests", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) return;
+    renderQuests(await response.json());
+  } catch (error) {
+    el("quests-note").textContent = error.message;
+  }
+}
+
+function renderQuests(data) {
+  questsData = data;
+  el("quests-note").textContent =
+    "Задания выдаёт " + (data.giver || "бармен") + ". Сдано " +
+    data.done + " из " + data.total + ".";
+  const list = el("quests-list");
+  list.textContent = "";
+  (data.quests || []).forEach((one) => list.appendChild(questCard(one)));
 }
 
 // ---------- почта: посылки между бойцами ----------
@@ -11128,7 +11417,8 @@ function paintClanLine() {
 
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
-  "hr", "work", "school", "police", "mafia", "flats", "post", "trade", "house",
+  "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "trade",
+  "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -11263,6 +11553,13 @@ el("hero-avatar").addEventListener("click", () => {
   haptic((feedback) => feedback.selectionChanged());
   openLooks();
 });
+// Бармен на картинке — кнопка: с него и начинается разговор
+el("tavern-npc").addEventListener("click", () => {
+  haptic((feedback) => feedback.selectionChanged());
+  barTalking = true;
+  if (barData) renderBar(barData);
+  else loadBar();
+});
 el("sheet-close").addEventListener("click", closeSheet);
 el("sheet-back").addEventListener("click", closeSheet);
 // Имя клана под местоположением открывает состав семьи
@@ -11272,8 +11569,8 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
-  "school", "police", "mafia", "flats", "post", "shop", "magic", "workshop",
-  "club",
+  "school", "police", "mafia", "flats", "post", "tavern", "shop", "magic",
+  "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

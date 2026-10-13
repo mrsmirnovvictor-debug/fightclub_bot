@@ -925,6 +925,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
      картинка смотрелась бы вклеенной карточкой, а не видом из дверей */
   margin: -14px -14px 12px;
   overflow: hidden;
+  /* Жители дома стоят поверх вида, и считаются они от него */
+  position: relative;
   border-bottom: 1px solid var(--line);
   /* Пока картинка не доехала, на её месте стоит подложка карточки, а не
      дыра в цвет фона */
@@ -1197,6 +1199,105 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* Срок аренды: пока оплачена — обычная строка, кончилась — тревожная */
 .lease-term { margin: 4px 0 8px; font-weight: 700; font-size: 13.5px; }
 .lease-term.late { color: var(--hp-red); }
+
+/* ---------- житель дома: бармен на картинке ---------- */
+
+/* Картинку рисуют с прозрачным фоном, и она ложится поверх вида изнутри
+   у правого края — там, где в баре и стоит стойка. Сам он кнопка: с него
+   начинается разговор, и нажимать «поговорить» где-то внизу, глядя на
+   нарисованного человека, было бы странно */
+.npc {
+  position: absolute;
+  right: 4%;
+  bottom: 0;
+  height: 86%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  /* Над картинкой — только значок дела, и ему нужен свой слой */
+  display: flex;
+  align-items: flex-end;
+}
+.npc-pic {
+  height: 100%;
+  width: auto;
+  display: block;
+  /* Тень под ногами: без неё он висит в воздухе поверх картинки */
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.45));
+}
+.npc:active .npc-pic { transform: scale(0.98); }
+/* Значок дела: «!» — есть работа, часы — ждёт, галочка — принимает */
+.npc-mark {
+  position: absolute;
+  top: 4%;
+  right: 0;
+  min-width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ---------- разговор ---------- */
+
+/* Реплика стоит карточкой, ответы — кнопками под ней: разговор читается
+   сверху вниз, как он и идёт */
+.talk {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 12px;
+  margin-bottom: 14px;
+}
+.talk-who { color: var(--muted); font-size: 12.5px; margin-bottom: 6px; }
+.talk-text { margin: 0; white-space: pre-line; line-height: 1.45; }
+.talk-step { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; }
+.talk-prize {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--slot);
+  font-size: 13px;
+}
+.talk-replies { display: grid; gap: 8px; margin-top: 12px; }
+
+/* ---------- журнал заданий ---------- */
+
+.quest-list { display: grid; gap: 8px; }
+.quest {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+/* Значок состояния: галочка у сданного, часы у взятого, номер у того,
+   до которого ещё не дошли */
+.quest-mark {
+  flex: none;
+  min-width: 24px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--muted);
+}
+.quest-body { min-width: 0; }
+.quest-title { font-weight: 700; }
+.quest-task { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.quest-prize { font-size: 12.5px; margin-top: 4px; }
+/* Взятое выделено рамкой, сданное притушено: список читается с одного
+   взгляда — вот что делаю, вот что уже сделал */
+.quest-taken { border-color: var(--accent); }
+.quest-taken.ready .quest-prize { color: var(--hp-green); font-weight: 600; }
+.quest-done { opacity: 0.6; }
+.quest-soon .quest-title { color: var(--muted); }
 
 /* ---------- выписка по карте ---------- */
 
@@ -2461,6 +2562,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   grid-auto-columns: 1fr;
   gap: 6px;
   margin: 10px 0 12px;
+}
+/* Три кнопки встают в ряд и читаются с одного взгляда. Четвёртая ряд
+   ломает: на четверть телефона «Характеристики» не влезают и обрезаются
+   многоточием. Поэтому четыре кнопки складываются в два этажа по две —
+   ширины там с запасом, и ни одно слово не обрублено */
+.hero-acts.folded {
+  grid-auto-flow: row;
+  grid-template-columns: 1fr 1fr;
 }
 .hero-act {
   display: flex;

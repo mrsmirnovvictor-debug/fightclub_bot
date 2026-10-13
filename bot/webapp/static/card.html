@@ -386,6 +386,34 @@
     <section id="flats-home" class="hidden"></section>
   </main>
 
+  <!-- ---------- 3b11. Бар: бармен и его задания ---------- -->
+  <!-- Бармен стоит прямо на виде изнутри: картинка с прозрачным фоном
+       ложится поверх интерьера у стойки и сама себе кнопка. Значок над
+       ним говорит, есть ли дело: «!» — предлагает, часы — ждёт, галочка
+       — принимает работу. Разговор раскрывается под картинкой.
+
+       Экран зовётся `tavern`, а не `bar`, хотя дом — «Бар»: `id="bar"`
+       уже носит нижняя панель вкладок, и два таких на страницу — это
+       один `getElementById` на двоих -->
+  <main id="tavern" class="screen hidden">
+    <figure class="interior hidden" id="tavern-interior">
+      <img class="interior-pic" id="tavern-pic" alt="">
+      <button type="button" class="npc hidden" id="tavern-npc">
+        <img class="npc-pic" id="tavern-npc-pic" alt="">
+        <span class="npc-mark" id="tavern-npc-mark"></span>
+      </button>
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="tavern-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-tavern"></span>
+    </header>
+    <h1 class="screen-title">🍸 Бар</h1>
+    <p class="screen-note" id="tavern-note"></p>
+
+    <div id="tavern-body"></div>
+  </main>
+
   <!-- ---------- 3b10. Почта: посылки между бойцами ---------- -->
   <!-- Две вкладки: «Отправить» — рюкзак, ник, цена и срок; «Посылки» —
        две полки: что пришло тебе и что ты отправил сам. Вторая полка не
@@ -551,6 +579,13 @@
       <ul class="rows" id="combat"></ul>
       <hr class="rule">
       <ul class="rows" id="record"></ul>
+    </section>
+
+    <!-- Квесты: список заданий бармена. Он же журнал — боец носит его с
+         собой, и открывается он откуда угодно -->
+    <section id="hero-quests" class="hidden">
+      <p class="screen-note" id="quests-note"></p>
+      <div class="quest-list" id="quests-list"></div>
     </section>
 
     <!-- Документы: пока один полис, но раздел заведён под то, что будет

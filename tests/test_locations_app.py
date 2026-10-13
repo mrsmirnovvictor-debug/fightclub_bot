@@ -88,10 +88,11 @@ async def test_houses_without_a_trade_say_so(client, db):
     # А стадион уже открыт: за ним второй рейд города
     assert houses["stadium"]["works"] is True
     assert houses["stadium"]["services"] == ["raid"]
-    # Бар уже нанимает, но обещано сверх работы и другое: у дома есть и
-    # услуга, и строка «скоро»
+    # За баром две услуги — задания бармена и работа за стойкой, — но
+    # обещано сверх них и третье: у дома есть и услуги, и строка «скоро»
     assert houses["bar"]["works"] is True
-    assert houses["bar"]["services"] == ["work"] and houses["bar"]["soon"]
+    assert houses["bar"]["services"] == ["tavern", "work"]
+    assert houses["bar"]["soon"]
     # А банк уже открыт: за ним счёт, карта и банкомат
     assert houses["bank"]["works"] is True
     assert houses["bank"]["services"] == ["bank"]

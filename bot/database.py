@@ -32,6 +32,7 @@ from bot.game.post import Parcel
 from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, get_injury
 from bot.game.insurance import Policy
+from bot.game.progress import QuestLog
 from bot.game.looks import MALE
 from bot.game.modes import FightMode, mode_of
 from bot.game.potions import ActiveEffect, get_potion
@@ -594,6 +595,23 @@ CREATE TABLE IF NOT EXISTS card_log (
 );
 
 CREATE INDEX IF NOT EXISTS card_log_user ON card_log(user_id, at);
+
+-- Квесты бойца: по строке на взятое задание. Нет строки — задание ещё
+-- не предлагали или от него отказались. `marks` — отметки города: что
+-- он уже видел по этому заданию (бой выигран, дверь открыта, вопрос
+-- отвечен). Хранится строкой через запятую: отметок у задания две-три,
+-- и таблица на них была бы дороже самих отметок
+CREATE TABLE IF NOT EXISTS quests (
+    user_id INTEGER NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    code    TEXT    NOT NULL,
+    state   TEXT    NOT NULL DEFAULT 'taken',
+    marks   TEXT    NOT NULL DEFAULT '',
+    taken_at INTEGER NOT NULL DEFAULT 0,
+    done_at  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, code)
+);
+
+CREATE INDEX IF NOT EXISTS quests_user ON quests(user_id, state);
 
 -- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
 -- ничего не задваивает, а новая группа получает всё с начала.
@@ -2640,6 +2658,74 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [self._lease(row) for row in rows]
+
+    # ---------- квесты ----------
+
+    @staticmethod
+    def _quest(row) -> QuestLog:
+        return QuestLog(
+            code=str(row["code"]),
+            state=str(row["state"]),
+            marks=frozenset(
+                one for one in str(row["marks"] or "").split(",") if one
+            ),
+            taken_at=int(row["taken_at"]),
+            done_at=int(row["done_at"]),
+        )
+
+    async def quests_of(self, user_id: int) -> list[QuestLog]:
+        """Все записи по заданиям бойца: и взятые, и сданные."""
+        async with self.conn.execute(
+            "SELECT * FROM quests WHERE user_id = ? ORDER BY taken_at, rowid",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._quest(row) for row in rows]
+
+    async def take_quest(self, user_id: int, code: str, now: int) -> None:
+        """Записать взятое задание. Второй раз то же не берут."""
+        await self.conn.execute(
+            """
+            INSERT INTO quests (user_id, code, state, marks, taken_at)
+            VALUES (?,?,'taken','',?)
+            ON CONFLICT(user_id, code) DO NOTHING
+            """,
+            (user_id, code, now),
+        )
+        await self.conn.commit()
+        logger.info("Боец %s взял задание %s", user_id, code)
+
+    async def mark_quest(self, user_id: int, code: str, mark: str) -> bool:
+        """Поставить отметку города. False — задания на руках нет.
+
+        Отметки складываются в одну строку, и дважды одна и та же в неё
+        не ложится: условие на `instr` дешевле, чем читать и писать
+        строку двумя запросами.
+        """
+        cursor = await self.conn.execute(
+            """
+            UPDATE quests
+               SET marks = CASE WHEN marks = '' THEN ?
+                                ELSE marks || ',' || ? END
+             WHERE user_id = ? AND code = ? AND state = 'taken'
+               AND instr(',' || marks || ',', ',' || ? || ',') = 0
+            """,
+            (mark, mark, user_id, code, mark),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def finish_quest(self, user_id: int, code: str, now: int) -> bool:
+        """Закрыть задание. False — его уже сдали или не брали."""
+        cursor = await self.conn.execute(
+            "UPDATE quests SET state = 'done', done_at = ? "
+            "WHERE user_id = ? AND code = ? AND state = 'taken'",
+            (now, user_id, code),
+        )
+        await self.conn.commit()
+        if cursor.rowcount > 0:
+            logger.info("Боец %s сдал задание %s", user_id, code)
+        return cursor.rowcount > 0
 
     # ---------- выписка по карте ----------
 

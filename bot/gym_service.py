@@ -50,6 +50,9 @@ from bot.game.gym import (
 from bot.game.health import now_ts
 from bot.game.locations import Service
 from bot.models import Player
+# Квесты слушают город: службы зовут `notice` и больше о них
+# ничего не знают
+from bot.quest_service import notice
 from bot.travel_service import require
 
 logger = logging.getLogger(__name__)
@@ -348,6 +351,9 @@ async def _close_visit(
         visit.stat.value,
         points,
     )
+    # Отработанное занятие — событие для бармена: он даёт на это свой
+    # абонемент
+    await notice(db, player, "train")
     training = training_for(visit.stat)
     name = training.title if training else "Тренировка"
     return f"{name} отработана: +1 очко в {visit.stat.dative}."

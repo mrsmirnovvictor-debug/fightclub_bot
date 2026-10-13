@@ -359,6 +359,46 @@ def flats_state(
     return body
 
 
+def quest_log(done=("ring",), taken: str = "", marks=()) -> dict:
+    """Журнал заданий для экрана: что сдано и что сейчас на руках."""
+    from bot.game.progress import DONE, QuestLog
+
+    moment = now_ts()
+    log = {
+        code: QuestLog(code=code, state=DONE, taken_at=moment, done_at=moment)
+        for code in done
+    }
+    if taken:
+        log[taken] = QuestLog(
+            code=taken, marks=frozenset(marks), taken_at=moment
+        )
+    return log
+
+
+def bar_state(done=("ring",), taken: str = "", marks=(), **changes) -> dict:
+    """Ответ бара: бармен, разговор и список заданий."""
+    from bot.webapp.bar import build_bar
+
+    player = make_player("bar")
+    body = build_bar(player, quest_log(done, taken, marks), now_ts())
+    body.update(changes)
+    return body
+
+
+def quests_state(done=("ring",), taken: str = "", marks=()) -> dict:
+    """Ответ журнала заданий — вкладка «Квесты» в карточке."""
+    from bot.webapp.bar import quests_payload
+
+    player = make_player("bar")
+    rows = quests_payload(player, quest_log(done, taken, marks))
+    return {
+        "quests": rows,
+        "done": sum(1 for row in rows if row["state"] == "done"),
+        "total": len(rows),
+        "giver": "Бармен в Баре",
+    }
+
+
 def post_state(inbox=(), outbox=(), bag=("bandana",), **changes) -> dict:
     """Ответ почты: рюкзак на отправку и обе полки посылок."""
     from bot.webapp.post import build_post
@@ -771,7 +811,8 @@ async def open_page(
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
     battle=None, city=None, workshop=None, hospital=None, trade=None,
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
-    police=None, mafia=None, clan=None, flats=None, post=None, images=False,
+    police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
+    quests=None, images=False,
     telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
@@ -812,6 +853,8 @@ async def open_page(
     await page.route("**/api/mafia", canned(mafia or mansion_state()))
     await page.route("**/api/flats", canned(flats or flats_state()))
     await page.route("**/api/post", canned(post or post_state()))
+    await page.route("**/api/bar", canned(bar or bar_state()))
+    await page.route("**/api/quests", canned(quests or quests_state()))
     await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
                                                     "ranks": [], "said": ""}))
 
@@ -7284,8 +7327,8 @@ async def test_a_missing_picture_falls_back_to_the_icon(server):
         await browser.close()
 
 
-async def test_the_three_profile_buttons_are_dressed_alike(server):
-    """«Характеристики», «Документы» и «Награды» — одна кнопка на всех.
+async def test_the_profile_buttons_are_dressed_alike(server):
+    """«Характеристики», «Квесты», «Документы» и «Награды» — одна кнопка.
 
     Сверяем не класс, а посчитанные браузером цвета и размеры: класс можно
     поставить один, а перекрыть его тремя разными правилами. Кнопка
@@ -7301,7 +7344,7 @@ async def test_the_three_profile_buttons_are_dressed_alike(server):
         await page.wait_for_selector("#hero-tabs .hero-act")
 
         acts = page.locator("#hero-tabs .hero-act")
-        assert await acts.count() == 3, "три кнопки в одном ряду"
+        assert await acts.count() == 4, "четыре кнопки в два этажа"
 
         def looks(one):
             return one.evaluate(
@@ -7322,8 +7365,8 @@ async def test_the_three_profile_buttons_are_dressed_alike(server):
             )
 
         # Невыбранные две — «Документы» и «Награды»
-        papers = await looks(acts.nth(1))
-        daily = await looks(acts.nth(2))
+        papers = await looks(acts.nth(2))
+        daily = await looks(acts.nth(3))
         assert papers == daily, f"кнопки разной одежды: {papers} против {daily}"
 
         # И ширина одна: ряд делится ровно, а не по длине надписи
@@ -7331,6 +7374,18 @@ async def test_the_three_profile_buttons_are_dressed_alike(server):
             "boxes => boxes.map(box => Math.round(box.getBoundingClientRect().width))"
         )
         assert max(widths) - min(widths) <= 1, f"кнопки разной ширины: {widths}"
+
+        # Четвёртая кнопка в один ряд не встаёт: на четверть телефона
+        # «Характеристики» обрезались бы многоточием, и ряд складывается
+        # в два этажа по две — ни одно слово не обрублено
+        assert "folded" in await page.locator("#hero-tabs").get_attribute("class")
+        cut = await acts.evaluate_all(
+            "boxes => boxes.map(box => {"
+            "  const text = box.querySelector('.hero-act-text');"
+            "  return text.scrollWidth > text.clientWidth + 1;"
+            "})"
+        )
+        assert cut == [False, False, False, False], "надпись обрезана"
         await browser.close()
 
 
@@ -7347,7 +7402,7 @@ async def test_the_chosen_section_is_the_only_lit_button(server):
         lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
         assert len(lit) == 1 and "Характеристики" in lit[0]
 
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         lit = await page.locator("#hero-tabs .hero-act.on").all_inner_texts()
         assert len(lit) == 1 and "Документы" in lit[0]
 
@@ -7372,7 +7427,7 @@ async def test_a_waiting_reward_puts_a_dot_on_its_button(server):
         await browser.close()
 
 
-async def test_without_a_calendar_the_row_holds_only_two_buttons(server):
+async def test_without_a_calendar_the_row_holds_only_three_buttons(server):
     """Кнопка без содержимого — обещание, которого не будет."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -7382,8 +7437,12 @@ async def test_without_a_calendar_the_row_holds_only_two_buttons(server):
         browser, page = await open_page(pw, server, card, build_shop(player))
         await page.wait_for_selector("#hero-tabs .hero-act")
 
-        assert await page.locator("#hero-tabs .hero-act").count() == 2
+        assert await page.locator("#hero-tabs .hero-act").count() == 3
         assert await page.locator("#hero-daily").count() == 0
+        # Три встают в один ряд: складывать нечего
+        assert "folded" not in await page.locator("#hero-tabs").get_attribute(
+            "class"
+        )
         await browser.close()
 
 
@@ -8125,15 +8184,15 @@ async def open_hero(pw, server, card=None):
     return browser, page
 
 
-async def test_the_character_screen_has_two_sections_and_starts_on_stats(server):
+async def test_the_character_screen_has_three_sections_and_starts_on_stats(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server)
 
         tabs = await page.locator("#hero-tabs .hero-act").all_inner_texts()
-        assert len(tabs) == 2
-        assert "Характеристики" in tabs[0] and "Документы" in tabs[1]
-        # Параметры открыты, документы свёрнуты
+        assert tabs == ["Характеристики", "Квесты", "Документы"]
+        # Параметры открыты, квесты и документы свёрнуты
         assert await page.locator("#hero-stats").is_visible()
+        assert await page.locator("#hero-quests").is_hidden()
         assert await page.locator("#hero-papers").is_hidden()
         await browser.close()
 
@@ -8142,7 +8201,7 @@ async def test_the_fighter_himself_stays_above_both_sections(server):
     """Куклу и здоровье за вкладку не прячем: они нужны в обоих разделах."""
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector("#hero-papers:not(.hidden)")
 
         assert await page.locator("#hero-avatar").is_visible()
@@ -8151,11 +8210,11 @@ async def test_the_fighter_himself_stays_above_both_sections(server):
         await browser.close()
 
 
-async def test_the_buttons_are_three_bare_words(server):
-    """Ни значков, ни счётчиков: три слова читаются с одного взгляда.
+async def test_the_buttons_are_bare_words(server):
+    """Ни значков, ни счётчиков: слова читаются с одного взгляда.
 
     Число документов на кнопке и эмодзи перед каждым словом превращали ряд
-    в три разные надписи вместо одного выбора.
+    в четыре разные надписи вместо одного выбора.
     """
     player = make_player()
     card = card_with_papers([make_policy(), make_policy()])
@@ -8167,7 +8226,7 @@ async def test_the_buttons_are_three_bare_words(server):
 
         said = await page.locator("#hero-tabs .hero-act").all_inner_texts()
 
-        assert said == ["Характеристики", "Документы", "Награды"]
+        assert said == ["Характеристики", "Квесты", "Документы", "Награды"]
         # Двух документов на кнопке не видно: она про раздел, а не про счёт
         assert not any(ch.isdigit() for ch in "".join(said))
         await browser.close()
@@ -8177,7 +8236,7 @@ async def test_the_policy_names_the_holder_the_period_and_what_it_gives(server):
     """Ровно то, что просили видеть в описании полиса."""
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector(".paper")
 
         assert "Полис страхования жизни и здоровья" in await page.locator(
@@ -8198,7 +8257,7 @@ async def test_an_expired_policy_says_so_in_words_not_only_in_grey(server):
         browser, page = await open_hero(
             pw, server, card_with_papers([make_policy(active=False)])
         )
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector(".paper")
 
         assert await page.locator(".paper.stale").count() == 1
@@ -8210,7 +8269,7 @@ async def test_an_expired_policy_says_so_in_words_not_only_in_grey(server):
 async def test_the_renewal_switch_says_which_way_it_is_set(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server, card_with_papers([make_policy()]))
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector(".paper-renew")
 
         said = await page.locator(".paper-renew-state").inner_text()
@@ -8224,7 +8283,7 @@ async def test_the_switch_offers_to_turn_the_renewal_back_on(server):
         browser, page = await open_hero(
             pw, server, card_with_papers([make_policy(auto_renew=False)])
         )
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector(".paper-renew")
 
         said = await page.locator(".paper-renew-state").inner_text()
@@ -8236,7 +8295,7 @@ async def test_the_switch_offers_to_turn_the_renewal_back_on(server):
 async def test_an_empty_documents_section_says_where_papers_come_from(server):
     async with async_playwright() as pw:
         browser, page = await open_hero(pw, server)
-        await page.locator("#hero-tabs .hero-act").nth(1).click()
+        await page.locator("#hero-tabs .hero-act", has_text="Документы").click()
         await page.wait_for_selector("#hero-papers:not(.hidden)")
 
         assert await page.locator(".paper").count() == 0
@@ -10530,4 +10589,232 @@ async def test_the_club_list_wears_the_marks_of_the_family(server):
         assert "Коза Ностра" in await theirs.locator(".clan-sign").get_attribute(
             "title"
         )
+        await browser.close()
+
+
+async def test_the_barman_stands_on_the_counter_with_his_mark(server):
+    """Бармен нарисован поверх интерьера, и значок над ним зовёт подойти.
+
+    Картинка — она же кнопка: к бармену подходят, нажав на бармена, а не
+    на строку под ним. Значок говорит, стоит ли вообще подходить.
+    """
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, bar=bar_state(done=(), images=True), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .talk, #tavern-body .shelf")
+
+        # Бармен лежит внутри рамки вида изнутри, а не рядом с ней
+        assert await page.locator("#tavern-interior #tavern-npc").count() == 1
+        npc = page.locator("#tavern-npc")
+        assert await npc.evaluate("node => node.tagName") == "BUTTON"
+        assert "У бармена есть работа" in (await npc.get_attribute("title"))
+        # Есть что предложить — восклицательный знак
+        assert await page.locator("#tavern-npc-mark").inner_text() == "❗"
+        # И кошелёк в шапке: за задания бармен платит
+        assert "214" in num_space(
+            await page.locator("#shop-purse-tavern").inner_text()
+        )
+        await browser.close()
+
+
+async def test_the_barman_offers_the_first_quest_and_the_fighter_answers(server):
+    """Разговор: реплика бармена, награда и два ответа голосом бойца."""
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, bar=bar_state(done=())
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .talk")
+
+        talk = page.locator("#tavern-body .talk")
+        assert await talk.locator(".talk-who").inner_text() == (
+            "Бармен «Последней капли»"
+        )
+        # Знакомство идёт перед первым заданием, и ровно один раз
+        text = await talk.locator(".talk-text").inner_text()
+        assert "Ну садись" in text and "Бойцовский клуб" in text
+        assert "+50 опыта" in await talk.locator(".talk-prize").inner_text()
+        assert await talk.locator(".talk-replies .btn").all_inner_texts() == [
+            "Схожу подерусь.", "Я подумаю."
+        ]
+
+        # «Берусь» уходит на сервер кодом задания
+        await page.evaluate(
+            """() => {
+                window.barAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await talk.locator(".talk-replies .btn").first.click()
+        await page.wait_for_function("() => window.sent")
+        assert (await page.evaluate("window.sent"))["action"] == "take"
+        assert (await page.evaluate("window.sent"))["quest"] == "ring"
+        await browser.close()
+
+
+async def test_the_taken_quest_waits_on_the_counter(server):
+    """Задание на руках: бармен ждёт, разговор свёрнут, дело на виду."""
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, bar=bar_state(done=("ring",), taken="pro")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .shelf")
+
+        assert await page.locator("#tavern-npc-mark").inner_text() == "🕓"
+        assert "Задания бармена: 1 из 10." in await page.locator(
+            "#tavern-note"
+        ).inner_text()
+        # Разговора нет: к бармену с делом подходят сами
+        assert await page.locator("#tavern-body .talk").count() == 0
+        heads = await page.locator("#tavern-body .shelf-head").all_inner_texts()
+        assert heads == ["Бармен «Последней капли»", "Сейчас на руках"]
+        task = page.locator("#tavern-body .quest")
+        assert await task.locator(".quest-mark").inner_text() == "🕓"
+        assert await task.locator(".quest-title").inner_text() == (
+            "Что дают за звёзды"
+        )
+
+        # «Подойти к стойке» раскрывает разговор, и бармен напоминает о деле
+        await page.locator(".btn", has_text="Подойти к стойке").click()
+        await page.wait_for_selector("#tavern-body .talk")
+        hint = await page.locator(".talk-text").inner_text()
+        assert "Элитный магазин" in hint
+        assert await page.locator(".talk-replies .btn").all_inner_texts() == [
+            "Отойти"
+        ]
+        await browser.close()
+
+
+async def test_the_barman_asks_his_three_questions(server):
+    """Сходил в элитный магазин — бармен спрашивает, и ответы нумерованы."""
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    bar = bar_state(done=("ring",), taken="pro", marks=("visit:premium",))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, bar=bar)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .talk")
+
+        talk = page.locator("#tavern-body .talk")
+        assert "Сколько опыта за бой" in await talk.locator(
+            ".talk-text"
+        ).inner_text()
+        assert await talk.locator(".talk-step").inner_text() == "Вопрос 1 из 3"
+        assert await talk.locator(".talk-replies .btn").all_inner_texts() == [
+            "Столько же, сколько без неё", "Полтора раза", "Вдвое", "Отойти"
+        ]
+
+        # Ответ уходит номером вопроса и номером варианта
+        await page.evaluate(
+            """() => {
+                window.barAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await talk.locator(".talk-replies .btn").nth(1).click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "answer", "quest": None, "step": 0, "option": 1
+        }
+        await browser.close()
+
+
+async def test_the_finished_quest_is_handed_over_at_the_counter(server):
+    """Дело сделано: значок галочкой, бармен сам поднимает глаза."""
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    bar = bar_state(
+        done=("ring",), taken="pro", marks=("visit:premium", "quiz:done")
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, bar=bar, images=True)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .talk")
+
+        assert await page.locator("#tavern-npc-mark").inner_text() == "✅"
+        # Разговор раскрыт сам: бармену есть что сказать
+        assert "«Ну?»" in await page.locator(".talk-text").inner_text()
+        assert await page.locator(".talk-replies .btn").all_inner_texts() == [
+            "Прочитал. Спрашивай.", "Отойти"
+        ]
+        # И в карточке дела стоит отметка «готово — к бармену»
+        assert "готово — к бармену" in await page.locator(
+            "#tavern-body .quest-prize"
+        ).inner_text()
+
+        # «Отойти» сворачивает разговор и держит свёрнутым: бармен с делом
+        # на руках не заговаривает заново на той же перерисовке
+        await page.locator(".talk-replies .btn", has_text="Отойти").click()
+        await page.wait_for_selector("#tavern-body .shelf")
+        assert await page.locator("#tavern-body .talk").count() == 0
+        # А позовёт обратно сам бармен: картинка — она же кнопка
+        await page.locator("#tavern-npc").click()
+        await page.wait_for_selector("#tavern-body .talk")
+
+        await page.evaluate(
+            """() => {
+                window.barAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await page.locator(".talk-replies .btn").first.click()
+        await page.wait_for_function("() => window.sent")
+        assert (await page.evaluate("window.sent"))["action"] == "hand"
+        await browser.close()
+
+
+async def test_the_quests_tab_lists_all_ten_with_their_marks(server):
+    """Вкладка «Квесты»: десять строк, галочка сданному, часы взятому."""
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    quests = quests_state(done=("ring",), taken="pro")
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, quests=quests)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#hero-tabs .hero-act", has_text="Квесты").click()
+        await page.wait_for_selector("#hero-quests:not(.hidden)")
+        await page.wait_for_selector("#quests-list .quest")
+
+        assert await page.locator("#quests-note").inner_text() == (
+            "Задания выдаёт Бармен в Баре. Сдано 1 из 10."
+        )
+        rows = page.locator("#quests-list .quest")
+        assert await rows.count() == 10
+        marks = await page.locator("#quests-list .quest-mark").all_inner_texts()
+        # Сданное — галочкой, взятое — часами, остальные просто по номеру
+        assert marks == ["✅", "🕓", "3", "4", "5", "6", "7", "8", "9", "10"]
+        assert await rows.nth(0).get_attribute("class") == "quest quest-done"
+        assert await rows.nth(1).get_attribute("class") == "quest quest-taken"
+        assert await rows.nth(2).get_attribute("class") == "quest quest-soon"
+        assert await rows.nth(9).locator(".quest-prize").inner_text() == (
+            "+100 опыта"
+        )
+        # Награда кредитами стоит рядом с опытом
+        assert "+100 💰" in await rows.nth(2).locator(".quest-prize").inner_text()
         await browser.close()

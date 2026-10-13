@@ -17,6 +17,8 @@ from bot.game.locations import Service
 from bot.game.equipment import Item, get_item
 from bot.game.market import fee_of, payout, price_is_sane, price_range
 from bot.models import Player
+# Квесты слушают город: службы зовут `notice` и больше о них ничего не знают
+from bot.quest_service import notice
 
 
 class MarketError(Exception):
@@ -59,6 +61,9 @@ async def sell_lot(db: Database, player: Player, gear_id: int, price: int) -> in
 
     await db.delete_gear(owned.id)
     player.gear = [row for row in player.gear if row.id != owned.id]
+    # Вещь на прилавке — событие для бармена: одно из его заданий ровно
+    # в этом и состоит
+    await notice(db, player, "market")
     return await db.add_lot(
         seller_id=player.user_id,
         code=owned.code,

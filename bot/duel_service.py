@@ -66,6 +66,9 @@ from bot.inventory_service import wear_after_fight
 from bot.keyboards import challenge_keyboard, fight_keyboard, standoff_keyboard
 from bot.messaging import Announcer
 from bot.models import Player, ProgressReport
+# Квесты слушают город: службы зовут `notice` и больше о них
+# ничего не знают
+from bot.quest_service import notice
 
 logger = logging.getLogger(__name__)
 
@@ -897,6 +900,8 @@ class DuelService:
             full_exp = win_exp(fighter.damage_dealt, my_level, opponent_level)
             if won:
                 player.wins += 1
+                # Победа — событие для бармена: с неё начинается город
+                await notice(self.db, player, "fight")
                 exp = full_exp
             elif result.winner_id is None:
                 player.draws += 1

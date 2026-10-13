@@ -98,6 +98,14 @@ from bot.estate_service import (
     take as flat_take,
     withdraw as flat_withdraw,
 )
+from bot.quest_service import (
+    QuestError,
+    answer as quest_answer,
+    hand as quest_hand,
+    journal as quest_journal,
+    notice_visit,
+    take as quest_take,
+)
 from bot.post_service import (
     PostError,
     collect as parcel_collect,
@@ -146,6 +154,7 @@ from bot.webapp.clans import (
 )
 from bot.webapp.estate import build_house
 from bot.webapp.post import build_post
+from bot.webapp.bar import build_bar, quests_payload
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
     build_market,
@@ -426,6 +435,9 @@ async def _at(request: web.Request, service: Service, own: bool = True):
     if player.settle_card(now_ts()):
         await request.app[DB_KEY].save_player(player)
     require(player, service)
+    # Дверь, в которую вошли, — событие для бармена: часть его заданий в
+    # том и состоит, чтобы дойти и посмотреть. Службы о квестах не знают
+    await notice_visit(request.app[DB_KEY], player, service)
     return player
 
 
@@ -2218,6 +2230,71 @@ async def api_post_action(request: web.Request) -> web.Response:
     return await _post_state(request, fresh, said)
 
 
+# ---------- бар: бармен и его задания ----------
+
+
+async def _bar_state(request: web.Request, player, said: str = "") -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = build_bar(player, await quest_journal(db, player), now_ts(), said)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_bar(request: web.Request) -> web.Response:
+    """Бар: бармен за стойкой, разговор и список заданий."""
+    player = await _at(request, Service.TAVERN)
+    return await _bar_state(request, player)
+
+
+async def api_bar_action(request: web.Request) -> web.Response:
+    """Ответ бармену: взять задание, сдать его или ответить на вопрос."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.TAVERN)
+    try:
+        if action == "take":
+            said = await quest_take(db, player, str(data.get("quest") or ""))
+        elif action == "hand":
+            said = await quest_hand(db, player, str(data.get("quest") or ""))
+        elif action == "answer":
+            right, said = await quest_answer(
+                db, player, int(data.get("step", 0)), int(data.get("option", -1))
+            )
+        elif action in ("later", "bye"):
+            said = ""
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except QuestError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _bar_state(request, fresh, said)
+
+
+async def api_quests(request: web.Request) -> web.Response:
+    """Список заданий бойца — вкладка «Квесты» в карточке.
+
+    Места тут нет нарочно: журнал боец носит с собой, и смотреть в него
+    можно откуда угодно.
+    """
+    player = await _own_player(request)
+    db = request.app[DB_KEY]
+    log = await quest_journal(db, player)
+    rows = quests_payload(player, log)
+    return web.json_response(
+        {
+            "quests": rows,
+            "done": sum(1 for row in rows if row["state"] == "done"),
+            "total": len(rows),
+            # Где искать того, кто их раздаёт
+            "giver": "Бармен в Баре",
+        }
+    )
+
+
 async def avatar(request: web.Request) -> web.StreamResponse:
     """Отдать фото бойца. Ссылка подписана и живёт час."""
     config = request.app[CONFIG_KEY]
@@ -2365,6 +2442,9 @@ def create_app(
             web.post("/api/flats", api_house_action),
             web.get("/api/post", api_post),
             web.post("/api/post", api_post_action),
+            web.get("/api/bar", api_bar),
+            web.post("/api/bar", api_bar_action),
+            web.get("/api/quests", api_quests),
             web.get("/avatar/{user_id}", avatar),
             web.get("/healthz", healthz),
             web.static("/static", STATIC_DIR),
