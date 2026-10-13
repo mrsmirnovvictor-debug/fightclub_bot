@@ -615,13 +615,18 @@ def test_houses_without_a_trade_are_still_on_the_map():
     # своего дела у него пока нет
     assert "office_building" in {place.code for place in coming}
     assert len(coming) == 13
-    # Бар и почта — особый случай: за ними уже стоит работа, но обещано
-    # сверх неё и другое. У такого дома есть и услуга, и строка «скоро»
+    # Бар — особый случай: за ним уже стоит работа, но обещано сверх неё
+    # и другое. У такого дома есть и услуга, и строка «скоро»
     from bot.game.locations import get_location
 
-    for code in ("bar", "post_office"):
-        place = get_location(code)
-        assert place.works and place.soon, code
+    bar = get_location("bar")
+    assert bar.works and bar.soon
+    # А почта своё обещание сдержала: на ней принимают посылки, и «скоро»
+    # у неё больше нет. Услуг у неё две, и почта стоит первой — дверь на
+    # карте открывает тот экран, что в списке первый
+    post = get_location("post_office")
+    assert post.works and not post.soon
+    assert post.services[0] is Service.POST and Service.WORK in post.services
     for place in coming:
         assert place.soon, f"{place.code}: не сказано, что здесь будет"
         assert place.services == ()

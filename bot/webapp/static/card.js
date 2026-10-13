@@ -1380,6 +1380,21 @@ function startEffects(list, hurt) {
 // закрытое и так свёрнуто в конце каждой полки.
 const filters = { slot: "all" };
 
+/** Поле с подписью: подпись сверху, само поле под ней.
+ *
+ * Числовое поле без подписи читается как попало: ноль в нём может
+ * означать что угодно, и угадывать это игрок не должен.
+ */
+function field(title, inner) {
+  const box = document.createElement("div");
+  box.className = "field";
+  const head = document.createElement("div");
+  head.className = "field-head";
+  head.textContent = title;
+  box.append(head, inner);
+  return box;
+}
+
 function chip(label, active, onClick, extraClass) {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -1869,8 +1884,8 @@ function lotCard(lot) {
 
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
-  "bank", "hr", "work", "school", "police", "mafia", "flats", "trade", "house",
-  "bag", "hero",
+  "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "trade",
+  "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1880,7 +1895,8 @@ const TABS = ["club", "map", "bag", "hero"];
 const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
-  school: "map", police: "map", mafia: "map", flats: "map", house: "map",
+  school: "map", police: "map", mafia: "map", flats: "map", post: "map",
+  house: "map",
 };
 let lastTab = "hero";
 
@@ -1922,6 +1938,8 @@ function showTab(name) {
   if (name === "mafia") loadMafia();
   // И подъезд тоже: квартиры снимают и освобождают без нас
   if (name === "flats") loadFlats();
+  // Почта: посылки кладут и забирают чужими руками
+  if (name === "post") loadPost();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2306,6 +2324,7 @@ const HOUSE_SCREENS = {
   hire: () => showTab("hr"),
   work: () => showTab("work"),
   estate: () => showTab("flats"),
+  post: () => showTab("post"),
   school: () => showTab("school"),
   police: () => showTab("police"),
   mafia: () => showTab("mafia"),
@@ -6624,15 +6643,36 @@ function scheduleSlot(slot) {
 let bankData = null;
 let bankTab = "";
 let bankBusy = false;
+// За какой срок просим выписку: число дней (0 — всё время) или свои
+// границы в секундах. Срок живёт на странице, а не на сервере: сервер
+// отвечает на тот вопрос, который ему задали
+let bankDays = 30;
+let bankSince = 0;
+let bankUntil = 0;
 
 function pickBankTab(name) {
   bankTab = name;
   if (bankData) renderBank(bankData);
 }
 
+/** Строка запроса выписки: либо срок в днях, либо свои границы. */
+function statementQuery() {
+  if (bankSince || bankUntil) {
+    return "?since=" + bankSince + "&until=" + bankUntil;
+  }
+  return "?days=" + bankDays;
+}
+
+function pickStatement(days) {
+  bankDays = days;
+  bankSince = 0;
+  bankUntil = 0;
+  loadBank();
+}
+
 async function loadBank() {
   try {
-    const response = await fetch("api/bank", {
+    const response = await fetch("api/bank" + statementQuery(), {
       headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
     });
     if (!response.ok) {
@@ -6700,7 +6740,140 @@ function renderBank(data) {
 
   if (bankTab === "new") body.appendChild(newProductTab(data));
   else if (bankTab === "atm") body.appendChild(atmTab(data));
+  else if (bankTab === "log") body.appendChild(statementTab(data));
   else body.appendChild(accountsTab(data));
+}
+
+// ---------- вкладка «Выписка» ----------
+//
+// Банк видит только счёт: наличные ходят из рук в руки и следа не
+// оставляют. Поэтому выписка — про карту, и говорит об этом сама, а не
+// оставляет бойца гадать, почему покупки за наличные в ней не видно.
+
+function statementTab(data) {
+  const box = document.createElement("div");
+  const log = data.statement || { rows: [], periods: [] };
+
+  const periods = document.createElement("div");
+  periods.className = "bubbles";
+  periods.id = "log-periods";
+  (log.periods || []).forEach((one) => {
+    periods.appendChild(
+      chip(one.title, !log.custom && one.on, () => pickStatement(one.days))
+    );
+  });
+  periods.appendChild(
+    chip("Свой срок", Boolean(log.custom), () => openPeriodSheet())
+  );
+  box.appendChild(periods);
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = log.custom
+    ? "Выписка: " + (log.since || "начало") + " — " + (log.until || log.now)
+    : "Выписка" + (log.days ? " за " + log.days + " дней" : " за всё время");
+  box.appendChild(head);
+
+  const sums = document.createElement("div");
+  sums.className = "log-sums";
+  [
+    ["Приход", log.income, "plus"],
+    ["Расход", log.spent, "minus"],
+  ].forEach(([title, money, mark]) => {
+    const cell = document.createElement("div");
+    cell.className = "log-sum " + mark;
+    const name = document.createElement("span");
+    name.className = "log-sum-title";
+    name.textContent = title;
+    const sum = document.createElement("span");
+    sum.className = "log-sum-money";
+    sum.textContent = (mark === "plus" ? "+" : "−") + num(money || 0) + " 💰";
+    cell.append(name, sum);
+    sums.appendChild(cell);
+  });
+  box.appendChild(sums);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent = log.note || "";
+  box.appendChild(note);
+
+  const list = document.createElement("div");
+  list.className = "log-list";
+  (log.rows || []).forEach((row) => list.appendChild(logRow(row)));
+  box.appendChild(list);
+  return box;
+}
+
+function logRow(row) {
+  const box = document.createElement("div");
+  box.className = "log-row";
+
+  const left = document.createElement("div");
+  left.className = "log-what";
+  const note = document.createElement("div");
+  note.className = "log-note";
+  note.textContent = row.note;
+  const when = document.createElement("div");
+  when.className = "log-when";
+  when.textContent = row.when + " · " + row.kind_title;
+  left.append(note, when);
+  box.appendChild(left);
+
+  const right = document.createElement("div");
+  right.className = "log-money";
+  const sum = document.createElement("div");
+  sum.className = "log-sum-value " + (row.plus ? "plus" : "minus");
+  sum.textContent = (row.plus ? "+" : "−") + num(Math.abs(row.amount)) + " 💰";
+  const rest = document.createElement("div");
+  rest.className = "log-rest";
+  rest.textContent = "остаток " + num(row.balance) + " 💰";
+  right.append(sum, rest);
+  box.appendChild(right);
+  return box;
+}
+
+/** Свой срок: две даты и кнопка. Любой срок — значит любой. */
+function openPeriodSheet() {
+  openSheet("Свой срок", "Выписка за выбранные дни включительно", true);
+  const list = el("sheet-list");
+
+  const since = document.createElement("input");
+  since.type = "date";
+  since.className = "field-input";
+  since.id = "log-since";
+  list.appendChild(since);
+
+  const until = document.createElement("input");
+  until.type = "date";
+  until.className = "field-input";
+  until.id = "log-until";
+  list.appendChild(until);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Показать", {
+      onClick: () => {
+        const from = Date.parse(el("log-since").value);
+        const to = Date.parse(el("log-until").value);
+        if (!from && !to) {
+          popup("Выписка", "Выбери хотя бы одну дату.");
+          return;
+        }
+        bankDays = 0;
+        bankSince = from ? Math.floor(from / 1000) : 0;
+        // Последний день входит в срок целиком: до его полуночи
+        bankUntil = to ? Math.floor(to / 1000) + 24 * 60 * 60 - 1 : 0;
+        closeSheet();
+        loadBank();
+      },
+    })
+  );
+  buttons.appendChild(
+    button("Отменить", { secondary: true, onClick: () => closeSheet() })
+  );
+  list.appendChild(buttons);
 }
 
 function bankHint(data) {
@@ -9078,6 +9251,336 @@ function clanMemberRow(member, actions) {
   return box;
 }
 
+// ---------- почта: посылки между бойцами ----------
+//
+// Две вкладки. «Отправить» — рюкзак: выбрал вещь, написал ник, назначил
+// цену и срок. «Посылки» — две полки: что пришло тебе и что ты отправил
+// сам. Вторая ничего не делает и нужна ровно затем, чтобы знать, у кого
+// твоя вещь и сколько ей там лежать.
+
+let postData = null;
+let postBusy = false;
+let postTab = "send";
+// Что выбрано и написано в форме отправки. Форма перерисовывается от
+// каждого нажатия — выбрали вещь, сменили срок, — и набранное должно
+// это переживать: иначе ник стирается ровно в тот миг, когда он нужен
+let postItem = 0;
+let postTerm = "long";
+let postWho = "";
+let postCod = "0";
+const POST_TABS = [
+  ["send", "📦 Отправить"],
+  ["parcels", "📬 Посылки"],
+];
+
+async function loadPost() {
+  try {
+    const response = await fetch("api/post", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("post-note").textContent = "Почта не открылась.";
+      return;
+    }
+    renderPost(await response.json());
+  } catch (error) {
+    el("post-note").textContent = error.message;
+  }
+}
+
+async function postAction(payload) {
+  if (postBusy) return;
+  postBusy = true;
+  try {
+    haptic((feedback) => feedback.impactOccurred("light"));
+    const response = await fetch("api/post", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": (tg && tg.initData) || "",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      popup("Почта", data.error || "Не получилось.");
+      return;
+    }
+    if (payload.action === "send") {
+      postItem = 0;
+      postWho = "";
+      postCod = "0";
+    }
+    renderPost(data);
+    if (data.card) render(data.card, true);
+    if (data.said) popup("Почта", data.said);
+  } catch (error) {
+    popup("Почта", error.message);
+  } finally {
+    postBusy = false;
+  }
+}
+
+function pickPostTab(name) {
+  postTab = name;
+  if (postData) renderPost(postData);
+  else paintPostTabs();
+}
+
+function paintPostTabs() {
+  POST_TABS.forEach(([code]) => {
+    el("post-" + code).classList.toggle("hidden", code !== postTab);
+  });
+}
+
+function renderPost(data) {
+  postData = data;
+  el("shop-purse-post").textContent = "";
+  el("shop-purse-post").appendChild(purse(data.credits));
+  el("post-note").textContent = data.said || data.note;
+
+  const tabs = el("post-tabs");
+  tabs.textContent = "";
+  POST_TABS.forEach(([code, label]) => {
+    const count = code === "parcels" ? data.inbox.length : 0;
+    tabs.appendChild(
+      chip(count ? label + " · " + count : label, postTab === code, () =>
+        pickPostTab(code)
+      )
+    );
+  });
+  paintPostTabs();
+
+  renderSendTab(data);
+  renderParcelsTab(data);
+}
+
+/** Вкладка «Отправить»: форма сверху, рюкзак под ней. */
+function renderSendTab(data) {
+  const body = el("post-send");
+  body.textContent = "";
+  body.appendChild(walletBar(data.purse, loadPost));
+  body.appendChild(sendBox(data));
+}
+
+function sendBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Отправить посылку · " + num(data.price) + " 💰";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Вещь уйдёт названному бойцу. Наложенный платёж — цена, которую он " +
+    "заплатит на почте; она придёт тебе. Отправка не возвращается.";
+  box.appendChild(note);
+
+  // Поля с подписями: в числовом поле стоит ноль, и без подписи понять,
+  // что это наложенный платёж, нельзя
+  const who = document.createElement("input");
+  who.type = "text";
+  who.className = "field-input";
+  who.id = "post-who";
+  who.placeholder = "Ник бойца";
+  who.value = postWho;
+  who.addEventListener("input", () => {
+    postWho = who.value;
+  });
+  box.appendChild(field("Кому отправить", who));
+
+  const price = document.createElement("input");
+  price.type = "number";
+  price.inputMode = "numeric";
+  price.min = "0";
+  price.max = String(data.max_cod);
+  price.value = postCod;
+  price.className = "field-input";
+  price.id = "post-cod";
+  price.addEventListener("input", () => {
+    postCod = price.value;
+  });
+  box.appendChild(field("Наложенный платёж, 💰 (0 — подарок)", price));
+
+  // Срок хранения: пузырями, как вкладки — выбор из трёх
+  const terms = document.createElement("div");
+  terms.className = "bubbles";
+  terms.id = "post-terms";
+  data.terms.forEach((term) => {
+    terms.appendChild(
+      chip(term.title, postTerm === term.code, () => {
+        postTerm = term.code;
+        if (postData) renderPost(postData);
+      })
+    );
+  });
+  box.appendChild(field("Срок хранения", terms));
+
+  if (!data.bag.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent = "Рюкзак пуст. Надетое сначала снимают в инвентаре.";
+    box.appendChild(empty);
+    return box;
+  }
+  data.bag.forEach((one) => {
+    const row = thingCard(one, 0, false, true);
+    if (one.id === postItem) row.classList.add("picked");
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button(one.id === postItem ? "Отправить" : "Выбрать", {
+        secondary: one.id !== postItem,
+        disabled: !data.can_pay,
+        hint: "На отправку не хватает кредитов.",
+        onClick: () => {
+          if (one.id !== postItem) {
+            postItem = one.id;
+            renderPost(postData);
+            return;
+          }
+          sendParcel(one, data);
+        },
+      })
+    );
+    row.querySelector(".thing-body").appendChild(buttons);
+    box.appendChild(row);
+  });
+  return box;
+}
+
+async function sendParcel(item, data) {
+  const who = el("post-who").value.trim();
+  if (!who) {
+    popup("Почта", "Напиши ник того, кому отправляешь.");
+    return;
+  }
+  const cod = Math.max(0, Math.floor(Number(el("post-cod").value) || 0));
+  const term = (data.terms.find((one) => one.code === postTerm) || {}).title;
+  const ok = await askConfirm(
+    "Отправить «" + item.title + "»?",
+    "Получатель — " + who + ". " +
+      (cod ? "Наложенный платёж: " + cod + " 💰. " : "Без платежа, подарком. ") +
+      "Срок хранения: " + (term || "").toLowerCase() + ". " +
+      "За отправку спишется " + data.price + " 💰, и они не возвращаются.",
+    "Отправить"
+  );
+  if (!ok) return;
+  postAction({
+    action: "send",
+    item: item.id,
+    nickname: who,
+    price: cod,
+    term: postTerm,
+  });
+}
+
+/** Вкладка «Посылки»: что пришло тебе и что ты отправил. */
+function renderParcelsTab(data) {
+  const body = el("post-parcels");
+  body.textContent = "";
+  body.appendChild(walletBar(data.purse, loadPost));
+  body.appendChild(inboxBox(data));
+  body.appendChild(outboxBox(data));
+}
+
+function inboxBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Тебе · " + data.inbox.length;
+  box.appendChild(head);
+
+  if (!data.inbox.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent = "Посылок нет. Пусто на полке — не беда.";
+    box.appendChild(empty);
+    return box;
+  }
+  data.inbox.forEach((one) => box.appendChild(parcelCard(one, true)));
+  return box;
+}
+
+function outboxBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Отправлено · " + data.outbox.length;
+  box.appendChild(head);
+
+  if (!data.outbox.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent = "Твоих посылок на почте нет.";
+    box.appendChild(empty);
+    return box;
+  }
+  data.outbox.forEach((one) => box.appendChild(parcelCard(one, false)));
+  return box;
+}
+
+/** Карточка посылки: вещь, от кого или кому, платёж и срок. */
+function parcelCard(parcel, mine) {
+  const row = thingCard(parcel, 0, false, true);
+  row.classList.add("parcel");
+  if (parcel.back) row.classList.add("back");
+  const body = row.querySelector(".thing-body");
+
+  const who = document.createElement("div");
+  who.className = "thing-note";
+  who.textContent = parcel.back
+    ? "Возврат · не забрал: " + parcel.to + " · " + parcel.sent
+    : (mine ? "От: " + parcel.from : "Кому: " + parcel.to) + " · " + parcel.sent;
+  body.appendChild(who);
+
+  const terms = document.createElement("div");
+  terms.className = "thing-note";
+  terms.textContent =
+    (parcel.due ? "Наложенный платёж: " + num(parcel.due) + " 💰" : "Подарок") +
+    " · " +
+    (parcel.forever
+      ? "до востребования"
+      : parcel.left ? "лежит ещё " + parcel.left : "срок вышел");
+  body.appendChild(terms);
+
+  if (!mine) return row;
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button(parcel.due ? "Забрать · " + num(parcel.due) + " 💰" : "Забрать", {
+      disabled: !parcel.can_take,
+      hint: "На выкуп посылки не хватает кредитов.",
+      onClick: () => postAction({ action: "take", parcel: parcel.parcel }),
+    })
+  );
+  if (!parcel.back) {
+    buttons.appendChild(
+      button("Отказаться", {
+        secondary: true,
+        onClick: async () => {
+          const ok = await askConfirm(
+            "Отказаться от посылки?",
+            "«" + parcel.title + "» поедет обратно к бойцу " + parcel.from + ".",
+            "Отказаться"
+          );
+          if (ok) postAction({ action: "refuse", parcel: parcel.parcel });
+        },
+      })
+    );
+  }
+  body.appendChild(buttons);
+  return row;
+}
+
 // ---------- жилой дом: аренда квартиры ----------
 //
 // Экран один на все четыре дома и держит две вкладки: подъезд и свою
@@ -10501,7 +11004,7 @@ function paintClanLine() {
 
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
-  "hr", "work", "school", "police", "mafia", "flats", "trade", "house",
+  "hr", "work", "school", "police", "mafia", "flats", "post", "trade", "house",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -10645,7 +11148,8 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
-  "school", "police", "mafia", "flats", "shop", "magic", "workshop", "club",
+  "school", "police", "mafia", "flats", "post", "shop", "magic", "workshop",
+  "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

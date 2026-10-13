@@ -79,6 +79,23 @@ class ProgressReport:
         return not (self.exp or self.credits or self.rating_delta)
 
 
+@dataclass(frozen=True)
+class CardMove:
+    """Строка выписки по карте: час, сумма со знаком и за что.
+
+    Сумма со знаком нарочно: выписка читается столбиком, и минус в ней —
+    не оформление, а смысл. `balance` — остаток на счету после операции:
+    он лежит рядом с суммой, чтобы выписку можно было сверить глазами, а
+    не пересчитывать с начала времён.
+    """
+
+    at: int
+    amount: int
+    kind: str
+    note: str
+    balance: int
+
+
 @dataclass
 class Player:
     user_id: int
@@ -144,6 +161,11 @@ class Player:
     # вместе с бойцом, потому что знак мафии стоит у ника везде, где ник
     # показывают, — а карточка собирается без второго похода в базу
     clan: Standing | None = None
+    # Выписка, которую ещё не записали в базу. Платит боец здесь, а до
+    # базы строка едет вместе с ним: `save_player` сливает их и чистит
+    # список. Так всякое списание картой попадает в выписку одинаково —
+    # из какой бы лавки за ним ни пришли
+    card_moves: list[CardMove] = field(default_factory=list)
     # Снятая квартира. None — боец живёт где придётся. Читается вместе с
     # бойцом: срок у сейфа и кладовой должен быть известен в ту же
     # минуту, в какую боец входит в дом, — и без второго похода в базу
@@ -658,8 +680,11 @@ class Player:
             return 0
         if self.account_balance < CARD_YEAR_PRICE:
             return 0
+        from bot.game.bank import FEE
+
         self.account_balance -= CARD_YEAR_PRICE
         self.card_paid_until = now + YEAR_SECONDS
+        self.note_card(-CARD_YEAR_PRICE, FEE, "Обслуживание карты за год", now)
         return CARD_YEAR_PRICE
 
     def purse_for(self, now: int, service=None) -> str:
@@ -703,18 +728,43 @@ class Player:
     def can_afford(self, price: int, now: int = 0, service=None) -> bool:
         return self.purse_money(self.purse_for(now, service)) >= price
 
-    def pay(self, price: int, now: int = 0, service=None) -> str:
+    def note_card(
+        self, amount: int, kind: str, note: str, now: int = 0
+    ) -> CardMove:
+        """Записать движение по счёту — в выписку, а не в базу.
+
+        Базы у бойца нет, и ходить за ней из каждой лавки незачем:
+        строка едет с ним и ложится на полку в `save_player`.
+        """
+        move = CardMove(
+            at=now or now_ts(),
+            amount=amount,
+            kind=kind,
+            note=note,
+            balance=self.account_balance,
+        )
+        self.card_moves.append(move)
+        return move
+
+    def pay(self, price: int, now: int = 0, service=None, note: str = "") -> str:
         """Снять цену с того кошелька, которым боец здесь платит.
 
         Цену сюда передают уже посчитанную: скидку считают там, где её
         показывают, — иначе на витрине стояло бы одно число, а с кошелька
         уходило другое.
+
+        Заплатили картой — операция попадает в выписку. `note` — своё
+        слово места: лавка подписывается домом, а контора, у которой
+        действий несколько, называет само действие.
         """
+        from bot.game.bank import PAY, pay_note
+
         purse = self.purse_for(now, service)
         if self.purse_money(purse) < price:
             raise ValueError("Недостаточно кредитов")
         if purse == CARD:
             self.account_balance -= price
+            self.note_card(-price, PAY, pay_note(service, note), now)
         else:
             self.credits -= price
         return purse

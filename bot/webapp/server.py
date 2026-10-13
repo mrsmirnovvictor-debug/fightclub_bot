@@ -98,6 +98,13 @@ from bot.estate_service import (
     take as flat_take,
     withdraw as flat_withdraw,
 )
+from bot.post_service import (
+    PostError,
+    collect as parcel_collect,
+    refuse as parcel_refuse,
+    send as parcel_send,
+    sweep as parcel_sweep,
+)
 from bot.game.clans import Petition
 from bot.webapp.citymap import build_map
 from bot.bank_service import (
@@ -111,7 +118,11 @@ from bot.bank_service import (
 )
 from bot.game.bank import CARD
 from bot.game.work import SHIFT_HOURS
-from bot.webapp.bank import build_bank
+from bot.webapp.bank import (
+    STATEMENT_DAYS,
+    build_bank,
+    statement_payload,
+)
 from bot.webapp.work import build_hr, build_work
 from bot.work_service import WorkError
 from bot.work_service import apply as work_apply
@@ -133,6 +144,7 @@ from bot.webapp.clans import (
     invites_payload,
 )
 from bot.webapp.estate import build_house
+from bot.webapp.post import build_post
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
     build_market,
@@ -1191,6 +1203,31 @@ async def api_policy(request: web.Request) -> web.Response:
 # ---------- Vegas Банк ----------
 
 
+def _span(request: web.Request, moment: int) -> tuple[int, int, int]:
+    """Срок выписки из запроса: (дней, с, по) в секундах.
+
+    Три вида запроса: ничего — месяц по умолчанию; `days` — готовый
+    срок, ноль означает «всё время»; `since`/`until` — свой срок, и
+    тогда число дней уже ни при чём.
+    """
+    since = _query_int(request, "since")
+    until = _query_int(request, "until")
+    if since or until:
+        return 0, since, until
+    days = request.query.get("days")
+    if days is None:
+        return STATEMENT_DAYS, moment - STATEMENT_DAYS * 24 * 60 * 60, 0
+    span = max(0, _query_int(request, "days"))
+    return span, (moment - span * 24 * 60 * 60) if span else 0, 0
+
+
+def _query_int(request: web.Request, name: str) -> int:
+    try:
+        return int(request.query.get(name) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _bank_state(request: web.Request, player, said: str = "") -> web.Response:
     """Ответ банка всегда один и тот же: банк целиком плюс карточка.
 
@@ -1198,7 +1235,25 @@ async def _bank_state(request: web.Request, player, said: str = "") -> web.Respo
     экране банка их два кошелька, и разойтись им нельзя ни на кредит.
     """
     config = request.app[CONFIG_KEY]
-    body = build_bank(player, now_ts(), said)
+    db = request.app[DB_KEY]
+    moment = now_ts()
+    # Выписка: за строками надо в базу, и сбор банка туда не ходит
+    days, since, until = _span(request, moment)
+    income, spent = await db.card_turnover(player.user_id, since, until)
+    body = build_bank(
+        player,
+        moment,
+        said,
+        statement=statement_payload(
+            await db.card_log(player.user_id, since, until),
+            days=days,
+            income=income,
+            spent=spent,
+            since=since if (days == 0 and since) else 0,
+            until=until,
+            now=moment,
+        ),
+    )
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)
 
@@ -2078,6 +2133,63 @@ async def api_house_action(request: web.Request) -> web.Response:
     return await _house_state(request, fresh, said)
 
 
+# ---------- почта: посылки между бойцами ----------
+
+
+async def _post_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    # Просрочку сводим на входе: посылка с вышедшим сроком должна уже
+    # лежать развёрнутой, а не ждать следующего захода
+    await parcel_sweep(db, now_ts())
+    body = build_post(
+        player,
+        await db.parcels_for(player.user_id),
+        await db.parcels_from(player.user_id),
+    )
+    body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_post(request: web.Request) -> web.Response:
+    """Почта: что отправить и что тебя ждёт."""
+    player = await _at(request, Service.POST)
+    return await _post_state(request, player)
+
+
+async def api_post_action(request: web.Request) -> web.Response:
+    """Отправить посылку, получить её или отказаться."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.POST)
+    try:
+        if action == "send":
+            said = await parcel_send(
+                db,
+                player,
+                int(data.get("item", 0)),
+                str(data.get("nickname") or ""),
+                int(data.get("price", 0)),
+                str(data.get("term") or ""),
+            )
+        elif action == "take":
+            said = await parcel_collect(db, player, int(data.get("parcel", 0)))
+        elif action == "refuse":
+            said = await parcel_refuse(db, player, int(data.get("parcel", 0)))
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except PostError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _post_state(request, fresh, said)
+
+
 async def avatar(request: web.Request) -> web.StreamResponse:
     """Отдать фото бойца. Ссылка подписана и живёт час."""
     config = request.app[CONFIG_KEY]
@@ -2223,6 +2335,8 @@ def create_app(
             web.post("/api/clan", api_clan_action),
             web.get("/api/flats", api_house_flats),
             web.post("/api/flats", api_house_action),
+            web.get("/api/post", api_post),
+            web.post("/api/post", api_post_action),
             web.get("/avatar/{user_id}", avatar),
             web.get("/healthz", healthz),
             web.static("/static", STATIC_DIR),

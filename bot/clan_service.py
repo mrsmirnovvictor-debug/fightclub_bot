@@ -111,7 +111,7 @@ async def found(
             f"Клан «{title}» или этот знак уже заняли. Попробуй ещё раз."
         ) from error
 
-    player.pay(price, moment, Service.MAFIA)
+    player.pay(price, moment, Service.MAFIA, note="Создание клана")
     await db.save_player(player)
     await _refresh(db, player)
     logger.info("Боец %s завёл клан %s", player.user_id, clan.id)
@@ -164,7 +164,7 @@ async def rename(
         await db.rename_clan(clan.id, title, moment)
     except sqlite3.IntegrityError as error:
         raise ClanError(f"Клан «{title}» в городе уже есть.") from error
-    player.pay(price, moment, Service.MAFIA)
+    player.pay(price, moment, Service.MAFIA, note="Смена имени клана")
     await db.save_player(player)
     await _refresh(db, player)
     logger.info("Клан %s сменил имя на %s", clan.id, title)
@@ -433,7 +433,7 @@ async def deposit(
     # Сперва сейф, потом карман: если сейфа уже нет, с бойца и не снято
     if not await db.move_vault(standing.clan.id, amount):  # pragma: no cover
         raise ClanError("Такого клана нет.")
-    player.pay(amount, moment, Service.MAFIA)
+    player.pay(amount, moment, Service.MAFIA, note="Взнос в сейф клана")
     await db.save_player(player)
     await _refresh(db, player)
     logger.info("Боец %s положил %s в сейф клана %s", player.user_id, amount,

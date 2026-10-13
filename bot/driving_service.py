@@ -76,7 +76,7 @@ async def enroll(db: Database, player: Player, now: int | None = None) -> School
         raise SchoolError(
             f"Курс стоит {price} 💰, а {player.purse_note(moment, Service.SCHOOL)}."
         )
-    player.pay(price, moment, Service.SCHOOL)
+    player.pay(price, moment, Service.SCHOOL, note="Курс ПДД")
     await db.save_player(player)
     logger.info("Боец %s записался в автошколу", player.user_id)
     return await _save(db, player, replace(school, course_at=moment))

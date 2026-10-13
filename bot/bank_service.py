@@ -30,7 +30,12 @@ from bot.game.bank import (
     CARD_PRICE,
     CARD_YEAR_PRICE,
     CASH,
+    CASH_OUT,
+    FEE,
+    GOT,
     PURSES,
+    SENT,
+    TOP_UP,
     YEAR_SECONDS,
     make_number,
     tidy_number,
@@ -107,6 +112,7 @@ async def issue_card(db: Database, player: Player, now: int | None = None) -> in
     player.card_paid_until = paid_until
     if where == CARD:
         player.account_balance -= CARD_PRICE
+        player.note_card(-CARD_PRICE, FEE, "Выпуск карты", moment)
     else:
         player.credits -= CARD_PRICE
     await db.save_player(player)
@@ -151,6 +157,10 @@ async def deposit(
         raise BankError("Наличные изменились. Попробуй ещё раз.")
     player.credits -= amount
     player.account_balance += amount
+    await db.log_card(
+        player.user_id, amount, TOP_UP, "Внесение наличных",
+        player.account_balance, now,
+    )
     return Move(amount, player.credits, player.account_balance)
 
 
@@ -168,6 +178,10 @@ async def withdraw(
         raise BankError("Деньги на счету изменились. Попробуй ещё раз.")
     player.account_balance -= amount
     player.credits += amount
+    await db.log_card(
+        player.user_id, -amount, CASH_OUT, "Снятие в банкомате",
+        player.account_balance, now,
+    )
     return Move(amount, player.credits, player.account_balance)
 
 
@@ -194,6 +208,16 @@ async def send(
         raise BankError("Деньги на счету изменились. Попробуй ещё раз.")
 
     player.account_balance -= amount
+    # Выписка у перевода двойная: у отправителя списание, у получателя
+    # приход. Остаток получателя берём из базы — его самого тут нет
+    await db.log_card(
+        player.user_id, -amount, SENT, f"Перевод: {holder.nickname}",
+        player.account_balance, now,
+    )
+    await db.log_card(
+        holder.user_id, amount, GOT, f"От бойца: {player.nickname}",
+        await db.account_money(holder.user_id), now,
+    )
     logger.info(
         "Банк перевёл %s с бойца %s бойцу %s", amount, player.user_id, holder.user_id
     )

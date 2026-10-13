@@ -41,6 +41,7 @@ from bot.game.bank import (
     with_discount,
 )
 from bot.game.classes import Stats
+from bot.game.health import now_ts
 from bot.game.locations import Service, get_location, where_to
 from bot.models import Player
 from bot.webapp.server import create_app
@@ -555,7 +556,9 @@ async def test_the_bank_opens_an_account_and_issues_a_card_by_the_handle(client,
 
     body = await (await client.get("/api/bank", headers=headers())).json()
     assert body["account"]["open"] is False
-    assert [tab["code"] for tab in body["tabs"]] == ["new", "accounts", "atm"]
+    assert [tab["code"] for tab in body["tabs"]] == [
+        "new", "accounts", "atm", "log"
+    ]
 
     body = await (
         await client.post("/api/bank", json={"action": "account"}, headers=headers())
@@ -789,3 +792,171 @@ async def test_the_gym_charges_the_account_for_an_extra_training(db):
 
     assert player.account_balance == was - 45, "деньги не ушли со счёта"
     assert player.credits == 0
+
+
+# ---------- выписка по карте ----------
+
+
+async def test_the_statement_remembers_everything_the_card_did(db):
+    """Выписка помнит и списания, и приходы — и ничего из наличных."""
+    player = await with_card(db, make_player(credits=1_000))
+    await deposit(db, player, 500, NOW)
+
+    # Покупка картой: цена уже со скидкой, в выписке — она же
+    player.pay_from = CARD
+    price = player.price_here(100, NOW, Service.CLOTHES)
+    player.pay(price, NOW, Service.CLOTHES)
+    await db.save_player(player)
+
+    # Контора со своим словом подписывается сама
+    player.pay(60, NOW, Service.MAFIA, note="Создание клана")
+    await db.save_player(player)
+
+    # А наличными — мимо выписки: банк их не видит
+    player.pay_from = CASH
+    player.pay(70, NOW, Service.POTIONS)
+    await db.save_player(player)
+
+    moves = await db.card_log(player.user_id)
+    # Выпуска карты в выписке нет: за неё заплатили наличными — на счету
+    # в тот час было пусто
+    assert [one.note for one in moves] == [
+        "Создание клана", "Магазин одежды", "Внесение наличных",
+    ], "новые операции идут первыми"
+    assert [one.amount for one in moves] == [-60, -price, 500]
+    # Остаток рядом с суммой: выписку можно сверить глазами
+    assert moves[0].balance == 500 - price - 60
+    assert moves[0].balance == player.account_balance
+
+    income, spent = await db.card_turnover(player.user_id)
+    assert income == 500 and spent == price + 60
+
+
+async def test_the_statement_takes_both_sides_of_a_transfer(db):
+    """Перевод виден у обоих: у одного списание, у другого приход."""
+    sender = await with_account(db, make_player(credits=1_000))
+    taker = await with_account(db, make_player(43, "Марла", credits=0))
+    await deposit(db, sender, 400, NOW)
+
+    await send(db, sender, taker.account_number, 250, NOW)
+
+    mine = await db.card_log(sender.user_id)
+    assert mine[0].note == "Перевод: Марла" and mine[0].amount == -250
+    assert mine[0].balance == 150
+    theirs = await db.card_log(taker.user_id)
+    assert theirs[0].note == "От бойца: Тайлер" and theirs[0].amount == 250
+    assert theirs[0].balance == 250
+
+    # Снятие в банкомате — тоже строка, и тоже со знаком
+    await withdraw(db, sender, 100, NOW)
+    assert (await db.card_log(sender.user_id))[0].note == "Снятие в банкомате"
+    assert (await db.card_log(sender.user_id))[0].amount == -100
+
+
+async def test_the_statement_counts_only_the_days_asked_for(db):
+    """Границы срока честные: что старше — в выписку не попадает."""
+    player = await with_account(db, make_player(credits=1_000))
+    day = 24 * 60 * 60
+    for days_ago, amount in ((60, 10), (20, 20), (1, 30)):
+        await db.log_card(
+            player.user_id, amount, "top_up", "Внесение наличных", 0,
+            NOW - days_ago * day,
+        )
+
+    month = await db.card_log(player.user_id, since=NOW - 30 * day)
+    assert [one.amount for one in month] == [30, 20]
+    assert await db.card_turnover(player.user_id, since=NOW - 30 * day) == (50, 0)
+    assert len(await db.card_log(player.user_id)) == 3, "без границ — всё"
+
+    # Свой срок: с и по
+    middle = await db.card_log(
+        player.user_id, since=NOW - 30 * day, until=NOW - 10 * day
+    )
+    assert [one.amount for one in middle] == [20]
+
+
+async def test_the_statement_comes_with_the_bank_screen(client, db):
+    """Выписка едет вкладкой банка: месяц по умолчанию, срок — по просьбе."""
+    player = await with_card(db, make_player(credits=1_000))
+    await deposit(db, player, 500, NOW)
+    day = 24 * 60 * 60
+    await db.log_card(
+        player.user_id, -40, "pay", "Аптека", 100, now_ts() - 100 * day
+    )
+
+    body = await (await client.get("/api/bank", headers=headers())).json()
+    assert [tab["code"] for tab in body["tabs"]][-1] == "log"
+    statement = body["statement"]
+    assert statement["days"] == 30
+    assert [one["note"] for one in statement["rows"]] == ["Внесение наличных"]
+    assert statement["rows"][0]["plus"] is True
+    assert statement["rows"][0]["kind_title"] == "Пополнение"
+    assert statement["income"] == 500 and statement["spent"] == 0
+    assert [one["days"] for one in statement["periods"]] == [7, 30, 90, 365, 0]
+    assert [one["on"] for one in statement["periods"]] == [
+        False, True, False, False, False
+    ]
+
+    # «Всё время» достаёт и столетнюю операцию
+    body = await (
+        await client.get("/api/bank?days=0", headers=headers())
+    ).json()
+    assert [one["note"] for one in body["statement"]["rows"]][-1] == "Аптека"
+    assert body["statement"]["days"] == 0
+
+    # Свой срок: только тот день, в который прошла старая операция
+    since = now_ts() - 101 * day
+    body = await (
+        await client.get(
+            f"/api/bank?since={since}&until={since + 2 * day}", headers=headers()
+        )
+    ).json()
+    assert [one["note"] for one in body["statement"]["rows"]] == ["Аптека"]
+    assert body["statement"]["custom"] is True
+
+
+async def test_the_bank_writes_its_own_fees_into_the_statement(db):
+    """Что банк взял себе — тоже строка: выпуск со счёта и год."""
+    player = await with_account(db, make_player(credits=1_000))
+    await deposit(db, player, 600, NOW)
+    await issue_card(db, player, NOW)
+
+    moves = await db.card_log(player.user_id)
+    assert moves[0].note == "Выпуск карты" and moves[0].amount == -CARD_PRICE
+    assert moves[0].balance == 600 - CARD_PRICE
+
+    # Год подошёл — списали и записали
+    said = await settle_card(db, player, NOW + YEAR_SECONDS + 1)
+    assert "Обслуживание карты" in said
+    moves = await db.card_log(player.user_id)
+    assert moves[0].note == "Обслуживание карты за год"
+    assert moves[0].amount == -CARD_YEAR_PRICE
+    assert moves[0].balance == player.account_balance
+
+
+async def test_every_place_signs_the_statement_in_its_own_words(db):
+    """Каждое место подписывается само: по выписке видно, за что списали."""
+    from bot.clan_service import found
+    from bot.estate_service import rent
+    from bot.game.clans import CLAN_PRICE
+    from bot.game.post import SEND_PRICE
+    from bot.post_service import send as post_send
+
+    player = await with_card(db, make_player(credits=5_000))
+    await deposit(db, player, 4_000, NOW)
+    player.pay_from = CARD
+    guest = await stand(db, make_player(43, "Марла", location="post_office"))
+    owned = await db.add_gear(player.user_id, "bandana")
+    player.gear = await db.list_gear(player.user_id)
+
+    player.location = "mafia_mansion"
+    await found(db, player, "Коза Ностра", "black_ravens", now=NOW)
+    player.location = "residential_apartment"
+    await rent(db, player, 1, now=NOW)
+    player.location = "post_office"
+    await post_send(db, player, owned.id, "Марла", 0, "long", now=NOW)
+
+    notes = [one.note for one in await db.card_log(player.user_id)]
+    assert notes[:3] == ["Отправка посылки", "Аренда квартиры", "Создание клана"]
+    amounts = [one.amount for one in await db.card_log(player.user_id)]
+    assert amounts[:3] == [-SEND_PRICE, -300, -CLAN_PRICE]

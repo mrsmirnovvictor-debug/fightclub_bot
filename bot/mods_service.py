@@ -61,7 +61,7 @@ async def buy_mod(
             f"Не хватает кредитов: «{mod.title}» стоит {price} 💰, "
             f"а {player.purse_note(moment, Service.REPAIR)}."
         )
-    player.pay(price, moment, Service.REPAIR)
+    player.pay(price, moment, Service.REPAIR, note="Модификатор")
     await db.save_player(player)
     await db.add_mod(player.user_id, code)
     return mod

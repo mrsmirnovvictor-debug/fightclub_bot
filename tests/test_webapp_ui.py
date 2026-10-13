@@ -338,6 +338,62 @@ def flats_state(
     return body
 
 
+def post_state(inbox=(), outbox=(), bag=("bandana",), **changes) -> dict:
+    """Ответ почты: рюкзак на отправку и обе полки посылок."""
+    from bot.webapp.post import build_post
+
+    moment = now_ts()
+    player = make_player("post_office")
+    player.credits = 2_000
+    player.gear = [
+        OwnedItem(item=CATALOGUE[code], id=index + 1)
+        for index, code in enumerate(bag)
+    ]
+    body = build_post(player, list(inbox), list(outbox), moment)
+    body.update(changes)
+    return body
+
+
+def a_parcel(
+    number: int = 1, code: str = "pipe", price: int = 0, mine: bool = False,
+    days: int = 5, back: bool = False,
+) -> object:
+    """Посылка для экрана: от Марлы бойцу или от бойца Марле."""
+    from bot.game.post import DAY, Parcel
+
+    moment = now_ts()
+    return Parcel(
+        id=number,
+        from_id=42 if mine else 43,
+        to_id=43 if mine else 42,
+        code=code,
+        max_wear=20,
+        price=price,
+        sent_at=moment - 3_600,
+        keep_until=moment + days * DAY if days else 0,
+        back=back,
+        from_name="Растафарайчик" if mine else "Марла",
+        to_name="Марла" if mine else "Растафарайчик",
+    )
+
+
+def statement_state(rows=(), days: int = 30, **changes) -> dict:
+    """Выписка по карте так, как она уезжает вкладкой банка."""
+    from bot.models import CardMove
+    from bot.webapp.bank import statement_payload
+
+    moment = now_ts()
+    moves = [
+        CardMove(moment - (index + 1) * 3_600, amount, kind, note, balance)
+        for index, (amount, kind, note, balance) in enumerate(rows)
+    ]
+    income = sum(one.amount for one in moves if one.amount > 0)
+    spent = -sum(one.amount for one in moves if one.amount < 0)
+    body = statement_payload(moves, days=days, income=income, spent=spent, now=moment)
+    body.update(changes)
+    return body
+
+
 def police_state(passed: bool = True, licence: bool = False) -> dict:
     from bot.game.driving import School
     from bot.game.health import now_ts
@@ -694,7 +750,8 @@ async def open_page(
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
     battle=None, city=None, workshop=None, hospital=None, trade=None,
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
-    police=None, mafia=None, clan=None, flats=None, images=False, telegram="",
+    police=None, mafia=None, clan=None, flats=None, post=None, images=False,
+    telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -733,6 +790,7 @@ async def open_page(
     await page.route("**/api/police", canned(police or police_state()))
     await page.route("**/api/mafia", canned(mafia or mansion_state()))
     await page.route("**/api/flats", canned(flats or flats_state()))
+    await page.route("**/api/post", canned(post or post_state()))
     await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
                                                     "ranks": [], "said": ""}))
 
@@ -8708,13 +8766,13 @@ async def open_bank(pw, server, bank=None):
     return browser, page
 
 
-async def test_the_bank_stands_on_three_tabs(server):
+async def test_the_bank_stands_on_four_tabs(server):
     async with async_playwright() as pw:
         browser, page = await open_bank(pw, server)
         await page.wait_for_selector("#bank-tabs")
 
         tabs = await page.locator("#bank-tabs .chip").all_inner_texts()
-        assert tabs == ["Новый продукт", "Счета", "Банкомат"]
+        assert tabs == ["Новый продукт", "Счета", "Банкомат", "Выписка"]
         await browser.close()
 
 
@@ -9964,6 +10022,207 @@ async def test_the_overdue_flat_is_locked_but_still_his(server):
         assert not await page.locator(
             "#flats-home .btn", has_text="Продлить"
         ).is_disabled()
+        await browser.close()
+
+
+def num_space(text: str) -> str:
+    """Число так, как его пишет страница: разряды неразрывным пробелом."""
+    return text.replace(" ", "\u00a0")
+
+
+async def test_the_post_office_sends_a_parcel_in_three_fields(server):
+    """Отправка: ник, наложенный платёж, срок — и вещь из рюкзака.
+
+    Сначала вещь выбирают, и только потом кнопка становится «Отправить»:
+    посылка уходит насовсем, и нажать её мимоходом нельзя.
+    """
+    player = make_player("post_office")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "post")
+        await page.wait_for_selector("#post-send .shelf")
+
+        assert await page.locator("#post-tabs .chip").all_inner_texts() == [
+            "📦 Отправить", "📬 Посылки"
+        ]
+        heads = await page.locator("#post-send .shelf-head").all_inner_texts()
+        assert heads == ["Отправить посылку · 5 💰"]
+        # Три поля с подписями: кому, почём и насколько
+        assert await page.locator("#post-send .field-head").all_inner_texts() == [
+            "Кому отправить", "Наложенный платёж, 💰 (0 — подарок)",
+            "Срок хранения",
+        ]
+        assert await page.locator("#post-terms .chip").all_inner_texts() == [
+            "5 дней", "30 дней", "До востребования"
+        ]
+        assert await page.locator("#post-terms .chip.on").inner_text() == "30 дней"
+
+        await page.evaluate(
+            """() => {
+                window.askConfirm = (title, message) => {
+                    window.asked = [title, message];
+                    return Promise.resolve(true);
+                };
+                window.postAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await page.fill("#post-who", "Марла")
+        await page.fill("#post-cod", "150")
+        await page.locator("#post-terms .chip", has_text="5 дней").click()
+
+        # Первое нажатие выбирает вещь, второе отправляет
+        thing = page.locator("#post-send .thing", has_text="Бандана")
+        await thing.locator(".btn").click()
+        assert await thing.locator(".btn").inner_text() == "Отправить"
+        assert await page.evaluate("window.sent") is None
+        await thing.locator(".btn").click()
+        await page.wait_for_function("() => window.sent")
+
+        asked = await page.evaluate("window.asked")
+        assert asked[0] == "Отправить «Бандана»?"
+        assert "Марла" in asked[1] and "150 💰" in asked[1] and "5 дней" in asked[1]
+        assert "не возвращаются" in asked[1]
+        assert await page.evaluate("window.sent") == {
+            "action": "send", "item": 1, "nickname": "Марла",
+            "price": 150, "term": "short",
+        }
+        await browser.close()
+
+
+async def test_the_parcels_shelf_shows_who_sent_what(server):
+    """Полка посылок: от кого, почём, сколько лежать — и две кнопки."""
+    player = make_player("post_office")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    post = post_state(
+        inbox=(a_parcel(1, "pipe", price=150), a_parcel(2, "sneakers", days=0)),
+        outbox=(a_parcel(3, "club_tee", mine=True, days=30),),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, post=post)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "post")
+        await page.wait_for_selector("#post-send .shelf")
+
+        # Счётчик на вкладке: посылок две
+        assert "Посылки · 2" in await page.locator(
+            "#post-tabs .chip"
+        ).nth(1).inner_text()
+        await page.locator("#post-tabs .chip", has_text="Посылки").click()
+        await page.wait_for_selector("#post-parcels:not(.hidden)")
+
+        heads = await page.locator("#post-parcels .shelf-head").all_inner_texts()
+        assert heads == ["Тебе · 2", "Отправлено · 1"]
+
+        cod = page.locator("#post-parcels .parcel", has_text="Деревянная бита")
+        assert "От: Марла" in await cod.inner_text()
+        assert "Наложенный платёж: 150 💰" in await cod.inner_text()
+        assert "лежит ещё 5 дней" in await cod.inner_text()
+        assert await cod.locator(".btn").all_inner_texts() == [
+            "Забрать · 150 💰", "Отказаться"
+        ]
+
+        gift = page.locator("#post-parcels .parcel", has_text="Кеды")
+        assert "Подарок · до востребования" in await gift.inner_text()
+
+        # Отправленное — только память: кнопок на нём нет
+        sent = page.locator("#post-parcels .parcel", has_text="Клубная футболка")
+        assert "Кому: Марла" in await sent.inner_text()
+        assert await sent.locator(".btn").count() == 0
+
+        await page.evaluate(
+            """() => {
+                window.askConfirm = () => Promise.resolve(true);
+                window.postAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        await cod.locator(".btn", has_text="Забрать").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "take", "parcel": 1}
+
+        await page.evaluate("() => { window.sent = null; }")
+        await cod.locator(".btn", has_text="Отказаться").click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {"action": "refuse", "parcel": 1}
+        await browser.close()
+
+
+async def test_the_statement_lists_the_card_and_its_period(server):
+    """Выписка: строки со знаком, два итога и выбор срока.
+
+    Срок выбирают пузырями, и каждый из них — новый запрос: считает
+    сервер, а страница только спрашивает.
+    """
+    player = make_player("bank")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    bank = bank_state()
+    bank["statement"] = statement_state(
+        rows=(
+            (-120, "pay", "Магазин одежды", 1_880),
+            (900, "wage", "Жалованье: Бармен", 2_000),
+            (-250, "sent", "Перевод: Марла", 1_100),
+        )
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, bank=bank)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bank")
+        await page.wait_for_selector("#bank-tabs .chip")
+
+        await page.locator("#bank-tabs .chip", has_text="Выписка").click()
+        await page.wait_for_selector(".log-list")
+
+        assert await page.locator("#log-periods .chip").all_inner_texts() == [
+            "7 дней", "30 дней", "3 месяца", "Год", "Всё время", "Свой срок"
+        ]
+        assert await page.locator("#log-periods .chip.on").inner_text() == "30 дней"
+        assert "Выписка за 30 дней" in await page.locator(
+            "#bank-body .shelf-head"
+        ).inner_text()
+
+        sums = await page.locator(".log-sum-money").all_inner_texts()
+        assert sums == ["+900 💰", "−370 💰"]
+
+        rows = page.locator(".log-row")
+        assert await rows.count() == 3
+        assert "Магазин одежды" in await rows.nth(0).inner_text()
+        assert "Оплата" in await rows.nth(0).inner_text()
+        assert await rows.nth(0).locator(".log-sum-value").inner_text() == "−120 💰"
+        assert await rows.nth(0).locator(".log-rest").inner_text() == (
+            "остаток " + num_space("1 880") + " 💰"
+        )
+        assert await rows.nth(1).locator(".log-sum-value").inner_text() == "+900 💰"
+        assert "наличные" in (await page.locator(
+            "#bank-body .screen-note"
+        ).last.inner_text()).lower()
+
+        # Пузырь срока — это новый запрос к банку, с числом дней в адресе
+        asked = []
+        page.on("request", lambda one: asked.append(one.url))
+        await page.locator("#log-periods .chip", has_text="Всё время").click()
+        await page.wait_for_function(
+            "() => bankDays === 0", timeout=3_000
+        )
+        assert any("days=0" in url for url in asked)
+
+        # «Свой срок» спрашивает две даты и шлёт границы
+        await page.locator("#log-periods .chip", has_text="Свой срок").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        await page.fill("#log-since", "2026-09-01")
+        await page.fill("#log-until", "2026-09-30")
+        await page.locator("#sheet-list .btn", has_text="Показать").click()
+        await page.wait_for_function("() => bankSince > 0", timeout=3_000)
+        assert any("since=" in url and "until=" in url for url in asked)
         await browser.close()
 
 

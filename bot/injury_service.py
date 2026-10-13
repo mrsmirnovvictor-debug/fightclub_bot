@@ -106,7 +106,7 @@ async def heal_injury(
             f"а {player.purse_note(moment, Service.HEAL)}."
         )
 
-    player.pay(price, moment, Service.HEAL)
+    player.pay(price, moment, Service.HEAL, note="Лечение травмы")
     # Совсем мгновенно не лечат: после капельницы боец ещё лежит, но
     # минуты вместо часов. Если травме и так оставалось меньше, срок не
     # удлиняем — за это платить незачем

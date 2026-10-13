@@ -180,7 +180,12 @@ async def repair_item(
         )
 
     result = repair(owned, points, rng)
-    player.pay(player.price_here(result.price, moment, service), moment, service)
+    player.pay(
+        player.price_here(result.price, moment, service),
+        moment,
+        service,
+        note="Починка вещи",
+    )
     await db.save_player(player)
     if result.destroyed:
         await db.delete_gear(owned.id)

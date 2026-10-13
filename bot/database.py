@@ -28,6 +28,7 @@ from bot.game.clans import (
 )
 from bot.game.driving import School
 from bot.game.estate import Kept, Lease
+from bot.game.post import Parcel
 from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, get_injury
 from bot.game.insurance import Policy
@@ -35,7 +36,7 @@ from bot.game.looks import MALE
 from bot.game.modes import FightMode, mode_of
 from bot.game.potions import ActiveEffect, get_potion
 from bot.game.world import DEFAULT_CITY
-from bot.models import Player, Ring
+from bot.models import CardMove, Player, Ring
 
 logger = logging.getLogger(__name__)
 
@@ -556,6 +557,43 @@ CREATE TABLE IF NOT EXISTS flat_items (
 );
 
 CREATE INDEX IF NOT EXISTS flat_items_flat ON flat_items(flat_id);
+
+-- Посылка на почте. Вещь переезжает сюда из инвентаря целиком и так же
+-- выдаётся — получателю или, если срок вышел, обратно отправителю.
+-- `keep_until` ноль — до востребования; `back` — посылка едет назад
+CREATE TABLE IF NOT EXISTS parcels (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id    INTEGER NOT NULL,
+    to_id      INTEGER NOT NULL,
+    code       TEXT    NOT NULL,
+    wear       INTEGER NOT NULL DEFAULT 0,
+    max_wear   INTEGER NOT NULL DEFAULT 20,
+    mod        TEXT    NOT NULL DEFAULT '',
+    mod_value  INTEGER NOT NULL DEFAULT 0,
+    price      INTEGER NOT NULL DEFAULT 0,
+    sent_at    INTEGER NOT NULL DEFAULT 0,
+    keep_until INTEGER NOT NULL DEFAULT 0,
+    back       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS parcels_to ON parcels(to_id);
+CREATE INDEX IF NOT EXISTS parcels_from ON parcels(from_id);
+
+-- Выписка по карте: всё, что прошло по счёту. Наличные сюда не
+-- попадают — они ходят из рук в руки и следа не оставляют. `amount`
+-- со знаком: минус — списание, плюс — приход; `balance` — остаток
+-- после операции, чтобы выписку можно было сверить глазами
+CREATE TABLE IF NOT EXISTS card_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    at      INTEGER NOT NULL,
+    amount  INTEGER NOT NULL,
+    kind    TEXT    NOT NULL,
+    note    TEXT    NOT NULL DEFAULT '',
+    balance INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS card_log_user ON card_log(user_id, at);
 
 -- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
 -- ничего не задваивает, а новая группа получает всё с начала.
@@ -1091,6 +1129,8 @@ class Database:
             ),
         )
         await self.conn.commit()
+        # Выписка, принесённая из лавки: боец платил там, а пишем здесь
+        await self.flush_card_moves(player)
 
     async def delete_player(self, user_id: int) -> None:
         """Стереть бойца со всем нажитым.
@@ -1283,6 +1323,14 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
         return _to_player(row) if row else None
+
+    async def account_money(self, user_id: int) -> int:
+        """Остаток на счету одним числом — для строки чужой выписки."""
+        async with self.conn.execute(
+            "SELECT account_balance FROM players WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["account_balance"]) if row else 0
 
     async def move_to_account(self, user_id: int, amount: int) -> bool:
         """Положить наличные на свой счёт. False — столько наличных нет.
@@ -2592,6 +2640,303 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [self._lease(row) for row in rows]
+
+    # ---------- выписка по карте ----------
+
+    async def log_card(
+        self, user_id: int, amount: int, kind: str, note: str,
+        balance: int, now: int | None = None,
+    ) -> None:
+        """Записать одну операцию по счёту."""
+        await self.conn.execute(
+            """
+            INSERT INTO card_log (user_id, at, amount, kind, note, balance)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (user_id, now_ts() if now is None else now, amount, kind, note, balance),
+        )
+        await self.conn.commit()
+
+    async def flush_card_moves(self, player) -> None:
+        """Сложить в базу выписку, которую боец принёс с собой.
+
+        Зовётся из `save_player`: платят в лавке, а пишут здесь — иначе
+        каждая лавка ходила бы в базу сама и половина забывала бы.
+        """
+        moves = list(player.card_moves)
+        if not moves:
+            return
+        await self.conn.executemany(
+            """
+            INSERT INTO card_log (user_id, at, amount, kind, note, balance)
+            VALUES (?,?,?,?,?,?)
+            """,
+            [
+                (player.user_id, one.at, one.amount, one.kind, one.note, one.balance)
+                for one in moves
+            ],
+        )
+        await self.conn.commit()
+        player.card_moves.clear()
+
+    async def card_log(
+        self, user_id: int, since: int = 0, until: int = 0, limit: int = 200
+    ) -> list[CardMove]:
+        """Выписка за срок, новые операции первыми.
+
+        `since` и `until` — границы в секундах; нули означают «с начала»
+        и «по сей час». Потолок в двести строк — не экономия, а длина
+        экрана: дальше его всё равно никто не листает, а за точными
+        числами есть границы срока.
+        """
+        where = ["user_id = ?"]
+        args: list[int] = [user_id]
+        if since:
+            where.append("at >= ?")
+            args.append(since)
+        if until:
+            where.append("at <= ?")
+            args.append(until)
+        args.append(limit)
+        async with self.conn.execute(
+            f"""
+            SELECT at, amount, kind, note, balance FROM card_log
+            WHERE {" AND ".join(where)}
+            ORDER BY at DESC, id DESC LIMIT ?
+            """,
+            tuple(args),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            CardMove(
+                at=int(row["at"]),
+                amount=int(row["amount"]),
+                kind=str(row["kind"]),
+                note=str(row["note"]),
+                balance=int(row["balance"]),
+            )
+            for row in rows
+        ]
+
+    async def card_turnover(
+        self, user_id: int, since: int = 0, until: int = 0
+    ) -> tuple[int, int]:
+        """Приход и расход за срок: два числа под выпиской."""
+        where = ["user_id = ?"]
+        args: list[int] = [user_id]
+        if since:
+            where.append("at >= ?")
+            args.append(since)
+        if until:
+            where.append("at <= ?")
+            args.append(until)
+        async with self.conn.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN amount > 0 THEN amount END), 0) AS income,
+                COALESCE(SUM(CASE WHEN amount < 0 THEN -amount END), 0) AS spent
+            FROM card_log WHERE {" AND ".join(where)}
+            """,
+            tuple(args),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (int(row["income"]), int(row["spent"])) if row else (0, 0)
+
+    # ---------- почта: посылки между бойцами ----------
+
+    @staticmethod
+    def _parcel(row) -> Parcel:
+        return Parcel(
+            id=int(row["id"]),
+            from_id=int(row["from_id"]),
+            to_id=int(row["to_id"]),
+            code=str(row["code"]),
+            wear=int(row["wear"]),
+            max_wear=int(row["max_wear"]),
+            mod=str(row["mod"]),
+            mod_value=int(row["mod_value"]),
+            price=int(row["price"]),
+            sent_at=int(row["sent_at"]),
+            keep_until=int(row["keep_until"]),
+            back=bool(row["back"]),
+            from_name=str(row["from_name"] or "") if "from_name" in row.keys() else "",
+            to_name=str(row["to_name"] or "") if "to_name" in row.keys() else "",
+        )
+
+    _PARCEL_COLUMNS = """
+        p.*,
+        (SELECT nickname FROM players WHERE user_id = p.from_id) AS from_name,
+        (SELECT nickname FROM players WHERE user_id = p.to_id) AS to_name
+    """
+
+    async def parcel(self, parcel_id: int) -> Parcel | None:
+        """Одна посылка по номеру. None — её уже выдали."""
+        async with self.conn.execute(
+            f"SELECT {self._PARCEL_COLUMNS} FROM parcels p WHERE p.id = ?",
+            (parcel_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._parcel(row) if row else None
+
+    async def parcels_for(self, user_id: int) -> list[Parcel]:
+        """Что ждёт бойца на почте: присланное ему и вернувшееся к нему."""
+        async with self.conn.execute(
+            f"""
+            SELECT {self._PARCEL_COLUMNS} FROM parcels p
+            WHERE (p.back = 0 AND p.to_id = ?) OR (p.back = 1 AND p.from_id = ?)
+            ORDER BY p.sent_at, p.id
+            """,
+            (user_id, user_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._parcel(row) for row in rows]
+
+    async def parcels_from(self, user_id: int) -> list[Parcel]:
+        """Что боец отправил и чего ещё не забрали."""
+        async with self.conn.execute(
+            f"""
+            SELECT {self._PARCEL_COLUMNS} FROM parcels p
+            WHERE p.from_id = ? AND p.back = 0 AND p.to_id <> ?
+            ORDER BY p.sent_at, p.id
+            """,
+            (user_id, user_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._parcel(row) for row in rows]
+
+    async def waiting_count(self, user_id: int) -> int:
+        """Сколько посылок уже ждёт этого бойца."""
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM parcels WHERE to_id = ? AND back = 0",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["n"]) if row else 0
+
+    async def post_gear(
+        self, item_id: int, user_id: int, to_id: int, price: int,
+        keep_until: int, now: int,
+    ) -> Parcel | None:
+        """Отправить вещь из рюкзака посылкой. None — вещи нет или надета.
+
+        Вещь не копируется: сперва её забирают из инвентаря и только
+        потом кладут на полку почты.
+        """
+        async with self.conn.execute(
+            """
+            SELECT code, wear, max_wear, mod, mod_value FROM inventory
+            WHERE id = ? AND user_id = ? AND slot IS NULL
+            """,
+            (item_id, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        cursor = await self.conn.execute(
+            "DELETE FROM inventory WHERE id = ? AND user_id = ? AND slot IS NULL",
+            (item_id, user_id),
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - вещь увели между запросами
+            await self.conn.commit()
+            return None
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO parcels
+                (from_id, to_id, code, wear, max_wear, mod, mod_value,
+                 price, sent_at, keep_until, back)
+            VALUES (?,?,?,?,?,?,?,?,?,?,0)
+            """,
+            (
+                user_id, to_id, str(row["code"]), int(row["wear"]),
+                int(row["max_wear"]), str(row["mod"]), int(row["mod_value"]),
+                price, now, keep_until,
+            ),
+        )
+        await self.conn.commit()
+        logger.info("Боец %s отправил посылку бойцу %s", user_id, to_id)
+        return Parcel(
+            id=int(cursor.lastrowid or 0),
+            from_id=user_id,
+            to_id=to_id,
+            code=str(row["code"]),
+            wear=int(row["wear"]),
+            max_wear=int(row["max_wear"]),
+            mod=str(row["mod"]),
+            mod_value=int(row["mod_value"]),
+            price=price,
+            sent_at=now,
+            keep_until=keep_until,
+        )
+
+    async def hand_parcel(self, parcel_id: int, user_id: int) -> str:
+        """Выдать посылку этому бойцу: вещь уходит к нему в рюкзак.
+
+        Возвращает код вещи. Пусто — посылку уже выдали: между взглядом
+        на полку и нажатием кнопки проходит время.
+        """
+        async with self.conn.execute(
+            "SELECT code, wear, max_wear, mod, mod_value FROM parcels WHERE id = ?",
+            (parcel_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return ""
+        cursor = await self.conn.execute(
+            "DELETE FROM parcels WHERE id = ?", (parcel_id,)
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - посылку выдали дважды
+            await self.conn.commit()
+            return ""
+        await self.conn.execute(
+            """
+            INSERT INTO inventory (user_id, code, wear, max_wear, mod, mod_value)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (
+                user_id, str(row["code"]), int(row["wear"]), int(row["max_wear"]),
+                str(row["mod"]), int(row["mod_value"]),
+            ),
+        )
+        await self.conn.commit()
+        return str(row["code"])
+
+    async def return_parcel(self, parcel_id: int) -> None:
+        """Отправить посылку обратно: теперь её ждёт отправитель.
+
+        Наложенный платёж с возврата снимаем — за дорогу уже заплачено, и
+        брать с отправителя его же цену было бы разбоем. Срока у
+        возврата нет: это последняя полка, с которой вещь забирают.
+        """
+        await self.conn.execute(
+            "UPDATE parcels SET back = 1, price = 0, keep_until = 0 WHERE id = ?",
+            (parcel_id,),
+        )
+        await self.conn.commit()
+
+    async def overdue_parcels(self, now: int) -> list[Parcel]:
+        """Посылки, чей срок хранения вышел."""
+        async with self.conn.execute(
+            f"""
+            SELECT {self._PARCEL_COLUMNS} FROM parcels p
+            WHERE p.back = 0 AND p.keep_until > 0 AND p.keep_until <= ?
+            ORDER BY p.id
+            """,
+            (now,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._parcel(row) for row in rows]
+
+    async def pay_cash(self, user_id: int, amount: int) -> None:
+        """Дописать бойцу наличные, не собирая его целиком.
+
+        Нужно там, где деньги получает тот, кого сейчас нет в сети:
+        продавец на почте, хозяин съехавшей квартиры.
+        """
+        await self.conn.execute(
+            "UPDATE players SET credits = credits + ? WHERE user_id = ?",
+            (amount, user_id),
+        )
+        await self.conn.commit()
 
     # ---------- заявки и приглашения ----------
 

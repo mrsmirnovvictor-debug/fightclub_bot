@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from bot.bank_service import open_account
 from bot.content.work_quiz import grade, pass_mark, quiz_for
 from bot.database import Database
+from bot.game.bank import WAGE
 from bot.game.health import now_ts
 from bot.game.work import (
     COOLDOWN_SECONDS,
@@ -321,6 +322,7 @@ async def _pay(
     if paid:
         if player.has_account:
             player.account_balance += paid
+            player.note_card(paid, WAGE, f"Жалованье: {vacancy.title}", now)
         else:  # pragma: no cover - счёт открывают при приёме
             player.credits += paid
     player.job_minutes = 0
