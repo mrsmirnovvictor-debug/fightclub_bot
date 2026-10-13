@@ -984,6 +984,11 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .clan-sign.big { width: 28px; height: 28px; border-radius: 6px; }
 .head-clan { display: inline-flex; align-items: center; gap: 5px; }
+/* В шапке карточки знак стоит между значком класса и ником с премиумом,
+   а те рисуются глифами в 17–19 пикселей и занимают около двадцати.
+   Картинка в восемнадцать выглядела рядом с ними мельче всех — в
+   списках, где строка меньше, она на месте, а здесь ей нужен тот же рост */
+.head-clan .clan-sign { width: 20px; height: 20px; border-radius: 5px; }
 
 /* Строка участника клана: кнопки старших уезжают вправо и переносятся
    под строку, когда их много, — иначе ник сжимается в точку */
@@ -1862,19 +1867,17 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .raid-you {
   border: 1px solid var(--line);
   border-radius: 8px;
-  /* Фон обязателен: под верхнюю карту заходит следующая, и без фона она
-     просвечивала бы сквозь неё */
-  background: var(--slot);
   padding: 6px 8px;
   min-width: 0;
 }
-.raid-you.down { opacity: 0.55; }
+/* Выбывший блёкнет содержимым, а не целиком: прозрачная карта в колоде
+   показала бы ту, что лежит под ней, — а карта обязана крыть соседку */
+.raid-you.down > * { opacity: 0.55; }
 .boss-card {
   display: grid;
   gap: 2px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--slot);
   padding: 8px;
   min-width: 0;
 }
@@ -1913,8 +1916,9 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   padding: 14px 8px;
 }
 /* Павший остаётся на табло: по нему и видно, сколько банды уже легло, —
-   а убери их, и отряд не поймёт, идёт ли дело к концу */
-.boss-card.dropped, .stack-card.down { opacity: 0.55; }
+   а убери их, и отряд не поймёт, идёт ли дело к концу. Блёкнет он
+   содержимым, а не картой: саму карту гасить нельзя, она кроет соседку */
+.boss-card.dropped > *, .stack-card.down > * { opacity: 0.55; }
 .boss-card.dropped .fight-name,
 .stack-card.down .fight-name { text-decoration: line-through; }
 /* Карта колоды. Видна у неё только верхняя часть — имя и шкала: низ
@@ -1927,7 +1931,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   position: relative;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--slot);
   /* Снизу у карточки запас: он и есть то, что прячет соседка сверху.
      Без него нахлёст не на чем показать — карточки сошлись бы встык и
      читались списком, а не колодой */
@@ -1937,6 +1940,19 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* Тень по верхней кромке соседки: ею и видно, что карта лежит под ней, а
    не нарисована впритык */
 .stack-card { box-shadow: 0 -2px 3px rgba(0, 0, 0, 0.1); }
+
+/* Карты колоды кроют друг друга — значит, должны быть непрозрачными.
+   `--slot` полупрозрачен нарочно: обычно он ложится на фон страницы и
+   даёт мягкую подложку. Здесь под ним лежит другая карта, и её низ
+   просвечивал сквозь верхнюю. Красим в два слоя: сперва фон страницы,
+   поверх — тот же `--slot`. Цвет выходит ровно прежний, но сквозь карту
+   больше ничего не видно */
+.raid-you,
+.boss-card,
+.stack-card {
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--slot), var(--slot));
+}
 .stack-head {
   display: flex;
   align-items: baseline;

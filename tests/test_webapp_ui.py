@@ -4804,6 +4804,56 @@ async def test_the_group_board_stacks_everyone_else(server):
         await browser.close()
 
 
+async def test_the_board_cards_hide_what_lies_under_them(server):
+    """Карточки колоды непрозрачны: низ нижней карты не просвечивает.
+
+    Карты лежат внахлёст, и `--slot` у них полупрозрачный — на обычном
+    экране он ложится на фон страницы, а в колоде под ним оказывалась
+    соседняя карта. Выбывший блёкнет содержимым, а не картой: погаси
+    карту целиком, и сквозь неё снова видно нижнюю.
+    """
+    battle = battle_with_round()
+    party = battle["battle"]["party"]
+    battle["battle"]["party"] = party + [
+        {
+            "user_id": 44, "name": "Тайлер", "level": 6, "emoji": "🛡️",
+            "hp": 50, "max_hp": 110, "percent": 45, "damage_dealt": 20,
+            "alive": True, "team": 0, "team_title": "Красные",
+            "rival_id": None, "rival": None, "ready": True, "you": False,
+        },
+        {
+            "user_id": 45, "name": "Зевака", "level": 3, "emoji": "🤸",
+            "hp": 0, "max_hp": 80, "percent": 0, "damage_dealt": 5,
+            "alive": False, "team": 0, "team_title": "Красные",
+            "rival_id": None, "rival": None, "ready": True, "you": False,
+        },
+    ]
+    async with async_playwright() as pw:
+        browser, page = await open_squad(pw, server, battle)
+
+        # Ни одна карта доски не прозрачна: ни фоном, ни целиком
+        opaque = await page.evaluate(
+            """() => [...document.querySelectorAll(
+                '#club-battle .raid-you, #club-battle .boss-card,'
+                + ' #club-battle .stack-card')].map((one) => {
+                const style = getComputedStyle(one);
+                return [one.className, style.backgroundColor, style.opacity];
+            })"""
+        )
+        assert opaque, "доска пуста — проверять нечего"
+        for name, colour, alpha in opaque:
+            assert "rgba" not in colour, f"{name}: фон просвечивает ({colour})"
+            assert alpha == "1", f"{name}: карта погашена целиком"
+
+        # Выбывший всё равно блёклый — но блёкнет его содержимое
+        fallen = page.locator("#club-battle .stack-card.down").first
+        inside = await fallen.locator(".stack-head").evaluate(
+            "(one) => getComputedStyle(one).opacity"
+        )
+        assert inside == "0.55"
+        await browser.close()
+
+
 async def test_the_group_board_keeps_the_place_of_a_missing_rival(server):
     """Пары в этом ходу не досталось — место соперника всё равно занято."""
     battle = battle_with_round()
@@ -9685,6 +9735,63 @@ async def test_the_clan_line_in_the_card_opens_the_family(server):
         assert await page.evaluate("window.sent") == {
             "action": "promote", "user": 44
         }
+        await browser.close()
+
+
+async def test_the_clan_sign_in_the_head_is_as_big_as_its_neighbours(server):
+    """Знак клана в шапке карточки не мельче значка класса и премиума.
+
+    В шапке рядом с ним стоят эмодзи — они рисуются глифом и занимают
+    около двадцати пикселей. Картинка в восемнадцать выглядела там
+    мельче всех; в списках, где строка меньше, она на месте.
+    """
+    player = make_player()
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Шапка одна и та же в карточке и в рюкзаке — меряем обе. Мерим
+        # одним заходом в страницу: карточка перерисовывается
+        # сердцебиением, и между двумя замерами знак успевает смениться
+        for tab, screen in (("hero", "#hero"), ("bag", "#bag")):
+            await open_screen(page, tab)
+            sign, fclass = await page.evaluate(
+                """(screen) => {
+                    const size = (selector) => {
+                        const one = document.querySelector(screen + ' ' + selector);
+                        const box = one.getBoundingClientRect();
+                        return [box.width, box.height];
+                    };
+                    return [size('.head-clan .clan-sign'), size('.head-class')];
+                }""",
+                screen,
+            )
+            assert sign == [20, 20], screen
+            # И не мельче соседа: значок класса рядом рисуется эмодзи
+            assert sign[1] >= fclass[1] * 0.8, screen
+
+        # А в списках знак остаётся прежним: там и строка мельче
+        row = await page.evaluate(
+            """() => {
+                const box = document.createElement('div');
+                box.className = 'fighter';
+                const sign = document.createElement('img');
+                sign.className = 'clan-sign';
+                box.appendChild(sign);
+                document.body.appendChild(box);
+                const size = sign.getBoundingClientRect().height;
+                box.remove();
+                return size;
+            }"""
+        )
+        assert row == 18
         await browser.close()
 
 
