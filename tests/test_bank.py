@@ -945,7 +945,8 @@ async def test_every_place_signs_the_statement_in_its_own_words(db):
     player = await with_card(db, make_player(credits=5_000))
     await deposit(db, player, 4_000, NOW)
     player.pay_from = CARD
-    guest = await stand(db, make_player(43, "Марла", location="post_office"))
+    # Получатель посылки: отправить её надо кому-то живому
+    await stand(db, make_player(43, "Марла", location="post_office"))
     owned = await db.add_gear(player.user_id, "bandana")
     player.gear = await db.list_gear(player.user_id)
 

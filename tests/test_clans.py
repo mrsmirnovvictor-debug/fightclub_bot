@@ -860,44 +860,69 @@ async def test_the_worn_thing_goes_nowhere(db):
     assert await db.clan_items(don.clan.clan.id) == []
 
 
-async def test_the_mansion_shows_the_family_and_the_estate(client, db):
-    """Особняк отвечает тремя вкладками: кланы, состав и имущество."""
+async def test_the_mansion_opens_a_clan_with_its_three_tabs(client, db):
+    """Особняк в два колена: список кланов, а по нажатию — сам клан.
+
+    Открытый клан едет полем `opened`: состав, имущество и настройки
+    одной записью. Пока клан не открыт, в ответе его нет — список
+    кланов тащить за собой чужие сейфы не должен.
+    """
     don, (soldier,) = await family(db, members=1)
     don.credits = 500
     await db.save_player(don)
     item_id = await stock(db, don)
+    clan_id = don.clan.clan.id
 
+    body = await (await client.get("/api/mafia", headers=headers())).json()
+    assert body["opened"] == {}, "список кланов открывается без клана"
+    assert [one["id"] for one in body["clans"]] == [clan_id]
+
+    body = await (
+        await client.get(f"/api/mafia?clan={clan_id}", headers=headers())
+    ).json()
+    opened = body["opened"]
+    assert opened["id"] == clan_id and opened["mine"] is True
+    assert opened["clan"]["rank_title"] == "Дон"
+    assert [one["nickname"] for one in opened["members"]] == ["Тайлер", "Боец-0"]
+    assert opened["can_admin"] is True and opened["is_don"] is True
+    assert opened["estate"]["vault"] == 0
+
+    # Действия помнят, какой клан открыт: страница шлёт его сама
     answer = await client.post(
-        "/api/mafia", headers=headers(), json={"action": "deposit", "amount": 400}
+        "/api/mafia",
+        headers=headers(),
+        json={"action": "deposit", "amount": 400, "open": clan_id},
     )
     assert answer.status == 200, await answer.text()
-    body = await answer.json()
-    assert body["estate"]["vault"] == 400 and body["estate"]["can_take"] is True
-    assert body["estate"]["slots"] == VAULT_SLOTS
-    assert [one["title"] for one in body["estate"]["bag"]] == ["Бандана"]
-    # Состав едет тем же ответом: по нему и рисуется вкладка «Состав»
-    assert [one["nickname"] for one in body["family"]["members"]] == [
-        "Тайлер", "Боец-0"
-    ]
+    estate = (await answer.json())["opened"]["estate"]
+    assert estate["vault"] == 400 and estate["can_take"] is True
+    assert estate["slots"] == VAULT_SLOTS
+    assert [one["title"] for one in estate["bag"]] == ["Бандана"]
 
     answer = await client.post(
-        "/api/mafia", headers=headers(), json={"action": "stash", "item": item_id}
+        "/api/mafia",
+        headers=headers(),
+        json={"action": "stash", "item": item_id, "open": clan_id},
     )
     assert answer.status == 200, await answer.text()
-    body = await answer.json()
-    stored = body["estate"]["items"]
+    estate = (await answer.json())["opened"]["estate"]
+    stored = estate["items"]
     assert [one["title"] for one in stored] == ["Бандана"]
-    assert stored[0]["by"] == "Тайлер" and body["estate"]["free"] == VAULT_SLOTS - 1
-    assert body["estate"]["bag"] == []
+    assert stored[0]["by"] == "Тайлер" and estate["free"] == VAULT_SLOTS - 1
+    assert estate["bag"] == []
 
     # Мафиози видит и сейф, и полки, а кнопок «взять» у него нет
-    body = await (await client.get("/api/mafia", headers=headers(100))).json()
-    assert body["estate"]["vault"] == 400 and body["estate"]["can_take"] is False
+    body = await (
+        await client.get(f"/api/mafia?clan={clan_id}", headers=headers(100))
+    ).json()
+    assert body["opened"]["estate"]["vault"] == 400
+    assert body["opened"]["estate"]["can_take"] is False
+    assert body["opened"]["requests"] == [], "заявки — дело старших"
 
     answer = await client.post(
         "/api/mafia",
         headers=headers(100),
-        json={"action": "take", "item": stored[0]["id"]},
+        json={"action": "take", "item": stored[0]["id"], "open": clan_id},
     )
     assert answer.status == 409
     assert "Дон и приближённые" in (await answer.json())["error"]
@@ -905,9 +930,37 @@ async def test_the_mansion_shows_the_family_and_the_estate(client, db):
     answer = await client.post(
         "/api/mafia",
         headers=headers(),
-        json={"action": "take", "item": stored[0]["id"]},
+        json={"action": "take", "item": stored[0]["id"], "open": clan_id},
     )
     assert answer.status == 200, await answer.text()
-    body = await answer.json()
-    assert body["estate"]["items"] == []
-    assert [one["title"] for one in body["estate"]["bag"]] == ["Бандана"]
+    estate = (await answer.json())["opened"]["estate"]
+    assert estate["items"] == []
+    assert [one["title"] for one in estate["bag"]] == ["Бандана"]
+
+
+async def test_a_strangers_clan_opens_with_its_roster_alone(client, db):
+    """Чужой клан открывается составом: ни сейфа, ни заявок в ответе нет."""
+    don, _ = await family(db, members=1)
+    clan_id = don.clan.clan.id
+    guest = await enlist(db, 60, "Гость")
+    await db.save_player(guest)
+
+    body = await (
+        await client.get(f"/api/mafia?clan={clan_id}", headers=headers(60))
+    ).json()
+    opened = body["opened"]
+    assert opened["id"] == clan_id and opened["mine"] is False
+    assert [one["nickname"] for one in opened["members"]] == ["Тайлер", "Боец-0"]
+    assert opened["estate"] == {} and opened["requests"] == []
+    assert opened["can_admin"] is False and opened["is_don"] is False
+    # И кнопок на чужих бойцах у гостя нет никаких
+    assert not any(
+        one["can_expel"] or one["can_promote"] or one["can_handover"]
+        for one in opened["members"]
+    )
+
+    # Клана с таким номером нет — открывается список
+    body = await (
+        await client.get("/api/mafia?clan=999", headers=headers(60))
+    ).json()
+    assert body["opened"] == {}

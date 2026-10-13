@@ -139,6 +139,7 @@ from bot.driving_service import (
 )
 from bot.webapp.clans import (
     build_clan,
+    build_clan_page,
     build_estate,
     build_mansion,
     invites_payload,
@@ -1922,26 +1923,46 @@ async def api_invoice(request: web.Request) -> web.Response:
 # ---------- мафия: особняк и своя семья ----------
 
 
+async def _opened_clan(db, config, player, clan_id: int) -> dict:
+    """Открытый в особняке клан. Пусто — открыт список, а не клан.
+
+    Чужой клан открывается одним составом: имущество и заявки — дела
+    семьи, и в ответ они кладутся только своему. Прятать их на странице
+    было бы не прятать: что уехало в браузер, то уже видно.
+    """
+    if not clan_id:
+        return {}
+    roster = await db.roster_of(clan_id)
+    if roster is None:
+        return {}
+    standing = player.clan
+    mine = bool(standing and standing.clan.id == clan_id)
+    requests: list = []
+    invites: list = []
+    estate: dict = {}
+    if mine:
+        if standing is not None and standing.can_admin:
+            requests = await db.petitions_of_clan(clan_id, Petition.REQUEST)
+            invites = await db.petitions_of_clan(clan_id, Petition.INVITE)
+        estate = build_estate(player, await db.clan_items(clan_id))
+    return build_clan_page(
+        player, roster, requests, invites, estate, config.bot_token
+    )
+
+
 async def _mansion_state(
-    request: web.Request, player, said: str = ""
+    request: web.Request, player, said: str = "", clan_id: int = 0
 ) -> web.Response:
     db = request.app[DB_KEY]
     config = request.app[CONFIG_KEY]
     clans = await db.all_clans()
     knocks = await db.petitions_of_user(player.user_id, Petition.REQUEST)
-    # Две внутренние вкладки особняка: состав семьи и её имущество.
-    # Одиночке там нечего смотреть, и база за ними не ходит
-    family = build_clan(player, *await _family(db, player), config.bot_token)
-    items = (
-        await db.clan_items(player.clan.clan.id) if player.clan is not None else []
-    )
     body = build_mansion(
         player,
         clans,
         knocks,
         config.bot_token,
-        family=family,
-        estate=build_estate(player, items),
+        opened=await _opened_clan(db, config, player, clan_id),
     )
     body["said"] = said
     body["card"] = build_card(player, config.bot_token, player.user_id)
@@ -1949,9 +1970,11 @@ async def _mansion_state(
 
 
 async def api_mansion(request: web.Request) -> web.Response:
-    """Особняк мафии: кланы города, состав своей семьи и её имущество."""
+    """Особняк мафии: список кланов, а по `clan` — и открытый клан."""
     player = await _at(request, Service.MAFIA)
-    return await _mansion_state(request, player)
+    return await _mansion_state(
+        request, player, clan_id=_query_int(request, "clan")
+    )
 
 
 async def api_mansion_action(request: web.Request) -> web.Response:
@@ -1997,7 +2020,12 @@ async def api_mansion_action(request: web.Request) -> web.Response:
     except (TypeError, ValueError):
         return web.json_response({"error": "Непонятный ответ."}, status=400)
     fresh = await db.get_player(player.user_id) or player
-    return await _mansion_state(request, fresh, said)
+    # Какой клан был открыт, тот и остаётся: страница присылает его сама,
+    # а ушедший из семьи возвращается к списку
+    opened = int(data.get("open", 0) or 0)
+    if action == "leave":
+        opened = 0
+    return await _mansion_state(request, fresh, said, clan_id=opened)
 
 
 async def _family(db, player) -> tuple:

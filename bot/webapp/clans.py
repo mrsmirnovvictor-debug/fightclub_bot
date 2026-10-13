@@ -4,12 +4,15 @@
 `bot.game.clans`, действия — в `bot.clan_service`, хранение — в
 `bot.database`.
 
-Один экран, три вкладки и одна строка. Особняк — про весь город:
-«Кланы» заводят и выбирают семью, «Состав» разбирает чины и заявки,
-«Имущество» держит сейф и хранилище. Тот же состав едет отдельным
-ответом в карточку бойца: под местоположением стоит имя клана, и по
-нему открывается то же окно — чтобы поднять или выгнать бойца, не
-переходя через полгорода.
+Особняк устроен в два колена. Первое — список кланов города: свой с
+галочкой и крестиком выхода, чужие с дверью заявки. Второе — открытый
+клан: «Состав», «Имущество» и «Настройки». Чужой клан открывается
+одним составом: имущество и настройки — дела семьи, и смотреть их
+чужими глазами нечего.
+
+Тот же состав едет отдельным ответом в карточку бойца: под
+местоположением стоит имя клана, и по нему открывается то же окно —
+чтобы поднять или выгнать бойца, не переходя через полгорода.
 
 А строка одна на все списки города: класс, знак клана, ник, премиум,
 уровень — ровно в этом порядке, и собирает её `member_row`.
@@ -197,23 +200,94 @@ def knock_row(
     return row
 
 
+def build_clan_page(
+    player: Player,
+    roster: Roster,
+    requests: list[Knock] | None = None,
+    invites: list[Knock] | None = None,
+    estate: dict[str, Any] | None = None,
+    bot_token: str = "",
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Открытый клан: состав, имущество и настройки одной записью.
+
+    Собирается для любого клана, не только своего: по чужому видно, кто
+    в нём состоит, — за этим в список и заходят, прежде чем постучаться.
+    Кнопки чинов на чужой строке не появятся: кому что можно, решает
+    `member_row`, а не вкладка.
+
+    Имущество и заявки сюда кладут только для своей семьи. Чужой сейф —
+    не наше дело, и в ответе его нет вовсе: прятать на странице то, что
+    уже уехало в браузер, значит не прятать.
+    """
+    moment = now_ts() if now is None else now
+    clan = roster.clan
+    standing = player.clan
+    mine = bool(standing and standing.clan.id == clan.id)
+    admin = bool(mine and standing and standing.can_admin)
+    rows = [
+        member_row(member, clan, bot_token, moment, player)
+        for member in sorted(
+            roster.members, key=lambda one: (one.rank.order, one.joined_at)
+        )
+    ]
+    by_rank = {rank: [row for row in rows if row["rank"] == rank.value] for rank in Rank}
+    head = clan_payload(clan, bot_token, moment)
+    if mine and standing is not None:
+        head = dict(head, rank=standing.rank.value, rank_title=standing.rank.title)
+    return {
+        "id": clan.id,
+        "mine": mine,
+        "clan": head,
+        "can_admin": admin,
+        "is_don": bool(mine and standing and standing.is_don),
+        "max_capos": MAX_CAPOS,
+        "free_capo_seats": roster.free_capo_seats,
+        # Семья тремя рядами: Дон, приближённые, мафиози
+        "ranks": [
+            {
+                "code": rank.value,
+                "title": rank.plural,
+                "members": by_rank[rank],
+                "limit": MAX_CAPOS if rank is Rank.CAPO else 0,
+            }
+            for rank in Rank
+        ],
+        "members": rows,
+        # Заявки и свои приглашения видят только старшие: мафиози эти
+        # списки не решает, и показывать ему чужие ники незачем
+        "requests": [
+            knock_row(knock, bot_token, moment) for knock in (requests or [])
+        ]
+        if admin
+        else [],
+        "invites": [
+            knock_row(knock, bot_token, moment) for knock in (invites or [])
+        ]
+        if admin
+        else [],
+        "estate": estate if (mine and estate) else {},
+        "rename_price": RENAME_PRICE,
+        "rename_days": RENAME_DAYS,
+        "name_min": NAME_MIN,
+        "name_max": NAME_MAX,
+    }
+
+
 def build_mansion(
     player: Player,
     clans: list[Clan],
     knocks: list[Knock],
     bot_token: str,
     now: int | None = None,
-    family: dict[str, Any] | None = None,
-    estate: dict[str, Any] | None = None,
+    opened: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Экран особняка тремя вкладками: кланы, состав и имущество.
+    """Экран особняка: список кланов, а при `opened` — и открытый клан.
 
     `knocks` — заявки самого бойца: по ним в списке и видно, куда он уже
-    стучался и что можно отозвать. `family` и `estate` — две внутренние
-    вкладки: их собирают `build_clan` и `build_estate`, а здесь они
-    только складываются в один ответ, чтобы страница не ходила за
-    особняком трижды. Пусто — боец ни в какой семье, и показывать там
-    нечего.
+    стучался и что можно отозвать. `opened` собирает `build_clan_page`:
+    клан открывают нажатием, и держать его страницей отдельно от списка
+    незачем — ответ один, и в нём видно, что открыто.
     """
     moment = now_ts() if now is None else now
     standing = player.clan
@@ -249,13 +323,9 @@ def build_mansion(
             )
             for clan in clans
         ],
-        # Две внутренние вкладки одним ответом: «Состав» и «Имущество»
-        "family": family
-        if family is not None
-        else build_clan(player, None, [], [], bot_token, moment),
-        "estate": estate
-        if estate is not None
-        else build_estate(player, [], moment),
+        # Открытый клан, если в список уже ткнули. Пусто — показывают
+        # сам список
+        "opened": opened or {},
         "note": mansion_note(player),
         "said": "",
     }
@@ -284,13 +354,13 @@ def mansion_note(player: Player) -> str:
         )
     if standing.is_don:
         return (
-            f"Ты Дон клана «{standing.clan.name}». Состав и имущество — на "
-            "соседних вкладках; уйти можно, только передав дела другому."
+            f"Ты Дон клана «{standing.clan.name}». Нажми на семью в списке: "
+            "там состав, имущество и настройки."
         )
     return (
         f"Ты в клане «{standing.clan.name}», чин — "
-        f"{standing.rank.title.lower()}. Состав и имущество — на соседних "
-        "вкладках."
+        f"{standing.rank.title.lower()}. Нажми на семью в списке: там "
+        "состав и имущество."
     )
 
 
@@ -447,6 +517,7 @@ def invites_payload(
 
 __all__ = [
     "build_clan",
+    "build_clan_page",
     "build_estate",
     "build_mansion",
     "clan_payload",

@@ -272,23 +272,44 @@ def stored_things(*codes: str) -> list:
     ]
 
 
-def don_mansion(vault: int = 400, items=(), bag=("bandana",), **changes) -> dict:
-    """Особняк глазами Дона: все три вкладки одним ответом."""
-    from bot.webapp.clans import build_clan, build_estate, build_mansion
+async def mansion_pages(page, listing: dict, opened: dict) -> None:
+    """Особняк на две страницы: список кланов и открытый клан.
+
+    Подменённая ручка отвечает одним и тем же на любой запрос, а особняк
+    теперь спрашивает по-разному: список — без клана, клан — с номером.
+    Отсюда своя подмена: по адресу и видно, что просили.
+    """
+    async def answer(route):
+        url = route.request.url
+        body = opened if ("clan=" in url or route.request.method == "POST") else listing
+        await route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        )
+
+    await page.route("**/api/mafia*", answer)
+
+
+def don_mansion(
+    vault: int = 400, items=(), bag=("bandana",), opened: bool = True,
+    requests=(), invites=(), **changes,
+) -> dict:
+    """Особняк глазами Дона. `opened` — клан уже открыт из списка."""
+    from bot.webapp.clans import build_clan_page, build_estate, build_mansion
 
     don, roster = a_family(vault)
     don.gear = [
         OwnedItem(item=CATALOGUE[code], id=number + 1)
         for number, code in enumerate(bag)
     ]
-    body = build_mansion(
-        don,
-        [roster.clan],
-        [],
-        TOKEN,
-        family=build_clan(don, roster, [], [], TOKEN),
-        estate=build_estate(don, list(items)),
+    page = (
+        build_clan_page(
+            don, roster, list(requests), list(invites),
+            build_estate(don, list(items)), TOKEN,
+        )
+        if opened
+        else {}
     )
+    body = build_mansion(don, [roster.clan], [], TOKEN, opened=page)
     body.update(changes)
     return body
 
@@ -9667,16 +9688,25 @@ async def test_the_mansion_offers_a_clan_and_lists_the_families(server):
         assert await page.locator("#sign-grid .sign.picked").count() == 1
         assert await page.locator("#clan-name").input_value() == "Кровавые черепа"
 
-        # В первую семью можно постучаться, во второй уже лежит заявка
-        cards = page.locator(".clan-card")
-        assert await cards.count() == 2
-        assert "Коза Ностра" in await cards.nth(0).inner_text()
-        assert "В семье 3 из 25" in await cards.nth(0).inner_text()
-        buttons = await cards.nth(0).locator(".btn").all_inner_texts()
-        assert buttons == ["Подать заявку"]
-        assert await cards.nth(1).locator(".btn").all_inner_texts() == [
+        # В первую семью можно постучаться, во второй уже лежит заявка.
+        # Дела в списке — значками: дверь, песочные часы, крестик
+        rows = page.locator(".clan-item")
+        assert await rows.count() == 2
+        assert "Коза Ностра" in await rows.nth(0).inner_text()
+        assert "В семье 3 из 25" in await rows.nth(0).inner_text()
+        knock = rows.nth(0).locator(".icon-btn")
+        assert await knock.inner_text() == "➡️🚪"
+        assert await knock.get_attribute("title") == "Подать заявку"
+        assert await rows.nth(1).locator(".icon-btn").get_attribute("title") == (
             "Отозвать заявку"
-        ]
+        )
+
+        # Нажатие на саму строку открывает клан: за составом идёт запрос
+        asked = []
+        page.on("request", lambda one: asked.append(one.url))
+        await rows.nth(0).locator(".clan-open").click()
+        await page.wait_for_function("() => mafiaOpen === 1", timeout=3_000)
+        assert any("clan=1" in url for url in asked)
         await browser.close()
 
 
@@ -9739,11 +9769,13 @@ async def test_the_clan_line_in_the_card_opens_the_family(server):
 
 
 async def test_the_clan_sign_in_the_head_is_as_big_as_its_neighbours(server):
-    """Знак клана в шапке карточки не мельче значка класса и премиума.
+    """Знак клана в шапке: того же роста, что соседи, и на одной с ними линии.
 
     В шапке рядом с ним стоят эмодзи — они рисуются глифом и занимают
     около двадцати пикселей. Картинка в восемнадцать выглядела там
-    мельче всех; в списках, где строка меньше, она на месте.
+    мельче всех; в списках, где строка меньше, она на месте. И стояла
+    выше прочих: у картинки нижний край и есть её черта строки, а эмодзи
+    свисают под черту.
     """
     player = make_player()
     player.clan = Standing(
@@ -9777,6 +9809,19 @@ async def test_the_clan_sign_in_the_head_is_as_big_as_its_neighbours(server):
             # И не мельче соседа: значок класса рядом рисуется эмодзи
             assert sign[1] >= fclass[1] * 0.8, screen
 
+            # А ещё все значки шапки стоят на одной линии: середины сходятся
+            middles = await page.evaluate(
+                """(screen) => ['.head-class', '.head-clan .clan-sign',
+                                '.head-name', '.head-level'].map((selector) => {
+                    const box = document
+                        .querySelector(screen + ' ' + selector)
+                        .getBoundingClientRect();
+                    return Math.round(box.top + box.height / 2);
+                })""",
+                screen,
+            )
+            assert max(middles) - min(middles) <= 1, (screen, middles)
+
         # А в списках знак остаётся прежним: там и строка мельче
         row = await page.evaluate(
             """() => {
@@ -9796,11 +9841,11 @@ async def test_the_clan_sign_in_the_head_is_as_big_as_its_neighbours(server):
 
 
 async def test_the_family_stands_in_three_rows_with_its_marks(server):
-    """Вкладка «Состав» в особняке: Дон, приближённые, мафиози.
+    """Открытый клан: «Состав» — три чина, и больше ничего.
 
     Порядок знаков в строке один на весь город: класс, знак клана, ник,
-    премиум, уровень. Права Дон передаёт со своей строки — выпадающим
-    списком, а не кнопкой у каждого бойца: в семье их до двадцати пяти.
+    премиум, уровень. Заявки, приглашения, передача прав и имя семьи
+    уехали в «Настройки»: состав — это список людей, а не пульт.
     """
     player = make_player("mafia_mansion")
     player.clan = Standing(
@@ -9811,22 +9856,30 @@ async def test_the_family_stands_in_three_rows_with_its_marks(server):
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     async with async_playwright() as pw:
-        browser, page = await open_page(pw, server, card, mafia=don_mansion())
+        browser, page = await open_page(pw, server, card)
+        await mansion_pages(page, don_mansion(opened=False), don_mansion())
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "mafia")
         await page.wait_for_selector("#mafia-clans .shelf")
 
-        # Три вкладки одного дома, и своя семья в списке с галочкой
+        # В списке одна вкладка — он сам, и своя семья с галочкой
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
-            "🎩 Кланы", "👔 Состав", "💼 Имущество"
+            "🎩 Кланы"
         ]
-        assert "✅ Коза Ностра" in await page.locator(".clan-card").inner_text()
+        row = page.locator(".clan-item")
+        assert "✅ Коза Ностра" in await row.inner_text()
+        assert await row.locator(".icon-btn").get_attribute("title") == (
+            "Выйти из клана"
+        )
 
-        await page.locator("#mafia-tabs .chip", has_text="Состав").click()
+        # Нажали на клан — открылись его вкладки
+        await row.locator(".clan-open").click()
         await page.wait_for_selector("#mafia-family:not(.hidden)")
+        assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
+            "← Кланы", "👔 Состав", "💼 Имущество", "⚙️ Настройки"
+        ]
         heads = await page.locator("#mafia-family .shelf-head").all_inner_texts()
-        assert heads == ["Заявки · 0", "Дон", "Приближённые · 1 из 3",
-                         "Мафиози", "Позвать в семью"]
+        assert heads == ["Дон", "Приближённые · 1 из 3", "Мафиози"]
 
         # Строка приближённой: класс, знак клана, ник с премиумом, уровень
         capo = page.locator("#mafia-family .clan-row", has_text="Марла")
@@ -9837,11 +9890,59 @@ async def test_the_family_stands_in_three_rows_with_its_marks(server):
         assert await capo.locator(".btn").all_inner_texts() == [
             "Разжаловать", "Выгнать"
         ]
-        # А на себе у Дона одна кнопка — передача прав
+        # На себе у Дона кнопок нет: передача прав ушла в настройки
         don = page.locator("#mafia-family .clan-row", has_text="Растафарайчик")
-        assert await don.locator(".btn").all_inner_texts() == ["Передать права"]
+        assert await don.locator(".btn").count() == 0
+        await browser.close()
 
-        # Окно передачи прав: список семьи, свой чин и две кнопки
+
+async def test_the_settings_tab_holds_the_deeds_of_the_family(server):
+    """«Настройки»: заявки, приглашения, передача прав и имя семьи."""
+    from bot.game.clans import Knock, Petition
+
+    player = make_player("mafia_mansion")
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=now_ts(),
+                  sign="black_ravens", members=3),
+        rank=Rank.DON,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    knock = Knock(
+        clan_id=1, user_id=77, kind=Petition.REQUEST, nickname="Гость",
+        level=4, class_code="rogue", created_at=now_ts(),
+    )
+    sent = Knock(
+        clan_id=1, user_id=78, kind=Petition.INVITE, nickname="Боб",
+        level=6, class_code="tank", created_at=now_ts(),
+    )
+    opened = don_mansion(requests=(knock,), invites=(sent,))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await mansion_pages(page, don_mansion(opened=False), opened)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+
+        await page.locator("#mafia-tabs .chip", has_text="Настройки").click()
+        await page.wait_for_selector("#mafia-settings:not(.hidden)")
+        heads = await page.locator("#mafia-settings .shelf-head").all_inner_texts()
+        assert heads == [
+            "Заявки · 1", "Позвать в семью", "Передать права", "Сменить имя"
+        ]
+        # Заявка с кнопками и список позванных — всё здесь
+        knocked = page.locator("#mafia-settings .clan-row", has_text="Гость")
+        assert await knocked.locator(".btn").all_inner_texts() == [
+            "Принять", "Отклонить"
+        ]
+        assert "Позваны и думают: Боб" in await page.locator(
+            "#mafia-settings"
+        ).inner_text()
+        assert await page.locator("#clan-rename").count() == 1
+
+        # Передача прав: окно со списком семьи и выбором своего чина
         await page.evaluate(
             """() => {
                 window.clanAction = (payload) => {
@@ -9850,7 +9951,9 @@ async def test_the_family_stands_in_three_rows_with_its_marks(server):
                 };
             }"""
         )
-        await don.locator(".btn", has_text="Передать права").click()
+        await page.locator(
+            "#mafia-settings .btn", has_text="Выбрать преемника"
+        ).click()
         await page.wait_for_selector("#sheet:not(.hidden)")
         heirs = await page.locator("#handover-heir option").all_inner_texts()
         assert heirs == ["Марла · Приближённый", "Ангел · Мафиози"]
@@ -9878,13 +9981,16 @@ async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
         rank=Rank.DON,
     )
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    mafia = don_mansion(vault=400, items=stored_things("pipe"))
+    opened = don_mansion(vault=400, items=stored_things("pipe"))
 
     async with async_playwright() as pw:
-        browser, page = await open_page(pw, server, card, mafia=mafia)
+        browser, page = await open_page(pw, server, card)
+        await mansion_pages(page, don_mansion(opened=False), opened)
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "mafia")
         await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
 
         await page.locator("#mafia-tabs .chip", has_text="Имущество").click()
         await page.wait_for_selector("#mafia-estate:not(.hidden)")
@@ -9935,22 +10041,48 @@ async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
         await browser.close()
 
 
-async def test_a_loner_sees_only_the_clans_tab(server):
-    """У одиночки в особняке одна вкладка: состав и сейф чужой семьи не его."""
+async def test_a_stranger_clan_opens_with_its_roster_alone(server):
+    """Чужой клан открывается одним составом: имущество и настройки — свои."""
     player = make_player("mafia_mansion")
     card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # Тот же клан, но боец в нём не состоит: смотрит со стороны
+    from bot.webapp.clans import build_clan_page, build_mansion
+
+    _, roster = a_family()
+    guest = make_player("mafia_mansion")
+    listing = build_mansion(guest, [roster.clan], [], TOKEN)
+    opened = build_mansion(
+        guest, [roster.clan], [], TOKEN,
+        opened=build_clan_page(guest, roster, bot_token=TOKEN),
+    )
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card)
+        await mansion_pages(page, listing, opened)
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "mafia")
         await page.wait_for_selector("#mafia-clans .shelf")
 
+        # В списке у одиночки одна вкладка — он сам
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
             "🎩 Кланы"
         ]
         assert await page.locator("#mafia-family").is_hidden()
         assert await page.locator("#mafia-estate").is_hidden()
+
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+        # У чужой семьи только состав: ни сейфа, ни настроек
+        assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
+            "← Кланы", "👔 Состав"
+        ]
+        rows = await page.locator("#mafia-family .clan-row").all_inner_texts()
+        assert len(rows) == 3 and "Растафарайчик" in rows[0]
+        assert await page.locator("#mafia-family .btn").count() == 0
+
+        # И назад к списку — той же лентой
+        await page.locator("#mafia-tabs .chip", has_text="← Кланы").click()
+        await page.wait_for_selector("#mafia-clans:not(.hidden)")
         await browser.close()
 
 
