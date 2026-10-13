@@ -9661,7 +9661,7 @@ function renderStudy(data) {
   stopStudyClock();
 
   if (studyExam) {
-    body.appendChild(examBox());
+    body.appendChild(studyExamBox());
     return;
   }
   if (data.study && data.study.code) body.appendChild(myCourseBox(data.study));
@@ -9858,8 +9858,13 @@ function tickStudy() {
     "Осталось " + minutes + ":" + String(seconds).padStart(2, "0");
 }
 
-/** Выпускной билет: десять вопросов на одном экране и одна кнопка. */
-function examBox() {
+/** Выпускной билет: десять вопросов на одном экране и одна кнопка.
+ *
+ * `studyExamBox`, а не `examBox`: тем именем зовётся билет автошколы,
+ * и в одном файле две функции с одним именем — это одна функция,
+ * последняя. Экзамен по ПДД после такого показывал пустоту.
+ */
+function studyExamBox() {
   const box = document.createElement("section");
   box.className = "quiz";
   const head = document.createElement("h2");
@@ -9875,7 +9880,7 @@ function examBox() {
   box.appendChild(note);
 
   studyExam.questions.forEach((question, index) => {
-    box.appendChild(examQuestion(question, index));
+    box.appendChild(studyExamQuestion(question, index));
   });
 
   const row = document.createElement("div");
@@ -9902,7 +9907,7 @@ function examBox() {
   return box;
 }
 
-function examQuestion(question, index) {
+function studyExamQuestion(question, index) {
   const box = document.createElement("div");
   box.className = "question";
   const text = document.createElement("div");
