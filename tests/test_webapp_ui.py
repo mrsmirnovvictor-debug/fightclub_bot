@@ -10620,6 +10620,19 @@ async def test_the_barman_stands_on_the_counter_with_his_mark(server):
         assert "214" in num_space(
             await page.locator("#shop-purse-tavern").inner_text()
         )
+
+        # Стоит он правее середины картинки, но не в самом углу: место
+        # считается по его центру, чтобы не зависеть от ширины png
+        where = await page.evaluate(
+            """() => {
+                const view = document.getElementById('tavern-interior')
+                    .getBoundingClientRect();
+                const him = document.getElementById('tavern-npc')
+                    .getBoundingClientRect();
+                return (him.x + him.width / 2 - view.x) / view.width;
+            }"""
+        )
+        assert 0.55 < where < 0.75, f"бармен стоит не там: {where}"
         await browser.close()
 
 
