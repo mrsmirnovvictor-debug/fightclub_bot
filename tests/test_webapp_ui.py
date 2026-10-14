@@ -5456,24 +5456,24 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
 
 
 async def test_a_house_without_a_trade_says_when_it_opens(server):
-    """Автосалон на карте есть, зайти можно, а услуги пока нет.
+    """Общежитие на карте есть, зайти можно, а услуги пока нет.
 
     Раньше такой дом отвечал всплывашкой, и боец оставался на карте — то
     есть внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
-    записка о том, чего тут ждать. Особняк мафии из этого списка вышел:
-    в нём завелись кланы.
+    записка о том, чего тут ждать. Домов этих всё меньше: особняк мафии
+    вышел из списка с кланами, автосалон — с местом менеджера.
     """
-    walker = make_player(location="car_dealership")
+    walker = make_player(location="dormitory")
     card = build_card(walker, TOKEN, viewer_id=walker.user_id)
     async with async_playwright() as pw:
         browser, page = await open_map(
-            pw, server, city_map("car_dealership"), card, images=True
+            pw, server, city_map("dormitory"), card, images=True
         )
 
-        await page.locator(".zone-house").filter(has_text="Автосалон").click()
+        await page.locator(".zone-house").filter(has_text="Общежитие").click()
         await page.wait_for_selector("#house:not(.hidden)")
 
-        assert await page.locator("#house-title").inner_text() == "Автосалон"
+        assert await page.locator("#house-title").inner_text() == "Общежитие"
         note = await page.locator("#house-soon").inner_text()
         assert "Скоро" in note
         # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
