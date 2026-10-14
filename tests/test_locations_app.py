@@ -79,12 +79,16 @@ async def test_houses_without_a_trade_say_so(client, db):
         houses["mafia_mansion"]["soon"]
         and houses["mafia_mansion"]["services"] == ["mafia"]
     )
-    # А за автосалоном услуги пока нет вовсе: только обещание
-    assert houses["car_dealership"]["works"] is False
+    # А в автосалоне теперь продают: работа есть, но машины и гаражи
+    # всё ещё обещаны — дом с услугой и со строкой «скоро» разом
+    assert houses["car_dealership"]["works"] is True
     assert (
         houses["car_dealership"]["soon"]
-        and houses["car_dealership"]["services"] == []
+        and houses["car_dealership"]["services"] == ["work"]
     )
+    # А вот за тюрьмой услуги пока нет вовсе: только обещание
+    assert houses["prison"]["works"] is False
+    assert houses["prison"]["soon"] and houses["prison"]["services"] == []
     # А стадион уже открыт: за ним второй рейд города
     assert houses["stadium"]["works"] is True
     assert houses["stadium"]["services"] == ["raid"]
@@ -93,11 +97,13 @@ async def test_houses_without_a_trade_say_so(client, db):
     assert houses["bar"]["works"] is True
     assert houses["bar"]["services"] == ["tavern", "work"]
     assert houses["bar"]["soon"]
-    # А банк уже открыт: за ним счёт, карта и банкомат
+    # А банк уже открыт: за ним счёт, карта и банкомат — и три места
+    # работы под диплом. Банк стоит первым: дверь на карте открывает
+    # тот экран, что в списке первый
     assert houses["bank"]["works"] is True
-    assert houses["bank"]["services"] == ["bank"]
+    assert houses["bank"]["services"] == ["bank", "work"]
     assert houses["workshop"]["services"] == ["repair"]
-    assert houses["northern_wall_shop"]["services"] == ["fan"]
+    assert houses["northern_wall_shop"]["services"] == ["fan", "work"]
 
 
 # ---------- вид изнутри ----------

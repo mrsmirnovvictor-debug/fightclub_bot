@@ -128,31 +128,49 @@ EMPTY_HISTORY = {
 }
 
 
-def hr_state(job: str = "", taken=(), blocked=(), minutes: int = 6 * 60) -> dict:
-    """Агентство, как его отдаёт сервер: доска из пяти мест."""
+def hr_state(
+    job: str = "", taken=(), blocked=(), minutes: int = 6 * 60,
+    diplomas=(), months: int = 0,
+) -> dict:
+    """Агентство, как его отдаёт сервер: вся доска города."""
     from bot.game.health import now_ts
     from bot.webapp.work import build_hr
-    from bot.game.work import COOLDOWN_SECONDS, VACANCIES
+    from bot.game.work import COOLDOWN_SECONDS, MONTH_SECONDS, VACANCIES
+    from bot.work_service import lacking
 
     moment = now_ts()
     player = make_player("office_building")
+    player.diplomas = list(diplomas)
+    player.job_experience = months * MONTH_SECONDS
     if job:
         player.job_code = job
         player.job_since = moment - 3 * 24 * 60 * 60
         player.job_week = moment - 2 * 24 * 60 * 60
         player.job_minutes = minutes
         player.account_number = "VB-1234-5678-9012"
-    rows = [
-        {
-            "vacancy": one,
-            "taken_by": ("Тайлер" if one.code == job
-                         else "Марла" if one.code in taken else ""),
-            "mine": one.code == job,
-            "blocked_until": moment + COOLDOWN_SECONDS if one.code in blocked else 0,
-            "block_reason": "test" if one.code in blocked else "",
-        }
-        for one in VACANCIES
-    ]
+    rows = []
+    for one in VACANCIES:
+        holders = []
+        if one.code == job:
+            holders = ["Тайлер"]
+        elif one.code in taken:
+            # Занимаем все кресла: так проверяется «мест нет»
+            holders = [f"Марла-{number}" for number in range(one.seats)]
+        rows.append(
+            {
+                "vacancy": one,
+                "holders": holders,
+                "taken_by": ", ".join(holders),
+                "taken_seats": len(holders),
+                "free_seats": max(0, one.seats - len(holders)),
+                "mine": one.code == job,
+                "blocked_until": (
+                    moment + COOLDOWN_SECONDS if one.code in blocked else 0
+                ),
+                "block_reason": "test" if one.code in blocked else "",
+                "lacks": lacking(player, one, moment),
+            }
+        )
     return build_hr(player, rows, moment)
 
 
@@ -9136,28 +9154,34 @@ async def open_work(pw, server, work=None, place="bar", job="bartender"):
     return browser, page
 
 
-async def test_the_agency_shows_all_five_vacancies(server):
+async def test_the_agency_shows_the_whole_board(server):
+    """Доска города: места с улицы и места под диплом, все разом."""
+    from bot.game.work import VACANCIES
+
     async with async_playwright() as pw:
         browser, page = await open_hr(pw, server)
         await page.wait_for_selector(".vacancy")
 
         titles = await page.locator(".vacancy-title").all_inner_texts()
-        assert len(titles) == 5
+        assert len(titles) == len(VACANCIES)
         assert any("Бармен" in one for one in titles)
+        assert any("Патрульный" in one for one in titles)
         pays = await page.locator(".vacancy-pay").all_inner_texts()
-        assert "250 💰/нед" in pays and "200 💰/нед" in pays
+        assert "250 💰/нед" in pays and num_space("1 500") + " 💰/нед" in pays
         await browser.close()
 
 
 async def test_a_taken_vacancy_names_its_holder_and_offers_nothing(server):
-    """Место одно на город: занятое не прячем, а подписываем."""
+    """Место занятое не прячем, а подписываем — и называем кем."""
     async with async_playwright() as pw:
         browser, page = await open_hr(pw, server, hr=hr_state(taken=("croupier",)))
         await page.wait_for_selector(".vacancy")
 
         taken = page.locator(".vacancy.taken")
         assert await taken.count() == 1
-        assert "Занято: Марла." in await taken.locator(".vacancy-state").inner_text()
+        assert "Занято: Марла-0." in await taken.locator(
+            ".vacancy-state"
+        ).inner_text()
         assert await taken.locator(".btn").count() == 0
         await browser.close()
 
@@ -11111,4 +11135,79 @@ async def test_the_diploma_lies_in_the_papers_without_a_pro_note(server):
         assert not any(one.strip().endswith("Покрытие") for one in rows)
         # И ни один бланк не обещает чужую подписку
         assert await page.locator(".paper-held").count() == 0
+        await browser.close()
+
+
+async def test_the_diploma_vacancy_says_what_it_wants(server):
+    """Место под диплом: документ, стаж и сколько кресел свободно."""
+    async with async_playwright() as pw:
+        browser, page = await open_hr(pw, server, hr=hr_state(diplomas=("banking",)))
+        await page.wait_for_selector(".vacancy")
+
+        cashier = page.locator(".vacancy", has_text="Кассир в Банке")
+        facts = await cashier.locator(".vacancy-fact").all_inner_texts()
+        assert any("Диплом об экономическом образовании" in one for one in facts)
+        assert any("2, свободно 2" in one for one in facts)
+        # Опыта это место не требует — строки «Опыт» на нём нет вовсе
+        assert not any(one.startswith("Опыт") for one in facts)
+        # Диплом есть, теста нет: берут сразу
+        assert await cashier.locator(".btn").inner_text() == "Устроиться"
+
+        # А у бармена всё наоборот: тест есть, диплома не нужно
+        barman = page.locator(".vacancy", has_text="Бармен")
+        assert await barman.locator(".btn").inner_text() == "Подать заявку"
+        bar_facts = await barman.locator(".vacancy-fact").all_inner_texts()
+        assert any("не требуется" in one for one in bar_facts)
+        # Кресло у бармена одно, и строки «Мест» на карточке нет вовсе.
+        # Сверяем первую строку поля целиком: «Место» тоже начинается
+        # с «Мест», и `startswith` поймал бы его заодно
+        labels = [one.splitlines()[0] for one in bar_facts]
+        assert "Мест" not in labels and "Место" in labels
+        await browser.close()
+
+
+async def test_the_board_says_what_is_missing_instead_of_a_button(server):
+    """Нет диплома или стажа — вместо кнопки сказано, чего не хватает."""
+    async with async_playwright() as pw:
+        browser, page = await open_hr(
+            pw, server, hr=hr_state(diplomas=("banking",), months=1)
+        )
+        await page.wait_for_selector(".vacancy")
+
+        # Диплом есть, стажа мало: управляющим не берут, и сказано почему
+        head = page.locator(".vacancy", has_text="Управляющий филиалом")
+        assert await head.locator(".btn").count() == 0
+        said = await head.locator(".vacancy-state").inner_text()
+        assert "Нужен опыт от 2 месяцев, а у тебя 1 месяц." == said
+
+        # А диплома врача нет вовсе — и сказано, какой нужен
+        doctor = page.locator(".vacancy", has_text="Санитар")
+        assert await doctor.locator(".btn").count() == 0
+        assert "Нужен документ: Диплом медицинского колледжа." in (
+            await doctor.locator(".vacancy-state").inner_text()
+        )
+        await browser.close()
+
+
+async def test_a_house_with_several_jobs_lists_them_all(server):
+    """В банке три места, и чужак на рабочем экране видит все три."""
+    from bot.webapp.work import build_work
+
+    player = make_player("bank")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    work = build_work(player)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, work=work)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "work")
+        await page.wait_for_selector("#work-body .offer")
+
+        heads = await page.locator("#work-body .shelf-head").all_inner_texts()
+        assert len(heads) == 3
+        assert any("Кассир в Банке" in one for one in heads)
+        assert any("Управляющий филиалом" in one for one in heads)
+        assert "Эти места занимают в HR-агентстве" in await page.locator(
+            "#work-body .screen-note"
+        ).last.inner_text()
         await browser.close()

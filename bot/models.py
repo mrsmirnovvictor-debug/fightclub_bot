@@ -195,6 +195,10 @@ class Player:
     # — можно ли встать на смену ещё раз сегодня
     job_code: str = ""
     job_since: int = 0
+    # Опыт работы: секунды, отложенные с прошлых мест. Текущее место сюда
+    # ещё не вошло — его досчитывают от `job_since` на лету, иначе опыт
+    # пришлось бы подкручивать каждую минуту
+    job_experience: int = 0
     job_week: int = 0  # начало оплачиваемой недели: понедельник, 9:00 МСК
     job_minutes: int = 0
     shift_until: int = 0  # 0 — смена не идёт
@@ -662,6 +666,23 @@ class Player:
 
     def shift_left(self, now: int) -> int:
         return max(0, self.shift_until - now)
+
+    # ---------- опыт работы ----------
+
+    def experience(self, now: int) -> int:
+        """Сколько всего боец проработал, в секундах.
+
+        Отложенное с прошлых мест плюс то, что идёт на нынешнем. Опыт
+        копится по всем местам разом: город смотрит, сколько боец вообще
+        работал, а не кем именно он работал.
+        """
+        here = max(0, now - self.job_since) if self.works and self.job_since else 0
+        return self.job_experience + here
+
+    def experience_months(self, now: int) -> int:
+        from bot.game.work import months_of
+
+        return months_of(self.experience(now))
 
     # ---------- учёба ----------
 

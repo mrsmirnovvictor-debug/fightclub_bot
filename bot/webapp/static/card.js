@@ -7456,8 +7456,11 @@ function hrHint(data) {
     return "Ты уже работаешь. Работа одна на бойца.";
   }
   const open = (data.vacancies || []).filter((one) => one.open).length;
-  if (!open) return "Свободных мест сейчас нет. Загляни позже.";
-  return "Пять мест на город. Заявка — и мини-тест из пяти вопросов.";
+  if (!open) return "Подходящих мест сейчас нет. Загляни позже.";
+  return (
+    "Открыто мест: " + open + ". С улицы берут по тесту, остальных — "
+    + "по диплому и стажу."
+  );
 }
 
 /** Своя работа: часы за неделю и когда платят. */
@@ -7583,7 +7586,18 @@ function vacancyCard(one, data) {
     ["Место", one.place_title],
     ["Норма", one.hours + " ч в неделю"],
     ["Образование", one.education],
-  ].forEach(([name, value]) => {
+    // Стаж спрашивают не везде: «без опыта» на каждой карточке было бы
+    // шумом, а на местах под диплом он и есть главное условие
+    ["Опыт", one.months ? one.months_text : ""],
+    // Сколько кресел и сколько из них свободно. У мест с одним креслом
+    // строка не нужна: «1 место, свободно 1» ничего не добавляет
+    [
+      "Мест",
+      one.seats > 1
+        ? one.seats + ", свободно " + one.free_seats
+        : "",
+    ],
+  ].filter(([, value]) => value).forEach(([name, value]) => {
     const row = document.createElement("div");
     row.className = "vacancy-fact";
     const left = document.createElement("span");
@@ -7616,7 +7630,16 @@ function vacancyButton(one, data) {
   if (one.taken) {
     const said = document.createElement("p");
     said.className = "vacancy-state";
-    said.textContent = "Занято: " + one.taken_by + ".";
+    said.textContent =
+      (one.seats > 1 ? "Все места заняты: " : "Занято: ") + one.taken_by + ".";
+    return said;
+  }
+  // Нет диплома или стажа — говорим чего именно, а не прячем кнопку:
+  // человек должен понимать, куда ему идти доучиваться
+  if (one.lacks) {
+    const said = document.createElement("p");
+    said.className = "vacancy-state";
+    said.textContent = one.lacks;
     return said;
   }
   if (one.blocked) {
@@ -7627,10 +7650,17 @@ function vacancyButton(one, data) {
     return said;
   }
   const busy = Boolean(data.job && data.job.code);
-  return button("Подать заявку", {
+  // Где тест есть — сперва вопросы; где его нет, дверь закрыта дипломом,
+  // и экзамен по ней уже сдан в училище: берут сразу
+  return button(one.has_quiz ? "Подать заявку" : "Устроиться", {
     disabled: busy,
     hint: "У тебя уже есть работа. Работа одна на бойца.",
-    onClick: () => hrAction({ action: "quiz", code: one.code }),
+    onClick: () =>
+      hrAction(
+        one.has_quiz
+          ? { action: "quiz", code: one.code }
+          : { action: "apply", code: one.code, answers: [] }
+      ),
   });
 }
 
@@ -7650,6 +7680,8 @@ function rulesBox(data) {
   box.appendChild(head);
   [
     ["Тест", data.questions + " вопросов, нужно " + data.pass_percent + "%"],
+    ["Диплом", "на места под диплом теста нет: его сдали в училище"],
+    ["Опыт", "считается по всем местам и остаётся при уходе"],
     ["Смена", data.shift_hours + " ч, не больше " + data.day_hours + " ч в сутки"],
     ["Выплата", "в понедельник в 9:00 по Москве"],
     ["Мало часов", "меньше половины нормы — увольнение"],
@@ -7902,36 +7934,50 @@ function payBox(job) {
   return box;
 }
 
-/** Чужое рабочее место: что тут вообще есть. */
+/** Чужое рабочее место: что тут вообще работают.
+ *
+ * Мест в доме бывает несколько — в банке три, — и перечисляем все: за
+ * любым из них идти в одну и ту же дверь, но знать о них надо.
+ */
 function strangerBox(data) {
   const box = document.createElement("section");
   box.className = "offer";
-  if (!data.vacancy.code) return box;
-  const head = document.createElement("h2");
-  head.className = "shelf-head";
-  head.textContent = data.vacancy.emoji + " " + data.vacancy.title;
-  box.appendChild(head);
+  const here = data.vacancies || [];
+  if (!here.length) return box;
 
-  const facts = document.createElement("div");
-  facts.className = "vacancy-facts";
-  [
-    ["Жалованье", num(data.vacancy.salary) + " 💰 в неделю"],
-    ["Норма", data.vacancy.hours + " ч в неделю"],
-  ].forEach(([name, value]) => {
-    const row = document.createElement("div");
-    row.className = "vacancy-fact";
-    const left = document.createElement("span");
-    left.textContent = name;
-    const right = document.createElement("span");
-    right.textContent = value;
-    row.append(left, right);
-    facts.appendChild(row);
+  here.forEach((one) => {
+    const head = document.createElement("h2");
+    head.className = "shelf-head";
+    head.textContent = one.emoji + " " + one.title;
+    box.appendChild(head);
+
+    const facts = document.createElement("div");
+    facts.className = "vacancy-facts";
+    [
+      ["Жалованье", num(one.salary) + " 💰 в неделю"],
+      ["Норма", one.hours + " ч в неделю"],
+      ["Образование", one.needs ? one.education : ""],
+      ["Опыт", one.months ? one.months_text : ""],
+      ["Мест", one.seats > 1 ? String(one.seats) : ""],
+    ].filter(([, value]) => value).forEach(([name, value]) => {
+      const row = document.createElement("div");
+      row.className = "vacancy-fact";
+      const left = document.createElement("span");
+      left.textContent = name;
+      const right = document.createElement("span");
+      right.textContent = value;
+      row.append(left, right);
+      facts.appendChild(row);
+    });
+    box.appendChild(facts);
   });
-  box.appendChild(facts);
 
   const note = document.createElement("p");
   note.className = "screen-note";
-  note.textContent = "Это место занимают в HR-агентстве, а не здесь.";
+  note.textContent =
+    here.length > 1
+      ? "Эти места занимают в HR-агентстве, а не здесь."
+      : "Это место занимают в HR-агентстве, а не здесь.";
   box.appendChild(note);
   return box;
 }

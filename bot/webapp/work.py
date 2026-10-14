@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from bot.content.work_quiz import quiz_for
 from bot.game.clock import club_moment
 from bot.game.health import now_ts
 from bot.game.locations import get_location
@@ -30,7 +31,7 @@ from bot.game.work import (
     hours_of,
     payday_after,
     shift_fits,
-    vacancy_at,
+    vacancies_at,
     work_day,
 )
 from bot.models import Player
@@ -50,8 +51,17 @@ def vacancy_payload(one: Vacancy) -> dict[str, Any]:
         "place": one.place,
         "place_title": place.title if place else one.place,
         "education": one.education,
+        "needs": one.needs,
+        "months": one.months,
+        "months_text": one.months_text,
+        "seats": one.seats,
         "note": one.note,
         "keep_hours": one.keep_hours(),
+        # Есть ли тест — да или нет, и ни одного вопроса сверх этого.
+        # Там, где дверь закрыта дипломом, экзамен уже сдан в училище, и
+        # страница по этому полю решает, показать вопросы или сразу
+        # кнопку «Устроиться»
+        "has_quiz": bool(quiz_for(one.code)),
     }
 
 
@@ -65,14 +75,21 @@ def board_payload(rows: list[dict], moment: int) -> list[dict[str, Any]]:
         body.update(
             {
                 "taken_by": row["taken_by"],
-                "taken": bool(row["taken_by"]),
+                "taken": row["free_seats"] <= 0,
+                "taken_seats": row["taken_seats"],
+                "free_seats": row["free_seats"],
+                "holders": row["holders"],
+                "lacks": row["lacks"],
                 "mine": row["mine"],
                 "blocked_until": blocked,
                 "blocked": bool(blocked),
                 "block_days": _days_left(blocked, moment),
                 "block_reason": row["block_reason"],
-                # Подать заявку можно на свободное и не закрытое место
-                "open": not row["taken_by"] and not blocked,
+                # Подать заявку можно на свободное, не закрытое место,
+                # к которому у бойца есть бумаги
+                "open": (
+                    row["free_seats"] > 0 and not blocked and not row["lacks"]
+                ),
             }
         )
         out.append(body)
@@ -157,7 +174,7 @@ def build_work(player: Player, now: int | None = None) -> dict[str, Any]:
     """Рабочее место: смена, часы за сутки и за неделю."""
     moment = now_ts() if now is None else now
     here = get_location(player.where(moment))
-    at_work = vacancy_at(player.where(moment))
+    at_work = vacancies_at(player.where(moment))
     job = job_payload(player, moment)
     mine = bool(job) and job["place"] == player.where(moment)
     shift = shift_payload(player, moment)
@@ -165,7 +182,9 @@ def build_work(player: Player, now: int | None = None) -> dict[str, Any]:
         "place": here.title if here else "",
         "job": job if mine else {},
         "shift": shift,
-        "vacancy": vacancy_payload(at_work) if at_work else {},
+        # Что тут вообще работают. В банке таких мест три, и экран
+        # чужака перечисляет их все: за любым из них идти в агентство
+        "vacancies": [vacancy_payload(one) for one in at_work],
         # Встать на смену можно на своём месте, не на смене и если сутки
         # ещё не отработаны
         "can_start": bool(mine) and not shift and not job.get("day_full", False),
@@ -179,7 +198,7 @@ def _work_note(
     mine: bool,
     on_shift: bool,
     job: dict,
-    at_work: Vacancy | None,
+    at_work: tuple[Vacancy, ...],
     here,
     moment: int,
 ) -> str:
@@ -190,11 +209,16 @@ def _work_note(
         if job.get("day_full"):
             return day_is_over(moment, DAY_HOURS)
         return "Можно встать на смену — два часа."
-    if at_work is not None:
-        where = at_work.title
+    if at_work:
+        # Перечисляем все здешние места: в банке их три, и сказать про
+        # одно значило бы спрятать два
+        names = ", ".join(one.title.lower() for one in at_work)
         soon = here.soon if here is not None and here.soon else ""
         said = (
-            f"Здесь работает {where.lower()}, и это место занимают через "
+            f"Здесь работают: {names}. Эти места занимают через "
+            "HR-агентство."
+            if len(at_work) > 1
+            else f"Здесь работает {names}, и это место занимают через "
             "HR-агентство."
         )
         if soon:

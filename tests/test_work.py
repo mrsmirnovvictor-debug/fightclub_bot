@@ -36,7 +36,7 @@ from bot.game.work import (
     get_vacancy,
     payday_after,
     payday_before,
-    vacancy_at,
+    vacancies_at,
     week_is_over,
 )
 from bot.models import Player
@@ -133,12 +133,12 @@ def test_the_hiring_moved_to_the_agency_of_its_own():
 
 
 def test_every_vacancy_has_a_house_that_takes_workers():
-    """Работать негде — значит, вакансии нет: проверяем все пять."""
+    """Работать негде — значит, вакансии нет: проверяем все до одной."""
     for one in VACANCIES:
         place = get_location(one.place)
         assert place is not None, one.code
         assert place.allows(Service.WORK), f"{one.place} не принимает работников"
-        assert vacancy_at(one.place) is one
+        assert one in vacancies_at(one.place)
 
 
 def test_the_work_does_not_steal_the_house_from_its_own_screen():
@@ -153,25 +153,37 @@ def test_the_work_does_not_steal_the_house_from_its_own_screen():
         assert Service.WORK in place.services, code
 
 
-def test_the_five_vacancies_are_the_ones_the_city_promised():
+def test_the_street_vacancies_are_the_ones_the_city_promised():
+    """Пять мест первой очереди: с улицы, без диплома и без стажа."""
     rows = {one.code: one for one in VACANCIES}
+    street = [one for one in VACANCIES if not one.needs]
 
-    assert len(VACANCIES) == 5
+    assert len(street) == 5
     assert (rows["bartender"].salary, rows["bartender"].hours) == (250, 10)
     assert (rows["postman"].salary, rows["postman"].hours) == (200, 8)
     assert (rows["trainer"].salary, rows["trainer"].hours) == (300, 10)
     assert (rows["fight_host"].salary, rows["fight_host"].hours) == (300, 10)
     assert (rows["croupier"].salary, rows["croupier"].hours) == (300, 10)
-    # Образования не требует ни одна: это первая очередь работы
-    assert all(one.education == "не требуется" for one in VACANCIES)
+    # У этих пяти ни диплома, ни стажа, и место одно на город
+    for one in street:
+        assert one.education == "не требуется"
+        assert one.months == 0 and one.seats == 1
 
 
 # ---------- тест при приёме ----------
 
 
-def test_every_vacancy_has_a_quiz_of_five():
+def test_every_street_vacancy_has_a_quiz_of_five():
+    """Тест — там, где нет диплома: он и есть вступительный экзамен.
+
+    На местах под диплом экзамен уже сдан — в училище, и спрашивать
+    второй раз то же самое значило бы не верить собственному бланку.
+    """
     for one in VACANCIES:
         questions = quiz_for(one.code)
+        if one.needs:
+            assert questions == (), f"{one.code}: диплом и тест разом"
+            continue
         assert len(questions) == 5, one.code
         for question in questions:
             assert len(question.options) >= 3, question.text
@@ -283,7 +295,7 @@ async def test_the_second_barman_is_stopped_by_the_base_not_by_python(db):
 
     taken = await db.taken_jobs()
     assert list(taken) == ["bartender"]
-    assert taken["bartender"]["nickname"] == "Тайлер"
+    assert [one["nickname"] for one in taken["bartender"]] == ["Тайлер"]
 
 
 async def test_the_query_itself_refuses_a_second_job_to_one_fighter(db):
@@ -301,23 +313,34 @@ async def test_the_query_itself_refuses_a_second_job_to_one_fighter(db):
 
     taken = await db.taken_jobs()
     assert list(taken) == ["bartender"]
-    assert taken["bartender"]["nickname"] == "Тайлер"
+    assert [one["nickname"] for one in taken["bartender"]] == ["Тайлер"]
 
 
-async def test_the_base_holds_one_holder_per_vacancy_by_its_own_index(db):
-    """Индекс на вакансии: двоих с одним местом база не примет вовсе."""
-    import sqlite3
+async def test_the_query_counts_the_seats_before_it_writes(db):
+    """Мест бывает четыре, и считает их тот же запрос, что записывает.
 
-    await stand(db, make_player())
-    await stand(db, make_player(2, "Марла"))
-    await db.conn.execute(
-        "UPDATE players SET job_code = 'bartender' WHERE user_id = 42"
-    )
+    Раньше «одно место на город» держал уникальный индекс. Мест стало
+    несколько, индекс пришлось снять — и счёт переехал в `WHERE` того же
+    оператора: между проверкой и записью щели по-прежнему нет.
+    """
+    now = moment_at()
+    fighters = []
+    for number in range(4):
+        one = await stand(db, make_player(100 + number, f"Боец-{number}"))
+        fighters.append(one)
 
-    with pytest.raises(sqlite3.IntegrityError):
-        await db.conn.execute(
-            "UPDATE players SET job_code = 'bartender' WHERE user_id = 2"
-        )
+    # Два места: первые двое заняли, третьему отказали
+    assert await db.take_job(fighters[0].user_id, "bank_cashier", now, now, 2)
+    assert await db.take_job(fighters[1].user_id, "bank_cashier", now, now, 2)
+    assert not await db.take_job(fighters[2].user_id, "bank_cashier", now, now, 2)
+
+    taken = await db.taken_jobs()
+    assert [one["nickname"] for one in taken["bank_cashier"]] == [
+        "Боец-0", "Боец-1"
+    ]
+    # А на место с одним креслом второго не пускают и подавно
+    assert await db.take_job(fighters[2].user_id, "bank_head", now, now, 1)
+    assert not await db.take_job(fighters[3].user_id, "bank_head", now, now, 1)
 
 
 async def test_a_fighter_holds_one_job_at_a_time(db):
@@ -740,16 +763,19 @@ async def test_nobody_quits_mid_shift(db):
 # ---------- через ручку ----------
 
 
-async def test_the_agency_shows_five_vacancies_by_the_handle(client, db):
+async def test_the_agency_shows_every_vacancy_by_the_handle(client, db):
     await stand(db, make_player())
 
     body = await (await client.get("/api/hr", headers=headers())).json()
 
-    assert len(body["vacancies"]) == 5
+    assert len(body["vacancies"]) == len(VACANCIES)
     row = body["vacancies"][0]
     assert {"code", "title", "salary", "hours", "place_title"} <= set(row)
-    # Вопросов на доске нет: их выдают по заявке
+    # Вопросов на доске нет: их выдают по заявке. Есть только признак,
+    # что тест у места вообще бывает
     assert "quiz" not in row
+    assert row["has_quiz"] is True
+    assert not any("text" in str(value) for value in row.values())
 
 
 async def test_the_agency_is_shut_to_those_who_are_elsewhere(client, db):
@@ -915,7 +941,7 @@ async def test_the_freed_vacancy_can_be_taken_by_another(db):
 
     assert attempt.hired is True
     taken = await db.taken_jobs()
-    assert taken["bartender"]["nickname"] == "Марла"
+    assert [one["nickname"] for one in taken["bartender"]] == ["Марла"]
     assert (await db.get_player(absent.user_id)).job_code == ""
 
 
@@ -933,3 +959,194 @@ async def test_a_holder_who_keeps_the_norm_is_not_touched_by_others(db):
     kept = await db.get_player(worker.user_id)
     assert kept.job_code == "bartender"
     assert kept.account_balance == 250, "норму выполнил, а не заплатили"
+
+
+# ---------- места под диплом ----------
+
+
+def test_the_diploma_jobs_are_the_ones_the_city_promised():
+    """Двадцать мест под диплом: дом, кол-во, требование, стаж и деньги."""
+    rows = {one.code: one for one in VACANCIES if one.needs}
+    assert len(rows) == 20
+
+    def check(code, place, seats, needs, months, salary):
+        one = rows[code]
+        assert one.place == place, code
+        assert one.seats == seats, code
+        assert one.needs == needs, code
+        assert one.months == months, code
+        assert one.salary == salary, code
+
+    check("bank_head", "bank", 1, "banking", 2, 1_500)
+    check("bank_cashier", "bank", 2, "banking", 0, 500)
+    check("bank_clerk", "bank", 4, "banking", 1, 700)
+    check("mayor_adviser", "city_administration", 2, "gov", 1, 700)
+    check("clerk", "city_administration", 4, "gov", 0, 500)
+    check("police_chief", "vcpd", 1, "police", 2, 1_500)
+    check("police_inspector", "vcpd", 2, "police", 1, 700)
+    check("police_patrol", "vcpd", 4, "police", 0, 500)
+    check("head_doctor", "hospital", 1, "medic", 2, 1_500)
+    check("district_doctor", "hospital", 2, "medic", 1, 700)
+    check("orderly", "hospital", 4, "medic", 0, 500)
+    check("army_head", "military_base", 1, "cadet", 2, 1_500)
+    check("senior_officer", "military_base", 2, "cadet", 1, 700)
+    check("junior_officer", "military_base", 4, "cadet", 0, 500)
+    check("taxi_driver", "taxi_depot", 4, "licence", 0, 500)
+    # Пять менеджеров в пяти домах — одно место, пять дверей
+    sales = [one for one in rows.values() if one.needs == "management"]
+    assert len(sales) == 5
+    assert {one.place for one in sales} == {
+        "car_dealership", "insurance_office", "driving_school",
+        "strength_gym", "northern_wall_shop",
+    }
+    for one in sales:
+        assert (one.seats, one.months, one.salary) == (3, 0, 600)
+
+
+def test_the_requirement_is_named_by_the_diploma_itself():
+    """Доска зовёт документ так же, как зовёт его училище."""
+    from bot.game.study import get_course
+    from bot.game.work import get_vacancy
+
+    assert get_vacancy("bank_head").education == (
+        get_course("banking").diploma_title
+    )
+    assert get_vacancy("army_head").education == (
+        get_course("cadet").diploma_title
+    )
+    # У таксиста не диплом, а права
+    assert get_vacancy("taxi_driver").education == "Водительское удостоверение"
+    assert get_vacancy("bartender").education == "не требуется"
+
+
+def test_the_months_are_counted_down_not_up(db):
+    """Полтора месяца — это один месяц опыта, а не два."""
+    from bot.game.work import MONTH_SECONDS, months_count, months_of, plural_months
+
+    # Падежи у числа разные: после «от» родительный, при счёте счётный.
+    # «От 2 месяца» и «у тебя 1 месяца» — обе фразы одинаково кривые
+    assert plural_months(1) == "месяца" and months_count(1) == "месяц"
+    assert plural_months(2) == "месяцев" and months_count(2) == "месяца"
+    assert plural_months(5) == "месяцев" and months_count(5) == "месяцев"
+
+    assert months_of(0) == 0
+    assert months_of(MONTH_SECONDS - 1) == 0
+    assert months_of(MONTH_SECONDS) == 1
+    assert months_of(MONTH_SECONDS * 3 // 2) == 1
+    assert months_of(MONTH_SECONDS * 2) == 2
+
+
+async def test_without_the_diploma_the_door_is_shut(db):
+    """Диплома нет — не берут, и говорят, какого именно."""
+    player = await stand(db, make_player())
+
+    with pytest.raises(WorkError, match="Нужен документ"):
+        await apply(db, player, "bank_cashier", [], moment_at())
+    assert not player.works
+
+    # С дипломом — берут, и без всякого теста: его сдали в училище
+    player.diplomas = ["banking"]
+    attempt = await apply(db, player, "bank_cashier", [], moment_at())
+    assert attempt.hired is True
+    assert player.job_code == "bank_cashier"
+
+
+async def test_the_taxi_asks_for_the_licence_not_a_diploma(db):
+    """У таксопарка требование своё: права, а не диплом."""
+    from bot.game.driving import School
+
+    player = await stand(db, make_player())
+    player.diplomas = ["banking", "gov", "cadet"]
+    with pytest.raises(WorkError, match="Водительское удостоверение"):
+        await apply(db, player, "taxi_driver", [], moment_at())
+
+    player.school = School(licence_at=moment_at())
+    attempt = await apply(db, player, "taxi_driver", [], moment_at())
+    assert attempt.hired is True
+
+
+async def test_the_top_seat_waits_for_the_experience(db):
+    """Диплом есть, стажа нет — на управляющего не берут."""
+    from bot.game.work import MONTH_SECONDS
+
+    player = await stand(db, make_player())
+    player.diplomas = ["banking"]
+
+    with pytest.raises(
+        WorkError, match="Нужен опыт от 2 месяцев, а у тебя 0 месяцев"
+    ):
+        await apply(db, player, "bank_head", [], moment_at())
+
+    # Два месяца стажа — и дверь открыта
+    player.job_experience = 2 * MONTH_SECONDS
+    attempt = await apply(db, player, "bank_head", [], moment_at())
+    assert attempt.hired is True
+
+
+async def test_the_experience_counts_the_current_job_too(db):
+    """Опыт идёт, пока боец работает, — а не только после ухода."""
+    from bot.game.work import MONTH_SECONDS
+
+    player = await hired(db, make_player())
+    hour = moment_at()
+    assert player.experience_months(hour) == 0
+    assert player.experience_months(hour + MONTH_SECONDS) == 1
+    assert player.experience_months(hour + 3 * MONTH_SECONDS) == 3
+
+
+async def test_the_experience_stays_when_the_job_is_gone(db):
+    """Стаж — единственное, что боец уносит с работы."""
+    from bot.game.work import MONTH_SECONDS
+
+    player = await hired(db, make_player(location=BAR))
+    later = moment_at() + 2 * MONTH_SECONDS
+
+    await quit_job(db, player, later)
+
+    assert not player.works
+    assert player.job_experience >= 2 * MONTH_SECONDS
+    assert player.experience_months(later) == 2
+    fresh = await db.get_player(player.user_id)
+    assert fresh.experience_months(later) == 2
+
+
+async def test_four_patrolmen_fit_and_the_fifth_does_not(db):
+    """Патрульных в городе четверо: пятому отказывают по числу мест."""
+    from bot.game.work import MONTH_SECONDS
+
+    now = moment_at()
+    for number in range(4):
+        one = await stand(db, make_player(200 + number, f"Боец-{number}"))
+        one.diplomas = ["police"]
+        assert (await apply(db, one, "police_patrol", [], now)).hired
+
+    fifth = await stand(db, make_player(250, "Пятый"))
+    fifth.diplomas = ["police"]
+    with pytest.raises(WorkError, match="Свободных мест нет"):
+        await apply(db, fifth, "police_patrol", [], now)
+
+    # Все четверо на месте, и доска это показывает
+    taken = await db.taken_jobs()
+    assert len(taken["police_patrol"]) == 4
+
+    # А на соседнее кресло в том же доме — пожалуйста: участковых двое,
+    # и там своё условие по стажу
+    fifth.job_experience = 2 * MONTH_SECONDS
+    assert (await apply(db, fifth, "police_inspector", [], now)).hired
+
+
+async def test_the_board_counts_the_free_seats(db):
+    """Доска показывает, сколько кресел занято и кем."""
+    now = moment_at()
+    taken = await stand(db, make_player(300, "Марла"))
+    taken.diplomas = ["medic"]
+    await apply(db, taken, "orderly", [], now)
+
+    seeker = await stand(db, make_player(301, "Тайлер"))
+    rows = {one["vacancy"].code: one for one in await vacancies(db, seeker, now)}
+
+    row = rows["orderly"]
+    assert row["taken_seats"] == 1 and row["free_seats"] == 3
+    assert row["holders"] == ["Марла"]
+    # У соискателя без диплома место закрыто, и сказано чем
+    assert "Нужен документ" in row["lacks"]

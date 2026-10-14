@@ -37,6 +37,7 @@ from bot.game.health import now_ts
 from bot.game.work import (
     COOLDOWN_SECONDS,
     DAY_HOURS,
+    LICENCE,
     PASS_SHARE,
     SHIFT_HOURS,
     SHIFT_SECONDS,
@@ -45,9 +46,11 @@ from bot.game.work import (
     get_vacancy,
     hours_of,
     day_is_over,
+    months_count,
+    plural_months,
     work_day,
     shift_fits,
-    vacancy_at,
+    vacancies_at,
     week_is_over,
     week_of,
 )
@@ -98,17 +101,51 @@ async def vacancies(db: Database, player: Player, now: int | None = None) -> lis
     rows = []
     for one in VACANCIES:
         block = blocks.get(one.code)
-        holder = taken.get(one.code)
+        holders = taken.get(one.code, [])
         rows.append(
             {
                 "vacancy": one,
-                "taken_by": holder["nickname"] if holder else "",
+                # Кто уже занял места. Имён столько же, сколько занятых
+                # мест: на доске видно и сколько свободно, и к кому идти
+                "holders": [row["nickname"] for row in holders],
+                "taken_by": ", ".join(row["nickname"] for row in holders),
+                "taken_seats": len(holders),
+                "free_seats": max(0, one.seats - len(holders)),
                 "mine": player.job_code == one.code,
                 "blocked_until": block["until"] if block else 0,
                 "block_reason": block["reason"] if block else "",
+                # Чего не хватает этому бойцу: диплома, опыта или ничего
+                "lacks": lacking(player, one, moment),
             }
         )
     return rows
+
+
+def lacking(player: Player, vacancy: Vacancy, now: int) -> str:
+    """Чего бойцу не хватает для этого места. Пусто — хватает всего.
+
+    Две двери и обе закрыты бумагой: диплом и стаж. Проверяем здесь, а
+    не на странице, по той же причине, по какой там не проверяют цену:
+    спрятанная кнопка обходится запросом мимо интерфейса.
+    """
+    if vacancy.needs and not _has_paper(player, vacancy.needs):
+        return f"Нужен документ: {vacancy.education}."
+    if vacancy.months:
+        mine = player.experience_months(now)
+        if mine < vacancy.months:
+            return (
+                f"Нужен опыт от {vacancy.months} "
+                f"{plural_months(vacancy.months)}, а у тебя "
+                f"{mine} {months_count(mine)}."
+            )
+    return ""
+
+
+def _has_paper(player: Player, code: str) -> bool:
+    """Есть ли у бойца документ, которого требует место."""
+    if code == LICENCE:
+        return player.school.has_licence
+    return player.has_diploma(code)
 
 
 async def release_the_absent(db: Database, now: int | None = None) -> list[str]:
@@ -125,16 +162,17 @@ async def release_the_absent(db: Database, now: int | None = None) -> list[str]:
     """
     moment = now_ts() if now is None else now
     freed: list[str] = []
-    for code, holder in (await db.taken_jobs()).items():
-        if not holder["week"] or not week_is_over(holder["week"], moment):
-            continue
-        absent = await db.get_player(holder["user_id"])
-        if absent is None:  # pragma: no cover - боец удалил персонажа
-            await db.leave_job(holder["user_id"])
-            freed.append(code)
-            continue
-        if await settle(db, absent, moment) and not absent.works:
-            freed.append(code)
+    for code, holders in (await db.taken_jobs()).items():
+        for holder in holders:
+            if not holder["week"] or not week_is_over(holder["week"], moment):
+                continue
+            absent = await db.get_player(holder["user_id"])
+            if absent is None:  # pragma: no cover - боец удалил персонажа
+                await db.leave_job(holder["user_id"])
+                freed.append(code)
+                continue
+            if await settle(db, absent, moment) and not absent.works:
+                freed.append(code)
     return freed
 
 
@@ -169,13 +207,23 @@ async def apply(
     if code in blocks:
         raise WorkError(_block_text(blocks[code], moment))
 
+    # Бумаги спрашивают до теста: отвечать на вопросы о банке тому, у
+    # кого нет диплома, незачем — его всё равно не возьмут
+    lack = lacking(player, vacancy, moment)
+    if lack:
+        raise WorkError(lack)
+
     # Держателя, у которого неделя давно кончилась, сначала рассчитываем:
     # иначе место занимал бы вечно тот, кто перестал заходить
     await release_the_absent(db, moment)
     taken = await db.taken_jobs()
-    if code in taken:
+    holders = taken.get(code, [])
+    if len(holders) >= vacancy.seats:
+        who = ", ".join(one["nickname"] for one in holders)
         raise WorkError(
-            f"Место занято: здесь уже работает {taken[code]['nickname']}."
+            f"Свободных мест нет: здесь уже работают {who}."
+            if vacancy.seats > 1
+            else f"Место занято: здесь уже работает {who}."
         )
 
     right, total = grade(code, answers)
@@ -191,7 +239,9 @@ async def apply(
         )
         return Attempt(right, total, need, False, vacancy)
 
-    if not await db.take_job(player.user_id, code, moment, week_of(moment)):
+    if not await db.take_job(
+        player.user_id, code, moment, week_of(moment), vacancy.seats
+    ):
         raise WorkError("Место только что заняли. Попробуй другую вакансию.")
     player.job_code = code
     player.job_since = moment
@@ -344,8 +394,14 @@ async def _pay(
 async def _release(
     db: Database, player: Player, vacancy: Vacancy, now: int, reason: str
 ) -> None:
-    """Освободить место и закрыть его для этого бойца на неделю."""
-    await db.leave_job(player.user_id)
+    """Освободить место и закрыть его для этого бойца на неделю.
+
+    Опыт при этом не теряется: отработанное на этом месте складывается
+    с отложенным и остаётся при бойце. Стаж — единственное, что он
+    уносит с работы, и терять его за уход было бы странно.
+    """
+    player.job_experience = player.experience(now)
+    await db.leave_job(player.user_id, player.job_experience)
     await db.block_job(player.user_id, vacancy.code, now + COOLDOWN_SECONDS, reason)
     player.job_code = ""
     player.job_since = 0
@@ -382,9 +438,10 @@ __all__ = [
     "my_vacancy",
     "quit_job",
     "quiz_payload",
+    "lacking",
     "release_the_absent",
     "settle",
     "start_shift",
     "vacancies",
-    "vacancy_at",
+    "vacancies_at",
 ]

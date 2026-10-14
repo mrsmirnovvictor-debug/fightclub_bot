@@ -76,6 +76,18 @@ OVERTIME_RATE = 2.0
 COOLDOWN_DAYS = 7
 COOLDOWN_SECONDS = COOLDOWN_DAYS * 24 * HOUR
 
+# ---------- опыт ----------
+
+# Сколько секунд в «месяце опыта». Месяц берём ровный, в тридцать суток:
+# опыт считается от часа приёма, а не по календарю, и февраль с августом
+# в нём не должны стоить по-разному
+MONTH_SECONDS = 30 * 24 * HOUR
+
+# Недельная норма новых мест. Пять смен по два часа — та же рабочая
+# неделя, что у тренера и крупье: места различаются дипломом и деньгами,
+# а не тем, сколько в них сидеть
+STAFF_HOURS = 10
+
 # ---------- тест ----------
 
 # Доля верных ответов, с которой берут на работу
@@ -83,10 +95,83 @@ PASS_SHARE = 0.8
 
 NO_EDUCATION = "не требуется"
 
+# Чем, кроме диплома, бывает закрыта дверь. Права — не диплом: их не
+# учат неделями, их сдают по билету, и у таксопарка требование именно
+# такое
+LICENCE = "licence"
+
+
+def paper_title(code: str) -> str:
+    """Как называется документ, которого требует место.
+
+    Диплом называет сам курс: если завтра переименуют «Диплом
+    менеджера», доска агентства переименуется вместе с ним и спорить с
+    самим дипломом не станет.
+    """
+    if not code:
+        return NO_EDUCATION
+    if code == LICENCE:
+        from bot.game.driving import LICENCE_TITLE
+
+        return LICENCE_TITLE
+    from bot.game.study import diploma_of
+
+    course = diploma_of(code)
+    return course.diploma_title if course else code
+
+
+def plural_months(count: int) -> str:
+    """Месяцы после «от»: «от 1 месяца», «от 2 месяцев».
+
+    Падеж родительный, а не именительный: после предлога «от» стоит
+    «месяца» при единице и «месяцев» при всём остальном. Привычное
+    «месяц, месяца, месяцев» здесь даёт «от 2 месяца» — так не говорят.
+    """
+    tail = count % 100
+    if 11 <= tail <= 14:
+        return "месяцев"
+    return "месяца" if count % 10 == 1 else "месяцев"
+
+
+def months_count(count: int) -> str:
+    """Месяцы при счёте: «1 месяц», «2 месяца», «5 месяцев».
+
+    Не то же, что `plural_months`: там форма после предлога «от», здесь
+    — при числе. «У тебя 1 месяца» звучит так же неправильно, как «от 2
+    месяца», и одной функцией оба случая не закрыть.
+    """
+    tail = count % 100
+    if 11 <= tail <= 14:
+        return "месяцев"
+    last = count % 10
+    if last == 1:
+        return "месяц"
+    if 2 <= last <= 4:
+        return "месяца"
+    return "месяцев"
+
+
+def months_of(seconds: int) -> int:
+    """Опыт в месяцах — вниз: полтора месяца это один, а не два."""
+    return max(0, seconds // MONTH_SECONDS)
+
 
 @dataclass(frozen=True)
 class Vacancy:
-    """Место работы: где, почём и сколько часов в неделю."""
+    """Место работы: где, почём, сколько часов в неделю и кого берут.
+
+    `seats` — сколько таких мест в городе. У бармена оно одно, у
+    патрульного четыре: город большой, и патрулировать его вчетвером
+    естественнее, чем вдвоём драться за одну дубинку.
+
+    `needs` — документ, без которого не возьмут: код диплома из
+    `bot.game.study` или `licence` — водительское удостоверение. Пусто
+    — берут с улицы, как брали бармена.
+
+    `months` — сколько месяцев опыта требуют. Опыт считается от часа
+    первого приёма и копится по всем местам: город смотрит, сколько
+    боец вообще работал, а не кем именно.
+    """
 
     code: str
     title: str
@@ -94,8 +179,22 @@ class Vacancy:
     salary: int  # кредиты за неделю при выполненной норме
     hours: int  # недельная норма в часах
     place: str  # код локации, где работают
-    education: str = NO_EDUCATION
+    seats: int = 1
+    needs: str = ""
+    months: int = 0
     note: str = ""
+
+    @property
+    def education(self) -> str:
+        """Чего требуют от соискателя — строкой, для витрины."""
+        return paper_title(self.needs)
+
+    @property
+    def months_text(self) -> str:
+        """«без опыта», «от 1 месяца», «от 2 месяцев»."""
+        if not self.months:
+            return "без опыта"
+        return f"от {self.months} {plural_months(self.months)}"
 
     @property
     def shifts(self) -> int:
@@ -177,6 +276,147 @@ VACANCIES: tuple[Vacancy, ...] = (
         "croupier", "Крупье", "🎲", salary=300, hours=10, place="casino",
         note="Раздавать, считать и не смотреть в глаза.",
     ),
+
+    # ---------- места под диплом ----------
+    #
+    # Всё, что ниже, город отдаёт только учёным: без бумаги сюда не
+    # берут, а на верхние ступени не берут и с бумагой, пока не
+    # отработал своё. Поэтому и платят здесь втрое против улицы — за
+    # диплом, которого у патрульного с улицы нет.
+
+    # Банк: банковское дело
+    Vacancy(
+        "bank_head", "Управляющий филиалом Банка «Vegas»", "🏦",
+        salary=1_500, hours=STAFF_HOURS, place="bank",
+        seats=1, needs="banking", months=2,
+        note="Подписывать то, что до тебя никто не решился подписать.",
+    ),
+    Vacancy(
+        "bank_cashier", "Кассир в Банке", "💵",
+        salary=500, hours=STAFF_HOURS, place="bank",
+        seats=2, needs="banking",
+        note="Считать чужое вслух и не ошибаться.",
+    ),
+    Vacancy(
+        "bank_clerk", "Менеджер по работе с клиентами", "🗂",
+        salary=700, hours=STAFF_HOURS, place="bank",
+        seats=4, needs="banking", months=1,
+        note="Объяснять ставку тому, кто пришёл спорить.",
+    ),
+
+    # Администрация: государственное управление
+    Vacancy(
+        "mayor_adviser", "Советник мэра", "🏛",
+        salary=700, hours=STAFF_HOURS, place="city_administration",
+        seats=2, needs="gov", months=1,
+        note="Говорить мэру то, что он не хочет слышать, но вовремя.",
+    ),
+    Vacancy(
+        "clerk", "Секретарь", "📋",
+        salary=500, hours=STAFF_HOURS, place="city_administration",
+        seats=4, needs="gov",
+        note="Знать, где лежит бумага, раньше того, кто её спросит.",
+    ),
+
+    # Полиция: полицейская академия
+    Vacancy(
+        "police_chief", "Начальник Полиции Вегаса", "🎖",
+        salary=1_500, hours=STAFF_HOURS, place="vcpd",
+        seats=1, needs="police", months=2,
+        note="Отвечать за город, когда отвечать больше некому.",
+    ),
+    Vacancy(
+        "police_inspector", "Участковый", "👮",
+        salary=700, hours=STAFF_HOURS, place="vcpd",
+        seats=2, needs="police", months=1,
+        note="Знать свой квартал по именам и по кличкам.",
+    ),
+    Vacancy(
+        "police_patrol", "Патрульный", "🚓",
+        salary=500, hours=STAFF_HOURS, place="vcpd",
+        seats=4, needs="police",
+        note="Ходить по улицам так, чтобы на них было тихо.",
+    ),
+
+    # Больница: медицинский колледж
+    Vacancy(
+        "head_doctor", "Главный врач", "🩺",
+        salary=1_500, hours=STAFF_HOURS, place="hospital",
+        seats=1, needs="medic", months=2,
+        note="Решать первым и объясняться потом.",
+    ),
+    Vacancy(
+        "district_doctor", "Участковый врач", "⚕️",
+        salary=700, hours=STAFF_HOURS, place="hospital",
+        seats=2, needs="medic", months=1,
+        note="Смотреть тех, кто дошёл сам, и тех, кого принесли.",
+    ),
+    Vacancy(
+        "orderly", "Санитар", "🧤",
+        salary=500, hours=STAFF_HOURS, place="hospital",
+        seats=4, needs="medic",
+        note="Донести, удержать и не упасть самому.",
+    ),
+
+    # Армейская часть: кадетский корпус
+    Vacancy(
+        "army_head", "Начальник армейской части", "⭐",
+        salary=1_500, hours=STAFF_HOURS, place="military_base",
+        seats=1, needs="cadet", months=2,
+        note="Отдавать приказ, за который отвечать тебе.",
+    ),
+    Vacancy(
+        "senior_officer", "Старший офицер", "🎗",
+        salary=700, hours=STAFF_HOURS, place="military_base",
+        seats=2, needs="cadet", months=1,
+        note="Держать роту между приказом и здравым смыслом.",
+    ),
+    Vacancy(
+        "junior_officer", "Младший офицер", "🪖",
+        salary=500, hours=STAFF_HOURS, place="military_base",
+        seats=4, needs="cadet",
+        note="Строить, вести и считать по головам на обратном пути.",
+    ),
+
+    # Менеджмент: пять одинаковых мест в пяти разных домах
+    Vacancy(
+        "sales_cars", "Менеджер по продажам", "🚘",
+        salary=600, hours=STAFF_HOURS, place="car_dealership",
+        seats=3, needs="management",
+        note="Продавать машину тому, кто зашёл посмотреть.",
+    ),
+    Vacancy(
+        "sales_insurance", "Менеджер по продажам", "📑",
+        salary=600, hours=STAFF_HOURS, place="insurance_office",
+        seats=3, needs="management",
+        note="Продавать то, чего человек надеется не получить.",
+    ),
+    Vacancy(
+        "sales_driving", "Менеджер по продажам", "🚦",
+        salary=600, hours=STAFF_HOURS, place="driving_school",
+        seats=3, needs="management",
+        note="Записывать на курс тех, кто пришёл «просто спросить».",
+    ),
+    Vacancy(
+        "sales_gym", "Менеджер по продажам", "🏋️",
+        salary=600, hours=STAFF_HOURS, place="strength_gym",
+        seats=3, needs="management",
+        note="Продавать абонемент на год тому, кто пришёл на месяц.",
+    ),
+    Vacancy(
+        "sales_northern", "Менеджер по продажам", "🛒",
+        salary=600, hours=STAFF_HOURS, place="northern_wall_shop",
+        seats=3, needs="management",
+        note="Держать прилавок и знать, что на нём кончается.",
+    ),
+
+    # Таксопарк: права, а не диплом
+    Vacancy(
+        "taxi_driver", "Водитель такси", "🚕",
+        salary=500, hours=STAFF_HOURS, place="taxi_depot",
+        seats=4, needs=LICENCE,
+        note="Везти туда, куда сказали, и молчать про остальное.",
+    ),
 )
 
 WORK_IMAGE = f"{MAGIC}/work_contract.jpeg"
@@ -186,9 +426,9 @@ def get_vacancy(code: str) -> Vacancy | None:
     return next((one for one in VACANCIES if one.code == code), None)
 
 
-def vacancy_at(place: str) -> Vacancy | None:
-    """Какая работа есть в этом доме. У дома она одна."""
-    return next((one for one in VACANCIES if one.place == place), None)
+def vacancies_at(place: str) -> tuple[Vacancy, ...]:
+    """Какая работа есть в этом доме. У банка её три, у бара одна."""
+    return tuple(one for one in VACANCIES if one.place == place)
 
 
 WORK_PLACES: frozenset[str] = frozenset(one.place for one in VACANCIES)
@@ -307,17 +547,24 @@ __all__ = [
     "OVERTIME_RATE",
     "WEEK_SECONDS",
     "WORK_IMAGE",
+    "LICENCE",
+    "MONTH_SECONDS",
+    "STAFF_HOURS",
     "WORK_PLACES",
     "Vacancy",
     "day_is_full",
     "day_is_over",
     "get_vacancy",
     "hours_of",
+    "months_count",
+    "months_of",
+    "paper_title",
+    "plural_months",
     "moscow_day",
     "payday_after",
     "payday_before",
     "shift_fits",
-    "vacancy_at",
+    "vacancies_at",
     "week_is_over",
     "week_of",
     "work_day",

@@ -772,11 +772,13 @@ def work_badge(player: Player, moment: int) -> dict:
     по второму меняет надпись. Всё остальное о работе лежит на её
     собственном экране — в карточке ему делать нечего.
     """
-    from bot.game.work import vacancy_at
+    from bot.game.work import get_vacancy
 
-    here = vacancy_at(player.where(moment))
+    # Не «есть ли тут работа», а «моя ли она»: в банке три места, и
+    # кассиру незачем видеть кнопку смены управляющего
+    mine = get_vacancy(player.job_code) if player.job_code else None
     return {
-        "here": bool(here is not None and here.code == player.job_code),
+        "here": bool(mine is not None and mine.place == player.where(moment)),
         "on_shift": player.on_shift(moment),
         "code": player.job_code,
     }

@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS players (
     -- Работа: одна на бойца, и потому живёт в его же строке
     job_code        TEXT    NOT NULL DEFAULT '',
     job_since       INTEGER NOT NULL DEFAULT 0,
+    job_experience  INTEGER NOT NULL DEFAULT 0,
     job_week        INTEGER NOT NULL DEFAULT 0,
     job_minutes     INTEGER NOT NULL DEFAULT 0,
     shift_until     INTEGER NOT NULL DEFAULT 0,
@@ -643,7 +644,7 @@ PLAYER_COLUMNS = (
     "raid_wins, raid_fights, seen_at, location, travel_to, arrives_at, "
     "city, birthplace, pro_until, gender, created_at, "
     "account_number, account_balance, card_at, card_paid_until, pay_from, "
-    "job_code, job_since, job_week, job_minutes, shift_until, "
+    "job_code, job_since, job_experience, job_week, job_minutes, shift_until, "
     "shift_day, shift_minutes, "
     "study_code, study_since, study_lessons, study_day, study_exam_at, "
     "study_tries, lesson_until, diplomas"
@@ -682,6 +683,8 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     # неё таблицу из одной строки на человека незачем
     ("job_code", "TEXT NOT NULL DEFAULT ''"),  # пусто — не работает
     ("job_since", "INTEGER NOT NULL DEFAULT 0"),
+    # Опыт работы: секунды, отложенные с прошлых мест
+    ("job_experience", "INTEGER NOT NULL DEFAULT 0"),
     ("job_week", "INTEGER NOT NULL DEFAULT 0"),  # начало оплачиваемой недели
     ("job_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за неделю
     ("shift_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — смена не идёт
@@ -837,11 +840,15 @@ class Database:
             "CREATE UNIQUE INDEX IF NOT EXISTS players_account "
             "ON players(account_number) WHERE account_number <> ''"
         )
-        # Вакансия одна на город: второго бармена база не примет. Держать
-        # это питоном значило бы ловить с опозданием — двое, нажавшие
-        # «устроиться» в одну секунду, оба прошли бы проверку
+        # Мест на вакансии бывает несколько: патрульных в городе четверо,
+        # а управляющий банком один. Уникальный индекс по `job_code`,
+        # который держал «одно место на город», для этого не годится — и
+        # на живой базе его надо снять, иначе второй патрульный не
+        # запишется. Считает места теперь сам запрос в `take_job`:
+        # условие стоит там же, где запись, и щели между ними нет
+        await self.conn.execute("DROP INDEX IF EXISTS players_job")
         await self.conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS players_job "
+            "CREATE INDEX IF NOT EXISTS players_job "
             "ON players(job_code) WHERE job_code <> ''"
         )
 
@@ -1092,12 +1099,12 @@ class Database:
                 location, travel_to, arrives_at,
                 city, birthplace, pro_until, gender, created_at,
                 account_number, account_balance, card_at, card_paid_until, pay_from,
-                job_code, job_since, job_week, job_minutes,
+                job_code, job_since, job_experience, job_week, job_minutes,
                 shift_until, shift_day, shift_minutes,
                 study_code, study_since, study_lessons, study_day,
                 study_exam_at, study_tries, lesson_until, diplomas
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -1136,6 +1143,7 @@ class Database:
                 card_paid_until = excluded.card_paid_until,
                 pay_from        = excluded.pay_from,
                 job_code        = excluded.job_code,
+                job_experience  = excluded.job_experience,
                 job_since       = excluded.job_since,
                 job_week        = excluded.job_week,
                 job_minutes     = excluded.job_minutes,
@@ -1192,6 +1200,7 @@ class Database:
                 player.pay_from,
                 player.job_code,
                 player.job_since,
+                player.job_experience,
                 player.job_week,
                 player.job_minutes,
                 player.shift_until,
@@ -1493,57 +1502,68 @@ class Database:
 
     # ---------- работа ----------
 
-    async def take_job(self, user_id: int, code: str, now: int, week: int) -> bool:
-        """Занять вакансию. False — её уже заняли или боец где-то работает.
+    async def take_job(
+        self, user_id: int, code: str, now: int, week: int, seats: int = 1
+    ) -> bool:
+        """Занять место. False — свободных нет или боец где-то работает.
 
         Оба условия стоят в самом запросе. Проверить в питоне, а потом
-        записать, значит оставить щель, в которую пролезает второй
-        бармен: двое, нажавшие «устроиться» в одну секунду, оба прошли бы
-        проверку. Уникальность вакансии дополнительно держит индекс.
+        записать, значит оставить щель, в которую пролезает лишний
+        патрульный: двое, нажавшие «устроиться» в одну секунду, оба
+        прошли бы проверку. Считаем занятых прямо в `WHERE` — один
+        оператор, и база выполняет его целиком или никак.
         """
-        try:
-            cursor = await self.conn.execute(
-                "UPDATE players SET job_code = ?, job_since = ?, job_week = ?, "
-                "job_minutes = 0, shift_until = 0, shift_day = '', "
-                "shift_minutes = 0 "
-                "WHERE user_id = ? AND job_code = '' "
-                "AND NOT EXISTS (SELECT 1 FROM players WHERE job_code = ?)",
-                (code, now, week, user_id, code),
-            )
-        except sqlite3.IntegrityError:
-            # Вакансию заняли в ту же секунду: индекс не дал второму
-            return False
+        cursor = await self.conn.execute(
+            "UPDATE players SET job_code = ?, job_since = ?, job_week = ?, "
+            "job_minutes = 0, shift_until = 0, shift_day = '', "
+            "shift_minutes = 0 "
+            "WHERE user_id = ? AND job_code = '' "
+            "AND (SELECT COUNT(*) FROM players WHERE job_code = ?) < ?",
+            (code, now, week, user_id, code, max(1, seats)),
+        )
         await self.conn.commit()
         return cursor.rowcount > 0
 
-    async def taken_jobs(self) -> dict[str, dict]:
-        """Какие вакансии заняты и кем: код работы → кто и с какой недели.
+    async def taken_jobs(self) -> dict[str, list[dict]]:
+        """Кто на каких местах: код работы → список занявших.
+
+        Список, а не один человек: мест на вакансии бывает четыре, и
+        доска должна показать всех, кто их занял.
 
         Неделя нужна тому, кто смотрит на доску: держателя, у которого
         она давно кончилась, пора рассчитать и снять с места. Иначе
-        боец, переставший заходить, занимал бы место вечно — а место
-        одно на город.
+        боец, переставший заходить, занимал бы место вечно — а мест в
+        городе счётное число.
         """
         async with self.conn.execute(
             "SELECT user_id, job_code, nickname, job_week "
-            "FROM players WHERE job_code <> ''"
+            "FROM players WHERE job_code <> '' ORDER BY job_since, user_id"
         ) as cursor:
-            return {
-                row["job_code"]: {
-                    "user_id": row["user_id"],
-                    "nickname": row["nickname"],
-                    "week": row["job_week"],
-                }
-                for row in await cursor.fetchall()
-            }
+            out: dict[str, list[dict]] = {}
+            for row in await cursor.fetchall():
+                out.setdefault(str(row["job_code"]), []).append(
+                    {
+                        "user_id": row["user_id"],
+                        "nickname": row["nickname"],
+                        "week": row["job_week"],
+                    }
+                )
+            return out
 
-    async def leave_job(self, user_id: int) -> None:
-        """Уйти с работы: место освобождается, часы обнуляются."""
+    async def leave_job(self, user_id: int, experience: int = 0) -> None:
+        """Уйти с работы: место освобождается, часы обнуляются.
+
+        `experience` — весь опыт бойца вместе с только что отработанным
+        на этом месте: уходя, он забирает его с собой. Отложить опыт
+        надо здесь же, одним запросом с уходом, — иначе ушедший в ту
+        секунду, когда упал процесс, потерял бы свой стаж.
+        """
         await self.conn.execute(
             "UPDATE players SET job_code = '', job_since = 0, job_week = 0, "
-            "job_minutes = 0, shift_until = 0, shift_day = '', shift_minutes = 0 "
+            "job_minutes = 0, shift_until = 0, shift_day = '', shift_minutes = 0, "
+            "job_experience = ? "
             "WHERE user_id = ?",
-            (user_id,),
+            (max(0, experience), user_id),
         )
         await self.conn.commit()
 
