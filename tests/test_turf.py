@@ -1,0 +1,362 @@
+"""Война за территории: доход, гарнизон и штурм точки.
+
+Порядок проверок — по тому, что дороже сломать:
+
+1. **Деньги.** Доход капает за полные сутки и только владельцу; остаток
+   суток не пропадает, а переезжает в следующий расчёт.
+2. **Ничьих точек не бывает.** За пустой стоит городская охрана, и её
+   надо бить — иначе первый зашедший снимает весь город даром.
+3. **Кто воюет.** Семья и служба — равные владельцы; одиночка не воюет
+   ни за кого.
+4. **Отдых после боя.** Точку не отбивают в ту же минуту, кто бы ни
+   победил.
+5. **Потолок.** Больше четырёх точек одна семья не держит.
+"""
+
+from __future__ import annotations
+
+import random
+
+import pytest
+from aiohttp.test_utils import TestClient, TestServer
+
+from bot.clan_service import found, _join
+from bot.config import Config
+from bot.database import Database
+from bot.game.classes import Stats
+from bot.game.turf import (
+    CALM_SECONDS,
+    DAY_SECONDS,
+    MAX_SPOTS_PER_OWNER,
+    SPOTS,
+    TOTAL_SPOTS,
+    Owner,
+    calm_left,
+    days_held,
+    get_spot,
+    owner_of_clan,
+    owner_of_service,
+    payout,
+)
+from bot.models import Player
+from bot.webapp.server import create_app
+from bot.turf_service import (
+    TurfError,
+    assault,
+    garrison,
+    held_by,
+    income_of,
+    owner_of,
+    owner_title,
+    survey,
+    vault_of,
+)
+from tests.test_inventory import FakeBot
+from tests.test_webapp import TOKEN, make_init_data
+
+NOW = 1_800_000_000
+MANSION = "mafia_mansion"
+
+
+def headers(user_id: int = 1) -> dict:
+    return {"X-Telegram-Init-Data": make_init_data(user_id)}
+
+
+@pytest.fixture
+async def client(db):
+    app = create_app(FakeBot(), db, Config(bot_token=TOKEN))
+    async with TestClient(TestServer(app)) as one:
+        yield one
+
+
+def make_player(
+    user_id: int = 1, nickname: str = "Дон", level: int = 10,
+    clazz: str = "warrior",
+) -> Player:
+    return Player(
+        user_id=user_id, nickname=nickname, class_code=clazz, level=level,
+        credits=5_000, location=MANSION,
+        **Stats(strength=25, agility=25, intuition=25, endurance=25).as_dict(),
+    )
+
+
+async def family(
+    db: Database, size: int = 4, first: int = 1,
+    name: str = "Коза Ностра", sign: str = "black_ravens",
+):
+    """Клан с доном и бойцами. Возвращает дона и список номеров отряда."""
+    don = make_player(first, f"Дон-{first}")
+    await db.save_player(don)
+    clan = await found(db, don, name, sign, now=NOW)
+    squad = [don.user_id]
+    for number in range(first + 1, first + size):
+        one = make_player(number, f"Боец-{number}", clazz="assassin")
+        await db.save_player(one)
+        await _join(db, one, clan, NOW)
+        squad.append(number)
+    return don, squad, clan
+
+
+async def seize(db: Database, don: Player, squad: list[int], code: str) -> int:
+    """Взять точку, сколько бы попыток ни ушло. Отдаёт час захвата.
+
+    Исход боя решает бросок, и тест про деньги не должен зависеть от
+    того, повезло ли отряду с первого раза.
+    """
+    moment = NOW
+    for seed in range(40):
+        result = await assault(
+            db, don, code, squad, now=moment, rng=random.Random(seed)
+        )
+        if result.won:
+            return moment
+        # Точка отдыхает — следующий заход за её сроком
+        moment += CALM_SECONDS + 60
+    raise AssertionError(f"за сорок заходов не взяли {code}")
+
+
+# ---------- правила ----------
+
+
+def test_the_spots_stand_on_real_houses():
+    """Точка — существующий дом города, а не выдуманный объект."""
+    from bot.game.locations import get_location
+
+    assert TOTAL_SPOTS == 10
+    for spot in SPOTS:
+        place = get_location(spot.code)
+        assert place is not None, spot.code
+        assert spot.title == place.title
+        assert spot.income > 0
+
+    # Домов, за которые драться не станут, среди точек нет
+    codes = {one.code for one in SPOTS}
+    assert not codes & {
+        "mafia_mansion", "vcpd", "military_base", "hospital", "university",
+        "police_school", "medical_college", "cadet_corps",
+    }
+
+
+def test_the_income_counts_whole_days_only():
+    """Полсуток дохода не приносят, но и не пропадают."""
+    spot = get_spot("casino")
+    assert days_held(NOW, NOW + DAY_SECONDS - 1) == 0
+    assert days_held(NOW, NOW + DAY_SECONDS) == 1
+
+    money, mark = payout(spot, NOW, NOW + DAY_SECONDS // 2)
+    assert money == 0 and mark == NOW, "неполные сутки не трогаем"
+
+    money, mark = payout(spot, NOW, NOW + 3 * DAY_SECONDS + 500)
+    assert money == spot.income * 3
+    # Остаток переезжает: пятьсот секунд не сгорели
+    assert mark == NOW + 3 * DAY_SECONDS
+
+
+def test_the_owner_is_a_family_or_a_service():
+    """Владелец — пара «вид» и «кто», и видов ровно два."""
+    clan = owner_of_clan(7)
+    assert clan.clan_id == 7 and not clan.service and not clan.nobody
+    service = owner_of_service("police")
+    assert service.service == "police" and service.clan_id == 0
+    assert Owner().nobody
+    assert not clan.same(service) and clan.same(owner_of_clan(7))
+
+
+def test_the_calm_holds_a_full_day():
+    assert calm_left(NOW, NOW) == CALM_SECONDS
+    assert calm_left(NOW, NOW + CALM_SECONDS) == 0
+    assert calm_left(0, NOW) == 0, "боя не было — отдыхать не от чего"
+
+
+# ---------- кто воюет ----------
+
+
+async def test_a_loner_fights_for_nobody(db):
+    """За территории воюют семьи и службы, одиночки — нет."""
+    one = make_player()
+    await db.save_player(one)
+    assert owner_of(one).nobody
+
+    with pytest.raises(TurfError, match="Вступи в клан"):
+        await assault(db, one, "bar", [one.user_id], now=NOW)
+
+
+async def test_the_service_fights_as_a_family(db):
+    """Полиция — такой же владелец, как клан мафии."""
+    cop = make_player(5, "Сержант")
+    cop.job_code = "police_patrol"
+    cop.diplomas = ["police"]
+    await db.save_player(cop)
+
+    mine = owner_of(cop)
+    assert mine.service == "police"
+    assert await owner_title(db, mine) == "Полиция Вегаса"
+
+    # А врач не воюет: его служба без права силы
+    medic = make_player(6, "Доктор")
+    medic.job_code = "orderly"
+    await db.save_player(medic)
+    assert owner_of(medic).nobody
+
+
+async def test_nobody_holds_a_spot_for_free(db):
+    """За ничьей точкой стоит городская охрана — её надо бить."""
+    don, squad, _ = await family(db)
+    guards = await garrison(db, Owner(), [10, 10], NOW)
+
+    assert len(guards) == 3
+    assert all(one.alive and one.max_hp > 0 for one in guards)
+    assert all("Охранник" in one.name for one in guards)
+
+
+async def test_the_garrison_is_made_of_living_members(db):
+    """Гарнизон — настоящие бойцы семьи, а не боссы с потолка."""
+    don, squad, clan = await family(db, size=3)
+    wall = await garrison(db, owner_of_clan(clan.id), [10], NOW)
+
+    assert [one.name for one in wall] == ["Дон-1", "Боец-2", "Боец-3"]
+    assert all(one.level == 10 for one in wall)
+
+
+# ---------- штурм ----------
+
+
+async def test_the_won_spot_changes_hands_and_starts_paying(db):
+    """Взяли точку — она ваша и платит с часа захвата."""
+    don, squad, clan = await family(db)
+    taken = await seize(db, don, squad, "bar")
+
+    mine = owner_of_clan(clan.id)
+    held = await held_by(db, mine, taken)
+    assert [one.spot.code for one in held] == ["bar"]
+    assert await income_of(db, mine, taken) == get_spot("bar").income
+
+    # Трое суток спустя доход в сейфе семьи
+    await survey(db, taken + 3 * DAY_SECONDS)
+    assert await vault_of(db, mine) == get_spot("bar").income * 3
+
+
+async def test_the_spot_rests_after_the_battle(db):
+    """За точку подрались — сутки её не трогают, кто бы ни победил.
+
+    Проверяем с чужой стороны: своей точке отвечают «и так за вами», а
+    отдых придуман ровно для того, чтобы её не отбивали в ту же минуту.
+    """
+    don, squad, _ = await family(db)
+    await assault(db, don, "bar", squad, now=NOW, rng=random.Random(0))
+
+    rival, foes, _ = await family(
+        db, first=20, name="Бешеные псы", sign="silver_wolves"
+    )
+    with pytest.raises(TurfError, match="отдыхает"):
+        await assault(db, rival, "bar", foes, now=NOW + 60, rng=random.Random(1))
+
+    # А через сутки — пожалуйста
+    await assault(
+        db, rival, "bar", foes, now=NOW + CALM_SECONDS, rng=random.Random(2)
+    )
+
+
+async def test_your_own_spot_is_not_stormed(db):
+    don, squad, clan = await family(db)
+    taken = await seize(db, don, squad, "bar")
+
+    with pytest.raises(TurfError, match="и так за вами"):
+        await assault(
+            db, don, "bar", squad, now=taken + CALM_SECONDS, rng=random.Random(3)
+        )
+
+
+async def test_four_spots_are_the_ceiling(db):
+    """Больше четырёх точек одна семья не держит."""
+    don, squad, clan = await family(db)
+    moment = NOW
+    for code in ("bar", "weapon_shop", "taxi_depot", "pawnshop"):
+        moment = max(moment, await seize(db, don, squad, code)) + CALM_SECONDS
+
+    held = await held_by(db, owner_of_clan(clan.id), moment)
+    assert len(held) == MAX_SPOTS_PER_OWNER
+
+    with pytest.raises(TurfError, match="не удержать"):
+        await assault(
+            db, don, "car_dealership", squad, now=moment, rng=random.Random(4)
+        )
+
+
+async def test_an_empty_squad_does_not_march(db):
+    don, squad, clan = await family(db)
+
+    with pytest.raises(TurfError, match="Отряд пуст"):
+        await assault(db, don, "bar", [], now=NOW)
+    # И чужими бойцами тоже не повоюешь
+    stranger = make_player(99, "Чужой")
+    await db.save_player(stranger)
+    with pytest.raises(TurfError, match="Отряд пуст"):
+        await assault(db, don, "bar", [99], now=NOW)
+
+
+async def test_the_survey_pays_even_the_absent_owner(db):
+    """Доход сводит тот, кто пришёл смотреть, — в том числе чужой."""
+    don, squad, clan = await family(db)
+    taken = await seize(db, don, squad, "bar")
+
+    # Смотрит посторонний, а платят семье
+    stranger = make_player(50, "Прохожий")
+    await db.save_player(stranger)
+    await survey(db, taken + 5 * DAY_SECONDS)
+
+    assert await vault_of(db, owner_of_clan(clan.id)) == (
+        get_spot("bar").income * 5
+    )
+
+
+# ---------- ручки и экран ----------
+
+
+async def test_the_turf_map_is_read_from_anywhere(db, client):
+    """Карту войны смотрят откуда угодно: воюют в доме, знают везде."""
+    don, squad, clan = await family(db)
+    answer = await client.get("/api/turf", headers=headers(don.user_id))
+    assert answer.status == 200
+    body = await answer.json()
+
+    assert body["total"] == TOTAL_SPOTS and len(body["spots"]) == TOTAL_SPOTS
+    assert body["side"]["title"] == "Коза Ностра"
+    assert body["held"] == 0 and body["income"] == 0
+    first = body["spots"][0]
+    assert first["owner"]["nobody"] is True
+    assert first["can_storm"] is True
+
+
+async def test_the_handler_storms_and_names_the_outcome(db, client):
+    """Штурм через ручку: исход словами, карта обновлена."""
+    don, squad, clan = await family(db)
+    for _ in range(40):
+        answer = await client.post(
+            "/api/turf",
+            json={"action": "storm", "spot": "bar", "squad": squad},
+            headers=headers(don.user_id),
+        )
+        if answer.status == 409:
+            # Точка отдыхает после неудачи — для теста это не отказ
+            break
+        body = await answer.json()
+        if "взят" in body["said"]:
+            bar = next(one for one in body["spots"] if one["code"] == "bar")
+            assert bar["mine"] is True
+            assert bar["owner"]["title"] == "Коза Ностра"
+            assert body["held"] == 1
+            return
+    # Не взяли за попытку — тоже исход, и он назван
+    assert "отбит" in body["said"] or answer.status == 409
+
+
+async def test_a_loner_is_told_he_has_no_side(db, client):
+    """Одиночке карта видна, а кнопки штурма у него нет."""
+    one = make_player(9, "Сам по себе")
+    await db.save_player(one)
+    body = await (await client.get("/api/turf", headers=headers(9))).json()
+
+    assert body["side"]["nobody"] is True
+    assert "Вступи в клан" in body["note"]
+    assert not any(row["can_storm"] for row in body["spots"])

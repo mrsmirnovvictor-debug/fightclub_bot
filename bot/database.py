@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -33,6 +34,7 @@ from bot.game.health import now_ts
 from bot.game.injuries import ActiveInjury, get_injury
 from bot.game.insurance import Policy
 from bot.game.progress import QuestLog
+from bot.game.turf import Owner
 from bot.game.looks import MALE
 from bot.game.modes import FightMode, mode_of
 from bot.game.potions import ActiveEffect, get_potion
@@ -609,6 +611,30 @@ CREATE TABLE IF NOT EXISTS card_log (
 );
 
 CREATE INDEX IF NOT EXISTS card_log_user ON card_log(user_id, at);
+
+-- Территории: по строке на точку города. Владелец — пара «вид» и «кто»:
+-- `clan`/номер или `service`/код. Два разных вида владельцев в одной
+-- колонке были бы путаницей, а две таблицы на одно и то же — двумя
+-- правдами. `paid_until` — час, до которого доход уже начислен: остаток
+-- суток не пропадает, он переезжает в следующий расчёт
+CREATE TABLE IF NOT EXISTS turf (
+    code       TEXT    PRIMARY KEY,
+    owner_kind TEXT    NOT NULL DEFAULT 'none',
+    owner_key  TEXT    NOT NULL DEFAULT '',
+    taken_at   INTEGER NOT NULL DEFAULT 0,
+    paid_until INTEGER NOT NULL DEFAULT 0,
+    fought_at  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS turf_owner ON turf(owner_kind, owner_key);
+
+-- Казна городской службы. У клана сейф лежит в его же строке, а у
+-- службы своей строки нет вовсе: служба — это взгляд на рабочие места,
+-- и состава у неё не хранится. Казна — единственное, что у неё своё
+CREATE TABLE IF NOT EXISTS service_vault (
+    code   TEXT    PRIMARY KEY,
+    vault  INTEGER NOT NULL DEFAULT 0
+);
 
 -- Квесты бойца: по строке на взятое задание. Нет строки — задание ещё
 -- не предлагали или от него отказались. `marks` — отметки города: что
@@ -2740,6 +2766,94 @@ class Database:
             rows = await cursor.fetchall()
         return [self._lease(row) for row in rows]
 
+    # ---------- территории ----------
+
+    @staticmethod
+    def _turf(row) -> "TurfRow":
+        return TurfRow(
+            code=str(row["code"]),
+            owner=Owner(str(row["owner_kind"]), str(row["owner_key"])),
+            taken_at=int(row["taken_at"]),
+            paid_until=int(row["paid_until"]),
+            fought_at=int(row["fought_at"]),
+        )
+
+    async def turf_rows(self) -> dict[str, "TurfRow"]:
+        """Все точки, которые кто-то когда-то трогал: код → запись.
+
+        Нетронутой точки в базе нет вовсе, и это не упущение: ничья
+        точка — это строка, которой нет, а не строка с пустым владельцем.
+        Правила читают её как «под городской охраной».
+        """
+        async with self.conn.execute("SELECT * FROM turf") as cursor:
+            rows = await cursor.fetchall()
+        return {str(row["code"]): self._turf(row) for row in rows}
+
+    async def turf_row(self, code: str) -> "TurfRow | None":
+        async with self.conn.execute(
+            "SELECT * FROM turf WHERE code = ?", (code,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._turf(row) if row else None
+
+    async def take_turf(
+        self, code: str, kind: str, key: str, now: int
+    ) -> None:
+        """Записать нового владельца точки и отправить её отдыхать.
+
+        Час боя и час захвата — один и тот же: точка отдыхает ровно от
+        того мига, когда за неё дрались, кто бы ни победил.
+        """
+        await self.conn.execute(
+            """
+            INSERT INTO turf (code, owner_kind, owner_key, taken_at,
+                              paid_until, fought_at)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(code) DO UPDATE SET
+                owner_kind = excluded.owner_kind,
+                owner_key  = excluded.owner_key,
+                taken_at   = excluded.taken_at,
+                paid_until = excluded.paid_until,
+                fought_at  = excluded.fought_at
+            """,
+            (code, kind, key, now, now, now),
+        )
+        await self.conn.commit()
+        logger.info("Точка %s теперь за %s:%s", code, kind, key)
+
+    async def hold_turf(self, code: str, now: int) -> None:
+        """Отметить, что за точку дрались, а владелец остался прежним."""
+        await self.conn.execute(
+            "UPDATE turf SET fought_at = ? WHERE code = ?", (now, code)
+        )
+        await self.conn.commit()
+
+    async def pay_turf(self, code: str, paid_until: int) -> None:
+        """Передвинуть час, до которого доход уже начислен."""
+        await self.conn.execute(
+            "UPDATE turf SET paid_until = ? WHERE code = ?", (paid_until, code)
+        )
+        await self.conn.commit()
+
+    async def service_vault(self, code: str) -> int:
+        async with self.conn.execute(
+            "SELECT vault FROM service_vault WHERE code = ?", (code,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["vault"]) if row else 0
+
+    async def add_to_service_vault(self, code: str, amount: int) -> int:
+        """Положить в казну службы. Возвращает остаток после."""
+        await self.conn.execute(
+            """
+            INSERT INTO service_vault (code, vault) VALUES (?,?)
+            ON CONFLICT(code) DO UPDATE SET vault = vault + excluded.vault
+            """,
+            (code, amount),
+        )
+        await self.conn.commit()
+        return await self.service_vault(code)
+
     # ---------- квесты ----------
 
     @staticmethod
@@ -4143,6 +4257,17 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+@dataclass(frozen=True)
+class TurfRow:
+    """Строка таблицы точек: чья она, с какого часа и когда дрались."""
+
+    code: str
+    owner: Owner
+    taken_at: int = 0
+    paid_until: int = 0
+    fought_at: int = 0
 
 
 def _to_player(row: Iterable[Any]) -> Player:

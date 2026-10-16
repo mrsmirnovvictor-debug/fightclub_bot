@@ -98,6 +98,10 @@ from bot.estate_service import (
     take as flat_take,
     withdraw as flat_withdraw,
 )
+from bot.turf_service import (
+    TurfError,
+    assault as turf_assault,
+)
 from bot.study_service import (
     StudyError,
     attend as study_attend,
@@ -165,6 +169,7 @@ from bot.webapp.post import build_post
 from bot.webapp.bar import build_bar, quests_payload
 from bot.game.study import EXAM_SIZE, PASS_MARK
 from bot.webapp.study import build_study, exam_payload
+from bot.webapp.turf import build_turf
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
     build_market,
@@ -2240,6 +2245,60 @@ async def api_post_action(request: web.Request) -> web.Response:
     return await _post_state(request, fresh, said)
 
 
+# ---------- территории: война за точки города ----------
+
+
+async def _turf_state(request: web.Request, player, said: str = "") -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_turf(db, player, now_ts(), said)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_turf(request: web.Request) -> web.Response:
+    """Карта территорий: кто что держит и сколько это приносит.
+
+    Места тут нет нарочно: карту войны смотрят откуда угодно — воевать
+    приходят в дом, а знать, за что воюют, можно и из кармана.
+    """
+    player = await _own_player(request)
+    return await _turf_state(request, player)
+
+
+async def api_turf_action(request: web.Request) -> web.Response:
+    """Штурм точки. Отряд собирает тот, кто нападает."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    try:
+        if action == "storm":
+            squad = [int(one) for one in data.get("squad") or []]
+            # Сам нападающий идёт первым и всегда: вести отряд, не выходя
+            # из дома, нельзя
+            squad = [player.user_id] + [
+                one for one in squad if one != player.user_id
+            ]
+            done = await turf_assault(
+                db, player, str(data.get("spot") or ""), squad
+            )
+            said = (
+                f"{done.spot.title} взят: гарнизон смят за {done.waves} волн."
+                if done.won
+                else f"{done.spot.title} отбит: отряд не дошёл."
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except TurfError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный отряд."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _turf_state(request, fresh, said)
+
+
 # ---------- учёба: корпус, колледж, академия и университет ----------
 
 
@@ -2527,6 +2586,8 @@ def create_app(
             web.post("/api/flats", api_house_action),
             web.get("/api/post", api_post),
             web.post("/api/post", api_post_action),
+            web.get("/api/turf", api_turf),
+            web.post("/api/turf", api_turf_action),
             web.get("/api/study", api_study),
             web.post("/api/study", api_study_action),
             web.get("/api/bar", api_bar),
