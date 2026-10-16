@@ -852,7 +852,7 @@ async def open_page(
     battle=None, city=None, workshop=None, hospital=None, trade=None,
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
-    quests=None, study=None, images=False,
+    quests=None, study=None, turf=None, images=False,
     telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
@@ -896,6 +896,7 @@ async def open_page(
     await page.route("**/api/bar", canned(bar or bar_state()))
     await page.route("**/api/quests", canned(quests or quests_state()))
     await page.route("**/api/study", canned(study or study_state()))
+    await page.route("**/api/turf", canned(turf or {"spots": []}))
     await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
                                                     "ranks": [], "said": ""}))
 
@@ -9970,7 +9971,7 @@ async def test_the_family_stands_in_three_rows_with_its_marks(server):
 
         # В списке одна вкладка — он сам, и своя семья с галочкой
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
-            "🎩 Кланы"
+            "🚩 Территории", "🎩 Кланы"
         ]
         row = page.locator(".clan-item")
         assert "✅ Коза Ностра" in await row.inner_text()
@@ -9982,7 +9983,8 @@ async def test_the_family_stands_in_three_rows_with_its_marks(server):
         await row.locator(".clan-open").click()
         await page.wait_for_selector("#mafia-family:not(.hidden)")
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
-            "← Кланы", "👔 Состав", "💼 Имущество", "⚙️ Настройки"
+            "🚩 Территории", "← Кланы", "👔 Состав", "💼 Имущество",
+            "⚙️ Настройки",
         ]
         heads = await page.locator("#mafia-family .shelf-head").all_inner_texts()
         assert heads == ["Дон", "Приближённые · 1 из 3", "Мафиози"]
@@ -10171,7 +10173,7 @@ async def test_a_stranger_clan_opens_with_its_roster_alone(server):
 
         # В списке у одиночки одна вкладка — он сам
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
-            "🎩 Кланы"
+            "🚩 Территории", "🎩 Кланы"
         ]
         assert await page.locator("#mafia-family").is_hidden()
         assert await page.locator("#mafia-estate").is_hidden()
@@ -10180,7 +10182,7 @@ async def test_a_stranger_clan_opens_with_its_roster_alone(server):
         await page.wait_for_selector("#mafia-family:not(.hidden)")
         # У чужой семьи только состав: ни сейфа, ни настроек
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
-            "← Кланы", "👔 Состав"
+            "🚩 Территории", "← Кланы", "👔 Состав"
         ]
         rows = await page.locator("#mafia-family .clan-row").all_inner_texts()
         assert len(rows) == 3 and "Растафарайчик" in rows[0]
@@ -10191,6 +10193,121 @@ async def test_a_stranger_clan_opens_with_its_roster_alone(server):
         await page.wait_for_selector("#mafia-clans:not(.hidden)")
         await browser.close()
 
+
+# ---------- война за территории ----------
+
+
+async def war_states(db):
+    """Три состояния войны одним заходом: карта, сбор и идущая волна.
+
+    Панель живая, и поодиночке эти три не собрать: сбор родится только
+    из карты, а волна — только из сбора. Поэтому один прогон службы, а
+    снимки с него по дороге.
+    """
+    from bot.turf_war import TurfWar
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW, family
+
+    don, squad, _ = await family(db)
+    war = TurfWar(db)
+    try:
+        board = await build_war(db, don, war, NOW)
+        muster = await war.open_muster(don, "casino", now=NOW)
+        for number in squad[1:3]:
+            await war.join(muster.id, await db.get_player(number))
+        lobby = await build_war(db, don, war, NOW)
+        await war.march(muster.id, don.user_id, now=NOW)
+        siege = await build_war(db, don, war, NOW)
+    finally:
+        await war.close()
+    return don, board, lobby, siege
+
+
+async def open_war(pw, server, don, body):
+    """Открыть карту войны с готовым ответом и остановить опрос.
+
+    Панель сама ходит на сервер раз в пару секунд; в тесте это лишний
+    шум, и таймер мы гасим сразу после отрисовки.
+    """
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+    browser, page = await open_page(pw, server, card, turf=body)
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "turf")
+    await page.wait_for_selector("#turf-body .shelf, #turf-body .spot")
+    await page.evaluate("stopTurfPoll()")
+    return browser, page
+
+
+async def test_the_war_map_shows_the_spots_and_the_call_to_arms(server, db):
+    """Карта войны: точки города, их доход, владелец и кнопка сбора."""
+    don, board, _, _ = await war_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, board)
+
+        assert await page.locator("#turf .spot").count() == 10
+        first = page.locator("#turf .spot").first
+        assert "Казино" in await first.locator(".spot-title").inner_text()
+        assert "300" in await first.locator(".spot-income").inner_text()
+        # Ничьих точек не бывает: за пустой стоит городская охрана
+        assert "городская охрана" in await first.locator(".spot-owner").inner_text()
+        assert await first.locator("button").inner_text() == "Созвать отряд"
+
+        # Свои дела — строкой над картой
+        tally = await page.locator("#turf-body .shelf").first.inner_text()
+        assert "Коза Ностра" in tally and "0 из 4" in tally
+        await browser.close()
+
+
+async def test_the_muster_lists_the_squad_and_only_the_leader_marches(server, db):
+    """Сбор отряда: кто записан, сколько ждать и чьи кнопки."""
+    don, _, lobby, _ = await war_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, lobby)
+
+        head = await page.locator("#turf-body .shelf").first.inner_text()
+        assert "Отряд на Казино" in head and "3 из 5" in head
+        rows = await page.locator("#turf .muster-row").all_inner_texts()
+        assert len(rows) == 3 and rows[0].startswith("★")
+
+        # Веди отряд старший: остальным остаётся выйти
+        buttons = await page.locator("#turf .muster .btn").all_inner_texts()
+        assert buttons == ["Пошли", "Распустить"]
+
+        # Точку, на которую уже идут, вторым отрядом не берут
+        casino = page.locator("#turf .spot").first
+        assert "уже дерутся" in await casino.locator(".spot-state").inner_text()
+        assert await casino.locator("button").count() == 0
+        await browser.close()
+
+
+async def test_the_siege_shows_both_sides_and_waits_for_the_blow(server, db):
+    """Волна штурма: гарнизон, отряд, прицел и кнопки удара с блоком."""
+    don, _, _, siege = await war_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, siege)
+
+        head = await page.locator("#turf-body .shelf").first.inner_text()
+        assert "Казино · волна 1" in head and "городская охрана" in head
+
+        # Обе стороны стоят полосками: по ним и видно, кого осталось бить
+        sides = await page.locator("#turf .shelf-head").all_inner_texts()
+        assert sides[1:3] == ["Гарнизон", "Отряд"]
+        assert await page.locator("#turf .siege-row").count() == 6
+        # Сначала весь гарнизон, потом отряд: свой боец стоит четвёртым
+        mine = page.locator("#turf .siege-row").nth(3)
+        assert "(ты)" in await mine.inner_text()
+        assert "Бьём: " in await page.locator("#turf .raid-aim").inner_text()
+
+        # Пока ход не набран, вперёд не пускают
+        go = page.locator("#turf-go")
+        assert await go.is_disabled()
+        await page.locator("#turf .zone-list").first.locator("label").first.click()
+        await page.locator("#turf .zone-list").last.locator("label").first.click()
+        assert await go.is_enabled()
+        await browser.close()
 
 async def test_the_stairwell_shows_what_is_free_and_what_is_taken(server):
     """Подъезд: этажи, цены, занятые двери с ником жильца.

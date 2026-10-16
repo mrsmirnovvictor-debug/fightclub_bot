@@ -98,10 +98,7 @@ from bot.estate_service import (
     take as flat_take,
     withdraw as flat_withdraw,
 )
-from bot.turf_service import (
-    TurfError,
-    assault as turf_assault,
-)
+from bot.turf_service import TurfError
 from bot.study_service import (
     StudyError,
     attend as study_attend,
@@ -169,7 +166,8 @@ from bot.webapp.post import build_post
 from bot.webapp.bar import build_bar, quests_payload
 from bot.game.study import EXAM_SIZE, PASS_MARK
 from bot.webapp.study import build_study, exam_payload
-from bot.webapp.turf import build_turf
+from bot.webapp.turf import build_war
+from bot.turf_war import TurfWar
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
     build_market,
@@ -198,6 +196,7 @@ DUELS_KEY: web.AppKey = web.AppKey("duels")
 STORE_KEY: web.AppKey = web.AppKey("store")
 # Рейды: тот же сервис, что и в ветке группы — апп ему второй пульт
 RAIDS_KEY: web.AppKey = web.AppKey("raids")
+WAR_KEY: web.AppKey = web.AppKey("war")
 # Групповые бои: состав собирают где угодно, а дерутся в карточке
 BATTLES_KEY: web.AppKey = web.AppKey("battles")
 # Столы на рынке: обмен идёт минуты и живёт в памяти, как и бои
@@ -2251,7 +2250,9 @@ async def api_post_action(request: web.Request) -> web.Response:
 async def _turf_state(request: web.Request, player, said: str = "") -> web.Response:
     db = request.app[DB_KEY]
     config = request.app[CONFIG_KEY]
-    body = await build_turf(db, player, now_ts(), said)
+    body = await build_war(
+        db, player, request.app.get(WAR_KEY), now_ts(), said
+    )
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)
 
@@ -2267,33 +2268,64 @@ async def api_turf(request: web.Request) -> web.Response:
 
 
 async def api_turf_action(request: web.Request) -> web.Response:
-    """Штурм точки. Отряд собирает тот, кто нападает."""
+    """Живая осада: созвать отряд, вести его, бить и закрыть итог."""
     data = await _payload(request)
     action = str(data.get("action") or "")
     db = request.app[DB_KEY]
     player = await _own_player(request)
+    war = request.app.get(WAR_KEY)
+    if war is None:  # pragma: no cover - приложение заводит её само
+        return web.json_response({"error": "Война сейчас недоступна."}, status=503)
     try:
-        if action == "storm":
-            squad = [int(one) for one in data.get("squad") or []]
-            # Сам нападающий идёт первым и всегда: вести отряд, не выходя
-            # из дома, нельзя
-            squad = [player.user_id] + [
-                one for one in squad if one != player.user_id
-            ]
-            done = await turf_assault(
-                db, player, str(data.get("spot") or ""), squad
+        if action == "call":
+            # Созвать отряд на точку. Созвавший записан первым
+            await war.open_muster(player, str(data.get("spot") or ""))
+            said = "Отряд собирается. Свои подтянутся — и вперёд."
+        elif action == "join":
+            await war.join(_int_field(data, "muster_id"), player)
+            said = "Ты в отряде."
+        elif action == "leave":
+            muster = war.muster_of_user(player.user_id)
+            if muster is None:
+                raise TurfError("Ты никуда не записан.")
+            await war.leave(muster.id, player.user_id)
+            said = "Ты вышел из отряда."
+        elif action == "march":
+            muster = war.muster_of_user(player.user_id)
+            if muster is None:
+                raise TurfError("Ты никуда не записан.")
+            await war.march(muster.id, player.user_id)
+            said = "Пошли."
+        elif action == "turn":
+            # Ход целиком: удар каждой рукой и блок уходят одной кнопкой
+            siege = war.siege_of_user(player.user_id)
+            if siege is None:
+                raise TurfError("Ты сейчас не на штурме.")
+            hands = _hands(data)
+            block = str(data.get("block", ""))
+            fighter = siege.party.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
+                raise TurfError("Выбери и удар, и блок.")
+            for hand, zone in sorted(hands.items()):
+                await war.choose(siege.id, player.user_id, "attack", zone, hand)
+            said = await war.choose(siege.id, player.user_id, "block", block)
+        elif action == "ability":
+            siege = war.siege_of_user(player.user_id)
+            if siege is None:
+                raise TurfError("Ты сейчас не на штурме.")
+            said = await war.use_ability(
+                siege.id, player.user_id, str(data.get("code") or "")
             )
-            said = (
-                f"{done.spot.title} взят: гарнизон смят за {done.waves} волн."
-                if done.won
-                else f"{done.spot.title} отбит: отряд не дошёл."
-            )
+        elif action == "done":
+            war.forget_result(player.user_id)
+            said = ""
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except TurfError as error:
         return web.json_response({"error": str(error)}, status=409)
     except (TypeError, ValueError):
-        return web.json_response({"error": "Непонятный отряд."}, status=400)
+        return web.json_response({"error": "Непонятное нажатие."}, status=400)
 
     fresh = await db.get_player(player.user_id) or player
     return await _turf_state(request, fresh, said)
@@ -2516,6 +2548,9 @@ def create_app(
     if battles is not None:
         app[BATTLES_KEY] = battles
     app[TRADE_KEY] = TradeService(db)
+    # Войну за территории держит само приложение: она живёт в мини-аппе,
+    # ветки в группе у неё нет, и заводить её снаружи незачем
+    app[WAR_KEY] = TurfWar(db)
     # Кого дорога спрашивает, можно ли уходить: из недодранного боя нельзя
     app[TRAVEL_KEY].watch(duels, raids, battles)
     # А обмен спрашивает то же самое про стол: позвать занятого бойцом

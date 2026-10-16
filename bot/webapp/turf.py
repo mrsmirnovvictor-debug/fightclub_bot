@@ -18,6 +18,7 @@ from typing import Any
 
 from bot.game.clock import club_moment
 from bot.game.health import format_duration, now_ts
+from bot.game.classes import BLOCK_WIDTH
 from bot.game.turf import (
     CALM_HOURS,
     MAX_GARRISON,
@@ -26,6 +27,7 @@ from bot.game.turf import (
     Owner,
     calm_left,
 )
+from bot.turf_service import MAX_WAVES
 from bot.models import Player
 
 
@@ -107,4 +109,135 @@ def _note(mine: Owner, held: int) -> str:
     return f"Точек у вас {held} из {MAX_SPOTS_PER_OWNER}. Доход капает раз в сутки."
 
 
-__all__ = ["build_turf", "spot_row"]
+# ---------- живая осада ----------
+
+
+def fighter_row(one, viewer_id: int = 0) -> dict[str, Any]:
+    """Боец в панели: имя, запас и жив ли он ещё."""
+    return {
+        "user_id": one.user_id,
+        "name": one.name,
+        "hp": max(0, one.hp),
+        "max_hp": one.max_hp,
+        "percent": max(0, round(one.hp / one.max_hp * 100)) if one.max_hp else 0,
+        "alive": one.alive,
+        "level": one.level,
+        "fclass": one.fclass.emoji,
+        "is_self": one.user_id == viewer_id,
+    }
+
+
+def muster_payload(muster, viewer_id: int, seconds: int) -> dict[str, Any]:
+    """Сбор отряда: куда идут, кто записан и сколько ждать."""
+    return {
+        "id": muster.id,
+        "spot": muster.spot.code,
+        "spot_title": muster.spot.title,
+        "income": muster.spot.income,
+        "leader": muster.leader,
+        "mine": viewer_id in muster.members,
+        "is_leader": viewer_id == muster.leader,
+        "members": [
+            {"user_id": one, "name": name, "is_self": one == viewer_id}
+            for one, name in muster.members.items()
+        ],
+        "total": len(muster.members),
+        "max": MAX_GARRISON,
+        "seconds_left": muster.seconds_left(seconds),
+    }
+
+
+def siege_payload(siege, viewer_id: int) -> dict[str, Any]:
+    """Панель штурма: гарнизон, отряд, что нажато и чем кончилось."""
+    from bot.webapp.fight import (
+        ATTACK_BUTTONS,
+        abilities_payload,
+        block_buttons,
+        hands_payload,
+    )
+
+    mine = siege.choices.get(viewer_id)
+    fighter = siege.party.get(viewer_id)
+    foe = siege.foe_of(viewer_id)
+    return {
+        "id": siege.id,
+        "spot": siege.spot.code,
+        "spot_title": siege.spot.title,
+        "income": siege.spot.income,
+        "defender": siege.defender_title,
+        "wave": siege.wave,
+        "max_waves": MAX_WAVES,
+        "finished": siege.finished,
+        "won": siege.won,
+        "summary": siege.summary,
+        "hands": hands_payload(fighter),
+        # Кнопки зон: сколько рук, столько столбцов удара, плюс блок
+        "attacks": [dict(row) for row in ATTACK_BUTTONS],
+        "blocks": block_buttons(fighter.block_width if fighter else BLOCK_WIDTH),
+        # Весь гарнизон по порядку: по нему видно, сколько ещё стоит
+        "wall": [fighter_row(one) for one in siege.wall.values()],
+        "party": [fighter_row(one, viewer_id) for one in siege.party.values()],
+        # Кого смотрящий бьёт сейчас. Пусто — некого: его защитника
+        # добили, а следующий достанется со следующего размена
+        "foe": fighter_row(foe) if foe is not None else None,
+        "yours": viewer_id in siege.party,
+        "alive": bool(fighter and fighter.alive),
+        "acted": viewer_id in siege.acted,
+        "seconds_left": siege.seconds_left(),
+        "chosen": {
+            "attacks": {
+                str(hand): zone.value
+                for hand, zone in (mine.attacks.items() if mine else ())
+            },
+            "block": mine.block[0].value if mine and mine.block else None,
+        },
+        # Приёмы — только свои: чужая заготовка перестаёт быть
+        # неожиданностью, если её видно
+        "abilities": abilities_payload(fighter),
+        "log": siege.rounds,
+    }
+
+
+async def build_war(
+    db, player: Player, war, now: int | None = None, said: str = ""
+) -> dict[str, Any]:
+    """Карта войны вместе с тем, что у бойца идёт прямо сейчас.
+
+    Ответ всегда полный: панель опрашивает ручку раз в пару секунд, и по
+    нему видно, что рисовать — карту, сбор, волну или итог.
+    """
+    body = await build_turf(db, player, now, said)
+    if war is None:  # pragma: no cover - бот без войны не поднимается
+        body.update({"muster": None, "siege": None, "result": None})
+        return body
+    muster = war.muster_of_user(player.user_id)
+    siege = war.siege_of_user(player.user_id)
+    result = war.result_of_user(player.user_id)
+    body["muster"] = (
+        muster_payload(muster, player.user_id, war.lobby_seconds)
+        if muster is not None
+        else None
+    )
+    body["siege"] = siege_payload(siege, player.user_id) if siege else None
+    body["result"] = siege_payload(result, player.user_id) if result else None
+    # Где уже дерутся: на такую точку второй отряд не собирают
+    busy = {one.spot.code for one in war.musters()} | {
+        one.spot.code for one in war.sieges()
+    }
+    for row in body["spots"]:
+        if row["code"] in busy:
+            row["can_storm"] = False
+            row["busy"] = True
+        else:
+            row["busy"] = False
+    return body
+
+
+__all__ = [
+    "build_turf",
+    "build_war",
+    "fighter_row",
+    "muster_payload",
+    "siege_payload",
+    "spot_row",
+]

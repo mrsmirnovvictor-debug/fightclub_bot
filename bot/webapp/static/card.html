@@ -393,6 +393,21 @@
     <section id="flats-home" class="hidden"></section>
   </main>
 
+  <!-- ---------- 3b13. Война за территории ---------- -->
+  <!-- Один экран на всю войну: карта точек, сбор отряда, идущая волна и
+       итог. Что из этого рисовать, решает сервер — ответ всегда полный,
+       и страница только смотрит, что в нём лежит -->
+  <main id="turf" class="screen hidden">
+    <header class="screen-head">
+      <button type="button" class="back" id="turf-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-turf"></span>
+    </header>
+    <h1 class="screen-title">🚩 Территории</h1>
+    <p class="screen-note" id="turf-note"></p>
+
+    <div id="turf-body"></div>
+  </main>
+
   <!-- ---------- 3b12. Учёба: приёмная, занятие и выпускной билет ---------- -->
   <!-- Экран один на пять домов, и что он покажет, решает дом: в четырёх
        приёмная с курсами, на полигоне только часы занятия. Заголовок

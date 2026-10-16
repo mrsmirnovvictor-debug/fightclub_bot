@@ -328,27 +328,112 @@ async def test_the_turf_map_is_read_from_anywhere(db, client):
     assert first["can_storm"] is True
 
 
-async def test_the_handler_storms_and_names_the_outcome(db, client):
-    """Штурм через ручку: исход словами, карта обновлена."""
-    don, squad, clan = await family(db)
-    for _ in range(40):
-        answer = await client.post(
-            "/api/turf",
-            json={"action": "storm", "spot": "bar", "squad": squad},
-            headers=headers(don.user_id),
+async def post(client, user_id: int, **body):
+    """Нажатие в панели войны."""
+    return await client.post("/api/turf", json=body, headers=headers(user_id))
+
+
+async def test_the_muster_gathers_and_marches(db, client):
+    """Сбор отряда: созвали, записались, пошли — и началась волна."""
+    don, squad, _ = await family(db)
+
+    answer = await post(client, don.user_id, action="call", spot="bar")
+    assert answer.status == 200
+    body = await answer.json()
+    muster = body["muster"]
+    assert muster["spot"] == "bar" and muster["is_leader"] is True
+    assert [one["user_id"] for one in muster["members"]] == [don.user_id]
+    # На точку, где уже собираются, второй отряд не зовут
+    bar = next(one for one in body["spots"] if one["code"] == "bar")
+    assert bar["busy"] is True and bar["can_storm"] is False
+
+    # Свои записываются
+    answer = await post(client, squad[1], action="join", muster_id=muster["id"])
+    body = await answer.json()
+    assert body["muster"]["total"] == 2
+    assert body["muster"]["is_leader"] is False
+
+    # Ведёт отряд созвавший
+    answer = await post(client, squad[1], action="march")
+    assert answer.status == 409
+    assert "созвал" in (await answer.json())["error"]
+
+    answer = await post(client, don.user_id, action="march")
+    body = await answer.json()
+    siege = body["siege"]
+    assert siege is not None and siege["wave"] == 1
+    assert siege["spot"] == "bar" and siege["defender"] == "городская охрана"
+    assert len(siege["party"]) == 2 and siege["wall"]
+    assert siege["yours"] and siege["alive"] and not siege["acted"]
+    assert siege["foe"] is not None, "прицел наведён"
+
+
+async def test_the_wave_takes_the_blow_and_the_block(db, client):
+    """Ход целиком: удар и блок одной кнопкой, и боец отработал."""
+    don, squad, _ = await family(db)
+    await post(client, don.user_id, action="call", spot="bar")
+    await post(client, don.user_id, action="march")
+
+    answer = await post(
+        client, don.user_id, action="turn", attack="head", block="belly"
+    )
+    assert answer.status == 200
+    body = await answer.json()
+    live = body["siege"] or body["result"]
+    assert live["log"], "размен попал в журнал"
+    # Либо боец отработал волну, либо волна уже закрылась и началась новая
+    assert live["finished"] or live["acted"] or live["wave"] >= 1
+
+
+async def test_the_siege_ends_and_the_spot_changes_hands(db, client):
+    """Штурм до конца: итог показан, и точка записана за победителем."""
+    don, squad, _ = await family(db)
+    await post(client, don.user_id, action="call", spot="bar")
+    await post(client, don.user_id, action="march")
+
+    body = {}
+    for _ in range(200):
+        answer = await post(
+            client, don.user_id, action="turn", attack="head", block="belly"
         )
-        if answer.status == 409:
-            # Точка отдыхает после неудачи — для теста это не отказ
-            break
         body = await answer.json()
-        if "взят" in body["said"]:
-            bar = next(one for one in body["spots"] if one["code"] == "bar")
-            assert bar["mine"] is True
-            assert bar["owner"]["title"] == "Коза Ностра"
-            assert body["held"] == 1
-            return
-    # Не взяли за попытку — тоже исход, и он назван
-    assert "отбит" in body["said"] or answer.status == 409
+        if body.get("result"):
+            break
+        if answer.status == 409:
+            # Выбыл из боя: итог придёт сам
+            body = await (await client.get(
+                "/api/turf", headers=headers(don.user_id)
+            )).json()
+            if body.get("result"):
+                break
+            raise AssertionError("штурм встал: ни итога, ни хода")
+    result = body["result"]
+    assert result is not None and result["finished"] is True
+    assert result["summary"], "итог назван словами"
+
+    bar = next(one for one in body["spots"] if one["code"] == "bar")
+    if result["won"]:
+        assert bar["mine"] is True and bar["owner"]["title"] == "Коза Ностра"
+    else:
+        assert bar["owner"]["nobody"] is True
+    # Пока итог не закрыт, он висит; закрыли — пропал
+    body = await (await post(client, don.user_id, action="done")).json()
+    assert body["result"] is None
+
+
+async def test_a_stranger_does_not_join_the_muster(db, client):
+    """Сбор свой: чужая семья в него не записывается."""
+    don, _, _ = await family(db)
+    rival, _, _ = await family(
+        db, first=20, name="Бешеные псы", sign="silver_wolves"
+    )
+    body = await (await post(client, don.user_id, action="call", spot="bar")).json()
+
+    answer = await post(
+        client, rival.user_id, action="join", muster_id=body["muster"]["id"]
+    )
+    assert answer.status == 409
+    assert "чужой сбор" in (await answer.json())["error"]
 
 
 async def test_a_loner_is_told_he_has_no_side(db, client):

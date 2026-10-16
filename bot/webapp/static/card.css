@@ -1272,6 +1272,53 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .talk-replies { display: grid; gap: 8px; margin-top: 12px; }
 
+/* ---------- война за территории ---------- */
+
+/* Точка на карте войны: заголовок с доходом, кто держит и кнопка.
+   Своя помечена рамкой — её на карте ищут глазами первой */
+.spot {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.spot.mine { border-color: var(--accent); }
+.spot-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.spot-title { margin: 0; font-size: 15px; }
+.spot-income { font-weight: 800; white-space: nowrap; }
+.spot-owner { margin: 6px 0 0; font-size: 13px; }
+.spot-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+.spot-state { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; }
+
+/* Сбор отряда: список имён, созвавший со звездой */
+.muster-list { display: grid; gap: 4px; margin: 8px 0; }
+.muster-row {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--slot);
+  font-size: 13px;
+}
+.muster-row.me { border: 1px solid var(--accent); }
+
+/* Строка бойца в штурме: имя, полоса здоровья и числа */
+.siege-row {
+  display: grid;
+  grid-template-columns: 1fr 90px auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 13px;
+}
+.siege-row.down { opacity: 0.45; }
+.siege-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.siege-hp { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
 /* ---------- учёба: приёмная и курсы ---------- */
 
 /* Карточка курса устроена как бланк документа: заголовок с ценой, строки
