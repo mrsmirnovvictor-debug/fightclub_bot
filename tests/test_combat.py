@@ -553,8 +553,10 @@ def test_fatigue_is_stretched_over_the_whole_fight():
     assert fatigue_multiplier(MAX_TURNS, MAX_TURNS) == pytest.approx(
         fatigue_multiplier(LONG_TURNS, LONG_TURNS)
     )
-    # ровно ту же кривую боец видел до появления длинного боя
-    assert fatigue_multiplier(MAX_TURNS, MAX_TURNS) == pytest.approx(2.44)
+    # К финальному гонгу удар тяжелее вот на столько — и в коротком бою,
+    # и в длинном. Разгон замедлен впятеро против прежнего: было 2.44,
+    # то есть бой сходился усталостью, а не разменом
+    assert fatigue_multiplier(MAX_TURNS, MAX_TURNS) == pytest.approx(1.288)
     # на середине длинного боя бьют ещё спокойно
     assert fatigue_multiplier(9, LONG_TURNS) == 1.0
     assert fatigue_multiplier(9, MAX_TURNS) > 1.0
@@ -1147,3 +1149,62 @@ def test_the_warrior_stays_out_of_the_circle():
             for seed in (2032, 4056, 6080)
         ) / 3
         assert 0.40 < share < 0.62, f"воин против {rival}: {share:.0%}"
+
+
+# ---------- потолки ----------
+
+
+def test_the_anticrit_ceiling_never_rises_above_the_crit_one():
+    """Антикрит не бывает выше крита — ни по характеристике, ни с вещами.
+
+    Крит и антикрит вычитаются, и антикрит выше потолка крита означал бы,
+    что выносливость отменяет не часть чужого крита, а весь крит целиком —
+    вместе со всем, что написано на оружии ассасина.
+
+    Ниже опускать тоже нельзя, и это выяснилось дорого: антикрит и есть
+    противоядие танка от ассасина, третья нога круга. Поэтому потолки
+    равны, а не просто совпадают — второй считается от первого.
+    """
+    from bot.game.stats import (
+        ANTICRIT_SHARE_OF_CRIT,
+        MAX_ANTICRIT,
+        MAX_ANTICRIT_TOTAL,
+        MAX_CRIT_CHANCE,
+        MAX_CRIT_TOTAL,
+    )
+
+    assert MAX_ANTICRIT <= MAX_CRIT_CHANCE
+    assert MAX_ANTICRIT_TOTAL <= MAX_CRIT_TOTAL
+    # И это не совпадение двух чисел: подвинь крит — антикрит поедет следом
+    assert MAX_ANTICRIT == pytest.approx(MAX_CRIT_CHANCE * ANTICRIT_SHARE_OF_CRIT)
+    assert MAX_ANTICRIT_TOTAL == pytest.approx(
+        MAX_CRIT_TOTAL * ANTICRIT_SHARE_OF_CRIT
+    )
+
+
+def test_the_fan_kit_no_longer_hits_the_ceiling_of_the_total():
+    """Потолок итога подняли затем, чтобы доли с вещей доходили до боя.
+
+    Фанатский комплект воина несёт 260% точности и 251% антикрита. На
+    прежнем потолке в 200% шестьдесят пунктов с вещей не делали ничего:
+    их срезало до того, как они попадали в бой.
+    """
+    from bot.game.combat import total_accuracy, total_anticrit
+    from bot.game.stats import MAX_ACCURACY_TOTAL
+
+    assert MAX_ACCURACY_TOTAL >= 2.6, "комплект должен доходить до боя целиком"
+    assert total_accuracy(0.0, 2.60) == pytest.approx(2.60)
+    assert total_anticrit(0.0, 2.51) == pytest.approx(2.51)
+
+
+def test_the_dodge_keeps_its_rail_even_with_the_ceilings_raised():
+    """Последний предохранитель: в бой уворот идёт зажатым.
+
+    Это не потолок характеристики, а потолок разницы пары, и ставить его
+    к сотне нельзя: боец, в которого нельзя попасть вовсе, не выигрывает
+    бой, а делает его бесконечным.
+    """
+    from bot.game.combat import MAX_DODGE_CHANCE, MIN_DODGE_CHANCE
+
+    assert MIN_DODGE_CHANCE > 0, "совсем без надежды уйти с линии удара"
+    assert MAX_DODGE_CHANCE < 1.0, "в такого бойца нельзя попасть вовсе"

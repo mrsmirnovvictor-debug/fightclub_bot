@@ -1289,11 +1289,19 @@ async def test_only_the_best_takes_a_thing_and_never_two(bot, db):
 
 
 async def test_the_potion_falls_to_everyone_or_to_nobody(bot, db):
-    """Один бросок на отряд: либо склянка у всех, либо ни у кого."""
+    """Один бросок на отряд: либо склянка у всех, либо ни у кого.
+
+    Зёрен тридцать, а не шесть, и это не щедрость. Склянка падает с
+    вероятностью 0.8, значит на шести зёрнах «не упало ни разу» выходит
+    в четверти случаев — и тест падал не от правки правил, а от любого
+    сдвига потока случайных чисел: правка баланса, лишний бросок на
+    пробитие блока, что угодно. На тридцати зёрнах у обоих исходов
+    запас: 0.8³⁰ — это один прогон из восьмисот.
+    """
     from bot.game.raid import GANG_POTIONS
 
     seen = set()
-    for seed in range(6):
+    for seed in range(30):
         async with one_fight(bot, seed) as (fresh, players, session):
             assert session.finished
             got = []
@@ -1306,7 +1314,7 @@ async def test_the_potion_falls_to_everyone_or_to_nobody(bot, db):
             assert got[0] in (0, 1), "за бой падает одна склянка, а не стопка"
             seen.add(got[0])
 
-    assert seen == {0, 1}, "за шесть боёв не выпало и того, и другого"
+    assert seen == {0, 1}, "за тридцать боёв не выпало и того, и другого"
 
 
 async def test_a_lost_raid_drops_nothing_at_all(bot, db):

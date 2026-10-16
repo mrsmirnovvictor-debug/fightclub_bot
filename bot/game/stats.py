@@ -39,8 +39,8 @@ CRIT_PER_INTUITION = 0.0108
 # сам — увороту трикстера срезал бы, а точности танка нет. Поэтому итог
 # может перевалить и за сотню процентов: в бой идёт не он, а разница между
 # парой, и её держит уже свой потолок — `MAX_DODGE_CHANCE` в combat.py.
-MAX_CRIT_CHANCE = 1.0 if NO_LIMITS else 0.45
-MAX_CRIT_TOTAL = 2.0 if NO_LIMITS else 2.0
+MAX_CRIT_CHANCE = 1.0 if NO_LIMITS else 0.75
+MAX_CRIT_TOTAL = 4.0 if NO_LIMITS else 4.0
 BASE_CRIT_POWER = 1.5
 # Интуиция растит не только шанс крита, но и его силу. Шанс упирается в
 # потолок, сила — нет, поэтому вкладываться в интуицию имеет смысл всегда.
@@ -48,8 +48,8 @@ CRIT_POWER_PER_INTUITION = 0.04
 
 BASE_DODGE_CHANCE = 0.02
 DODGE_PER_AGILITY = 0.01
-MAX_DODGE_CHANCE = 1.0 if NO_LIMITS else 0.50
-MAX_DODGE_TOTAL = 2.0 if NO_LIMITS else 2.0
+MAX_DODGE_CHANCE = 1.0 if NO_LIMITS else 0.75
+MAX_DODGE_TOTAL = 4.0 if NO_LIMITS else 4.0
 
 # Три пары идут по кругу: ловкость бьёт выносливость, выносливость —
 # интуицию, интуиция — ловкость. Отсюда камень-ножницы-бумага между
@@ -62,28 +62,49 @@ MAX_DODGE_TOTAL = 2.0 if NO_LIMITS else 2.0
 
 # Точность (антиуворот): интуиция угадывает, куда уйдёт соперник
 ACCURACY_PER_INTUITION = 0.005
-MAX_ACCURACY = 1.0 if NO_LIMITS else 0.45
-MAX_ACCURACY_TOTAL = 2.0 if NO_LIMITS else 2.0
+MAX_ACCURACY = 1.0 if NO_LIMITS else 0.75
+MAX_ACCURACY_TOTAL = 4.0 if NO_LIMITS else 4.0
 
-# Антикрит: выносливость терпит там, где другой сложился бы
+# Антикрит: выносливость терпит там, где другой сложился бы.
+#
+# **Его потолок считается от потолка крита и выше него не бывает.** Раньше
+# числа просто совпадали — 45% и 45%, 200% и 200%, — и держалось это
+# совпадение ни на чём: поправь одно, и второе молча разъедется.
+#
+# Поднять антикрит выше крита нельзя никогда: они вычитаются, и антикрит
+# выше потолка крита означал бы, что выносливость отменяет не какую-то
+# часть чужого крита, а весь крит вообще — вместе со всем, что написано
+# на оружии ассасина.
+#
+# А опустить его ниже — тоже нельзя, и это выяснилось дорого. Антикрит и
+# есть противоядие танка от ассасина, третья нога круга «трикстер — танк
+# — ассасин». На доле 0.8 танк переставал бить ассасина совсем: круг
+# ломался на шестом, восьмом и десятом уровнях, в украшениях и в
+# фанатском. Поэтому доля здесь единица, и смысл её не в том, чтобы
+# что-то урезать, а в том, чтобы два потолка нельзя было развести порознь.
+ANTICRIT_SHARE_OF_CRIT = 1.0
 ANTICRIT_PER_ENDURANCE = 0.011
-MAX_ANTICRIT = 1.0 if NO_LIMITS else 0.45
-MAX_ANTICRIT_TOTAL = 2.0 if NO_LIMITS else 2.0
+MAX_ANTICRIT = (
+    1.0 if NO_LIMITS else round(MAX_CRIT_CHANCE * ANTICRIT_SHARE_OF_CRIT, 4)
+)
+MAX_ANTICRIT_TOTAL = (
+    4.0 if NO_LIMITS else round(MAX_CRIT_TOTAL * ANTICRIT_SHARE_OF_CRIT, 4)
+)
 
 # Сопротивление урону: выносливость снимает долю с каждого пропущенного удара.
 # Потолок здесь единственный, который не снимается выключателем: это не шанс,
 # а прямой множитель урона, и на сотне процентов бой встал бы совсем.
 RESIST_PER_ENDURANCE = 0.008
-MAX_RESIST = 0.38
+MAX_RESIST = 0.50
 
 # Пробивание: ловкость находит щель в чужой обороне и срезает сопротивление
 PENETRATION_PER_AGILITY = 0.008
-MAX_PENETRATION = 0.5
+MAX_PENETRATION = 0.75
 
 # Контрудар — продолжение уворота, поэтому и растёт он от ловкости
 BASE_COUNTER_CHANCE = 0.02
 COUNTER_PER_AGILITY = 0.007
-MAX_COUNTER_CHANCE = 1.0 if NO_LIMITS else 0.5
+MAX_COUNTER_CHANCE = 1.0 if NO_LIMITS else 0.75
 COUNTER_DAMAGE_MULT = 0.85  # контрудар бьёт почти в полную силу
 
 # Пробитие блока: крит, упёршийся в блок, всё равно может его проломить.
@@ -93,7 +114,7 @@ BLOCK_BREAK_CHANCE = 0.5
 MIN_BLOCK_BREAK = 0.05
 # Пробитый блок гасит удар вполовину: проходит половина максимального урона
 BLOCK_BREAK_DAMAGE_SHARE = 0.5
-MAX_BLOCK_HOLD = 1.0 if NO_LIMITS else 0.6
+MAX_BLOCK_HOLD = 1.0 if NO_LIMITS else 0.75
 
 HP_PER_LEVEL = 5  # прибавка к здоровью за каждый уровень
 
@@ -177,7 +198,8 @@ def derive(
         anticrit=round(
             share(
                 MAX_ANTICRIT,
-                stats.endurance * ANTICRIT_PER_ENDURANCE + fclass.anticrit_bonus,
+                stats.endurance * ANTICRIT_PER_ENDURANCE * fclass.anticrit_gain
+                + fclass.anticrit_bonus,
             ),
             4,
         ),
