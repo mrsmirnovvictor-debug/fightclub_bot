@@ -73,6 +73,25 @@ async def _refresh(db: Database, player: Player) -> Standing | None:
 # ---------- завести клан ----------
 
 
+def _serves_the_law(player: Player) -> str:
+    """Служит ли боец закону. Пусто — не служит, можно в семью.
+
+    Полиция, армия и ФБР в клан не идут, и проверка нужна с обеих
+    сторон: агентство не берёт мафиози, а особняк не принимает служивого.
+    Одной стороны мало — иначе правило обходится тем, что сперва
+    устраиваешься, а потом вступаешь.
+    """
+    from bot.game.work import get_vacancy
+
+    job = get_vacancy(player.job_code) if player.job_code else None
+    if job is None or not job.lawful:
+        return ""
+    return (
+        f"Ты на службе: {job.title}. Служба и семья несовместимы — "
+        "сперва уйди с места."
+    )
+
+
 async def found(
     db: Database,
     player: Player,
@@ -85,6 +104,9 @@ async def found(
     _at_mansion(player, moment, "Завести клан")
     if player.clan is not None:
         raise ClanError("Ты уже в клане: из двух семей сразу не выйдет.")
+    serves = _serves_the_law(player)
+    if serves:
+        raise ClanError(serves)
 
     trouble = name_problem(name)
     if trouble:
@@ -182,6 +204,9 @@ async def apply(
     _at_mansion(player, moment, "Подать заявку")
     if player.clan is not None:
         raise ClanError("Ты уже в клане. Сначала уйди из нынешнего.")
+    serves = _serves_the_law(player)
+    if serves:
+        raise ClanError(serves)
     clan = await db.clan_by_id(clan_id)
     if clan is None:
         raise ClanError("Такого клана нет.")
@@ -218,6 +243,9 @@ async def accept(
     moment = now_ts() if now is None else now
     if player.clan is not None:
         raise ClanError("Ты уже в клане. Сначала уйди из нынешнего.")
+    serves = _serves_the_law(player)
+    if serves:
+        raise ClanError(serves)
     knock = await db.petition(clan_id, player.user_id)
     if knock is None or knock.kind is not Petition.INVITE:
         raise ClanError("Такого приглашения нет.")
@@ -263,6 +291,15 @@ async def approve(
     if await db.standing_of(user_id) is not None:
         await db.drop_petition(standing.clan.id, user_id)
         raise ClanError("Этот боец уже в клане — заявка снята.")
+    # Пока заявка лежала, боец мог уйти на службу: в участок берут
+    # быстрее, чем дон читает почту
+    guest = await db.get_player(user_id)
+    if guest is not None and _serves_the_law(guest):
+        await db.drop_petition(standing.clan.id, user_id)
+        raise ClanError(
+            f"{guest.nickname} теперь на службе — заявка снята. "
+            "Служба и семья несовместимы."
+        )
     clan = await db.clan_by_id(standing.clan.id)
     if clan is None or clan.full:  # pragma: no cover - клан не исчезает на ходу
         raise ClanError("В клане мест нет.")
@@ -295,6 +332,10 @@ async def invite(
     guest = await db.find_by_nickname(name)
     if guest is None:
         raise ClanError(f"Бойца с ником «{name}» в клубе нет.")
+    if _serves_the_law(guest):
+        raise ClanError(
+            f"{guest.nickname} на службе — в семью такие не идут."
+        )
     if guest.user_id == player.user_id:
         raise ClanError("Ты и так в семье.")
     if await db.standing_of(guest.user_id) is not None:

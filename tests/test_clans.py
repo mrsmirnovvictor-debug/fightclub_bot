@@ -964,3 +964,74 @@ async def test_a_strangers_clan_opens_with_its_roster_alone(client, db):
         await client.get("/api/mafia?clan=999", headers=headers(60))
     ).json()
     assert body["opened"] == {}
+
+
+# ---------- служба и семья ----------
+
+
+async def test_a_serviceman_is_not_let_into_the_family(db):
+    """Полицейского и военного в клан не пускают — ни одной дверью.
+
+    Дверей в семью четыре: завести свой клан, подать заявку, принять
+    приглашение и быть принятым доном. Закрыты должны быть все: хватит
+    одной открытой, чтобы правило обходилось в два нажатия.
+    """
+    from bot.clan_service import accept, invite
+    from bot.game.clans import Petition
+    from bot.game.health import now_ts
+
+    # Ник и номер свои: у дона из `family` они те же, что у `make_player`
+    # по умолчанию, и один затёр бы другого
+    cop = make_player(user_id=66, nickname="Сержант", credits=CLAN_PRICE)
+    cop.job_code = "police_patrol"
+    await db.save_player(cop)
+
+    # Первая дверь: свой клан
+    with pytest.raises(ClanError, match="Служба и семья несовместимы"):
+        await found(db, cop, "Синие мундиры", SIGN)
+
+    # Вторая: заявка в чужой
+    don, _ = await family(db)
+    with pytest.raises(ClanError, match="Служба и семья несовместимы"):
+        await apply(db, cop, don.clan.clan.id)
+
+    # Третья: приглашение. Его и не выпишут
+    with pytest.raises(ClanError, match="на службе"):
+        await invite(db, don, cop.nickname)
+
+    # А если приглашение лежало с тех пор, когда боец ещё не служил, —
+    # принять его всё равно нельзя
+    await db.add_petition(
+        don.clan.clan.id, cop.user_id, Petition.INVITE, now=now_ts()
+    )
+    with pytest.raises(ClanError, match="Служба и семья несовместимы"):
+        await accept(db, cop, don.clan.clan.id)
+
+
+async def test_the_don_cannot_approve_a_fighter_who_went_to_serve(db):
+    """Пока заявка лежала, боец ушёл на службу — заявку снимают."""
+    from bot.clan_service import approve
+
+    don, _ = await family(db)
+    seeker = await enlist(db, 77, "Марла")
+    await apply(db, seeker, don.clan.clan.id)
+
+    # Устроился патрульным, пока дон думал
+    seeker.job_code = "police_patrol"
+    await db.save_player(seeker)
+
+    with pytest.raises(ClanError, match="на службе"):
+        await approve(db, don, seeker.user_id)
+    # Заявка снята: висеть ей больше незачем
+    assert await db.petition(don.clan.clan.id, seeker.user_id) is None
+
+
+async def test_a_bartender_joins_the_family_without_a_word(db):
+    """Работа сама по себе семье не мешает — мешает только служба."""
+    don, _ = await family(db)
+    barman = await enlist(db, 78, "Боб")
+    barman.job_code = "bartender"
+    await db.save_player(barman)
+
+    await apply(db, barman, don.clan.clan.id)
+    assert await db.petition(don.clan.clan.id, barman.user_id) is not None

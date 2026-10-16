@@ -47,6 +47,10 @@ INTERIORS = f"{LOCATIONS}/interiors"
 NEW_INTERIORS = f"{BUCKET}/interiors"
 # Знаки кланов: по картинке на знак, и знак один на клан
 CLANS = f"{BUCKET}/clans"
+# Значки городских служб: полиция, ФБР, армия, медицина, администрация и
+# мэр. Рисуют их с прозрачным фоном — значок встаёт у ника рядом со
+# знаком клана, и носить их разом нельзя: служба и семья несовместимы
+SERVICES = f"{BUCKET}/services"
 
 
 def avatar(code: str) -> str:
@@ -57,6 +61,11 @@ def avatar(code: str) -> str:
 def clan_sign(code: str) -> str:
     """Знак клана лежит под своим кодом: clans/black_ravens.png."""
     return f"{CLANS}/{code}.png"
+
+
+def service_badge(code: str) -> str:
+    """Значок службы лежит под её кодом: services/police.png."""
+    return f"{SERVICES}/{code}.png"
 
 
 def slot(name: str) -> str:
@@ -191,6 +200,7 @@ __all__ = [
     "PDD",
     "POTIONS",
     "RAID_ITEMS",
+    "SERVICES",
     "SETS",
     "SHIRTS",
     "SLOTS",

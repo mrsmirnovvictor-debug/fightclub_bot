@@ -1150,3 +1150,79 @@ async def test_the_board_counts_the_free_seats(db):
     assert row["holders"] == ["Марла"]
     # У соискателя без диплома место закрыто, и сказано чем
     assert "Нужен документ" in row["lacks"]
+
+
+# ---------- служба и семья ----------
+
+
+def test_the_light_side_is_police_and_army_only():
+    """Пометка стоит на месте, а не на доме: уборщица в участке не служба."""
+    lawful = {one.code for one in VACANCIES if one.lawful}
+    assert lawful == {
+        "police_chief", "police_inspector", "police_patrol",
+        "army_head", "senior_officer", "junior_officer",
+    }
+    # Врач и секретарь работают со всеми: лечить и выдавать бумагу мафиози
+    # никто не запрещал
+    for code in ("head_doctor", "orderly", "clerk", "mayor_adviser"):
+        assert not get_vacancy(code).lawful, code
+
+
+def test_the_service_and_the_vacancy_agree_on_the_light_side():
+    """Светлая сторона описана дважды — и обе записи обязаны сойтись."""
+    from bot.game.services import SERVICES, service_of_job
+
+    for one in VACANCIES:
+        service = service_of_job(one.code)
+        if service is None:
+            assert not one.lawful, f"{one.code}: место светлое, а службы нет"
+            continue
+        assert one.lawful == service.lawful, (
+            f"{one.code}: место {one.lawful}, а служба {service.code} "
+            f"{service.lawful}"
+        )
+    # И у каждой светлой службы есть хоть одно место — кроме тех, чьи
+    # дома ещё не открыты
+    opened = [one for one in SERVICES if one.jobs]
+    assert {one.code for one in opened} == {
+        "police", "army", "medical", "administration"
+    }
+
+
+async def test_the_mafia_is_not_taken_into_the_service(db):
+    """Состоишь в семье — в полицию и в армию не возьмут."""
+    from bot.game.clans import Clan, Rank, Standing
+
+    player = await stand(db, make_player())
+    player.diplomas = ["police", "cadet"]
+    player.job_experience = 0
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=moment_at(),
+                  sign="black_ravens", members=1),
+        rank=Rank.DON,
+    )
+
+    for code in ("police_patrol", "junior_officer"):
+        with pytest.raises(WorkError, match="не берут тех, кто в семье"):
+            await apply(db, player, code, [], moment_at())
+    assert not player.works
+
+    # А врачом и барменом — пожалуйста: это не светлая сторона
+    player.diplomas = ["police", "cadet", "medic"]
+    assert (await apply(db, player, "orderly", [], moment_at())).hired
+
+
+async def test_the_board_says_why_the_service_is_shut(db):
+    """Доска не прячет кнопку, а говорит, что мешает."""
+    from bot.game.clans import Clan, Rank, Standing
+    from bot.work_service import lacking
+
+    player = await stand(db, make_player())
+    player.diplomas = ["police"]
+    player.clan = Standing(
+        clan=Clan(id=1, name="Коза Ностра", don=42, created_at=moment_at(),
+                  sign="black_ravens", members=1),
+        rank=Rank.SOLDIER,
+    )
+    said = lacking(player, get_vacancy("police_patrol"), moment_at())
+    assert "не берут тех, кто в семье" in said and "Коза Ностра" in said

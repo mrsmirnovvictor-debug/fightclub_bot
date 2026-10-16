@@ -95,6 +95,18 @@ PASS_SHARE = 0.8
 
 NO_EDUCATION = "не требуется"
 
+# ---------- светлая сторона ----------
+#
+# Служба и семья несовместимы. Полиция, армия и ФБР не берут того, кто
+# состоит в клане, — и это не придирка кадровика, а то единственное, что
+# делает выбор семьи выбором: иначе дон города ходил бы в патруль, а
+# начальник полиции платил бы взносы в общак.
+#
+# Отметка стоит на самом месте, а не выводится из дома: в полицейском
+# участке работает и уборщица, и если завтра такое место заведут, оно не
+# должно закрываться перед мафией заодно с начальником.
+LAWFUL = "lawful"
+
 # Чем, кроме диплома, бывает закрыта дверь. Права — не диплом: их не
 # учат неделями, их сдают по билету, и у таксопарка требование именно
 # такое
@@ -182,6 +194,8 @@ class Vacancy:
     seats: int = 1
     needs: str = ""
     months: int = 0
+    # Светлая сторона: место не берут того, кто состоит в клане
+    lawful: bool = False
     note: str = ""
 
     @property
@@ -323,18 +337,21 @@ VACANCIES: tuple[Vacancy, ...] = (
         "police_chief", "Начальник Полиции Вегаса", "🎖",
         salary=1_500, hours=STAFF_HOURS, place="vcpd",
         seats=1, needs="police", months=2,
+        lawful=True,
         note="Отвечать за город, когда отвечать больше некому.",
     ),
     Vacancy(
         "police_inspector", "Участковый", "👮",
         salary=700, hours=STAFF_HOURS, place="vcpd",
         seats=2, needs="police", months=1,
+        lawful=True,
         note="Знать свой квартал по именам и по кличкам.",
     ),
     Vacancy(
         "police_patrol", "Патрульный", "🚓",
         salary=500, hours=STAFF_HOURS, place="vcpd",
         seats=4, needs="police",
+        lawful=True,
         note="Ходить по улицам так, чтобы на них было тихо.",
     ),
 
@@ -363,18 +380,21 @@ VACANCIES: tuple[Vacancy, ...] = (
         "army_head", "Начальник армейской части", "⭐",
         salary=1_500, hours=STAFF_HOURS, place="military_base",
         seats=1, needs="cadet", months=2,
+        lawful=True,
         note="Отдавать приказ, за который отвечать тебе.",
     ),
     Vacancy(
         "senior_officer", "Старший офицер", "🎗",
         salary=700, hours=STAFF_HOURS, place="military_base",
         seats=2, needs="cadet", months=1,
+        lawful=True,
         note="Держать роту между приказом и здравым смыслом.",
     ),
     Vacancy(
         "junior_officer", "Младший офицер", "🪖",
         salary=500, hours=STAFF_HOURS, place="military_base",
         seats=4, needs="cadet",
+        lawful=True,
         note="Строить, вести и считать по головам на обратном пути.",
     ),
 

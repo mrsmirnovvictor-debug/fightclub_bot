@@ -72,6 +72,7 @@ from bot.webapp.auth import sign_avatar
 from bot.webapp.clans import fighter_badges
 from bot.webapp.bank import purse_payload
 from bot.webapp.documents import build_documents
+from bot.webapp.services import service_badge
 
 # Ссылка на аватар живёт час — столько же, сколько открытая карточка
 AVATAR_TTL = 60 * 60
@@ -945,6 +946,7 @@ def fighter_row(
             "emoji": player.fclass.emoji,
         },
         "clan": fighter_badges(player, bot_token),
+        "service": service_badge(player),
     }
 
 
@@ -1061,6 +1063,9 @@ def build_card(
         # Клан: по нему страница ставит знаки у ника и зажигает вкладку
         # «Клан». Пусто — боец сам по себе, и вкладки у него нет
         "clan": fighter_badges(player, bot_token, moment),
+        # Служба: значок у ника рядом со знаком клана. Носить их разом
+        # нельзя — служивого в семью не пускают, мафиози на службу не берут
+        "service": service_badge(player),
         "pro": {
             "active": player.is_pro(moment),
             "seconds_left": player.pro_left(moment),

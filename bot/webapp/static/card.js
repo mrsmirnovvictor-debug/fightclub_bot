@@ -2652,7 +2652,14 @@ function fighterRow(fighter) {
   info.setAttribute("aria-label", "Карточка бойца " + fighter.nickname);
   info.addEventListener("click", () => showFighter(fighter));
 
-  box.append(face, ...clanMarks(fighter.clan), name, level, info);
+  box.append(
+    face,
+    ...clanMarks(fighter.clan),
+    ...serviceMarks(fighter.service),
+    name,
+    level,
+    info
+  );
   return box;
 }
 
@@ -9305,6 +9312,23 @@ function clanMarks(mark) {
   return marks;
 }
 
+/** Значок службы: тот же размер и место, что у знака клана.
+ *
+ * Носить их разом нельзя — служивого в семью не пускают, мафиози на
+ * службу не берут, — поэтому у ника всегда стоит либо одно, либо другое.
+ */
+function serviceMarks(service) {
+  const marks = [];
+  if (!service || !service.badge) return marks;
+  const badge = document.createElement("img");
+  badge.className = "clan-sign service-badge";
+  badge.src = service.badge;
+  badge.alt = service.title || "Значок службы";
+  badge.title = service.title || "Служба";
+  marks.push(badge);
+  return marks;
+}
+
 /** Строка бойца в списках клана: класс, знаки, ник, премиум, уровень. */
 function clanMemberRow(member, actions) {
   const box = document.createElement("div");
@@ -11823,6 +11847,7 @@ function renderClanMarks(card) {
     if (!box) return;
     box.textContent = "";
     clanMarks(clan).forEach((mark) => box.appendChild(mark));
+    serviceMarks(card.service).forEach((mark) => box.appendChild(mark));
   });
 }
 
