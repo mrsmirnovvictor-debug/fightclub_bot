@@ -719,6 +719,47 @@ CREATE TABLE IF NOT EXISTS service_weeks (
     PRIMARY KEY (code, week)
 );
 
+-- Выборы мэра. Сами выборы не хранятся — их считает календарь
+-- (`bot.game.elections`); строка заводится в тот час, когда голоса
+-- сведены. `day` — дата голосования по Москве, она же ключ
+CREATE TABLE IF NOT EXISTS elections (
+    day       TEXT    PRIMARY KEY,
+    closed_at INTEGER NOT NULL DEFAULT 0,
+    winner_id INTEGER NOT NULL DEFAULT 0,
+    votes     INTEGER NOT NULL DEFAULT 0,
+    turnout   INTEGER NOT NULL DEFAULT 0
+);
+
+-- Кандидаты этих выборов. `dropped_at` — снят: кандидат сел в тюрьму,
+-- пока шло выдвижение, и в бюллетень не попал
+CREATE TABLE IF NOT EXISTS candidates (
+    day        TEXT    NOT NULL,
+    user_id    INTEGER NOT NULL,
+    program    TEXT    NOT NULL DEFAULT '',
+    filed_at   INTEGER NOT NULL DEFAULT 0,
+    dropped_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, user_id)
+);
+
+-- Голоса. Один боец — один голос, и это держит сама база
+CREATE TABLE IF NOT EXISTS ballots (
+    day     TEXT    NOT NULL,
+    user_id INTEGER NOT NULL,
+    for_id  INTEGER NOT NULL,
+    cast_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS ballots_for ON ballots(day, for_id);
+
+-- Кто сейчас мэр. Строка одна на город: мэр один, и кресло у него одно
+CREATE TABLE IF NOT EXISTS mayor (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    user_id INTEGER NOT NULL DEFAULT 0,
+    since   INTEGER NOT NULL DEFAULT 0,
+    day     TEXT    NOT NULL DEFAULT ''
+);
+
 -- Квесты бойца: по строке на взятое задание. Нет строки — задание ещё
 -- не предлагали или от него отказались. `marks` — отметки города: что
 -- он уже видел по этому заданию (бой выигран, дверь открыта, вопрос
@@ -3056,6 +3097,124 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    # ---------- выборы мэра ----------
+
+    async def nominate(
+        self, day: str, user_id: int, program: str, now: int
+    ) -> bool:
+        """Записать кандидата. False — он уже выдвигался на эти выборы."""
+        cursor = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO candidates (day, user_id, program, filed_at)
+            VALUES (?,?,?,?)
+            """,
+            (day, user_id, program, now),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def candidates(self, day: str) -> list[dict]:
+        """Кандидаты этих выборов, снятые вместе со всеми."""
+        async with self.conn.execute(
+            "SELECT * FROM candidates WHERE day = ? ORDER BY filed_at, user_id",
+            (day,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def drop_candidate(self, day: str, user_id: int, now: int) -> bool:
+        """Снять кандидата. False — он уже снят или не выдвигался."""
+        cursor = await self.conn.execute(
+            """
+            UPDATE candidates SET dropped_at = ?
+            WHERE day = ? AND user_id = ? AND dropped_at = 0
+            """,
+            (now, day, user_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def cast_ballot(
+        self, day: str, user_id: int, for_id: int, now: int
+    ) -> bool:
+        """Отдать голос. False — этот боец уже голосовал.
+
+        Один голос на человека держит первичный ключ, а не проверка
+        перед запросом: две кнопки, нажатые разом, иначе дали бы два.
+        """
+        cursor = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO ballots (day, user_id, for_id, cast_at)
+            VALUES (?,?,?,?)
+            """,
+            (day, user_id, for_id, now),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def ballot_of(self, day: str, user_id: int) -> int:
+        """За кого проголосовал этот боец. Ноль — ещё не голосовал."""
+        async with self.conn.execute(
+            "SELECT for_id FROM ballots WHERE day = ? AND user_id = ?",
+            (day, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["for_id"]) if row else 0
+
+    async def tally(self, day: str) -> dict[int, int]:
+        """Сколько голосов у каждого кандидата."""
+        async with self.conn.execute(
+            "SELECT for_id, COUNT(*) AS votes FROM ballots WHERE day = ? "
+            "GROUP BY for_id",
+            (day,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {int(row["for_id"]): int(row["votes"]) for row in rows}
+
+    async def election(self, day: str) -> dict | None:
+        async with self.conn.execute(
+            "SELECT * FROM elections WHERE day = ?", (day,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def close_election(
+        self, day: str, winner_id: int, votes: int, turnout: int, now: int
+    ) -> bool:
+        """Записать итог выборов. False — их уже сводили."""
+        cursor = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO elections
+                (day, closed_at, winner_id, votes, turnout)
+            VALUES (?,?,?,?,?)
+            """,
+            (day, now, winner_id, votes, turnout),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def mayor(self) -> dict:
+        """Кто сейчас мэр. Пустой номер — кресло свободно."""
+        async with self.conn.execute(
+            "SELECT user_id, since, day FROM mayor WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else {"user_id": 0, "since": 0, "day": ""}
+
+    async def seat_mayor(self, user_id: int, since: int, day: str) -> None:
+        """Посадить мэра в кресло. Прежний в тот же миг его освобождает."""
+        await self.conn.execute(
+            """
+            INSERT INTO mayor (id, user_id, since, day) VALUES (1,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                since   = excluded.since,
+                day     = excluded.day
+            """,
+            (user_id, since, day),
+        )
+        await self.conn.commit()
 
     # ---------- дежурная часть, ордера и тюрьма ----------
 

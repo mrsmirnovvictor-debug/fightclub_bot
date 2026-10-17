@@ -111,6 +111,12 @@ async def jail(db: Database, user_id: int, now: int | None = None) -> int:
         player.travel_to = None
         player.arrives_at = 0
         await db.save_player(player)
+    # Сел во время выдвижения — снят с выборов. Снимает его посадка, а
+    # не бюллетень: иначе пришлось бы потом гадать по журналу отсидок,
+    # когда именно он сидел
+    from bot.election_service import strike_if_running
+
+    await strike_if_running(db, user_id, moment)
     logger.info("Боец %s сел в %s-й раз до %s", user_id, times, until)
     return until
 

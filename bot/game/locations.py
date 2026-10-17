@@ -57,6 +57,7 @@ class Service(str, Enum):
     POST = "post"  # почта: посылки между бойцами
     TAVERN = "tavern"  # бар: бармен и его задания
     STUDY = "study"  # учёба: запись на курс, занятия и выпускной экзамен
+    VOTE = "vote"  # администрация: выдвижение в мэры и выборы
 
     @property
     def title(self) -> str:
@@ -88,6 +89,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.POST: "отправлять посылки",
     Service.TAVERN: "брать задания у бармена",
     Service.STUDY: "учиться и сдавать экзамен",
+    Service.VOTE: "выдвигаться в мэры",
 }
 
 
@@ -1000,8 +1002,9 @@ LOCATIONS: tuple[Location, ...] = (
             (0.427205, 0.383373), (0.5356, 0.379785),
             (0.533475, 0.474282), (0.426142, 0.478469),
         ),
-        services=(Service.WORK,),
-        soon="бумаги и разрешения",
+        # Выборы впереди работы: в администрацию ходят за кандидатурой,
+        # а на смену — по кнопке в шапке, как и во всех прочих домах
+        services=(Service.VOTE, Service.WORK),
         genitive="администрации",
         interior_folder=art.NEW_INTERIORS,
     ),

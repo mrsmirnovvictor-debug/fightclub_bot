@@ -1287,6 +1287,82 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .car-slot.empty { border-style: dashed; opacity: 0.55; }
 
+/* ---------- выборы мэра ---------- */
+
+/* Плашка в правом нижнем углу: идут выборы и сколько ещё идти. Висит
+   поверх любого экрана — голосование не ждёт, пока на него посмотрят.
+   Отдавшему голос она зелёная: ему торопиться уже некуда */
+.vote-chip {
+  position: fixed;
+  right: 12px;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  z-index: 40;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: #6f42c1;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+}
+.vote-chip.done { background: #2ea043; }
+
+/* Бюллетень: строки с кружками, выбранная подсвечена */
+.ballot-list { display: grid; gap: 6px; margin: 10px 0; }
+.ballot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--slot);
+  border: 1px solid var(--line);
+  font-size: 14px;
+}
+.ballot-row.on { border-color: var(--accent); }
+.ballot-row.picked { border-color: #2ea043; font-weight: 700; }
+
+/* Кандидат на экране администрации: имя, голоса и программа под ними */
+.candidate {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.candidate.picked { border-color: #2ea043; }
+.candidate.mine { border-color: var(--accent); }
+.candidate-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.candidate-name { font-weight: 700; font-size: 14px; }
+.candidate-votes { font-weight: 800; white-space: nowrap; }
+.candidate-program {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+/* Поле программы: простыню сюда не пишут, но абзац должен помещаться */
+.program {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--slot);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+
 /* ---------- участок: дежурная часть и дела ---------- */
 
 /* Карточка дела: кто кого и на сколько, под ней состояние строкой.

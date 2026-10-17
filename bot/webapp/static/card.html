@@ -400,6 +400,25 @@
     <section id="flats-home" class="hidden"></section>
   </main>
 
+  <!-- ---------- 3b15. Администрация: выборы мэра ---------- -->
+  <!-- Экран дома: кто мэр, какая сейчас фаза цикла, список кандидатов с
+       программами и кнопка выдвижения. Голосуют не здесь — бюллетень
+       приходит сам, в любом доме и на любом экране -->
+  <main id="elections" class="screen hidden">
+    <figure class="interior hidden" id="elections-interior">
+      <img class="interior-pic" id="elections-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="elections-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-elections"></span>
+    </header>
+    <h1 class="screen-title">🏛 Администрация города</h1>
+    <p class="screen-note" id="elections-note"></p>
+
+    <div id="elections-body"></div>
+  </main>
+
   <!-- ---------- 3b14. Кто здесь: соседи по дому и ограбления ---------- -->
   <!-- Экран один на весь город: дом — тот, в котором боец стоит. Что
        рисовать — список соседей, идущую драку или её развязку, — решает
@@ -712,6 +731,22 @@
       <div class="daily-buttons" id="invite-buttons"></div>
     </section>
   </div>
+
+  <!-- Бюллетень: окно встаёт поверх любого экрана, пока идут выборы.
+       Голосуют не в доме, а везде — значит, и лист приходит сам.
+       Закрыл — остаётся плашка в правом нижнем углу с отсчётом -->
+  <div class="daily-veil hidden" id="ballot-veil">
+    <section class="daily" id="ballot-box">
+      <h2 class="daily-head" id="ballot-head"></h2>
+      <p class="daily-note" id="ballot-note"></p>
+      <div class="ballot-list" id="ballot-list"></div>
+      <div class="daily-buttons" id="ballot-buttons"></div>
+    </section>
+  </div>
+
+  <!-- Плашка выборов: висит в углу поверх всего, пока идёт голосование
+       и бюллетень закрыт. Нажал — лист открылся снова -->
+  <button type="button" class="vote-chip hidden" id="vote-chip"></button>
 
   <div id="sheet" class="sheet hidden">
     <div class="sheet-back" id="sheet-back"></div>

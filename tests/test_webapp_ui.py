@@ -852,7 +852,8 @@ async def open_page(
     battle=None, city=None, workshop=None, hospital=None, trade=None,
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
-    quests=None, study=None, turf=None, crowd=None, images=False,
+    quests=None, study=None, turf=None, crowd=None, elections=None,
+    images=False,
     telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
@@ -898,6 +899,9 @@ async def open_page(
     await page.route("**/api/study", canned(study or study_state()))
     await page.route("**/api/turf", canned(turf or {"spots": []}))
     await page.route("**/api/crowd", canned(crowd or {"crowd": []}))
+    await page.route("**/api/elections", canned(
+        elections or {"candidates": [], "phase": "quiet"}
+    ))
     await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
                                                     "ranks": [], "said": ""}))
 
@@ -10197,6 +10201,139 @@ async def test_a_stranger_clan_opens_with_its_roster_alone(server):
         await page.wait_for_selector("#mafia-clans:not(.hidden)")
         await browser.close()
 
+
+# ---------- выборы мэра ----------
+
+
+async def election_states(db):
+    """Администрация в выдвижение и в день голосования, плюс бюллетень."""
+    from bot.election_service import nominate, state, vote
+    from bot.webapp.elections import ballot_payload, build_elections
+    from tests.test_elections import SUNDAY, WEDNESDAY, citizen
+
+    marla = await citizen(db, 1, "Марла")
+    tyler = await citizen(db, 2, "Тайлер Дёрден")
+    await nominate(db, marla, "Снесу казино.", now=WEDNESDAY)
+    await nominate(db, tyler, "Правил не будет.", now=WEDNESDAY)
+    voter = await citizen(db, 3, "Боец", where="bar")
+
+    nom = build_elections(voter, await state(db, voter, WEDNESDAY), WEDNESDAY)
+    sheet = await state(db, voter, SUNDAY)
+    ballot = ballot_payload(sheet)
+    await vote(db, voter, 1, now=SUNDAY)
+    done = ballot_payload(await state(db, voter, SUNDAY))
+    return voter, nom, ballot, done
+
+
+async def open_admin(pw, server, who, body):
+    card = build_card(who, TOKEN, viewer_id=who.user_id)
+    browser, page = await open_page(pw, server, card, elections=body)
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "elections")
+    await page.wait_for_selector("#elections-body .shelf")
+    return browser, page
+
+
+async def test_the_administration_takes_a_candidacy(server, db):
+    """Экран администрации: фаза, кандидаты с программами и бланк."""
+    voter, nom, _, _ = await election_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_admin(pw, server, voter, nom)
+
+        heads = await page.locator("#elections-body .shelf-head").all_inner_texts()
+        assert heads == [
+            "Выдвижение кандидатов", "Выдвинуть кандидатуру", "Кандидаты",
+        ]
+        # Отсчёт до субботы меряется днями, а не минутами
+        cycle = await page.locator("#elections-body .shelf").first.inner_text()
+        assert "кресло пустует" in cycle
+        assert ":" not in cycle.split("До конца этапа")[1]
+
+        rows = await page.locator("#elections .candidate").all_inner_texts()
+        assert len(rows) == 2
+        assert "Снесу казино." in rows[0] and "Правил не будет." in rows[1]
+        # Бланк программы на месте, и в нём есть потолок
+        area = page.locator("#election-program")
+        assert await area.get_attribute("maxlength") == "400"
+        await browser.close()
+
+
+async def test_the_ballot_comes_with_the_card_and_takes_one_vote(server, db):
+    """Бюллетень встаёт поверх экрана сам, и голос в нём один."""
+    voter, _, ballot, _ = await election_states(db)
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = ballot
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#ballot-veil:not(.hidden)")
+
+        assert await page.locator("#ballot-head").inner_text() == "🗳 Выборы мэра"
+        rows = await page.locator("#ballot-list .ballot-row").all_inner_texts()
+        assert rows == ["Марла", "Тайлер Дёрден"]
+
+        # Пока никто не выбран, голосовать не дают
+        go = page.locator("#ballot-buttons .btn").first
+        assert await go.is_disabled()
+        await page.locator("#ballot-list .ballot-row").first.click()
+        assert await go.is_enabled()
+
+        # Закрыл лист — в углу осталась плашка с отсчётом
+        await page.locator("#ballot-buttons .btn").last.click()
+        assert await page.locator("#ballot-veil").is_hidden()
+        chip = page.locator("#vote-chip")
+        assert await chip.is_visible()
+        assert "Идут выборы" in await chip.inner_text()
+        # И она открывает лист обратно
+        await chip.click()
+        assert await page.locator("#ballot-veil").is_visible()
+        await browser.close()
+
+
+async def test_the_voted_see_their_mark_and_not_a_second_form(server, db):
+    """Проголосовал — показываем отметку, а не второй бланк."""
+    voter, _, _, done = await election_states(db)
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = done
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#ballot-veil:not(.hidden)")
+
+        assert "Твой голос отдан" in await page.locator("#ballot-note").inner_text()
+        rows = await page.locator("#ballot-list .ballot-row").all_inner_texts()
+        assert rows == ["✅ Марла"], "одна строка с отметкой, а не бланк"
+        buttons = await page.locator("#ballot-buttons .btn").all_inner_texts()
+        assert buttons == ["Закрыть"]
+
+        await page.locator("#ballot-buttons .btn").click()
+        chip = page.locator("#vote-chip")
+        assert "Голос отдан" in await chip.inner_text()
+        assert "done" in (await chip.get_attribute("class"))
+        await browser.close()
+
+
+async def test_a_quiet_month_shows_no_ballot_at_all(server, db):
+    """Вне голосования ни листа, ни плашки: показывать нечего."""
+    from tests.test_elections import citizen
+
+    voter = await citizen(db, 3, "Боец", where="bar")
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = {
+        "shown": False, "phase": "quiet", "title": "До выборов", "day": "",
+        "seconds_left": 0, "mine": 0, "candidates": [],
+        "mayor": {"user_id": 0, "name": ""},
+    }
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        assert await page.locator("#ballot-veil").is_hidden()
+        assert await page.locator("#vote-chip").is_hidden()
+        await browser.close()
 
 # ---------- участок: дежурная часть, розыск и свои дела ----------
 

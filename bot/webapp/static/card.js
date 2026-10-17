@@ -1885,7 +1885,7 @@ function lotCard(lot) {
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
-  "study", "turf", "crowd", "trade", "house", "bag", "hero",
+  "study", "turf", "crowd", "elections", "trade", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1896,7 +1896,8 @@ const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
-  tavern: "map", study: "map", turf: "map", crowd: "map", house: "map",
+  tavern: "map", study: "map", turf: "map", crowd: "map",
+  elections: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1958,6 +1959,8 @@ function showTab(name) {
     loadCrowd();
     armCrowdPoll(10000);
   } else stopCrowdPoll();
+  // Администрация: фаза цикла могла смениться, пока на неё не смотрели
+  if (name === "elections") loadElections();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2453,6 +2456,7 @@ const HOUSE_SCREENS = {
   post: () => showTab("post"),
   tavern: () => showTab("tavern"),
   study: () => showTab("study"),
+  vote: () => showTab("elections"),
   school: () => showTab("school"),
   police: () => showTab("police"),
   mafia: () => showTab("mafia"),
@@ -6203,6 +6207,9 @@ function render(card, keepTab) {
   renderClanMarks(card);
   renderDaily(card);
   renderPapers(card);
+  // Карточка приезжает после каждого действия: состояние выборов в ней
+  // свежее того, что держит плашка в углу
+  if (card.is_self && card.ballot) setBallot(card.ballot);
   renderBag(card);
   // Рюкзак поменялся — значит поменялось и то, что можно выставить на
   // комиссию. Без этого экран комиссионки остаётся с прежним списком: он
@@ -9943,6 +9950,297 @@ function renderQuests(data) {
   (data.quests || []).forEach((one) => list.appendChild(questCard(one)));
 }
 
+// Длинный отсчёт: от выдвижения до голосования трое суток, и `clockText`
+// назвал бы их «4920:00». Единица тут одна, самая крупная из подходящих,
+// — как `format_term` на сервере
+function longClock(seconds) {
+  const left = Math.max(0, seconds);
+  if (left >= 86400) {
+    const days = Math.round(left / 86400);
+    return days + " " + plural(days, "день", "дня", "дней");
+  }
+  if (left >= 3600) {
+    const hours = Math.floor(left / 3600);
+    const minutes = Math.floor(left / 60) % 60;
+    return hours + " ч" + (minutes ? " " + minutes + " мин" : "");
+  }
+  return clockText(left);
+}
+
+// ---------- выборы мэра ----------
+//
+// Два места и одно состояние. Экран администрации — про весь цикл:
+// кто мэр, какая фаза, кто выдвинулся и с какой программой. Бюллетень —
+// лист поверх всего: голосуют не в доме, а везде, и он приходит сам, с
+// карточкой. Закрыл лист — в углу остаётся плашка с отсчётом.
+
+let electionData = null;
+let ballotState = null;
+let ballotPick = 0;
+let ballotClosed = false;
+let voteTimer = null;
+
+async function loadElections() {
+  try {
+    const response = await fetch("api/elections", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("elections-note").textContent = "Администрация не открылась.";
+      return;
+    }
+    const data = await response.json();
+    renderElections(data);
+    setBallot(data.ballot);
+  } catch (error) {
+    el("elections-note").textContent = error.message;
+  }
+}
+
+async function electionAction(payload) {
+  try {
+    const data = await post("api/elections", payload);
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderElections(data);
+    setBallot(data.ballot);
+    if (data.said) popup("Администрация", data.said);
+  } catch (error) {
+    popup("Администрация", error.message);
+    await loadElections();
+  }
+}
+
+function renderElections(data) {
+  electionData = data;
+  el("shop-purse-elections").textContent = "";
+  el("shop-purse-elections").appendChild(purse((data.card || {}).credits || 0));
+  el("elections-note").textContent = data.said || data.note || "";
+
+  const body = el("elections-body");
+  body.textContent = "";
+  body.appendChild(cycleBox(data));
+  if (data.can_nominate) body.appendChild(nominateBox(data));
+  body.appendChild(candidatesBox(data));
+}
+
+/** Где сейчас цикл: фаза, отсчёт и кто в кресле. */
+function cycleBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = data.phase_title;
+  box.appendChild(head);
+  box.appendChild(
+    paperRows([
+      ["Мэр города", data.mayor.name || "кресло пустует"],
+      ["Кандидатов", String(data.total)],
+      ["До конца этапа", longClock(data.seconds_left)],
+    ])
+  );
+  return box;
+}
+
+/** Бланк выдвижения: программа и кнопка. Регистрация автоматическая. */
+function nominateBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Выдвинуть кандидатуру";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = "Программу можно не писать — выдвинут и так. "
+    + "Сядешь в тюрьму до субботы — снимут.";
+  box.appendChild(note);
+
+  const area = document.createElement("textarea");
+  area.className = "program";
+  area.id = "election-program";
+  area.rows = 4;
+  area.maxLength = data.program_max;
+  area.placeholder = "Предвыборная программа (до " + data.program_max + " знаков)";
+  box.appendChild(area);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Выдвинуться", {
+      onClick: () =>
+        electionAction({ action: "nominate", program: area.value }),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Кандидаты с программами, а в подсчёт — ещё и с числом голосов. */
+function candidatesBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Кандидаты";
+  box.appendChild(head);
+  if (!data.candidates.length) {
+    const said = document.createElement("p");
+    said.className = "screen-note";
+    said.textContent = "Пока никого.";
+    box.appendChild(said);
+    return box;
+  }
+  data.candidates.forEach((one) => {
+    const row = document.createElement("article");
+    row.className = "candidate"
+      + (one.user_id === data.mine ? " picked" : "")
+      + (data.standing && one.user_id === (data.card || {}).user_id ? " mine" : "");
+    const line = document.createElement("header");
+    line.className = "candidate-head";
+    const name = document.createElement("span");
+    name.className = "candidate-name";
+    name.textContent = (one.user_id === data.mine ? "✅ " : "") + one.name;
+    line.appendChild(name);
+    if (data.counting) {
+      const votes = document.createElement("span");
+      votes.className = "candidate-votes";
+      votes.textContent = one.votes + " " + plural(
+        one.votes, "голос", "голоса", "голосов"
+      );
+      line.appendChild(votes);
+    }
+    row.appendChild(line);
+    if (one.program) {
+      const said = document.createElement("p");
+      said.className = "candidate-program";
+      said.textContent = one.program;
+      row.appendChild(said);
+    }
+    box.appendChild(row);
+  });
+  return box;
+}
+
+// ---------- бюллетень и плашка в углу ----------
+
+function setBallot(ballot) {
+  if (!ballot) return;
+  const was = ballotState;
+  ballotState = ballot;
+  // Новое голосование — лист снова открываем: прошлый раз закрывали не
+  // этот, а тот, которого уже нет
+  if (!was || was.day !== ballot.day) {
+    ballotClosed = false;
+    ballotPick = 0;
+  }
+  paintVoteChip();
+  if (ballot.shown && !ballotClosed) openBallot();
+  else el("ballot-veil").classList.add("hidden");
+}
+
+function openBallot() {
+  const ballot = ballotState;
+  if (!ballot || !ballot.shown) return;
+  ballotClosed = false;
+  el("ballot-veil").classList.remove("hidden");
+  el("ballot-head").textContent = "🗳 Выборы мэра";
+
+  const list = el("ballot-list");
+  list.textContent = "";
+  const buttons = el("ballot-buttons");
+  buttons.textContent = "";
+
+  if (ballot.mine) {
+    // Проголосовал — показываем отметку, а не второй бланк
+    const chosen = ballot.candidates.find((one) => one.user_id === ballot.mine);
+    el("ballot-note").textContent = "Твой голос отдан. Передумать нельзя.";
+    const row = document.createElement("div");
+    row.className = "ballot-row picked";
+    row.textContent = "✅ " + ((chosen && chosen.name) || "кандидат");
+    list.appendChild(row);
+    buttons.appendChild(button("Закрыть", { onClick: () => closeBallot() }));
+    return;
+  }
+
+  el("ballot-note").textContent =
+    "Голос один, передумать нельзя. До конца голосования "
+    + longClock(ballot.seconds_left) + ".";
+  ballot.candidates.forEach((one) => {
+    const row = document.createElement("label");
+    row.className = "ballot-row" + (ballotPick === one.user_id ? " on" : "");
+    const dot = document.createElement("input");
+    dot.type = "radio";
+    dot.name = "ballot";
+    dot.value = String(one.user_id);
+    dot.checked = ballotPick === one.user_id;
+    dot.addEventListener("change", () => {
+      ballotPick = one.user_id;
+      openBallot();
+    });
+    const text = document.createElement("span");
+    text.textContent = one.name;
+    row.append(dot, text);
+    list.appendChild(row);
+  });
+
+  buttons.appendChild(
+    button("Проголосовать", {
+      disabled: !ballotPick,
+      hint: "Сначала выбери кандидата.",
+      onClick: () => electionAction({ action: "vote", user: ballotPick }),
+    })
+  );
+  buttons.appendChild(button("Позже", { onClick: () => closeBallot() }));
+}
+
+function closeBallot() {
+  ballotClosed = true;
+  el("ballot-veil").classList.add("hidden");
+  paintVoteChip();
+}
+
+// Плашка в правом нижнем углу: идут выборы и сколько ещё идти. Висит
+// поверх любого экрана — голосование не ждёт, пока на него посмотрят
+function paintVoteChip() {
+  const chip = el("vote-chip");
+  const ballot = ballotState;
+  const shown = Boolean(ballot && ballot.shown);
+  chip.classList.toggle("hidden", !shown);
+  if (!shown) return;
+  chip.classList.toggle("done", Boolean(ballot.mine));
+  chip.textContent = (ballot.mine ? "🗳 Голос отдан · " : "🗳 Идут выборы · ")
+    + longClock(ballot.seconds_left);
+}
+
+function startVoteClock() {
+  if (voteTimer) return;
+  voteTimer = setInterval(() => {
+    if (!ballotState || !ballotState.shown) return;
+    ballotState.seconds_left -= 1;
+    if (ballotState.seconds_left <= 0) {
+      // Время вышло: что теперь с выборами, знает сервер
+      loadBallot();
+      return;
+    }
+    paintVoteChip();
+  }, 1000);
+}
+
+async function loadBallot() {
+  try {
+    const response = await fetch("api/elections", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    setBallot(data.ballot);
+  } catch (error) {
+    // Молча: плашка в углу не повод показывать окно с ошибкой
+  }
+}
+
 // ---------- кто здесь: соседи по дому и ограбления ----------
 //
 // Экран один на весь город, и дом у него тот, в котором боец стоит.
@@ -13163,6 +13461,9 @@ async function load() {
     const card = await response.json();
     render(card);
     showInvites(card.invites);
+    // Бюллетень приезжает с карточкой: при входе в игру во время
+    // голосования лист встаёт поверх любого экрана сам
+    setBallot(card.ballot);
     const screen = wantedScreen();
     if (card.is_self && screen) SCREEN_PARAMS[screen]();
   } catch (error) {
@@ -13194,13 +13495,16 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study", "turf",
-  "crowd", "shop", "magic",
+  "crowd", "elections", "shop", "magic",
   "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });
 // Счётчик соседей в углу карты: нажал — открылся список дома
 el("map-crowd").addEventListener("click", () => showTab("crowd"));
+// Плашка выборов: нажал — бюллетень открылся снова
+el("vote-chip").addEventListener("click", () => openBallot());
+startVoteClock();
 watchInteriors();
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты

@@ -169,6 +169,13 @@ from bot.webapp.study import build_study, exam_payload
 from bot.webapp.turf import build_war, map_marks
 from bot.webapp.crowd import build_crowd, crowd_marks
 from bot.webapp.police import build_police_board
+from bot.webapp.elections import ballot_payload, build_elections
+from bot.election_service import (
+    ElectionError,
+    nominate as election_nominate,
+    state as election_state,
+    vote as election_vote,
+)
 from bot.police_service import (
     PoliceError,
     collect as police_collect,
@@ -437,6 +444,12 @@ async def api_card(request: web.Request) -> web.Response:
             knocks,
             {key: value for key, value in clans.items() if value is not None},
             config.bot_token,
+        )
+    # Бюллетень приезжает с карточкой: город выбирает мэра, а не ходит
+    # за этим в окно, и первый запрос каждого — как раз этот
+    if player.user_id == viewer.user_id:
+        card["ballot"] = ballot_payload(
+            await election_state(db, player, now_ts())
         )
     return web.json_response(card)
 
@@ -2340,6 +2353,57 @@ async def api_post_action(request: web.Request) -> web.Response:
     return await _post_state(request, fresh, said)
 
 
+# ---------- выборы мэра ----------
+
+
+async def _elections_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    state = await election_state(db, player, now_ts())
+    body = build_elections(player, state, now_ts(), said)
+    body["ballot"] = ballot_payload(state)
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_elections(request: web.Request) -> web.Response:
+    """Выборы: кандидаты, свой голос и что сейчас можно.
+
+    Места тут нет нарочно: голосуют откуда угодно, и бюллетень должен
+    открываться там, где боец стоит. В администрацию ходят ногами
+    только затем, чтобы выдвинуться, — это проверяет служба.
+    """
+    player = await _own_player(request)
+    if player.arrive():
+        await request.app[DB_KEY].save_player(player)
+    return await _elections_state(request, player)
+
+
+async def api_elections_action(request: web.Request) -> web.Response:
+    """Выдвинуть кандидатуру или отдать голос."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    try:
+        if action == "nominate":
+            said = await election_nominate(
+                db, player, str(data.get("program") or "")
+            )
+        elif action == "vote":
+            said = await election_vote(db, player, _int_field(data, "user"))
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except ElectionError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _elections_state(request, fresh, said)
+
+
 # ---------- кто здесь: соседи по дому и ограбления ----------
 
 
@@ -2801,6 +2865,8 @@ def create_app(
             web.post("/api/look", api_look),
             web.get("/api/topup", api_topup),
             web.post("/api/invoice", api_invoice),
+            web.get("/api/elections", api_elections),
+            web.post("/api/elections", api_elections_action),
             web.get("/api/crowd", api_crowd),
             web.post("/api/crowd", api_crowd_action),
             web.get("/api/mafia", api_mansion),
