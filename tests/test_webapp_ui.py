@@ -10105,7 +10105,10 @@ async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
         await page.wait_for_selector("#mafia-estate:not(.hidden)")
         assert await page.locator(".vault-sum").inner_text() == "400 💰"
         heads = await page.locator("#mafia-estate .shelf-head").all_inner_texts()
-        assert heads == ["Сейф семьи", "Склад семьи · 1 из 30"]
+        assert heads == [
+            "Сейф семьи", "Склад семьи · 1 из 30", "Гараж семьи · 0 из 3",
+            "Ограбления",
+        ]
         # Полок тридцать: занятые с картинкой, свободные с плюсом
         assert await page.locator("#shelf-grid .shelf-slot").count() == 30
         assert await page.locator("#shelf-grid .shelf-slot.free").count() == 29
