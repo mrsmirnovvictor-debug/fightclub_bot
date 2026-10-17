@@ -9166,17 +9166,22 @@ async def open_work(pw, server, work=None, place="bar", job="bartender"):
 
 
 async def test_the_agency_shows_the_whole_board(server):
-    """Доска города: места с улицы и места под диплом, все разом."""
-    from bot.game.work import VACANCIES
+    """Доска агентства: места с улицы и места под диплом, все разом.
+
+    Полицейских на ней нет: в полицию приходят в полицию, и отдельная
+    дверь у неё не для красоты.
+    """
+    from bot.game.work import agency_board
 
     async with async_playwright() as pw:
         browser, page = await open_hr(pw, server)
         await page.wait_for_selector(".vacancy")
 
         titles = await page.locator(".vacancy-title").all_inner_texts()
-        assert len(titles) == len(VACANCIES)
+        assert len(titles) == len(agency_board())
         assert any("Бармен" in one for one in titles)
-        assert any("Патрульный" in one for one in titles)
+        assert any("Крупье" in one for one in titles)
+        assert not any("Патрульный" in one for one in titles)
         pays = await page.locator(".vacancy-pay").all_inner_texts()
         assert "250 💰/нед" in pays and num_space("1 500") + " 💰/нед" in pays
         await browser.close()
