@@ -10512,39 +10512,48 @@ function fightRowCard(one) {
   return box;
 }
 
-/** Драка целиком: обе стороны, кнопки хода и журнал. */
+/** Драка целиком: заголовок, доска, кнопки хода и журнал. */
 function robberyBox(fight) {
   const box = document.createElement("div");
+  box.className = "fight-panel";
 
-  const head = document.createElement("section");
-  head.className = "shelf";
-  const title = document.createElement("h2");
-  title.className = "shelf-head";
-  title.textContent = fight.finished
+  // Шапка как в групповом бою: кто на кого и какой раунд. Часы хода
+  // тут же: кто не нажал, за того бьёт случай
+  const head = document.createElement("p");
+  head.className = "fight-round";
+  head.textContent = fight.finished
     ? finishedTitle(fight)
-    : fight.attacker + " → " + fight.victim + " · раунд " + fight.round;
-  head.appendChild(title);
-  const who = document.createElement("p");
-  who.className = "screen-note";
-  who.textContent = fight.finished
-    ? fight.place_title
-    : fight.place_title
-      + (fight.seconds_left ? " · ход: " + clockText(fight.seconds_left) : "");
-  head.appendChild(who);
-  (fight.summary || []).forEach((line) => {
-    const said = document.createElement("p");
-    said.className = "screen-note";
-    said.textContent = line;
-    head.appendChild(said);
-  });
+    : (fight.kind === "arrest" ? "🚔 " : "⚔️ ")
+      + fight.attacker + " → " + fight.victim + " — раунд " + fight.round;
   box.appendChild(head);
 
-  const arrest = fight.kind === "arrest";
-  box.appendChild(sideBox(arrest ? "Полиция" : "Налётчики", fight.red));
-  box.appendChild(sideBox(arrest ? "Задержанные" : "Против них", fight.blue));
+  const who = document.createElement("p");
+  who.className = "fight-line";
+  who.textContent = fight.finished
+    ? fight.place_title + " · раундов: " + fight.round
+    : fight.place_title
+      + (fight.seconds_left ? " · ход " + clockText(fight.seconds_left) : "");
+  box.appendChild(who);
+
+  box.appendChild(robberyBoard(fight));
   box.appendChild(robberyFoot(fight));
+  // Журнал внизу и всегда: ради него сюда и смотрят, когда свой ход уже
+  // сделан, — и после драки он остаётся единственным, что было
   if ((fight.log || []).length) box.appendChild(robberyLog(fight));
   return box;
+}
+
+// Своя сторона слева, чужая справа — и так же у того, кто дерётся за
+// другую. Смотрящему со стороны слева налётчики: драку начали они
+function robberyBoard(fight) {
+  const red = fight.red || [];
+  const blue = fight.blue || [];
+  const you = red.concat(blue).find((one) => one.is_self) || null;
+  const ours = you && blue.indexOf(you) >= 0 ? blue : red;
+  const theirs = ours === red ? blue : red;
+  return brawlBoard(
+    ours, theirs, you, fight.foe, Boolean(fight.yours) && !fight.finished
+  );
 }
 
 function finishedTitle(fight) {
@@ -10554,19 +10563,28 @@ function finishedTitle(fight) {
   return fight.won ? "💰 Карман взят" : "🛡 Отбились";
 }
 
-/** Что под шкалами: кнопки хода, строка ожидания или «Понятно». */
+/** Что под доской: кнопки хода, строка со стороны или «Понятно». */
 function robberyFoot(fight) {
   if (fight.finished) {
+    const box = document.createElement("div");
+    box.className = "fight-finish";
+    (fight.summary || []).forEach((line) => {
+      const said = document.createElement("p");
+      said.className = "log-line";
+      said.textContent = line;
+      box.appendChild(said);
+    });
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
     buttons.appendChild(
       button("Понятно", { onClick: () => crowdAction({ action: "done" }) })
     );
-    return buttons;
+    box.appendChild(buttons);
+    return box;
   }
-  const said = document.createElement("p");
-  said.className = "screen-note";
   if (!fight.yours || !fight.alive) {
+    const said = document.createElement("p");
+    said.className = "fight-line";
     said.textContent = fight.alive
       ? "Ты смотришь со стороны."
       : "Тебя вынесли — досматривай со стороны.";
@@ -10574,12 +10592,16 @@ function robberyFoot(fight) {
   }
   if (!fight.paired) {
     // Сторона больше другой: кому-то пары в этом раунде не досталось
+    const said = document.createElement("p");
+    said.className = "fight-line";
     said.textContent = "В этом раунде пары тебе не досталось. Ждём.";
     return said;
   }
   if (fight.acted) {
-    said.textContent = "Ход принят. Ждём остальных.";
-    return said;
+    // Строки «ход принят» тут нет нарочно: на доске у своей карточки
+    // уже стоит галочка, и повторять то же самое словами незачем.
+    // Остаются заготовки — по ним видно, что накоплено к размену
+    return restingTricks(fight);
   }
   return robberyTurnForm(fight);
 }
@@ -10753,6 +10775,12 @@ function renderTurf(data) {
   // внизу — кнопки хода или «Понятно», а журнал нужен и там, и там
   if (data.result) {
     body.appendChild(siegeBox(data.result));
+    // Взял точку — её надо держать: без выставленного она не платит. Тот,
+    // кто вёл отряд, стоит ногами ровно на ней, и прилавок ему тут же:
+    // иначе про охрану узнают через сутки, по пустой казне
+    if (data.result.won && data.hire && data.hire.side) {
+      body.appendChild(hireBox(data));
+    }
     return;
   }
   if (data.siege) {
@@ -10830,8 +10858,22 @@ function spotCard(one, data) {
     box.appendChild(note);
   }
 
+  // Своя точка: воевать за неё не надо, а охрану поставить — надо, и
+  // без этой кнопки прилавок выше остаётся незамеченным
+  if (one.mine) {
+    if (one.here && data.hire && data.hire.side
+        && one.posted < one.max_posted) {
+      const buttons = document.createElement("div");
+      buttons.className = "thing-buttons";
+      buttons.appendChild(
+        button("🛡 Поставить охрану", { onClick: showHireShelf })
+      );
+      box.appendChild(buttons);
+    }
+    return box;
+  }
+
   // Почему нельзя — говорим, а не прячем кнопку
-  if (one.mine) return box;
   if (one.busy) {
     box.appendChild(spotState("За точку уже дерутся."));
     return box;
@@ -10867,15 +10909,40 @@ function spotCard(one, data) {
   return box;
 }
 
+// Прилавок стоит выше списка точек, и после захвата до него не
+// доходят — кнопка у точки просто подводит к нему
+function showHireShelf() {
+  const shelf = el("turf-hire");
+  if (shelf && shelf.scrollIntoView) {
+    shelf.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
 /** Наём: кто на руках, кого ставить здесь и что предлагают взять. */
 function hireBox(data) {
   const hire = data.hire;
   const box = document.createElement("section");
   box.className = "shelf";
+  box.id = "turf-hire";
   const head = document.createElement("h2");
   head.className = "shelf-head";
   head.textContent = hire.side === "merc" ? "Наёмники" : "Патрульные";
   box.appendChild(head);
+
+  // Зачем это вообще. Прилавок сам по себе ничего не объясняет, а
+  // стоящему на своей пустой точке надо сказать прямо: доход идёт за
+  // то, что её держат, а не за флажок на карте
+  if (hire.can_post) {
+    const call = document.createElement("p");
+    call.className = "thing-note hire-call";
+    const ready = hire.mine.filter((one) => !one.spot).length;
+    call.textContent = ready
+      ? "🛡 " + hire.spot_title + " за вами. Выставь человека из резерва:"
+        + " без охраны точка не платит."
+      : "🛡 " + hire.spot_title + " за вами, охраны на ней нет. Найми ниже"
+        + " и выставь здесь же: без охраны точка не платит.";
+    box.appendChild(call);
+  }
 
   const note = document.createElement("p");
   note.className = "thing-note";
@@ -11037,22 +11104,18 @@ function siegeBox(siege) {
   return box;
 }
 
-// Доска штурма — та же, что в групповом бою: внизу ты и тот, кого бьёшь
-// в этой волне, выше остальные — слева отряд, справа гарнизон. Шкалы
-// двумя столбиками читались хуже: в них не видно, кто с кем сошёлся.
-function siegeBoard(siege) {
+// Доска боя отрядами — одна на штурм и на ограбление, и та же, что в
+// групповом бою: внизу ты и тот, кого бьёшь в этом размене, выше
+// остальные — свои слева, чужие справа. Шкалы двумя столбиками
+// читались хуже: в них не видно, кто с кем сошёлся.
+function brawlBoard(ours, theirs, you, foe, mine) {
   const box = document.createElement("div");
   box.className = "raid-board";
-  const party = siege.party || [];
-  const wall = siege.wall || [];
-  const you = party.find((one) => one.is_self) || party[0] || null;
-  const foe = siege.foe;
-
   box.appendChild(
     deckOf(
       "raid-mates",
-      siegeCards(party.filter((one) => one !== you), "mate", true),
-      you ? siegeCard(you, "raid-you", true) : null
+      brawlCards(ours.filter((one) => one !== you), "mate", mine),
+      you ? brawlCard(you, "raid-you", mine) : null
     )
   );
   const swords = document.createElement("p");
@@ -11062,26 +11125,36 @@ function siegeBoard(siege) {
   box.appendChild(
     deckOf(
       "raid-foes",
-      siegeCards(
-        wall.filter((one) => !foe || one.user_id !== foe.user_id),
+      brawlCards(
+        theirs.filter((one) => !foe || one.user_id !== foe.user_id),
         "foe", false
       ),
-      foe ? siegeCard(foe, "boss-card mine", false) : noRivalCard()
+      foe ? brawlCard(foe, "boss-card mine", false) : noRivalCard()
     )
   );
   return box;
 }
 
+// Отряд слева, гарнизон справа — галочки только у отряда, и только
+// пока бой идёт: в итоге «ход сделан» уже ничего не значит
+function siegeBoard(siege) {
+  const party = siege.party || [];
+  const you = party.find((one) => one.is_self) || party[0] || null;
+  return brawlBoard(
+    party, siege.wall || [], you, siege.foe, !siege.finished
+  );
+}
+
 // Карты стопки: живые сверху, павшие глубже — как в рейде и в бою
-function siegeCards(rows, kind, ours) {
+function brawlCards(rows, kind, ours) {
   return byTheLiving(rows).map((one) => {
     const card = stackCard(kind, one.alive);
     stackHead(
       card,
-      siegeMark(one, ours) + siegeName(one),
+      brawlMark(one, ours) + brawlName(one),
       one.alive ? one.hp + "/" + one.max_hp : "выбыл"
     );
-    siegeFace(card.querySelector(".fight-name"), one);
+    brawlFace(card.querySelector(".fight-name"), one);
     card.appendChild(fightBar(one));
     return card;
   });
@@ -11089,7 +11162,7 @@ function siegeCards(rows, kind, ours) {
 
 // Лицо нанятого или охранника — кружком перед именем. У игрока его нет:
 // его карточка и так рядом, а место в строке одно
-function siegeFace(into, one) {
+function brawlFace(into, one) {
   if (!into || !one.picture) return;
   const face = picture(one.picture, one.name, "");
   face.className = "npc-face";
@@ -11097,14 +11170,14 @@ function siegeFace(into, one) {
 }
 
 // Крупная карта: имя с уровнем, запас числом и шкала под ними
-function siegeCard(one, kind, ours) {
+function brawlCard(one, kind, ours) {
   const box = document.createElement("div");
   box.className = kind + (one.alive ? "" : " down dropped");
   const name = document.createElement("p");
   name.className = "fight-name";
-  name.textContent = siegeMark(one, ours) + siegeName(one)
+  name.textContent = brawlMark(one, ours) + brawlName(one)
     + " [" + one.level + "]" + (one.is_self ? " — ты" : "");
-  siegeFace(name, one);
+  brawlFace(name, one);
   const hp = document.createElement("p");
   hp.className = "fight-hp";
   hp.textContent = one.alive ? one.hp + "/" + one.max_hp : "выбыл";
@@ -11112,15 +11185,15 @@ function siegeCard(one, kind, ours) {
   return box;
 }
 
-// Галочку и часы ставим только своим: гарнизон ведёт бросок, и «ждём
-// его хода» про него было бы неправдой
-function siegeMark(one, ours) {
+// Галочку и часы ставим только своим: чужая сторона ведёт свой бросок,
+// и «ждём его хода» про неё было бы неправдой
+function brawlMark(one, ours) {
   if (!one.alive) return "💀 ";
   if (!ours) return "";
   return one.acted ? "✅ " : "⏳ ";
 }
 
-function siegeName(one) {
+function brawlName(one) {
   return (one.fclass || "") + " " + one.name;
 }
 
@@ -11171,45 +11244,6 @@ function siegeLog(siege) {
   // Свежее сверху — и между разменами, и внутри размена: в волне на
   // десять бойцов иначе не понять, что было позже
   siege.log.slice().reverse().forEach((turn) => judgeLines(turn, box, true));
-  return box;
-}
-
-/** Одна сторона боя: полоски здоровья по бойцам. */
-function sideBox(title, rows) {
-  const box = document.createElement("section");
-  box.className = "shelf";
-  const head = document.createElement("h2");
-  head.className = "shelf-head";
-  head.textContent = title;
-  box.appendChild(head);
-  (rows || []).forEach((one) => {
-    const row = document.createElement("div");
-    row.className = "siege-row" + (one.alive ? "" : " down");
-    const name = document.createElement("span");
-    name.className = "siege-name";
-    // У нанятых и охраны есть лицо, у игрока — значок класса: его
-    // карточка и так рядом, а место в строке одно
-    if (one.picture) {
-      const face = picture(one.picture, one.name, one.fclass || "");
-      face.className = "npc-face";
-      name.appendChild(face);
-      name.appendChild(document.createTextNode(" " + one.name));
-    } else {
-      name.textContent = (one.fclass || "") + " " + one.name
-        + (one.is_self ? " (ты)" : "");
-    }
-    const bar = document.createElement("div");
-    bar.className = "hours-line";
-    const fill = document.createElement("div");
-    fill.className = "hours-fill" + (one.percent < 35 ? " short" : "");
-    fill.style.width = one.percent + "%";
-    bar.appendChild(fill);
-    const hp = document.createElement("span");
-    hp.className = "siege-hp";
-    hp.textContent = one.hp + "/" + one.max_hp;
-    row.append(name, bar, hp);
-    box.appendChild(row);
-  });
   return box;
 }
 

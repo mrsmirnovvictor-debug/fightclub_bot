@@ -1519,18 +1519,13 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .muster-row.me { border: 1px solid var(--accent); }
 
-/* Строка бойца в штурме: имя, полоса здоровья и числа */
-.siege-row {
-  display: grid;
-  grid-template-columns: 1fr 90px auto;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 0;
-  font-size: 13px;
+/* Зов поставить охрану: единственная строка на экране, которая просит
+   что-то сделать, — и видно её должно быть сразу */
+.hire-call {
+  color: var(--text);
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
 }
-.siege-row.down { opacity: 0.45; }
-.siege-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.siege-hp { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
 /* ---------- учёба: приёмная и курсы ---------- */
 

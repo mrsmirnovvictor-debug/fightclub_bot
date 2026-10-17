@@ -604,6 +604,13 @@ class TurfWar:
             siege.summary.append(
                 f"Прежним в казну ушло {siege.handed} 💰 за время владения."
             )
+        if won:
+            # Взятая точка стоит пустой: прежних выставленных вынесли, а
+            # своих ещё нет. Без этой строки про охрану узнают через
+            # сутки, по пустой казне
+            siege.summary.append(
+                "Точка пустая и дохода не даёт: выставь на ней человека."
+            )
         self._sieges.pop(siege.id, None)
         for user_id in siege.party:
             self._busy.pop(user_id, None)

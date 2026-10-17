@@ -38,8 +38,10 @@ from bot.models import Player
 LOG_TAIL = 60
 
 
-def fighter_row(one, user_id: int, name: str, viewer_id: int) -> dict[str, Any]:
-    """Боец в панели драки: имя, запас и жив ли он ещё."""
+def fighter_row(
+    one, user_id: int, name: str, viewer_id: int, acted: bool = False
+) -> dict[str, Any]:
+    """Боец в панели драки: имя, запас, жив ли он и сделал ли ход."""
     return {
         "user_id": user_id,
         "name": name,
@@ -52,12 +54,23 @@ def fighter_row(one, user_id: int, name: str, viewer_id: int) -> dict[str, Any]:
         # Лицо есть у нанятых и охраны, у игрока его нет
         "picture": one.picture,
         "is_self": user_id == viewer_id,
+        "acted": acted,
     }
 
 
-def side_rows(raid, side: int, viewer_id: int) -> list[dict[str, Any]]:
+def side_rows(
+    raid, side: int, viewer_id: int, ours: bool = False
+) -> list[dict[str, Any]]:
+    """Сторона целиком. Галочку хода отдаём только своим.
+
+    Чужая готовность — не наше дело: на доске её не показывают, и в
+    ответе ей тоже делать нечего.
+    """
     return [
-        fighter_row(raid.fighters[one], one, raid.names.get(one, "боец"), viewer_id)
+        fighter_row(
+            raid.fighters[one], one, raid.names.get(one, "боец"), viewer_id,
+            ours and one in raid.acted,
+        )
         for one in raid.side_ids(side)
     ]
 
@@ -74,6 +87,7 @@ def raid_payload(raid, viewer_id: int) -> dict[str, Any]:
     mine = raid.choices.get(viewer_id)
     fighter = raid.fighters.get(viewer_id)
     foe = raid.foe_of(viewer_id)
+    side = raid.side_of(viewer_id) if viewer_id in raid.fighters else None
     return {
         "id": raid.id,
         "kind": raid.kind,
@@ -90,8 +104,8 @@ def raid_payload(raid, viewer_id: int) -> dict[str, Any]:
         "hands": hands_payload(fighter),
         "attacks": [dict(row) for row in ATTACK_BUTTONS],
         "blocks": block_buttons(fighter.block_width if fighter else BLOCK_WIDTH),
-        "red": side_rows(raid, RED, viewer_id),
-        "blue": side_rows(raid, 1 - RED, viewer_id),
+        "red": side_rows(raid, RED, viewer_id, side == RED),
+        "blue": side_rows(raid, 1 - RED, viewer_id, side == 1 - RED),
         # Кого смотрящий бьёт в этом раунде. Пусто — пары не досталось:
         # сторона больше другой, и кто-то раунд пропускает
         "foe": (
@@ -100,7 +114,7 @@ def raid_payload(raid, viewer_id: int) -> dict[str, Any]:
             else None
         ),
         "yours": viewer_id in raid.fighters,
-        "side": raid.side_of(viewer_id) if viewer_id in raid.fighters else None,
+        "side": side,
         "alive": bool(fighter and fighter.alive),
         "acted": viewer_id in raid.acted,
         "paired": viewer_id in raid.paired,

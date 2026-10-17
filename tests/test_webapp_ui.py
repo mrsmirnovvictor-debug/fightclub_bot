@@ -10540,12 +10540,16 @@ async def house_states(db):
 
 
 async def open_crowd(pw, server, don, body):
-    """Открыть список дома с готовым ответом и погасить опрос."""
+    """Открыть список дома с готовым ответом и погасить опрос.
+
+    Ждём либо полку соседей, либо доску драки: в доме, где дерутся,
+    списка нет вовсе.
+    """
     card = build_card(don, TOKEN, viewer_id=don.user_id)
     browser, page = await open_page(pw, server, card, crowd=body)
     await page.wait_for_selector("#hero:not(.hidden)")
     await open_screen(page, "crowd")
-    await page.wait_for_selector("#crowd-body .shelf")
+    await page.wait_for_selector("#crowd-body .shelf, #crowd-body .raid-board")
     await page.evaluate("stopCrowdPoll()")
     return browser, page
 
@@ -10577,7 +10581,7 @@ async def test_the_house_shows_who_is_here_and_who_can_be_robbed(server, db):
 
 
 async def test_the_robbery_panel_shows_both_sides_and_the_log(server, db):
-    """Панель драки: налётчики, жертва, журнал судьи и кнопки хода."""
+    """Панель драки: доска как в групповом бою, журнал судьи и кнопки."""
     don, _, live = await house_states(db)
     fight = live["fight"]
     assert fight is not None and fight["log"], "судье было что сказать"
@@ -10585,16 +10589,55 @@ async def test_the_robbery_panel_shows_both_sides_and_the_log(server, db):
     async with async_playwright() as pw:
         browser, page = await open_crowd(pw, server, don, live)
 
-        heads = await page.locator("#crowd .shelf-head").all_inner_texts()
-        assert "Налётчики" in heads and "Против них" in heads
-        assert "Ход драки" in heads
-        # Своих в налётчиках двое: один напал, второй вмешался
-        assert await page.locator("#crowd .siege-row").count() == 3
+        head = await page.locator("#crowd .fight-round").inner_text()
+        assert "Прохожий" in head and "раунд" in head
+        assert "Ход драки" in await page.locator(
+            "#crowd .fight-log .shelf-head"
+        ).inner_text()
+
+        # Доска та же, что в групповом бою: свои слева, чужие справа.
+        # Счёт карт сверяем с ответом: пара в раунде достаётся не всем,
+        # и у кого её нет — внизу справа пусто
+        board = page.locator("#crowd .raid-board")
+        assert await board.count() == 1
+        mine = await board.locator(".raid-you").inner_text()
+        assert "— ты" in mine
+        foe = fight["foe"]
+        assert await board.locator(".raid-mates .stack-card").count() == (
+            len(fight["red"]) - 1
+        ), "один напал, второй вмешался"
+        assert await board.locator(".raid-foes .stack-card").count() == (
+            len(fight["blue"]) - 1 if foe else len(fight["blue"])
+        )
+        theirs = await board.locator(".raid-foes").inner_text()
+        assert "Прохожий" in theirs
+        if foe:
+            assert foe["name"] in await board.locator(
+                ".boss-card.mine"
+            ).inner_text()
+
+        # Галочка хода — только у своих: чужой бросок не наш
+        you = next(one for one in fight["red"] if one["is_self"])
+        mark = "💀" if not you["alive"] else ("✅" if you["acted"] else "⏳")
+        assert mark in mine
+        assert "⏳" not in theirs and "✅" not in theirs
 
         lines = await page.locator("#crowd .fight-log .log-line").all_inner_texts()
         said = [one for turn in fight["log"] for one in turn["lines"]]
         assert len(lines) == len(said)
         assert lines[0] == said[-1], "свежее сверху"
+
+        # Ход сделан — слов «ход принят» нет: галочка на доске уже
+        # сказала то же самое, а под доской остаются заготовки
+        waiting = json.loads(json.dumps(live))
+        waiting["fight"].update({"acted": True, "alive": True, "paired": True})
+        for one in waiting["fight"]["red"]:
+            if one["is_self"]:
+                one.update({"acted": True, "alive": True})
+        await page.evaluate("(data) => renderCrowd(data)", waiting)
+        assert "Ход принят" not in await page.locator("#crowd-body").inner_text()
+        assert "✅" in await page.locator("#crowd .raid-you").inner_text()
+        assert await page.locator("#crowd #crowd-go").count() == 0
         await browser.close()
 
 
@@ -10887,7 +10930,7 @@ async def test_the_finished_siege_shows_its_outcome_and_its_log(server, db):
         # Доска видна и после боя: по ней и понятно, кто кого
         assert await page.locator("#turf .raid-board").count() == 1
         assert await page.locator(
-            "#turf .thing-buttons .btn"
+            "#turf .fight-finish .btn"
         ).inner_text() == "Понятно"
         await browser.close()
 
@@ -10945,10 +10988,63 @@ async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
         # Строка точки считает выставленных, а не городскую охрану
         here = page.locator("#turf .spot").first
         assert "охрана: 1 из 10" in await here.locator(".spot-owner").inner_text()
+        # И у своей точки под ногами — кнопка к прилавку: иначе про
+        # охрану не догадываются вовсе
+        assert await here.locator(".btn").inner_text() == "🛡 Поставить охрану"
         casino = page.locator("#turf .spot").nth(1)
         assert "городская охрана" in await casino.locator(
             ".spot-owner"
         ).inner_text()
+        await browser.close()
+
+
+async def test_the_won_spot_offers_the_guard_right_away(server, db):
+    """Взял точку — прилавок охраны под итогом, а не где-то потом.
+
+    Итог тут поддельный нарочно: чем кончился настоящий штурм, решает
+    бросок, а предмет проверки — что победитель видит, куда ставить
+    человека, не выходя с экрана.
+    """
+    from bot.game.health import now_ts
+    from bot.hire_service import hire
+    from bot.webapp.turf import build_war
+    from tests.test_robbery import family, stand
+
+    moment = now_ts()
+    don, squad, clan = await family(db)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), moment)
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    await db.save_player(boss)
+    await hire(db, await db.get_player(don.user_id), "merc_7", now=moment)
+    boss = await db.get_player(don.user_id)
+    body = await build_war(db, boss, None, moment)
+    body["result"] = {
+        "finished": True,
+        "won": True,
+        "spot_title": "Бар",
+        "wave": 3,
+        "summary": ["Бар взят за 3 волн.",
+                    "Точка пустая и дохода не даёт: выставь на ней человека."],
+    }
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, boss, body)
+
+        # Итог на месте, и сразу под ним — прилавок с резервом
+        assert "Точка взята" in await page.locator(
+            "#turf .fight-round"
+        ).inner_text()
+        said = await page.locator("#turf .fight-finish .log-line").all_inner_texts()
+        assert any("выставь" in one for one in said)
+
+        shelf = page.locator("#turf-hire")
+        assert await shelf.count() == 1
+        assert "Бар за вами" in await shelf.locator(".hire-call").inner_text()
+        assert "из резерва" in await shelf.locator(".hire-call").inner_text()
+        buttons = await shelf.locator(".neighbour .btn").all_inner_texts()
+        assert buttons == ["Выставить здесь"]
         await browser.close()
 
 

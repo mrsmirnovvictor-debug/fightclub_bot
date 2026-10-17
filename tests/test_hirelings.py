@@ -314,6 +314,8 @@ async def test_the_lost_spot_loses_its_hired_for_good(db):
         await war.close()
 
     assert siege.won, "трое десятого уровня против одного наёмника"
+    # Взятая точка стоит пустой, и итог об этом говорит прямо
+    assert any("выставь" in one for one in siege.summary)
     assert siege.fallen == 1
     assert await db.hirelings_at(BAR) == [], "наёмник погиб насовсем"
     assert await db.hirelings_of(don.user_id) == [], "и с рук его списали"
