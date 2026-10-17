@@ -2063,9 +2063,9 @@ function paintTurfBand() {
   box.classList.toggle("hidden", !band);
   if (!band) return;
 
-  // Одна строка: жетон, название с доходом и кнопка справа. Плашка
-  // висит поверх города, и три строки с кнопкой во всю ширину
-  // закрывали соседний дом — войти в него было нельзя
+  // Чип в углу: жетон владельца и кнопка. Названия и дохода тут нет
+  // нарочно — дом, у двери которого стоишь, подписан на самой карте, а
+  // плашка висит поверх города: чем она меньше, тем меньше закрывает
   const head = document.createElement("p");
   head.className = "turf-band-head";
   if (band.badge) {
@@ -2073,16 +2073,13 @@ function paintTurfBand() {
     badge.className = "band-badge";
     head.appendChild(badge);
   } else {
-    head.appendChild(document.createTextNode(band.mark + " "));
+    head.appendChild(document.createTextNode(band.mark));
   }
-  head.appendChild(document.createTextNode(
-    band.title + " · " + num(band.income) + " 💰"
-  ));
   box.appendChild(head);
 
   if (!band.button) {
-    // Кнопки нет — вместо неё причина: это единственное, ради чего
-    // плашке стоит быть в две строки
+    // Кнопки нет — вместо неё причина: ради неё плашка и становится
+    // шире жетона
     const said = document.createElement("p");
     said.className = "turf-band-note";
     said.textContent = band.text;

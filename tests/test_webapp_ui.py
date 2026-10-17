@@ -11087,14 +11087,23 @@ async def test_the_city_map_marks_the_spots_and_offers_the_muster(server, db):
         await page.wait_for_selector("#map:not(.hidden)")
         await page.wait_for_selector(".zone-house")
 
-        # Плашка под ногами: отсюда и собирают отряд. Она в одну
-        # строку — название с доходом и кнопка рядом
+        # Плашка под ногами: отсюда и собирают отряд. Это чип в углу —
+        # жетон владельца и кнопка, без названия и дохода: дом подписан
+        # на самой карте, а плашка висит поверх города
         band = page.locator("#map-turf")
         assert await band.is_visible()
         said = await band.inner_text()
-        assert "⚪️ Бар · 90" in said
-        assert "Держит" not in said, "про владельца говорит отметка"
+        assert "⚪️" in said
+        assert "Бар" not in said and "90" not in said
         assert await page.locator("#turf-call").inner_text() == "🚩 Отряд"
+
+        # Стоит она в правом нижнем углу и занимает меньше половины
+        # ширины: закрывать город ей нечем
+        chip = await band.bounding_box()
+        screen = await page.locator("#map").bounding_box()
+        assert chip["x"] + chip["width"] >= screen["x"] + screen["width"] - 20
+        assert chip["width"] < screen["width"] / 2
+
         # И нажатия сквозь неё проходят: иначе она закрывала бы дверь
         # соседнего дома, и войти в него было бы нельзя
         assert await band.evaluate(

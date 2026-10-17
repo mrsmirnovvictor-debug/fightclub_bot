@@ -1824,25 +1824,22 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* Плашка под ногами: боец дошёл до точки, и отсюда собирают отряд.
    Стоит выше стрелки «вниз»: та висит по центру нижнего края, и полоса
    во всю ширину накрыла бы её целиком */
-/* Плашка точки под ногами. Одной строкой и по ширине содержимого: она
-   висит поверх города, и прежняя — три строки с кнопкой во всю ширину —
-   накрывала дверь соседнего дома, в который из-за неё нельзя было
-   войти. По той же причине мимо неё проходят нажатия: ловит их только
-   кнопка */
+/* Плашка точки под ногами — чип в правом нижнем углу: жетон владельца
+   и кнопка, больше ничего. Дом, у двери которого стоишь, подписан на
+   самой карте, а плашка висит поверх города: прежняя, в три строки и
+   во всю ширину, накрывала дверь соседнего дома, и войти в него было
+   нельзя. По той же причине мимо неё проходят нажатия: ловит их
+   только кнопка */
 .turf-band {
   position: absolute;
-  left: 12px;
   right: 12px;
   bottom: calc(136px + env(safe-area-inset-bottom));
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  width: fit-content;
+  gap: 6px;
   max-width: calc(100% - 24px);
-  margin: 0 auto;
-  padding: 6px 8px 6px 10px;
-  border-radius: 12px;
+  padding: 4px 5px 4px 7px;
+  border-radius: 999px;
   background: rgba(0, 0, 0, 0.72);
   border: 1px solid rgba(255, 255, 255, 0.18);
   color: #fff;
@@ -1851,27 +1848,27 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .turf-band-head {
   display: flex;
   align-items: center;
-  gap: 6px;
   margin: 0;
-  font-weight: 800;
-  font-size: 13.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 15px;
+  line-height: 1;
 }
 .band-badge { width: 22px; height: 22px; border-radius: 50%; }
 .turf-band-note {
   margin: 0;
-  flex-basis: 100%;
-  font-size: 12.5px;
-  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.82);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 4px;
 }
 .turf-band .band-go {
   pointer-events: auto;
   margin: 0;
-  padding: 6px 12px;
+  padding: 5px 10px;
   width: auto;
-  font-size: 13px;
+  border-radius: 999px;
+  font-size: 12.5px;
   white-space: nowrap;
 }
 
