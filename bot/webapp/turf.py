@@ -8,8 +8,14 @@
 кого: территории на то и территории, чтобы про них знали все.
 
 **Кнопка штурма считается на сервере.** Можно ли идти, решает служба:
-своя точка, отдых после боя, потолок в четыре точки и то, воюет ли этот
-боец вообще. Страница только рисует ответ.
+своя точка, отдых после боя, потолок в четыре точки, то, воюет ли этот
+боец вообще, — и то, стоит ли он у самого дома. Страница только рисует
+ответ.
+
+**В особняке — доска, у дома — кнопка.** Список точек с владельцами и
+доходом смотрят откуда угодно: это сводка, а не пульт. Созвать отряд
+можно только там, где боец стоит ногами, и `here` в строке точки — это
+ровно оно.
 """
 
 from __future__ import annotations
@@ -17,12 +23,13 @@ from __future__ import annotations
 from typing import Any
 
 from bot.game.clock import club_moment
-from bot.game.health import format_duration, now_ts
+from bot.game.health import format_term, now_ts
 from bot.game.classes import BLOCK_WIDTH
 from bot.game.turf import (
     CALM_HOURS,
     MAX_GARRISON,
     MAX_SPOTS_PER_OWNER,
+    SERVICE,
     TOTAL_SPOTS,
     Owner,
     calm_left,
@@ -31,8 +38,30 @@ from bot.turf_service import MAX_WAVES
 from bot.models import Player
 
 
+# Сколько разменов журнала уходит в панель. Штурм двух полных отрядов
+# — это до сорока волн по пять ударов, и слать все двести в каждом
+# опросе незачем: читают последние, а не первые
+LOG_TAIL = 60
+
+# Отметка владельца в списке: по ней видно, чья точка, не читая имени.
+# Своя — флаг, чужая семья — шляпа, служба — щит, ничья — круг
+OWN_MARK = "🚩"
+CLAN_MARK = "🎩"
+SERVICE_MARK = "🛡"
+NOBODY_MARK = "⚪️"
+
+
+def spot_mark(owner: Owner, ours: bool) -> str:
+    """Чем помечена точка в списке."""
+    if ours:
+        return OWN_MARK
+    if owner.nobody:
+        return NOBODY_MARK
+    return SERVICE_MARK if owner.kind == SERVICE else CLAN_MARK
+
+
 async def spot_row(
-    db, holding, mine: Owner, moment: int
+    db, holding, mine: Owner, moment: int, here: str = ""
 ) -> dict[str, Any]:
     """Строка точки: дом, доход, владелец и можно ли идти на штурм."""
     from bot.turf_service import owner_title
@@ -41,6 +70,7 @@ async def spot_row(
     owner = holding.owner
     rest = calm_left(holding.fought_at, moment)
     ours = owner.same(mine) and not mine.nobody
+    standing = spot.code == here
     return {
         "code": spot.code,
         "title": spot.title,
@@ -52,12 +82,19 @@ async def spot_row(
             "title": await owner_title(db, owner),
             "nobody": owner.nobody,
         },
+        "mark": spot_mark(owner, ours),
         "mine": ours,
+        # Боец стоит у этого дома. Без этого кнопки сбора не бывает:
+        # точку берут ногами
+        "here": standing,
         "taken_at": club_moment(holding.taken_at) if holding.taken_at else "",
         # Отдых после боя: точку не отбивают в ту же минуту
         "calm": rest,
-        "calm_text": format_duration(rest) if rest else "",
-        "can_storm": bool(not ours and not rest and not mine.nobody),
+        # Отдых — сутки, и `format_duration` назвал бы их «1440 мин»
+        "calm_text": format_term(rest) if rest else "",
+        "can_storm": bool(
+            standing and not ours and not rest and not mine.nobody
+        ),
     }
 
 
@@ -69,12 +106,17 @@ async def build_turf(
 
     moment = now_ts() if now is None else now
     mine = owner_of(player)
+    here = player.where(moment)
     rows = await survey(db, moment)
-    spots = [await spot_row(db, one, mine, moment) for one in rows]
+    spots = [await spot_row(db, one, mine, moment, here) for one in rows]
     held = [one for one in spots if one["mine"]]
     return {
         "title": "Территории",
         "spots": spots,
+        # Где боец стоит сейчас: по этому экран и решает, рисовать ли
+        # кнопку сбора хоть у одной строки
+        "here": here,
+        "at_spot": any(one["here"] for one in spots),
         "total": TOTAL_SPOTS,
         # За кого воюет этот боец. Пусто — ни за кого: одиночкам войны
         # за территории не положено
@@ -91,20 +133,29 @@ async def build_turf(
         "squad": MAX_GARRISON,
         "calm_hours": CALM_HOURS,
         "said": said,
-        "note": _note(mine, len(held)),
+        "note": _note(mine, len(held), any(one["here"] for one in spots)),
     }
 
 
-def _note(mine: Owner, held: int) -> str:
+def _note(mine: Owner, held: int, at_spot: bool) -> str:
     if mine.nobody:
         return (
             "За территории воюют семьи и службы. Вступи в клан или иди на "
             "службу — тогда и поговорим."
         )
+    if not at_spot:
+        # Доска, а не пульт: отсюда видно, кто чем владеет, но взять
+        # точку можно только придя к ней
+        tail = (
+            f"Точек у вас {held} из {MAX_SPOTS_PER_OWNER}."
+            if held
+            else "Своих точек пока нет."
+        )
+        return f"{tail} Захват берут на месте: дойди до дома и созови отряд."
     if not held:
         return (
-            "Своих точек пока нет. Ничьи тоже под охраной: брать их "
-            "придётся боем."
+            "Ты на месте. Ничьи точки тоже под охраной: брать их придётся "
+            "боем."
         )
     return f"Точек у вас {held} из {MAX_SPOTS_PER_OWNER}. Доход капает раз в сутки."
 
@@ -194,7 +245,7 @@ def siege_payload(siege, viewer_id: int) -> dict[str, Any]:
         # Приёмы — только свои: чужая заготовка перестаёт быть
         # неожиданностью, если её видно
         "abilities": abilities_payload(fighter),
-        "log": siege.rounds,
+        "log": siege.rounds[-LOG_TAIL:],
     }
 
 
@@ -207,8 +258,12 @@ async def build_war(
     нему видно, что рисовать — карту, сбор, волну или итог.
     """
     body = await build_turf(db, player, now, said)
-    if war is None:  # pragma: no cover - бот без войны не поднимается
+    if war is None:
+        # Войны может не быть: карту точек собирают и без неё — так её
+        # берут снимки и проверки, которым до кнопок дела нет
         body.update({"muster": None, "siege": None, "result": None})
+        for row in body["spots"]:
+            row["busy"] = False
         return body
     muster = war.muster_of_user(player.user_id)
     siege = war.siege_of_user(player.user_id)
@@ -233,10 +288,75 @@ async def build_war(
     return body
 
 
+# ---------- отметки войны на карте города ----------
+
+
+def map_marks(body: dict[str, Any]) -> dict[str, Any]:
+    """Война глазами карты: флажок под каждой точкой и плашка под ногами.
+
+    Считается из готового ответа войны, а не заново: два списка одних и
+    тех же точек однажды разошлись бы, и карта показала бы одного
+    владельца, а особняк другого.
+    """
+    spots = {
+        row["code"]: {
+            "mark": row["mark"],
+            "owner": row["owner"]["title"],
+            "income": row["income"],
+            "mine": row["mine"],
+        }
+        for row in body["spots"]
+    }
+    row = next((one for one in body["spots"] if one["here"]), None)
+    return {"spots": spots, "here": _band(body, row) if row else None}
+
+
+def _band(body: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    """Плашка у дома: чей он, сколько приносит и что можно нажать."""
+    in_hand = bool(body.get("muster") or body.get("siege") or body.get("result"))
+    band = {
+        "code": row["code"],
+        "title": row["title"],
+        "mark": row["mark"],
+        "owner": row["owner"]["title"],
+        "income": row["income"],
+        "mine": row["mine"],
+        "in_hand": in_hand,
+    }
+    if in_hand:
+        band["button"] = "open"
+        band["text"] = (
+            "Штурм идёт." if body.get("siege") else
+            "Итог штурма ждёт." if body.get("result") else
+            "Отряд собирается."
+        )
+    elif row["can_storm"]:
+        band["button"] = "call"
+        band["text"] = f"Держит: {row['owner']['title']}."
+    else:
+        band["button"] = ""
+        band["text"] = _why_not(body, row)
+    return band
+
+
+def _why_not(body: dict[str, Any], row: dict[str, Any]) -> str:
+    """Почему кнопки сбора нет. Молча гасить её — значит врать."""
+    if row["mine"]:
+        return "Точка и так ваша."
+    if row.get("busy"):
+        return "За точку уже дерутся."
+    if row["calm"]:
+        return f"Точка отдыхает после боя: {row['calm_text']}."
+    if body["side"]["nobody"]:
+        return "Воевать за территории тебе пока не за кого."
+    return f"Держит: {row['owner']['title']}."
+
+
 __all__ = [
     "build_turf",
     "build_war",
     "fighter_row",
+    "map_marks",
     "muster_payload",
     "siege_payload",
     "spot_row",

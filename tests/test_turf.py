@@ -97,6 +97,17 @@ async def family(
     return don, squad, clan
 
 
+async def stand(db: Database, user_ids: list[int], code: str) -> None:
+    """Поставить бойцов к дому: точку берут ногами, а не из списка."""
+    for one in user_ids:
+        player = await db.get_player(one)
+        assert player is not None
+        player.location = code
+        player.travel_to = None
+        player.arrives_at = 0
+        await db.save_player(player)
+
+
 async def seize(db: Database, don: Player, squad: list[int], code: str) -> int:
     """Взять точку, сколько бы попыток ни ушло. Отдаёт час захвата.
 
@@ -325,7 +336,51 @@ async def test_the_turf_map_is_read_from_anywhere(db, client):
     assert body["held"] == 0 and body["income"] == 0
     first = body["spots"][0]
     assert first["owner"]["nobody"] is True
-    assert first["can_storm"] is True
+    # Смотреть — да, собирать отряд — нет: боец стоит в особняке, а
+    # точку берут ногами
+    assert first["here"] is False and first["can_storm"] is False
+    assert body["at_spot"] is False
+    assert "на месте" in body["note"]
+
+
+async def test_the_call_button_appears_only_where_the_fighter_stands(db, client):
+    """Кнопка сбора — у того дома, в котором боец стоит, и только там."""
+    don, _, _ = await family(db)
+    await stand(db, [don.user_id], "bar")
+
+    body = await (await client.get(
+        "/api/turf", headers=headers(don.user_id)
+    )).json()
+    assert body["here"] == "bar" and body["at_spot"] is True
+    rows = {one["code"]: one for one in body["spots"]}
+    assert rows["bar"]["here"] is True and rows["bar"]["can_storm"] is True
+    # Соседний дом виден так же подробно, но взять его отсюда нельзя
+    assert rows["casino"]["here"] is False
+    assert rows["casino"]["can_storm"] is False
+
+
+async def test_a_spot_is_not_called_from_across_the_city(db, client):
+    """Созвать отряд на казино, сидя в особняке, нельзя."""
+    don, _, _ = await family(db)
+
+    answer = await post(client, don.user_id, action="call", spot="casino")
+    assert answer.status == 409
+    assert "дойти" in (await answer.json())["error"]
+
+
+async def test_the_marks_say_whose_the_spot_is(db, client):
+    """Отметка в строке: своя точка — флаг, ничья — круг, служба — щит."""
+    don, squad, clan = await family(db)
+    await seize(db, don, squad, "bar")
+    await db.take_turf("casino", "service", "police", NOW)
+
+    body = await (await client.get(
+        "/api/turf", headers=headers(don.user_id)
+    )).json()
+    rows = {one["code"]: one for one in body["spots"]}
+    assert rows["bar"]["mark"] == "🚩" and rows["bar"]["mine"] is True
+    assert rows["casino"]["mark"] == "🛡"
+    assert rows["market"]["mark"] == "⚪️"
 
 
 async def post(client, user_id: int, **body):
@@ -336,6 +391,7 @@ async def post(client, user_id: int, **body):
 async def test_the_muster_gathers_and_marches(db, client):
     """Сбор отряда: созвали, записались, пошли — и началась волна."""
     don, squad, _ = await family(db)
+    await stand(db, squad, "bar")
 
     answer = await post(client, don.user_id, action="call", spot="bar")
     assert answer.status == 200
@@ -371,6 +427,7 @@ async def test_the_muster_gathers_and_marches(db, client):
 async def test_the_wave_takes_the_blow_and_the_block(db, client):
     """Ход целиком: удар и блок одной кнопкой, и боец отработал."""
     don, squad, _ = await family(db)
+    await stand(db, squad, "bar")
     await post(client, don.user_id, action="call", spot="bar")
     await post(client, don.user_id, action="march")
 
@@ -388,6 +445,7 @@ async def test_the_wave_takes_the_blow_and_the_block(db, client):
 async def test_the_siege_ends_and_the_spot_changes_hands(db, client):
     """Штурм до конца: итог показан, и точка записана за победителем."""
     don, squad, _ = await family(db)
+    await stand(db, squad, "bar")
     await post(client, don.user_id, action="call", spot="bar")
     await post(client, don.user_id, action="march")
 
@@ -421,12 +479,93 @@ async def test_the_siege_ends_and_the_spot_changes_hands(db, client):
     assert body["result"] is None
 
 
+async def test_the_city_map_carries_the_flags_and_the_band(db, client):
+    """Карта города: флажок под каждой точкой и плашка под ногами."""
+    don, squad, clan = await family(db)
+    await db.take_turf("casino", "service", "police", NOW)
+    await stand(db, squad, "bar")
+
+    body = await (await client.get(
+        "/api/map", headers=headers(don.user_id)
+    )).json()
+    marks = body["turf"]["spots"]
+    assert len(marks) == TOTAL_SPOTS
+    assert marks["casino"]["owner"] == "Полиция Вегаса"
+    assert marks["casino"]["income"] == get_spot("casino").income
+    assert marks["bar"]["mine"] is False
+
+    # Плашка под ногами: боец стоит у бара, и отсюда собирают отряд
+    band = body["turf"]["here"]
+    assert band["code"] == "bar" and band["button"] == "call"
+
+    # Созвал — та же плашка открывает штурм, а не зовёт второй отряд
+    await post(client, don.user_id, action="call", spot="bar")
+    body = await (await client.get(
+        "/api/map", headers=headers(don.user_id)
+    )).json()
+    assert body["turf"]["here"]["button"] == "open"
+    assert body["turf"]["here"]["in_hand"] is True
+
+
+async def test_the_map_band_is_empty_away_from_the_spots(db, client):
+    """Стоишь не на точке — плашки нет, а флажки на месте."""
+    don, _, _ = await family(db)
+
+    body = await (await client.get(
+        "/api/map", headers=headers(don.user_id)
+    )).json()
+    assert body["turf"]["here"] is None
+    assert len(body["turf"]["spots"]) == TOTAL_SPOTS
+
+
+async def test_the_road_is_shut_while_the_squad_stands(db, client):
+    """Из-под точки не уходят: дорога спрашивает войну, и та не пускает.
+
+    Без этого захват ногами был бы одной видимостью: пришёл, созвал
+    отряд, ушёл в особняк — и дерись оттуда.
+    """
+    don, squad, _ = await family(db)
+    await stand(db, squad, "bar")
+    await post(client, don.user_id, action="call", spot="bar")
+
+    answer = await client.post(
+        "/api/travel", json={"to": "casino"}, headers=headers(don.user_id)
+    )
+    assert answer.status == 409
+    assert "бой" in (await answer.json())["error"]
+
+    # Распустил сбор — дорога открылась
+    await post(client, don.user_id, action="leave")
+    answer = await client.post(
+        "/api/travel", json={"to": "casino"}, headers=headers(don.user_id)
+    )
+    assert answer.status == 200
+
+
+async def test_the_ceiling_holds_in_the_live_panel_too(db, client):
+    """Потолок в четыре точки считается и у кнопки сбора.
+
+    Раньше его знал только разовый штурм, и панель брала бы весь город:
+    правило, которое держит одна из двух дверей, — не правило.
+    """
+    don, squad, clan = await family(db)
+    moment = NOW
+    for code in ("bar", "casino", "market", "jewelry_store"):
+        moment = max(moment, await seize(db, don, squad, code)) + CALM_SECONDS
+    await stand(db, squad, "car_dealership")
+
+    answer = await post(client, don.user_id, action="call", spot="car_dealership")
+    assert answer.status == 409
+    assert "не удержать" in (await answer.json())["error"]
+
+
 async def test_a_stranger_does_not_join_the_muster(db, client):
     """Сбор свой: чужая семья в него не записывается."""
     don, _, _ = await family(db)
-    rival, _, _ = await family(
+    rival, rivals, _ = await family(
         db, first=20, name="Бешеные псы", sign="silver_wolves"
     )
+    await stand(db, [don.user_id] + rivals, "bar")
     body = await (await post(client, don.user_id, action="call", spot="bar")).json()
 
     answer = await post(

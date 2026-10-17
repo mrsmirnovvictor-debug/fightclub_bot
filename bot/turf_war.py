@@ -9,10 +9,16 @@
 пропала вместе с ним. Точка при этом не пострадает: пока бой не сведён,
 в базе ничего не менялось.
 
+**Точку берут ногами.** Созвать отряд можно только стоя у самого дома, и
+записаться в чужой сбор — тоже. Иначе карта войны стала бы пультом:
+выбрал строку в особняке, нажал — и взял казино через весь город. Дорога
+на время сбора и штурма запирается: `is_busy` отвечает на вопрос дороги,
+можно ли уходить.
+
 **Сбор идёт в мини-аппе, а не в чате.** У рейда лобби живёт сообщением в
-ветке группы, потому что рейд собирают в группе. Семью собирают в
-особняке, и ветки у неё нет: лобби здесь — это экран, на который смотрят
-все свои.
+ветке группы, потому что рейд собирают в группе. Семью собирают у самой
+точки, и ветки у неё нет: лобби здесь — это экран, на который смотрят
+все, кто дошёл.
 
 **Гарнизон бьёт наугад.** Защитник не обязан сидеть в сети: его людей
 ведёт бросок, а не рука. Это и есть цена обороны — зато и потерять точку
@@ -43,7 +49,14 @@ from bot.game.combat import Action, Fighter, random_action, resolve_round
 from bot.game.fightlog import turn_payload
 from bot.game.health import now_ts
 from bot.game.narrator import strike_lines
-from bot.game.turf import MAX_GARRISON, Owner, Spot, calm_left, get_spot
+from bot.game.turf import (
+    MAX_GARRISON,
+    MAX_SPOTS_PER_OWNER,
+    Owner,
+    Spot,
+    calm_left,
+    get_spot,
+)
 from bot.models import Player
 from bot.raid_service import Choice
 from bot.turf_service import (
@@ -204,6 +217,14 @@ class TurfWar:
     def forget_result(self, user_id: int) -> None:
         self._results.pop(user_id, None)
 
+    def is_busy(self, user_id: int) -> bool:
+        """Занят ли боец: этим дорога и решает, отпускать ли его.
+
+        Точку берут ногами, и уйти из-под неё посреди сбора или волны
+        нельзя — иначе отряд собирался бы у дома, а дрался из кармана.
+        """
+        return user_id in self._busy
+
     def musters(self) -> list[Muster]:
         return list(self._musters.values())
 
@@ -239,6 +260,12 @@ class TurfWar:
             )
         if self._busy.get(player.user_id):
             raise TurfError("Ты уже в деле: сперва закончи его.")
+        # Точку берут ногами. Созвать отряд на казино, сидя в особняке,
+        # нельзя: карта войны на то и карта, чтобы по ней ходить
+        if player.where(moment) != code:
+            raise TurfError(
+                f"До {spot.genitive} надо дойти: отряд собирают на месте."
+            )
         if self.muster_at(code) is not None or self.siege_at(code) is not None:
             raise TurfError(f"За {spot.genitive} уже дерутся. Подожди.")
 
@@ -251,6 +278,14 @@ class TurfWar:
             raise TurfError(
                 f"За {spot.genitive} недавно дрались — точка отдыхает ещё "
                 f"{max(1, rest // 3600)} ч."
+            )
+        # Потолок в четыре точки считается здесь, а не на развязке:
+        # собрать отряд, дойти и услышать «мест нет» — издевательство
+        held = [one for one in rows if one.owner.same(mine)]
+        if len(held) >= MAX_SPOTS_PER_OWNER:
+            raise TurfError(
+                f"Больше {MAX_SPOTS_PER_OWNER} точек разом не удержать. "
+                "Сперва отдайте какую-нибудь."
             )
         if not player.can_fight():
             raise TurfError("Сперва подлечись: в таком виде на штурм не ходят.")
@@ -281,6 +316,10 @@ class TurfWar:
             raise TurfError("Ты уже в деле: сперва закончи его.")
         if not owner_of(player).same(muster.owner):
             raise TurfError("Это чужой сбор — к ним не ходят.")
+        if player.where() != muster.spot.code:
+            raise TurfError(
+                f"Отряд стоит у {muster.spot.genitive} — туда и приходи."
+            )
         if muster.full:
             raise TurfError(f"В отряде мест нет: больше {MAX_GARRISON} не берут.")
         if not player.can_fight():
@@ -327,11 +366,16 @@ class TurfWar:
         if user_id != muster.leader:
             raise TurfError("Вести отряд — дело того, кто его созвал.")
 
+        # На штурм идут те, кто стоит у дома и держится на ногах.
+        # Ушедшего или добитого отряд не ждёт: он записывался, а не шёл
         party: dict[int, Fighter] = {}
         for one in muster.members:
             player = await self.db.get_player(one)
-            if player is not None and player.can_fight():
-                party[one] = Fighter.from_player(player, armed=True)
+            if player is None or not player.can_fight():
+                continue
+            if player.where(moment) != muster.spot.code:
+                continue
+            party[one] = Fighter.from_player(player, armed=True)
         if not party:
             self._drop_muster(muster)
             raise TurfError("Отряд разбежался — штурм отменён.")

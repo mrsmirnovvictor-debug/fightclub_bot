@@ -2026,6 +2026,55 @@ function renderMap(data) {
   mapWas = data.district || "";
   paintDistrict();
   paintRoad();
+  paintTurfBand();
+}
+
+// ---------- война за территории на карте ----------
+//
+// Точку берут ногами, и карта — единственный экран, с которого это
+// делают. Под каждой точкой висит флажок с владельцем, а тому, кто до
+// точки дошёл, снизу выезжает плашка с кнопкой сбора.
+
+function turfOnMap() {
+  return (mapData && mapData.turf) || { spots: {}, here: null };
+}
+
+// Видна ли плашка под ногами. В пути — нет: боец ещё числится у старого
+// дома, и кнопка сбора под ногами уходящего была бы обманом
+function turfBandShown() {
+  const going = Boolean(mapData && mapData.road && mapData.road.going);
+  return Boolean(turfOnMap().here) && !going;
+}
+
+function paintTurfBand() {
+  const box = el("map-turf");
+  box.textContent = "";
+  const band = turfBandShown() ? turfOnMap().here : null;
+  box.classList.toggle("hidden", !band);
+  if (!band) return;
+
+  const head = document.createElement("p");
+  head.className = "turf-band-head";
+  head.textContent = band.mark + " " + band.title
+    + " · " + num(band.income) + " 💰/сут";
+  box.appendChild(head);
+
+  const said = document.createElement("p");
+  said.className = "turf-band-note";
+  said.textContent = band.text;
+  box.appendChild(said);
+
+  if (!band.button) return;
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "btn wide";
+  go.id = "turf-call";
+  go.textContent = band.button === "call" ? "🚩 Созвать отряд" : "Открыть штурм";
+  go.addEventListener("click", () => {
+    showTab("turf");
+    if (band.button === "call") turfAction({ action: "call", spot: band.code });
+  });
+  box.appendChild(go);
 }
 
 function shownDistrict() {
@@ -2198,10 +2247,18 @@ function houseShape(place) {
 
   // Под вывеской казино — отсчёт рейда: подвал открыт не всегда, и
   // единственное место, где это видно заранее, — карта
+  let stacked = 0;
   if ((place.services || []).includes("raid")) {
     const plate = raidPlate(place);
-    if (plate) group.appendChild(plate);
+    if (plate) {
+      group.appendChild(plate);
+      stacked = plate.dataset.height ? Number(plate.dataset.height) : 0;
+    }
   }
+  // А под ней — флажок войны: чья точка и сколько приносит. У казино
+  // плашки две, и вторая встаёт под первой, а не поверх неё
+  const flag = turfPlate(place, stacked);
+  if (flag) group.appendChild(flag);
 
   const enter = () => enterHouse(place);
   group.addEventListener("click", enter);
@@ -2278,6 +2335,56 @@ function raidPlate(place) {
     clock.textContent = plateClock(raid.seconds_left);
     plate.appendChild(clock);
   }
+  // Сколько места заняла плашка: под казино за ней встаёт ещё флажок
+  // войны, и ему надо знать, с какой высоты начинать
+  plate.dataset.height = String(height + PLATE_GAP);
+  return plate;
+}
+
+// Просвет между двумя плашками под одной вывеской
+const PLATE_GAP = 12;
+// Ширина буквы флажка на глаз: 29 пикселей жирным
+const PLATE_CHAR = 16;
+
+/** Флажок войны под вывеской: чья точка и сколько приносит. */
+function turfPlate(place, drop) {
+  const mark = (turfOnMap().spots || {})[place.code];
+  if (!mark) return null;
+  // Под ногами флажка не рисуем: там уже лежит плашка со сбором, и она
+  // говорит то же самое — а у двери на нижнем краю карты они и вовсе
+  // ложатся друг на друга
+  if (place.here && turfBandShown()) return null;
+
+  const text = mark.mark + " " + mark.owner + " · " + mark.income + "/сут";
+  const middle = (place.zone.x + place.zone.w / 2) * MAP_W;
+  const top = (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP + PLATE_DROP
+    + (drop || 0);
+  const height = PLATE_PAD * 2 + PLATE_LINE;
+  // Имя семьи бывает длинным, и в рейдовую ширину оно не лезет: коробку
+  // растягиваем под буквы. Мерить их у браузера нечем — холст на этом
+  // шаге ещё ничего не меряет, — поэтому считаем на глаз, как подписи
+  const width = Math.max(PLATE_W, text.length * PLATE_CHAR + PLATE_PAD * 2);
+
+  const plate = svgNode("g", {
+    class: "zone-plate turf" + (mark.mine ? " mine" : ""),
+  });
+  plate.appendChild(svgNode("rect", {
+    x: middle - width / 2,
+    y: top,
+    width: width,
+    height: height,
+    rx: 18,
+    class: "plate-box",
+  }));
+  const word = svgNode("text", {
+    x: middle,
+    y: top + height / 2,
+    class: "plate-word",
+    "text-anchor": "middle",
+    "dominant-baseline": "central",
+  });
+  word.textContent = text;
+  plate.appendChild(word);
   return plate;
 }
 
@@ -9717,9 +9824,11 @@ function renderTurf(data) {
   const body = el("turf-body");
   body.textContent = "";
 
-  // Итог закрывают сами: пока его не прочли, он висит поверх всего
+  // Итог закрывают сами: пока его не прочли, он висит поверх всего.
+  // Панель у идущего штурма и у итога одна: разница только в том, что
+  // внизу — кнопки хода или «Понятно», а журнал нужен и там, и там
   if (data.result) {
-    body.appendChild(siegeResultBox(data.result));
+    body.appendChild(siegeBox(data.result));
     return;
   }
   if (data.siege) {
@@ -9728,7 +9837,12 @@ function renderTurf(data) {
   }
   if (data.muster) body.appendChild(musterBox(data.muster));
   body.appendChild(turfTallyBox(data));
-  (data.spots || []).forEach((one) => body.appendChild(spotCard(one, data)));
+  // Точка под ногами идёт первой: остальной список — сводка по доходу,
+  // а кнопка сбора бывает только у неё, и искать её внизу незачем
+  const spots = (data.spots || []).slice().sort(
+    (a, b) => Number(b.here) - Number(a.here)
+  );
+  spots.forEach((one) => body.appendChild(spotCard(one, data)));
 }
 
 /** Свои дела: сколько точек, сколько приносят и что в казне. */
@@ -9754,13 +9868,15 @@ function turfTallyBox(data) {
 /** Строка точки на карте войны. */
 function spotCard(one, data) {
   const box = document.createElement("article");
-  box.className = "spot" + (one.mine ? " mine" : "");
+  box.className = "spot" + (one.mine ? " mine" : "") + (one.here ? " here" : "");
 
   const head = document.createElement("header");
   head.className = "spot-head";
   const title = document.createElement("h3");
   title.className = "spot-title";
-  title.textContent = one.title;
+  // Отметка впереди имени: по ней чья точка видно, не читая строки ниже
+  title.textContent = (one.mark || "") + " " + one.title
+    + (one.here ? " · ты здесь" : "");
   const income = document.createElement("span");
   income.className = "spot-income";
   income.textContent = num(one.income) + " 💰/сут";
@@ -9791,8 +9907,18 @@ function spotCard(one, data) {
     box.appendChild(spotState("Точка отдыхает после боя: " + one.calm_text + "."));
     return box;
   }
-  if (!one.can_storm) {
+  if (data.side && data.side.nobody) {
     box.appendChild(spotState("Воевать за территории тебе пока не за кого."));
+    return box;
+  }
+  // Отсюда только смотрят. Отряд собирают у самого дома, и это не
+  // придирка интерфейса: так же думает и сервер
+  if (!one.here) {
+    box.appendChild(spotState("Захват берут на месте: дойди до дома."));
+    return box;
+  }
+  if (!one.can_storm) {
+    box.appendChild(spotState("Отсюда на эту точку не ходят."));
     return box;
   }
   const buttons = document.createElement("div");
@@ -9859,7 +9985,7 @@ function musterBox(muster) {
   return box;
 }
 
-/** Идущий штурм: гарнизон, отряд и кнопки хода. */
+/** Штурм целиком: заголовок, стороны, кнопки хода и журнал боя. */
 function siegeBox(siege) {
   const box = document.createElement("div");
 
@@ -9867,36 +9993,73 @@ function siegeBox(siege) {
   head.className = "shelf";
   const title = document.createElement("h2");
   title.className = "shelf-head";
-  title.textContent = siege.spot_title + " · волна " + siege.wave;
+  title.textContent = siege.finished
+    ? (siege.won ? "🚩 Точка взята" : "🛡 Точка отбита")
+    : siege.spot_title + " · волна " + siege.wave;
   head.appendChild(title);
   const who = document.createElement("p");
   who.className = "screen-note";
   // Часы хода: кто не нажал, за того бьёт случай, и видно, сколько ждать
-  who.textContent = "Держит: " + siege.defender + "."
-    + (siege.seconds_left ? " Ход: " + clockText(siege.seconds_left) + "." : "");
+  who.textContent = siege.finished
+    ? siege.spot_title + " · волн: " + siege.wave
+    : "Держит: " + siege.defender + "."
+      + (siege.seconds_left ? " Ход: " + clockText(siege.seconds_left) + "." : "");
   head.appendChild(who);
+  (siege.summary || []).forEach((line) => {
+    const said = document.createElement("p");
+    said.className = "screen-note";
+    said.textContent = line;
+    head.appendChild(said);
+  });
   box.appendChild(head);
 
   box.appendChild(sideBox("Гарнизон", siege.wall));
   box.appendChild(sideBox("Отряд", siege.party));
+  box.appendChild(siegeFoot(siege));
+  // Журнал внизу и всегда: ради него сюда и смотрят, когда свой ход уже
+  // сделан, — и после боя он остаётся единственным, что было
+  if ((siege.log || []).length) box.appendChild(siegeLog(siege));
+  return box;
+}
 
+/** Что под шкалами: кнопки хода, строка ожидания или «Понятно». */
+function siegeFoot(siege) {
+  if (siege.finished) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Понятно", { onClick: () => turfAction({ action: "done" }) })
+    );
+    return buttons;
+  }
   if (!siege.yours || !siege.alive) {
     const said = document.createElement("p");
     said.className = "screen-note";
     said.textContent = siege.alive
       ? "Ты смотришь со стороны."
       : "Тебя вынесли — досматривай со стороны.";
-    box.appendChild(said);
-    return box;
+    return said;
   }
   if (siege.acted) {
     const said = document.createElement("p");
     said.className = "screen-note";
     said.textContent = "Ход принят. Ждём остальных.";
-    box.appendChild(said);
-    return box;
+    return said;
   }
-  box.appendChild(siegeTurnForm(siege));
+  return siegeTurnForm(siege);
+}
+
+/** Журнал штурма словами судьи — тот же, что в рейде и в дуэли. */
+function siegeLog(siege) {
+  const box = document.createElement("div");
+  box.className = "fight-log";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Ход штурма";
+  box.appendChild(head);
+  // Свежее сверху — и между разменами, и внутри размена: в волне на
+  // десять бойцов иначе не понять, что было позже
+  siege.log.slice().reverse().forEach((turn) => judgeLines(turn, box, true));
   return box;
 }
 
@@ -9993,34 +10156,6 @@ function paintTurfDraft() {
     ? turfData.siege.hands
     : [{ hand: 0 }];
   go.disabled = !turfReady(hands);
-}
-
-/** Итог штурма: взяли или отбили, и что с точкой. */
-function siegeResultBox(result) {
-  const box = document.createElement("section");
-  box.className = "shelf";
-  const head = document.createElement("h2");
-  head.className = "shelf-head";
-  head.textContent = result.won ? "🚩 Точка взята" : "🛡 Точка отбита";
-  box.appendChild(head);
-
-  (result.summary || []).forEach((line) => {
-    const said = document.createElement("p");
-    said.className = "screen-note";
-    said.textContent = line;
-    box.appendChild(said);
-  });
-
-  box.appendChild(sideBox("Отряд", result.party));
-  box.appendChild(sideBox("Гарнизон", result.wall));
-
-  const buttons = document.createElement("div");
-  buttons.className = "thing-buttons";
-  buttons.appendChild(
-    button("Понятно", { onClick: () => turfAction({ action: "done" }) })
-  );
-  box.appendChild(buttons);
-  return box;
 }
 
 // ---------- учёба: приёмная, занятие и выпускной билет ----------

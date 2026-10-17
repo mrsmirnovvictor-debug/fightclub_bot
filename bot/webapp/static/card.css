@@ -1284,6 +1284,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin-bottom: 10px;
 }
 .spot.mine { border-color: var(--accent); }
+/* Точка под ногами: единственная, с которой собирают отряд */
+.spot.here { border-color: var(--accent); border-width: 2px; }
 .spot-head {
   display: flex;
   align-items: baseline;
@@ -1597,6 +1599,34 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .plate-word { font-size: 29px; }
 .plate-clock { font-size: 39px; letter-spacing: 1px; }
+
+/* Флажок войны под вывеской дома-точки: кто её держит и сколько она
+   приносит. Своя — зелёная, чужая — лиловая: рейдовых цветов не берём,
+   иначе под казино две плашки спорили бы одним языком */
+.zone-plate.turf .plate-box { fill: #6f42c1; }
+.zone-plate.turf.mine .plate-box { fill: #2ea043; }
+
+/* Плашка под ногами: боец дошёл до точки, и отсюда собирают отряд.
+   Стоит выше стрелки «вниз»: та висит по центру нижнего края, и полоса
+   во всю ширину накрыла бы её целиком */
+.turf-band {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(136px + env(safe-area-inset-bottom));
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.turf-band-head { margin: 0; font-weight: 800; font-size: 14px; }
+.turf-band-note {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.78);
+}
+.turf-band .btn { margin-top: 8px; }
 
 /* ---------- стрелки в соседние районы ---------- */
 

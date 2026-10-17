@@ -166,7 +166,7 @@ from bot.webapp.post import build_post
 from bot.webapp.bar import build_bar, quests_payload
 from bot.game.study import EXAM_SIZE, PASS_MARK
 from bot.webapp.study import build_study, exam_payload
-from bot.webapp.turf import build_war
+from bot.webapp.turf import build_war, map_marks
 from bot.turf_war import TurfWar
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
@@ -333,9 +333,17 @@ async def api_oops(request: web.Request) -> web.Response:
 
 
 async def _city(request: web.Request, player) -> dict:
-    """Карта вместе с отсчётами рейдов: плашкам нужна база, карте — нет."""
+    """Карта вместе с плашками: рейдам и войне нужна база, карте — нет.
+
+    Война считается тем же ответом, что и экран территорий: два списка
+    одних и тех же точек однажды разошлись бы, и карта показала бы
+    одного владельца, а особняк другого.
+    """
     plates = await plates_payload(player, request.app.get(RAIDS_KEY))
-    return build_map(player, raids=plates)
+    board = await build_war(
+        request.app[DB_KEY], player, request.app.get(WAR_KEY), now_ts()
+    )
+    return build_map(player, raids=plates, turf=map_marks(board))
 
 
 async def api_map(request: web.Request) -> web.Response:
@@ -2551,8 +2559,10 @@ def create_app(
     # Войну за территории держит само приложение: она живёт в мини-аппе,
     # ветки в группе у неё нет, и заводить её снаружи незачем
     app[WAR_KEY] = TurfWar(db)
-    # Кого дорога спрашивает, можно ли уходить: из недодранного боя нельзя
-    app[TRAVEL_KEY].watch(duels, raids, battles)
+    # Кого дорога спрашивает, можно ли уходить: из недодранного боя нельзя.
+    # Война за территории там же: точку берут ногами, и уйти из-под неё
+    # посреди сбора или волны — то же бегство, что и посреди дуэли
+    app[TRAVEL_KEY].watch(duels, raids, battles, app[WAR_KEY])
     # А обмен спрашивает то же самое про стол: позвать занятого бойцом
     # нельзя, и согласиться, пока тебя ждут на ринге, — тоже
     app[TRADE_KEY].watch(duels, raids, battles)

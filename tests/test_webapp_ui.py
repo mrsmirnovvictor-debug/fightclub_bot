@@ -10198,17 +10198,20 @@ async def test_a_stranger_clan_opens_with_its_roster_alone(server):
 
 
 async def war_states(db):
-    """Три состояния войны одним заходом: карта, сбор и идущая волна.
+    """Четыре состояния войны одним заходом: карта, сбор, волна и итог.
 
-    Панель живая, и поодиночке эти три не собрать: сбор родится только
-    из карты, а волна — только из сбора. Поэтому один прогон службы, а
-    снимки с него по дороге.
+    Панель живая, и поодиночке их не собрать: сбор родится только из
+    карты, волна — только из сбора, а итог — только из волны. Поэтому
+    один прогон службы, а снимки с него по дороге.
     """
     from bot.turf_war import TurfWar
     from bot.webapp.turf import build_war
-    from tests.test_turf import NOW, family
+    from tests.test_turf import NOW, family, stand
 
     don, squad, _ = await family(db)
+    # Точку берут ногами: отряд собирается у самого дома
+    await stand(db, squad, "casino")
+    don = await db.get_player(don.user_id)
     war = TurfWar(db)
     try:
         board = await build_war(db, don, war, NOW)
@@ -10218,9 +10221,25 @@ async def war_states(db):
         lobby = await build_war(db, don, war, NOW)
         await war.march(muster.id, don.user_id, now=NOW)
         siege = await build_war(db, don, war, NOW)
+        # Добиваем штурм до конца: кто кого — неважно, важно, что панель
+        # умеет показать итог
+        for _ in range(400):
+            live = war.siege_of_user(don.user_id)
+            if live is None or live.finished:
+                break
+            for one in list(live.alive_ids):
+                # Последний размен волны разводит бой прямо здесь, и
+                # следующему нажатию уже некуда деваться
+                if live.finished:
+                    break
+                await war.choose(live.id, one, "attack", "head")
+                if live.finished:
+                    break
+                await war.choose(live.id, one, "block", "belly")
+        done = await build_war(db, don, war, NOW)
     finally:
         await war.close()
-    return don, board, lobby, siege
+    return don, board, lobby, siege, done
 
 
 async def open_war(pw, server, don, body):
@@ -10240,7 +10259,7 @@ async def open_war(pw, server, don, body):
 
 async def test_the_war_map_shows_the_spots_and_the_call_to_arms(server, db):
     """Карта войны: точки города, их доход, владелец и кнопка сбора."""
-    don, board, _, _ = await war_states(db)
+    don, board, _, _, _ = await war_states(db)
 
     async with async_playwright() as pw:
         browser, page = await open_war(pw, server, don, board)
@@ -10261,7 +10280,7 @@ async def test_the_war_map_shows_the_spots_and_the_call_to_arms(server, db):
 
 async def test_the_muster_lists_the_squad_and_only_the_leader_marches(server, db):
     """Сбор отряда: кто записан, сколько ждать и чьи кнопки."""
-    don, _, lobby, _ = await war_states(db)
+    don, _, lobby, _, _ = await war_states(db)
 
     async with async_playwright() as pw:
         browser, page = await open_war(pw, server, don, lobby)
@@ -10284,7 +10303,7 @@ async def test_the_muster_lists_the_squad_and_only_the_leader_marches(server, db
 
 async def test_the_siege_shows_both_sides_and_waits_for_the_blow(server, db):
     """Волна штурма: гарнизон, отряд, прицел и кнопки удара с блоком."""
-    don, _, _, siege = await war_states(db)
+    don, _, _, siege, _ = await war_states(db)
 
     async with async_playwright() as pw:
         browser, page = await open_war(pw, server, don, siege)
@@ -10307,6 +10326,135 @@ async def test_the_siege_shows_both_sides_and_waits_for_the_blow(server, db):
         await page.locator("#turf .zone-list").first.locator("label").first.click()
         await page.locator("#turf .zone-list").last.locator("label").first.click()
         assert await go.is_enabled()
+        await browser.close()
+
+async def test_the_siege_log_reads_newest_first(server, db):
+    """Журнал штурма: слова судьи целиком и свежее сверху, как в рейде."""
+    don, _, _, siege, done = await war_states(db)
+    assert siege["siege"]["log"] == [], "до первого размена судье нечего сказать"
+    said = [line for turn in done["result"]["log"] for line in turn["lines"]]
+    assert said, "штурм прошёл молча"
+
+    async with async_playwright() as pw:
+        # Пустой журнал не рисуем вовсе: заголовок без строк — мусор
+        browser, page = await open_war(pw, server, don, siege)
+        assert await page.locator("#turf .fight-log").count() == 0
+        await browser.close()
+
+        browser, page = await open_war(pw, server, don, done)
+        lines = await page.locator("#turf .fight-log .log-line").all_inner_texts()
+        assert len(lines) == len(said)
+        # Первой строкой — последнее, что сказал судья
+        assert lines[0] == said[-1]
+        assert lines[-1] == said[0]
+        await browser.close()
+
+
+async def test_the_finished_siege_shows_its_outcome_and_its_log(server, db):
+    """Итог штурма: чем кончилось, кто остался и весь разбор боя."""
+    don, _, _, _, done = await war_states(db)
+    result = done["result"]
+    assert result is not None and result["finished"] is True
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, done)
+
+        head = await page.locator("#turf-body .shelf").first.inner_text()
+        assert "Точка взята" in head or "Точка отбита" in head
+        assert "волн" in head
+
+        # Журнал боя — то, ради чего итог и открывают
+        lines = await page.locator("#turf .fight-log .log-line").all_inner_texts()
+        assert lines, "журнал пуст"
+        assert await page.locator("#turf .fight-log .shelf-head").inner_text() == (
+            "Ход штурма"
+        )
+        # Обе стороны видно и после боя: по ним и понятно, кто кого
+        heads = await page.locator("#turf .shelf-head").all_inner_texts()
+        assert "Гарнизон" in heads and "Отряд" in heads
+        assert await page.locator(
+            "#turf .thing-buttons .btn"
+        ).inner_text() == "Понятно"
+        await browser.close()
+
+
+async def test_the_board_sends_the_fighter_to_the_house(server, db):
+    """Из особняка — только смотреть: кнопки сбора нет ни у одной точки."""
+    from tests.test_turf import NOW, family
+    from bot.webapp.turf import build_war
+
+    don, _, _ = await family(db)
+    board = await build_war(db, don, None, NOW)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, don, board)
+
+        assert await page.locator("#turf .spot button").count() == 0
+        states = await page.locator("#turf .spot-state").all_inner_texts()
+        assert all("дойди до дома" in one for one in states)
+        assert "Захват берут на месте" in await page.locator(
+            "#turf-note"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_the_city_map_flags_the_spots_and_offers_the_muster(server, db):
+    """Карта города: флажок владельца под вывеской и плашка под ногами."""
+    from bot.webapp.citymap import build_map
+    from bot.webapp.turf import build_war, map_marks
+    from tests.test_turf import NOW, family, stand
+
+    don, squad, _ = await family(db)
+    await stand(db, squad, "bar")
+    don = await db.get_player(don.user_id)
+    city = build_map(don, raids={}, turf=map_marks(await build_war(db, don, None, NOW)))
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-house")
+
+        # Флажок висит под вывеской точки и говорит, кто её держит
+        # Плашка под ногами: отсюда и собирают отряд
+        band = page.locator("#map-turf")
+        assert await band.is_visible()
+        said = await band.inner_text()
+        assert "Бар" in said and "90" in said and "городская охрана" in said
+        assert await page.locator("#turf-call").inner_text() == "🚩 Созвать отряд"
+
+        # Флажка под своей вывеской нет: плашка говорит то же самое, а у
+        # двери на нижнем краю карты они легли бы друг на друга
+        assert await page.locator(".zone-plate.turf").count() == 0
+        await browser.close()
+
+
+async def test_the_map_flags_the_neighbours_without_a_band(server, db):
+    """Стоишь не на точке — плашки нет, а флажок соседней точки на месте."""
+    from bot.webapp.citymap import build_map
+    from bot.webapp.turf import build_war, map_marks
+    from tests.test_turf import NOW, family, stand
+
+    don, squad, _ = await family(db)
+    # Клуб и оружейный стоят в одном районе: клуб не точка, оружейный точка
+    await stand(db, squad, "fight_club")
+    don = await db.get_player(don.user_id)
+    city = build_map(don, raids={}, turf=map_marks(await build_war(db, don, None, NOW)))
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-house")
+
+        assert await page.locator("#map-turf").is_hidden()
+        # Плашка нарисована в SVG, а у него нет inner_text
+        flag = await page.locator(".zone-plate.turf").first.text_content()
+        assert "городская охрана" in flag and "/сут" in flag
         await browser.close()
 
 async def test_the_stairwell_shows_what_is_free_and_what_is_taken(server):

@@ -58,7 +58,10 @@ def district_row(district, here: str, limping: bool = False) -> dict:
 
 
 def build_map(
-    player: Player, now: int | None = None, raids: dict | None = None
+    player: Player,
+    now: int | None = None,
+    raids: dict | None = None,
+    turf: dict | None = None,
 ) -> dict:
     """Город целиком: где боец, куда идёт и что где стоит.
 
@@ -66,6 +69,10 @@ def build_map(
     считает сервер, потому что для них нужна база (свой рейд в этом окне
     уже пройден или ещё нет). Домов два, и расписания у них свои, поэтому
     и плашек две: одна сказала бы под стадионом часы казино.
+
+    `turf` — война за территории: флажок с владельцем под каждой точкой
+    и плашка под ногами у того, кто до точки дошёл. Захват берут на
+    месте, и карта — единственный экран, с которого это видно.
     """
     here = player.where(now)
     place = get_location(here)
@@ -92,6 +99,9 @@ def build_map(
         },
         # Отсчёты рейдов по домам: пусто — плашки под этим домом нет
         "raids": raids or {},
+        # Война за территории: `spots` — флажки по домам, `here` —
+        # плашка с кнопкой сбора, если боец стоит на точке
+        "turf": turf or {"spots": {}, "here": None},
         "districts": [
             district_row(district, here, limping) for district in DISTRICTS
         ],
