@@ -12093,10 +12093,18 @@ async def test_the_diploma_vacancy_says_what_it_wants(server):
         assert await barman.locator(".btn").inner_text() == "Подать заявку"
         bar_facts = await barman.locator(".vacancy-fact").all_inner_texts()
         assert any("не требуется" in one for one in bar_facts)
-        # Кресло у бармена одно, и строки «Мест» на карточке нет вовсе.
-        # Сверяем первую строку поля целиком: «Место» тоже начинается
-        # с «Мест», и `startswith` поймал бы его заодно
-        labels = [one.splitlines()[0] for one in bar_facts]
+        # За стойкой двадцать мест, и это на карточке написано
+        assert any("20, свободно 20" in one for one in bar_facts)
+
+        # А у места с одним креслом строки «Мест» нет вовсе: «1 место,
+        # свободно 1» ничего не добавляет. Сверяем первую строку поля
+        # целиком: «Место» тоже начинается с «Мест», и `startswith`
+        # поймал бы его заодно
+        post = page.locator(".vacancy", has_text="Сотрудник почты")
+        labels = [
+            one.splitlines()[0]
+            for one in await post.locator(".vacancy-fact").all_inner_texts()
+        ]
         assert "Мест" not in labels and "Место" in labels
         await browser.close()
 

@@ -165,10 +165,14 @@ def test_the_street_vacancies_are_the_ones_the_city_promised():
     assert (rows["trainer"].salary, rows["trainer"].hours) == (300, 10)
     assert (rows["fight_host"].salary, rows["fight_host"].hours) == (300, 10)
     assert (rows["croupier"].salary, rows["croupier"].hours) == (300, 10)
-    # У этих пяти ни диплома, ни стажа, и место одно на город
+    # У этих пяти ни диплома, ни стажа
     for one in street:
         assert one.education == "не требуется"
-        assert one.months == 0 and one.seats == 1
+        assert one.months == 0
+    # За стойкой двадцать мест: бар — первая работа в городе, и одно
+    # место на всех означало бы, что устроиться успевает один
+    assert rows["bartender"].seats == 20
+    assert all(one.seats == 1 for one in street if one.code != "bartender")
 
 
 # ---------- тест при приёме ----------
@@ -264,20 +268,39 @@ async def test_a_failed_test_leaves_the_other_doors_open(db):
     assert attempt.hired is True
 
 
-# ---------- вакансия одна на город ----------
+# ---------- мест столько, сколько их в городе ----------
 
 
 async def test_a_taken_vacancy_is_gone_from_the_board(db):
+    """Место с одним креслом: занял первый — второму отказ."""
     first = await stand(db, make_player())
     second = await stand(db, make_player(2, "Марла"))
-    await apply(db, first, "bartender", right_answers("bartender"), moment_at())
+    await apply(db, first, "postman", right_answers("postman"), moment_at())
 
     board = await vacancies(db, second, moment_at())
-    row = next(one for one in board if one["vacancy"].code == "bartender")
+    row = next(one for one in board if one["vacancy"].code == "postman")
 
     assert row["taken_by"] == "Тайлер"
     with pytest.raises(WorkError, match="занято"):
-        await apply(db, second, "bartender", right_answers("bartender"), moment_at())
+        await apply(db, second, "postman", right_answers("postman"), moment_at())
+
+
+async def test_the_bar_hires_twenty_and_turns_away_the_twenty_first(db):
+    """За стойкой двадцать мест: занявший не закрывает бар остальным."""
+    now = moment_at()
+    for number in range(20):
+        one = await stand(db, make_player(400 + number, f"Бармен-{number}"))
+        await apply(db, one, "bartender", right_answers("bartender"), now)
+
+    board = await vacancies(db, await stand(db, make_player(500, "Марла")), now)
+    row = next(one for one in board if one["vacancy"].code == "bartender")
+    assert row["taken_seats"] == 20 and row["free_seats"] == 0
+
+    late = await stand(db, make_player(501, "Опоздавший"))
+    with pytest.raises(WorkError, match="заняты все 20") as refusal:
+        await apply(db, late, "bartender", right_answers("bartender"), now)
+    # Двадцать имён в отказе — стена текста, а не ответ: называем четверых
+    assert "и ещё 16" in str(refusal.value)
 
 
 async def test_the_second_barman_is_stopped_by_the_base_not_by_python(db):

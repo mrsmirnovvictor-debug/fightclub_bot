@@ -118,7 +118,7 @@ async def vacancies(
                 # Кто уже занял места. Имён столько же, сколько занятых
                 # мест: на доске видно и сколько свободно, и к кому идти
                 "holders": [row["nickname"] for row in holders],
-                "taken_by": ", ".join(row["nickname"] for row in holders),
+                "taken_by": holders_text(holders),
                 "taken_seats": len(holders),
                 # Безлимитное место свободно всегда: его не считают
                 "free_seats": (
@@ -133,6 +133,20 @@ async def vacancies(
             }
         )
     return rows
+
+
+# Сколько имён помещается в отказ. Имена нужны затем, чтобы знать, к
+# кому идти договариваться; за стойкой мест двадцать, и двадцать имён
+# — это не ответ, а стена текста
+NAMES_SHOWN = 4
+
+
+def holders_text(holders: list[dict]) -> str:
+    """Кто занял места — словами. Длинный список сворачивается в счёт."""
+    names = [one["nickname"] for one in holders]
+    if len(names) <= NAMES_SHOWN:
+        return ", ".join(names)
+    return ", ".join(names[:NAMES_SHOWN]) + f" и ещё {len(names) - NAMES_SHOWN}"
 
 
 def lacking(player: Player, vacancy: Vacancy, now: int) -> str:
@@ -233,8 +247,9 @@ async def hire_at_house(
     taken = await db.taken_jobs()
     holders = taken.get(code, [])
     if vacancy.limited and len(holders) >= vacancy.seats:
-        who = ", ".join(one["nickname"] for one in holders)
-        raise WorkError(f"Место занято: здесь уже служит {who}.")
+        raise WorkError(
+            f"Место занято: здесь уже служит {holders_text(holders)}."
+        )
     if not await db.take_job(
         player.user_id, code, moment, week_of(moment), vacancy.cap
     ):
@@ -287,9 +302,9 @@ async def apply(
     taken = await db.taken_jobs()
     holders = taken.get(code, [])
     if vacancy.limited and len(holders) >= vacancy.seats:
-        who = ", ".join(one["nickname"] for one in holders)
+        who = holders_text(holders)
         raise WorkError(
-            f"Свободных мест нет: здесь уже работают {who}."
+            f"Мест нет: заняты все {vacancy.seats}. Здесь работают {who}."
             if vacancy.seats > 1
             else f"Место занято: здесь уже работает {who}."
         )
@@ -506,6 +521,7 @@ __all__ = [
     "my_vacancy",
     "quit_job",
     "quiz_payload",
+    "holders_text",
     "lacking",
     "release_the_absent",
     "settle",
