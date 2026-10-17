@@ -168,6 +168,13 @@ from bot.game.study import EXAM_SIZE, PASS_MARK
 from bot.webapp.study import build_study, exam_payload
 from bot.webapp.turf import build_war, map_marks
 from bot.webapp.crowd import build_crowd, crowd_marks
+from bot.webapp.police import build_police_board
+from bot.police_service import (
+    PoliceError,
+    collect as police_collect,
+    file_report as police_report,
+    settle_week as police_settle,
+)
 from bot.robbery_service import RobberyError, RobberyService
 from bot.turf_war import TurfWar
 from bot.webapp.driving import build_police, build_school
@@ -1470,13 +1477,46 @@ async def api_school_action(request: web.Request) -> web.Response:
     return await _school_state(request, fresh, said, attempt)
 
 
-async def api_police(request: web.Request) -> web.Response:
-    """Участок: готов ли бланк прав."""
-    player = await _at(request, Service.POLICE)
+async def _police_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
     config = request.app[CONFIG_KEY]
+    # Неделю участка сводит тот, кто пришёл смотреть: часов у клуба нет
+    await police_settle(db, now_ts())
     body = build_police(player)
+    body.update(await build_police_board(db, player, now_ts()))
+    if said:
+        body["said"] = said
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)
+
+
+async def api_police(request: web.Request) -> web.Response:
+    """Участок: бланк прав, дежурная часть и свои дела."""
+    player = await _at(request, Service.POLICE)
+    return await _police_state(request, player)
+
+
+async def api_police_action(request: web.Request) -> web.Response:
+    """Дела участка: заявление о нападении и возврат своих денег."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.POLICE)
+    try:
+        if action == "report":
+            said = await police_report(db, player, _int_field(data, "case"))
+        elif action == "collect":
+            said = await police_collect(db, player)
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except PoliceError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _police_state(request, fresh, said)
 
 
 async def api_licence(request: web.Request) -> web.Response:
@@ -2343,6 +2383,14 @@ async def api_crowd_action(request: web.Request) -> web.Response:
         elif action == "join":
             await service.join(_int_field(data, "raid_id"), player)
             said = "Ты в драке."
+        elif action == "step_in":
+            # Полицейский встаёт за того, на кого напали. Без лицензии:
+            # защищать — это работа, а не право, которое покупают
+            await service.step_in(_int_field(data, "raid_id"), player)
+            said = "Ты вмешался. Держись."
+        elif action == "arrest":
+            raid = await service.arrest(player, _int_field(data, "user"))
+            said = f"Задержание: {raid.names.get(raid.victim, 'он')} не уйдёт."
         elif action == "turn":
             raid = service.of_user(player.user_id)
             if raid is None:
@@ -2729,6 +2777,7 @@ def create_app(
             web.get("/api/school", api_school),
             web.post("/api/school", api_school_action),
             web.get("/api/police", api_police),
+            web.post("/api/police", api_police_action),
             web.post("/api/licence", api_licence),
             web.get("/api/hr", api_hr),
             web.post("/api/hr", api_hr_action),

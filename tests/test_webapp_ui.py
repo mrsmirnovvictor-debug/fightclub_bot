@@ -10198,6 +10198,158 @@ async def test_a_stranger_clan_opens_with_its_roster_alone(server):
         await browser.close()
 
 
+# ---------- участок: дежурная часть, розыск и свои дела ----------
+
+
+async def station_states(db):
+    """Участок глазами сотрудника и глазами пострадавшего."""
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from tests.test_police import a_case, cop, weaken
+    from tests.test_robbery import NOW, family, make_player, stand
+
+    officer = await cop(db, 80, "Сержант Марла")
+    don, squad, clan = await family(db)
+    await stand(db, squad, "vcpd")
+    don = await weaken(db, don.user_id)
+    victim = make_player(50, "Прохожий", where="vcpd", credits=2_000)
+    await db.save_player(victim)
+    await a_case(db, victim.user_id, don.user_id, loot=240, filed=True)
+    await a_case(db, victim.user_id, squad[1], loot=0, place="casino")
+    await db.add_to_service_vault("police", 1_400)
+
+    sheet = build_police(officer)
+    sheet.update(await build_police_board(db, officer, NOW))
+    mine = build_police(victim)
+    mine.update(await build_police_board(db, victim, NOW))
+    return officer, victim, sheet, mine
+
+
+async def open_station(pw, server, who, body):
+    card = build_card(who, TOKEN, viewer_id=who.user_id)
+    browser, page = await open_page(pw, server, card, police=body)
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "police")
+    await page.wait_for_selector("#police-body .shelf")
+    return browser, page
+
+
+async def test_the_duty_board_belongs_to_the_badge(server, db):
+    """Сводка по городу — сотруднику: розыск, нападения и копилка."""
+    officer, _, sheet, _ = await station_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, officer, sheet)
+
+        heads = await page.locator("#police-body .shelf-head").all_inner_texts()
+        assert heads[:3] == ["Дежурная часть", "В розыске", "Нападения"]
+
+        # В копилке то, что положили, а норма считается от нападений
+        duty = await page.locator("#police-body .shelf").first.inner_text()
+        # Тысячи разделены неразрывным пробелом — так их пишет `num`
+        assert "1\u00a0400 💰" in duty and "На службе" in duty
+
+        # Розыск: по кому ордер и на сколько
+        hunted = await page.locator("#police-body .case.wanted").all_inner_texts()
+        assert len(hunted) == 1 and "Дон-1" in hunted[0]
+
+        # Нападений два, и видно, какое из них с заявлением
+        cases = await page.locator(
+            "#police-body .shelf:last-of-type .case"
+        ).all_inner_texts()
+        assert len(cases) == 2
+        assert any("в розыске" in one for one in cases)
+        assert any("без заявления" in one for one in cases)
+        await browser.close()
+
+
+async def test_the_victim_sees_only_his_own_cases(server, db):
+    """Пострадавшему — свои дела и кнопка заявления. Сводки у него нет."""
+    _, victim, _, mine = await station_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, victim, mine)
+
+        heads = await page.locator("#police-body .shelf-head").all_inner_texts()
+        assert heads == ["Твои дела"], "сводки по городу у штатского нет"
+        assert await page.locator("#police-body .case").count() == 2
+        # Заявление пишут по тому делу, по которому его ещё нет
+        buttons = await page.locator("#police-body .btn").all_inner_texts()
+        assert buttons == ["Написать заявление"]
+        await browser.close()
+
+
+async def test_the_station_tells_the_jailed_how_long_he_sits(server, db):
+    """Сидящему первым делом говорят срок, а не про права."""
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from bot.police_service import jail
+    from bot.game.health import now_ts
+    from tests.test_robbery import make_player
+
+    one = make_player(50, "Мафиози", where="vcpd")
+    await db.save_player(one)
+    await jail(db, one.user_id, now_ts())
+    one = await db.get_player(one.user_id)
+    body = build_police(one)
+    body.update(await build_police_board(db, one, now_ts()))
+
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, one, body)
+        first = await page.locator("#police-body .shelf").first.inner_text()
+        assert "Ты сидишь" in first and "Из тюрьмы не выходят" in first
+        assert "1-я" in first
+        await browser.close()
+
+
+async def test_the_badge_arrests_and_steps_in_from_the_house(server, db):
+    """У значка свои кнопки: задержать разыскиваемого и вмешаться в драку."""
+    from bot.robbery_service import RobberyService
+    from bot.webapp.crowd import build_crowd
+    from tests.test_police import a_case, cop
+    from tests.test_robbery import (
+        NOW, family, licensed, make_player, stand,
+    )
+
+    officer = await cop(db, 80, "Сержант", where="bar")
+    don, squad, _ = await family(db)
+    await stand(db, squad, "bar")
+    victim = make_player(50, "Прохожий", where="bar")
+    await db.save_player(victim)
+    await licensed(db, [don.user_id], 1)
+    await a_case(db, victim.user_id, don.user_id, loot=200, filed=True)
+
+    service = RobberyService(db)
+    try:
+        board = await build_crowd(db, officer, service, NOW)
+        raid = await service.rob(
+            await db.get_player(don.user_id), victim.user_id, now=NOW
+        )
+        live = await build_crowd(db, officer, service, NOW)
+    finally:
+        await service.close()
+
+    async with async_playwright() as pw:
+        card = build_card(officer, TOKEN, viewer_id=officer.user_id)
+        browser, page = await open_page(pw, server, card, crowd=board)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "crowd")
+        await page.wait_for_selector("#crowd-body .shelf")
+        await page.evaluate("stopCrowdPoll()")
+
+        # Разыскиваемый помечен, и у него кнопка задержания
+        rows = await page.locator("#crowd .neighbour").all_inner_texts()
+        assert any("🔎 Дон-1" in one for one in rows)
+        buttons = await page.locator("#crowd .neighbour .btn").all_inner_texts()
+        assert buttons == ["🚔 Задержать"]
+
+        # А в идущей драке — кнопка вмешательства, и без лицензии
+        await page.evaluate("(data) => renderCrowd(data)", live)
+        fight = page.locator("#crowd .neighbour.fight")
+        assert await fight.count() == 1
+        assert await fight.locator(".btn").inner_text() == "🚔 Вмешаться"
+        await browser.close()
+
 # ---------- кто здесь: соседи по дому и ограбления ----------
 
 

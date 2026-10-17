@@ -1287,6 +1287,29 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .car-slot.empty { border-style: dashed; opacity: 0.55; }
 
+/* ---------- участок: дежурная часть и дела ---------- */
+
+/* Карточка дела: кто кого и на сколько, под ней состояние строкой.
+   Закрытое дело приглушено — по нему уже ничего не сделать */
+.case {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.case.closed { opacity: 0.62; }
+.case.wanted { border-color: #b02020; }
+.case-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.case-who { font-weight: 700; font-size: 14px; }
+.case-sum { font-weight: 800; white-space: nowrap; }
+.case-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+
 /* ---------- кто здесь: соседи по дому и ограбления ---------- */
 
 /* Значок в углу карты: сколько народу в доме и идёт ли в нём драка.

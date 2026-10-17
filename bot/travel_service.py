@@ -18,7 +18,8 @@ from __future__ import annotations
 import logging
 
 from bot.database import Database
-from bot.game.health import format_duration, now_ts
+from bot.game.health import format_duration, format_term, now_ts
+from bot.game.police import PRISON, jail_left
 from bot.game.locations import (
     Location,
     Service,
@@ -72,6 +73,16 @@ class Travel:
             raise LockedError(
                 "Сначала закончи бой: соперник ждёт, и уходить посреди "
                 "этого нечестно."
+            )
+        # Из тюрьмы не выходят, пока срок идёт. Замок стоит здесь, а не
+        # в сторожах боя: сидящий ничем не занят — он просто заперт, и
+        # отпирает его время, а не чужая развязка
+        until, _ = await self.db.jail_term(player.user_id)
+        left = jail_left(until, moment)
+        if left and player.location == PRISON:
+            raise LockedError(
+                f"Ты сидишь — до освобождения {format_term(left)}. "
+                "Из тюрьмы не выходят."
             )
         # Со смены не уходят: боец на работе, а не гуляет по городу.
         # Замок спадает сам, когда час смены пройдёт, — сторожа у него

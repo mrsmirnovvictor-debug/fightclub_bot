@@ -83,6 +83,9 @@ class Robbery:
     id: int
     place: str
     place_title: str
+    # Что это за драка: `rob` — ограбление, `arrest` — задержание. Бой
+    # у них один, разная только развязка
+    kind: str
     attacker: int
     victim: int
     fighters: dict[int, Fighter]
@@ -90,6 +93,9 @@ class Robbery:
     names: dict[int, str]
     # Чей клан у бойца. Ноль — ничей: такой в драку не вмешивается
     clans: dict[int, int]
+    # Кто из дерущихся при значке полиции. От этого зависит развязка:
+    # мафия, которую побил полицейский, едет в тюрьму
+    badges: set[int] = field(default_factory=set)
     round_number: int = 0
     choices: dict[int, Choice] = field(default_factory=dict)
     acted: set[int] = field(default_factory=set)
@@ -103,6 +109,10 @@ class Robbery:
     loot: int = 0
     # Премия семье за закрытую недельную цель. Ноль — не закрыли
     bonus: int = 0
+    # Кого посадили и на сколько: по строке на задержанного
+    jailed: list[dict] = field(default_factory=list)
+    # Сколько награбленного вернулось в участок
+    recovered: int = 0
     timer: asyncio.Task | None = None
     started_at: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -284,6 +294,7 @@ class RobberyService:
             id=next(self._ids),
             place=here,
             place_title=place.title if place else here,
+            kind="rob",
             attacker=player.user_id,
             victim=victim_id,
             fighters={
@@ -302,6 +313,74 @@ class RobberyService:
         self._busy[victim_id] = raid.id
         logger.info(
             "Ограбление в %s: боец %s напал на %s", here, player.user_id, victim_id
+        )
+        self._open_round(raid)
+        return raid
+
+    async def arrest(
+        self, officer: Player, suspect_id: int, now: int | None = None
+    ) -> Robbery:
+        """Задержать разыскиваемого. Та же драка, другая развязка.
+
+        Лицензии задержание не стоит: лицензию покупают, чтобы нападать,
+        а задерживать — это работа. Зато нужен ордер, а ордер берётся из
+        заявления жертвы, а не из кассы.
+        """
+        from bot.game.locations import get_location
+        from bot.police_service import has_warrant, serves_in_police
+
+        moment = now_ts() if now is None else now
+        if not serves_in_police(officer):
+            raise RobberyError("Задержание — дело полиции.")
+        if self._busy.get(officer.user_id):
+            raise RobberyError("Ты уже в деле: сперва закончи его.")
+        if suspect_id == officer.user_id:
+            raise RobberyError("Себя задерживать не за что.")
+
+        suspect = await self.db.get_player(suspect_id)
+        if suspect is None:
+            raise RobberyError("Такого бойца нет.")
+        if not await has_warrant(self.db, suspect_id):
+            raise RobberyError("На него нет ордера: заявления никто не писал.")
+        here = officer.where(moment)
+        if suspect.where(moment) != here or suspect.in_transit(moment):
+            raise RobberyError("Его тут уже нет.")
+        if not is_online(suspect.seen_at, moment):
+            raise RobberyError("Его нет в сети: задерживать некого.")
+        if self._busy.get(suspect_id):
+            raise RobberyError("Его уже держат — дождись развязки.")
+        if not officer.can_fight(moment):
+            raise RobberyError("Сперва подлечись: в таком виде не задерживают.")
+        if not suspect.can_fight(moment):
+            raise RobberyError("Он и так еле стоит. Не сегодня.")
+
+        place = get_location(here)
+        raid = Robbery(
+            id=next(self._ids),
+            place=here,
+            place_title=place.title if place else here,
+            kind="arrest",
+            attacker=officer.user_id,
+            victim=suspect_id,
+            fighters={
+                officer.user_id: Fighter.from_player(officer, armed=True),
+                suspect_id: Fighter.from_player(suspect, armed=True),
+            },
+            sides={officer.user_id: RED, suspect_id: BLUE},
+            names={officer.user_id: officer.nickname,
+                   suspect_id: suspect.nickname},
+            clans={
+                officer.user_id: 0,
+                suspect_id: suspect.clan.clan.id if suspect.clan else 0,
+            },
+            badges={officer.user_id},
+        )
+        self._raids[raid.id] = raid
+        self._busy[officer.user_id] = raid.id
+        self._busy[suspect_id] = raid.id
+        logger.info(
+            "Задержание в %s: сотрудник %s берёт %s",
+            here, officer.user_id, suspect_id,
         )
         self._open_round(raid)
         return raid
@@ -333,16 +412,72 @@ class RobberyService:
             raise RobberyError(f"На этой стороне мест нет: больше {MAX_SIDE} не лезут.")
 
         await self._spend(player.user_id, moment)
-        raid.fighters[player.user_id] = Fighter.from_player(player, armed=True)
-        raid.sides[player.user_id] = side
-        raid.names[player.user_id] = player.nickname
-        raid.clans[player.user_id] = mine
-        self._busy[player.user_id] = raid.id
+        self._enlist(raid, player, side, clan_id=mine)
         logger.info(
             "В ограбление %s вмешался боец %s за сторону %s",
             raid.id, player.user_id, side,
         )
         return raid
+
+    async def step_in(
+        self, raid_id: int, officer: Player, now: int | None = None
+    ) -> Robbery:
+        """Полицейский встаёт на сторону того, на кого напали.
+
+        Лицензии не просим: лицензию покупают, чтобы нападать. Защищать
+        — это работа, и платить за право её делать патрульный не должен.
+        """
+        from bot.police_service import serves_in_police
+
+        moment = now_ts() if now is None else now
+        raid = self._raids.get(raid_id)
+        if raid is None:
+            raise RobberyError("Эта драка уже кончилась.")
+        if officer.user_id in raid.fighters:
+            return raid
+        if not serves_in_police(officer):
+            raise RobberyError("Так вмешивается полиция, а ты не при значке.")
+        if self._busy.get(officer.user_id):
+            raise RobberyError("Ты уже в деле: сперва закончи его.")
+        if officer.where(moment) != raid.place or officer.in_transit(moment):
+            raise RobberyError("Драка идёт не здесь. Дойди до места.")
+        if not officer.can_fight(moment):
+            raise RobberyError("Сперва подлечись: в таком виде не лезут.")
+
+        side = self._side_for_badge(raid)
+        if len(raid.side_ids(side)) >= MAX_SIDE:
+            raise RobberyError(f"На этой стороне мест нет: больше {MAX_SIDE} не лезут.")
+        self._enlist(raid, officer, side, clan_id=0, badge=True)
+        logger.info(
+            "В драку %s вмешался сотрудник %s за сторону %s",
+            raid.id, officer.user_id, side,
+        )
+        return raid
+
+    def _enlist(
+        self, raid: Robbery, player: Player, side: int, clan_id: int,
+        badge: bool = False,
+    ) -> None:
+        """Поставить бойца в строй. Пара найдётся со следующего раунда."""
+        raid.fighters[player.user_id] = Fighter.from_player(player, armed=True)
+        raid.sides[player.user_id] = side
+        raid.names[player.user_id] = player.nickname
+        raid.clans[player.user_id] = clan_id
+        if badge:
+            raid.badges.add(player.user_id)
+        self._busy[player.user_id] = raid.id
+
+    @staticmethod
+    def _side_for_badge(raid: Robbery) -> int:
+        """На чьей стороне встанет полицейский.
+
+        Где уже есть значок — туда; а если значка нет ни на ком, то за
+        того, на кого напали. Другой стороны у полиции в этой драке нет.
+        """
+        for side in (RED, 1 - RED):
+            if any(one in raid.badges for one in raid.side_ids(side)):
+                return side
+        return raid.side_of(raid.victim)
 
     @staticmethod
     def _side_for(raid: Robbery, clan_id: int) -> int | None:
@@ -473,7 +608,7 @@ class RobberyService:
     # ---------- развязка ----------
 
     async def _finish(self, raid: Robbery, outcome: BattleOutcome) -> None:
-        """Свести драку: добыча, здоровье, покой и недельный счёт семьи."""
+        """Свести драку: добыча, здоровье, тюрьма и недельные счета."""
         if raid.finished:  # pragma: no cover - две развязки разом
             return
         raid.finished = True
@@ -482,6 +617,23 @@ class RobberyService:
             raid.timer.cancel()
         moment = now_ts()
 
+        if raid.kind == "arrest":
+            await self._finish_arrest(raid, moment)
+        else:
+            await self._finish_robbery(raid, moment)
+
+        raid.summary = self._summary(raid, outcome)
+        self._raids.pop(raid.id, None)
+        for user_id in raid.fighters:
+            self._busy.pop(user_id, None)
+            self._results[user_id] = raid
+        logger.info(
+            "Драка %s (%s) кончена: %s, добыча %s",
+            raid.id, raid.kind, "взяли" if raid.won else "отбились", raid.loot,
+        )
+
+    async def _finish_robbery(self, raid: Robbery, moment: int) -> None:
+        """Развязка ограбления: карман, покой, дело и счёт семьи."""
         victim = await self.db.get_player(raid.victim)
         robber = await self.db.get_player(raid.attacker)
         if raid.won and victim is not None and robber is not None:
@@ -497,19 +649,62 @@ class RobberyService:
 
         # Покой ограбленного — от развязки, кто бы ни победил
         await self.db.mark_robbed(raid.victim, moment)
+        # Дело заводится на любое нападение, а не только на удачное:
+        # полиция видит и то, от чего отбились
+        await self.db.open_case(
+            raid.victim, raid.attacker, raid.place, raid.loot,
+            int(raid.won), moment,
+        )
         clan_id = raid.clans.get(raid.attacker, 0)
         if clan_id:
             await self._count_for_clan(raid, clan_id, moment)
+        # Полицейский на стороне жертвы и победа жертвы — это посадка
+        if not raid.won and self._badge_on(raid, 1 - RED):
+            await self._lock_up(raid, raid.side_ids(RED), moment)
 
-        raid.summary = self._summary(raid, outcome)
-        self._raids.pop(raid.id, None)
+    async def _finish_arrest(self, raid: Robbery, moment: int) -> None:
+        """Развязка задержания: награбленное в участок, мафия в тюрьму."""
         for user_id in raid.fighters:
-            self._busy.pop(user_id, None)
-            self._results[user_id] = raid
-        logger.info(
-            "Ограбление %s кончено: %s, добыча %s",
-            raid.id, "взяли" if raid.won else "отбились", raid.loot,
+            await self._settle(raid, await self.db.get_player(user_id))
+        if not raid.won:
+            # Отбился — ордер остаётся, и его возьмут в следующий раз
+            return
+        from bot.police_service import reward_arrest
+
+        raid.recovered = await self.db.close_cases(
+            raid.victim, raid.attacker, moment
         )
+        await reward_arrest(self.db, raid.attacker, raid.recovered, moment)
+        await self._lock_up(raid, [raid.victim], moment)
+
+    @staticmethod
+    def _badge_on(raid: Robbery, side: int) -> bool:
+        """Был ли на этой стороне хоть один при значке."""
+        return any(one in raid.badges for one in raid.side_ids(side))
+
+    async def _lock_up(
+        self, raid: Robbery, user_ids: list[int], moment: int
+    ) -> None:
+        """Посадить проигравших. Сидят только те, кто в семье.
+
+        Одиночку сажать не за что: он не мафия, и ордер выписан не на
+        него. В ограблении на стороне налётчика одиночек и не бывает,
+        а вот в помощь мафии мог влезть кто угодно — проверяем.
+        """
+        from bot.police_service import jail
+
+        for user_id in user_ids:
+            if not raid.clans.get(user_id):
+                continue
+            until = await jail(self.db, user_id, moment)
+            raid.jailed.append(
+                {
+                    "user_id": user_id,
+                    "name": raid.names.get(user_id, "боец"),
+                    "until": until,
+                    "hours": max(1, (until - moment) // 3600),
+                }
+            )
 
     async def _count_for_clan(
         self, raid: Robbery, clan_id: int, moment: int
@@ -551,18 +746,11 @@ class RobberyService:
         await self.db.save_player(player)
 
     def _summary(self, raid: Robbery, outcome: BattleOutcome) -> list[str]:
-        robber = raid.names.get(raid.attacker, "налётчик")
-        victim = raid.names.get(raid.victim, "боец")
-        if raid.won:
-            first = (
-                f"{robber} обобрал {victim}: {raid.loot} 💰 из кармана."
-                if raid.loot
-                else f"{robber} взял верх, но карман {victim} оказался пуст."
-            )
-        elif outcome.draw:
-            first = "Разняли: оба на ногах, деньги при своих."
-        else:
-            first = f"{victim} отбился — брать нечего."
+        first = (
+            self._arrest_line(raid, outcome)
+            if raid.kind == "arrest"
+            else self._robbery_line(raid, outcome)
+        )
         lines = [
             first,
             f"Дрались в {raid.place_title}, раундов: {raid.round_number}.",
@@ -571,7 +759,38 @@ class RobberyService:
             lines.append(
                 f"Недельная цель семьи закрыта: {raid.bonus} 💰 в сейф."
             )
+        for one in raid.jailed:
+            lines.append(f"{one['name']} сел на {one['hours']} ч.")
         return lines
+
+    def _robbery_line(self, raid: Robbery, outcome: BattleOutcome) -> str:
+        robber = raid.names.get(raid.attacker, "налётчик")
+        victim = raid.names.get(raid.victim, "боец")
+        if raid.won:
+            return (
+                f"{robber} обобрал {victim}: {raid.loot} 💰 из кармана."
+                if raid.loot
+                else f"{robber} взял верх, но карман {victim} оказался пуст."
+            )
+        if outcome.draw:
+            return "Разняли: оба на ногах, деньги при своих."
+        if raid.jailed:
+            return f"{victim} отбился, и за налётчиками приехали."
+        return f"{victim} отбился — брать нечего."
+
+    def _arrest_line(self, raid: Robbery, outcome: BattleOutcome) -> str:
+        officer = raid.names.get(raid.attacker, "патрульный")
+        suspect = raid.names.get(raid.victim, "задержанный")
+        if raid.won:
+            return (
+                f"{officer} взял {suspect}. В участок вернулось "
+                f"{raid.recovered} 💰."
+                if raid.recovered
+                else f"{officer} взял {suspect}. Возвращать было нечего."
+            )
+        if outcome.draw:
+            return "Разняли. Ордер остаётся в силе."
+        return f"{suspect} ушёл от {officer}. Ордер остаётся в силе."
 
     async def close(self) -> None:
         """Погасить таймеры: бот выключается."""

@@ -679,6 +679,46 @@ CREATE TABLE IF NOT EXISTS clan_cars (
 
 CREATE INDEX IF NOT EXISTS clan_cars_clan ON clan_cars(clan_id);
 
+-- Дежурная часть: по строке на каждое нападение, доведённое до
+-- развязки. Полиция видит их все — прятать от неё нечего. `filed_at`
+-- — заявление жертвы: пока оно не написано, задерживать не за что;
+-- `arrested_at` — задержание; `repaid_at` — жертва забрала своё
+CREATE TABLE IF NOT EXISTS police_cases (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    victim_id   INTEGER NOT NULL,
+    suspect_id  INTEGER NOT NULL,
+    place       TEXT    NOT NULL DEFAULT '',
+    loot        INTEGER NOT NULL DEFAULT 0,
+    won         INTEGER NOT NULL DEFAULT 0,
+    robbed_at   INTEGER NOT NULL DEFAULT 0,
+    filed_at    INTEGER NOT NULL DEFAULT 0,
+    arrested_at INTEGER NOT NULL DEFAULT 0,
+    arrested_by INTEGER NOT NULL DEFAULT 0,
+    repaid_at   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS police_cases_suspect ON police_cases(suspect_id);
+CREATE INDEX IF NOT EXISTS police_cases_victim ON police_cases(victim_id);
+
+-- Тюрьма: до какого часа сидит и в который раз. Счёт не обнуляется —
+-- срок растёт от того, сколько раз человека уже брали
+CREATE TABLE IF NOT EXISTS jail (
+    user_id INTEGER PRIMARY KEY,
+    until   INTEGER NOT NULL DEFAULT 0,
+    times   INTEGER NOT NULL DEFAULT 0
+);
+
+-- Недельный счёт службы: задержаний за неделю и роздана ли копилка.
+-- У клана такой счёт свой (`clan_weeks`), и это не дубль: у семьи
+-- считаются нападения, у службы — задержания
+CREATE TABLE IF NOT EXISTS service_weeks (
+    code    TEXT    NOT NULL,
+    week    INTEGER NOT NULL,
+    arrests INTEGER NOT NULL DEFAULT 0,
+    paid    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (code, week)
+);
+
 -- Квесты бойца: по строке на взятое задание. Нет строки — задание ещё
 -- не предлагали или от него отказались. `marks` — отметки города: что
 -- он уже видел по этому заданию (бой выигран, дверь открыта, вопрос
@@ -3016,6 +3056,201 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    # ---------- дежурная часть, ордера и тюрьма ----------
+
+    async def open_case(
+        self, victim_id: int, suspect_id: int, place: str, loot: int,
+        won: int, now: int,
+    ) -> int:
+        """Записать нападение в дежурную часть. Возвращает номер дела."""
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO police_cases
+                (victim_id, suspect_id, place, loot, won, robbed_at)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (victim_id, suspect_id, place, loot, won, now),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid)
+
+    async def police_cases(self, limit: int = 60) -> list[dict]:
+        """Дежурная часть целиком: свежее сверху."""
+        async with self.conn.execute(
+            "SELECT * FROM police_cases ORDER BY robbed_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def cases_of_victim(self, victim_id: int) -> list[dict]:
+        async with self.conn.execute(
+            "SELECT * FROM police_cases WHERE victim_id = ? ORDER BY id DESC",
+            (victim_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def cases_of_suspect(self, suspect_id: int) -> list[dict]:
+        async with self.conn.execute(
+            "SELECT * FROM police_cases WHERE suspect_id = ? ORDER BY id DESC",
+            (suspect_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def file_case(self, case_id: int, victim_id: int, now: int) -> bool:
+        """Принять заявление. False — дело чужое или заявление уже есть.
+
+        Жертва в условии, а не в проверке перед запросом: заявление по
+        чужому делу не должно проходить даже в гонке двух нажатий.
+        """
+        cursor = await self.conn.execute(
+            """
+            UPDATE police_cases SET filed_at = ?
+            WHERE id = ? AND victim_id = ? AND filed_at = 0 AND arrested_at = 0
+            """,
+            (now, case_id, victim_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def wanted(self, now: int = 0) -> list[dict]:
+        """По кому выписан ордер: заявление есть, задержания нет."""
+        async with self.conn.execute(
+            """
+            SELECT suspect_id,
+                   COUNT(*)   AS cases,
+                   SUM(loot)  AS loot,
+                   MIN(filed_at) AS since
+            FROM police_cases
+            WHERE filed_at > 0 AND arrested_at = 0
+            GROUP BY suspect_id
+            ORDER BY since
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def close_cases(
+        self, suspect_id: int, officer_id: int, now: int
+    ) -> int:
+        """Закрыть задержанием все дела этого мафиози. Отдаёт сумму.
+
+        Сумму считаем до записи: после неё `arrested_at` уже стоит, и
+        отличить только что закрытые дела от закрытых вчера нельзя.
+        """
+        async with self.conn.execute(
+            """
+            SELECT COALESCE(SUM(loot), 0) AS loot FROM police_cases
+            WHERE suspect_id = ? AND filed_at > 0 AND arrested_at = 0
+            """,
+            (suspect_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        loot = int(row["loot"]) if row else 0
+        await self.conn.execute(
+            """
+            UPDATE police_cases SET arrested_at = ?, arrested_by = ?
+            WHERE suspect_id = ? AND filed_at > 0 AND arrested_at = 0
+            """,
+            (now, officer_id, suspect_id),
+        )
+        await self.conn.commit()
+        return loot
+
+    async def repay_case(self, case_id: int, victim_id: int, now: int) -> int:
+        """Выдать жертве её деньги. Ноль — выдавать было нечего."""
+        async with self.conn.execute(
+            """
+            SELECT loot FROM police_cases
+            WHERE id = ? AND victim_id = ? AND arrested_at > 0 AND repaid_at = 0
+            """,
+            (case_id, victim_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None or not int(row["loot"]):
+            return 0
+        cursor = await self.conn.execute(
+            """
+            UPDATE police_cases SET repaid_at = ?
+            WHERE id = ? AND victim_id = ? AND arrested_at > 0 AND repaid_at = 0
+            """,
+            (now, case_id, victim_id),
+        )
+        await self.conn.commit()
+        return int(row["loot"]) if cursor.rowcount else 0
+
+    async def jail_term(self, user_id: int) -> tuple[int, int]:
+        """До какого часа сидит и в который раз его взяли."""
+        async with self.conn.execute(
+            "SELECT until, times FROM jail WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (int(row["until"]), int(row["times"])) if row else (0, 0)
+
+    async def put_in_jail(self, user_id: int, until: int, times: int) -> None:
+        """Посадить до этого часа и записать, который это раз.
+
+        Срок считает служба, а не база: он зависит от числа отсидок, и
+        это правило, а не хранение.
+        """
+        await self.conn.execute(
+            """
+            INSERT INTO jail (user_id, until, times) VALUES (?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                until = excluded.until,
+                times = excluded.times
+            """,
+            (user_id, until, times),
+        )
+        await self.conn.commit()
+
+    async def service_week(self, code: str, week: int) -> tuple[int, int]:
+        """Задержаний за неделю и роздана ли копилка."""
+        async with self.conn.execute(
+            "SELECT arrests, paid FROM service_weeks WHERE code = ? AND week = ?",
+            (code, week),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (int(row["arrests"]), int(row["paid"])) if row else (0, 0)
+
+    async def add_service_arrest(self, code: str, week: int) -> int:
+        await self.conn.execute(
+            """
+            INSERT INTO service_weeks (code, week, arrests, paid)
+            VALUES (?,?,1,0)
+            ON CONFLICT(code, week) DO UPDATE SET arrests = arrests + 1
+            """,
+            (code, week),
+        )
+        await self.conn.commit()
+        arrests, _ = await self.service_week(code, week)
+        return arrests
+
+    async def pay_service_week(self, code: str, week: int) -> bool:
+        """Отметить копилку розданной. False — её уже раздавали."""
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO service_weeks (code, week) VALUES (?,?)",
+            (code, week),
+        )
+        cursor = await self.conn.execute(
+            "UPDATE service_weeks SET paid = 1 WHERE code = ? AND week = ? "
+            "AND paid = 0",
+            (code, week),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def attacks_in_week(self, week: int) -> int:
+        """Сколько нападений город видел за эту неделю — по всем семьям."""
+        async with self.conn.execute(
+            "SELECT COALESCE(SUM(attacks), 0) AS total FROM clan_weeks WHERE week = ?",
+            (week,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["total"]) if row else 0
 
     # ---------- гараж семьи ----------
 

@@ -9306,6 +9306,7 @@ function stopExamClock() {
 // ---------- участок: выдача прав ----------
 
 let policeBusy = false;
+let policeData = null;
 
 async function loadPolice() {
   try {
@@ -9352,9 +9353,20 @@ async function takeLicence() {
 }
 
 function renderPolice(data) {
+  policeData = data;
   el("police-note").textContent = data.said || data.note;
   const body = el("police-body");
   body.textContent = "";
+
+  // Срок — первым делом: сидящему всё остальное пока не нужно
+  if (data.jail && data.jail.left) body.appendChild(jailBox(data.jail));
+  // Свои дела — всем, сводка по городу — только при значке
+  if ((data.mine || []).length) body.appendChild(myCasesBox(data));
+  if (data.badge) {
+    body.appendChild(dutyWeekBox(data));
+    if ((data.wanted || []).length) body.appendChild(wantedBox(data));
+    body.appendChild(dutyBoardBox(data));
+  }
 
   if (data.licence && data.licence.title) {
     body.appendChild(paperCard(data.licence));
@@ -9365,6 +9377,179 @@ function renderPolice(data) {
   row.className = "thing-buttons";
   row.appendChild(button("Получить права", { onClick: () => takeLicence() }));
   body.appendChild(row);
+}
+
+async function policeAction(payload) {
+  if (policeBusy) return;
+  policeBusy = true;
+  try {
+    const data = await post("api/police", payload);
+    haptic((feedback) => feedback.impactOccurred("medium"));
+    if (data.card) render(data.card, true);
+    renderPolice(data);
+  } catch (error) {
+    popup("Участок", error.message);
+    await loadPolice();
+  } finally {
+    policeBusy = false;
+  }
+}
+
+/** Срок: сколько сидеть и в который раз взяли. */
+function jailBox(term) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🚔 Ты сидишь";
+  box.appendChild(head);
+  const said = document.createElement("p");
+  said.className = "screen-note";
+  said.textContent = "До освобождения " + clockText(term.left)
+    + ". Отсидка " + term.times + "-я. Из тюрьмы не выходят.";
+  box.appendChild(said);
+  return box;
+}
+
+/** Свои дела: по какому написать заявление и где забрать деньги. */
+function myCasesBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Твои дела";
+  box.appendChild(head);
+
+  if (data.owed) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Забрать " + num(data.owed) + " 💰", {
+        onClick: () => policeAction({ action: "collect" }),
+      })
+    );
+    box.appendChild(buttons);
+  }
+  data.mine.forEach((one) => box.appendChild(caseCard(one, true)));
+  return box;
+}
+
+function caseCard(one, mine) {
+  const box = document.createElement("article");
+  box.className = "case" + (one.arrested ? " closed" : "");
+
+  const head = document.createElement("header");
+  head.className = "case-head";
+  const who = document.createElement("span");
+  who.className = "case-who";
+  // Названия домов лежат в именительном: «нападение в бар» читалось бы
+  // хуже, чем дом отдельной строкой ниже
+  who.textContent = mine ? "Нападение" : one.suspect + " → " + one.victim;
+  const sum = document.createElement("span");
+  sum.className = "case-sum";
+  sum.textContent = one.loot ? "−" + num(one.loot) + " 💰" : "без потерь";
+  head.append(who, sum);
+  box.appendChild(head);
+
+  const said = document.createElement("p");
+  said.className = "case-note";
+  said.textContent = [
+    one.at,
+    one.place_title,
+    one.arrested ? "задержан" : one.filed ? "в розыске" : "без заявления",
+    one.repaid ? "деньги возвращены" : "",
+  ].filter(Boolean).join(" · ");
+  box.appendChild(said);
+
+  if (one.can_file) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Написать заявление", {
+        onClick: () => policeAction({ action: "report", case: one.id }),
+      })
+    );
+    box.appendChild(buttons);
+  }
+  return box;
+}
+
+/** Норма недели и копилка участка. */
+function dutyWeekBox(data) {
+  const week = data.week || {};
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Дежурная часть";
+  box.appendChild(head);
+  box.appendChild(
+    paperRows([
+      ["Нападений за неделю", String(week.attacks || 0)],
+      ["Задержаний", (week.arrests || 0) + " из " + (week.target || 0)],
+      ["В копилке", num(data.vault || 0) + " 💰"],
+      ["На службе", String(data.officers || 0)],
+    ])
+  );
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = week.done
+    ? "Норма выполнена: к копилке добавится " + num(week.bonus || 0)
+      + " 💰, и всё разделится поровну в понедельник."
+    : "Норма — половина нападений за неделю. Выполните — к копилке "
+      + num(week.bonus || 0) + " 💰, и она разделится поровну.";
+  box.appendChild(said);
+  return box;
+}
+
+/** Розыск: по кому выписан ордер. */
+function wantedBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "В розыске";
+  box.appendChild(head);
+  data.wanted.forEach((one) => {
+    const row = document.createElement("article");
+    row.className = "case wanted";
+    const line = document.createElement("header");
+    line.className = "case-head";
+    const who = document.createElement("span");
+    who.className = "case-who";
+    who.textContent = "🔎 " + one.name;
+    const sum = document.createElement("span");
+    sum.className = "case-sum";
+    sum.textContent = num(one.loot) + " 💰";
+    line.append(who, sum);
+    row.appendChild(line);
+    const said = document.createElement("p");
+    said.className = "case-note";
+    said.textContent = "Дел: " + one.cases
+      + ". Задержать можно там, где он стоит.";
+    row.appendChild(said);
+    box.appendChild(row);
+  });
+  return box;
+}
+
+/** Все нападения города: сводка, которую видит только значок. */
+function dutyBoardBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Нападения";
+  box.appendChild(head);
+  if (!data.cases.length) {
+    const said = document.createElement("p");
+    said.className = "screen-note";
+    said.textContent = "В городе тихо.";
+    box.appendChild(said);
+    return box;
+  }
+  data.cases.forEach((one) => box.appendChild(caseCard(one, false)));
+  return box;
 }
 
 // ---------- вид изнутри ----------
@@ -9871,8 +10056,9 @@ function neighbourCard(one, data) {
   head.className = "neighbour-head";
   const name = document.createElement("span");
   name.className = "neighbour-name";
-  name.textContent = (one.online ? "🟢 " : "⚪️ ") + one.name
-    + " [" + one.level + "]";
+  // Розыск виден всем, не только значку: город знает, кого ищут
+  name.textContent = (one.online ? "🟢 " : "⚪️ ") + (one.wanted ? "🔎 " : "")
+    + one.name + " [" + one.level + "]";
   const where = document.createElement("span");
   where.className = "neighbour-clan";
   where.textContent = one.clan || "";
@@ -9884,7 +10070,17 @@ function neighbourCard(one, data) {
   said.textContent = one.online ? "В сети" : one.presence;
   box.appendChild(said);
 
-  if (one.can_rob) {
+  if (one.can_arrest) {
+    // У значка своя кнопка: задержание не стоит лицензии
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("🚔 Задержать", {
+        onClick: () => crowdAction({ action: "arrest", user: one.user_id }),
+      })
+    );
+    box.appendChild(buttons);
+  } else if (one.can_rob) {
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
     buttons.appendChild(
@@ -9912,7 +10108,8 @@ function fightRowCard(one) {
   head.className = "neighbour-head";
   const name = document.createElement("span");
   name.className = "neighbour-name";
-  name.textContent = "⚔️ " + one.attacker + " → " + one.victim;
+  name.textContent = (one.kind === "arrest" ? "🚔 " : "⚔️ ")
+    + one.attacker + " → " + one.victim;
   const round = document.createElement("span");
   round.className = "neighbour-clan";
   round.textContent = "раунд " + one.round;
@@ -9925,7 +10122,17 @@ function fightRowCard(one) {
     + one.sides.blue.join(", ");
   box.appendChild(said);
 
-  if (one.can_join) {
+  if (one.can_step_in) {
+    // Полицейский встаёт за того, на кого напали, и без лицензии
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("🚔 Вмешаться", {
+        onClick: () => crowdAction({ action: "step_in", raid_id: one.id }),
+      })
+    );
+    box.appendChild(buttons);
+  } else if (one.can_join) {
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
     buttons.appendChild(
@@ -9952,7 +10159,7 @@ function robberyBox(fight) {
   const title = document.createElement("h2");
   title.className = "shelf-head";
   title.textContent = fight.finished
-    ? (fight.won ? "💰 Карман взят" : "🛡 Отбились")
+    ? finishedTitle(fight)
     : fight.attacker + " → " + fight.victim + " · раунд " + fight.round;
   head.appendChild(title);
   const who = document.createElement("p");
@@ -9970,11 +10177,19 @@ function robberyBox(fight) {
   });
   box.appendChild(head);
 
-  box.appendChild(sideBox("Налётчики", fight.red));
-  box.appendChild(sideBox("Против них", fight.blue));
+  const arrest = fight.kind === "arrest";
+  box.appendChild(sideBox(arrest ? "Полиция" : "Налётчики", fight.red));
+  box.appendChild(sideBox(arrest ? "Задержанные" : "Против них", fight.blue));
   box.appendChild(robberyFoot(fight));
   if ((fight.log || []).length) box.appendChild(robberyLog(fight));
   return box;
+}
+
+function finishedTitle(fight) {
+  if (fight.kind === "arrest") {
+    return fight.won ? "🚔 Задержан" : "🏃 Ушёл";
+  }
+  return fight.won ? "💰 Карман взят" : "🛡 Отбились";
 }
 
 /** Что под шкалами: кнопки хода, строка ожидания или «Понятно». */

@@ -74,6 +74,7 @@ def raid_payload(raid, viewer_id: int) -> dict[str, Any]:
     foe = raid.foe_of(viewer_id)
     return {
         "id": raid.id,
+        "kind": raid.kind,
         "place": raid.place,
         "place_title": raid.place_title,
         "attacker": raid.names.get(raid.attacker, "налётчик"),
@@ -126,7 +127,9 @@ def _name_of(raid, fighter) -> str:
     return raid.names.get(_id_of(raid, fighter), "боец")
 
 
-def raid_row(raid, player: Player, clan_id: int) -> dict[str, Any]:
+def raid_row(
+    raid, player: Player, clan_id: int, badge: bool = False
+) -> dict[str, Any]:
     """Строка идущей драки в списке дома: кто кого и можно ли вмешаться."""
     sides = {
         "red": [raid.names.get(one, "боец") for one in raid.side_ids(RED)],
@@ -139,22 +142,47 @@ def raid_row(raid, player: Player, clan_id: int) -> dict[str, Any]:
                 side = number
                 break
     full = side is not None and len(raid.side_ids(side)) >= MAX_SIDE
+    # Сторона полицейского: где уже есть значок, а если нет — за того,
+    # на кого напали. Лицензия ему не нужна, это работа
+    badge_side = _badge_side(raid)
+    badge_full = len(raid.side_ids(badge_side)) >= MAX_SIDE
+    inside = player.user_id in raid.fighters
     return {
         "id": raid.id,
+        "kind": raid.kind,
         "attacker": raid.names.get(raid.attacker, "налётчик"),
         "victim": raid.names.get(raid.victim, "боец"),
         "round": raid.round_number,
         "sides": sides,
-        "mine": player.user_id in raid.fighters,
+        "mine": inside,
         "side": side,
         "side_title": "" if side is None else (
             "за налётчика" if side == RED else "за жертву"
         ),
-        "can_join": bool(
-            side is not None and not full and player.user_id not in raid.fighters
+        "can_join": bool(side is not None and not full and not inside),
+        "badge_side": badge_side,
+        "can_step_in": bool(badge and not badge_full and not inside),
+        "why": (
+            _why_not_step_in(raid, player, badge_full)
+            if badge
+            else _why_not_join(raid, player, clan_id, side, full)
         ),
-        "why": _why_not_join(raid, player, clan_id, side, full),
     }
+
+
+def _badge_side(raid) -> int:
+    for side in (RED, 1 - RED):
+        if any(one in raid.badges for one in raid.side_ids(side)):
+            return side
+    return raid.side_of(raid.victim)
+
+
+def _why_not_step_in(raid, player: Player, full: bool) -> str:
+    if player.user_id in raid.fighters:
+        return "Ты в этой драке."
+    if full:
+        return f"На этой стороне мест нет: больше {MAX_SIDE} не лезут."
+    return ""
 
 
 def _why_not_join(raid, player: Player, clan_id: int, side, full: bool) -> str:
@@ -171,13 +199,20 @@ def _why_not_join(raid, player: Player, clan_id: int, side, full: bool) -> str:
 
 async def neighbour_row(
     db, one: Player, player: Player, clan_id: int, mine: int, moment: int,
-    busy: bool,
+    busy: bool, badge: bool = False, wanted: bool = False,
 ) -> dict[str, Any]:
     """Сосед по дому: кто он, в сети ли и можно ли его взять."""
     online = is_online(one.seen_at, moment)
     rest = safe_left(await db.robbed_at(one.user_id), moment)
     same = bool(mine and clan_id == mine)
     return {
+        # Розыск и значок: по ним считается кнопка задержания. Покой
+        # ограбленного тут ни при чём — он защищает от мафии, а не от
+        # полиции, и прятаться за ним от ордера нельзя
+        "wanted": wanted,
+        "can_arrest": bool(
+            badge and wanted and online and not busy and one.can_fight(moment)
+        ),
         "user_id": one.user_id,
         "name": one.nickname,
         "level": one.level,
@@ -193,6 +228,17 @@ async def neighbour_row(
             and one.can_fight(moment)
         ),
     }
+
+
+def _why_not_arrest(row: dict[str, Any]) -> str:
+    """Почему нельзя задержать этого."""
+    if not row["wanted"]:
+        return "На него нет ордера."
+    if not row["online"]:
+        return "Не в сети."
+    if row["busy"]:
+        return "Уже дерётся."
+    return "Еле стоит. Не сегодня."
 
 
 def _why_not_rob(row: dict[str, Any], mine: int, licences: int) -> str:
@@ -220,15 +266,20 @@ async def build_crowd(
     """Дом целиком: кто в нём стоит, что в нём идёт и что можно нажать."""
     from bot.game.locations import get_location
 
+    from bot.police_service import serves_in_police
+
     moment = now_ts() if now is None else now
     here = player.where(moment)
     place = get_location(here)
     clan_id = player.clan.clan.id if player.clan else 0
+    badge = serves_in_police(player)
+    hunted = {int(one["suspect_id"]) for one in await db.wanted()}
 
     body: dict[str, Any] = {
         "place": here,
         "place_title": place.title if place else here,
         "credits": player.credits,
+        "badge": badge,
         "clan": player.clan.clan.name if player.clan else "",
         "share": round(LOOT_SHARE * 100),
         "safe_hours": SAFE_HOURS,
@@ -253,7 +304,7 @@ async def build_crowd(
     body["fight"] = raid_payload(live, player.user_id) if live else None
     body["result"] = raid_payload(result, player.user_id) if result else None
     body["fights"] = [
-        raid_row(one, player, clan_id) for one in service.at(here)
+        raid_row(one, player, clan_id, badge) for one in service.at(here)
     ]
 
     here_now = [
@@ -273,10 +324,17 @@ async def build_crowd(
         row = await neighbour_row(
             db, one, player, his_clan, clan_id, moment,
             busy=service.is_busy(one.user_id),
+            badge=badge, wanted=one.user_id in hunted,
         )
         row["clan"] = name
-        row["why"] = _why_not_rob(row, clan_id, left)
         row["can_rob"] = row["can_rob"] and bool(left)
+        # Сотруднику говорим про ордер, остальным — про лицензию: у них
+        # разные кнопки, и причина отказа у каждой своя
+        row["why"] = (
+            _why_not_arrest(row) if badge and not row["can_arrest"]
+            else "" if badge
+            else _why_not_rob(row, clan_id, left)
+        )
         rows.append(row)
     body["crowd"] = rows
     body["note"] = _note(body, clan_id)
@@ -308,13 +366,16 @@ async def crowd_marks(db, player: Player, service, now: int | None = None
 
 
 def _note(body: dict[str, Any], clan_id: int) -> str:
+    # Названия домов лежат в именительном, и падежей у них нет. Поэтому
+    # дом ставим через двоеточие, а не внутрь фразы: «драка в бар» —
+    # хуже, чем «драка идёт прямо сейчас: Бар»
     where = body["place_title"]
     if body["fight"]:
-        return f"Драка в {where.lower()} идёт прямо сейчас."
+        return f"Драка идёт прямо сейчас: {where}."
     total = len(body["crowd"])
     online = sum(1 for one in body["crowd"] if one["online"])
     if not total:
-        return f"В {where.lower()} больше никого."
+        return f"Тут больше никого: {where}."
     head = f"Здесь ещё {total}, из них в сети {online}."
     if not clan_id:
         return head
