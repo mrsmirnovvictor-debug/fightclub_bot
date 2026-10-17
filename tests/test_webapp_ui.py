@@ -10739,14 +10739,21 @@ async def war_states(db):
     return don, board, lobby, siege, done
 
 
-async def open_war(pw, server, don, body):
+async def open_war(pw, server, don, body, images=False):
     """Открыть карту войны с готовым ответом и остановить опрос.
 
     Панель сама ходит на сервер раз в пару секунд; в тесте это лишний
     шум, и таймер мы гасим сразу после отрисовки.
+
+    `images` — нужны ли картинки. Обычно нет: до бакета из тестов не
+    дотянуться. Но лица нанятых — предмет проверки, и им подсовывается
+    пиксель: упавшая картинка подменяется текстом, и найти её было бы
+    уже нечем.
     """
     card = build_card(don, TOKEN, viewer_id=don.user_id)
-    browser, page = await open_page(pw, server, card, turf=body)
+    browser, page = await open_page(
+        pw, server, card, turf=body, images=images
+    )
     await page.wait_for_selector("#hero:not(.hidden)")
     await open_screen(page, "turf")
     await page.wait_for_selector("#turf-body .shelf, #turf-body .spot")
@@ -10803,7 +10810,7 @@ async def test_the_siege_shows_both_sides_and_waits_for_the_blow(server, db):
     don, _, _, siege, _ = await war_states(db)
 
     async with async_playwright() as pw:
-        browser, page = await open_war(pw, server, don, siege)
+        browser, page = await open_war(pw, server, don, siege, images=True)
 
         head = await page.locator("#turf-body .shelf").first.inner_text()
         assert "Казино · волна 1" in head and "городская охрана" in head
@@ -10811,6 +10818,8 @@ async def test_the_siege_shows_both_sides_and_waits_for_the_blow(server, db):
         # Обе стороны стоят полосками: по ним и видно, кого осталось бить
         sides = await page.locator("#turf .shelf-head").all_inner_texts()
         assert sides[1:3] == ["Гарнизон", "Отряд"]
+        # У гарнизона лица: это охрана и нанятые, а не игроки
+        assert await page.locator("#turf .siege-row .npc-face").count() == 3
         assert await page.locator("#turf .siege-row").count() == 6
         # Сначала весь гарнизон, потом отряд: свой боец стоит четвёртым
         mine = page.locator("#turf .siege-row").nth(3)
@@ -10899,7 +10908,7 @@ async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
     board = await build_war(db, boss, None, moment)
 
     async with async_playwright() as pw:
-        browser, page = await open_war(pw, server, boss, board)
+        browser, page = await open_war(pw, server, boss, board, images=True)
 
         heads = await page.locator("#turf-body .shelf-head").all_inner_texts()
         assert "Наёмники" in heads
@@ -10912,10 +10921,18 @@ async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
         # Своего второго на ту же точку не ставят, и так и сказано
         assert "уже стоит человек" in await panel.inner_text()
 
-        # Прилавок: три ступени с ценами
-        prices = await panel.locator(".thing-buttons .btn").all_inner_texts()
-        assert len(prices) == 3
+        # Прилавок: три карточки с лицами и ценами
+        cards = panel.locator(".hire-card")
+        assert await cards.count() == 3
+        assert await cards.locator(".hire-face").count() == 3
+        prices = await cards.locator(".btn").all_inner_texts()
         assert "300" in prices[0] and "1\u00a0200" in prices[2]
+        # И лица едут из папки нанятых, а не откуда попало
+        first = await cards.locator(".hire-face").first.get_attribute("src")
+        assert "/avatars/npc/" in first
+
+        # В резерве лицо тоже стоит, рядом с именем
+        assert await panel.locator(".neighbour .npc-face").count() == 2
 
         # Строка точки считает выставленных, а не городскую охрану
         here = page.locator("#turf .spot").first

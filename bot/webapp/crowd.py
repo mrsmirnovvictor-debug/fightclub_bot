@@ -49,6 +49,8 @@ def fighter_row(one, user_id: int, name: str, viewer_id: int) -> dict[str, Any]:
         "alive": one.alive,
         "level": one.level,
         "fclass": one.fclass.emoji,
+        # Лицо есть у нанятых и охраны, у игрока его нет
+        "picture": one.picture,
         "is_self": user_id == viewer_id,
     }
 

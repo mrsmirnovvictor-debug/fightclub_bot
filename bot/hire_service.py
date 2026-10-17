@@ -36,6 +36,7 @@ from bot.game.hirelings import (
     cap_for,
     get_grade,
     grades_for,
+    guard_picture,
     hired_left,
 )
 from bot.models import Player
@@ -153,6 +154,7 @@ async def roster(db: Database, player: Player) -> dict:
                 "grade": str(one["grade"]),
                 "title": _title(str(one["grade"])),
                 "level": _level(str(one["grade"])),
+                "picture": _picture(str(one["grade"])),
                 "spot": str(one["spot"]),
             }
             for one in mine
@@ -164,6 +166,7 @@ async def roster(db: Database, player: Player) -> dict:
                 "level": one.level,
                 "fclass": FIGHTER_CLASSES[one.fclass].emoji,
                 "price": one.price,
+                "picture": one.picture,
             }
             for one in (grades_for(side) if side else ())
         ],
@@ -178,6 +181,11 @@ def _title(code: str) -> str:
 def _level(code: str) -> int:
     grade = get_grade(code)
     return grade.level if grade else 1
+
+
+def _picture(code: str) -> str:
+    grade = get_grade(code)
+    return grade.picture if grade else ""
 
 
 # ---------- кто стоит на точке ----------
@@ -217,7 +225,9 @@ def _stats_for(level: int) -> Stats:
     )
 
 
-def _npc(number: int, name: str, fclass: str, level: int) -> Fighter:
+def _npc(
+    number: int, name: str, fclass: str, level: int, picture: str = ""
+) -> Fighter:
     weapon = _weapon_for(level, fclass)
     return Fighter(
         user_id=number,
@@ -226,6 +236,7 @@ def _npc(number: int, name: str, fclass: str, level: int) -> Fighter:
         stats=_stats_for(level),
         level=level,
         equipment=Equipment(items={Slot.WEAPON: weapon} if weapon else {}),
+        picture=picture,
     )
 
 
@@ -235,8 +246,12 @@ def guards(start: int = -1) -> list[Fighter]:
     Ничья и бесплатная. Стоит на всякой точке, которой не владеет семья:
     дом не бывает без сторожа, даже когда за него никто не дерётся.
     """
+    face = guard_picture()
     return [
-        _npc(start - number, f"Охранник {number + 1}", GUARD_CLASS, GUARD_LEVEL)
+        _npc(
+            start - number, f"Охранник {number + 1}", GUARD_CLASS,
+            GUARD_LEVEL, face,
+        )
         for number in range(GUARD_SIZE)
     ]
 
@@ -249,7 +264,10 @@ async def posted(db: Database, spot: str, start: int = -100) -> list[Fighter]:
         if grade is None:  # pragma: no cover - ступень из будущей версии
             continue
         out.append(
-            _npc(start - number, grade.title, grade.fclass, grade.level)
+            _npc(
+                start - number, grade.title, grade.fclass, grade.level,
+                grade.picture,
+            )
         )
     return out
 

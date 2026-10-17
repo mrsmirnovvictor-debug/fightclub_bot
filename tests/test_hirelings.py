@@ -70,6 +70,31 @@ def test_the_grades_stand_where_the_rules_say():
     assert [one.fclass for one in PATROL_GRADES] == ["tank", "rogue", "tank"]
 
 
+def test_every_grade_has_a_face():
+    """У каждой ступени своё лицо, и лежит оно в папке нанятых."""
+    from bot.game.art import NPC_AVATARS
+    from bot.game.hirelings import guard_picture
+
+    faces = {one.code: one.picture for one in MERC_GRADES + PATROL_GRADES}
+    assert len(set(faces.values())) == 6, "шесть ступеней — шесть лиц"
+    for code, link in faces.items():
+        assert link.startswith(NPC_AVATARS), code
+        assert link.endswith(".png"), code
+
+    # Имена файлов в бакете свои: наёмник там зовётся мафией
+    assert faces["merc_9"].endswith("/mafia_9_tank.png")
+    assert faces["patrol_7"].endswith("/police_7_trickster.png")
+    assert guard_picture().endswith("/guard_4_tank.png")
+
+
+def test_the_hired_carry_their_face_into_the_fight():
+    """Лицо едет с бойцом: его рисуют в шкалах гарнизона."""
+    from bot.game.hirelings import guard_picture
+
+    one = guards()[0]
+    assert one.picture == guard_picture()
+
+
 def test_the_rank_says_how_many_are_held():
     """Три рядовому, четыре старшему, пять самому старшему."""
     assert cap_for("soldier") == PLAIN_CAP == 3

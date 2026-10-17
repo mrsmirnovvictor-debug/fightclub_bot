@@ -1438,6 +1438,51 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .neighbour-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
 .neighbour-why { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
 
+/* ---------- наём: лица нанятых и прилавок ---------- */
+
+/* Лицо нанятого в строке: кружок размером со значок класса, который он
+   и заменяет. Больше делать нельзя — строка боя и так тесная */
+.npc-face {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  vertical-align: middle;
+  background: var(--slot);
+}
+
+/* Прилавок найма: три карточки в ряд, в каждой лицо, ступень и цена */
+.hire-shelf {
+  display: grid;
+  /* `minmax(0, 1fr)`, а не `1fr`: у клетки сетки своя наименьшая ширина
+     по содержимому, и картинка во всю ширину распирала третью карточку
+     за край экрана */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.hire-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--slot);
+  text-align: center;
+}
+.hire-face {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--panel);
+}
+.hire-title { margin: 0; font-size: 12.5px; font-weight: 700; }
+.hire-note { margin: 0; font-size: 11.5px; color: var(--muted); }
+.hire-card .btn { width: 100%; padding: 6px 4px; font-size: 12.5px; }
+
 /* ---------- война за территории ---------- */
 
 /* Точка на карте войны: заголовок с доходом, кто держит и кнопка.

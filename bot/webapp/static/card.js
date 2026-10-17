@@ -10887,7 +10887,14 @@ function hireBox(data) {
     line.className = "neighbour-head";
     const name = document.createElement("span");
     name.className = "neighbour-name";
-    name.textContent = one.title + " [" + one.level + "]";
+    if (one.picture) {
+      const face = picture(one.picture, one.title, "");
+      face.className = "npc-face";
+      name.appendChild(face);
+    }
+    name.appendChild(
+      document.createTextNode(" " + one.title + " [" + one.level + "]")
+    );
     const where = document.createElement("span");
     where.className = "neighbour-clan";
     where.textContent = one.spot ? "на точке" : "в резерве";
@@ -10913,19 +10920,35 @@ function hireBox(data) {
     box.appendChild(why);
   }
 
-  // Прилавок: три ступени, и каждая за свои деньги
-  const buttons = document.createElement("div");
-  buttons.className = "thing-buttons";
+  // Прилавок: три ступени, и каждая со своим лицом и своей ценой
+  const shelf = document.createElement("div");
+  shelf.className = "hire-shelf";
   hire.grades.forEach((one) => {
-    buttons.appendChild(
-      button(one.fclass + " " + one.level + " · " + num(one.price) + " 💰", {
+    const card = document.createElement("article");
+    card.className = "hire-card";
+    if (one.picture) {
+      const face = picture(one.picture, one.title, one.fclass || "");
+      face.className = "hire-face";
+      card.appendChild(face);
+    }
+    const title = document.createElement("p");
+    title.className = "hire-title";
+    title.textContent = one.title;
+    card.appendChild(title);
+    const said = document.createElement("p");
+    said.className = "hire-note";
+    said.textContent = one.fclass + " " + one.level + " ур.";
+    card.appendChild(said);
+    card.appendChild(
+      button(num(one.price) + " 💰", {
         disabled: !hire.left,
         hint: "Больше " + hire.cap + " на руках не держат.",
         onClick: () => turfAction({ action: "hire", grade: one.code }),
       })
     );
+    shelf.appendChild(card);
   });
-  box.appendChild(buttons);
+  box.appendChild(shelf);
   return box;
 }
 
@@ -11071,8 +11094,17 @@ function sideBox(title, rows) {
     row.className = "siege-row" + (one.alive ? "" : " down");
     const name = document.createElement("span");
     name.className = "siege-name";
-    name.textContent = (one.fclass || "") + " " + one.name
-      + (one.is_self ? " (ты)" : "");
+    // У нанятых и охраны есть лицо, у игрока — значок класса: его
+    // карточка и так рядом, а место в строке одно
+    if (one.picture) {
+      const face = picture(one.picture, one.name, one.fclass || "");
+      face.className = "npc-face";
+      name.appendChild(face);
+      name.appendChild(document.createTextNode(" " + one.name));
+    } else {
+      name.textContent = (one.fclass || "") + " " + one.name
+        + (one.is_self ? " (ты)" : "");
+    }
     const bar = document.createElement("div");
     bar.className = "hours-line";
     const fill = document.createElement("div");

@@ -40,32 +40,42 @@ SIDE_TITLES: dict[str, str] = {MERC: "наёмники", PATROL: "патруль
 
 @dataclass(frozen=True)
 class Grade:
-    """Ступень найма: кого берут, какого уровня и почём."""
+    """Ступень найма: кого берут, какого уровня, почём и с каким лицом."""
 
     code: str
     title: str
     level: int
     fclass: str
     price: int
+    # Имя файла лица в `avatars/npc`. Пишется руками, а не считается из
+    # кода: в бакете наёмник зовётся мафией, а трикстер — трикстером, и
+    # переименовывать чужую папку ради красивой формулы не наше дело
+    art: str = ""
 
     @property
     def side(self) -> str:
         return MERC if self.code.startswith(MERC) else PATROL
+
+    @property
+    def picture(self) -> str:
+        from bot.game.art import npc_avatar
+
+        return npc_avatar(self.art) if self.art else ""
 
 
 # Три ступени у каждой стороны. Классы расставлены так, чтобы средняя
 # ступень не была просто «той же, но дороже»: у семьи это трикстер,
 # ассасин и танк, у города — танк, трикстер и танк
 MERC_GRADES: tuple[Grade, ...] = (
-    Grade("merc_5", "Наёмник", 5, "rogue", 300),
-    Grade("merc_7", "Головорез", 7, "assassin", 600),
-    Grade("merc_9", "Громила", 9, "tank", 1_200),
+    Grade("merc_5", "Наёмник", 5, "rogue", 300, "mafia_5_trickster"),
+    Grade("merc_7", "Головорез", 7, "assassin", 600, "mafia_7_assassin"),
+    Grade("merc_9", "Громила", 9, "tank", 1_200, "mafia_9_tank"),
 )
 
 PATROL_GRADES: tuple[Grade, ...] = (
-    Grade("patrol_5", "Патрульный", 5, "tank", 300),
-    Grade("patrol_7", "Сержант", 7, "rogue", 600),
-    Grade("patrol_9", "Боец спецназа", 9, "tank", 1_200),
+    Grade("patrol_5", "Патрульный", 5, "tank", 300, "police_5_tank"),
+    Grade("patrol_7", "Сержант", 7, "rogue", 600, "police_7_trickster"),
+    Grade("patrol_9", "Боец спецназа", 9, "tank", 1_200, "police_9_tank"),
 )
 
 GRADES: dict[str, Grade] = {
@@ -88,6 +98,14 @@ PER_PERSON = 1
 GUARD_LEVEL = 4
 GUARD_CLASS = "tank"
 GUARD_SIZE = 3
+GUARD_ART = "guard_4_tank"
+
+
+def guard_picture() -> str:
+    """Лицо городской охраны. Одно на всех троих: это не люди, а пост."""
+    from bot.game.art import npc_avatar
+
+    return npc_avatar(GUARD_ART)
 
 
 def grades_for(side: str) -> tuple[Grade, ...]:
@@ -118,6 +136,7 @@ def hired_left(cap: int, hired: int) -> int:
 
 __all__ = [
     "GRADES",
+    "GUARD_ART",
     "GUARD_CLASS",
     "GUARD_LEVEL",
     "GUARD_SIZE",
@@ -134,6 +153,7 @@ __all__ = [
     "Grade",
     "cap_for",
     "get_grade",
+    "guard_picture",
     "grades_for",
     "hired_left",
 ]

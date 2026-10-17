@@ -12,6 +12,10 @@ WEAPONS = f"{BUCKET}/weapons"
 # Второй заход по недостающим позициям лёг в отдельную папку
 ADDED = f"{BUCKET}/add"
 AVATARS = f"{BUCKET}/avatars"
+# Лица нанятых и городской охраны. Лежат отдельной папкой внутри
+# образов: это не образ игрока — выбрать их нельзя, они приходят
+# вместе со ступенью найма
+NPC_AVATARS = f"{AVATARS}/npc"
 # Подложки пустых слотов. Папку переименовали в `placeholders`: «слоты»
 # в бакете путались со слотами зала, а подложка — это и есть плейсхолдер
 SLOTS = f"{BUCKET}/placeholders"
@@ -56,6 +60,11 @@ SERVICES = f"{BUCKET}/services"
 def avatar(code: str) -> str:
     """Картинка образа лежит под его же кодом: avatars/rookie.jpeg."""
     return f"{AVATARS}/{code}.jpeg"
+
+
+def npc_avatar(code: str) -> str:
+    """Лицо нанятого по его коду: avatars/npc/mafia_9_tank.png."""
+    return f"{NPC_AVATARS}/{code}.png"
 
 
 def clan_sign(code: str) -> str:
