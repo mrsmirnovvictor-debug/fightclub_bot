@@ -10756,7 +10756,9 @@ async def open_war(pw, server, don, body, images=False):
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await open_screen(page, "turf")
-    await page.wait_for_selector("#turf-body .shelf, #turf-body .spot")
+    await page.wait_for_selector(
+        "#turf-body .shelf, #turf-body .spot, #turf-body .raid-board"
+    )
     await page.evaluate("stopTurfPoll()")
     return browser, page
 
@@ -10806,24 +10808,27 @@ async def test_the_muster_lists_the_squad_and_only_the_leader_marches(server, db
 
 
 async def test_the_siege_shows_both_sides_and_waits_for_the_blow(server, db):
-    """Волна штурма: гарнизон, отряд, прицел и кнопки удара с блоком."""
+    """Волна штурма: доска как в групповом бою, прицел и кнопки хода."""
     don, _, _, siege, _ = await war_states(db)
 
     async with async_playwright() as pw:
         browser, page = await open_war(pw, server, don, siege, images=True)
 
-        head = await page.locator("#turf-body .shelf").first.inner_text()
-        assert "Казино · волна 1" in head and "городская охрана" in head
+        head = await page.locator("#turf .fight-round").inner_text()
+        assert "Казино — волна 1" in head
+        assert "городская охрана" in await page.locator(
+            "#turf .fight-line"
+        ).first.inner_text()
 
-        # Обе стороны стоят полосками: по ним и видно, кого осталось бить
-        sides = await page.locator("#turf .shelf-head").all_inner_texts()
-        assert sides[1:3] == ["Гарнизон", "Отряд"]
-        # У гарнизона лица: это охрана и нанятые, а не игроки
-        assert await page.locator("#turf .siege-row .npc-face").count() == 3
-        assert await page.locator("#turf .siege-row").count() == 6
-        # Сначала весь гарнизон, потом отряд: свой боец стоит четвёртым
-        mine = page.locator("#turf .siege-row").nth(3)
-        assert "(ты)" in await mine.inner_text()
+        # Доска та же, что в групповом бою: слева отряд, справа гарнизон
+        board = page.locator("#turf .raid-board")
+        assert await board.count() == 1
+        assert await board.locator(".raid-you").count() == 1
+        assert "— ты" in await board.locator(".raid-you").inner_text()
+        # Внизу справа тот, кого бьём в этой волне
+        assert await board.locator(".boss-card.mine").count() == 1
+        # У охраны лица, у игроков — нет
+        assert await board.locator(".npc-face").count() == 3
         assert "Бьём: " in await page.locator("#turf .raid-aim").inner_text()
 
         # Пока ход не набран, вперёд не пускают
@@ -10865,9 +10870,13 @@ async def test_the_finished_siege_shows_its_outcome_and_its_log(server, db):
     async with async_playwright() as pw:
         browser, page = await open_war(pw, server, don, done)
 
-        head = await page.locator("#turf-body .shelf").first.inner_text()
+        head = await page.locator("#turf .fight-round").inner_text()
         assert "Точка взята" in head or "Точка отбита" in head
-        assert "волн" in head
+        assert "волн" in await page.locator("#turf .fight-line").first.inner_text()
+
+        # Итог словами стоит над кнопкой, а не в шапке
+        said = await page.locator("#turf .fight-finish .log-line").all_inner_texts()
+        assert said, "итог назван словами"
 
         # Журнал боя — то, ради чего итог и открывают
         lines = await page.locator("#turf .fight-log .log-line").all_inner_texts()
@@ -10875,9 +10884,8 @@ async def test_the_finished_siege_shows_its_outcome_and_its_log(server, db):
         assert await page.locator("#turf .fight-log .shelf-head").inner_text() == (
             "Ход штурма"
         )
-        # Обе стороны видно и после боя: по ним и понятно, кто кого
-        heads = await page.locator("#turf .shelf-head").all_inner_texts()
-        assert "Гарнизон" in heads and "Отряд" in heads
+        # Доска видна и после боя: по ней и понятно, кто кого
+        assert await page.locator("#turf .raid-board").count() == 1
         assert await page.locator(
             "#turf .thing-buttons .btn"
         ).inner_text() == "Понятно"

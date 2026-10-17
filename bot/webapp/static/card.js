@@ -11010,33 +11010,26 @@ function musterBox(muster) {
 /** Штурм целиком: заголовок, стороны, кнопки хода и журнал боя. */
 function siegeBox(siege) {
   const box = document.createElement("div");
+  box.className = "fight-panel";
 
-  const head = document.createElement("section");
-  head.className = "shelf";
-  const title = document.createElement("h2");
-  title.className = "shelf-head";
-  title.textContent = siege.finished
+  // Шапка как в групповом бою: строка про волну и строка про место.
+  // Часы хода тут же: кто не нажал, за того бьёт случай
+  const head = document.createElement("p");
+  head.className = "fight-round";
+  head.textContent = siege.finished
     ? (siege.won ? "🚩 Точка взята" : "🛡 Точка отбита")
-    : siege.spot_title + " · волна " + siege.wave;
-  head.appendChild(title);
-  const who = document.createElement("p");
-  who.className = "screen-note";
-  // Часы хода: кто не нажал, за того бьёт случай, и видно, сколько ждать
-  who.textContent = siege.finished
-    ? siege.spot_title + " · волн: " + siege.wave
-    : "Держит: " + siege.defender + "."
-      + (siege.seconds_left ? " Ход: " + clockText(siege.seconds_left) + "." : "");
-  head.appendChild(who);
-  (siege.summary || []).forEach((line) => {
-    const said = document.createElement("p");
-    said.className = "screen-note";
-    said.textContent = line;
-    head.appendChild(said);
-  });
+    : "🚩 " + siege.spot_title + " — волна " + siege.wave;
   box.appendChild(head);
 
-  box.appendChild(sideBox("Гарнизон", siege.wall));
-  box.appendChild(sideBox("Отряд", siege.party));
+  const who = document.createElement("p");
+  who.className = "fight-line";
+  who.textContent = siege.finished
+    ? siege.spot_title + " · волн: " + siege.wave
+    : "Держит: " + siege.defender
+      + (siege.seconds_left ? " · ход " + clockText(siege.seconds_left) : "");
+  box.appendChild(who);
+
+  box.appendChild(siegeBoard(siege));
   box.appendChild(siegeFoot(siege));
   // Журнал внизу и всегда: ради него сюда и смотрят, когда свой ход уже
   // сделан, — и после боя он остаётся единственным, что было
@@ -11044,29 +11037,125 @@ function siegeBox(siege) {
   return box;
 }
 
-/** Что под шкалами: кнопки хода, строка ожидания или «Понятно». */
+// Доска штурма — та же, что в групповом бою: внизу ты и тот, кого бьёшь
+// в этой волне, выше остальные — слева отряд, справа гарнизон. Шкалы
+// двумя столбиками читались хуже: в них не видно, кто с кем сошёлся.
+function siegeBoard(siege) {
+  const box = document.createElement("div");
+  box.className = "raid-board";
+  const party = siege.party || [];
+  const wall = siege.wall || [];
+  const you = party.find((one) => one.is_self) || party[0] || null;
+  const foe = siege.foe;
+
+  box.appendChild(
+    deckOf(
+      "raid-mates",
+      siegeCards(party.filter((one) => one !== you), "mate", true),
+      you ? siegeCard(you, "raid-you", true) : null
+    )
+  );
+  const swords = document.createElement("p");
+  swords.className = "versus";
+  swords.textContent = "⚔️";
+  box.appendChild(swords);
+  box.appendChild(
+    deckOf(
+      "raid-foes",
+      siegeCards(
+        wall.filter((one) => !foe || one.user_id !== foe.user_id),
+        "foe", false
+      ),
+      foe ? siegeCard(foe, "boss-card mine", false) : noRivalCard()
+    )
+  );
+  return box;
+}
+
+// Карты стопки: живые сверху, павшие глубже — как в рейде и в бою
+function siegeCards(rows, kind, ours) {
+  return byTheLiving(rows).map((one) => {
+    const card = stackCard(kind, one.alive);
+    stackHead(
+      card,
+      siegeMark(one, ours) + siegeName(one),
+      one.alive ? one.hp + "/" + one.max_hp : "выбыл"
+    );
+    siegeFace(card.querySelector(".fight-name"), one);
+    card.appendChild(fightBar(one));
+    return card;
+  });
+}
+
+// Лицо нанятого или охранника — кружком перед именем. У игрока его нет:
+// его карточка и так рядом, а место в строке одно
+function siegeFace(into, one) {
+  if (!into || !one.picture) return;
+  const face = picture(one.picture, one.name, "");
+  face.className = "npc-face";
+  into.insertBefore(face, into.firstChild);
+}
+
+// Крупная карта: имя с уровнем, запас числом и шкала под ними
+function siegeCard(one, kind, ours) {
+  const box = document.createElement("div");
+  box.className = kind + (one.alive ? "" : " down dropped");
+  const name = document.createElement("p");
+  name.className = "fight-name";
+  name.textContent = siegeMark(one, ours) + siegeName(one)
+    + " [" + one.level + "]" + (one.is_self ? " — ты" : "");
+  siegeFace(name, one);
+  const hp = document.createElement("p");
+  hp.className = "fight-hp";
+  hp.textContent = one.alive ? one.hp + "/" + one.max_hp : "выбыл";
+  box.append(name, hp, fightBar(one));
+  return box;
+}
+
+// Галочку и часы ставим только своим: гарнизон ведёт бросок, и «ждём
+// его хода» про него было бы неправдой
+function siegeMark(one, ours) {
+  if (!one.alive) return "💀 ";
+  if (!ours) return "";
+  return one.acted ? "✅ " : "⏳ ";
+}
+
+function siegeName(one) {
+  return (one.fclass || "") + " " + one.name;
+}
+
+/** Что под доской: кнопки хода, строка со стороны или «Понятно». */
 function siegeFoot(siege) {
   if (siege.finished) {
+    const box = document.createElement("div");
+    box.className = "fight-finish";
+    (siege.summary || []).forEach((line) => {
+      const said = document.createElement("p");
+      said.className = "log-line";
+      said.textContent = line;
+      box.appendChild(said);
+    });
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
     buttons.appendChild(
       button("Понятно", { onClick: () => turfAction({ action: "done" }) })
     );
-    return buttons;
+    box.appendChild(buttons);
+    return box;
   }
   if (!siege.yours || !siege.alive) {
     const said = document.createElement("p");
-    said.className = "screen-note";
+    said.className = "fight-line";
     said.textContent = siege.alive
       ? "Ты смотришь со стороны."
-      : "Тебя вынесли — досматривай со стороны.";
+      : "Тебя вынесли — отряд дерётся дальше.";
     return said;
   }
   if (siege.acted) {
-    const said = document.createElement("p");
-    said.className = "screen-note";
-    said.textContent = "Ход принят. Ждём остальных.";
-    return said;
+    // Строки «ход принят» тут нет нарочно: на доске у своей карточки
+    // уже стоит галочка, и повторять то же самое словами незачем.
+    // Остаются заготовки — по ним видно, что накоплено к размену
+    return restingTricks(siege);
   }
   return siegeTurnForm(siege);
 }

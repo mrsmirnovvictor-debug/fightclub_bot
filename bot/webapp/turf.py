@@ -211,8 +211,12 @@ def _note(mine: Owner, held: int, at_spot: bool) -> str:
 # ---------- живая осада ----------
 
 
-def fighter_row(one, viewer_id: int = 0) -> dict[str, Any]:
-    """Боец в панели: имя, запас и жив ли он ещё."""
+def fighter_row(one, viewer_id: int = 0, acted: bool = False) -> dict[str, Any]:
+    """Боец в панели: имя, запас, жив ли он ещё и сделал ли ход.
+
+    `acted` — только у своих: гарнизон ведёт бросок, и «ждём его хода»
+    про него было бы неправдой.
+    """
     return {
         "user_id": one.user_id,
         "name": one.name,
@@ -225,6 +229,7 @@ def fighter_row(one, viewer_id: int = 0) -> dict[str, Any]:
         # Лицо есть у нанятых и охраны, у игрока его нет
         "picture": one.picture,
         "is_self": one.user_id == viewer_id,
+        "acted": acted,
     }
 
 
@@ -277,7 +282,10 @@ def siege_payload(siege, viewer_id: int) -> dict[str, Any]:
         "blocks": block_buttons(fighter.block_width if fighter else BLOCK_WIDTH),
         # Весь гарнизон по порядку: по нему видно, сколько ещё стоит
         "wall": [fighter_row(one) for one in siege.wall.values()],
-        "party": [fighter_row(one, viewer_id) for one in siege.party.values()],
+        "party": [
+            fighter_row(one, viewer_id, user_id in siege.acted)
+            for user_id, one in siege.party.items()
+        ],
         # Кого смотрящий бьёт сейчас. Пусто — некого: его защитника
         # добили, а следующий достанется со следующего размена
         "foe": fighter_row(foe) if foe is not None else None,
