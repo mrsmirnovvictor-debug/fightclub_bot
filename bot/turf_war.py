@@ -573,8 +573,12 @@ class TurfWar:
             # следующего расчёта у него уже не будет
             row = await self.db.turf_row(siege.spot.code)
             if row is not None:
+                # Считаем до того, как выставленные полягут: платят
+                # только за то время, что точку охраняли
                 siege.handed = await hand_over(
-                    self.db, siege.spot, siege.defender, row.paid_until, moment
+                    self.db, siege.spot, siege.defender, row.paid_until,
+                    moment,
+                    guarded=bool(await self.db.hirelings_at(siege.spot.code)),
                 )
             # Отбили точку — выставленные на ней гибнут насовсем
             siege.fallen = await self.db.clear_spot(siege.spot.code)

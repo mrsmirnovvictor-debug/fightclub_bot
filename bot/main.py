@@ -20,6 +20,7 @@ from aiogram.types import (
 )
 
 from bot.config import Config, load_config
+from bot import chores
 from bot.database import Database
 from bot.battle_service import BattleService
 from bot.duel_service import DuelService
@@ -122,6 +123,10 @@ async def run(config: Config | None = None) -> None:
     )
     db = Database(config.db_path)
     await db.connect()
+    # Разовые работы по данным: сброс точек и прочее, что делается один
+    # раз на живой базе. Молчат, когда делать нечего
+    for line in await chores.run(db):
+        logger.info("Разовая работа: %s", line)
     duels = DuelService(bot=bot, db=db, config=config)
     battles = BattleService(bot=bot, db=db, config=config)
     tournaments = TournamentService(bot=bot, db=db, config=config, duels=duels)

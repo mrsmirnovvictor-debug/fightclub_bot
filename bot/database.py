@@ -775,6 +775,14 @@ CREATE TABLE IF NOT EXISTS hirelings (
 CREATE INDEX IF NOT EXISTS hirelings_owner ON hirelings(owner_id);
 CREATE INDEX IF NOT EXISTS hirelings_spot ON hirelings(spot);
 
+-- Разовые работы по живой базе: сброс точек, пересчёт — всё, что
+-- делается один раз и не должно повториться при перезапуске. Миграции
+-- колонок лежат отдельно (`MIGRATIONS`): там форма, тут данные
+CREATE TABLE IF NOT EXISTS chores (
+    code    TEXT PRIMARY KEY,
+    done_at INTEGER NOT NULL DEFAULT 0
+);
+
 -- Квесты бойца: по строке на взятое задание. Нет строки — задание ещё
 -- не предлагали или от него отказались. `marks` — отметки города: что
 -- он уже видел по этому заданию (бой выигран, дверь открыта, вопрос
@@ -3113,6 +3121,34 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    # ---------- разовые работы ----------
+
+    async def chore_done(self, code: str) -> bool:
+        """Делали ли уже эту работу."""
+        async with self.conn.execute(
+            "SELECT 1 FROM chores WHERE code = ?", (code,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def mark_chore(self, code: str, now: int) -> bool:
+        """Отметить работу сделанной. False — её уже делали.
+
+        Отметка и проверка — один запрос: бот перезапускается, и два
+        захода подряд не должны сбросить точки дважды.
+        """
+        cursor = await self.conn.execute(
+            "INSERT OR IGNORE INTO chores (code, done_at) VALUES (?,?)",
+            (code, now),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def wipe_turf(self) -> int:
+        """Снять всех владельцев с точек. Возвращает, сколько сняли."""
+        cursor = await self.conn.execute("DELETE FROM turf")
+        await self.conn.commit()
+        return cursor.rowcount
+
     # ---------- нанятые: наёмники и патрульные ----------
 
     async def hire(
@@ -3168,6 +3204,12 @@ class Database:
         cursor = await self.conn.execute(
             "DELETE FROM hirelings WHERE spot = ?", (spot,)
         )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def clear_all_hirelings(self) -> int:
+        """Распустить всех нанятых разом. Это для разовых работ."""
+        cursor = await self.conn.execute("DELETE FROM hirelings")
         await self.conn.commit()
         return cursor.rowcount
 

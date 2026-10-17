@@ -31,6 +31,7 @@ from bot.game.turf import (
     MAX_GARRISON,
     MAX_SPOTS_PER_OWNER,
     SERVICE,
+    SERVICE_SHARE,
     TOTAL_SPOTS,
     Owner,
     calm_left,
@@ -89,6 +90,8 @@ async def spot_row(
         # Сколько нанятых на точке и сколько их туда ещё влезет
         "posted": (posted or {}).get(spot.code, 0),
         "max_posted": MAX_POSTED,
+        # Платит ли точка. Брошенная не платит: это дом с вывеской
+        "guarded": holding.guarded,
         # Боец стоит у этого дома. Без этого кнопки сбора не бывает:
         # точку берут ногами
         "here": standing,
@@ -135,7 +138,11 @@ async def build_turf(
             "nobody": mine.nobody,
         },
         "held": len(held),
-        "income": sum(one["income"] for one in held),
+        "income": sum(
+            int(one["income"] * (SERVICE_SHARE if mine.kind == SERVICE else 1))
+            for one in held
+            if one["guarded"]
+        ),
         "vault": await vault_of(db, mine),
         "ceiling": MAX_SPOTS_PER_OWNER,
         "squad": MAX_GARRISON,
@@ -195,7 +202,10 @@ def _note(mine: Owner, held: int, at_spot: bool) -> str:
             "Ты на месте. Ничьи точки тоже под охраной: брать их придётся "
             "боем."
         )
-    return f"Точек у вас {held} из {MAX_SPOTS_PER_OWNER}. Доход капает раз в сутки."
+    return (
+        f"Точек у вас {held} из {MAX_SPOTS_PER_OWNER}. Доход капает раз в "
+        "сутки и только с тех, на которых кто-то стоит."
+    )
 
 
 # ---------- живая осада ----------

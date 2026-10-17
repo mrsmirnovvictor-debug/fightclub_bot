@@ -42,7 +42,7 @@ from bot.game.turf import (
     share_of,
 )
 from bot.hire_service import HireError, guards, hire, post, roster, side_of
-from bot.turf_service import garrison, hand_over, survey, vault_of
+from bot.turf_service import garrison, hand_over, income_of, survey, vault_of
 from tests.test_robbery import NOW, family, make_player, stand
 from tests.test_police import cop
 
@@ -343,12 +343,52 @@ async def test_the_handover_pays_the_hours_actually_held(db):
     assert await hand_over(db, spot, Owner(), taken, half) == 0
 
 
+async def test_an_abandoned_spot_pays_nothing(db):
+    """Точка платит, только пока на ней кто-то стоит.
+
+    Взятая и брошенная — это дом с вывеской, а не доход. И несчитанные
+    сутки не копятся: поставишь наёмника завтра — за вчера не дадут.
+    """
+    don, squad, clan = await family(db)
+    spot = get_spot(BAR)
+    mine = owner_of_clan(clan.id)
+    await db.take_turf(BAR, "clan", str(clan.id), NOW)
+
+    # Двое суток без охраны — в сейфе пусто
+    await survey(db, NOW + 2 * DAY_SECONDS)
+    assert await vault_of(db, mine) == 0
+    assert await income_of(db, mine, NOW + 2 * DAY_SECONDS) == 0
+
+    # Поставили наёмника — и вот с этого часа точка платит
+    await stand(db, [don.user_id], BAR)
+    boss = await rich(db, don.user_id)
+    await hire(db, boss, "merc_5", now=NOW + 2 * DAY_SECONDS)
+    taken = (await db.hirelings_of(don.user_id))[0]
+    await post(db, await db.get_player(don.user_id), int(taken["id"]), BAR,
+               now=NOW + 2 * DAY_SECONDS)
+
+    await survey(db, NOW + 3 * DAY_SECONDS)
+    assert await vault_of(db, mine) == spot.income, "за сутки, а не за трое"
+    assert await income_of(db, mine, NOW + 3 * DAY_SECONDS) == spot.income
+
+
 async def test_the_city_keeps_half_of_the_income(db):
     """Точка под городом платит вдвое меньше, чем под семьёй."""
+    from bot.police_service import POLICE
+
     spot = get_spot(BAR)
-    await db.take_turf(BAR, "service", "police", NOW)
+    officer = await cop(db, 90, "Сержант")
+    officer.credits = 5_000
+    officer.location = BAR
+    await db.save_player(officer)
+    await db.take_turf(BAR, "service", POLICE, NOW)
+    officer = await db.get_player(90)
+    await hire(db, officer, "patrol_5", now=NOW)
+    taken = (await db.hirelings_of(90))[0]
+    await post(db, await db.get_player(90), int(taken["id"]), BAR, now=NOW)
+
     await survey(db, NOW + DAY_SECONDS)
-    assert await vault_of(db, owner_of_service("police")) == spot.income // 2
+    assert await vault_of(db, owner_of_service(POLICE)) == spot.income // 2
 
 
 # ---------- экран ----------

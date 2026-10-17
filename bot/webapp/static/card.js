@@ -10811,10 +10811,14 @@ function spotCard(one, data) {
   const who = document.createElement("p");
   who.className = "spot-owner";
   // Нанятых считаем, городскую охрану называем: её не ставят и не
-  // считают, она просто есть на всякой точке, где не хозяйничает семья
+  // считают, она просто есть на всякой точке, где не хозяйничает семья.
+  // Брошенная точка не платит, и об этом говорим прямо: деньги — не
+  // за флажок на карте, а за то, что её кто-то держит
   const kept = one.posted
     ? "охрана: " + one.posted + " из " + one.max_posted
-    : one.owner.kind === "clan" ? "без охраны" : "городская охрана";
+    : one.owner.nobody
+      ? "городская охрана"
+      : "без охраны — не платит";
   who.textContent = (one.mine ? "✅ Держите вы" : "Держит: " + one.owner.title)
     + " · " + kept;
   box.appendChild(who);

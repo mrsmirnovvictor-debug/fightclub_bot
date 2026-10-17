@@ -80,6 +80,8 @@ class Holding:
     fought_at: int = 0
     # Сколько доход накапал владельцу и не было начислено
     due: int = 0
+    # Стоит ли на точке хоть один нанятый. Нет — точка не платит
+    guarded: bool = False
 
 
 @dataclass
@@ -141,19 +143,28 @@ async def survey(
     """
     moment = now_ts() if now is None else now
     rows = await db.turf_rows()
+    # Кто на точках стоит. Точка платит, только пока её кто-то охраняет:
+    # взятая и брошенная — это просто дом с вывеской, а не доход
+    kept = await db.posted_counts()
     out: list[Holding] = []
     for spot in SPOTS:
         row = rows.get(spot.code)
         if row is None:
             out.append(Holding(spot=spot, owner=Owner()))
             continue
+        guarded = bool(kept.get(spot.code))
         due = 0
         if not row.owner.nobody:
             due, paid_until = payout(
                 spot, row.paid_until, moment, share_of(row.owner.kind)
             )
-            if due:
+            if due and guarded:
                 await _pay(db, spot, row.owner, due, paid_until)
+            elif due:
+                # Несчитанные сутки не копятся: поставишь наёмника
+                # завтра — за вчерашнее брошенное стояние не дадут
+                await db.pay_turf(spot.code, paid_until)
+                due = 0
         out.append(
             Holding(
                 spot=spot,
@@ -161,13 +172,15 @@ async def survey(
                 taken_at=row.taken_at,
                 fought_at=row.fought_at,
                 due=due,
+                guarded=guarded,
             )
         )
     return out
 
 
 async def hand_over(
-    db: Database, spot: Spot, owner: Owner, since: int, now: int
+    db: Database, spot: Spot, owner: Owner, since: int, now: int,
+    guarded: bool = True,
 ) -> int:
     """Рассчитать прежнего владельца за неполные сутки перед сменой.
 
@@ -175,7 +188,7 @@ async def hand_over(
     следующий — которого у потерявшего точку уже не будет. Держал
     четырнадцать часов, отбили на пятнадцатом: четырнадцать часов его.
     """
-    if owner.nobody:
+    if owner.nobody or not guarded:
         return 0
     due = final_payout(spot, since, now, share_of(owner.kind))
     if due:
@@ -205,8 +218,12 @@ async def held_by(db: Database, owner: Owner, now: int | None = None) -> list[Ho
 
 
 async def income_of(db: Database, owner: Owner, now: int | None = None) -> int:
-    """Сколько владелец получает в сутки со всех своих точек."""
-    return sum(one.spot.income for one in await held_by(db, owner, now))
+    """Сколько владелец получает в сутки. Брошенные точки не в счёт."""
+    return sum(
+        int(one.spot.income * share_of(owner.kind))
+        for one in await held_by(db, owner, now)
+        if one.guarded
+    )
 
 
 async def vault_of(db: Database, owner: Owner) -> int:

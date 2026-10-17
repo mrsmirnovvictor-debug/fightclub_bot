@@ -108,6 +108,26 @@ async def stand(db: Database, user_ids: list[int], code: str) -> None:
         await db.save_player(player)
 
 
+async def guard(db: Database, user_id: int, code: str, when: int = NOW) -> None:
+    """Поставить на точку одного наёмника.
+
+    Без охраны точка не платит вовсе, и проверкам про деньги без этого
+    шага считать нечего: взятая и брошенная — дом с вывеской.
+    """
+    from bot.hire_service import hire, post
+
+    one = await db.get_player(user_id)
+    one.credits += 5_000
+    one.location = code
+    one.travel_to = None
+    one.arrives_at = 0
+    await db.save_player(one)
+    await hire(db, await db.get_player(user_id), "merc_5", now=when)
+    taken = [row for row in await db.hirelings_of(user_id) if not row["spot"]]
+    await post(db, await db.get_player(user_id), int(taken[0]["id"]), code,
+               now=when)
+
+
 async def seize(db: Database, don: Player, squad: list[int], code: str) -> int:
     """Взять точку, сколько бы попыток ни ушло. Отдаёт час захвата.
 
@@ -268,6 +288,7 @@ async def test_the_won_spot_changes_hands_and_starts_paying(db):
     """Взяли точку — она ваша и платит с часа захвата."""
     don, squad, clan = await family(db)
     taken = await seize(db, don, squad, "bar")
+    await guard(db, don.user_id, "bar", taken)
 
     mine = owner_of_clan(clan.id)
     held = await held_by(db, mine, taken)
@@ -342,6 +363,7 @@ async def test_the_survey_pays_even_the_absent_owner(db):
     """Доход сводит тот, кто пришёл смотреть, — в том числе чужой."""
     don, squad, clan = await family(db)
     taken = await seize(db, don, squad, "bar")
+    await guard(db, don.user_id, "bar", taken)
 
     # Смотрит посторонний, а платят семье
     stranger = make_player(50, "Прохожий")
