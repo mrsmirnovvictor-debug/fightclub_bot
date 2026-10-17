@@ -533,10 +533,15 @@ async def test_the_siege_ends_and_the_spot_changes_hands(db, client):
     assert body["result"] is None
 
 
-async def test_the_city_map_carries_the_flags_and_the_band(db, client):
-    """Карта города: флажок под каждой точкой и плашка под ногами."""
+async def test_the_city_map_carries_the_marks_and_the_band(db, client):
+    """Карта города: отметка у каждой точки и плашка под ногами.
+
+    Отметка — всё, что карта говорит о точке: владелец и доход стояли
+    там строкой под каждой вывеской, и карта читалась как ведомость.
+    """
     don, squad, clan = await family(db)
     await db.take_turf("casino", "service", "police", NOW)
+    await db.take_turf("market", "clan", str(clan.id), NOW)
     await stand(db, squad, "bar")
 
     body = await (await client.get(
@@ -544,9 +549,15 @@ async def test_the_city_map_carries_the_flags_and_the_band(db, client):
     )).json()
     marks = body["turf"]["spots"]
     assert len(marks) == TOTAL_SPOTS
-    assert marks["casino"]["owner"] == "Полиция Вегаса"
-    assert marks["casino"]["income"] == get_spot("casino").income
-    assert marks["bar"]["mine"] is False
+    # Фуражка у службы, шляпа у семьи, круг у ничьей
+    assert marks["casino"]["mark"] == "👮"
+    assert marks["market"]["mark"] == "🎩"
+    assert marks["bar"]["mark"] == "⚪️"
+    # Свою узнают по цвету названия, а не по отдельной отметке
+    assert marks["market"]["mine"] is True
+    assert marks["casino"]["mine"] is False
+    # Доход и имя владельца на карту не идут вовсе
+    assert set(marks["bar"]) == {"mark", "mine"}
 
     # Плашка под ногами: боец стоит у бара, и отсюда собирают отряд
     band = body["turf"]["here"]

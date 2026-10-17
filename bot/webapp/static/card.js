@@ -2245,31 +2245,29 @@ function houseShape(place) {
 
   // Подпись под дверью. Над ней нельзя: там на рисунке нарисована
   // настоящая вывеска дома, и наша ложится прямо на неё
+  // Отметка войны — перед названием: круг у ничьего дома, шляпа у
+  // семьи, фуражка у службы. По ней видно и то, что дом вообще берут,
+  // и кто его держит. Владельца и доход строкой под вывеской тут
+  // держали раньше — карта читалась как ведомость, а всё это есть в
+  // особняке
+  const held = (turfOnMap().spots || {})[place.code];
   const sign = svgNode("text", {
     x: (place.zone.x + place.zone.w / 2) * MAP_W,
     y: (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP,
-    class: "zone-sign",
+    class: "zone-sign" + (held && held.mine ? " ours" : ""),
     "text-anchor": "middle",
     "dominant-baseline": "hanging",
   });
-  sign.textContent = place.here ? "📍 " + place.title : place.title;
+  sign.textContent = (place.here ? "📍 " : "")
+    + (held ? held.mark + " " : "") + place.title;
   group.appendChild(sign);
 
   // Под вывеской казино — отсчёт рейда: подвал открыт не всегда, и
   // единственное место, где это видно заранее, — карта
-  let stacked = 0;
   if ((place.services || []).includes("raid")) {
     const plate = raidPlate(place);
-    if (plate) {
-      group.appendChild(plate);
-      stacked = plate.dataset.height ? Number(plate.dataset.height) : 0;
-    }
+    if (plate) group.appendChild(plate);
   }
-  // А под ней — флажок войны: чья точка и сколько приносит. У казино
-  // плашки две, и вторая встаёт под первой, а не поверх неё
-  const flag = turfPlate(place, stacked);
-  if (flag) group.appendChild(flag);
-
   const enter = () => enterHouse(place);
   group.addEventListener("click", enter);
   group.addEventListener("keydown", (event) => {
@@ -2347,54 +2345,6 @@ function raidPlate(place) {
   }
   // Сколько места заняла плашка: под казино за ней встаёт ещё флажок
   // войны, и ему надо знать, с какой высоты начинать
-  plate.dataset.height = String(height + PLATE_GAP);
-  return plate;
-}
-
-// Просвет между двумя плашками под одной вывеской
-const PLATE_GAP = 12;
-// Ширина буквы флажка на глаз: 29 пикселей жирным
-const PLATE_CHAR = 16;
-
-/** Флажок войны под вывеской: чья точка и сколько приносит. */
-function turfPlate(place, drop) {
-  const mark = (turfOnMap().spots || {})[place.code];
-  if (!mark) return null;
-  // Под ногами флажка не рисуем: там уже лежит плашка со сбором, и она
-  // говорит то же самое — а у двери на нижнем краю карты они и вовсе
-  // ложатся друг на друга
-  if (place.here && turfBandShown()) return null;
-
-  const text = mark.mark + " " + mark.owner + " · " + mark.income + "/сут";
-  const middle = (place.zone.x + place.zone.w / 2) * MAP_W;
-  const top = (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP + PLATE_DROP
-    + (drop || 0);
-  const height = PLATE_PAD * 2 + PLATE_LINE;
-  // Имя семьи бывает длинным, и в рейдовую ширину оно не лезет: коробку
-  // растягиваем под буквы. Мерить их у браузера нечем — холст на этом
-  // шаге ещё ничего не меряет, — поэтому считаем на глаз, как подписи
-  const width = Math.max(PLATE_W, text.length * PLATE_CHAR + PLATE_PAD * 2);
-
-  const plate = svgNode("g", {
-    class: "zone-plate turf" + (mark.mine ? " mine" : ""),
-  });
-  plate.appendChild(svgNode("rect", {
-    x: middle - width / 2,
-    y: top,
-    width: width,
-    height: height,
-    rx: 18,
-    class: "plate-box",
-  }));
-  const word = svgNode("text", {
-    x: middle,
-    y: top + height / 2,
-    class: "plate-word",
-    "text-anchor": "middle",
-    "dominant-baseline": "central",
-  });
-  word.textContent = text;
-  plate.appendChild(word);
   return plate;
 }
 

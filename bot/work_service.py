@@ -46,6 +46,7 @@ from bot.game.work import (
     agency_board,
     hired_at_house,
     get_vacancy,
+    hours_before_payday,
     hours_of,
     day_is_over,
     months_count,
@@ -418,7 +419,12 @@ async def settle(db: Database, player: Player, now: int | None = None) -> str:
     if not week_is_over(player.job_week, moment):
         return ""
 
-    slip = await _pay(db, player, vacancy, moment, fired=None)
+    # Неделя, в которую устроились, бывает короче нормы: пришёл в
+    # пятницу — до понедельника остаются двое суток по две смены, и
+    # половину нормы не закрыть никак. Увольнять за то, чего не дали
+    # сделать, нечестно: первая неделя считается, но не судится
+    short = short_week(player, vacancy)
+    slip = await _pay(db, player, vacancy, moment, fired=False if short else None)
     said = (
         f"Жалованье за неделю: {slip.paid} 💰 за {slip.hours:g} ч "
         f"из {vacancy.hours}."
@@ -435,7 +441,25 @@ async def settle(db: Database, player: Player, now: int | None = None) -> str:
             "Вакансия снова в агентстве, но подать на неё можно "
             "через неделю."
         )
+    elif short and slip.hours < vacancy.keep_hours():
+        said += (
+            " Неделя была короткой: устроился под её конец, и норму было "
+            "не закрыть. На этот раз без увольнения."
+        )
     return said
+
+
+def short_week(player: Player, vacancy: Vacancy) -> bool:
+    """Была ли эта неделя для бойца короче, чем норма его места.
+
+    Считается только для той недели, в которую его приняли: дальше
+    недели у него полные, и спрос с него обычный.
+    """
+    if player.job_since < player.job_week:
+        return False
+    return hours_before_payday(
+        player.job_since, player.job_week
+    ) < vacancy.keep_hours()
 
 
 async def _pay(
@@ -525,6 +549,7 @@ __all__ = [
     "lacking",
     "release_the_absent",
     "settle",
+    "short_week",
     "start_shift",
     "vacancies",
     "vacancies_at",

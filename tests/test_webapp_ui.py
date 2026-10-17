@@ -11068,8 +11068,8 @@ async def test_the_board_sends_the_fighter_to_the_house(server, db):
         await browser.close()
 
 
-async def test_the_city_map_flags_the_spots_and_offers_the_muster(server, db):
-    """Карта города: флажок владельца под вывеской и плашка под ногами."""
+async def test_the_city_map_marks_the_spots_and_offers_the_muster(server, db):
+    """Карта города: отметка у названия точки и плашка под ногами."""
     from bot.webapp.citymap import build_map
     from bot.webapp.turf import build_war, map_marks
     from tests.test_turf import NOW, family, stand
@@ -11087,7 +11087,6 @@ async def test_the_city_map_flags_the_spots_and_offers_the_muster(server, db):
         await page.wait_for_selector("#map:not(.hidden)")
         await page.wait_for_selector(".zone-house")
 
-        # Флажок висит под вывеской точки и говорит, кто её держит
         # Плашка под ногами: отсюда и собирают отряд
         band = page.locator("#map-turf")
         assert await band.is_visible()
@@ -11095,14 +11094,17 @@ async def test_the_city_map_flags_the_spots_and_offers_the_muster(server, db):
         assert "Бар" in said and "90" in said and "городская охрана" in said
         assert await page.locator("#turf-call").inner_text() == "🚩 Созвать отряд"
 
-        # Флажка под своей вывеской нет: плашка говорит то же самое, а у
-        # двери на нижнем краю карты они легли бы друг на друга
-        assert await page.locator(".zone-plate.turf").count() == 0
+        # Отметка стоит перед названием дома, а не строкой под ним
+        bar = page.locator(".zone-house", has_text="Бар").first
+        assert await bar.locator(".zone-sign").text_content() == "📍 ⚪️ Бар"
+        # Подписей с владельцем и доходом под домами нет вовсе
+        signs = await page.locator(".zone-sign").all_text_contents()
+        assert not any("/сут" in one for one in signs)
         await browser.close()
 
 
-async def test_the_map_flags_the_neighbours_without_a_band(server, db):
-    """Стоишь не на точке — плашки нет, а флажок соседней точки на месте."""
+async def test_the_map_marks_the_neighbours_without_a_band(server, db):
+    """Стоишь не на точке — плашки нет, а отметка соседней точки на месте."""
     from bot.webapp.citymap import build_map
     from bot.webapp.turf import build_war, map_marks
     from tests.test_turf import NOW, family, stand
@@ -11122,9 +11124,18 @@ async def test_the_map_flags_the_neighbours_without_a_band(server, db):
         await page.wait_for_selector(".zone-house")
 
         assert await page.locator("#map-turf").is_hidden()
-        # Плашка нарисована в SVG, а у него нет inner_text
-        flag = await page.locator(".zone-plate.turf").first.text_content()
-        assert "городская охрана" in flag and "/сут" in flag
+        # Отметка соседней точки на месте — и это всё, что карта о ней
+        # говорит: владельца и доход смотрят в особняке
+        # (подпись нарисована в SVG, а у него нет inner_text)
+        shop = page.locator(".zone-house", has_text="Оружейный магазин").first
+        assert await shop.locator(".zone-sign").text_content() == (
+            "⚪️ Оружейный магазин"
+        )
+        # А клуб не точка, и отметки у него нет вовсе
+        club = page.locator(".zone-house", has_text="Бойцовский клуб").first
+        assert (await club.locator(".zone-sign").text_content()).startswith(
+            "📍 Бойцовский клуб"
+        )
         await browser.close()
 
 async def test_the_stairwell_shows_what_is_free_and_what_is_taken(server):

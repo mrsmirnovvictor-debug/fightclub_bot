@@ -53,6 +53,29 @@ SERVICE_MARK = "🛡"
 NOBODY_MARK = "⚪️"
 
 
+def house_mark(owner: Owner) -> str:
+    """Чем помечен дом на карте города: кто его держит.
+
+    Своей точки тут нет нарочно: на карте важно не «чья она», а «её
+    вообще берут» — круг у ничьей, шляпа у семьи, фуражка у службы.
+    Прибыль на карту не идёт вовсе: её смотрят в особняке, а под
+    вывеской она была лишней строкой на каждом доме.
+    """
+    if owner.nobody:
+        return NOBODY_MARK
+    if owner.kind == SERVICE:
+        return service_mark(owner.key)
+    return CLAN_MARK
+
+
+def service_mark(key: str) -> str:
+    """Значок службы — её собственный: у полиции фуражка."""
+    from bot.game.services import BY_CODE
+
+    service = BY_CODE.get(key)
+    return service.emoji if service else SERVICE_MARK
+
+
 def spot_mark(owner: Owner, ours: bool) -> str:
     """Чем помечена точка в списке."""
     if ours:
@@ -86,6 +109,8 @@ async def spot_row(
             "nobody": owner.nobody,
         },
         "mark": spot_mark(owner, ours),
+        # Отметка для карты города: там «чья» важнее «своя ли»
+        "sign": house_mark(owner),
         "mine": ours,
         # Сколько нанятых на точке и сколько их туда ещё влезет
         "posted": (posted or {}).get(spot.code, 0),
@@ -350,19 +375,19 @@ async def build_war(
 
 
 def map_marks(body: dict[str, Any]) -> dict[str, Any]:
-    """Война глазами карты: флажок под каждой точкой и плашка под ногами.
+    """Война глазами карты: отметка у вывески и плашка под ногами.
 
     Считается из готового ответа войны, а не заново: два списка одних и
     тех же точек однажды разошлись бы, и карта показала бы одного
     владельца, а особняк другого.
+
+    Под вывеску идёт одна отметка и больше ничего. Владелец и доход
+    стояли там строкой на каждом доме — карта от этого читалась как
+    ведомость; всё это есть в особняке, а на карте довольно знать, что
+    дом вообще берут.
     """
     spots = {
-        row["code"]: {
-            "mark": row["mark"],
-            "owner": row["owner"]["title"],
-            "income": row["income"],
-            "mine": row["mine"],
-        }
+        row["code"]: {"mark": row["sign"], "mine": row["mine"]}
         for row in body["spots"]
     }
     row = next((one for one in body["spots"] if one["here"]), None)
@@ -414,6 +439,7 @@ __all__ = [
     "build_turf",
     "build_war",
     "fighter_row",
+    "house_mark",
     "map_marks",
     "muster_payload",
     "siege_payload",

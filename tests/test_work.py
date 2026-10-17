@@ -719,6 +719,72 @@ async def test_under_half_the_norm_is_paid_and_sacked(db):
     assert await db.taken_jobs() == {}
 
 
+async def test_the_friday_hire_is_not_sacked_for_a_week_he_had_no_time_for(db):
+    """Устроился в пятницу — до понедельника норму не закрыть.
+
+    Две смены по два часа — всё, что остаётся на субботу и воскресенье,
+    а половина нормы бармена это пять часов. Увольнять за то, чего не
+    дали сделать, нечестно.
+    """
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=9))
+    await start_shift(db, player, moment_at(day=10, hour=12))  # два часа
+
+    said = await settle(db, player, moment_at(day=12, hour=9))
+
+    assert player.job_code == "bartender", "уволен за короткую неделю"
+    assert player.account_balance == 50, "за отработанное всё равно платят"
+    assert "уволили" not in said
+    assert "Неделя была короткой" in said
+    assert await db.taken_jobs(), "место осталось за ним"
+
+
+async def test_the_thursday_hire_is_judged_like_everyone(db):
+    """Четверг — ещё не короткая неделя: три дня по две смены это шесть
+    часов, и половину нормы закрыть можно."""
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=8))
+    await start_shift(db, player, moment_at(day=8, hour=12))  # два часа
+
+    said = await settle(db, player, moment_at(day=12, hour=9))
+
+    assert "уволили" in said
+    assert player.job_code == ""
+
+
+async def test_the_short_week_is_forgiven_once_and_not_twice(db):
+    """Поблажка — только той неделе, в которую приняли.
+
+    Дальше недели у него полные, и спрос обычный: иначе устроившийся в
+    пятницу держал бы место, не работая вовсе.
+    """
+    player = await hired(db, make_player(location=BAR), now=moment_at(day=9))
+    assert "уволили" not in await settle(db, player, moment_at(day=12, hour=9))
+    assert player.job_code == "bartender"
+
+    # Следующая неделя целая, и за пустую уже увольняют
+    said = await settle(db, player, moment_at(day=19, hour=9))
+
+    assert "уволили" in said
+    assert player.job_code == ""
+
+
+def test_the_days_to_payday_count_what_is_left_whole():
+    """Сколько дней у принятого остаётся до расчёта: день приёма не в счёт."""
+    from bot.game.work import days_to_payday, hours_before_payday, week_of
+
+    week = week_of(moment_at(day=5, hour=12))
+    left = {
+        moment_at(day=day, hour=14): days_to_payday(
+            moment_at(day=day, hour=14), week
+        )
+        for day in range(5, 12)
+    }
+    assert list(left.values()) == [6, 5, 4, 3, 2, 1, 0]
+    # Пятница, суббота, воскресенье — меньше пяти часов, норму бармена
+    # в такую неделю не закрыть
+    for day in (9, 10, 11):
+        assert hours_before_payday(moment_at(day=day, hour=14), week) < 5
+
+
 async def test_the_sacked_cannot_come_back_for_a_week(db):
     player = await hired(db, make_player(location=BAR), now=moment_at(day=6))
     monday = moment_at(day=12, hour=9)

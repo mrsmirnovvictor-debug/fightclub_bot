@@ -564,6 +564,27 @@ def day_is_over(moment: int, hours: int) -> str:
     return said
 
 
+def days_to_payday(hired: int, week_start: int) -> int:
+    """Сколько целых рабочих дней осталось принятому до расчёта.
+
+    День приёма не в счёт: он уже наполовину прошёл, и требовать смену
+    от того, кто устроился вечером, значит считать время, которого у
+    него не было. Понедельник расчёта тоже не в счёт: в девять утра
+    неделя закрывается, и его ночь — это уже торг с будильником, а не
+    рабочий день.
+
+    Поэтому считаем дни между: устроился в пятницу — остаются суббота и
+    воскресенье, в воскресенье — не остаётся ничего.
+    """
+    payday = moscow_day(week_start + WEEK_SECONDS)
+    return max(0, (payday - moscow_day(hired)).days - 1)
+
+
+def hours_before_payday(hired: int, week_start: int) -> float:
+    """Сколько часов боец физически успевал отработать в эту неделю."""
+    return days_to_payday(hired, week_start) * DAY_HOURS
+
+
 def work_day(moment: int) -> str:
     """Какой сейчас рабочий день: сутки и неделя, которой они принадлежат.
 
@@ -598,6 +619,8 @@ __all__ = [
     "SHIFT_SECONDS",
     "VACANCIES",
     "agency_board",
+    "days_to_payday",
+    "hours_before_payday",
     "hired_at_house",
     "OVERTIME_RATE",
     "WEEK_SECONDS",
