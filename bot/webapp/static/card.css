@@ -1375,6 +1375,17 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin-bottom: 8px;
 }
 .case.closed { opacity: 0.62; }
+
+/* Место на службе: та же рамка, что у дела, но вещь другая — и класс
+   другой. Общий однажды уже перепутал одно с другим */
+.duty {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.duty.mine { border-color: var(--accent); }
 .case.wanted { border-color: #b02020; }
 .case-head {
   display: flex;

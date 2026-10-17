@@ -135,7 +135,7 @@ def hr_state(
     """Агентство, как его отдаёт сервер: вся доска города."""
     from bot.game.health import now_ts
     from bot.webapp.work import build_hr
-    from bot.game.work import COOLDOWN_SECONDS, MONTH_SECONDS, VACANCIES
+    from bot.game.work import COOLDOWN_SECONDS, MONTH_SECONDS, agency_board
     from bot.work_service import lacking
 
     moment = now_ts()
@@ -149,7 +149,9 @@ def hr_state(
         player.job_minutes = minutes
         player.account_number = "VB-1234-5678-9012"
     rows = []
-    for one in VACANCIES:
+    # Доска агентства, а не весь список мест города: полицейских на ней
+    # нет — в полицию приходят в полицию
+    for one in agency_board():
         holders = []
         if one.code == job:
             holders = ["Тайлер"]
@@ -162,7 +164,10 @@ def hr_state(
                 "holders": holders,
                 "taken_by": ", ".join(holders),
                 "taken_seats": len(holders),
-                "free_seats": max(0, one.seats - len(holders)),
+                "free_seats": (
+                    max(0, one.seats - len(holders)) if one.limited else one.cap
+                ),
+                "limited": one.limited,
                 "mine": one.code == job,
                 "blocked_until": (
                     moment + COOLDOWN_SECONDS if one.code in blocked else 0
@@ -10379,7 +10384,9 @@ async def test_the_duty_board_belongs_to_the_badge(server, db):
         browser, page = await open_station(pw, server, officer, sheet)
 
         heads = await page.locator("#police-body .shelf-head").all_inner_texts()
-        assert heads[:3] == ["Дежурная часть", "В розыске", "Нападения"]
+        assert heads[:4] == [
+            "Дежурная часть", "В розыске", "Нападения", "Служба в полиции",
+        ]
 
         # В копилке то, что положили, а норма считается от нападений
         duty = await page.locator("#police-body .shelf").first.inner_text()
@@ -10392,8 +10399,8 @@ async def test_the_duty_board_belongs_to_the_badge(server, db):
 
         # Нападений два, и видно, какое из них с заявлением
         cases = await page.locator(
-            "#police-body .shelf:last-of-type .case"
-        ).all_inner_texts()
+            "#police-body .shelf", has_text="Нападения"
+        ).first.locator(".case").all_inner_texts()
         assert len(cases) == 2
         assert any("в розыске" in one for one in cases)
         assert any("без заявления" in one for one in cases)
@@ -10408,10 +10415,14 @@ async def test_the_victim_sees_only_his_own_cases(server, db):
         browser, page = await open_station(pw, server, victim, mine)
 
         heads = await page.locator("#police-body .shelf-head").all_inner_texts()
-        assert heads == ["Твои дела"], "сводки по городу у штатского нет"
+        # Сводки по городу у штатского нет, а витрина службы есть: в
+        # полицию приходят с улицы, и дверь должна быть видна
+        assert heads == ["Твои дела", "Служба в полиции"]
         assert await page.locator("#police-body .case").count() == 2
         # Заявление пишут по тому делу, по которому его ещё нет
-        buttons = await page.locator("#police-body .btn").all_inner_texts()
+        buttons = await page.locator(
+            "#police-body .shelf", has_text="Твои дела"
+        ).first.locator(".btn").all_inner_texts()
         assert buttons == ["Написать заявление"]
         await browser.close()
 

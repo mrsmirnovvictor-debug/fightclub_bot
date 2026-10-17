@@ -9404,8 +9404,10 @@ function dutyJobsBox(data) {
   box.appendChild(note);
 
   data.jobs.forEach((one) => {
+    // Своя рамка, а не `.case`: дело в дежурной части и место на
+    // службе — разные вещи, и общий класс однажды уже их перепутал
     const row = document.createElement("article");
-    row.className = "case" + (one.mine ? " wanted" : "");
+    row.className = "duty" + (one.mine ? " mine" : "");
     const line = document.createElement("header");
     line.className = "case-head";
     const who = document.createElement("span");
