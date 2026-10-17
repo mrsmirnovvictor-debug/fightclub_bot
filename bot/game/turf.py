@@ -42,6 +42,10 @@ HOUR = 60 * 60
 DAY_SECONDS = 24 * HOUR
 
 # Сколько точка отдыхает после боя — чья бы она ни стала
+# Доля города в доходе с точки. Полиция держит точки не ради денег, и
+# платить ей как семье значило бы сделать службу выгоднее мафии
+SERVICE_SHARE = 0.5
+
 CALM_HOURS = 24
 CALM_SECONDS = CALM_HOURS * HOUR
 
@@ -164,17 +168,42 @@ def days_held(since: int, now: int) -> int:
     return (now - since) // DAY_SECONDS
 
 
-def payout(spot: Spot, since: int, now: int) -> tuple[int, int]:
+def payout(
+    spot: Spot, since: int, now: int, share: float = 1.0
+) -> tuple[int, int]:
     """Сколько точка должна и до какого часа она рассчитана.
 
     Возвращает пару: деньги и новый час отсчёта. Остаток суток не
     пропадает — он переезжает в следующий расчёт, поэтому долгое
     отсутствие владельца ничего ему не стоит.
+
+    `share` — доля владельца. У города она половинная: он держит точку
+    не ради денег, и платить ему как семье значило бы сделать службу
+    выгоднее мафии.
     """
     days = days_held(since, now)
     if not days:
         return 0, since
-    return spot.income * days, since + days * DAY_SECONDS
+    return int(spot.income * share * days), since + days * DAY_SECONDS
+
+
+def final_payout(spot: Spot, since: int, now: int, share: float = 1.0) -> int:
+    """Доход за неполные сутки — при смене владельца.
+
+    Обычный расчёт считает только полные сутки: остаток переезжает в
+    следующий. Но при перезахвате следующего у прежнего владельца уже
+    не будет, и остаток просто пропадал бы. Держал четырнадцать часов —
+    получи за четырнадцать часов.
+    """
+    seconds = max(0, now - since) if since else 0
+    if not seconds:
+        return 0
+    return int(spot.income * share * seconds / DAY_SECONDS)
+
+
+def share_of(kind: str) -> float:
+    """Какая доля дохода достаётся владельцу этого рода."""
+    return SERVICE_SHARE if kind == SERVICE else 1.0
 
 
 def calm_left(fought_at: int, now: int) -> int:
@@ -186,6 +215,9 @@ def calm_left(fought_at: int, now: int) -> int:
 
 __all__ = [
     "CALM_HOURS",
+    "SERVICE_SHARE",
+    "final_payout",
+    "share_of",
     "CALM_SECONDS",
     "CLAN",
     "DAY_SECONDS",

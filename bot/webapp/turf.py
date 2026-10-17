@@ -25,6 +25,7 @@ from typing import Any
 from bot.game.clock import club_moment
 from bot.game.health import format_term, now_ts
 from bot.game.classes import BLOCK_WIDTH
+from bot.game.hirelings import MAX_POSTED
 from bot.game.turf import (
     CALM_HOURS,
     MAX_GARRISON,
@@ -61,7 +62,8 @@ def spot_mark(owner: Owner, ours: bool) -> str:
 
 
 async def spot_row(
-    db, holding, mine: Owner, moment: int, here: str = ""
+    db, holding, mine: Owner, moment: int, here: str = "",
+    posted: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Строка точки: дом, доход, владелец и можно ли идти на штурм."""
     from bot.turf_service import owner_title
@@ -84,6 +86,9 @@ async def spot_row(
         },
         "mark": spot_mark(owner, ours),
         "mine": ours,
+        # Сколько нанятых на точке и сколько их туда ещё влезет
+        "posted": (posted or {}).get(spot.code, 0),
+        "max_posted": MAX_POSTED,
         # Боец стоит у этого дома. Без этого кнопки сбора не бывает:
         # точку берут ногами
         "here": standing,
@@ -108,7 +113,10 @@ async def build_turf(
     mine = owner_of(player)
     here = player.where(moment)
     rows = await survey(db, moment)
-    spots = [await spot_row(db, one, mine, moment, here) for one in rows]
+    standing = await db.posted_counts()
+    spots = [
+        await spot_row(db, one, mine, moment, here, standing) for one in rows
+    ]
     held = [one for one in spots if one["mine"]]
     return {
         "title": "Территории",
@@ -133,8 +141,38 @@ async def build_turf(
         "squad": MAX_GARRISON,
         "calm_hours": CALM_HOURS,
         "said": said,
+        # Нанятые: что на руках, что предлагают и кого можно выставить
+        "hire": await _hire_rows(db, player, here, spots),
         "note": _note(mine, len(held), any(one["here"] for one in spots)),
     }
+
+
+async def _hire_rows(
+    db, player: Player, here: str, spots: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Наём глазами экрана: счёт, прилавок и кого ставить здесь.
+
+    Выставить можно только на своей точке и только стоя на ней — это
+    решает служба, а страница рисует ответ.
+    """
+    from bot.hire_service import roster
+
+    body = await roster(db, player)
+    row = next((one for one in spots if one["code"] == here), None)
+    body["spot"] = here if row else ""
+    body["spot_title"] = row["title"] if row else ""
+    free = bool(row and row["mine"] and row["posted"] < MAX_POSTED)
+    ours = [one for one in body["mine"] if one["spot"] == here]
+    body["can_post"] = bool(free and not ours)
+    body["why"] = ""
+    if row and not body["can_post"]:
+        if not row["mine"]:
+            body["why"] = "Охрану ставят на своей точке."
+        elif ours:
+            body["why"] = "От тебя здесь уже стоит человек."
+        else:
+            body["why"] = f"На точке уже {MAX_POSTED} — больше не ставят."
+    return body
 
 
 def _note(mine: Owner, held: int, at_spot: bool) -> str:

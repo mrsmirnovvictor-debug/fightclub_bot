@@ -220,13 +220,45 @@ async def test_nobody_holds_a_spot_for_free(db):
     assert all("Охранник" in one.name for one in guards)
 
 
-async def test_the_garrison_is_made_of_living_members(db):
-    """Гарнизон — настоящие бойцы семьи, а не боссы с потолка."""
-    don, squad, clan = await family(db, size=3)
-    wall = await garrison(db, owner_of_clan(clan.id), [10], NOW)
+async def test_the_garrison_is_made_of_the_hired(db):
+    """Гарнизон — выставленные нанятые, а не живые бойцы семьи.
 
-    assert [one.name for one in wall] == ["Дон-1", "Боец-2", "Боец-3"]
-    assert all(one.level == 10 for one in wall)
+    Раньше точку держала сама семья — даром, во сне, всем составом.
+    Теперь охрану покупают: наёмник стоит денег и гибнет насовсем.
+    """
+    from bot.hire_service import hire, post
+
+    don, squad, clan = await family(db, size=3)
+    await stand(db, [don.user_id], "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    rich = await db.get_player(don.user_id)
+    rich.credits = 10_000
+    await db.save_player(rich)
+
+    mine = owner_of_clan(clan.id)
+    # Без наёмников у семьи на точке пусто — и её держит городская охрана
+    wall = await garrison(db, mine, [10], NOW, code="bar")
+    assert all("Охранник" in one.name for one in wall)
+
+    await hire(db, rich, "merc_9", now=NOW)
+    taken = (await db.hirelings_of(don.user_id))[0]
+    await post(db, rich, int(taken["id"]), "bar", now=NOW)
+
+    wall = await garrison(db, mine, [10], NOW, code="bar")
+    assert [one.name for one in wall] == ["Громила"]
+    assert wall[0].level == 9
+
+
+async def test_the_city_guards_stand_where_no_family_rules(db):
+    """Охрана города стоит и на ничьей точке, и под городом."""
+    from bot.game.turf import owner_of_service
+
+    ничья = await garrison(db, Owner(), [10], NOW, code="bar")
+    assert len(ничья) == 3 and all("Охранник" in one.name for one in ничья)
+    assert all(one.level == 4 for one in ничья)
+
+    города = await garrison(db, owner_of_service("police"), [10], NOW, code="bar")
+    assert all("Охранник" in one.name for one in города)
 
 
 # ---------- штурм ----------

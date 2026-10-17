@@ -10759,6 +10759,7 @@ function renderTurf(data) {
   }
   if (data.muster) body.appendChild(musterBox(data.muster));
   body.appendChild(turfTallyBox(data));
+  if (data.hire && data.hire.side) body.appendChild(hireBox(data));
   // Точка под ногами идёт первой: остальной список — сводка по доходу,
   // а кнопка сбора бывает только у неё, и искать её внизу незачем
   const spots = (data.spots || []).slice().sort(
@@ -10807,9 +10808,13 @@ function spotCard(one, data) {
 
   const who = document.createElement("p");
   who.className = "spot-owner";
-  who.textContent = one.mine
-    ? "✅ Держите вы"
-    : "Держит: " + one.owner.title;
+  // Нанятых считаем, городскую охрану называем: её не ставят и не
+  // считают, она просто есть на всякой точке, где не хозяйничает семья
+  const kept = one.posted
+    ? "охрана: " + one.posted + " из " + one.max_posted
+    : one.owner.kind === "clan" ? "без охраны" : "городская охрана";
+  who.textContent = (one.mine ? "✅ Держите вы" : "Держит: " + one.owner.title)
+    + " · " + kept;
   box.appendChild(who);
 
   if (one.note) {
@@ -10852,6 +10857,72 @@ function spotCard(one, data) {
       onClick: () => turfAction({ action: "call", spot: one.code }),
     })
   );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Наём: кто на руках, кого ставить здесь и что предлагают взять. */
+function hireBox(data) {
+  const hire = data.hire;
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = hire.side === "merc" ? "Наёмники" : "Патрульные";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = "На руках " + hire.hired + " из " + hire.cap
+    + ". Платишь ты, и гибнут они насовсем.";
+  box.appendChild(note);
+
+  // Свои: кто в резерве и кого можно поставить здесь
+  hire.mine.forEach((one) => {
+    const row = document.createElement("article");
+    row.className = "neighbour" + (one.spot ? " away" : "");
+    const line = document.createElement("header");
+    line.className = "neighbour-head";
+    const name = document.createElement("span");
+    name.className = "neighbour-name";
+    name.textContent = one.title + " [" + one.level + "]";
+    const where = document.createElement("span");
+    where.className = "neighbour-clan";
+    where.textContent = one.spot ? "на точке" : "в резерве";
+    line.append(name, where);
+    row.appendChild(line);
+    if (!one.spot && hire.can_post) {
+      const buttons = document.createElement("div");
+      buttons.className = "thing-buttons";
+      buttons.appendChild(
+        button("Выставить здесь", {
+          onClick: () => turfAction({ action: "post", hire_id: one.id }),
+        })
+      );
+      row.appendChild(buttons);
+    }
+    box.appendChild(row);
+  });
+
+  if (hire.why) {
+    const why = document.createElement("p");
+    why.className = "thing-note";
+    why.textContent = hire.why;
+    box.appendChild(why);
+  }
+
+  // Прилавок: три ступени, и каждая за свои деньги
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  hire.grades.forEach((one) => {
+    buttons.appendChild(
+      button(one.fclass + " " + one.level + " · " + num(one.price) + " 💰", {
+        disabled: !hire.left,
+        hint: "Больше " + hire.cap + " на руках не держат.",
+        onClick: () => turfAction({ action: "hire", grade: one.code }),
+      })
+    );
+  });
   box.appendChild(buttons);
   return box;
 }

@@ -50,6 +50,7 @@ from bot.game.fightlog import turn_payload
 from bot.game.health import now_ts
 from bot.game.narrator import strike_lines
 from bot.game.turf import (
+    CLAN,
     MAX_GARRISON,
     MAX_SPOTS_PER_OWNER,
     Owner,
@@ -63,6 +64,7 @@ from bot.turf_service import (
     MAX_WAVES,
     TurfError,
     garrison,
+    hand_over,
     owner_of,
     owner_title,
     survey,
@@ -118,6 +120,10 @@ class Siege:
     summary: list[str] = field(default_factory=list)
     finished: bool = False
     won: bool = False
+    # Сколько прежнему владельцу накапало за неполные сутки
+    handed: int = 0
+    # Сколько выставленных на точке полегло насовсем
+    fallen: int = 0
     timer: asyncio.Task | None = None
     started_at: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -286,13 +292,16 @@ class TurfWar:
         # прямо сейчас. Без этого потолок обходился в одну минуту: четыре
         # отряда, созванных разом, все проходили проверку по базе — в ней
         # ещё ничего не записано, — и семья брала весь город
-        held = [one for one in rows if one.owner.same(mine)]
+        # Потолок — забота семей. Город охраняет сколько угодно точек:
+        # он их не присваивает, а патрулирует, и ограничивать его числом
+        # значило бы сказать, что часть города ему не положена
+        held = [one for one in rows if one.owner.same(mine)] if mine.kind == CLAN else []
         coming = [
             one for one in self._sieges.values() if one.attacker.same(mine)
         ] + [
             one for one in self._musters.values() if one.owner.same(mine)
-        ]
-        if len(held) + len(coming) >= MAX_SPOTS_PER_OWNER:
+        ] if mine.kind == CLAN else []
+        if mine.kind == CLAN and len(held) + len(coming) >= MAX_SPOTS_PER_OWNER:
             raise TurfError(
                 f"Больше {MAX_SPOTS_PER_OWNER} точек разом не удержать. "
                 "Сперва отдайте какую-нибудь."
@@ -393,7 +402,8 @@ class TurfWar:
         rows = await survey(self.db, moment)
         here = next(one for one in rows if one.spot.code == muster.spot.code)
         wall = await garrison(
-            self.db, here.owner, [one.level for one in party.values()], moment
+            self.db, here.owner, [one.level for one in party.values()], moment,
+            code=muster.spot.code,
         )
         siege = Siege(
             id=next(self._ids),
@@ -559,6 +569,15 @@ class TurfWar:
             siege.timer.cancel()
         moment = now_ts()
         if won:
+            # Прежнего владельца рассчитываем за неполные сутки: своего
+            # следующего расчёта у него уже не будет
+            row = await self.db.turf_row(siege.spot.code)
+            if row is not None:
+                siege.handed = await hand_over(
+                    self.db, siege.spot, siege.defender, row.paid_until, moment
+                )
+            # Отбили точку — выставленные на ней гибнут насовсем
+            siege.fallen = await self.db.clear_spot(siege.spot.code)
             await self.db.take_turf(
                 siege.spot.code,
                 siege.attacker.kind,
@@ -573,6 +592,14 @@ class TurfWar:
             else f"{siege.spot.title} отбит: гарнизон устоял.",
             f"Гарнизон держал: {siege.defender_title}.",
         ]
+        if siege.fallen:
+            siege.summary.append(
+                f"Выставленных полегло: {siege.fallen}. Насовсем."
+            )
+        if siege.handed:
+            siege.summary.append(
+                f"Прежним в казну ушло {siege.handed} 💰 за время владения."
+            )
         self._sieges.pop(siege.id, None)
         for user_id in siege.party:
             self._busy.pop(user_id, None)

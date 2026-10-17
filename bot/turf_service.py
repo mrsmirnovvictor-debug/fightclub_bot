@@ -36,7 +36,6 @@ import random
 from dataclasses import dataclass, field
 
 from bot.database import Database
-from bot.game.classes import FIGHTER_CLASSES, Stats
 from bot.game.combat import Fighter, random_action, resolve_round
 from bot.game.health import now_ts
 from bot.game.services import get_service
@@ -50,9 +49,11 @@ from bot.game.turf import (
     Spot,
     calm_left,
     get_spot,
+    final_payout,
     owner_of_clan,
     owner_of_service,
     payout,
+    share_of,
 )
 from bot.models import Player
 
@@ -63,10 +64,6 @@ logger = logging.getLogger(__name__)
 # двух полных отрядов мог бы идти до скончания века
 MAX_WAVES = 40
 
-# Городская охрана: кто стоит на ничьей точке. Уровень берётся по
-# нападающим — охрана не должна быть ни бесплатной, ни непроходимой
-GUARD_CLASS = "tank"
-GUARD_SIZE = 3
 
 
 class TurfError(Exception):
@@ -152,7 +149,9 @@ async def survey(
             continue
         due = 0
         if not row.owner.nobody:
-            due, paid_until = payout(spot, row.paid_until, moment)
+            due, paid_until = payout(
+                spot, row.paid_until, moment, share_of(row.owner.kind)
+            )
             if due:
                 await _pay(db, spot, row.owner, due, paid_until)
         out.append(
@@ -165,6 +164,23 @@ async def survey(
             )
         )
     return out
+
+
+async def hand_over(
+    db: Database, spot: Spot, owner: Owner, since: int, now: int
+) -> int:
+    """Рассчитать прежнего владельца за неполные сутки перед сменой.
+
+    Обычный расчёт считает только полные сутки, а остаток переезжает в
+    следующий — которого у потерявшего точку уже не будет. Держал
+    четырнадцать часов, отбили на пятнадцатом: четырнадцать часов его.
+    """
+    if owner.nobody:
+        return 0
+    due = final_payout(spot, since, now, share_of(owner.kind))
+    if due:
+        await _pay(db, spot, owner, due, now)
+    return due
 
 
 async def _pay(
@@ -207,23 +223,35 @@ async def vault_of(db: Database, owner: Owner) -> int:
 
 
 async def garrison(
-    db: Database, owner: Owner, levels: list[int], now: int | None = None
+    db: Database, owner: Owner, levels: list[int], now: int | None = None,
+    code: str = "",
 ) -> list[Fighter]:
-    """Кто защищает точку этого владельца.
+    """Кто защищает точку: выставленные нанятые и городская охрана.
 
-    Ничья точка — городская охрана, и уровень у неё по нападающим: она
-    не должна быть ни бесплатной, ни непроходимой.
+    Живые бойцы владельца тут больше не стоят, и это не упрощение, а
+    смена правила. Раньше точку держала сама семья — и держала даром,
+    во сне, всем составом. Теперь охрану покупают: наёмник стоит денег,
+    гибнет насовсем и после каждого проигранного боя ставится заново.
+
+    **Охрана города стоит там, где не хозяйничает семья.** Дом не
+    бывает без сторожа: ничья точка и точка под городом — обе за тремя
+    охранниками четвёртого уровня. Семья их вырезает и ставит своих.
     """
-    if owner.nobody:
-        return _guards(levels)
-    players = await _members(db, owner)
-    if not players:
-        # Семья распалась или со службы все ушли: точку держит охрана
-        return _guards(levels)
-    return [
-        Fighter.from_player(one, armed=True)
-        for one in players[:MAX_GARRISON]
-    ]
+    from bot.hire_service import guards, posted
+
+    out: list[Fighter] = []
+    if code:
+        out.extend(await posted(db, code))
+    if owner.kind != CLAN:
+        out.extend(guards())
+    if not out:  # pragma: no cover - у семьи без наёмников пусто
+        out.extend(guards())
+    # Номера раздаём сквозные и отрицательные: по ним защитников не
+    # спутать с бойцами отряда, а судья ищет бойца именно по номеру —
+    # два одинаковых в одном гарнизоне обрушили бы ему поиск
+    for number, one in enumerate(out):
+        one.user_id = -(number + 1)
+    return out
 
 
 async def _members(db: Database, owner: Owner) -> list[Player]:
@@ -244,30 +272,6 @@ async def _members(db: Database, owner: Owner) -> list[Player]:
         player = await db.get_player(user_id)
         if player is not None:
             out.append(player)
-    return out
-
-
-def _guards(levels: list[int]) -> list[Fighter]:
-    """Городская охрана: трое по уровню нападающих."""
-    level = max(1, round(sum(levels) / len(levels))) if levels else 1
-    fclass = FIGHTER_CLASSES[GUARD_CLASS]
-    out = []
-    for number in range(GUARD_SIZE):
-        stats = Stats(
-            strength=4 + level,
-            agility=2 + level // 2,
-            intuition=2 + level // 2,
-            endurance=6 + level,
-        )
-        out.append(
-            Fighter(
-                user_id=-(number + 1),
-                name=f"Охранник {number + 1}",
-                fclass=fclass,
-                stats=stats,
-                level=level,
-            )
-        )
     return out
 
 

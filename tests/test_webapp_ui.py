@@ -10859,6 +10859,58 @@ async def test_the_finished_siege_shows_its_outcome_and_its_log(server, db):
         await browser.close()
 
 
+async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
+    """Наём на карте войны: счёт, резерв, прилавок и охрана точки."""
+    from bot.game.health import now_ts
+    from bot.hire_service import hire, post
+    from bot.webapp.turf import build_war
+    from tests.test_robbery import family, stand
+
+    moment = now_ts()
+    don, squad, clan = await family(db)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), moment - 5 * 3600)
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    await db.save_player(boss)
+    boss = await db.get_player(don.user_id)
+    await hire(db, boss, "merc_9", now=moment)
+    await hire(db, await db.get_player(don.user_id), "merc_7", now=moment)
+    mine = await db.hirelings_of(don.user_id)
+    await post(db, await db.get_player(don.user_id), int(mine[0]["id"]),
+               "bar", now=moment)
+    boss = await db.get_player(don.user_id)
+    board = await build_war(db, boss, None, moment)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, boss, board)
+
+        heads = await page.locator("#turf-body .shelf-head").all_inner_texts()
+        assert "Наёмники" in heads
+
+        panel = page.locator("#turf-body .shelf").nth(1)
+        assert "На руках 2 из 5" in await panel.inner_text()
+        rows = await panel.locator(".neighbour").all_inner_texts()
+        assert len(rows) == 2
+        assert "на точке" in rows[0] and "в резерве" in rows[1]
+        # Своего второго на ту же точку не ставят, и так и сказано
+        assert "уже стоит человек" in await panel.inner_text()
+
+        # Прилавок: три ступени с ценами
+        prices = await panel.locator(".thing-buttons .btn").all_inner_texts()
+        assert len(prices) == 3
+        assert "300" in prices[0] and "1\u00a0200" in prices[2]
+
+        # Строка точки считает выставленных, а не городскую охрану
+        here = page.locator("#turf .spot").first
+        assert "охрана: 1 из 10" in await here.locator(".spot-owner").inner_text()
+        casino = page.locator("#turf .spot").nth(1)
+        assert "городская охрана" in await casino.locator(
+            ".spot-owner"
+        ).inner_text()
+        await browser.close()
+
+
 async def test_the_board_sends_the_fighter_to_the_house(server, db):
     """Из особняка — только смотреть: кнопки сбора нет ни у одной точки."""
     from tests.test_turf import NOW, family
