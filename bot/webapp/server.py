@@ -134,7 +134,7 @@ from bot.bank_service import (
     withdraw,
 )
 from bot.game.bank import CARD
-from bot.game.work import SHIFT_HOURS
+from bot.game.work import SHIFT_HOURS, week_of
 from bot.webapp.bank import (
     STATEMENT_DAYS,
     build_bank,
@@ -167,6 +167,8 @@ from bot.webapp.bar import build_bar, quests_payload
 from bot.game.study import EXAM_SIZE, PASS_MARK
 from bot.webapp.study import build_study, exam_payload
 from bot.webapp.turf import build_war, map_marks
+from bot.webapp.crowd import build_crowd, crowd_marks
+from bot.robbery_service import RobberyError, RobberyService
 from bot.turf_war import TurfWar
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
@@ -197,6 +199,8 @@ STORE_KEY: web.AppKey = web.AppKey("store")
 # Рейды: тот же сервис, что и в ветке группы — апп ему второй пульт
 RAIDS_KEY: web.AppKey = web.AppKey("raids")
 WAR_KEY: web.AppKey = web.AppKey("war")
+# Ограбления: драка начинается в доме и там же кончается
+ROB_KEY: web.AppKey = web.AppKey("robbery")
 # Групповые бои: состав собирают где угодно, а дерутся в карточке
 BATTLES_KEY: web.AppKey = web.AppKey("battles")
 # Столы на рынке: обмен идёт минуты и живёт в памяти, как и бои
@@ -343,7 +347,14 @@ async def _city(request: web.Request, player) -> dict:
     board = await build_war(
         request.app[DB_KEY], player, request.app.get(WAR_KEY), now_ts()
     )
-    return build_map(player, raids=plates, turf=map_marks(board))
+    return build_map(
+        player,
+        raids=plates,
+        turf=map_marks(board),
+        crowd=await crowd_marks(
+            request.app[DB_KEY], player, request.app.get(ROB_KEY)
+        ),
+    )
 
 
 async def api_map(request: web.Request) -> web.Response:
@@ -1978,10 +1989,36 @@ async def _opened_clan(db, config, player, clan_id: int) -> dict:
         if standing is not None and standing.can_admin:
             requests = await db.petitions_of_clan(clan_id, Petition.REQUEST)
             invites = await db.petitions_of_clan(clan_id, Petition.INVITE)
-        estate = build_estate(player, await db.clan_items(clan_id))
+        # Гараж, лицензии и недельная цель — туда же, на «Имущество»:
+        # это дела дома семьи, и смотрят их там же, где сейф
+        week = week_of(now_ts())
+        attacks, paid = await db.clan_week(clan_id, week)
+        estate = build_estate(
+            player,
+            await db.clan_items(clan_id),
+            cars=await db.clan_cars(clan_id),
+            licences=await _licences_of(db, player.user_id),
+            attacks=attacks,
+            paid=paid,
+        )
     return build_clan_page(
         player, roster, requests, invites, estate, config.bot_token
     )
+
+
+async def _licences_of(db, user_id: int) -> dict:
+    """Лицензии бойца на эту неделю — для страницы семьи."""
+    from bot.game.robbery import LICENCE_PRICE, can_buy, licences_left
+
+    week = week_of(now_ts())
+    bought, spent = await db.licences(user_id, week)
+    return {
+        "bought": bought,
+        "spent": spent,
+        "left": licences_left(bought, spent),
+        "can_buy": can_buy(bought),
+        "price": LICENCE_PRICE,
+    }
 
 
 async def _mansion_state(
@@ -2047,8 +2084,19 @@ async def api_mansion_action(request: web.Request) -> web.Response:
             said = await clan_stash(db, player, int(data.get("item", 0)))
         elif action == "take":
             said = await clan_take(db, player, int(data.get("item", 0)))
+        elif action == "licence":
+            # Лицензию на ограбление берут здесь и только свои: это
+            # дело семьи, хоть платит за неё боец из своего кармана
+            service = request.app.get(ROB_KEY)
+            if service is None:  # pragma: no cover - служба заводится сама
+                raise ClanError("Сейчас не до этого.")
+            count = int(data.get("count", 1) or 1)
+            total = await service.buy(player, count)
+            said = f"Лицензий выписано: {count}. Всего за неделю — {total}."
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
+    except RobberyError as error:
+        return web.json_response({"error": str(error)}, status=409)
     except ClanError as error:
         return web.json_response({"error": str(error)}, status=409)
     except (TypeError, ValueError):
@@ -2250,6 +2298,85 @@ async def api_post_action(request: web.Request) -> web.Response:
         return web.json_response({"error": "Непонятный ответ."}, status=400)
     fresh = await db.get_player(player.user_id) or player
     return await _post_state(request, fresh, said)
+
+
+# ---------- кто здесь: соседи по дому и ограбления ----------
+
+
+async def _crowd_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_crowd(
+        db, player, request.app.get(ROB_KEY), now_ts(), said
+    )
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_crowd(request: web.Request) -> web.Response:
+    """Кто сейчас в этом доме и что в нём происходит.
+
+    Места тут нет отдельной проверкой: дом — тот, в котором боец стоит,
+    и другого он не увидит. Соседей по чужому дому не подсмотреть.
+    """
+    player = await _own_player(request)
+    if player.arrive():
+        await request.app[DB_KEY].save_player(player)
+    return await _crowd_state(request, player)
+
+
+async def api_crowd_action(request: web.Request) -> web.Response:
+    """Ограбление: напасть, вмешаться, ударить и закрыть развязку."""
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    service = request.app.get(ROB_KEY)
+    if service is None:  # pragma: no cover - приложение заводит её само
+        return web.json_response({"error": "Сейчас не до этого."}, status=503)
+    try:
+        if action == "rob":
+            raid = await service.rob(player, _int_field(data, "user"))
+            said = f"Ты взял {raid.names.get(raid.victim, 'его')} в оборот."
+        elif action == "join":
+            await service.join(_int_field(data, "raid_id"), player)
+            said = "Ты в драке."
+        elif action == "turn":
+            raid = service.of_user(player.user_id)
+            if raid is None:
+                raise RobberyError("Ты сейчас не дерёшься.")
+            hands = _hands(data)
+            block = str(data.get("block", ""))
+            fighter = raid.fighters.get(player.user_id)
+            need = fighter.attacks_per_round if fighter else 1
+            if len(hands) < need or not block:
+                raise RobberyError("Выбери и удар, и блок.")
+            for hand, zone in sorted(hands.items()):
+                await service.choose(raid.id, player.user_id, "attack", zone, hand)
+            said = await service.choose(
+                raid.id, player.user_id, "block", block
+            )
+        elif action == "ability":
+            raid = service.of_user(player.user_id)
+            if raid is None:
+                raise RobberyError("Ты сейчас не дерёшься.")
+            said = await service.use_ability(
+                raid.id, player.user_id, str(data.get("code") or "")
+            )
+        elif action == "done":
+            service.forget_result(player.user_id)
+            said = ""
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except RobberyError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятное нажатие."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _crowd_state(request, fresh, said)
 
 
 # ---------- территории: война за точки города ----------
@@ -2559,10 +2686,12 @@ def create_app(
     # Войну за территории держит само приложение: она живёт в мини-аппе,
     # ветки в группе у неё нет, и заводить её снаружи незачем
     app[WAR_KEY] = TurfWar(db)
+    # Ограбления: та же история, что и у войны, — живут в мини-аппе
+    app[ROB_KEY] = RobberyService(db)
     # Кого дорога спрашивает, можно ли уходить: из недодранного боя нельзя.
     # Война за территории там же: точку берут ногами, и уйти из-под неё
     # посреди сбора или волны — то же бегство, что и посреди дуэли
-    app[TRAVEL_KEY].watch(duels, raids, battles, app[WAR_KEY])
+    app[TRAVEL_KEY].watch(duels, raids, battles, app[WAR_KEY], app[ROB_KEY])
     # А обмен спрашивает то же самое про стол: позвать занятого бойцом
     # нельзя, и согласиться, пока тебя ждут на ринге, — тоже
     app[TRADE_KEY].watch(duels, raids, battles)
@@ -2623,6 +2752,8 @@ def create_app(
             web.post("/api/look", api_look),
             web.get("/api/topup", api_topup),
             web.post("/api/invoice", api_invoice),
+            web.get("/api/crowd", api_crowd),
+            web.post("/api/crowd", api_crowd_action),
             web.get("/api/mafia", api_mansion),
             web.post("/api/mafia", api_mansion_action),
             web.get("/api/clan", api_clan),

@@ -25,6 +25,7 @@ from typing import Any
 from bot.content.clans import SIGNS, get_sign
 from bot.game.clans import (
     CLAN_PRICE,
+    GARAGE_SLOTS,
     MAX_CAPOS,
     MAX_MEMBERS,
     NAME_MAX,
@@ -40,6 +41,15 @@ from bot.game.clans import (
     Stored,
 )
 from bot.game.equipment import get_item
+from bot.game.robbery import (
+    GOAL_REWARD,
+    LICENCES_PER_WEEK,
+    LICENCE_PRICE,
+    LOOT_SHARE,
+    WEEKLY_GOAL,
+    goal_done,
+    goal_left,
+)
 from bot.game.gear import OwnedItem
 from bot.game.classes import get_class
 from bot.game.clock import club_moment
@@ -393,10 +403,59 @@ def stored_row(player: Player, stored: Stored, moment: int) -> dict[str, Any]:
     return row
 
 
-def build_estate(
-    player: Player, items: list[Stored], now: int | None = None
+def garage_payload(cars: list[dict] | None) -> dict[str, Any]:
+    """Гараж семьи: три места под автомобили.
+
+    Машин в игре пока нет, и список стоит пустым — но места уже
+    отведены и видны: пустая полка говорит, что сюда что-то будет, а
+    отсутствие вкладки не говорит ничего.
+    """
+    rows = list(cars or [])
+    return {
+        "slots": GARAGE_SLOTS,
+        "free": max(0, GARAGE_SLOTS - len(rows)),
+        "cars": rows,
+        "soon": not rows,
+    }
+
+
+def robbery_payload(
+    licences: dict[str, int] | None, attacks: int, paid: int
 ) -> dict[str, Any]:
-    """Вкладка «Имущество»: сейф с кредитами и склад на тридцать вещей.
+    """Ограбления семьи: лицензии бойца и общая недельная цель.
+
+    Лицензии личные, цель общая — и лежат они рядом нарочно: одно
+    напрямую кормит другое, и видеть, сколько осталось до премии, надо
+    там же, где покупают право на нападение.
+    """
+    one = dict(licences or {})
+    return {
+        "price": one.get("price", LICENCE_PRICE),
+        "per_week": LICENCES_PER_WEEK,
+        "bought": one.get("bought", 0),
+        "spent": one.get("spent", 0),
+        "left": one.get("left", 0),
+        "can_buy": one.get("can_buy", 0),
+        "share": round(LOOT_SHARE * 100),
+        "goal": WEEKLY_GOAL,
+        "attacks": attacks,
+        "goal_left": goal_left(attacks),
+        "done": goal_done(attacks),
+        "paid": bool(paid),
+        "reward": GOAL_REWARD,
+    }
+
+
+def build_estate(
+    player: Player,
+    items: list[Stored],
+    now: int | None = None,
+    cars: list[dict] | None = None,
+    licences: dict[str, int] | None = None,
+    attacks: int = 0,
+    paid: int = 0,
+) -> dict[str, Any]:
+    """Вкладка «Имущество»: сейф, склад, гараж и дела по ограблениям.
 
     Остаток сейфа видит вся семья — общий карман тем и общий, что в него
     видно. А брать из него и с полок дают только старшим, и это решает
@@ -415,6 +474,8 @@ def build_estate(
             "can_take": False,
             "items": [],
             "bag": [],
+            "garage": garage_payload(None),
+            "robbery": robbery_payload(None, 0, 0),
         }
     rows = [
         row
@@ -435,6 +496,8 @@ def build_estate(
         # Что боец может положить: снятое из рюкзака. Надетое на полку не
         # ложится — сперва его снимают в инвентаре
         "bag": [item_payload(player, owned) for owned in player.backpack],
+        "garage": garage_payload(cars),
+        "robbery": robbery_payload(licences, attacks, paid),
     }
 
 

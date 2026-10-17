@@ -852,7 +852,7 @@ async def open_page(
     battle=None, city=None, workshop=None, hospital=None, trade=None,
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
-    quests=None, study=None, turf=None, images=False,
+    quests=None, study=None, turf=None, crowd=None, images=False,
     telegram="",
 ):
     """Открыть мини-апп с подменёнными ответами API."""
@@ -897,6 +897,7 @@ async def open_page(
     await page.route("**/api/quests", canned(quests or quests_state()))
     await page.route("**/api/study", canned(study or study_state()))
     await page.route("**/api/turf", canned(turf or {"spots": []}))
+    await page.route("**/api/crowd", canned(crowd or {"crowd": []}))
     await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
                                                     "ranks": [], "said": ""}))
 
@@ -10193,6 +10194,194 @@ async def test_a_stranger_clan_opens_with_its_roster_alone(server):
         await page.wait_for_selector("#mafia-clans:not(.hidden)")
         await browser.close()
 
+
+# ---------- кто здесь: соседи по дому и ограбления ----------
+
+
+async def house_states(db):
+    """Два состояния дома: список соседей и идущая в нём драка."""
+    from bot.robbery_service import RobberyService
+    from bot.webapp.crowd import build_crowd
+    from tests.test_robbery import NOW, family, licensed, make_player
+
+    don, squad, _ = await family(db)
+    victim = make_player(50, "Прохожий", credits=2_400)
+    await db.save_player(victim)
+    sleeper = make_player(51, "Марла", level=7, clazz="rogue")
+    sleeper.seen_at = NOW - 90_000
+    await db.save_player(sleeper)
+    await licensed(db, [don.user_id, squad[1]], 3)
+    don = await db.get_player(don.user_id)
+
+    service = RobberyService(db)
+    try:
+        board = await build_crowd(db, don, service, NOW)
+        raid = await service.rob(don, victim.user_id, now=NOW)
+        await service.join(raid.id, await db.get_player(squad[1]), now=NOW)
+        for one in list(raid.paired):
+            if raid.finished:
+                break
+            await service.choose(raid.id, one, "attack", "head")
+            if raid.finished:
+                break
+            await service.choose(raid.id, one, "block", "belly")
+        live = await build_crowd(db, don, service, NOW)
+    finally:
+        await service.close()
+    return don, board, live
+
+
+async def open_crowd(pw, server, don, body):
+    """Открыть список дома с готовым ответом и погасить опрос."""
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+    browser, page = await open_page(pw, server, card, crowd=body)
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await open_screen(page, "crowd")
+    await page.wait_for_selector("#crowd-body .shelf")
+    await page.evaluate("stopCrowdPoll()")
+    return browser, page
+
+
+async def test_the_house_shows_who_is_here_and_who_can_be_robbed(server, db):
+    """Список дома: кто в сети, чья семья и у кого кнопка нападения."""
+    don, board, _ = await house_states(db)
+
+    async with async_playwright() as pw:
+        browser, page = await open_crowd(pw, server, don, board)
+
+        rows = await page.locator("#crowd .neighbour").all_inner_texts()
+        assert len(rows) == 4, "двое своих, прохожий и спящая"
+        joined = "\n".join(rows)
+        assert "Коза Ностра" in joined and "Прохожий" in joined
+
+        # Кнопка нападения одна: своих не трогают, спящую не достать
+        buttons = await page.locator("#crowd .neighbour .btn").all_inner_texts()
+        assert buttons == ["💰 Ограбить"]
+        # А почему нельзя — написано, а не спрятано
+        whys = await page.locator("#crowd .neighbour-why").all_inner_texts()
+        assert "Свои." in whys and any("сети" in one for one in whys)
+
+        # Ушедшая стоит последней и приглушена
+        last = page.locator("#crowd .neighbour").last
+        assert "Марла" in await last.inner_text()
+        assert "away" in (await last.get_attribute("class"))
+        await browser.close()
+
+
+async def test_the_robbery_panel_shows_both_sides_and_the_log(server, db):
+    """Панель драки: налётчики, жертва, журнал судьи и кнопки хода."""
+    don, _, live = await house_states(db)
+    fight = live["fight"]
+    assert fight is not None and fight["log"], "судье было что сказать"
+
+    async with async_playwright() as pw:
+        browser, page = await open_crowd(pw, server, don, live)
+
+        heads = await page.locator("#crowd .shelf-head").all_inner_texts()
+        assert "Налётчики" in heads and "Против них" in heads
+        assert "Ход драки" in heads
+        # Своих в налётчиках двое: один напал, второй вмешался
+        assert await page.locator("#crowd .siege-row").count() == 3
+
+        lines = await page.locator("#crowd .fight-log .log-line").all_inner_texts()
+        said = [one for turn in fight["log"] for one in turn["lines"]]
+        assert len(lines) == len(said)
+        assert lines[0] == said[-1], "свежее сверху"
+        await browser.close()
+
+
+async def test_the_map_counts_the_neighbours_in_the_corner(server, db):
+    """Значок в углу карты: сколько народу в доме и идёт ли в нём драка."""
+    from bot.webapp.citymap import build_map
+
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    city = build_map(
+        player, crowd={"total": 4, "online": 3, "fights": 0}
+    )
+    hot = build_map(player, crowd={"total": 4, "online": 3, "fights": 1})
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-house")
+
+        chip = page.locator("#map-crowd")
+        assert await chip.is_visible()
+        assert await chip.inner_text() == "👥 3 из 4"
+        assert "hot" not in (await chip.get_attribute("class"))
+
+        # Пошла драка — значок краснеет и считает уже её
+        await page.evaluate(
+            "(data) => { renderMap(data); }", hot
+        )
+        assert await chip.inner_text() == "⚔️ 1 · 👥 3"
+        assert "hot" in (await chip.get_attribute("class"))
+        await browser.close()
+
+
+async def test_an_empty_house_hides_the_corner_chip(server, db):
+    """Никого рядом — значка нет: пустой счётчик только мешает."""
+    from bot.webapp.citymap import build_map
+
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    city = build_map(player, crowd={"total": 0, "online": 0, "fights": 0})
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-house")
+
+        assert await page.locator("#map-crowd").is_hidden()
+        await browser.close()
+
+
+async def test_the_family_page_shows_the_garage_and_the_licences(server, db):
+    """Имущество семьи: три места в гараже, лицензии и цель недели."""
+    from bot.game.robbery import GOAL_REWARD, WEEKLY_GOAL
+    from bot.webapp.clans import build_clan_page, build_estate, build_mansion
+
+    don, roster = a_family(vault=400)
+    estate = build_estate(
+        don, [], cars=[],
+        licences={"bought": 3, "spent": 1, "left": 2, "can_buy": 7, "price": 300},
+        attacks=7, paid=0,
+    )
+    listing = build_mansion(don, [roster.clan], [], TOKEN)
+    opened = build_mansion(
+        don, [roster.clan], [], TOKEN,
+        opened=build_clan_page(don, roster, [], [], estate, TOKEN),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, build_card(
+            don, TOKEN, viewer_id=don.user_id
+        ))
+        await mansion_pages(page, listing, opened)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+        await page.locator("#mafia-tabs .chip", has_text="Имущество").click()
+        await page.wait_for_selector("#mafia-estate:not(.hidden)")
+
+        # Гараж: три места, и все пустые
+        assert await page.locator("#mafia-estate .car-slot").count() == 3
+        assert await page.locator("#mafia-estate .car-slot.empty").count() == 3
+        heads = await page.locator("#mafia-estate .shelf-head").all_inner_texts()
+        assert "Гараж семьи · 0 из 3" in heads and "Ограбления" in heads
+
+        shop = await page.locator("#mafia-estate .shelf").last.inner_text()
+        assert "3 из 10" in shop and "10%" in shop
+        assert f"7 из {WEEKLY_GOAL}" in shop
+        assert str(GOAL_REWARD // 1000) in shop
+        await browser.close()
 
 # ---------- война за территории ----------
 

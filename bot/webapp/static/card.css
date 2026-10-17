@@ -1272,6 +1272,62 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .talk-replies { display: grid; gap: 8px; margin-top: 12px; }
 
+/* Гараж семьи: три места в ряд. Пустое — серая рамка со значком:
+   по ней видно, что сюда что-то встанет, а не что тут ничего нет */
+.garage { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.car-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  border-radius: 10px;
+  background: var(--slot);
+  border: 1px solid var(--line);
+  font-size: 22px;
+}
+.car-slot.empty { border-style: dashed; opacity: 0.55; }
+
+/* ---------- кто здесь: соседи по дому и ограбления ---------- */
+
+/* Значок в углу карты: сколько народу в доме и идёт ли в нём драка.
+   Красный — дерутся: это и есть то, ради чего на него смотрят */
+.crowd-chip {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.crowd-chip.hot { background: rgba(176, 32, 32, 0.86); }
+
+/* Строка соседа: имя со значком сети, семья справа, причина отказа
+   под ними. Ушедшего гасим прозрачностью — его карточку открыть можно,
+   а взять за карман нет */
+.neighbour {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.neighbour.away { opacity: 0.6; }
+.neighbour.fight { border-color: #b02020; }
+.neighbour-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.neighbour-name { font-weight: 700; font-size: 14px; }
+.neighbour-clan { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.neighbour-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+.neighbour-why { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+
 /* ---------- война за территории ---------- */
 
 /* Точка на карте войны: заголовок с доходом, кто держит и кнопка.

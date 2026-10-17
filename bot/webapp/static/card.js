@@ -1885,7 +1885,7 @@ function lotCard(lot) {
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
-  "study", "turf", "trade", "house", "bag", "hero",
+  "study", "turf", "crowd", "trade", "house", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1896,7 +1896,7 @@ const OPENED_FROM = {
   shop: "map", magic: "map", workshop: "map", hospital: "map", trade: "map",
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
-  tavern: "map", study: "map", turf: "map", house: "map",
+  tavern: "map", study: "map", turf: "map", crowd: "map", house: "map",
 };
 let lastTab = "hero";
 
@@ -1952,6 +1952,12 @@ function showTab(name) {
     loadTurf();
     armTurfPoll(10000);
   } else stopTurfPoll();
+  // Соседи и драки: то же самое, и по той же причине — драка идёт без
+  // нас, и узнать о ней можно только спросив
+  if (name === "crowd") {
+    loadCrowd();
+    armCrowdPoll(10000);
+  } else stopCrowdPoll();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2027,6 +2033,7 @@ function renderMap(data) {
   paintDistrict();
   paintRoad();
   paintTurfBand();
+  paintCrowdChip();
 }
 
 // ---------- война за территории на карте ----------
@@ -9751,6 +9758,346 @@ function renderQuests(data) {
   (data.quests || []).forEach((one) => list.appendChild(questCard(one)));
 }
 
+// ---------- кто здесь: соседи по дому и ограбления ----------
+//
+// Экран один на весь город, и дом у него тот, в котором боец стоит.
+// Ответ сервера всегда полный: по нему видно, что рисовать — список
+// соседей, идущую драку или её развязку. Опрашиваем часто, пока драка
+// идёт, и редко, когда нет: список соседей меняется минутами, а раунд
+// кончается секундами.
+
+let crowdData = null;
+let crowdTimer = null;
+let crowdDraft = { attacks: {}, block: null };
+let crowdRound = null;
+
+async function loadCrowd() {
+  try {
+    const response = await fetch("api/crowd", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) {
+      el("crowd-note").textContent = "Дом не открылся.";
+      return;
+    }
+    renderCrowd(await response.json());
+  } catch (error) {
+    el("crowd-note").textContent = error.message;
+  }
+}
+
+async function crowdAction(payload) {
+  try {
+    const data = await post("api/crowd", payload);
+    haptic((feedback) => feedback.impactOccurred("medium"));
+    if (data.card) render(data.card, true);
+    renderCrowd(data);
+    if (data.said) popup("Кто здесь", data.said);
+  } catch (error) {
+    popup("Кто здесь", error.message);
+    await loadCrowd();
+  }
+}
+
+function crowdPollRate(data) {
+  return data && data.fight ? 2000 : 10000;
+}
+
+function armCrowdPoll(rate) {
+  if (crowdTimer) clearInterval(crowdTimer);
+  crowdTimer = setInterval(loadCrowd, rate);
+}
+
+function stopCrowdPoll() {
+  if (crowdTimer) clearInterval(crowdTimer);
+  crowdTimer = null;
+}
+
+function renderCrowd(data) {
+  crowdData = data;
+  // Новый раунд — намётки прошлого сбрасываем: ушедшее судье обратно
+  // подсвечивать нечего
+  const round = data.fight ? data.fight.id + ":" + data.fight.round : null;
+  if (round !== crowdRound) {
+    crowdRound = round;
+    crowdDraft = { attacks: {}, block: null };
+  }
+  if (crowdTimer) armCrowdPoll(crowdPollRate(data));
+
+  el("crowd-title").textContent = "👥 " + (data.place_title || "Кто здесь");
+  el("shop-purse-crowd").textContent = "";
+  el("shop-purse-crowd").appendChild(purse(data.credits || 0));
+  el("crowd-note").textContent = data.said || data.note || "";
+
+  const body = el("crowd-body");
+  body.textContent = "";
+
+  if (data.result) {
+    body.appendChild(robberyBox(data.result));
+    return;
+  }
+  if (data.fight) {
+    body.appendChild(robberyBox(data.fight));
+    return;
+  }
+  (data.fights || []).forEach((one) => body.appendChild(fightRowCard(one)));
+  body.appendChild(crowdList(data));
+}
+
+/** Список соседей: кто в сети, чья семья и можно ли взять за карман. */
+function crowdList(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "В этом доме";
+  box.appendChild(head);
+  if (!(data.crowd || []).length) {
+    const said = document.createElement("p");
+    said.className = "screen-note";
+    said.textContent = "Пусто. Ты тут один.";
+    box.appendChild(said);
+    return box;
+  }
+  data.crowd.forEach((one) => box.appendChild(neighbourCard(one, data)));
+  return box;
+}
+
+function neighbourCard(one, data) {
+  const box = document.createElement("article");
+  box.className = "neighbour" + (one.online ? "" : " away");
+
+  const head = document.createElement("header");
+  head.className = "neighbour-head";
+  const name = document.createElement("span");
+  name.className = "neighbour-name";
+  name.textContent = (one.online ? "🟢 " : "⚪️ ") + one.name
+    + " [" + one.level + "]";
+  const where = document.createElement("span");
+  where.className = "neighbour-clan";
+  where.textContent = one.clan || "";
+  head.append(name, where);
+  box.appendChild(head);
+
+  const said = document.createElement("p");
+  said.className = "neighbour-note";
+  said.textContent = one.online ? "В сети" : one.presence;
+  box.appendChild(said);
+
+  if (one.can_rob) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("💰 Ограбить", {
+        onClick: () => crowdAction({ action: "rob", user: one.user_id }),
+      })
+    );
+    box.appendChild(buttons);
+  } else if (one.why) {
+    // Почему нельзя — говорим, а не прячем кнопку молча
+    const why = document.createElement("p");
+    why.className = "neighbour-why";
+    why.textContent = one.why;
+    box.appendChild(why);
+  }
+  return box;
+}
+
+/** Идущая в доме драка: кто кого и можно ли вмешаться. */
+function fightRowCard(one) {
+  const box = document.createElement("article");
+  box.className = "neighbour fight";
+
+  const head = document.createElement("header");
+  head.className = "neighbour-head";
+  const name = document.createElement("span");
+  name.className = "neighbour-name";
+  name.textContent = "⚔️ " + one.attacker + " → " + one.victim;
+  const round = document.createElement("span");
+  round.className = "neighbour-clan";
+  round.textContent = "раунд " + one.round;
+  head.append(name, round);
+  box.appendChild(head);
+
+  const said = document.createElement("p");
+  said.className = "neighbour-note";
+  said.textContent = one.sides.red.join(", ") + " — против — "
+    + one.sides.blue.join(", ");
+  box.appendChild(said);
+
+  if (one.can_join) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Вмешаться " + one.side_title, {
+        onClick: () => crowdAction({ action: "join", raid_id: one.id }),
+      })
+    );
+    box.appendChild(buttons);
+  } else if (one.why) {
+    const why = document.createElement("p");
+    why.className = "neighbour-why";
+    why.textContent = one.why;
+    box.appendChild(why);
+  }
+  return box;
+}
+
+/** Драка целиком: обе стороны, кнопки хода и журнал. */
+function robberyBox(fight) {
+  const box = document.createElement("div");
+
+  const head = document.createElement("section");
+  head.className = "shelf";
+  const title = document.createElement("h2");
+  title.className = "shelf-head";
+  title.textContent = fight.finished
+    ? (fight.won ? "💰 Карман взят" : "🛡 Отбились")
+    : fight.attacker + " → " + fight.victim + " · раунд " + fight.round;
+  head.appendChild(title);
+  const who = document.createElement("p");
+  who.className = "screen-note";
+  who.textContent = fight.finished
+    ? fight.place_title
+    : fight.place_title
+      + (fight.seconds_left ? " · ход: " + clockText(fight.seconds_left) : "");
+  head.appendChild(who);
+  (fight.summary || []).forEach((line) => {
+    const said = document.createElement("p");
+    said.className = "screen-note";
+    said.textContent = line;
+    head.appendChild(said);
+  });
+  box.appendChild(head);
+
+  box.appendChild(sideBox("Налётчики", fight.red));
+  box.appendChild(sideBox("Против них", fight.blue));
+  box.appendChild(robberyFoot(fight));
+  if ((fight.log || []).length) box.appendChild(robberyLog(fight));
+  return box;
+}
+
+/** Что под шкалами: кнопки хода, строка ожидания или «Понятно». */
+function robberyFoot(fight) {
+  if (fight.finished) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Понятно", { onClick: () => crowdAction({ action: "done" }) })
+    );
+    return buttons;
+  }
+  const said = document.createElement("p");
+  said.className = "screen-note";
+  if (!fight.yours || !fight.alive) {
+    said.textContent = fight.alive
+      ? "Ты смотришь со стороны."
+      : "Тебя вынесли — досматривай со стороны.";
+    return said;
+  }
+  if (!fight.paired) {
+    // Сторона больше другой: кому-то пары в этом раунде не досталось
+    said.textContent = "В этом раунде пары тебе не досталось. Ждём.";
+    return said;
+  }
+  if (fight.acted) {
+    said.textContent = "Ход принят. Ждём остальных.";
+    return said;
+  }
+  return robberyTurnForm(fight);
+}
+
+function robberyTurnForm(fight) {
+  const box = document.createElement("div");
+  box.className = "turn-form";
+  const hands = fight.hands && fight.hands.length
+    ? fight.hands
+    : [{ hand: 0, icon: "👊", title: "Кулаки" }];
+
+  if (fight.foe && fight.foe.alive) {
+    const aim = document.createElement("p");
+    aim.className = "raid-aim";
+    aim.textContent = "Бьём: " + fight.foe.name
+      + " [" + fight.foe.hp + "/" + fight.foe.max_hp + "]";
+    box.appendChild(aim);
+  }
+
+  const tricks = abilityPanel(fight.abilities, (trick) =>
+    useAbility("api/crowd", trick, renderCrowd)
+  );
+  if (tricks) box.appendChild(tricks);
+
+  box.appendChild(
+    zoneColumns(
+      hands,
+      fight.attacks,
+      fight.blocks,
+      () => crowdDraft,
+      "crowd",
+      paintCrowdDraft
+    )
+  );
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.id = "crowd-go";
+  go.className = "btn wide";
+  go.textContent = "Вперёд!";
+  go.disabled = !crowdReady(hands);
+  go.addEventListener("click", () => {
+    const move = {
+      action: "turn",
+      attacks: crowdDraft.attacks,
+      block: crowdDraft.block,
+    };
+    crowdDraft = { attacks: {}, block: null };
+    crowdAction(move);
+  });
+  box.appendChild(go);
+  return box;
+}
+
+function crowdReady(hands) {
+  return Boolean(crowdDraft.block)
+    && hands.every((row) => crowdDraft.attacks[row.hand]);
+}
+
+function paintCrowdDraft() {
+  const go = el("crowd-go");
+  if (!go || !crowdData || !crowdData.fight) return;
+  const hands = crowdData.fight.hands && crowdData.fight.hands.length
+    ? crowdData.fight.hands
+    : [{ hand: 0 }];
+  go.disabled = !crowdReady(hands);
+}
+
+/** Журнал драки словами судьи — тот же, что в рейде и на штурме. */
+function robberyLog(fight) {
+  const box = document.createElement("div");
+  box.className = "fight-log";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Ход драки";
+  box.appendChild(head);
+  fight.log.slice().reverse().forEach((turn) => judgeLines(turn, box, true));
+  return box;
+}
+
+// Счётчик соседей в углу карты. Город большой, и это единственное
+// место, откуда видно, что рядом кто-то есть
+function paintCrowdChip() {
+  const chip = el("map-crowd");
+  const here = (mapData && mapData.crowd) || { total: 0, online: 0, fights: 0 };
+  const going = Boolean(mapData && mapData.road && mapData.road.going);
+  const shown = Boolean(here.total || here.fights) && !going;
+  chip.classList.toggle("hidden", !shown);
+  if (!shown) return;
+  chip.textContent = here.fights
+    ? "⚔️ " + here.fights + " · 👥 " + here.online
+    : "👥 " + here.online + " из " + here.total;
+  chip.classList.toggle("hot", Boolean(here.fights));
+}
+
 // ---------- война за территории ----------
 //
 // Один экран на всю войну, и что рисовать — решает не страница, а
@@ -11655,6 +12002,87 @@ function renderEstateTab(estate) {
   if (!estate.in_clan) return;
   body.appendChild(vaultBox(estate));
   body.appendChild(shelfBox(estate));
+  body.appendChild(garageBox(estate.garage || {}));
+  body.appendChild(robberyBoxFamily(estate.robbery || {}));
+}
+
+/** Гараж семьи: три места под автомобили. Пока они пустые. */
+function garageBox(garage) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Гараж семьи · " + (garage.cars || []).length
+    + " из " + (garage.slots || 0);
+  box.appendChild(head);
+
+  const grid = document.createElement("div");
+  grid.className = "garage";
+  const cars = garage.cars || [];
+  for (let place = 0; place < (garage.slots || 0); place += 1) {
+    const slot = document.createElement("div");
+    const car = cars[place];
+    slot.className = "car-slot" + (car ? "" : " empty");
+    slot.textContent = car ? car.code : "🚗";
+    grid.appendChild(slot);
+  }
+  box.appendChild(grid);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = garage.soon
+    ? "Места под машины отведены. Самих машин в городе пока нет."
+    : "Ставят все, кто в семье. Выводят только старшие.";
+  box.appendChild(note);
+  return box;
+}
+
+/** Ограбления: лицензии бойца и общая недельная цель семьи. */
+function robberyBoxFamily(shop) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Ограбления";
+  box.appendChild(head);
+
+  box.appendChild(
+    paperRows([
+      ["Лицензий на руках", String(shop.left || 0)],
+      ["Куплено за неделю", (shop.bought || 0) + " из " + (shop.per_week || 0)],
+      ["Цена", num(shop.price || 0) + " 💰"],
+      ["Берут из кармана", (shop.share || 0) + "%"],
+    ])
+  );
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Лицензия — право на одно нападение или одно вмешательство. "
+    + "Деньги с ограбления идут тому, кто напал: помощникам ничего.";
+  box.appendChild(note);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Взять лицензию · " + num(shop.price || 0) + " 💰", {
+      disabled: !shop.can_buy,
+      hint: "На этой неделе больше не выпишут.",
+      onClick: () => mafiaAction({ action: "licence", count: 1 }),
+    })
+  );
+  box.appendChild(buttons);
+
+  // Цель общая: её закрывают все вместе, и премия тоже общая
+  const goal = document.createElement("p");
+  goal.className = "thing-note";
+  goal.textContent = shop.done
+    ? "Недельная цель закрыта: " + (shop.attacks || 0) + " из "
+      + (shop.goal || 0) + ". Премия " + num(shop.reward || 0) + " 💰 в сейфе."
+    : "Цель недели: " + (shop.attacks || 0) + " из " + (shop.goal || 0)
+      + " нападений. Закроете — " + num(shop.reward || 0) + " 💰 в сейф.";
+  box.appendChild(goal);
+  return box;
 }
 
 
@@ -12551,11 +12979,13 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study", "turf",
-  "shop", "magic",
+  "crowd", "shop", "magic",
   "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });
+// Счётчик соседей в углу карты: нажал — открылся список дома
+el("map-crowd").addEventListener("click", () => showTab("crowd"));
 watchInteriors();
 
 // Кнопок на панели меньше, чем экранов: лавки открываются с карты

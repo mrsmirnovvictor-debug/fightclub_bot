@@ -95,6 +95,9 @@
       <!-- Плашка под ногами: боец стоит на точке войны. Отсюда и только
            отсюда собирают отряд — точку берут ногами, а не из списка -->
       <div class="turf-band hidden" id="map-turf"></div>
+
+      <!-- Кто здесь: счётчик соседей в углу. Нажал — открылся список -->
+      <button type="button" class="crowd-chip hidden" id="map-crowd"></button>
     </div>
   </main>
 
@@ -395,6 +398,21 @@
 
     <section id="flats-stairs"></section>
     <section id="flats-home" class="hidden"></section>
+  </main>
+
+  <!-- ---------- 3b14. Кто здесь: соседи по дому и ограбления ---------- -->
+  <!-- Экран один на весь город: дом — тот, в котором боец стоит. Что
+       рисовать — список соседей, идущую драку или её развязку, — решает
+       сервер: ответ всегда полный -->
+  <main id="crowd" class="screen hidden">
+    <header class="screen-head">
+      <button type="button" class="back" id="crowd-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-crowd"></span>
+    </header>
+    <h1 class="screen-title" id="crowd-title">👥 Кто здесь</h1>
+    <p class="screen-note" id="crowd-note"></p>
+
+    <div id="crowd-body"></div>
   </main>
 
   <!-- ---------- 3b13. Война за территории ---------- -->

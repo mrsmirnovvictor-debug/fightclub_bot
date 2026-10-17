@@ -636,6 +636,49 @@ CREATE TABLE IF NOT EXISTS service_vault (
     vault  INTEGER NOT NULL DEFAULT 0
 );
 
+-- Лицензии на ограбление: сколько боец купил и сколько потратил за эту
+-- неделю. Неделя считается так же, как у работы, — от понедельника
+-- девяти утра по Москве. Прошлые недели остаются лежать: по ним видно,
+-- кто сколько сделал, и цена строки тут — четыре числа
+CREATE TABLE IF NOT EXISTS rob_licences (
+    user_id INTEGER NOT NULL,
+    week    INTEGER NOT NULL,
+    bought  INTEGER NOT NULL DEFAULT 0,
+    spent   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, week)
+);
+
+-- Покой ограбленного: час последнего нападения, кто бы ни победил.
+-- Строки нет — бойца не трогали вовсе
+CREATE TABLE IF NOT EXISTS rob_shield (
+    user_id   INTEGER PRIMARY KEY,
+    robbed_at INTEGER NOT NULL DEFAULT 0
+);
+
+-- Недельный счёт семьи: сколько нападений довели до развязки и выдана
+-- ли за это премия. Премия одна на неделю, и `paid` — именно про неё,
+-- а не про сумму: сумму знает `bot.game.robbery`
+CREATE TABLE IF NOT EXISTS clan_weeks (
+    clan_id INTEGER NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
+    week    INTEGER NOT NULL,
+    attacks INTEGER NOT NULL DEFAULT 0,
+    paid    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (clan_id, week)
+);
+
+-- Гараж семьи: три места под автомобили, как полки на складе. Машин в
+-- игре пока нет, и таблица стоит пустой — но место под них отведено
+-- здесь, а не в `clan_items`: вещь носят, машину ставят
+CREATE TABLE IF NOT EXISTS clan_cars (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    clan_id INTEGER NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
+    code    TEXT    NOT NULL,
+    put_by  INTEGER NOT NULL DEFAULT 0,
+    put_at  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS clan_cars_clan ON clan_cars(clan_id);
+
 -- Квесты бойца: по строке на взятое задание. Нет строки — задание ещё
 -- не предлагали или от него отказались. `marks` — отметки города: что
 -- он уже видел по этому заданию (бой выигран, дверь открыта, вопрос
@@ -2853,6 +2896,140 @@ class Database:
         )
         await self.conn.commit()
         return await self.service_vault(code)
+
+    async def clans_of(self, user_ids: list[int]) -> dict[int, tuple[int, str]]:
+        """Чья семья у каждого из этих бойцов: номер и имя.
+
+        Одним запросом, а не чтением бойцов по одному: список «кто
+        здесь» бывает на полсотни человек, и полсотни походов в базу
+        ради одного столбца — это дорого ни за что.
+        """
+        if not user_ids:
+            return {}
+        marks = ",".join("?" * len(user_ids))
+        async with self.conn.execute(
+            f"""
+            SELECT m.user_id AS user_id, c.id AS clan_id, c.name AS name
+            FROM clan_members m JOIN clans c ON c.id = m.clan_id
+            WHERE m.user_id IN ({marks})
+            """,
+            tuple(user_ids),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {int(row["user_id"]): (int(row["clan_id"]), str(row["name"]))
+                for row in rows}
+
+    # ---------- ограбление: лицензии, покой и недельный счёт ----------
+
+    async def licences(self, user_id: int, week: int) -> tuple[int, int]:
+        """Куплено и потрачено за эту неделю. Нет строки — ноль и ноль."""
+        async with self.conn.execute(
+            "SELECT bought, spent FROM rob_licences WHERE user_id = ? AND week = ?",
+            (user_id, week),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (int(row["bought"]), int(row["spent"])) if row else (0, 0)
+
+    async def buy_licences(self, user_id: int, week: int, count: int) -> None:
+        """Записать покупку. Сколько можно — решает служба, не база."""
+        await self.conn.execute(
+            """
+            INSERT INTO rob_licences (user_id, week, bought, spent)
+            VALUES (?,?,?,0)
+            ON CONFLICT(user_id, week) DO UPDATE SET
+                bought = bought + excluded.bought
+            """,
+            (user_id, week, count),
+        )
+        await self.conn.commit()
+
+    async def spend_licence(self, user_id: int, week: int) -> bool:
+        """Списать одну лицензию. False — списывать было нечего.
+
+        Условие стоит в самом `UPDATE`, а не в проверке перед ним: две
+        кнопки, нажатые разом, иначе потратили бы одну лицензию дважды.
+        """
+        cursor = await self.conn.execute(
+            """
+            UPDATE rob_licences SET spent = spent + 1
+            WHERE user_id = ? AND week = ? AND spent < bought
+            """,
+            (user_id, week),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def robbed_at(self, user_id: int) -> int:
+        """Час последнего нападения на бойца. Ноль — не трогали."""
+        async with self.conn.execute(
+            "SELECT robbed_at FROM rob_shield WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["robbed_at"]) if row else 0
+
+    async def mark_robbed(self, user_id: int, now: int) -> None:
+        """Отметить нападение: отсюда и считается покой."""
+        await self.conn.execute(
+            """
+            INSERT INTO rob_shield (user_id, robbed_at) VALUES (?,?)
+            ON CONFLICT(user_id) DO UPDATE SET robbed_at = excluded.robbed_at
+            """,
+            (user_id, now),
+        )
+        await self.conn.commit()
+
+    async def clan_week(self, clan_id: int, week: int) -> tuple[int, int]:
+        """Нападений за неделю и выдана ли премия."""
+        async with self.conn.execute(
+            "SELECT attacks, paid FROM clan_weeks WHERE clan_id = ? AND week = ?",
+            (clan_id, week),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (int(row["attacks"]), int(row["paid"])) if row else (0, 0)
+
+    async def add_clan_attack(self, clan_id: int, week: int) -> int:
+        """Засчитать семье нападение. Возвращает, сколько их стало."""
+        await self.conn.execute(
+            """
+            INSERT INTO clan_weeks (clan_id, week, attacks, paid)
+            VALUES (?,?,1,0)
+            ON CONFLICT(clan_id, week) DO UPDATE SET attacks = attacks + 1
+            """,
+            (clan_id, week),
+        )
+        await self.conn.commit()
+        attacks, _ = await self.clan_week(clan_id, week)
+        return attacks
+
+    async def pay_clan_goal(self, clan_id: int, week: int) -> bool:
+        """Отметить премию выданной. False — её уже выдавали.
+
+        Отметка и проверка — один запрос: премию за неделю выдают один
+        раз, а сводят её все, кто заглянул на страницу семьи.
+        """
+        cursor = await self.conn.execute(
+            """
+            UPDATE clan_weeks SET paid = 1
+            WHERE clan_id = ? AND week = ? AND paid = 0
+            """,
+            (clan_id, week),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    # ---------- гараж семьи ----------
+
+    async def clan_cars(self, clan_id: int) -> list[dict]:
+        """Что стоит в гараже. Машин в игре пока нет — список пуст."""
+        async with self.conn.execute(
+            """
+            SELECT id, code, put_by, put_at FROM clan_cars
+            WHERE clan_id = ? ORDER BY put_at, id
+            """,
+            (clan_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     # ---------- квесты ----------
 
