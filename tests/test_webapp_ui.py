@@ -11087,12 +11087,22 @@ async def test_the_city_map_marks_the_spots_and_offers_the_muster(server, db):
         await page.wait_for_selector("#map:not(.hidden)")
         await page.wait_for_selector(".zone-house")
 
-        # Плашка под ногами: отсюда и собирают отряд
+        # Плашка под ногами: отсюда и собирают отряд. Она в одну
+        # строку — название с доходом и кнопка рядом
         band = page.locator("#map-turf")
         assert await band.is_visible()
         said = await band.inner_text()
-        assert "Бар" in said and "90" in said and "городская охрана" in said
-        assert await page.locator("#turf-call").inner_text() == "🚩 Созвать отряд"
+        assert "⚪️ Бар · 90" in said
+        assert "Держит" not in said, "про владельца говорит отметка"
+        assert await page.locator("#turf-call").inner_text() == "🚩 Отряд"
+        # И нажатия сквозь неё проходят: иначе она закрывала бы дверь
+        # соседнего дома, и войти в него было бы нельзя
+        assert await band.evaluate(
+            "(box) => getComputedStyle(box).pointerEvents"
+        ) == "none"
+        assert await page.locator("#turf-call").evaluate(
+            "(go) => getComputedStyle(go).pointerEvents"
+        ) == "auto"
 
         # Отметка стоит перед названием дома, а не строкой под ним
         bar = page.locator(".zone-house", has_text="Бар").first
@@ -11100,6 +11110,51 @@ async def test_the_city_map_marks_the_spots_and_offers_the_muster(server, db):
         # Подписей с владельцем и доходом под домами нет вовсе
         signs = await page.locator(".zone-sign").all_text_contents()
         assert not any("/сут" in one for one in signs)
+        await browser.close()
+
+
+async def test_the_map_wears_the_badge_of_the_family_that_holds_it(server, db):
+    """У названия дома висит знак той семьи, что его держит.
+
+    Шляпой на всех кланов не обойтись: по ней не видно, чья это точка,
+    а знак для того и рисовали. У города свой значок, у ничьего дома
+    знака нет вовсе — там кружок словом.
+    """
+    from bot.webapp.citymap import build_map
+    from bot.webapp.turf import build_war, map_marks
+    from tests.test_turf import NOW, family, stand
+
+    don, squad, clan = await family(db)
+    await db.take_turf("casino", "clan", str(clan.id), NOW)
+    await db.take_turf("pawnshop", "service", "police", NOW)
+    await stand(db, squad, "casino")
+    don = await db.get_player(don.user_id)
+    city = build_map(don, raids={}, turf=map_marks(await build_war(db, don, None, NOW)))
+    card = build_card(don, TOKEN, viewer_id=don.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, city=city, images=True)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-map").click()
+        await page.wait_for_selector("#map:not(.hidden)")
+        await page.wait_for_selector(".zone-badge")
+
+        casino = page.locator(".zone-house", has_text="Казино").first
+        badge = await casino.locator(".zone-badge").get_attribute("href")
+        assert badge.endswith("/clans/black_ravens.png"), "знак своей семьи"
+        # Шляпы в подписи больше нет: её заменил знак
+        assert "🎩" not in await casino.locator(".zone-sign").text_content()
+        # Своя точка подсвечена зелёным
+        assert "ours" in await casino.locator(".zone-sign").get_attribute("class")
+
+        shop = page.locator(".zone-house", has_text="Комиссионный").first
+        assert (await shop.locator(".zone-badge").get_attribute("href")).endswith(
+            "/services/police.png"
+        )
+        # Жетон стоит слева от подписи, а не поверх неё
+        sign = await shop.locator(".zone-sign").bounding_box()
+        mark = await shop.locator(".zone-badge").bounding_box()
+        assert mark["x"] + mark["width"] <= sign["x"] + 1
         await browser.close()
 
 

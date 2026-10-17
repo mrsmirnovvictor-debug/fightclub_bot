@@ -256,9 +256,9 @@ async def test_the_garrison_is_made_of_the_hired(db):
     await db.save_player(rich)
 
     mine = owner_of_clan(clan.id)
-    # Без наёмников у семьи на точке пусто — и её держит городская охрана
-    wall = await garrison(db, mine, [10], NOW, code="bar")
-    assert all("Охранник" in one.name for one in wall)
+    # Без наёмников у семьи на точке пусто, и городская охрана за неё
+    # не встаёт: город не стережёт дом мафии от другой мафии
+    assert await garrison(db, mine, [10], NOW, code="bar") == []
 
     await hire(db, rich, "merc_9", now=NOW)
     taken = (await db.hirelings_of(don.user_id))[0]
@@ -549,15 +549,17 @@ async def test_the_city_map_carries_the_marks_and_the_band(db, client):
     )).json()
     marks = body["turf"]["spots"]
     assert len(marks) == TOTAL_SPOTS
-    # Фуражка у службы, шляпа у семьи, круг у ничьей
-    assert marks["casino"]["mark"] == "👮"
-    assert marks["market"]["mark"] == "🎩"
-    assert marks["bar"]["mark"] == "⚪️"
+    # У семьи и у службы жетон нарисованный: по знаку видно, какая
+    # именно семья держит дом, — по шляпе не было видно
+    assert marks["market"]["badge"].endswith("/clans/black_ravens.png")
+    assert marks["casino"]["badge"].endswith("/services/police.png")
+    # У ничьего дома жетона нет: городская охрана не фракция
+    assert marks["bar"]["badge"] == "" and marks["bar"]["mark"] == "⚪️"
     # Свою узнают по цвету названия, а не по отдельной отметке
     assert marks["market"]["mine"] is True
     assert marks["casino"]["mine"] is False
     # Доход и имя владельца на карту не идут вовсе
-    assert set(marks["bar"]) == {"mark", "mine"}
+    assert set(marks["bar"]) == {"mark", "badge", "mine"}
 
     # Плашка под ногами: боец стоит у бара, и отсюда собирают отряд
     band = body["turf"]["here"]
@@ -605,6 +607,39 @@ async def test_the_road_is_shut_while_the_squad_stands(db, client):
         "/api/travel", json={"to": "casino"}, headers=headers(don.user_id)
     )
     assert answer.status == 200
+
+
+async def test_one_family_walks_into_the_spot_another_left_empty(db):
+    """Мафия выбивает мафию, а пустую точку просто забирает.
+
+    Городская охрана за чужую семью не встаёт: дом, взятый семьёй и
+    брошенный без наёмника, не защищён никем. Драться не с кем — отряд
+    входит и забирает его, и ни одной волны на это не тратится.
+    """
+    from bot.turf_war import TurfWar
+
+    don, _, clan = await family(db)
+    rival, rivals, theirs = await family(
+        db, first=20, name="Бешеные псы", sign="silver_wolves"
+    )
+    # Первая семья взяла бар три дня назад и охрану не выставила
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
+    await stand(db, rivals, "bar")
+    boss = await db.get_player(rival.user_id)
+
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(boss, "bar", now=NOW)
+        siege = await war.march(muster.id, boss.user_id, now=NOW)
+    finally:
+        await war.close()
+
+    assert siege.finished and siege.won
+    assert siege.wave == 0, "волн не было: драться было не с кем"
+    assert "без боя" in siege.summary[0]
+    assert "Коза Ностра" in siege.summary[1], "сказано, у кого отняли"
+    row = (await db.turf_rows())["bar"]
+    assert row.owner == owner_of_clan(theirs.id), "точка сменила семью"
 
 
 async def test_the_ceiling_holds_in_the_live_panel_too(db, client):

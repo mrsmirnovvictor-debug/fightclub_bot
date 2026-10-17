@@ -1790,6 +1790,13 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    карте важно, кто дом держит, а не чей он тебе, — но пробежать
    глазами свои всё равно надо */
 .zone-sign.ours { fill: #7ee787; }
+/* Жетон владельца у названия дома: знак семьи или значок службы. Тень
+   под ним та же, что обводка у подписи, — иначе тёмный знак пропадает
+   на тёмном городе */
+.zone-badge {
+  pointer-events: none;
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.9));
+}
 
 /* Отсчёт рейда под вывеской казино. Цвет говорит то же, что и слова:
    синий — скоро откроется, жёлтый — идёт, зелёный — своё уже взял */
@@ -1817,24 +1824,56 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* Плашка под ногами: боец дошёл до точки, и отсюда собирают отряд.
    Стоит выше стрелки «вниз»: та висит по центру нижнего края, и полоса
    во всю ширину накрыла бы её целиком */
+/* Плашка точки под ногами. Одной строкой и по ширине содержимого: она
+   висит поверх города, и прежняя — три строки с кнопкой во всю ширину —
+   накрывала дверь соседнего дома, в который из-за неё нельзя было
+   войти. По той же причине мимо неё проходят нажатия: ловит их только
+   кнопка */
 .turf-band {
   position: absolute;
   left: 12px;
   right: 12px;
   bottom: calc(136px + env(safe-area-inset-bottom));
-  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin: 0 auto;
+  padding: 6px 8px 6px 10px;
   border-radius: 12px;
   background: rgba(0, 0, 0, 0.72);
   border: 1px solid rgba(255, 255, 255, 0.18);
   color: #fff;
+  pointer-events: none;
 }
-.turf-band-head { margin: 0; font-weight: 800; font-size: 14px; }
+.turf-band-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-weight: 800;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.band-badge { width: 22px; height: 22px; border-radius: 50%; }
 .turf-band-note {
-  margin: 4px 0 0;
+  margin: 0;
+  flex-basis: 100%;
   font-size: 12.5px;
   color: rgba(255, 255, 255, 0.78);
 }
-.turf-band .btn { margin-top: 8px; }
+.turf-band .band-go {
+  pointer-events: auto;
+  margin: 0;
+  padding: 6px 12px;
+  width: auto;
+  font-size: 13px;
+  white-space: nowrap;
+}
 
 /* ---------- стрелки в соседние районы ---------- */
 

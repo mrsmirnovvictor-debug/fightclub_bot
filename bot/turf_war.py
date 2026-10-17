@@ -424,6 +424,11 @@ class TurfWar:
             "Штурм точки %s: отряд %s против гарнизона %s",
             siege.spot.code, len(party), len(wall),
         )
+        if not wall:
+            # Защищать некому: семья взяла точку и не выставила на неё
+            # никого. Драться не с кем — отряд просто входит и забирает
+            await self._finish(siege, won=True)
+            return siege
         self._open_wave(siege)
         return siege
 
@@ -591,10 +596,13 @@ class TurfWar:
         else:
             await self.db.hold_turf(siege.spot.code, moment)
         siege.summary = [
-            f"{siege.spot.title} взят за {siege.wave} волн."
+            # Волн ноль — драки не было вовсе: точка стояла пустая
+            f"{siege.spot.title} взят без боя: охраны на нём не было."
+            if won and not siege.wave
+            else f"{siege.spot.title} взят за {siege.wave} волн."
             if won
             else f"{siege.spot.title} отбит: гарнизон устоял.",
-            f"Гарнизон держал: {siege.defender_title}.",
+            f"Держал точку: {siege.defender_title}.",
         ]
         if siege.fallen:
             siege.summary.append(

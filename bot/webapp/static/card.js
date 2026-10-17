@@ -2063,23 +2063,37 @@ function paintTurfBand() {
   box.classList.toggle("hidden", !band);
   if (!band) return;
 
+  // Одна строка: жетон, название с доходом и кнопка справа. Плашка
+  // висит поверх города, и три строки с кнопкой во всю ширину
+  // закрывали соседний дом — войти в него было нельзя
   const head = document.createElement("p");
   head.className = "turf-band-head";
-  head.textContent = band.mark + " " + band.title
-    + " · " + num(band.income) + " 💰/сут";
+  if (band.badge) {
+    const badge = picture(band.badge, band.owner, "");
+    badge.className = "band-badge";
+    head.appendChild(badge);
+  } else {
+    head.appendChild(document.createTextNode(band.mark + " "));
+  }
+  head.appendChild(document.createTextNode(
+    band.title + " · " + num(band.income) + " 💰"
+  ));
   box.appendChild(head);
 
-  const said = document.createElement("p");
-  said.className = "turf-band-note";
-  said.textContent = band.text;
-  box.appendChild(said);
-
-  if (!band.button) return;
+  if (!band.button) {
+    // Кнопки нет — вместо неё причина: это единственное, ради чего
+    // плашке стоит быть в две строки
+    const said = document.createElement("p");
+    said.className = "turf-band-note";
+    said.textContent = band.text;
+    box.appendChild(said);
+    return;
+  }
   const go = document.createElement("button");
   go.type = "button";
-  go.className = "btn wide";
+  go.className = "btn band-go";
   go.id = "turf-call";
-  go.textContent = band.button === "call" ? "🚩 Созвать отряд" : "Открыть штурм";
+  go.textContent = band.button === "call" ? "🚩 Отряд" : "Открыть";
   go.addEventListener("click", () => {
     showTab("turf");
     if (band.button === "call") turfAction({ action: "call", spot: band.code });
@@ -2208,15 +2222,58 @@ function placeZones() {
 // ничего не меряет и отвечает нулём — тогда прикидываем по числу букв.
 const SIGN_EDGE = 16;   // поле от края картинки
 const SIGN_CHAR = 21;   // ширина буквы на глаз: 38 пикселей жирным
+// Жетон владельца у названия: сторона и просвет до первой буквы
+const BADGE_SIZE = 40;
+const BADGE_GAP = 8;
 
 function fitSign(sign) {
   const measured = sign.getComputedTextLength ? sign.getComputedTextLength() : 0;
   const half = (measured || sign.textContent.length * SIGN_CHAR) / 2;
-  const left = SIGN_EDGE + half;
+  const badge = sign.parentNode
+    ? sign.parentNode.querySelector(".zone-badge")
+    : null;
+  // Жетон висит слева от подписи, и середину делят они вдвоём: иначе
+  // название уезжало бы от двери на полжетона
+  const shift = badge ? (BADGE_SIZE + BADGE_GAP) / 2 : 0;
+  const middle = Number(sign.dataset.base || sign.getAttribute("x")) + shift;
+  const left = SIGN_EDGE + half + shift * 2;
   const right = MAP_W - SIGN_EDGE - half;
   if (left > right) return;  // подпись шире карты — двигать её некуда
-  const x = Number(sign.getAttribute("x"));
-  sign.setAttribute("x", Math.min(Math.max(x, left), right));
+  const x = Math.min(Math.max(middle, left), right);
+  sign.setAttribute("x", x);
+  if (badge) badge.setAttribute("x", x - half - BADGE_GAP - BADGE_SIZE);
+}
+
+// Жетон владельца у названия дома. Место ему найдёт `fitSign`, когда
+// подпись уже на холсте и её есть чем мерить
+function houseBadge(held, top) {
+  const badge = svgNode("image", {
+    x: 0,
+    y: top - 4,
+    width: BADGE_SIZE,
+    height: BADGE_SIZE,
+    class: "zone-badge",
+    href: held.badge,
+    preserveAspectRatio: "xMidYMid meet",
+  });
+  // Старым webkit нужен xlink, новым хватает href: ставим оба
+  badge.setAttributeNS(
+    "http://www.w3.org/1999/xlink", "xlink:href", held.badge
+  );
+  // Не доехал — возвращаем значок словом: без него не понять, что дом
+  // вообще держат
+  badge.addEventListener("error", () => {
+    const sign = badge.parentNode
+      ? badge.parentNode.querySelector(".zone-sign")
+      : null;
+    badge.remove();
+    if (!sign || sign.textContent.indexOf(held.mark) >= 0) return;
+    sign.textContent = sign.textContent.replace(
+      /^(📍 )?/, (pin) => (pin || "") + held.mark + " "
+    );
+    fitSign(sign);
+  });
+  return badge;
 }
 
 function houseShape(place) {
@@ -2245,21 +2302,24 @@ function houseShape(place) {
 
   // Подпись под дверью. Над ней нельзя: там на рисунке нарисована
   // настоящая вывеска дома, и наша ложится прямо на неё
-  // Отметка войны — перед названием: круг у ничьего дома, шляпа у
-  // семьи, фуражка у службы. По ней видно и то, что дом вообще берут,
-  // и кто его держит. Владельца и доход строкой под вывеской тут
-  // держали раньше — карта читалась как ведомость, а всё это есть в
-  // особняке
+  // Отметка войны — перед названием. У семьи и у службы это их
+  // нарисованный жетон: по шляпе не видно, какая именно семья держит
+  // дом, а по знаку видно. У ничьего дома жетона нет — там кружок
+  // словом: городская охрана не фракция, и своего знака у неё нет
   const held = (turfOnMap().spots || {})[place.code];
+  const middle = (place.zone.x + place.zone.w / 2) * MAP_W;
+  const top = (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP;
   const sign = svgNode("text", {
-    x: (place.zone.x + place.zone.w / 2) * MAP_W,
-    y: (place.zone.y + place.zone.h) * MAP_H + SIGN_DROP,
+    x: middle,
+    y: top,
     class: "zone-sign" + (held && held.mine ? " ours" : ""),
     "text-anchor": "middle",
     "dominant-baseline": "hanging",
   });
+  sign.dataset.base = String(middle);
   sign.textContent = (place.here ? "📍 " : "")
-    + (held ? held.mark + " " : "") + place.title;
+    + (held && !held.badge ? held.mark + " " : "") + place.title;
+  if (held && held.badge) group.appendChild(houseBadge(held, top));
   group.appendChild(sign);
 
   // Под вывеской казино — отсчёт рейда: подвал открыт не всегда, и

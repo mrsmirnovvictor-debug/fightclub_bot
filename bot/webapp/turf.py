@@ -90,7 +90,7 @@ async def spot_row(
     posted: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Строка точки: дом, доход, владелец и можно ли идти на штурм."""
-    from bot.turf_service import owner_title
+    from bot.turf_service import owner_badge, owner_title
 
     spot = holding.spot
     owner = holding.owner
@@ -111,6 +111,9 @@ async def spot_row(
         "mark": spot_mark(owner, ours),
         # Отметка для карты города: там «чья» важнее «своя ли»
         "sign": house_mark(owner),
+        # Жетон владельца: знак семьи или значок службы. Нарисованный
+        # знак говорит то, чего не скажет шляпа, — какая именно семья
+        "badge": await owner_badge(db, owner),
         "mine": ours,
         # Сколько нанятых на точке и сколько их туда ещё влезет
         "posted": (posted or {}).get(spot.code, 0),
@@ -387,7 +390,11 @@ def map_marks(body: dict[str, Any]) -> dict[str, Any]:
     дом вообще берут.
     """
     spots = {
-        row["code"]: {"mark": row["sign"], "mine": row["mine"]}
+        row["code"]: {
+            "mark": row["sign"],
+            "badge": row["badge"],
+            "mine": row["mine"],
+        }
         for row in body["spots"]
     }
     row = next((one for one in body["spots"] if one["here"]), None)
@@ -401,6 +408,7 @@ def _band(body: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
         "code": row["code"],
         "title": row["title"],
         "mark": row["mark"],
+        "badge": row["badge"],
         "owner": row["owner"]["title"],
         "income": row["income"],
         "mine": row["mine"],
