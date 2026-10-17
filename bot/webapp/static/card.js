@@ -9375,6 +9375,8 @@ function renderPolice(data) {
     body.appendChild(dutyBoardBox(data));
   }
 
+  if ((data.jobs || []).length) body.appendChild(dutyJobsBox(data));
+
   if (data.licence && data.licence.title) {
     body.appendChild(paperCard(data.licence));
   }
@@ -9384,6 +9386,66 @@ function renderPolice(data) {
   row.className = "thing-buttons";
   row.appendChild(button("Получить права", { onClick: () => takeLicence() }));
   body.appendChild(row);
+}
+
+/** Служба в полиции: три ступени, и берут на них здесь, а не в агентстве. */
+function dutyJobsBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Служба в полиции";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = "Форму выдают здесь: тест агентства заменила академия. "
+    + "Начинают патрульным, дальше — по стажу.";
+  box.appendChild(note);
+
+  data.jobs.forEach((one) => {
+    const row = document.createElement("article");
+    row.className = "case" + (one.mine ? " wanted" : "");
+    const line = document.createElement("header");
+    line.className = "case-head";
+    const who = document.createElement("span");
+    who.className = "case-who";
+    who.textContent = one.emoji + " " + one.title + (one.mine ? " · твоё" : "");
+    const pay = document.createElement("span");
+    pay.className = "case-sum";
+    pay.textContent = num(one.salary) + " 💰/нед";
+    line.append(who, pay);
+    row.appendChild(line);
+
+    const said = document.createElement("p");
+    said.className = "case-note";
+    said.textContent = [
+      one.months_text,
+      one.limited
+        ? "мест " + one.seats + ", занято " + one.taken
+        : "мест сколько угодно",
+      one.note,
+    ].filter(Boolean).join(" · ");
+    row.appendChild(said);
+
+    if (one.can_take) {
+      const buttons = document.createElement("div");
+      buttons.className = "thing-buttons";
+      buttons.appendChild(
+        button("Устроиться", {
+          onClick: () => policeAction({ action: "hire", job: one.code }),
+        })
+      );
+      row.appendChild(buttons);
+    } else if (one.lacks && !one.mine) {
+      const why = document.createElement("p");
+      why.className = "case-note";
+      why.textContent = one.lacks;
+      row.appendChild(why);
+    }
+    box.appendChild(row);
+  });
+  return box;
 }
 
 async function policeAction(payload) {

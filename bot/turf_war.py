@@ -280,9 +280,19 @@ class TurfWar:
                 f"{max(1, rest // 3600)} ч."
             )
         # Потолок в четыре точки считается здесь, а не на развязке:
-        # собрать отряд, дойти и услышать «мест нет» — издевательство
+        # собрать отряд, дойти и услышать «мест нет» — издевательство.
+        #
+        # Считаем вместе с теми точками, за которые эта же сторона дерётся
+        # прямо сейчас. Без этого потолок обходился в одну минуту: четыре
+        # отряда, созванных разом, все проходили проверку по базе — в ней
+        # ещё ничего не записано, — и семья брала весь город
         held = [one for one in rows if one.owner.same(mine)]
-        if len(held) >= MAX_SPOTS_PER_OWNER:
+        coming = [
+            one for one in self._sieges.values() if one.attacker.same(mine)
+        ] + [
+            one for one in self._musters.values() if one.owner.same(mine)
+        ]
+        if len(held) + len(coming) >= MAX_SPOTS_PER_OWNER:
             raise TurfError(
                 f"Больше {MAX_SPOTS_PER_OWNER} точек разом не удержать. "
                 "Сперва отдайте какую-нибудь."

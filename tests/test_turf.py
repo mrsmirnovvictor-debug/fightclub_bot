@@ -559,6 +559,30 @@ async def test_the_ceiling_holds_in_the_live_panel_too(db, client):
     assert "не удержать" in (await answer.json())["error"]
 
 
+async def test_the_ceiling_counts_the_fights_already_going(db, client):
+    """Четыре отряда разом потолок не обходят.
+
+    Потолок считался по базе, а в базе до развязки ничего нет: созвав
+    четыре отряда в одну минуту, семья проходила проверку четырежды и
+    брала весь город. Теперь идущие бои считаются вместе с взятым.
+    """
+    don, squad, _ = await family(db, size=6)
+    await stand(db, squad, "bar")
+    await post(client, don.user_id, action="call", spot="bar")
+
+    # Трое своих зовут отряды на соседние точки — потолок это видит
+    codes = ["casino", "market", "northern_wall_shop"]
+    for number, code in zip(squad[1:4], codes):
+        await stand(db, [number], code)
+        answer = await post(client, number, action="call", spot=code)
+        assert answer.status == 200, code
+
+    await stand(db, [squad[4]], "jewelry_store")
+    answer = await post(client, squad[4], action="call", spot="jewelry_store")
+    assert answer.status == 409
+    assert "не удержать" in (await answer.json())["error"]
+
+
 async def test_a_stranger_does_not_join_the_muster(db, client):
     """Сбор свой: чужая семья в него не записывается."""
     don, _, _ = await family(db)

@@ -392,6 +392,29 @@ async def test_the_side_does_not_take_more_than_five(db):
         await service.join(raid.id, extra, now=NOW)
 
 
+async def test_the_brawl_pays_experience_like_a_ring_bout(db):
+    """Опыт за драку — тот же, что за бой на ринге. Рейтинг не трогаем."""
+    service = RobberyService(db, rng=random.Random(4))
+    don, _, _ = await family(db)
+    victim = make_player(50, "Прохожий", level=1, credits=1_000)
+    victim.strength = victim.agility = 5
+    await db.save_player(victim)
+    await licensed(db, [don.user_id], 1)
+    before = await db.get_player(don.user_id)
+
+    raid = await service.rob(before, victim.user_id, now=NOW)
+    await fight_out(service, raid)
+
+    assert raid.won, "первого уровня против десятого не выстоять"
+    after = await db.get_player(don.user_id)
+    assert after.total_exp > before.total_exp, "за драку дают опыт"
+    assert after.rating == before.rating, "рейтинг — лестница ринга"
+    # Проигравшему — столько же, сколько на ринге, то есть ничего:
+    # `LOSS_EXP_SHARE` в клубе нулевая, и здесь она та же
+    beaten = await db.get_player(victim.user_id)
+    assert beaten.total_exp == 0
+
+
 async def test_the_helper_gets_nothing(db):
     """Добыча идёт одному напавшему: помощники не получают ничего."""
     service = RobberyService(db, rng=random.Random(3))

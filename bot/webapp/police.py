@@ -60,6 +60,42 @@ def wanted_row(one: dict, names: dict[int, str]) -> dict[str, Any]:
     }
 
 
+async def duty_jobs(db, player: Player, now: int) -> list[dict[str, Any]]:
+    """Места участка: три ступени и что с каждой у этого бойца.
+
+    Берут здесь, а не в агентстве: в полицию приходят в полицию. Тест
+    агентства тут не нужен — его роль играет академия.
+    """
+    from bot.game.work import hired_at_house
+    from bot.work_service import vacancies
+
+    rows = await vacancies(db, player, now, board=hired_at_house("vcpd"))
+    out = []
+    for row in rows:
+        one = row["vacancy"]
+        out.append({
+            "code": one.code,
+            "title": one.title,
+            "emoji": one.emoji,
+            "salary": one.salary,
+            "hours": one.hours,
+            "note": one.note,
+            "months": one.months,
+            "months_text": one.months_text,
+            "limited": row["limited"],
+            "seats": one.seats,
+            "taken": row["taken_seats"],
+            "taken_by": row["taken_by"],
+            "mine": row["mine"],
+            "lacks": row["lacks"],
+            "can_take": bool(
+                not row["lacks"] and not player.works
+                and (not row["limited"] or row["free_seats"])
+            ),
+        })
+    return out
+
+
 async def build_police_board(
     db, player: Player, now: int | None = None
 ) -> dict[str, Any]:
@@ -85,6 +121,7 @@ async def build_police_board(
         "fee": ARREST_FEE,
         "quota_bonus": QUOTA_BONUS,
         "jail": await term_of(db, player.user_id, moment),
+        "jobs": await duty_jobs(db, player, moment),
     }
     if not badge:
         return body
@@ -126,4 +163,10 @@ def jail_note(term: dict[str, int], now: int) -> str:
     return f"Ты сидишь: до освобождения {format_term(left)}."
 
 
-__all__ = ["build_police_board", "case_row", "jail_note", "wanted_row"]
+__all__ = [
+    "build_police_board",
+    "case_row",
+    "duty_jobs",
+    "jail_note",
+    "wanted_row",
+]

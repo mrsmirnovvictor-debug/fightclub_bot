@@ -26,6 +26,7 @@ from bot.game.clock import MOSCOW
 from bot.game.health import now_ts
 from bot.game.locations import Service, get_location, where_to
 from bot.game.work import (
+    agency_board,
     COOLDOWN_SECONDS,
     DAY_HOURS,
     PASS_SHARE,
@@ -768,7 +769,12 @@ async def test_the_agency_shows_every_vacancy_by_the_handle(client, db):
 
     body = await (await client.get("/api/hr", headers=headers())).json()
 
-    assert len(body["vacancies"]) == len(VACANCIES)
+    # Полицейских мест на доске агентства нет: в полицию приходят в
+    # полицию, и отдельная дверь у неё не для красоты
+    assert len(body["vacancies"]) == len(agency_board())
+    assert not any(
+        one["code"].startswith("police_") for one in body["vacancies"]
+    )
     row = body["vacancies"][0]
     assert {"code", "title", "salary", "hours", "place_title"} <= set(row)
     # Вопросов на доске нет: их выдают по заявке. Есть только признак,
@@ -983,8 +989,10 @@ def test_the_diploma_jobs_are_the_ones_the_city_promised():
     check("mayor_adviser", "city_administration", 2, "gov", 1, 700)
     check("clerk", "city_administration", 4, "gov", 0, 500)
     check("police_chief", "vcpd", 1, "police", 2, 1_500)
-    check("police_inspector", "vcpd", 2, "police", 1, 700)
-    check("police_patrol", "vcpd", 4, "police", 0, 500)
+    # Полицейская лестница: начальник один, офицеров и патрульных город
+    # не считает — в патруль берут всех, кто кончил академию
+    check("police_officer", "vcpd", 0, "police", 1, 700)
+    check("police_patrol", "vcpd", 0, "police", 0, 500)
     check("head_doctor", "hospital", 1, "medic", 2, 1_500)
     check("district_doctor", "hospital", 2, "medic", 1, 700)
     check("orderly", "hospital", 4, "medic", 0, 500)
@@ -1110,29 +1118,34 @@ async def test_the_experience_stays_when_the_job_is_gone(db):
     assert fresh.experience_months(later) == 2
 
 
-async def test_four_patrolmen_fit_and_the_fifth_does_not(db):
-    """Патрульных в городе четверо: пятому отказывают по числу мест."""
+async def test_the_patrol_takes_everyone_and_the_chief_is_one(db):
+    """Патрульных город не считает, а начальник полиции ровно один."""
     from bot.game.work import MONTH_SECONDS
+    from bot.work_service import hire_at_house
 
     now = moment_at()
-    for number in range(4):
+    for number in range(6):
         one = await stand(db, make_player(200 + number, f"Боец-{number}"))
         one.diplomas = ["police"]
-        assert (await apply(db, one, "police_patrol", [], now)).hired
+        one.location = "vcpd"
+        await hire_at_house(db, one, "police_patrol", now)
 
-    fifth = await stand(db, make_player(250, "Пятый"))
-    fifth.diplomas = ["police"]
-    with pytest.raises(WorkError, match="Свободных мест нет"):
-        await apply(db, fifth, "police_patrol", [], now)
-
-    # Все четверо на месте, и доска это показывает
     taken = await db.taken_jobs()
-    assert len(taken["police_patrol"]) == 4
+    assert len(taken["police_patrol"]) == 6, "шестому тоже нашлась форма"
 
-    # А на соседнее кресло в том же доме — пожалуйста: участковых двое,
-    # и там своё условие по стажу
-    fifth.job_experience = 2 * MONTH_SECONDS
-    assert (await apply(db, fifth, "police_inspector", [], now)).hired
+    # Начальник один: второму отказывают
+    first = await stand(db, make_player(250, "Первый"))
+    first.diplomas = ["police"]
+    first.location = "vcpd"
+    first.job_experience = 3 * MONTH_SECONDS
+    await hire_at_house(db, first, "police_chief", now)
+
+    second = await stand(db, make_player(251, "Второй"))
+    second.diplomas = ["police"]
+    second.location = "vcpd"
+    second.job_experience = 3 * MONTH_SECONDS
+    with pytest.raises(WorkError, match="Место занято"):
+        await hire_at_house(db, second, "police_chief", now)
 
 
 async def test_the_board_counts_the_free_seats(db):
@@ -1159,7 +1172,7 @@ def test_the_light_side_is_police_and_army_only():
     """Пометка стоит на месте, а не на доме: уборщица в участке не служба."""
     lawful = {one.code for one in VACANCIES if one.lawful}
     assert lawful == {
-        "police_chief", "police_inspector", "police_patrol",
+        "police_chief", "police_officer", "police_patrol",
         "army_head", "senior_officer", "junior_officer",
     }
     # Врач и секретарь работают со всеми: лечить и выдавать бумагу мафиози

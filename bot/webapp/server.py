@@ -141,7 +141,7 @@ from bot.webapp.bank import (
     statement_payload,
 )
 from bot.webapp.work import build_hr, build_work
-from bot.work_service import WorkError
+from bot.work_service import WorkError, hire_at_house
 from bot.work_service import apply as work_apply
 from bot.work_service import quit_job as work_quit
 from bot.work_service import quiz_payload
@@ -1522,9 +1522,13 @@ async def api_police_action(request: web.Request) -> web.Response:
             said = await police_report(db, player, _int_field(data, "case"))
         elif action == "collect":
             said = await police_collect(db, player)
+        elif action == "hire":
+            # В полицию берут в полиции: тест агентства заменила академия
+            place = await hire_at_house(db, player, str(data.get("job") or ""))
+            said = f"Ты принят: {place.title}. Форму получишь на месте."
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
-    except PoliceError as error:
+    except (PoliceError, WorkError) as error:
         return web.json_response({"error": str(error)}, status=409)
     except (TypeError, ValueError):
         return web.json_response({"error": "Непонятный ответ."}, status=400)

@@ -470,6 +470,43 @@ async def test_the_station_shows_the_duty_board_to_officers_only(db, client):
     assert len(body["mine"]) == 1 and body["mine"][0]["can_file"] is True
 
 
+async def test_the_station_hires_its_own_and_the_agency_does_not(db, client):
+    """В полицию приходят в полицию: агентство этих мест не показывает."""
+    one = make_player(50, "Кадет", where=VCPD)
+    one.diplomas = ["police"]
+    await db.save_player(one)
+
+    body = await (await client.get(
+        "/api/police", headers=headers(one.user_id)
+    )).json()
+    ladder = {row["code"]: row for row in body["jobs"]}
+    assert set(ladder) == {"police_chief", "police_officer", "police_patrol"}
+    assert ladder["police_patrol"]["can_take"] is True
+    assert ladder["police_patrol"]["limited"] is False
+    # На кресло начальника нужен стаж, и об этом сказано словами
+    assert ladder["police_chief"]["can_take"] is False
+    assert "опыт" in ladder["police_chief"]["lacks"]
+
+    answer = await client.post(
+        "/api/police",
+        json={"action": "hire", "job": "police_patrol"},
+        headers=headers(one.user_id),
+    )
+    assert answer.status == 200
+    assert "Патрульный" in (await answer.json())["said"]
+    assert (await db.get_player(one.user_id)).job_code == "police_patrol"
+
+    # А на доске агентства полицейских мест нет вовсе
+    await stand(db, [one.user_id], "hr_agency")
+    hr = await (await client.get(
+        "/api/hr", headers=headers(one.user_id)
+    )).json()
+    assert hr["vacancies"], "доска агентства не пуста"
+    assert not [
+        row for row in hr["vacancies"] if row["code"].startswith("police_")
+    ]
+
+
 async def test_the_handler_files_and_repays(db, client):
     """Заявление через ручку, задержание, и деньги обратно жертве."""
     victim = make_player(50, "Прохожий", where=VCPD, credits=0)

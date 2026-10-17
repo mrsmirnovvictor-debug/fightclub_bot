@@ -43,6 +43,8 @@ from bot.game.work import (
     SHIFT_SECONDS,
     VACANCIES,
     Vacancy,
+    agency_board,
+    hired_at_house,
     get_vacancy,
     hours_of,
     day_is_over,
@@ -92,14 +94,22 @@ class Payslip:
 # ---------- кто где работает ----------
 
 
-async def vacancies(db: Database, player: Player, now: int | None = None) -> list[dict]:
-    """Доска агентства: все пять мест и что с каждым из них у этого бойца."""
+async def vacancies(
+    db: Database, player: Player, now: int | None = None,
+    board: tuple | None = None,
+) -> list[dict]:
+    """Доска агентства: места города и что с каждым из них у этого бойца.
+
+    `board` — какие места показывать. По умолчанию витрина агентства, в
+    которой полицейских мест нет: в полицию приходят в полицию, и
+    отдельная дверь у неё не для красоты.
+    """
     moment = now_ts() if now is None else now
     await release_the_absent(db, moment)
     taken = await db.taken_jobs()
     blocks = await db.job_blocks_of(player.user_id, moment)
     rows = []
-    for one in VACANCIES:
+    for one in agency_board() if board is None else board:
         block = blocks.get(one.code)
         holders = taken.get(one.code, [])
         rows.append(
@@ -110,7 +120,11 @@ async def vacancies(db: Database, player: Player, now: int | None = None) -> lis
                 "holders": [row["nickname"] for row in holders],
                 "taken_by": ", ".join(row["nickname"] for row in holders),
                 "taken_seats": len(holders),
-                "free_seats": max(0, one.seats - len(holders)),
+                # Безлимитное место свободно всегда: его не считают
+                "free_seats": (
+                    max(0, one.seats - len(holders)) if one.limited else one.cap
+                ),
+                "limited": one.limited,
                 "mine": player.job_code == one.code,
                 "blocked_until": block["until"] if block else 0,
                 "block_reason": block["reason"] if block else "",
@@ -190,6 +204,53 @@ def my_vacancy(player: Player) -> Vacancy | None:
 # ---------- приём на работу ----------
 
 
+async def hire_at_house(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> Vacancy:
+    """Взять место прямо в доме, без теста агентства.
+
+    Тест в агентстве — это проверка, годится ли человек. У полиции она
+    уже есть, и это академия: сдал её — приходи в участок и надевай
+    форму. Второй экзамен на том же пороге был бы недоверием к первому.
+    """
+    moment = now_ts() if now is None else now
+    vacancy = get_vacancy(code)
+    if vacancy is None or not vacancy.at_house:
+        raise WorkError("Сюда на эту работу не берут.")
+    if player.where(moment) != vacancy.place:
+        raise WorkError("За формой приходят на место, а не из кармана.")
+    if player.works:
+        mine = my_vacancy(player)
+        raise WorkError(
+            f"У тебя уже есть работа: {mine.title if mine else 'одна'}. "
+            "Работа одна на бойца."
+        )
+    lack = lacking(player, vacancy, moment)
+    if lack:
+        raise WorkError(lack)
+
+    await release_the_absent(db, moment)
+    taken = await db.taken_jobs()
+    holders = taken.get(code, [])
+    if vacancy.limited and len(holders) >= vacancy.seats:
+        who = ", ".join(one["nickname"] for one in holders)
+        raise WorkError(f"Место занято: здесь уже служит {who}.")
+    if not await db.take_job(
+        player.user_id, code, moment, week_of(moment), vacancy.cap
+    ):
+        raise WorkError("Место только что заняли.")
+    player.job_code = code
+    player.job_since = moment
+    player.job_week = week_of(moment)
+    player.job_minutes = 0
+    player.shift_until = 0
+    player.shift_day = ""
+    player.shift_minutes = 0
+    await db.save_player(player)
+    logger.info("Боец %s принят в %s на %s", player.user_id, vacancy.place, code)
+    return vacancy
+
+
 async def apply(
     db: Database, player: Player, code: str, answers: list[int], now: int | None = None
 ) -> Attempt:
@@ -225,7 +286,7 @@ async def apply(
     await release_the_absent(db, moment)
     taken = await db.taken_jobs()
     holders = taken.get(code, [])
-    if len(holders) >= vacancy.seats:
+    if vacancy.limited and len(holders) >= vacancy.seats:
         who = ", ".join(one["nickname"] for one in holders)
         raise WorkError(
             f"Свободных мест нет: здесь уже работают {who}."
@@ -247,7 +308,7 @@ async def apply(
         return Attempt(right, total, need, False, vacancy)
 
     if not await db.take_job(
-        player.user_id, code, moment, week_of(moment), vacancy.seats
+        player.user_id, code, moment, week_of(moment), vacancy.cap
     ):
         raise WorkError("Место только что заняли. Попробуй другую вакансию.")
     player.job_code = code

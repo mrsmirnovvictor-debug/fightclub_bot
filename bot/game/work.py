@@ -191,12 +191,27 @@ class Vacancy:
     salary: int  # кредиты за неделю при выполненной норме
     hours: int  # недельная норма в часах
     place: str  # код локации, где работают
+    # Ноль — мест сколько угодно: в патруль берут всех, кто кончил
+    # академию, и считать их городу незачем
     seats: int = 1
     needs: str = ""
     months: int = 0
     # Светлая сторона: место не берут того, кто состоит в клане
     lawful: bool = False
+    # Берут не в агентстве, а в самом доме. Агентство такие места не
+    # показывает вовсе: в полицию приходят в полицию
+    at_house: bool = False
     note: str = ""
+
+    @property
+    def limited(self) -> bool:
+        """Считает ли город эти места. Нет — берут всех подходящих."""
+        return self.seats > 0
+
+    @property
+    def cap(self) -> int:
+        """Сколько мест для запроса в базу. Безлимит — число с запасом."""
+        return self.seats if self.limited else 1_000_000
 
     @property
     def education(self) -> str:
@@ -334,24 +349,24 @@ VACANCIES: tuple[Vacancy, ...] = (
 
     # Полиция: полицейская академия
     Vacancy(
-        "police_chief", "Начальник Полиции Вегаса", "🎖",
+        "police_chief", "Начальник полиции", "🎖",
         salary=1_500, hours=STAFF_HOURS, place="vcpd",
         seats=1, needs="police", months=2,
-        lawful=True,
+        lawful=True, at_house=True,
         note="Отвечать за город, когда отвечать больше некому.",
     ),
     Vacancy(
-        "police_inspector", "Участковый", "👮",
+        "police_officer", "Офицер полиции", "👮",
         salary=700, hours=STAFF_HOURS, place="vcpd",
-        seats=2, needs="police", months=1,
-        lawful=True,
+        seats=0, needs="police", months=1,
+        lawful=True, at_house=True,
         note="Знать свой квартал по именам и по кличкам.",
     ),
     Vacancy(
         "police_patrol", "Патрульный", "🚓",
         salary=500, hours=STAFF_HOURS, place="vcpd",
-        seats=4, needs="police",
-        lawful=True,
+        seats=0, needs="police",
+        lawful=True, at_house=True,
         note="Ходить по улицам так, чтобы на них было тихо.",
     ),
 
@@ -444,6 +459,18 @@ WORK_IMAGE = f"{MAGIC}/work_contract.jpeg"
 
 def get_vacancy(code: str) -> Vacancy | None:
     return next((one for one in VACANCIES if one.code == code), None)
+
+
+def hired_at_house(place: str) -> tuple[Vacancy, ...]:
+    """Места, на которые берут в самом доме, а не в агентстве."""
+    return tuple(
+        one for one in VACANCIES if one.at_house and one.place == place
+    )
+
+
+def agency_board() -> tuple[Vacancy, ...]:
+    """Что показывает агентство. В полицию приходят в полицию."""
+    return tuple(one for one in VACANCIES if not one.at_house)
 
 
 def vacancies_at(place: str) -> tuple[Vacancy, ...]:
@@ -564,6 +591,8 @@ __all__ = [
     "SHIFT_HOURS",
     "SHIFT_SECONDS",
     "VACANCIES",
+    "agency_board",
+    "hired_at_house",
     "OVERTIME_RATE",
     "WEEK_SECONDS",
     "WORK_IMAGE",

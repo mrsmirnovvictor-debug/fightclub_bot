@@ -49,6 +49,13 @@ from bot.game.battle import (
 )
 from bot.game.classes import Zone, block_combo
 from bot.game.combat import Action, Fighter, resolve_round
+from bot.game.economy import (
+    DRAW_EXP_SHARE,
+    LOSS_EXP_SHARE,
+    consolation_exp,
+    pro_exp,
+    win_exp,
+)
 from bot.game.fightlog import turn_payload
 from bot.game.health import now_ts
 from bot.game.narrator import strike_lines
@@ -106,6 +113,8 @@ class Robbery:
     summary: list[str] = field(default_factory=list)
     finished: bool = False
     won: bool = False
+    # Судья развёл стороны поровну: опыт тогда идёт по ничьей
+    draw: bool = False
     loot: int = 0
     # Премия семье за закрытую недельную цель. Ноль — не закрыли
     bonus: int = 0
@@ -613,6 +622,7 @@ class RobberyService:
             return
         raid.finished = True
         raid.won = outcome.winning_team == RED
+        raid.draw = bool(outcome.draw)
         if raid.timer is not None:
             raid.timer.cancel()
         moment = now_ts()
@@ -730,9 +740,9 @@ class RobberyService:
     async def _settle(self, raid: Robbery, player: Player | None) -> None:
         """Записать бойцу, чем для него кончилась драка.
 
-        Здоровье и травмы — да, износ вещей — нет: ограбление коротко, и
-        платит за него тот, у кого взяли деньги. Снашивать ему заодно и
-        куртку значило бы наказать дважды за одно.
+        Здоровье, травмы и опыт — да, износ вещей — нет: ограбление
+        коротко, и платит за него тот, у кого взяли деньги. Снашивать
+        ему заодно и куртку значило бы наказать дважды за одно.
         """
         if player is None:  # pragma: no cover - персонажа удалили по ходу
             return
@@ -743,7 +753,32 @@ class RobberyService:
         if injury is not None:
             await hurt_player(self.db, player, injury)
         player.set_hp(fighter.hp)
+        player.grant_exp(self._exp_for(raid, player))
         await self.db.save_player(player)
+
+    def _exp_for(self, raid: Robbery, player: Player) -> int:
+        """Опыт за драку — тот же, что за бой на ринге.
+
+        Считается по нанесённому урону и по уровню противной стороны,
+        как в дуэли: драка в подворотне — такой же бой, и опыт за неё
+        должен быть таким же. Рейтинг при этом не двигается: рейтинг —
+        лестница ринга, и ограблением по ней не поднимаются.
+        """
+        fighter = raid.fighters[player.user_id]
+        mine = raid.side_of(player.user_id)
+        others = [
+            raid.fighters[one].level
+            for one in raid.fighters
+            if raid.side_of(one) != mine
+        ]
+        against = round(sum(others) / len(others)) if others else fighter.level
+        full = win_exp(fighter.damage_dealt, fighter.level, against)
+        won = raid.won if mine == RED else not raid.won
+        if raid.draw:
+            full = consolation_exp(full, DRAW_EXP_SHARE)
+        elif not won:
+            full = consolation_exp(full, LOSS_EXP_SHARE)
+        return pro_exp(full, player.is_pro())
 
     def _summary(self, raid: Robbery, outcome: BattleOutcome) -> list[str]:
         first = (
