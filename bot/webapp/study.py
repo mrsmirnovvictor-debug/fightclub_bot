@@ -20,7 +20,7 @@ from typing import Any
 
 from bot.game.clock import club_moment
 from bot.game.health import now_ts
-from bot.game.locations import get_location
+from bot.game.locations import Service, get_location
 from bot.game.study import (
     EXAM_SIZE,
     LESSON_HOURS,
@@ -33,15 +33,30 @@ from bot.game.study import (
     retry_at,
 )
 from bot.models import Player
+from bot.webapp.bank import purse_payload
 
 
-def course_payload(one: Course) -> dict[str, Any]:
-    """Строка приёмной: курс, цена, срок и что дают в конце."""
+def course_payload(
+    one: Course, player: Player | None = None, moment: int = 0
+) -> dict[str, Any]:
+    """Строка приёмной: курс, цена, срок и что дают в конце.
+
+    Цена — та, что боец заплатит на самом деле: карта даёт скидку, и
+    число на витрине обязано совпадать с тем, что уйдёт с кошелька.
+    """
+    from bot.game.locations import Service
+
+    price = (
+        player.price_here(one.price, moment, Service.STUDY)
+        if player is not None
+        else one.price
+    )
     return {
         "code": one.code,
         "title": one.title,
         "emoji": one.emoji,
-        "price": one.price,
+        "price": price,
+        "full_price": one.price,
         "weeks": one.weeks,
         "weeks_text": one.weeks_text,
         "lessons": one.lessons,
@@ -62,11 +77,13 @@ def course_payload(one: Course) -> dict[str, Any]:
     }
 
 
-def board_payload(player: Player, house: str) -> list[dict[str, Any]]:
+def board_payload(
+    player: Player, house: str, moment: int = 0
+) -> list[dict[str, Any]]:
     """Что читают в этом доме и что с каждым курсом у бойца."""
     out = []
     for one in courses_at(house):
-        body = course_payload(one)
+        body = course_payload(one, player, moment)
         body.update(
             {
                 "done": player.has_diploma(one.diploma),
@@ -95,7 +112,7 @@ def study_payload(player: Player, moment: int) -> dict[str, Any]:
         return {}
     here = player.where(moment)
     full = learned(player, one)
-    body = course_payload(one)
+    body = course_payload(one, player, moment)
     body.update(
         {
             "since": club_moment(player.study_since) if player.study_since else "",
@@ -215,10 +232,14 @@ def build_study(
     return {
         "title": house.title if house else "Учёба",
         "house": here,
-        "courses": board_payload(player, here),
+        "courses": board_payload(player, here, moment),
         "study": mine,
         "lesson": lesson_payload(player, moment),
         "credits": player.credits,
+        # Чем платить за курс — выбирают здесь же, как в лавке. Без
+        # этого выбора боец с жалованьем на счету и пустым карманом
+        # читал «не хватает кредитов» и шёл в банк догадываться
+        "purse": purse_payload(player, moment, Service.STUDY),
         "diplomas": [
             get_course(code).diploma_title
             for code in player.diplomas

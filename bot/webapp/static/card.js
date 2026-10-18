@@ -2090,9 +2090,11 @@ function paintTurfBand() {
   go.type = "button";
   go.className = "btn band-go";
   go.id = "turf-call";
-  go.textContent = band.button === "call" ? "🚩 Отряд" : "Открыть";
+  go.textContent = band.button === "call" ? "🚩 Отряд"
+    : band.button === "guard" ? "🛡 Охрана"
+    : "Открыть";
   go.addEventListener("click", () => {
-    showTab("turf");
+    openTurf("map");
     if (band.button === "call") turfAction({ action: "call", spot: band.code });
   });
   box.appendChild(go);
@@ -9374,6 +9376,18 @@ function renderPolice(data) {
 
   // Срок — первым делом: сидящему всё остальное пока не нужно
   if (data.jail && data.jail.left) body.appendChild(jailBox(data.jail));
+  // Город тоже воюет за точки, и вход в войну у него здесь: в участке,
+  // а не в особняке мафии
+  if (data.badge) {
+    const row = document.createElement("div");
+    row.className = "thing-buttons";
+    row.appendChild(
+      button("🚩 Территории", {
+        secondary: true, onClick: () => openTurf("police"),
+      })
+    );
+    body.appendChild(row);
+  }
   // Свои дела — всем, сводка по городу — только при значке
   if ((data.mine || []).length) body.appendChild(myCasesBox(data));
   if (data.badge) {
@@ -10711,6 +10725,20 @@ function paintCrowdChip() {
 // или всё уже кончилось. Опрос как у рейда: пока что-то живое — две
 // секунды, пусто — десять.
 
+// Откуда зашли в войну: из особняка, из участка или с карты. Туда же
+// и вернёт кнопка «назад» — иначе из территорий приходится выходить на
+// карту и заново входить в дом, из которого пришёл
+let turfFrom = "map";
+const TURF_BACKS = {
+  mafia: "← В особняк", police: "← В участок", map: "← На карту",
+};
+
+function openTurf(from) {
+  turfFrom = TURF_BACKS[from] ? from : "map";
+  el("turf-back").textContent = TURF_BACKS[turfFrom];
+  showTab("turf");
+}
+
 let turfData = null;
 let turfTimer = null;
 let turfDraft = { attacks: {}, block: null };
@@ -10796,6 +10824,8 @@ function renderTurf(data) {
   }
   if (data.muster) body.appendChild(musterBox(data.muster));
   body.appendChild(turfTallyBox(data));
+  // Точка под ногами — первым делом: ради неё сюда и пришли ногами
+  if (data.here_spot) body.appendChild(spotPanel(data.here_spot));
   if (data.hire && data.hire.side) body.appendChild(hireBox(data));
   // Точка под ногами идёт первой: остальной список — сводка по доходу,
   // а кнопка сбора бывает только у неё, и искать её внизу незачем
@@ -10923,6 +10953,93 @@ function showHireShelf() {
   if (shelf && shelf.scrollIntoView) {
     shelf.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+}
+
+/** Точка под ногами: кто её держит и кто на ней стоит.
+
+    «Охрана: 1 из 10» в списке — число, а не ответ: кого поставили,
+    чей он и сколько там городской охраны, по нему не видно. А решать,
+    ставить ли ещё одного, надо именно по этому. */
+function spotPanel(spot) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  if (spot.badge) {
+    const badge = picture(spot.badge, spot.owner.title, "");
+    badge.className = "band-badge";
+    head.appendChild(badge);
+    head.appendChild(document.createTextNode(" " + spot.title));
+  } else {
+    head.textContent = spot.mark + " " + spot.title;
+  }
+  box.appendChild(head);
+
+  box.appendChild(
+    paperRows([
+      ["Держит", spot.mine ? "ваши" : spot.owner.title],
+      ["Доход", num(spot.income) + " 💰 в сутки"],
+      [
+        "Охрана",
+        spot.posted.length + " из " + spot.max_posted
+          + (spot.guards ? " · городская охрана: " + spot.guards : ""),
+      ],
+      // Деньги идут за то, что точку держат, а не за флажок на карте
+      ["Платит", spot.guarded ? "да" : "нет — на ней никого"],
+    ])
+  );
+
+  (spot.posted || []).forEach((one) => box.appendChild(postedRow(one)));
+  if (spot.guards) box.appendChild(guardRow(spot));
+  return box;
+}
+
+/** Строка выставленного: лицо, ступень и от кого он тут стоит. */
+function postedRow(one) {
+  const row = document.createElement("article");
+  row.className = "neighbour";
+  const line = document.createElement("header");
+  line.className = "neighbour-head";
+  const name = document.createElement("span");
+  name.className = "neighbour-name";
+  if (one.picture) {
+    const face = picture(one.picture, one.title, "");
+    face.className = "npc-face";
+    name.appendChild(face);
+  }
+  name.appendChild(document.createTextNode(
+    " " + one.fclass + " " + one.title + " [" + one.level + "]"
+  ));
+  const from = document.createElement("span");
+  from.className = "neighbour-clan";
+  from.textContent = "от " + one.owner;
+  line.append(name, from);
+  row.appendChild(line);
+  return row;
+}
+
+/** Городская охрана: её не ставят и не считают — она просто есть. */
+function guardRow(spot) {
+  const row = document.createElement("article");
+  row.className = "neighbour away";
+  const line = document.createElement("header");
+  line.className = "neighbour-head";
+  const name = document.createElement("span");
+  name.className = "neighbour-name";
+  if (spot.guard_picture) {
+    const face = picture(spot.guard_picture, "Городская охрана", "");
+    face.className = "npc-face";
+    name.appendChild(face);
+  }
+  name.appendChild(document.createTextNode(
+    " Городская охрана · " + spot.guards + " × " + spot.guard_level + " ур."
+  ));
+  const from = document.createElement("span");
+  from.className = "neighbour-clan";
+  from.textContent = "город";
+  line.append(name, from);
+  row.appendChild(line);
+  return row;
 }
 
 /** Наём: кто на руках, кого ставить здесь и что предлагают взять. */
@@ -11416,6 +11533,12 @@ function renderStudy(data) {
   }
   if (data.study && data.study.code) body.appendChild(myCourseBox(data.study));
   (data.courses || []).forEach((one) => body.appendChild(courseCard(one, data)));
+  // Чем платить за курс — выбирают здесь же, как в лавке и в автошколе:
+  // жалованье приходит на счёт, а кошелёк по умолчанию наличный, и без
+  // этого выбора боец с деньгами на карте читал «не хватает кредитов»
+  if (!(data.study && data.study.code) && (data.courses || []).length) {
+    body.appendChild(walletBar(data.purse, loadStudy));
+  }
 }
 
 /** Строка приёмной: курс, цена, срок и кнопка записи. */
@@ -12502,10 +12625,6 @@ function renderMafia(data) {
 
   const tabs = el("mafia-tabs");
   tabs.textContent = "";
-  // Война за территории — не вкладка клана, а своя карта: её смотрят и
-  // те, кто воюет за службу, а не за семью. Поэтому вход стоит рядом с
-  // кланами, а не внутри открытого
-  tabs.appendChild(chip("🚩 Территории", false, () => showTab("turf")));
   if (!mafiaOpen) {
     tabs.appendChild(chip("🎩 Кланы", true, () => backToClans()));
   } else {
@@ -12514,6 +12633,12 @@ function renderMafia(data) {
       if (code !== "family" && !opened.mine) return;
       tabs.appendChild(chip(label, clanTab === code, () => pickClanTab(code)));
     });
+    // Война за территории — дело своей семьи, и вход в неё стоит среди
+    // её вкладок. Чужому клану её не показывают вовсе: кто где воюет,
+    // не его забота
+    if (opened.mine) {
+      tabs.appendChild(chip("🚩 Территории", false, () => openTurf("mafia")));
+    }
   }
   paintMafiaTabs();
 
@@ -13795,12 +13920,14 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 // куда угодно, кроме того места, откуда он в этот дом зашёл
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
-  "school", "police", "mafia", "flats", "post", "tavern", "study", "turf",
+  "school", "police", "mafia", "flats", "post", "tavern", "study",
   "crowd", "elections", "shop", "magic",
   "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });
+// Война — исключение: в неё заходят из дома, и возвращает она туда же
+el("turf-back").addEventListener("click", () => showTab(turfFrom));
 // Счётчик соседей в углу карты: нажал — открылся список дома
 el("map-crowd").addEventListener("click", () => showTab("crowd"));
 // Плашка выборов: нажал — бюллетень открылся снова

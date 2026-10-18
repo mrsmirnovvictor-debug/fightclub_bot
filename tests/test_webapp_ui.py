@@ -9984,9 +9984,10 @@ async def test_the_family_stands_in_three_rows_with_its_marks(server):
         await open_screen(page, "mafia")
         await page.wait_for_selector("#mafia-clans .shelf")
 
-        # В списке одна вкладка — он сам, и своя семья с галочкой
+        # В списке одна вкладка — он сам, и своя семья с галочкой.
+        # Территорий тут нет: война — дело открытой семьи, а не списка
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
-            "🚩 Территории", "🎩 Кланы"
+            "🎩 Кланы"
         ]
         row = page.locator(".clan-item")
         assert "✅ Коза Ностра" in await row.inner_text()
@@ -9998,8 +9999,8 @@ async def test_the_family_stands_in_three_rows_with_its_marks(server):
         await row.locator(".clan-open").click()
         await page.wait_for_selector("#mafia-family:not(.hidden)")
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
-            "🚩 Территории", "← Кланы", "👔 Состав", "💼 Имущество",
-            "⚙️ Настройки",
+            "← Кланы", "👔 Состав", "💼 Имущество", "⚙️ Настройки",
+            "🚩 Территории",
         ]
         heads = await page.locator("#mafia-family .shelf-head").all_inner_texts()
         assert heads == ["Дон", "Приближённые · 1 из 3", "Мафиози"]
@@ -10167,6 +10168,44 @@ async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
         await browser.close()
 
 
+async def test_the_war_opens_from_the_family_and_comes_back_to_it(server, db):
+    """Территории — вкладка своей семьи, и «назад» возвращает в особняк.
+
+    Раньше вход в войну стоял рядом со списком кланов и уводил на
+    карту: выйти из территорий можно было только через город, и семья
+    со всеми её вкладками пропадала.
+    """
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW, family
+
+    don, _, _ = await family(db)
+    board = await build_war(db, don, None, NOW)
+    player = make_player("mafia_mansion")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, turf=board)
+        await mansion_pages(page, don_mansion(opened=False), don_mansion())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+
+        # Вкладка стоит среди вкладок семьи, а не рядом со списком
+        await page.locator("#mafia-tabs .chip", has_text="Территории").click()
+        await page.wait_for_selector("#turf:not(.hidden)")
+        await page.evaluate("stopTurfPoll()")
+        assert await page.locator("#turf-back").inner_text() == "← В особняк"
+
+        # И возвращает она туда, откуда пришли, — с вкладками на месте
+        await page.locator("#turf-back").click()
+        await page.wait_for_selector("#mafia:not(.hidden)")
+        chips = await page.locator("#mafia-tabs .chip").all_inner_texts()
+        assert "👔 Состав" in chips and "🚩 Территории" in chips
+        await browser.close()
+
+
 async def test_a_stranger_clan_opens_with_its_roster_alone(server):
     """Чужой клан открывается одним составом: имущество и настройки — свои."""
     player = make_player("mafia_mansion")
@@ -10191,16 +10230,16 @@ async def test_a_stranger_clan_opens_with_its_roster_alone(server):
 
         # В списке у одиночки одна вкладка — он сам
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
-            "🚩 Территории", "🎩 Кланы"
+            "🎩 Кланы"
         ]
         assert await page.locator("#mafia-family").is_hidden()
         assert await page.locator("#mafia-estate").is_hidden()
 
         await page.locator(".clan-item .clan-open").click()
         await page.wait_for_selector("#mafia-family:not(.hidden)")
-        # У чужой семьи только состав: ни сейфа, ни настроек
+        # У чужой семьи только состав: ни сейфа, ни настроек, ни войны
         assert await page.locator("#mafia-tabs .chip").all_inner_texts() == [
-            "🚩 Территории", "← Кланы", "👔 Состав"
+            "← Кланы", "👔 Состав"
         ]
         rows = await page.locator("#mafia-family .clan-row").all_inner_texts()
         assert len(rows) == 3 and "Растафарайчик" in rows[0]
@@ -10379,6 +10418,32 @@ async def open_station(pw, server, who, body):
     await open_screen(page, "police")
     await page.wait_for_selector("#police-body .shelf")
     return browser, page
+
+
+async def test_the_station_opens_the_war_for_the_badge(server, db):
+    """Город тоже воюет за точки, и вход в войну у него в участке."""
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW
+
+    officer, _, sheet, _ = await station_states(db)
+    board = await build_war(db, officer, None, NOW)
+
+    async with async_playwright() as pw:
+        card = build_card(officer, TOKEN, viewer_id=officer.user_id)
+        browser, page = await open_page(
+            pw, server, card, police=sheet, turf=board
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector("#police-body .shelf")
+
+        await page.locator("#police-body .btn", has_text="Территории").click()
+        await page.wait_for_selector("#turf:not(.hidden)")
+        await page.evaluate("stopTurfPoll()")
+        assert await page.locator("#turf-back").inner_text() == "← В участок"
+        await page.locator("#turf-back").click()
+        await page.wait_for_selector("#police:not(.hidden)")
+        await browser.close()
 
 
 async def test_the_duty_board_belongs_to_the_badge(server, db):
@@ -10964,7 +11029,14 @@ async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
         heads = await page.locator("#turf-body .shelf-head").all_inner_texts()
         assert "Наёмники" in heads
 
-        panel = page.locator("#turf-body .shelf").nth(1)
+        # Точка под ногами стоит над прилавком: кто на ней стоит и от
+        # кого — это и есть ответ на «ставить ли ещё одного»
+        here = page.locator("#turf-body .shelf").nth(1)
+        said = await here.inner_text()
+        assert "Бар" in said and "1 из 10" in said and "Громила [9]" in said
+        assert "от Дон-1" in said, "видно, чей это человек"
+
+        panel = page.locator("#turf-hire")
         assert "На руках 2 из 5" in await panel.inner_text()
         rows = await panel.locator(".neighbour").all_inner_texts()
         assert len(rows) == 2
@@ -11976,6 +12048,32 @@ async def test_the_university_shows_four_specialities_with_their_price(server):
         assert await page.evaluate("window.sent") == {
             "action": "enrol", "course": "banking"
         }
+        await browser.close()
+
+
+async def test_the_academy_lets_you_pay_from_the_card(server):
+    """Чем платить за курс — выбирают в приёмной, а не в банке.
+
+    Жалованье приходит на счёт, а кошелёк по умолчанию наличный: без
+    этого выбора боец с деньгами на карте читал «не хватает кредитов»
+    и шёл догадываться, где его деньги.
+    """
+    player = make_player("police_school")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, study=study_state("police_school")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "study")
+        await page.wait_for_selector("#study-body .course")
+
+        assert await page.locator(".course").count() == 1
+        wallet = page.locator("#study-body .wallet")
+        assert await wallet.count() == 1
+        picks = await wallet.locator(".wallet-pick-title").all_inner_texts()
+        assert len(picks) == 2, "наличные и карта"
         await browser.close()
 
 

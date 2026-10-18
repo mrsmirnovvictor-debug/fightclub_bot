@@ -574,6 +574,68 @@ async def test_the_city_map_carries_the_marks_and_the_band(db, client):
     assert body["turf"]["here"]["in_hand"] is True
 
 
+async def test_the_map_band_keeps_quiet_when_there_is_nothing_to_press(
+    db, client
+):
+    """Плашки без кнопки не бывает: отдыхающая точка молчит.
+
+    «Точка отдыхает после боя: 14 ч» — ответ на вопрос, которого не
+    задавали: нажать всё равно нечего, а место на карте плашка
+    занимает и дверь закрывает.
+    """
+    don, squad, clan = await family(db)
+    await stand(db, squad, "bar")
+    # По бару только что отгремел бой — сутки его не трогают
+    await db.take_turf("bar", "service", "police", NOW)
+    await db.hold_turf("bar", NOW)
+
+    city = await (await client.get("/api/map", headers=headers(don.user_id))).json()
+    assert city["turf"]["here"] is None
+    # А отметка у дома остаётся: она говорит, чей он, а не что делать
+    assert city["turf"]["spots"]["bar"]["mark"] == "👮"
+
+
+async def test_the_band_offers_the_guard_on_your_own_spot(db, client):
+    """Своя точка: воевать не за что, а охрану поставить — есть кому."""
+    don, squad, clan = await family(db)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
+
+    city = await (await client.get("/api/map", headers=headers(don.user_id))).json()
+    band = city["turf"]["here"]
+    assert band["button"] == "guard" and band["mine"] is True
+
+
+async def test_the_spot_underfoot_shows_who_stands_on_it(db, client):
+    """Точка под ногами: кто её держит, кто на ней стоит и чей он."""
+    from bot.hire_service import hire, post
+
+    don, squad, clan = await family(db)
+    await stand(db, squad, "bar")
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    rich = await db.get_player(don.user_id)
+    rich.credits = 10_000
+    await db.save_player(rich)
+    await hire(db, await db.get_player(don.user_id), "merc_7", now=NOW)
+    taken = (await db.hirelings_of(don.user_id))[0]
+    await post(db, await db.get_player(don.user_id), int(taken["id"]), "bar",
+               now=NOW)
+
+    body = await (await client.get("/api/turf", headers=headers(don.user_id))).json()
+    here = body["here_spot"]
+    assert here["code"] == "bar" and here["mine"] is True
+    assert here["guarded"] is True and here["guards"] == 0, "за семью город не стоит"
+    assert [one["title"] for one in here["posted"]] == ["Головорез"]
+    assert here["posted"][0]["owner"] == "Дон-1"
+    assert here["posted"][0]["level"] == 7
+
+    # А на ничьей точке стоит городская охрана, и её видно числом
+    await stand(db, squad, "casino")
+    body = await (await client.get("/api/turf", headers=headers(don.user_id))).json()
+    assert body["here_spot"]["posted"] == []
+    assert body["here_spot"]["guards"] == 3
+
+
 async def test_the_map_band_is_empty_away_from_the_spots(db, client):
     """Стоишь не на точке — плашки нет, а флажки на месте."""
     don, _, _ = await family(db)
@@ -699,12 +761,24 @@ async def test_a_stranger_does_not_join_the_muster(db, client):
     assert "чужой сбор" in (await answer.json())["error"]
 
 
-async def test_a_loner_is_told_he_has_no_side(db, client):
-    """Одиночке карта видна, а кнопки штурма у него нет."""
+async def test_a_loner_is_not_shown_the_war_at_all(db, client):
+    """Одиночке война не видна вовсе: ни точек, ни отметок на карте.
+
+    Раньше ему показывали весь город с серыми кнопками. Это не
+    осторожность, а шум: взять точку он не может, доли не получит, и
+    единственное, что он из карты узнавал, — что где-то идёт чужая
+    война.
+    """
     one = make_player(9, "Сам по себе")
     await db.save_player(one)
+    await db.take_turf("bar", "service", "police", NOW)
     body = await (await client.get("/api/turf", headers=headers(9))).json()
 
     assert body["side"]["nobody"] is True
+    assert body["spots"] == [] and body["here_spot"] is None
+    assert body["hire"]["side"] == ""
     assert "Вступи в клан" in body["note"]
-    assert not any(row["can_storm"] for row in body["spots"])
+
+    # И на карте города у домов нет ни отметок, ни плашки под ногами
+    city = await (await client.get("/api/map", headers=headers(9))).json()
+    assert city["turf"]["spots"] == {} and city["turf"]["here"] is None

@@ -143,6 +143,12 @@ async def build_turf(
     moment = now_ts() if now is None else now
     mine = owner_of(player)
     here = player.where(moment)
+    # Война — дело семей и служб. Одиночке она не говорит ничего: точку
+    # ему не взять и доли не получить, — и знать про неё незачем.
+    # Поэтому не «карта с серыми кнопками», а пустой экран с одной
+    # строкой: это не секрет, это чужое дело
+    if mine.nobody:
+        return _shut_board(here, said)
     rows = await survey(db, moment)
     standing = await db.posted_counts()
     spots = [
@@ -178,7 +184,95 @@ async def build_turf(
         "said": said,
         # Нанятые: что на руках, что предлагают и кого можно выставить
         "hire": await _hire_rows(db, player, here, spots),
+        # Точка под ногами целиком: кто её держит и кто на ней стоит
+        "here_spot": await _spot_panel(
+            db, next((one for one in spots if one["here"]), None)
+        ),
         "note": _note(mine, len(held), any(one["here"] for one in spots)),
+    }
+
+
+def _shut_board(here: str, said: str) -> dict[str, Any]:
+    """Карта войны для того, кто в ней не участвует: пустая."""
+    return {
+        "title": "Территории",
+        "spots": [],
+        "here": here,
+        "at_spot": False,
+        "total": TOTAL_SPOTS,
+        "side": {"kind": "", "key": "", "title": "", "nobody": True},
+        "held": 0,
+        "income": 0,
+        "vault": 0,
+        "ceiling": MAX_SPOTS_PER_OWNER,
+        "squad": MAX_GARRISON,
+        "calm_hours": CALM_HOURS,
+        "said": said,
+        "hire": {"side": "", "cap": 0, "hired": 0, "left": 0, "mine": [],
+                 "grades": [], "spot": "", "spot_title": "",
+                 "can_post": False, "why": ""},
+        "here_spot": None,
+        "note": (
+            "За территории воюют семьи и службы. Вступи в клан или иди "
+            "на службу — тогда и поговорим."
+        ),
+    }
+
+
+async def _spot_panel(db, row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Точка под ногами: кто её держит и кто на ней стоит.
+
+    Нужна затем, что «охрана: 1 из 10» в списке — это число, а не
+    ответ: кого именно поставили, чей он и сколько там городской
+    охраны, из него не видно. А решать, ставить ли ещё одного, надо
+    именно по этому.
+    """
+    from bot.game.classes import FIGHTER_CLASSES
+    from bot.game.hirelings import (
+        GUARD_LEVEL,
+        GUARD_SIZE,
+        get_grade,
+        guard_picture,
+    )
+    from bot.game.turf import CLAN
+
+    if row is None:
+        return None
+    kept = []
+    for one in await db.hirelings_at(row["code"]):
+        grade = get_grade(str(one["grade"]))
+        if grade is None:  # pragma: no cover - ступень из будущей версии
+            continue
+        keeper = await db.get_player(int(one["owner_id"]))
+        kept.append(
+            {
+                "id": int(one["id"]),
+                "title": grade.title,
+                "level": grade.level,
+                "fclass": FIGHTER_CLASSES[grade.fclass].emoji,
+                "picture": grade.picture,
+                "side": grade.side,
+                "owner": keeper.nickname if keeper else "боец",
+                "owner_id": int(one["owner_id"]),
+            }
+        )
+    # Городская охрана стоит там, где не хозяйничает семья. Её не
+    # ставят и не считают в чьи-то места — она просто есть
+    guards = 0 if row["owner"]["kind"] == CLAN else GUARD_SIZE
+    return {
+        "code": row["code"],
+        "title": row["title"],
+        "income": row["income"],
+        "owner": row["owner"],
+        "mark": row["sign"],
+        "badge": row["badge"],
+        "mine": row["mine"],
+        "guarded": row["guarded"],
+        "posted": kept,
+        "max_posted": row["max_posted"],
+        "guards": guards,
+        "guard_level": GUARD_LEVEL,
+        "guard_picture": guard_picture() if guards else "",
     }
 
 
@@ -398,7 +492,11 @@ def map_marks(body: dict[str, Any]) -> dict[str, Any]:
         for row in body["spots"]
     }
     row = next((one for one in body["spots"] if one["here"]), None)
-    return {"spots": spots, "here": _band(body, row) if row else None}
+    band = _band(body, row) if row else None
+    # Плашки без кнопки не бывает. «Точка отдыхает после боя: 14 ч» —
+    # это ответ на вопрос, которого не задавали: нажимать всё равно
+    # нечего, а место на карте она занимает и дверь закрывает
+    return {"spots": spots, "here": band if band and band["button"] else None}
 
 
 def _band(body: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
@@ -424,6 +522,11 @@ def _band(body: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
     elif row["can_storm"]:
         band["button"] = "call"
         band["text"] = f"Держит: {row['owner']['title']}."
+    elif row["mine"]:
+        # Своя точка: воевать за неё не надо, а посмотреть, кто на ней
+        # стоит, и поставить ещё одного — надо
+        band["button"] = "guard"
+        band["text"] = ""
     else:
         band["button"] = ""
         band["text"] = _why_not(body, row)
