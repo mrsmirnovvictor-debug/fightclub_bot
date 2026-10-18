@@ -3345,6 +3345,14 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
+    async def drop_hireling(self, hire_id: int) -> bool:
+        """Снять одного нанятого насовсем: его убили на точке."""
+        cursor = await self.conn.execute(
+            "DELETE FROM hirelings WHERE id = ?", (hire_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
     async def clear_spot(self, spot: str) -> int:
         """Вынести всех нанятых с точки. Они гибнут насовсем."""
         cursor = await self.conn.execute(

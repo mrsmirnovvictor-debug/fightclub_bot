@@ -281,6 +281,202 @@ async def test_the_city_guards_stand_where_no_family_rules(db):
     assert all("Охранник" in one.name for one in города)
 
 
+# ---------- кто что делает на точке ----------
+
+
+def test_the_city_fights_the_family_and_guards_the_rest():
+    """Город бьёт только семью, остальное — патрулирует.
+
+    Ничья точка и так под городской охраной, и «отбивать» её у самого
+    себя городу незачем: туда он приводит патрульного. Семья наоборот —
+    берёт боем всё, что не её.
+    """
+    from bot.game.turf import ARREST, GUARD, SEIZE, action_for
+
+    police = owner_of_service("police")
+    ours, theirs = owner_of_clan(1), owner_of_clan(2)
+
+    assert action_for(Owner(), police) == GUARD, "ничья точка и так его"
+    assert action_for(police, police) == GUARD
+    assert action_for(ours, police) == ARREST, "мафию выводят задержанием"
+
+    assert action_for(Owner(), ours) == SEIZE, "там городская охрана"
+    assert action_for(police, ours) == SEIZE
+    assert action_for(theirs, ours) == SEIZE
+    assert action_for(ours, ours) == GUARD, "за свою точку не воюют"
+
+    # Одиночке на точке делать нечего вовсе
+    assert action_for(Owner(), Owner()) == ""
+
+
+async def test_the_board_names_the_deed_for_each_side(db, client):
+    """Экран называет дело словом: захват, задержание, охрана."""
+    from tests.test_police import cop
+
+    # Часы тут настоящие: ручка смотрит на них, а не на `NOW`, и точка,
+    # взятая «три дня назад» по клубному времени, для неё ещё в будущем
+    from bot.game.health import now_ts
+
+    long_ago = now_ts() - 3 * DAY_SECONDS
+    don, squad, clan = await family(db)
+    await db.take_turf("bar", "clan", str(clan.id), long_ago)
+    await db.take_turf("casino", "service", "police", long_ago)
+
+    # Семья: своя точка — охрана, чужие и ничьи — захват
+    await stand(db, [don.user_id], "bar")
+    body = await (await client.get(
+        "/api/turf", headers=headers(don.user_id)
+    )).json()
+    rows = {one["code"]: one for one in body["spots"]}
+    assert rows["bar"]["action"] == "guard"
+    assert rows["bar"]["action_title"] == "Охрана"
+    assert rows["casino"]["action"] == "seize"
+    assert rows["market"]["action"] == "seize", "ничья берётся боем"
+    assert rows["bar"]["can_storm"] is False
+
+    # Город: мафия — задержание, остальное — охрана
+    officer = await cop(db, 90, "Ragnar")
+    officer.location = "bar"
+    await db.save_player(officer)
+    body = await (await client.get(
+        "/api/turf", headers=headers(90)
+    )).json()
+    rows = {one["code"]: one for one in body["spots"]}
+    assert rows["bar"]["action"] == "arrest"
+    assert rows["bar"]["action_title"] == "Задержание"
+    assert rows["bar"]["can_storm"] is True
+    assert rows["casino"]["action"] == "guard"
+    assert rows["market"]["action"] == "guard", "ничью город патрулирует"
+    assert rows["market"]["can_storm"] is False
+
+
+async def test_the_city_takes_a_free_spot_with_a_patrolman(db):
+    """Ничью точку город берёт патрульным, а не отрядом."""
+    from bot.hire_service import hire, post
+    from bot.turf_war import TurfWar
+    from tests.test_police import cop
+
+    officer = await cop(db, 91, "Ragnar")
+    officer.location = "market"
+    officer.credits = 10_000
+    await db.save_player(officer)
+    officer = await db.get_player(91)
+    await hire(db, officer, "patrol_5", now=NOW)
+    mine = (await db.hirelings_of(91))[0]
+
+    # Отряд на ничью точку город не ведёт
+    war = TurfWar(db)
+    try:
+        with pytest.raises(TurfError, match="городской охраной"):
+            await war.open_muster(officer, "market", now=NOW)
+    finally:
+        await war.close()
+
+    # А патрульного ставит — и точка становится городской
+    await post(db, await db.get_player(91), int(mine["id"]), "market", now=NOW)
+    row = (await db.turf_rows())["market"]
+    assert row.owner == owner_of_service("police")
+    assert len(await db.hirelings_at("market")) == 1
+
+
+async def test_one_patrolman_from_one_player_and_ten_in_all(db):
+    """От бойца — один человек, на точке — десять. Кнопка гаснет, а не прячется."""
+    from bot.hire_service import HireError, hire, post
+    from bot.webapp.turf import build_turf
+    from tests.test_police import cop
+
+    officer = await cop(db, 92, "Ragnar")
+    officer.location = "market"
+    officer.credits = 20_000
+    await db.save_player(officer)
+    for _ in range(2):
+        await hire(db, await db.get_player(92), "patrol_5", now=NOW)
+    mine = await db.hirelings_of(92)
+    await post(db, await db.get_player(92), int(mine[0]["id"]), "market",
+               now=NOW)
+
+    with pytest.raises(HireError, match="уже стоит человек"):
+        await post(db, await db.get_player(92), int(mine[1]["id"]), "market",
+                   now=NOW)
+
+    body = await build_turf(db, await db.get_player(92), NOW)
+    assert body["hire"]["guarding"] is True, "место под кнопку есть"
+    assert body["hire"]["can_post"] is False, "а нажать её нельзя"
+    assert "уже стоит человек" in body["hire"]["why"]
+
+
+async def test_the_failed_assault_buries_the_dead_and_leaves_the_rest(db):
+    """Отбились — убитые не воскресают, уцелевшие целы, точка прежняя.
+
+    Развязку зовём руками: предмет проверки — что делает с точкой
+    проигранный штурм, а не чем кончится бросок костей.
+    """
+    from bot.hire_service import hire, post
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db)
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
+    await stand(db, squad, "bar")
+    # По человеку от двоих: от одного бойца на точке стоит один
+    for number in squad[:2]:
+        one = await db.get_player(number)
+        one.credits = 20_000
+        await db.save_player(one)
+        await hire(db, await db.get_player(number), "merc_9", now=NOW)
+        his = [row for row in await db.hirelings_of(number) if not row["spot"]]
+        await post(db, await db.get_player(number), int(his[0]["id"]), "bar",
+                   now=NOW)
+
+    rival, rivals, theirs = await family(
+        db, first=20, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+        # Один из двоих защитников пал, второй держится
+        first, second = sorted(siege.wall)[0], sorted(siege.wall)[1]
+        siege.wall[first].hp = 0
+        await war._finish(siege, won=False)
+    finally:
+        await war.close()
+
+    assert siege.fallen == 1
+    left = await db.hirelings_at("bar")
+    assert len(left) == 1, "убитый ушёл насовсем, уцелевший остался"
+    assert (await db.turf_rows())["bar"].owner == owner_of_clan(clan.id)
+    assert "Выставленных полегло: 1" in " ".join(siege.summary)
+
+    # И нового боя точка не ждёт: отбившийся гарнизон готов сразу
+    assert calm_left((await db.turf_rows())["bar"].fought_at, NOW) == 0
+
+
+async def test_the_city_reinforces_as_many_spots_as_it_likes(db):
+    """Потолок точек — забота семей: город патрулирует хоть весь город."""
+    from bot.hire_service import hire, post
+    from tests.test_police import cop
+
+    officer = await cop(db, 93, "Ragnar")
+    officer.credits = 50_000
+    await db.save_player(officer)
+    codes = [one.code for one in SPOTS][:MAX_SPOTS_PER_OWNER + 1]
+    for number, code in enumerate(codes):
+        one = await db.get_player(93)
+        one.location = code
+        await db.save_player(one)
+        await hire(db, await db.get_player(93), "patrol_5", now=NOW)
+        fresh = [row for row in await db.hirelings_of(93) if not row["spot"]]
+        await post(db, await db.get_player(93), int(fresh[0]["id"]), code,
+                   now=NOW)
+
+    rows = await db.turf_rows()
+    held = [code for code, row in rows.items() if row.owner.kind == "service"]
+    assert len(held) == len(codes) > MAX_SPOTS_PER_OWNER
+
+
 # ---------- штурм ----------
 
 
@@ -563,7 +759,8 @@ async def test_the_city_map_carries_the_marks_and_the_band(db, client):
 
     # Плашка под ногами: боец стоит у бара, и отсюда собирают отряд
     band = body["turf"]["here"]
-    assert band["code"] == "bar" and band["button"] == "call"
+    assert band["code"] == "bar" and band["button"] == "seize"
+    assert band["title"] == "Захват"
 
     # Созвал — та же плашка открывает штурм, а не зовёт второй отряд
     await post(client, don.user_id, action="call", spot="bar")

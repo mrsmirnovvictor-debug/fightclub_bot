@@ -108,7 +108,7 @@ async def post(
     now: int | None = None,
 ) -> dict:
     """Выставить своего нанятого на точку."""
-    from bot.game.turf import get_spot
+    from bot.game.turf import GUARD, action_for, get_spot
     from bot.turf_service import owner_of, survey
 
     moment = now_ts() if now is None else now
@@ -122,8 +122,10 @@ async def post(
         raise HireError("Охрану ставят за семью или за город.")
     rows = await survey(db, moment)
     here = next(one for one in rows if one.spot.code == spot)
-    if not here.owner.same(mine):
-        raise HireError("Точка не ваша. Сперва возьмите её.")
+    if action_for(here.owner, mine) != GUARD:
+        raise HireError(
+            "Тут сперва дерутся: на чужой точке охрану не ставят."
+        )
 
     standing = await db.hirelings_at(spot)
     if len(standing) >= MAX_POSTED:
@@ -134,6 +136,11 @@ async def post(
 
     if not await db.post_hireling(hire_id, player.user_id, spot):
         raise HireError("Этого выставить не вышло: он не твой или уже на точке.")
+    # Ничью точку город берёт патрульным, а не боем: драться там не с
+    # кем — городская охрана и так его. Запись о владельце появляется в
+    # тот же миг, иначе точка стояла бы с патрулём и без хозяина
+    if here.owner.nobody:
+        await db.take_turf(spot, mine.kind, mine.key, moment)
     logger.info("Боец %s выставил %s на %s", player.user_id, hire_id, spot)
     return {"total": len(standing) + 1, "max": MAX_POSTED}
 

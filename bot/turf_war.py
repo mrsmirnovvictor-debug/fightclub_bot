@@ -51,10 +51,12 @@ from bot.game.health import now_ts
 from bot.game.narrator import strike_lines
 from bot.game.turf import (
     CLAN,
+    GUARD,
     MAX_GARRISON,
     MAX_SPOTS_PER_OWNER,
     Owner,
     Spot,
+    action_for,
     calm_left,
     get_spot,
 )
@@ -277,8 +279,15 @@ class TurfWar:
 
         rows = await survey(self.db, moment)
         here = next(one for one in rows if one.spot.code == code)
-        if here.owner.same(mine):
-            raise TurfError(f"{spot.title} и так за вами.")
+        deed = action_for(here.owner, mine)
+        if deed == GUARD:
+            # Городу на ничьей точке драться не с кем, а на своей — тем
+            # более: туда приходят с патрульным, а не с отрядом
+            raise TurfError(
+                f"{spot.title} и так за вами." if here.owner.same(mine)
+                else f"{spot.title} под городской охраной: туда ставят "
+                     "патрульного, а не ведут отряд."
+            )
         rest = calm_left(here.fought_at, moment)
         if rest:
             raise TurfError(
@@ -564,6 +573,27 @@ class TurfWar:
             return
         await self._finish(siege, won=done)
 
+    async def _bury_the_fallen(self, siege: Siege) -> int:
+        """Снять с точки тех выставленных, кого убили в этой драке.
+
+        Номера гарнизона отрицательные и идут по порядку сборки: сперва
+        выставленные, потом городская охрана. По номеру и находим строку
+        в базе — городскую охрану в базе не держат, её хоронить нечем.
+        """
+        rows = await self.db.hirelings_at(siege.spot.code)
+        gone = 0
+        for key, one in siege.wall.items():
+            number = -key - 1
+            if one.alive or number >= len(rows):
+                continue
+            await self.db.drop_hireling(int(rows[number]["id"]))
+            gone += 1
+        if gone:
+            logger.info(
+                "На точке %s полегло выставленных: %s", siege.spot.code, gone
+            )
+        return gone
+
     async def _finish(self, siege: Siege, won: bool) -> None:
         """Свести штурм: записать точку и разложить итог по бойцам."""
         if siege.finished:  # pragma: no cover - две развязки разом
@@ -594,7 +624,11 @@ class TurfWar:
                 moment,
             )
         else:
-            await self.db.hold_turf(siege.spot.code, moment)
+            # Отбились — точка остаётся за прежним хозяином, но убитые
+            # в этой драке не воскресают: насовсем значит насовсем.
+            # Уцелевшие выходят на следующую драку целыми — гарнизон
+            # собирается заново, и здоровье у него своё
+            siege.fallen = await self._bury_the_fallen(siege)
         siege.summary = [
             # Волн ноль — драки не было вовсе: точка стояла пустая
             f"{siege.spot.title} взят без боя: охраны на нём не было."
@@ -608,6 +642,8 @@ class TurfWar:
             siege.summary.append(
                 f"Выставленных полегло: {siege.fallen}. Насовсем."
             )
+        if not won and not siege.fallen:
+            siege.summary.append("Гарнизон цел: ни один не выбыл.")
         if siege.handed:
             siege.summary.append(
                 f"Прежним в казну ушло {siege.handed} 💰 за время владения."

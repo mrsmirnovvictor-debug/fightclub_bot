@@ -10982,10 +10982,11 @@ async def test_the_war_map_shows_the_spots_and_the_call_to_arms(server, db):
         assert "300" in await first.locator(".spot-income").inner_text()
         # Ничьих точек не бывает: за пустой стоит городская охрана
         assert "городская охрана" in await first.locator(".spot-owner").inner_text()
-        assert await first.locator("button").inner_text() == "Созвать отряд"
+        assert await first.locator("button").inner_text() == "🚩 Захват"
 
-        # Свои дела — строкой над картой
-        tally = await page.locator("#turf-body .shelf").first.inner_text()
+        # Свои дела — строкой над картой. Первой полкой стоит точка, у
+        # двери которой боец стоит, своя сводка идёт за ней
+        tally = await page.locator("#turf-body .shelf").nth(1).inner_text()
         assert "Коза Ностра" in tally and "0 из 4" in tally
         await browser.close()
 
@@ -11127,9 +11128,9 @@ async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
         heads = await page.locator("#turf-body .shelf-head").all_inner_texts()
         assert "Наёмники" in heads
 
-        # Точка под ногами стоит над прилавком: кто на ней стоит и от
+        # Точка под ногами стоит первой полкой: кто на ней стоит и от
         # кого — это и есть ответ на «ставить ли ещё одного»
-        here = page.locator("#turf-body .shelf").nth(1)
+        here = page.locator("#turf-body .shelf").first
         said = await here.inner_text()
         assert "Бар" in said and "1 из 10" in said and "Громила [9]" in said
         assert "от Дон-1" in said, "видно, чей это человек"
@@ -11160,7 +11161,7 @@ async def test_the_turf_screen_hires_and_posts_the_guard(server, db):
         assert "охрана: 1 из 10" in await here.locator(".spot-owner").inner_text()
         # И у своей точки под ногами — кнопка к прилавку: иначе про
         # охрану не догадываются вовсе
-        assert await here.locator(".btn").inner_text() == "🛡 Поставить охрану"
+        assert await here.locator(".btn").inner_text() == "🛡 Охрана"
         casino = page.locator("#turf .spot").nth(1)
         assert "городская охрана" in await casino.locator(
             ".spot-owner"
@@ -11265,7 +11266,7 @@ async def test_the_city_map_marks_the_spots_and_offers_the_muster(server, db):
         said = await band.inner_text()
         assert "⚪️" in said
         assert "Бар" not in said and "90" not in said
-        assert await page.locator("#turf-call").inner_text() == "🚩 Отряд"
+        assert await page.locator("#turf-call").inner_text() == "🚩 Захват"
 
         # Стоит она в самом правом нижнем углу карты и занимает меньше
         # половины ширины: закрывать город ей нечем

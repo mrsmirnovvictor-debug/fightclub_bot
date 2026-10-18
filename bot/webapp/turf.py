@@ -27,13 +27,17 @@ from bot.game.health import format_term, now_ts
 from bot.game.classes import BLOCK_WIDTH
 from bot.game.hirelings import MAX_POSTED
 from bot.game.turf import (
+    ARREST,
     CALM_HOURS,
+    GUARD,
     MAX_GARRISON,
     MAX_SPOTS_PER_OWNER,
+    SEIZE,
     SERVICE,
     SERVICE_SHARE,
     TOTAL_SPOTS,
     Owner,
+    action_for,
     calm_left,
 )
 from bot.turf_service import MAX_WAVES
@@ -51,6 +55,15 @@ OWN_MARK = "🚩"
 CLAN_MARK = "🎩"
 SERVICE_MARK = "🛡"
 NOBODY_MARK = "⚪️"
+
+
+# Как зовётся дело на кнопке. Слова разные нарочно: город не
+# присваивает дом, он выводит с него мафию
+ACTION_TITLES: dict[str, str] = {
+    SEIZE: "Захват",
+    ARREST: "Задержание",
+    GUARD: "Охрана",
+}
 
 
 def house_mark(owner: Owner) -> str:
@@ -97,6 +110,7 @@ async def spot_row(
     rest = calm_left(holding.fought_at, moment)
     ours = owner.same(mine) and not mine.nobody
     standing = spot.code == here
+    deed = action_for(owner, mine)
     return {
         "code": spot.code,
         "title": spot.title,
@@ -128,8 +142,12 @@ async def spot_row(
         "calm": rest,
         # Отдых — сутки, и `format_duration` назвал бы их «1440 мин»
         "calm_text": format_term(rest) if rest else "",
+        # Что эта сторона делает на этой точке: берёт боем, выводит с
+        # неё мафию или ставит охрану. Решает правило, а не кнопка
+        "action": deed,
+        "action_title": ACTION_TITLES.get(deed, ""),
         "can_storm": bool(
-            standing and not ours and not rest and not mine.nobody
+            standing and deed in (SEIZE, ARREST) and not rest
         ),
     }
 
@@ -273,6 +291,12 @@ async def _spot_panel(db, row: dict[str, Any] | None) -> dict[str, Any] | None:
         "guards": guards,
         "guard_level": GUARD_LEVEL,
         "guard_picture": guard_picture() if guards else "",
+        # Что тут делают: берут боем, выводят мафию или ставят охрану
+        "action": row["action"],
+        "action_title": row["action_title"],
+        "can_storm": row["can_storm"],
+        "calm": row["calm"],
+        "calm_text": row["calm_text"],
     }
 
 
@@ -281,8 +305,13 @@ async def _hire_rows(
 ) -> dict[str, Any]:
     """Наём глазами экрана: счёт, прилавок и кого ставить здесь.
 
-    Выставить можно только на своей точке и только стоя на ней — это
-    решает служба, а страница рисует ответ.
+    Охрану ставят там, где у стороны дело «охрана»: на своей точке — и
+    город ещё на ничьей, которую он и так патрулирует. Решает служба, а
+    страница рисует ответ.
+
+    **Кнопка не прячется, а гаснет.** От одного бойца на точке стоит
+    один человек: второго он поставить не может, и сказать об этом
+    надо словами, а не пустым местом.
     """
     from bot.hire_service import roster
 
@@ -290,12 +319,16 @@ async def _hire_rows(
     row = next((one for one in spots if one["code"] == here), None)
     body["spot"] = here if row else ""
     body["spot_title"] = row["title"] if row else ""
-    free = bool(row and row["mine"] and row["posted"] < MAX_POSTED)
+    guarding = bool(row and row["action"] == GUARD)
+    free = bool(guarding and row["posted"] < MAX_POSTED)
     ours = [one for one in body["mine"] if one["spot"] == here]
     body["can_post"] = bool(free and not ours)
+    # Место под кнопку есть везде, где дело — охрана: даже когда
+    # нажимать её нельзя
+    body["guarding"] = guarding
     body["why"] = ""
     if row and not body["can_post"]:
-        if not row["mine"]:
+        if not guarding:
             body["why"] = "Охрану ставят на своей точке."
         elif ours:
             body["why"] = "От тебя здесь уже стоит человек."
@@ -514,21 +547,27 @@ def _band(body: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
     }
     if in_hand:
         band["button"] = "open"
+        band["title"] = "Открыть"
         band["text"] = (
             "Штурм идёт." if body.get("siege") else
             "Итог штурма ждёт." if body.get("result") else
             "Отряд собирается."
         )
     elif row["can_storm"]:
-        band["button"] = "call"
+        # Захват у семьи, задержание у города: слово на кнопке — то же,
+        # что на экране точки
+        band["button"] = row["action"]
+        band["title"] = row["action_title"]
         band["text"] = f"Держит: {row['owner']['title']}."
-    elif row["mine"]:
-        # Своя точка: воевать за неё не надо, а посмотреть, кто на ней
+    elif row["action"] == GUARD:
+        # Охрана: воевать тут не с кем, а посмотреть, кто на точке
         # стоит, и поставить ещё одного — надо
-        band["button"] = "guard"
+        band["button"] = GUARD
+        band["title"] = ACTION_TITLES[GUARD]
         band["text"] = ""
     else:
         band["button"] = ""
+        band["title"] = ""
         band["text"] = _why_not(body, row)
     return band
 

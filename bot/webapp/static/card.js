@@ -2090,13 +2090,14 @@ function paintTurfBand() {
   go.type = "button";
   go.className = "btn band-go";
   go.id = "turf-call";
-  go.textContent = band.button === "call" ? "🚩 Отряд"
-    : band.button === "guard" ? "🛡 Охрана"
-    : "Открыть";
-  go.addEventListener("click", () => {
-    openTurf("map");
-    if (band.button === "call") turfAction({ action: "call", spot: band.code });
-  });
+  // Слово на кнопке приходит с сервера: захват, задержание, охрана.
+  // Нажатие открывает экран точки, а не начинает бой — драку выбирают
+  // там, где видно, кто на точке стоит
+  go.textContent = band.button === "arrest" ? "🚔 " + band.title
+    : band.button === "seize" ? "🚩 " + band.title
+    : band.button === "guard" ? "🛡 " + band.title
+    : band.title || "Открыть";
+  go.addEventListener("click", () => openTurf("map"));
   box.appendChild(go);
 }
 
@@ -10940,8 +10941,10 @@ async function turfAction(payload) {
     const data = await post("api/turf", payload);
     haptic((feedback) => feedback.impactOccurred("medium"));
     if (data.card) render(data.card, true);
+    // Без окна поверх боя: сказанное встаёт строкой под заголовком, как
+    // в групповом бою. Окно посреди волны закрывает собой доску — и
+    // закрывает её в тот самый миг, когда на неё и смотрят
     renderTurf(data);
-    if (data.said) popup("Территории", data.said);
   } catch (error) {
     popup("Территории", error.message);
     await loadTurf();
@@ -10999,9 +11002,10 @@ function renderTurf(data) {
     return;
   }
   if (data.muster) body.appendChild(musterBox(data.muster));
-  body.appendChild(turfTallyBox(data));
-  // Точка под ногами — первым делом: ради неё сюда и пришли ногами
+  // Точка под ногами — первым делом: с её кнопки сюда и пришли, и
+  // первое, что надо увидеть, — кто на ней стоит
   if (data.here_spot) body.appendChild(spotPanel(data.here_spot));
+  body.appendChild(turfTallyBox(data));
   if (data.hire && data.hire.side) body.appendChild(hireBox(data));
   // Точка под ногами идёт первой: остальной список — сводка по доходу,
   // а кнопка сбора бывает только у неё, и искать её внизу незачем
@@ -11071,15 +11075,18 @@ function spotCard(one, data) {
     box.appendChild(note);
   }
 
-  // Своя точка: воевать за неё не надо, а охрану поставить — надо, и
-  // без этой кнопки прилавок выше остаётся незамеченным
-  if (one.mine) {
-    if (one.here && data.hire && data.hire.side
-        && one.posted < one.max_posted) {
+  // Точка, на которой не дерутся: воевать не за что, а охрану
+  // поставить — надо, и без этой кнопки прилавок остаётся незамеченным
+  if (one.action === "guard") {
+    if (one.here && data.hire && data.hire.side) {
       const buttons = document.createElement("div");
       buttons.className = "thing-buttons";
       buttons.appendChild(
-        button("🛡 Поставить охрану", { onClick: showHireShelf })
+        button("🛡 Охрана", {
+          disabled: !(data.hire || {}).can_post,
+          hint: (data.hire || {}).why || "Охрану ставят на своей точке.",
+          onClick: showHireShelf,
+        })
       );
       box.appendChild(buttons);
     }
@@ -11112,7 +11119,7 @@ function spotCard(one, data) {
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
   buttons.appendChild(
-    button("Созвать отряд", {
+    button((one.action === "arrest" ? "🚔 " : "🚩 ") + one.action_title, {
       disabled: Boolean(data.muster),
       hint: "Ты уже собираешь отряд.",
       onClick: () => turfAction({ action: "call", spot: one.code }),
@@ -11167,7 +11174,43 @@ function spotPanel(spot) {
 
   (spot.posted || []).forEach((one) => box.appendChild(postedRow(one)));
   if (spot.guards) box.appendChild(guardRow(spot));
+  const deed = spotDeed(spot);
+  if (deed) box.appendChild(deed);
   return box;
+}
+
+/** Кнопка дела под точкой: захват, задержание или охрана.
+
+    Слово на кнопке — то же, что на плашке у дома: семья захватывает,
+    город задерживает, а на своей точке и те и другие ставят охрану.
+    Кнопка не прячется, когда нажать её нельзя, — гаснет и говорит
+    почему: пустое место не объясняет ничего. */
+function spotDeed(spot) {
+  const hire = (turfData && turfData.hire) || {};
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (spot.action === "guard") {
+    buttons.appendChild(
+      button("🛡 " + spot.action_title, {
+        disabled: !hire.can_post,
+        hint: hire.why || "Охрану ставят на своей точке.",
+        onClick: showHireShelf,
+      })
+    );
+    return buttons;
+  }
+  if (!spot.action) return null;
+  const mark = spot.action === "arrest" ? "🚔 " : "🚩 ";
+  buttons.appendChild(
+    button(mark + spot.action_title, {
+      disabled: !spot.can_storm || Boolean(turfData && turfData.muster),
+      hint: spot.calm
+        ? "Точка отдыхает после боя: " + spot.calm_text + "."
+        : "Ты уже собираешь отряд.",
+      onClick: () => turfAction({ action: "call", spot: spot.code }),
+    })
+  );
+  return buttons;
 }
 
 /** Строка выставленного: лицо, ступень и от кого он тут стоит. */

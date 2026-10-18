@@ -241,7 +241,12 @@ async def test_the_second_from_one_person_does_not_fit(db):
 
 
 async def test_the_guard_is_posted_on_the_spot_and_on_your_own(db):
-    """Ставят на месте и только на свою точку."""
+    """Ставят на месте и только на свою точку.
+
+    Семье «своя» значит ровно своя: на ничьей точке стоит городская
+    охрана, и сперва её надо вынести боем. У города правило другое — он
+    ничью точку и так патрулирует, и про это свой тест.
+    """
     don, squad, clan = await family(db)
     boss = await rich(db, don.user_id)
     await hire(db, boss, "merc_5", now=NOW)
@@ -249,7 +254,7 @@ async def test_the_guard_is_posted_on_the_spot_and_on_your_own(db):
 
     # Точка ещё не ваша
     await stand(db, [don.user_id], BAR)
-    with pytest.raises(HireError, match="не ваша"):
+    with pytest.raises(HireError, match="сперва дерутся"):
         await post(db, await db.get_player(don.user_id), int(mine["id"]),
                    BAR, now=NOW)
 
