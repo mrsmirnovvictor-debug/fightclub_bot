@@ -317,10 +317,22 @@ async def test_the_board_names_the_deed_for_each_side(db, client):
     # взятая «три дня назад» по клубному времени, для неё ещё в будущем
     from bot.game.health import now_ts
 
+    from bot.hire_service import hire, post
+
     long_ago = now_ts() - 3 * DAY_SECONDS
     don, squad, clan = await family(db)
     await db.take_turf("bar", "clan", str(clan.id), long_ago)
     await db.take_turf("casino", "service", "police", long_ago)
+    # На баре стоит наёмник: пустой дом город снимал бы без боя, а тут
+    # есть кому стоять — значит, задержание
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    boss.location = "bar"
+    await db.save_player(boss)
+    await hire(db, await db.get_player(don.user_id), "merc_5", now=long_ago)
+    hired = (await db.hirelings_of(don.user_id))[0]
+    await post(db, await db.get_player(don.user_id), int(hired["id"]), "bar",
+               now=long_ago)
 
     # Семья: своя точка — охрана, чужие и ничьи — захват
     await stand(db, [don.user_id], "bar")
@@ -477,6 +489,123 @@ async def test_the_city_reinforces_as_many_spots_as_it_likes(db):
     assert len(held) == len(codes) > MAX_SPOTS_PER_OWNER
 
 
+async def test_the_abandoned_spot_goes_back_to_the_city(db):
+    """Сутки без охраны — и дом снова под городской охраной."""
+    from bot.game.turf import ABANDON_SECONDS
+
+    don, squad, clan = await family(db)
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+
+    # Первый взгляд заводит час опустения, второй его не двигает
+    await survey(db, NOW)
+    first = (await db.turf_rows())["bar"].empty_since
+    assert first == NOW
+    await survey(db, NOW + 60)
+    assert (await db.turf_rows())["bar"].empty_since == first
+
+    # Сутки не прошли — дом ещё семейный
+    rows = await survey(db, NOW + ABANDON_SECONDS - 1)
+    assert next(one for one in rows if one.spot.code == "bar").owner.kind == "clan"
+
+    # А на сутках он возвращается городу, и строки о нём больше нет
+    rows = await survey(db, NOW + ABANDON_SECONDS)
+    assert next(one for one in rows if one.spot.code == "bar").owner.nobody
+    assert "bar" not in await db.turf_rows()
+
+
+async def test_the_guarded_spot_is_not_abandoned(db):
+    """Поставил человека — час опустения сброшен, дом остаётся за семьёй."""
+    from bot.game.turf import ABANDON_SECONDS
+    from bot.hire_service import hire, post
+
+    don, squad, clan = await family(db)
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    await survey(db, NOW)  # час опустения пошёл
+
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    boss.location = "bar"
+    await db.save_player(boss)
+    await hire(db, await db.get_player(don.user_id), "merc_5", now=NOW)
+    mine = (await db.hirelings_of(don.user_id))[0]
+    await post(db, await db.get_player(don.user_id), int(mine["id"]), "bar",
+               now=NOW)
+
+    rows = await survey(db, NOW + ABANDON_SECONDS + 1)
+    assert next(one for one in rows if one.spot.code == "bar").owner.kind == "clan"
+    assert (await db.turf_rows())["bar"].empty_since == 0
+
+
+async def test_the_city_frees_an_empty_family_house_without_a_fight(db):
+    """Пустой дом семьи город снимает одним нажатием."""
+    from bot.hire_service import hire, post
+    from bot.turf_service import release
+    from tests.test_police import cop
+
+    don, squad, clan = await family(db)
+    await db.take_turf("bar", "clan", str(clan.id), NOW)
+    officer = await cop(db, 96, "Ragnar")
+    officer.location = "bar"
+    officer.credits = 10_000
+    await db.save_player(officer)
+
+    said = await release(db, await db.get_player(96), "bar", now=NOW)
+    assert "освобождён" in said
+    assert "bar" not in await db.turf_rows(), "дом снова под городской охраной"
+
+    # А с живой охраной так не получится: там дерутся
+    await db.take_turf("casino", "clan", str(clan.id), NOW)
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    boss.location = "casino"
+    await db.save_player(boss)
+    await hire(db, await db.get_player(don.user_id), "merc_5", now=NOW)
+    mine = (await db.hirelings_of(don.user_id))[0]
+    await post(db, await db.get_player(don.user_id), int(mine["id"]), "casino",
+               now=NOW)
+    guard = await db.get_player(96)
+    guard.location = "casino"
+    await db.save_player(guard)
+    with pytest.raises(TurfError, match="есть кому стоять"):
+        await release(db, await db.get_player(96), "casino", now=NOW)
+
+    # И семье освобождать нечего: это работа города
+    boss = await db.get_player(don.user_id)
+    boss.location = "bar"
+    await db.save_player(boss)
+    with pytest.raises(TurfError, match="работа города"):
+        await release(db, await db.get_player(don.user_id), "bar", now=NOW)
+
+
+async def test_the_board_offers_freeing_instead_of_a_fight(db, client):
+    """Экран называет дело освобождением, пока на точке никого нет."""
+    from bot.game.health import now_ts
+    from tests.test_police import cop
+
+    long_ago = now_ts() - 3 * DAY_SECONDS
+    don, squad, clan = await family(db)
+    await db.take_turf("bar", "clan", str(clan.id), long_ago)
+    officer = await cop(db, 97, "Ragnar")
+    officer.location = "bar"
+    await db.save_player(officer)
+
+    body = await (await client.get("/api/turf", headers=headers(97))).json()
+    row = next(one for one in body["spots"] if one["code"] == "bar")
+    assert row["action"] == "free" and row["action_title"] == "Освобождение"
+    assert row["can_free"] is True and row["can_storm"] is False
+
+    # Нажали — и дом городской, без единой волны
+    answer = await client.post(
+        "/api/turf", json={"action": "free", "spot": "bar"},
+        headers=headers(97),
+    )
+    assert answer.status == 200
+    body = await answer.json()
+    assert "освобождён" in body["said"]
+    row = next(one for one in body["spots"] if one["code"] == "bar")
+    assert row["owner"]["nobody"] is True
+    assert row["action"] == "guard", "теперь туда ставят патрульного"
+
 # ---------- штурм ----------
 
 
@@ -528,11 +657,28 @@ async def test_your_own_spot_is_not_stormed(db):
 
 
 async def test_four_spots_are_the_ceiling(db):
-    """Больше четырёх точек одна семья не держит."""
+    """Больше четырёх точек одна семья не держит.
+
+    Взятое держим охраной: без неё дом через сутки вернётся городу, и
+    потолок считать стало бы не с чего.
+    """
+    from bot.hire_service import hire, post
+
     don, squad, clan = await family(db)
     moment = NOW
-    for code in ("bar", "weapon_shop", "taxi_depot", "pawnshop"):
+    for number, code in enumerate(("bar", "weapon_shop", "taxi_depot",
+                                   "pawnshop")):
         moment = max(moment, await seize(db, don, squad, code)) + CALM_SECONDS
+        # По человеку от каждого: от одного бойца на точке стоит один
+        keeper = squad[number]
+        one = await db.get_player(keeper)
+        one.credits = 20_000
+        one.location = code
+        await db.save_player(one)
+        await hire(db, await db.get_player(keeper), "merc_5", now=moment)
+        free = [row for row in await db.hirelings_of(keeper) if not row["spot"]]
+        await post(db, await db.get_player(keeper), int(free[0]["id"]), code,
+                   now=moment)
 
     held = await held_by(db, owner_of_clan(clan.id), moment)
     assert len(held) == MAX_SPOTS_PER_OWNER

@@ -123,20 +123,45 @@ NO_ONE = Owner()
 # и всегда боем: у любой из них есть кому стоять.
 #
 # **Своя точка — только охрана.** Воевать за неё не с кем.
+#
+# **Брошенный дом город забирает без боя.** Семья, не поставившая на
+# точку человека, держит её одной вывеской: драться там не с кем, и
+# звать отряд на пустой дом — спектакль. Полицейский снимает такое
+# владение одним нажатием, и это **освобождение**, а не задержание:
+# задерживать некого.
 SEIZE = "seize"  # захват: семья берёт чужое
-ARREST = "arrest"  # задержание: город выводит мафию
+ARREST = "arrest"  # задержание: город выводит мафию боем
+FREE = "free"  # освобождение: город снимает влияние с пустого дома
 GUARD = "guard"  # охрана: поставить своего на точку
 
+# Сколько семья держит точку без охраны, прежде чем дом вернётся
+# городу. Сутки — те же, что у отдыха точки: день без человека это и
+# есть «бросили». Дом не бывает ничей вечно — ничей он под городской
+# охраной, а вывеска семьи на пустом доме не значит ничего
+ABANDON_HOURS = 24
+ABANDON_SECONDS = ABANDON_HOURS * HOUR
 
-def action_for(owner: Owner, mine: Owner) -> str:
-    """Что эта сторона может сделать на этой точке. Пусто — ничего."""
+
+def action_for(owner: Owner, mine: Owner, guarded: bool = True) -> str:
+    """Что эта сторона может сделать на этой точке. Пусто — ничего.
+
+    `guarded` — стоит ли на точке хоть один выставленный. Городу это
+    меняет дело: пустую семейную точку он освобождает без боя.
+    """
     if mine.nobody:
         return ""
     if owner.same(mine):
         return GUARD
     if mine.kind == SERVICE:
-        return ARREST if owner.kind == CLAN else GUARD
+        if owner.kind != CLAN:
+            return GUARD
+        return ARREST if guarded else FREE
     return SEIZE
+
+
+def abandoned(empty_since: int, now: int) -> bool:
+    """Брошена ли точка: сутки без единого выставленного."""
+    return bool(empty_since) and now - empty_since >= ABANDON_SECONDS
 
 
 @dataclass(frozen=True)
@@ -255,10 +280,14 @@ __all__ = [
     "MAX_SPOTS_PER_OWNER",
     "NOBODY",
     "NO_ONE",
+    "ABANDON_HOURS",
+    "ABANDON_SECONDS",
     "ARREST",
+    "FREE",
     "GUARD",
     "SEIZE",
     "SERVICE",
+    "abandoned",
     "action_for",
     "SPOTS",
     "TOTAL_SPOTS",

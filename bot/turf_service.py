@@ -41,12 +41,15 @@ from bot.game.health import now_ts
 from bot.game.services import get_service
 from bot.game.turf import (
     CLAN,
+    FREE,
     MAX_GARRISON,
     MAX_SPOTS_PER_OWNER,
     SERVICE,
     SPOTS,
     Owner,
     Spot,
+    abandoned,
+    action_for,
     calm_left,
     get_spot,
     final_payout,
@@ -128,6 +131,31 @@ async def owner_title(db: Database, owner: Owner) -> str:
     return service.title if service else owner.service
 
 
+async def _let_go(db: Database, row, guarded: bool, now: int) -> bool:
+    """Отпустить точку, которую семья держит одной вывеской.
+
+    Возвращает True — дом вернулся городу и дальше считается ничьим.
+
+    Час опустения ведём здесь же: выставили человека — час сбрасываем,
+    сняли последнего — ставим заново. Иначе пришлось бы помнить, когда
+    именно точка опустела, а помнить это некому.
+    """
+    if row.owner.kind != CLAN:
+        return False
+    if guarded:
+        if row.empty_since:
+            await db.mark_turf_empty(row.code, 0)
+        return False
+    if not row.empty_since:
+        await db.mark_turf_empty(row.code, now)
+        return False
+    if not abandoned(row.empty_since, now):
+        return False
+    await db.free_turf(row.code)
+    logger.info("Точка %s брошена и вернулась городу", row.code)
+    return True
+
+
 async def owner_badge(db: Database, owner: Owner) -> str:
     """Жетон владельца: знак семьи или значок службы.
 
@@ -168,6 +196,12 @@ async def survey(
             out.append(Holding(spot=spot, owner=Owner()))
             continue
         guarded = bool(kept.get(spot.code))
+        # Брошенный дом возвращается городу. Считается это здесь же, при
+        # взгляде: часов у клуба нет, и сторожить сутки некому — зато
+        # всякий, кто посмотрел на карту, досчитывает её за всех
+        if await _let_go(db, row, guarded, moment):
+            out.append(Holding(spot=spot, owner=Owner()))
+            continue
         due = 0
         if not row.owner.nobody:
             due, paid_until = payout(
@@ -252,6 +286,36 @@ async def vault_of(db: Database, owner: Owner) -> int:
 
 
 # ---------- гарнизон ----------
+
+
+async def release(db: Database, player: Player, code: str,
+                  now: int | None = None) -> str:
+    """Снять с точки влияние семьи. Город делает это без боя.
+
+    Драться на пустом доме не с кем: семья, не поставившая человека,
+    держит его одной вывеской. Полицейский снимает её одним нажатием —
+    и дом снова под городской охраной, как был до первого захвата.
+    """
+    moment = now_ts() if now is None else now
+    spot = get_spot(code)
+    if spot is None:
+        raise TurfError("Такой точки в городе нет.")
+    mine = owner_of(player)
+    if mine.kind != SERVICE:
+        raise TurfError("Освобождать дома — работа города.")
+    if player.where(moment) != code:
+        raise TurfError(f"До {spot.genitive} надо дойти: это делают на месте.")
+    rows = await survey(db, moment)
+    here = next(one for one in rows if one.spot.code == code)
+    if action_for(here.owner, mine, here.guarded) != FREE:
+        raise TurfError(
+            f"У {spot.genitive} есть кому стоять: без боя дом не отдадут."
+            if here.owner.kind == CLAN
+            else f"{spot.title} и так не за семьёй."
+        )
+    await db.free_turf(code)
+    logger.info("Боец %s освободил точку %s", player.user_id, code)
+    return f"{spot.title} освобождён: дом снова под городской охраной."
 
 
 async def garrison(
@@ -442,6 +506,7 @@ __all__ = [
     "owner_of",
     "owner_badge",
     "owner_title",
+    "release",
     "survey",
     "vault_of",
 ]

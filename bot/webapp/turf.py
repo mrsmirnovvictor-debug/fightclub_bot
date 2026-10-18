@@ -27,8 +27,10 @@ from bot.game.health import format_term, now_ts
 from bot.game.classes import BLOCK_WIDTH
 from bot.game.hirelings import MAX_POSTED
 from bot.game.turf import (
+    ABANDON_HOURS,
     ARREST,
     CALM_HOURS,
+    FREE,
     GUARD,
     MAX_GARRISON,
     MAX_SPOTS_PER_OWNER,
@@ -62,6 +64,7 @@ NOBODY_MARK = "⚪️"
 ACTION_TITLES: dict[str, str] = {
     SEIZE: "Захват",
     ARREST: "Задержание",
+    FREE: "Освобождение",
     GUARD: "Охрана",
 }
 
@@ -110,7 +113,8 @@ async def spot_row(
     rest = calm_left(holding.fought_at, moment)
     ours = owner.same(mine) and not mine.nobody
     standing = spot.code == here
-    deed = action_for(owner, mine)
+    # Пустую семейную точку город снимает без боя: драться там не с кем
+    deed = action_for(owner, mine, holding.guarded)
     return {
         "code": spot.code,
         "title": spot.title,
@@ -149,6 +153,9 @@ async def spot_row(
         "can_storm": bool(
             standing and deed in (SEIZE, ARREST) and not rest
         ),
+        # Освобождение идёт без боя, и отдыха точки оно не ждёт: драки
+        # не было — ждать нечего
+        "can_free": bool(standing and deed == FREE),
     }
 
 
@@ -199,6 +206,7 @@ async def build_turf(
         "ceiling": MAX_SPOTS_PER_OWNER,
         "squad": MAX_GARRISON,
         "calm_hours": CALM_HOURS,
+        "abandon_hours": ABANDON_HOURS,
         "said": said,
         # Нанятые: что на руках, что предлагают и кого можно выставить
         "hire": await _hire_rows(db, player, here, spots),
@@ -225,6 +233,7 @@ def _shut_board(here: str, said: str) -> dict[str, Any]:
         "ceiling": MAX_SPOTS_PER_OWNER,
         "squad": MAX_GARRISON,
         "calm_hours": CALM_HOURS,
+        "abandon_hours": ABANDON_HOURS,
         "said": said,
         "hire": {"side": "", "cap": 0, "hired": 0, "left": 0, "mine": [],
                  "grades": [], "spot": "", "spot_title": "",
@@ -295,6 +304,7 @@ async def _spot_panel(db, row: dict[str, Any] | None) -> dict[str, Any] | None:
         "action": row["action"],
         "action_title": row["action_title"],
         "can_storm": row["can_storm"],
+        "can_free": row["can_free"],
         "calm": row["calm"],
         "calm_text": row["calm_text"],
     }
@@ -559,6 +569,12 @@ def _band(body: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
         band["button"] = row["action"]
         band["title"] = row["action_title"]
         band["text"] = f"Держит: {row['owner']['title']}."
+    elif row["can_free"]:
+        # Пустой дом семьи город снимает без боя — и кнопка об этом
+        # говорит словом, а не «захватом»
+        band["button"] = FREE
+        band["title"] = ACTION_TITLES[FREE]
+        band["text"] = f"Держит: {row['owner']['title']}. Охраны нет."
     elif row["action"] == GUARD:
         # Охрана: воевать тут не с кем, а посмотреть, кто на точке
         # стоит, и поставить ещё одного — надо

@@ -98,7 +98,7 @@ from bot.estate_service import (
     take as flat_take,
     withdraw as flat_withdraw,
 )
-from bot.turf_service import TurfError
+from bot.turf_service import TurfError, release as turf_release
 from bot.hire_service import (
     HireError,
     hire as hire_one,
@@ -2556,6 +2556,9 @@ async def api_turf_action(request: web.Request) -> web.Response:
             # Созвать отряд на точку. Созвавший записан первым
             await war.open_muster(player, str(data.get("spot") or ""))
             said = "Отряд собирается. Свои подтянутся — и вперёд."
+        elif action == "free":
+            # Освобождение: пустой дом семьи город снимает без боя
+            said = await turf_release(db, player, str(data.get("spot") or ""))
         elif action == "join":
             await war.join(_int_field(data, "muster_id"), player)
             said = "Ты в отряде."

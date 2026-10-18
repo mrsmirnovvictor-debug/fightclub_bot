@@ -2093,7 +2093,8 @@ function paintTurfBand() {
   // Слово на кнопке приходит с сервера: захват, задержание, охрана.
   // Нажатие открывает экран точки, а не начинает бой — драку выбирают
   // там, где видно, кто на точке стоит
-  go.textContent = band.button === "arrest" ? "🚔 " + band.title
+  go.textContent = band.button === "arrest" || band.button === "free"
+    ? "🚔 " + band.title
     : band.button === "seize" ? "🚩 " + band.title
     : band.button === "guard" ? "🛡 " + band.title
     : band.title || "Открыть";
@@ -11118,6 +11119,15 @@ function spotCard(one, data) {
   }
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
+  if (one.action === "free") {
+    buttons.appendChild(
+      button("🚔 " + one.action_title, {
+        onClick: () => turfAction({ action: "free", spot: one.code }),
+      })
+    );
+    box.appendChild(buttons);
+    return box;
+  }
   buttons.appendChild(
     button((one.action === "arrest" ? "🚔 " : "🚩 ") + one.action_title, {
       disabled: Boolean(data.muster),
@@ -11195,6 +11205,17 @@ function spotDeed(spot) {
         disabled: !hire.can_post,
         hint: hire.why || "Охрану ставят на своей точке.",
         onClick: showHireShelf,
+      })
+    );
+    return buttons;
+  }
+  if (spot.action === "free") {
+    // Освобождение идёт без боя: драться на пустом доме не с кем
+    buttons.appendChild(
+      button("🚔 " + spot.action_title, {
+        disabled: !spot.can_free,
+        hint: "Освобождают на месте.",
+        onClick: () => turfAction({ action: "free", spot: spot.code }),
       })
     );
     return buttons;

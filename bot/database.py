@@ -641,7 +641,11 @@ CREATE TABLE IF NOT EXISTS turf (
     owner_key  TEXT    NOT NULL DEFAULT '',
     taken_at   INTEGER NOT NULL DEFAULT 0,
     paid_until INTEGER NOT NULL DEFAULT 0,
-    fought_at  INTEGER NOT NULL DEFAULT 0
+    fought_at  INTEGER NOT NULL DEFAULT 0,
+    -- С какого часа на точке никого не стоит. Ноль — охрана на месте.
+    -- По этому часу и считается, сколько семья держит дом впустую:
+    -- сутки без человека, и дом возвращается городу
+    empty_since INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS turf_owner ON turf(owner_kind, owner_key);
@@ -984,7 +988,25 @@ class Database:
         await self._migrate_arenas()
         await self._migrate_raid_windows()
         await self._migrate_clans()
+        await self._migrate_turf()
         await self._migrate_card_log()
+
+    async def _migrate_turf(self) -> None:
+        """Дописать час опустения в уже заведённые точки.
+
+        Точки появились раньше правила «сутки без охраны — и дом снова
+        городской», и на живой базе `CREATE TABLE IF NOT EXISTS` колонку
+        не добавит: таблица уже есть.
+        """
+        async with self.conn.execute("PRAGMA table_info(turf)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if not columns or "empty_since" in columns:
+            return
+        await self.conn.execute(
+            "ALTER TABLE turf ADD COLUMN empty_since INTEGER NOT NULL DEFAULT 0"
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: добавлена колонка turf.empty_since")
 
     async def _migrate_card_log(self) -> None:
         """Дописать комментарий к уже записанным операциям по карте.
@@ -3063,12 +3085,15 @@ class Database:
 
     @staticmethod
     def _turf(row) -> "TurfRow":
+        keys = row.keys()
         return TurfRow(
             code=str(row["code"]),
             owner=Owner(str(row["owner_kind"]), str(row["owner_key"])),
             taken_at=int(row["taken_at"]),
             paid_until=int(row["paid_until"]),
             fought_at=int(row["fought_at"]),
+            # Колонку дописали позже: на старой базе её может ещё не быть
+            empty_since=int(row["empty_since"]) if "empty_since" in keys else 0,
         )
 
     async def turf_rows(self) -> dict[str, "TurfRow"]:
@@ -3285,6 +3310,26 @@ class Database:
         cursor = await self.conn.execute(
             "INSERT OR IGNORE INTO chores (code, done_at) VALUES (?,?)",
             (code, now),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def mark_turf_empty(self, code: str, since: int) -> None:
+        """Отметить, с какого часа точка стоит пустой. Ноль — не пустая."""
+        await self.conn.execute(
+            "UPDATE turf SET empty_since = ? WHERE code = ?", (since, code)
+        )
+        await self.conn.commit()
+
+    async def free_turf(self, code: str) -> bool:
+        """Снять с точки владельца: она снова под городской охраной.
+
+        Строки у ничьей точки нет вовсе — её и удаляем. Это и есть
+        «вернуть городу»: дом остаётся с городской охраной, как был до
+        первого захвата.
+        """
+        cursor = await self.conn.execute(
+            "DELETE FROM turf WHERE code = ?", (code,)
         )
         await self.conn.commit()
         return cursor.rowcount > 0
@@ -5108,6 +5153,8 @@ class TurfRow:
     taken_at: int = 0
     paid_until: int = 0
     fought_at: int = 0
+    # С какого часа точка стоит без охраны. Ноль — на ней кто-то есть
+    empty_since: int = 0
 
 
 def _to_player(row: Iterable[Any]) -> Player:
