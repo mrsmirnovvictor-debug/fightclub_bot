@@ -52,6 +52,13 @@ IMAGES = "**/*.{jpeg,jpg,png}"
 PIXEL = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
+# Картинка вдвое выше своей ширины (2×4): пиксель на все случаи не
+# годится там, где проверяют обрезку — у квадрата её не видно ни при
+# каком `object-fit`. Лица нанятых нарисованы в полный рост, и рамка
+# им как раз не квадратная
+TALL_PIXELS = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAAECAIAAAArjXluAAAAFklEQVR42mM4oaEBRAwaASeACEZBBAGDXAlhbolbAwAAAABJRU5ErkJggg=="
+)
 pytestmark = pytest.mark.skipif(CHROMIUM is None, reason="Chromium не найден")
 
 
@@ -10988,6 +10995,66 @@ async def test_the_war_map_shows_the_spots_and_the_call_to_arms(server, db):
         # двери которой боец стоит, своя сводка идёт за ней
         tally = await page.locator("#turf-body .shelf").nth(1).inner_text()
         assert "Коза Ностра" in tally and "0 из 4" in tally
+        await browser.close()
+
+
+async def test_the_hire_counter_fits_its_cards_on_a_narrow_phone(server, db):
+    """Прилавок найма: кнопка по ширине карточки, лицо целиком.
+
+    Общий `min-width` у кнопок рассчитан на строку во весь экран, а на
+    прилавке их три в ряд — и цена вылезала за свою рамку. Лицо же
+    нарисовано в полный рост, и квадратная рамка срезала ему голову и
+    ноги. Мерим на узком экране: на широком обе беды прячутся.
+    """
+    from bot.hire_service import hire
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW
+    from tests.test_police import cop
+
+    officer = await cop(db, 71, "Ragnar", where="pawnshop")
+    officer.credits = 50_000
+    await db.save_player(officer)
+    await db.take_turf("pawnshop", "service", "police", NOW - 3 * 24 * 3600)
+    await hire(db, await db.get_player(71), "patrol_5", now=NOW)
+    officer = await db.get_player(71)
+    board = await build_war(db, officer, None, NOW)
+
+    async with async_playwright() as pw:
+        card = build_card(officer, TOKEN, viewer_id=officer.user_id)
+        browser, page = await open_page(pw, server, card, turf=board)
+        # Лицо в полный рост: вдвое выше своей ширины
+        await page.route(IMAGES, lambda route: route.fulfill(
+            status=200, content_type="image/png", body=TALL_PIXELS
+        ))
+        await page.set_viewport_size({"width": 360, "height": 900})
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "turf")
+        await page.wait_for_selector("#turf-hire .hire-card")
+        await page.evaluate("stopTurfPoll()")
+
+        measured = await page.evaluate("""() => {
+            const cards = [...document.querySelectorAll("#turf-hire .hire-card")];
+            return {
+                spill: cards.map((card) => Math.round(
+                    card.querySelector(".btn").getBoundingClientRect().right
+                    - card.getBoundingClientRect().right
+                )),
+                faces: cards.map((card) => {
+                    const face = card.querySelector(".hire-face");
+                    const box = face.getBoundingClientRect();
+                    return [Math.round(box.width), Math.round(box.height),
+                            face.naturalWidth, face.naturalHeight];
+                }),
+                scroll: document.documentElement.scrollWidth
+                    - document.documentElement.clientWidth,
+            };
+        }""")
+        assert len(measured["spill"]) == 3
+        assert all(one <= 0 for one in measured["spill"]), "кнопка в своей рамке"
+        for width, height, own_width, own_height in measured["faces"]:
+            # Пропорция та же, что у файла: значит, ничего не срезано
+            assert abs(height / width - own_height / own_width) < 0.05
+        assert measured["scroll"] == 0, "и экран вбок не уезжает"
         await browser.close()
 
 
