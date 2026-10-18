@@ -10991,6 +10991,47 @@ async def test_the_war_map_shows_the_spots_and_the_call_to_arms(server, db):
         await browser.close()
 
 
+async def test_the_resting_spot_says_so_on_its_own_panel(server, db):
+    """Погасшее задержание объясняет себя: точка отдыхает после боя.
+
+    На карте этого нарочно нет — плашка без кнопки не рисуется, —
+    зато на экране точки отдых стоит строкой, рядом с доходом и
+    охраной. Иначе начальник полиции видел бы мёртвую кнопку и ни
+    слова о том, когда за дом можно идти.
+    """
+    from bot.hire_service import hire, post
+    from bot.webapp.turf import build_war
+    from tests.test_turf import NOW, family, stand
+    from tests.test_police import cop
+
+    don, squad, clan = await family(db)
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    await db.save_player(boss)
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * 24 * 3600)
+    await stand(db, [don.user_id], "bar")
+    await hire(db, await db.get_player(don.user_id), "merc_7", now=NOW)
+    mine = (await db.hirelings_of(don.user_id))[0]
+    await post(db, await db.get_player(don.user_id), int(mine["id"]), "bar",
+               now=NOW)
+    # За бар подрались три часа назад: сутки покоя ещё не вышли
+    await db.hold_turf("bar", NOW - 3 * 3600)
+
+    officer = await cop(db, 94, "Ragnar", where="bar")
+    board = await build_war(db, officer, None, NOW)
+
+    async with async_playwright() as pw:
+        browser, page = await open_war(pw, server, officer, board)
+
+        panel = await page.locator("#turf-body .shelf").first.inner_text()
+        assert "Бар" in panel, "первой полкой — точка под ногами"
+        assert "Отдыхает" in panel and "ещё 21 час" in panel
+        deed = page.locator("#turf-body .shelf").first.locator("button")
+        assert await deed.inner_text() == "🚔 Задержание"
+        assert await deed.is_disabled(), "идти пока нельзя"
+        await browser.close()
+
+
 async def test_the_muster_lists_the_squad_and_only_the_leader_marches(server, db):
     """Сбор отряда: кто записан, сколько ждать и чьи кнопки."""
     don, _, lobby, _, _ = await war_states(db)

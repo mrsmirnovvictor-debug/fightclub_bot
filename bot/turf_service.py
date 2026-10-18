@@ -425,7 +425,9 @@ async def assault(
 
     won, waves, log = _fight(attackers, defenders, rng)
     if won:
-        await db.take_turf(code, mine.kind, mine.key, moment)
+        await db.take_turf(
+            code, mine.kind, mine.key, moment, fought=bool(waves)
+        )
     else:
         await db.hold_turf(code, moment)
     logger.info(

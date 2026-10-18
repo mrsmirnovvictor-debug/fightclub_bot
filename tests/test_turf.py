@@ -606,6 +606,73 @@ async def test_the_board_offers_freeing_instead_of_a_fight(db, client):
     assert row["owner"]["nobody"] is True
     assert row["action"] == "guard", "теперь туда ставят патрульного"
 
+
+async def test_the_rest_comes_from_a_fight_and_not_from_a_signboard(db):
+    """Отдых даёт драка. Патрульный, вошедший в ничей дом, — нет.
+
+    Иначе город запирал бы точку на сутки одним вошедшим человеком, и
+    «точка отдыхает после боя» стояло бы там, где боя не было.
+    """
+    from bot.hire_service import hire, post
+    from bot.turf_war import TurfWar
+    from tests.test_police import cop
+
+    officer = await cop(db, 98, "Ragnar")
+    officer.location = "market"
+    officer.credits = 10_000
+    await db.save_player(officer)
+    await hire(db, await db.get_player(98), "patrol_5", now=NOW)
+    mine = (await db.hirelings_of(98))[0]
+    await post(db, await db.get_player(98), int(mine["id"]), "market", now=NOW)
+
+    row = (await db.turf_rows())["market"]
+    assert row.owner == owner_of_service("police"), "дом стал городским"
+    assert row.fought_at == 0, "драки не было — и отдыхать не от чего"
+    assert calm_left(row.fought_at, NOW) == 0
+
+    # И семья идёт на него в ту же минуту: ждать ей нечего
+    rival, rivals, theirs = await family(db, first=20, name="Псы",
+                                         sign="silver_wolves")
+    await stand(db, rivals, "market")
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "market", now=NOW
+        )
+        assert muster.spot.code == "market"
+    finally:
+        await war.close()
+
+
+async def test_an_empty_house_taken_without_a_fight_does_not_rest(db):
+    """Дом, взятый без единой волны, суток покоя не даёт.
+
+    Семья бросила точку, другая вошла и забрала её — драки не было, и
+    отдых был бы наградой за пустую вывеску.
+    """
+    from bot.turf_war import TurfWar
+
+    don, _, clan = await family(db)
+    rival, rivals, theirs = await family(db, first=20, name="Псы",
+                                         sign="silver_wolves")
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
+    await stand(db, rivals, "bar")
+
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+    finally:
+        await war.close()
+
+    assert siege.won and siege.wave == 0
+    row = (await db.turf_rows())["bar"]
+    assert row.owner == owner_of_clan(theirs.id)
+    assert calm_left(row.fought_at, NOW) == 0, "драки не было — отдыха нет"
+
+
 # ---------- штурм ----------
 
 
@@ -977,6 +1044,52 @@ async def test_the_spot_underfoot_shows_who_stands_on_it(db, client):
     body = await (await client.get("/api/turf", headers=headers(don.user_id))).json()
     assert body["here_spot"]["posted"] == []
     assert body["here_spot"]["guards"] == 3
+
+
+async def test_the_panel_underfoot_knows_about_the_fight_going_on(db):
+    """Панель точки знает то же, что список: на ней уже дерутся.
+
+    Иначе погасшую кнопку она объясняла бы не тем — а неверная причина
+    хуже, чем никакой: с ней уходят с готовым, но ложным ответом.
+    """
+    from bot.hire_service import hire, post
+    from bot.turf_war import TurfWar
+    from bot.webapp.turf import build_war
+    from tests.test_police import cop
+
+    don, squad, clan = await family(db)
+    boss = await db.get_player(don.user_id)
+    boss.credits = 20_000
+    await db.save_player(boss)
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
+    await stand(db, [don.user_id], "bar")
+    await hire(db, await db.get_player(don.user_id), "merc_7", now=NOW)
+    mine = (await db.hirelings_of(don.user_id))[0]
+    await post(db, await db.get_player(don.user_id), int(mine["id"]), "bar",
+               now=NOW)
+
+    officer = await cop(db, 99, "Ragnar")
+    officer.location = "bar"
+    await db.save_player(officer)
+
+    war = TurfWar(db)
+    try:
+        # Пока город раздумывает, на бар собирается чужая семья
+        body = await build_war(db, await db.get_player(99), war, NOW)
+        assert body["here_spot"]["can_storm"] is True
+        assert body["here_spot"]["busy"] is False
+
+        rival, rivals, _ = await family(
+            db, first=20, name="Псы", sign="silver_wolves"
+        )
+        await stand(db, rivals, "bar")
+        await war.open_muster(await db.get_player(rival.user_id), "bar",
+                              now=NOW)
+        body = await build_war(db, await db.get_player(99), war, NOW)
+        assert body["here_spot"]["busy"] is True
+        assert body["here_spot"]["can_storm"] is False
+    finally:
+        await war.close()
 
 
 async def test_the_map_band_is_empty_away_from_the_spots(db, client):

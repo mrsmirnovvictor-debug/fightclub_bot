@@ -307,6 +307,9 @@ async def _spot_panel(db, row: dict[str, Any] | None) -> dict[str, Any] | None:
         "can_free": row["can_free"],
         "calm": row["calm"],
         "calm_text": row["calm_text"],
+        # За точку уже дерутся — второй отряд на неё не собирают.
+        # Ставит это `build_war`: кто дерётся, знает война, а не база
+        "busy": False,
     }
 
 
@@ -508,6 +511,13 @@ async def build_war(
             row["busy"] = True
         else:
             row["busy"] = False
+    # Точка под ногами — та же строка, и знать она должна то же самое:
+    # иначе панель объясняла бы погасшую кнопку не тем
+    panel = body.get("here_spot")
+    if panel is not None:
+        panel["busy"] = panel["code"] in busy
+        if panel["busy"]:
+            panel["can_storm"] = False
     return body
 
 

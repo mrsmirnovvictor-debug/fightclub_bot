@@ -3115,12 +3115,14 @@ class Database:
         return self._turf(row) if row else None
 
     async def take_turf(
-        self, code: str, kind: str, key: str, now: int
+        self, code: str, kind: str, key: str, now: int, fought: bool = True
     ) -> None:
         """Записать нового владельца точки и отправить её отдыхать.
 
-        Час боя и час захвата — один и тот же: точка отдыхает ровно от
-        того мига, когда за неё дрались, кто бы ни победил.
+        Отдыхает она от драки, а не от смены вывески: `fought` — была
+        ли драка. Патрульный, вошедший в ничей дом, и пустой дом,
+        взятый без единой волны, никого не задерживают: суток покоя
+        после них нет, потому что отбивать такое не у кого.
         """
         await self.conn.execute(
             """
@@ -3134,7 +3136,7 @@ class Database:
                 paid_until = excluded.paid_until,
                 fought_at  = excluded.fought_at
             """,
-            (code, kind, key, now, now, now),
+            (code, kind, key, now, now, now if fought else 0),
         )
         await self.conn.commit()
         logger.info("Точка %s теперь за %s:%s", code, kind, key)

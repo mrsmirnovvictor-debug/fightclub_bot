@@ -617,11 +617,14 @@ class TurfWar:
                 )
             # Отбили точку — выставленные на ней гибнут насовсем
             siege.fallen = await self.db.clear_spot(siege.spot.code)
+            # Волн ноль — драки не было: дом стоял пустой, и отдыхать
+            # ему не от чего. Сутки покоя даёт драка, а не вывеска
             await self.db.take_turf(
                 siege.spot.code,
                 siege.attacker.kind,
                 siege.attacker.key,
                 moment,
+                fought=bool(siege.wave),
             )
         else:
             # Отбились — точка остаётся за прежним хозяином, но убитые

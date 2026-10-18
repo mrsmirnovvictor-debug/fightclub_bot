@@ -575,7 +575,10 @@ function button(text, options) {
   if (options && options.disabled) {
     btn.disabled = true;
     if (options.hint) {
-      btn.addEventListener("click", () => popup("Нельзя надеть", options.hint));
+      // Заголовок общий: погасшая кнопка бывает не только у вещи —
+      // у точки, у работы, у перевода, — и «нельзя надеть» на экране
+      // территорий говорило бы про чужое
+      btn.addEventListener("click", () => popup("Нельзя", options.hint));
     }
   } else if (options && options.onClick) {
     btn.addEventListener("click", options.onClick);
@@ -11168,19 +11171,22 @@ function spotPanel(spot) {
   }
   box.appendChild(head);
 
-  box.appendChild(
-    paperRows([
-      ["Держит", spot.mine ? "ваши" : spot.owner.title],
-      ["Доход", num(spot.income) + " 💰 в сутки"],
-      [
-        "Охрана",
-        spot.posted.length + " из " + spot.max_posted
-          + (spot.guards ? " · городская охрана: " + spot.guards : ""),
-      ],
-      // Деньги идут за то, что точку держат, а не за флажок на карте
-      ["Платит", spot.guarded ? "да" : "нет — на ней никого"],
-    ])
-  );
+  const rows = [
+    ["Держит", spot.mine ? "ваши" : spot.owner.title],
+    ["Доход", num(spot.income) + " 💰 в сутки"],
+    [
+      "Охрана",
+      spot.posted.length + " из " + spot.max_posted
+        + (spot.guards ? " · городская охрана: " + spot.guards : ""),
+    ],
+    // Деньги идут за то, что точку держат, а не за флажок на карте
+    ["Платит", spot.guarded ? "да" : "нет — на ней никого"],
+  ];
+  // Отдых — главная причина, по которой тут нечего нажать, и строкой
+  // он честнее погасшей кнопки: на карте его не показывают нарочно,
+  // но на экране точки о нём спрашивают именно здесь
+  if (spot.calm) rows.push(["Отдыхает", "ещё " + spot.calm_text]);
+  box.appendChild(paperRows(rows));
 
   (spot.posted || []).forEach((one) => box.appendChild(postedRow(one)));
   if (spot.guards) box.appendChild(guardRow(spot));
@@ -11225,13 +11231,25 @@ function spotDeed(spot) {
   buttons.appendChild(
     button(mark + spot.action_title, {
       disabled: !spot.can_storm || Boolean(turfData && turfData.muster),
-      hint: spot.calm
-        ? "Точка отдыхает после боя: " + spot.calm_text + "."
-        : "Ты уже собираешь отряд.",
+      hint: spotWhyNot(spot),
       onClick: () => turfAction({ action: "call", spot: spot.code }),
     })
   );
   return buttons;
+}
+
+/** Почему кнопку дела нажать нельзя. Одна причина — настоящая.
+
+    Гасить кнопку и объяснять её не тем — хуже, чем спрятать: боец
+    уходит с готовым, но ложным ответом. Порядок тот же, что у сервера:
+    отдых, чужая драка, свой сбор. */
+function spotWhyNot(spot) {
+  if (spot.calm) {
+    return "Точка отдыхает после боя: " + spot.calm_text + ".";
+  }
+  if (spot.busy) return "За точку уже дерутся. Подожди.";
+  if (turfData && turfData.muster) return "Ты уже собираешь отряд.";
+  return "Сюда с отрядом не ходят.";
 }
 
 /** Строка выставленного: лицо, ступень и от кого он тут стоит. */
