@@ -644,17 +644,47 @@ CREATE TABLE IF NOT EXISTS turf (
     -- С какого часа на точке никого не стоит. Ноль — охрана на месте.
     -- По этому часу и считается, сколько семья держит дом впустую:
     -- сутки без человека, и дом возвращается городу
-    empty_since INTEGER NOT NULL DEFAULT 0
+    empty_since INTEGER NOT NULL DEFAULT 0,
+    -- До какого часа время владения уже записано в бонусный журнал.
+    -- Секунды, а не часы: обзор заглядывает часто, и округление на
+    -- каждом взгляде съедало бы по полчаса
+    counted_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS turf_owner ON turf(owner_kind, owner_key);
 
 -- Казна городской службы. У клана сейф лежит в его же строке, а у
 -- службы своей строки нет вовсе: служба — это взгляд на рабочие места,
--- и состава у неё не хранится. Казна — единственное, что у неё своё
+-- и состава у неё не хранится. Казна — единственное, что у неё своё.
+-- `split` — как начальник велел делить недельный бонусный пулл
 CREATE TABLE IF NOT EXISTS service_vault (
     code   TEXT    PRIMARY KEY,
-    vault  INTEGER NOT NULL DEFAULT 0
+    vault  INTEGER NOT NULL DEFAULT 0,
+    split  TEXT    NOT NULL DEFAULT 'even'
+);
+
+-- Недельный журнал бонусов: по строке на сторону, неделю и мерку.
+-- Стороны тут те же, что у точек, — `clan:3` или `service:police`, — и
+-- журнал на обе один: считается в нём одно и то же, сделанное за
+-- неделю, и разводить его по таблицам значило бы писать дважды
+CREATE TABLE IF NOT EXISTS bonus_weeks (
+    side_kind TEXT    NOT NULL,
+    side_key  TEXT    NOT NULL,
+    week      INTEGER NOT NULL,
+    metric    TEXT    NOT NULL,
+    value     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (side_kind, side_key, week, metric)
+);
+
+-- Что за неделю уже выдано. Строка есть — пулл роздан, и второй раз
+-- его не дадут: отметка и проверка тут один запрос
+CREATE TABLE IF NOT EXISTS bonus_paid (
+    side_kind TEXT    NOT NULL,
+    side_key  TEXT    NOT NULL,
+    week      INTEGER NOT NULL,
+    amount    INTEGER NOT NULL DEFAULT 0,
+    paid_at   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (side_kind, side_key, week)
 );
 
 -- Лицензии на ограбление: сколько боец купил и сколько потратил за эту
@@ -988,6 +1018,7 @@ class Database:
         await self._migrate_raid_windows()
         await self._migrate_clans()
         await self._migrate_turf()
+        await self._migrate_service_vault()
         await self._migrate_card_log()
 
     async def _migrate_turf(self) -> None:
@@ -1009,6 +1040,13 @@ class Database:
             )
             await self.conn.commit()
             logger.info("База обновлена: добавлена колонка turf.empty_since")
+        if "counted_at" not in columns:
+            await self.conn.execute(
+                "ALTER TABLE turf ADD COLUMN counted_at "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+            await self.conn.commit()
+            logger.info("База обновлена: добавлена колонка turf.counted_at")
         if "fought_at" in columns:
             # Отдых точки отменён: дом ходит из рук в руки сколько
             # угодно. Колонку убираем, а не оставляем лежать с мёртвыми
@@ -1016,6 +1054,27 @@ class Database:
             await self.conn.execute("ALTER TABLE turf DROP COLUMN fought_at")
             await self.conn.commit()
             logger.info("База обновлена: убрана колонка turf.fought_at")
+
+    async def _migrate_service_vault(self) -> None:
+        """Дописать службе, как она делит бонусный пулл.
+
+        Казна службы появилась раньше пулла, и на живой базе `CREATE
+        TABLE IF NOT EXISTS` колонку не добавит: таблица уже есть. У
+        старых строк дележ поровну — так участок делил копилку и до
+        всякой настройки.
+        """
+        async with self.conn.execute(
+            "PRAGMA table_info(service_vault)"
+        ) as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if not columns or "split" in columns:
+            return
+        await self.conn.execute(
+            "ALTER TABLE service_vault ADD COLUMN split "
+            "TEXT NOT NULL DEFAULT 'even'"
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: добавлена колонка service_vault.split")
 
     async def _migrate_card_log(self) -> None:
         """Дописать комментарий к уже записанным операциям по карте.
@@ -3100,8 +3159,9 @@ class Database:
             owner=Owner(str(row["owner_kind"]), str(row["owner_key"])),
             taken_at=int(row["taken_at"]),
             paid_until=int(row["paid_until"]),
-            # Колонку дописали позже: на старой базе её может ещё не быть
+            # Колонки дописали позже: на старой базе их может ещё не быть
             empty_since=int(row["empty_since"]) if "empty_since" in keys else 0,
+            counted_at=int(row["counted_at"]) if "counted_at" in keys else 0,
         )
 
     async def turf_rows(self) -> dict[str, "TurfRow"]:
@@ -3130,19 +3190,24 @@ class Database:
         Отдыха после боя у точки нет: взяли её минуту назад — можно
         идти и брать назад. Поэтому запись одна, про владельца, и
         никаких часов неприкосновенности в ней не хранится.
+
+        Час бонусного счёта новый хозяин начинает с нуля — с этой
+        минуты: часы прежнего дописывает тот, кто меняет владельца,
+        прежде чем позвать сюда.
         """
         await self.conn.execute(
             """
             INSERT INTO turf (code, owner_kind, owner_key, taken_at,
-                              paid_until)
-            VALUES (?,?,?,?,?)
+                              paid_until, counted_at)
+            VALUES (?,?,?,?,?,?)
             ON CONFLICT(code) DO UPDATE SET
                 owner_kind = excluded.owner_kind,
                 owner_key  = excluded.owner_key,
                 taken_at   = excluded.taken_at,
-                paid_until = excluded.paid_until
+                paid_until = excluded.paid_until,
+                counted_at = excluded.counted_at
             """,
-            (code, kind, key, now, now),
+            (code, kind, key, now, now, now),
         )
         await self.conn.commit()
         logger.info("Точка %s теперь за %s:%s", code, kind, key)
@@ -3319,6 +3384,121 @@ class Database:
         """Отметить, с какого часа точка стоит пустой. Ноль — не пустая."""
         await self.conn.execute(
             "UPDATE turf SET empty_since = ? WHERE code = ?", (since, code)
+        )
+        await self.conn.commit()
+
+    async def mark_turf_counted(self, code: str, upto: int) -> None:
+        """Отметить, до какого часа владение точкой уже записано."""
+        await self.conn.execute(
+            "UPDATE turf SET counted_at = ? WHERE code = ?", (upto, code)
+        )
+        await self.conn.commit()
+
+    # ---------- недельный бонусный журнал ----------
+
+    async def add_bonus(
+        self, kind: str, key: str, week: int, metric: str, amount: int
+    ) -> int:
+        """Засчитать стороне сделанное. Возвращает, сколько стало."""
+        await self.conn.execute(
+            """
+            INSERT INTO bonus_weeks (side_kind, side_key, week, metric, value)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(side_kind, side_key, week, metric)
+            DO UPDATE SET value = value + excluded.value
+            """,
+            (kind, key, week, metric, amount),
+        )
+        await self.conn.commit()
+        tally = await self.bonus_week(kind, key, week)
+        return tally.get(metric, 0)
+
+    async def bonus_week(
+        self, kind: str, key: str, week: int
+    ) -> dict[str, int]:
+        """Что эта сторона сделала за ту неделю: мерка → число."""
+        async with self.conn.execute(
+            """
+            SELECT metric, value FROM bonus_weeks
+            WHERE side_kind = ? AND side_key = ? AND week = ?
+            """,
+            (kind, key, week),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {str(row["metric"]): int(row["value"]) for row in rows}
+
+    async def owed_bonus_weeks(self, before: int) -> list[tuple[str, str, int]]:
+        """Чьи недели кончились, а пулл за них ещё не выдан."""
+        async with self.conn.execute(
+            """
+            SELECT DISTINCT w.side_kind AS kind, w.side_key AS key,
+                   w.week AS week
+            FROM bonus_weeks AS w
+            LEFT JOIN bonus_paid AS p
+              ON p.side_kind = w.side_kind AND p.side_key = w.side_key
+             AND p.week = w.week
+            WHERE w.week < ? AND p.week IS NULL
+            ORDER BY w.week
+            """,
+            (before,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            (str(row["kind"]), str(row["key"]), int(row["week"]))
+            for row in rows
+        ]
+
+    async def pay_bonus_week(
+        self, kind: str, key: str, week: int, amount: int, now: int
+    ) -> bool:
+        """Отметить пулл выданным. False — его уже выдавали.
+
+        Отметка и проверка — один запрос: пулл за неделю выдают один
+        раз, а сводят его все, кто заглянул на экран.
+        """
+        cursor = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO bonus_paid
+                (side_kind, side_key, week, amount, paid_at)
+            VALUES (?,?,?,?,?)
+            """,
+            (kind, key, week, amount, now),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def bonus_payout(
+        self, kind: str, key: str, week: int
+    ) -> dict[str, int] | None:
+        """Что стороне выдали за ту неделю. Пусто — ещё не выдавали."""
+        async with self.conn.execute(
+            """
+            SELECT amount, paid_at FROM bonus_paid
+            WHERE side_kind = ? AND side_key = ? AND week = ?
+            """,
+            (kind, key, week),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {"amount": int(row["amount"]), "paid_at": int(row["paid_at"])}
+
+    async def service_split(self, code: str) -> str:
+        """Как служба делит бонусный пулл."""
+        async with self.conn.execute(
+            "SELECT split FROM service_vault WHERE code = ?", (code,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row["split"]) if row else "even"
+
+    async def set_service_split(self, code: str, split: str) -> None:
+        """Записать, как делить пулл. Строки нет — заводим её пустой."""
+        await self.conn.execute(
+            """
+            INSERT INTO service_vault (code, vault, split) VALUES (?,0,?)
+            ON CONFLICT(code) DO UPDATE SET split = excluded.split
+            """,
+            (code, split),
         )
         await self.conn.commit()
 
@@ -5155,6 +5335,8 @@ class TurfRow:
     paid_until: int = 0
     # С какого часа точка стоит без охраны. Ноль — на ней кто-то есть
     empty_since: int = 0
+    # До какого часа владение этой точкой записано в бонусный журнал
+    counted_at: int = 0
 
 
 def _to_player(row: Iterable[Any]) -> Player:

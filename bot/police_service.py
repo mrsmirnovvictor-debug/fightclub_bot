@@ -142,14 +142,36 @@ async def reward_arrest(
     Награбленное лежит в ней не навсегда: жертва придёт и заберёт своё,
     а до тех пор участок его держит.
     """
+    from bot.bonus_service import note_arrest
+
     moment = now_ts() if now is None else now
     await db.add_to_service_vault(POLICE, ARREST_FEE + loot)
+    await note_arrest(db, POLICE, moment)
     arrests = await db.add_service_arrest(POLICE, week_of(moment))
     logger.info(
         "Задержание бойцом %s: в участок %s, задержаний за неделю %s",
         officer_id, ARREST_FEE + loot, arrests,
     )
     return arrests
+
+
+async def choose_split(db: Database, player: Player, split: str) -> str:
+    """Сказать, как делить бонусный пулл. Говорит один — начальник.
+
+    Настройка лежит у службы, а не у человека: смена начальника её не
+    теряет, и в понедельник деньги уходят людям по последнему слову,
+    кто бы ни сидел в кресле.
+    """
+    from bot.game.bonuses import SPLITS, SPLIT_TITLES
+
+    service = get_service(POLICE)
+    if not service or player.job_code != service.jobs[0]:
+        raise PoliceError("Дележ премии — дело начальника.")
+    if split not in SPLITS:
+        raise PoliceError("Так премию не делят.")
+    await db.set_service_split(POLICE, split)
+    logger.info("Начальник %s выбрал дележ премии: %s", player.user_id, split)
+    return f"Премию делим: {SPLIT_TITLES[split].lower()}."
 
 
 async def collect(
@@ -261,6 +283,7 @@ __all__ = [
     "POLICE",
     "PoliceError",
     "board",
+    "choose_split",
     "collect",
     "file_report",
     "has_warrant",

@@ -190,6 +190,7 @@ from bot.election_service import (
 )
 from bot.police_service import (
     PoliceError,
+    choose_split as police_split,
     collect as police_collect,
     file_report as police_report,
     settle_week as police_settle,
@@ -1550,6 +1551,10 @@ async def api_police_action(request: web.Request) -> web.Response:
             said = await office_stash(db, player, _int_field(data, "item_id"))
         elif action == "unstash":
             said = await office_take(db, player, _int_field(data, "stored"))
+        elif action == "split":
+            # Как делить бонусный пулл — решает начальник, заранее и
+            # один раз: в понедельник деньги уходят людям сами
+            said = await police_split(db, player, str(data.get("split") or ""))
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except (DutyError, PoliceError, WorkError) as error:
@@ -2087,6 +2092,16 @@ async def _opened_clan(db, config, player, clan_id: int) -> dict:
     )
 
 
+async def _clan_bonus(db, player) -> dict:
+    """Бонусный пулл семьи этого бойца. Пусто — он сам по себе."""
+    from bot.game.turf import owner_of_clan
+    from bot.webapp.bonus import build_bonus
+
+    if player.clan is None:
+        return {}
+    return await build_bonus(db, owner_of_clan(player.clan.clan.id), now_ts())
+
+
 async def _licences_of(db, user_id: int) -> dict:
     """Лицензии бойца на эту неделю — для страницы семьи."""
     from bot.game.robbery import LICENCE_PRICE, can_buy, licences_left
@@ -2116,6 +2131,9 @@ async def _mansion_state(
         config.bot_token,
         opened=await _opened_clan(db, config, player, clan_id),
     )
+    # Тот же счёт недели, что и во вкладке семьи: особняк — дом семьи,
+    # и смотреть на общее дело приходят сюда же
+    body["bonus"] = await _clan_bonus(db, player)
     body["said"] = said
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)
@@ -2214,6 +2232,8 @@ async def _clan_state(request: web.Request, player, said: str = "") -> web.Respo
     db = request.app[DB_KEY]
     config = request.app[CONFIG_KEY]
     body = build_clan(player, *await _family(db, player), config.bot_token)
+    # Бонусный пулл семьи: общий счёт недели видит каждый свой
+    body["bonus"] = await _clan_bonus(db, player)
     body["said"] = said
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)

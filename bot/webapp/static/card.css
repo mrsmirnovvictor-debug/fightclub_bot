@@ -1501,6 +1501,49 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-size: 12.5px;
 }
 
+/* ---------- бонусный пулл недели ---------- */
+
+/* Дело недели: заголовок с премией, строка о сделанном и лестница под
+   ними. Взятое дело обведено — по рамке видно, за что уже платят */
+.bonus-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.bonus-row.earned { border-color: var(--accent); }
+.bonus-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.bonus-name { font-weight: 700; font-size: 14px; }
+.bonus-award { font-weight: 700; font-size: 13.5px; color: var(--accent); }
+.bonus-note { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+/* Лестница: четыре ступени в ряд, с переносом на узком экране.
+   Пройденные закрашены, текущая обведена — так видно и где стоишь, и
+   сколько ещё ступеней впереди */
+.bonus-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+.bonus-step {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.bonus-step.done { color: var(--text); background: var(--slot); }
+.bonus-step.now { border-color: var(--accent); color: var(--accent); }
+.bonus-split { margin-top: 10px; }
+.bonus-split .bubbles { margin-top: 6px; }
+
 /* ---------- война за территории ---------- */
 
 /* Точка на карте войны: заголовок с доходом, кто держит и кнопка.

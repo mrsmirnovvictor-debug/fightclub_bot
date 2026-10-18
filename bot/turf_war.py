@@ -59,6 +59,7 @@ from bot.game.turf import (
     action_for,
     get_spot,
 )
+from bot.bonus_service import accrue, note_spot
 from bot.models import Player
 from bot.raid_service import Choice
 from bot.turf_service import (
@@ -610,12 +611,16 @@ class TurfWar:
                 )
             # Отбили точку — выставленные на ней гибнут насовсем
             siege.fallen = await self.db.clear_spot(siege.spot.code)
+            # Часы прежнего хозяина дописываем до смены вывески: с
+            # этой минуты часы пойдут уже новому
+            await accrue(self.db, moment)
             await self.db.take_turf(
                 siege.spot.code,
                 siege.attacker.kind,
                 siege.attacker.key,
                 moment,
             )
+            await note_spot(self.db, siege.attacker, moment)
         else:
             # Отбились — точка остаётся за прежним хозяином, но убитые
             # в этой драке не воскресают: насовсем значит насовсем.

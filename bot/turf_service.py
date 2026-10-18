@@ -181,8 +181,15 @@ async def survey(
     нет, и доход начисляется тем, кто пришёл посмотреть, — в том числе
     чужим владельцам. Это не вольность: считается он по тем же правилам
     и в пользу отсутствующего.
+
+    Тем же взглядом сводится и бонусный журнал: часы владения капают
+    сюда же, и дописать их надо раньше, чем брошенный дом вернётся
+    городу, — иначе последние сутки семьи пропали бы вместе со строкой.
     """
+    from bot.bonus_service import sweep
+
     moment = now_ts() if now is None else now
+    await sweep(db, moment)
     rows = await db.turf_rows()
     # Кто на точках стоит. Точка платит, только пока её кто-то охраняет:
     # взятая и брошенная — это просто дом с вывеской, а не доход
@@ -310,7 +317,13 @@ async def release(db: Database, player: Player, code: str,
             if here.owner.kind == CLAN
             else f"{spot.title} и так не за семьёй."
         )
+    from bot.bonus_service import accrue, note_spot
+
+    # Часы семьи дописываем, пока строка точки ещё на месте: с её
+    # удалением считать будет уже нечего
+    await accrue(db, moment)
     await db.free_turf(code)
+    await note_spot(db, mine, moment)
     logger.info("Боец %s освободил точку %s", player.user_id, code)
     return f"{spot.title} освобождён: дом снова под городской охраной."
 
@@ -415,7 +428,11 @@ async def assault(
 
     won, waves, log = _fight(attackers, defenders, rng)
     if won:
+        from bot.bonus_service import accrue, note_spot
+
+        await accrue(db, moment)
         await db.take_turf(code, mine.kind, mine.key, moment)
+        await note_spot(db, mine, moment)
     logger.info(
         "Штурм точки %s отрядом %s:%s — %s за %s волн",
         code, mine.kind, mine.key, "взяли" if won else "отбили", waves,

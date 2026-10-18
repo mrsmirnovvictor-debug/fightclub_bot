@@ -726,6 +726,12 @@ class RobberyService:
         получить за уже сделанное, незачем. Выдаётся она один раз, и это
         держит сама база: `pay_clan_goal` и отмечает, и проверяет.
         """
+        from bot.bonus_service import note_raid
+
+        # Нападение идёт в два счёта: в старую недельную цель семьи и в
+        # бонусный журнал. Счётчика на двоих не делаем — цель считает
+        # своё, пулл своё, и правила у них разные
+        await note_raid(self.db, clan_id, moment)
         attacks = await self.db.add_clan_attack(clan_id, week_of(moment))
         if not goal_done(attacks):
             return

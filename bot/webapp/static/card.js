@@ -9324,6 +9324,134 @@ function stopExamClock() {
   examTimer = null;
 }
 
+// ---------- бонусный пулл недели ----------
+
+/** Полка бонусов: три дела, лестница у каждого и общий счёт.
+
+    Одна на две стороны: у семьи и у города дела разные, а вид один —
+    и рисовать его дважды значило бы однажды разойтись. Кто что
+    считает, уже решено на сервере, здесь только числа. */
+function bonusBox(bonus) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🏆 " + (bonus.title || "Бонусы недели");
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Неделя кончится " + bonus.ends_text + " — через " + bonus.left_text
+    + ". Набежало " + num(bonus.pool) + " из " + num(bonus.top) + " 💰"
+    + (bonus.to_vault ? " — уйдут в сейф семьи." : " — разойдутся по людям.");
+  box.appendChild(note);
+
+  (bonus.rows || []).forEach((row) => box.appendChild(bonusRow(row)));
+
+  if (bonus.split) box.appendChild(splitBox(bonus.split));
+
+  if (bonus.last) {
+    const last = document.createElement("p");
+    last.className = "thing-note";
+    last.textContent =
+      "За прошлую неделю пришло " + num(bonus.last.amount) + " 💰 ("
+      + bonus.last.paid_text + ").";
+    box.appendChild(last);
+  }
+  return box;
+}
+
+/** Одно дело: сколько сделано, на какой ступени и что дальше. */
+function bonusRow(row) {
+  const box = document.createElement("article");
+  box.className = "bonus-row" + (row.step ? " earned" : "");
+
+  const line = document.createElement("header");
+  line.className = "bonus-head";
+  const name = document.createElement("span");
+  name.className = "bonus-name";
+  name.textContent = row.title;
+  const award = document.createElement("span");
+  award.className = "bonus-award";
+  award.textContent = row.award ? num(row.award) + " 💰" : "—";
+  line.append(name, award);
+  box.appendChild(line);
+
+  const said = document.createElement("p");
+  said.className = "bonus-note";
+  said.textContent =
+    "Сделано " + num(row.done) + " " + row.unit
+    + (row.left
+        ? " · до " + num(row.need) + " ещё " + num(row.left)
+          + " (" + num(row.next_award) + " 💰)"
+        : " · выше ступени нет");
+  box.appendChild(said);
+
+  // Лестница целиком: по ней видно не только где ты, но и куда идти
+  const steps = document.createElement("div");
+  steps.className = "bonus-steps";
+  (row.steps || []).forEach((step, number) => {
+    const one = document.createElement("span");
+    const reached = number < row.step;
+    one.className = "bonus-step"
+      + (reached ? " done" : "")
+      + (number === row.step - 1 ? " now" : "");
+    one.textContent = "от " + num(step.need) + " · " + num(step.award);
+    steps.appendChild(one);
+  });
+  box.appendChild(steps);
+  return box;
+}
+
+/** Как участок делит пулл — строкой под делами. Читают все. */
+function splitBox(split) {
+  const box = document.createElement("div");
+  box.className = "bonus-split";
+  const said = document.createElement("p");
+  said.className = "bonus-note";
+  said.textContent = "Делим: " + split.title.toLowerCase() + ". " + split.note
+    + (split.can_set ? " Поменять — в кабинете." : "");
+  box.appendChild(said);
+  return box;
+}
+
+/** Полка дележа в кабинете: слово начальника и две кнопки.
+
+    Кнопки стоят здесь и только здесь: дележ — настройка, а не дело
+    недели, и решают её заранее, в кабинете, а не на бегу в дежурной
+    части. В сводке от неё остаётся строка о том, как делят сейчас. */
+function splitShelf(bonus) {
+  const split = bonus.split || {};
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Дележ премии";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Набежало за неделю " + num(bonus.pool) + " из " + num(bonus.top)
+    + " 💰 — в понедельник уйдут сотрудникам сами. " + (split.note || "");
+  box.appendChild(note);
+
+  if (split.can_set) {
+    const row = document.createElement("div");
+    row.className = "bubbles";
+    (split.options || []).forEach((one) => {
+      row.appendChild(
+        chip(one.title, one.mine, () => policeAction({
+          action: "split", split: one.code,
+        }))
+      );
+    });
+    box.appendChild(row);
+  }
+  return box;
+}
+
 // ---------- участок: выдача прав ----------
 
 let policeBusy = false;
@@ -9416,6 +9544,11 @@ function renderPolice(data) {
 
   if (policeTab === "office" && office.post) {
     body.appendChild(officeBudgetBox(office));
+    // В кабинете от пулла только дележ: сам счёт недели стоит в
+    // дежурной части, и показывать его дважды незачем
+    if (data.bonus && data.bonus.split) {
+      body.appendChild(splitShelf(data.bonus));
+    }
     body.appendChild(officeRackBox(office));
     body.appendChild(officeStoreBox(office));
     // Гараж у кабинета тот же, что у семьи: три места и те же слова
@@ -9427,6 +9560,9 @@ function renderPolice(data) {
   if ((data.mine || []).length) body.appendChild(myCasesBox(data));
   if (data.badge) {
     body.appendChild(dutyWeekBox(data));
+    // Бонусный пулл участка: зарабатывают его все вместе, и счёт
+    // недели видит каждый сотрудник, а не только кресло
+    if (data.bonus && data.bonus.rows) body.appendChild(bonusBox(data.bonus));
     if ((data.wanted || []).length) body.appendChild(wantedBox(data));
     body.appendChild(dutyBoardBox(data));
   }
@@ -13187,6 +13323,10 @@ function renderEstateTab(estate) {
   body.textContent = "";
   if (!estate.in_clan) return;
   body.appendChild(vaultBox(estate));
+  // Бонусный пулл стоит сразу под сейфом: в него он и придёт, и
+  // смотрят на него там же, где на общие деньги
+  const bonus = (mansionData || {}).bonus;
+  if (bonus && bonus.rows) body.appendChild(bonusBox(bonus));
   body.appendChild(shelfBox(estate));
   body.appendChild(garageBox(estate.garage || {}));
   body.appendChild(robberyBoxFamily(estate.robbery || {}));
@@ -13716,6 +13856,9 @@ function renderClanSheet(data) {
   );
   const list = el("sheet-list");
   if (data.can_admin) list.appendChild(requestsBox(data));
+  // Общий счёт недели — выше состава: он про то, чем семья занята, а
+  // не про то, кто в ней числится
+  if (data.bonus && data.bonus.rows) list.appendChild(bonusBox(data.bonus));
   data.ranks.forEach((rank) => {
     if (!rank.members.length && rank.code !== "capo") return;
     list.appendChild(rankBox(rank, data));

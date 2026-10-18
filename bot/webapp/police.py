@@ -22,7 +22,9 @@ from bot.game.clock import club_moment
 from bot.game.health import format_term, now_ts
 from bot.game.locations import get_location
 from bot.game.police import ARREST_FEE, QUOTA_BONUS, jail_left
+from bot.game.turf import owner_of_service
 from bot.models import Player
+from bot.webapp.bonus import build_bonus
 
 
 def case_row(one: dict, now: int, mine: bool = False) -> dict[str, Any]:
@@ -140,6 +142,13 @@ async def build_police_board(
     body["officers"] = sheet["officers"]
     body["week"] = sheet["week"]
     body["office"] = await office_payload(db, player, sheet)
+    # Бонусный пулл участка видит каждый сотрудник: зарабатывают его
+    # вместе. Менять дележ может только начальник — это его настройка,
+    # и она лежит у службы, а не у человека
+    body["bonus"] = await build_bonus(
+        db, owner_of_service("police"), moment,
+        can_split=player.job_code == CHIEF_JOB,
+    )
     return body
 
 

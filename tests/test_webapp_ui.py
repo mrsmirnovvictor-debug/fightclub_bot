@@ -10491,13 +10491,14 @@ async def test_the_chiefs_office_holds_the_budget_the_rack_and_the_garage(
         await page.locator("#police-tabs .chip", has_text="Кабинет").click()
         heads = await page.locator("#police-body .shelf-head").all_inner_texts()
         assert heads[0] == "Бюджет"
-        assert heads[1] == "Форма начальника · 1 из 13"
-        assert heads[2] == "Склад кабинета · 1 из 15"
-        assert heads[3].startswith("Служебный гараж · 0 из 3")
+        assert heads[1] == "Дележ премии"
+        assert heads[2] == "Форма начальника · 1 из 13"
+        assert heads[3] == "Склад кабинета · 1 из 15"
+        assert heads[4].startswith("Служебный гараж · 0 из 3")
 
         # Склад — те же полки, что в особняке: вещь на полке и пустые
         # клетки под остальные
-        store = page.locator("#police-body .shelf").nth(2)
+        store = page.locator("#police-body .shelf").nth(3)
         assert await store.locator(".shelf-slot").count() == 15
         assert await store.locator(".shelf-slot.free").count() == 14
 
@@ -10522,6 +10523,62 @@ async def test_the_chiefs_office_holds_the_budget_the_rack_and_the_garage(
         browser, page = await open_station(pw, server, patrol, plain)
         chips = await page.locator("#police-tabs .chip").all_inner_texts()
         assert chips == ["🚩 Территории"]
+        await browser.close()
+
+
+async def test_the_station_shows_the_weekly_pool_to_every_officer(server, db):
+    """Полка бонусов: три дела, лестница и дележ пулла.
+
+    Счёт недели видит каждый сотрудник — зарабатывают его вместе, — а
+    кнопки дележа стоят только у начальника: это его слово.
+    """
+    from bot.bonus_service import note_arrest
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from tests.test_duty import chief, patrolman
+
+    boss = await chief(db)
+    for _ in range(7):
+        await note_arrest(db, "police", now_ts())
+
+    sheet = build_police(boss)
+    sheet.update(await build_police_board(db, boss, now_ts()))
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, boss, sheet)
+
+        box = page.locator("#police-body .shelf", has_text="Бонусы недели")
+        said = await box.inner_text()
+        assert "Задержания" in said and "Освобождения" in said
+        assert "Охрана" in said
+        assert "Сделано 7 задержаний" in said
+        # Вторая ступень взята, третья названа следующей
+        rows = box.locator(".bonus-row")
+        arrests = rows.first
+        assert "500" in await arrests.locator(".bonus-award").inner_text()
+        assert await arrests.locator(".bonus-step").count() == 4
+        assert await arrests.locator(".bonus-step.now").count() == 1
+        assert "до 10 ещё 3" in await arrests.inner_text()
+        # Как делят — строкой, а кнопки дележа стоят в кабинете
+        assert "Делим: поровну" in said
+        assert await box.locator(".chip").count() == 0
+
+        # Кабинет: та же настройка, но уже кнопками
+        await page.locator("#police-tabs .chip", has_text="Кабинет").click()
+        shelf = page.locator("#police-body .shelf", has_text="Дележ премии")
+        chips = await shelf.locator(".chip").all_inner_texts()
+        assert chips == ["Поровну", "По должностям"]
+        assert "уйдут сотрудникам сами" in await shelf.inner_text()
+        await browser.close()
+
+    # Патрульный читает тот же счёт, но кнопок дележа у него нет
+    plain = await patrolman(db)
+    body = build_police(plain)
+    body.update(await build_police_board(db, plain, now_ts()))
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, plain, body)
+        box = page.locator("#police-body .shelf", has_text="Бонусы недели")
+        assert "Сделано 7 задержаний" in await box.inner_text()
+        assert await box.locator(".bonus-split .chip").count() == 0
         await browser.close()
 
 
@@ -10559,8 +10616,9 @@ async def test_the_duty_board_belongs_to_the_badge(server, db):
         browser, page = await open_station(pw, server, officer, sheet)
 
         heads = await page.locator("#police-body .shelf-head").all_inner_texts()
-        assert heads[:4] == [
-            "Дежурная часть", "В розыске", "Нападения", "Служба в полиции",
+        assert heads[:5] == [
+            "Дежурная часть", "🏆 Бонусы недели", "В розыске", "Нападения",
+            "Служба в полиции",
         ]
 
         # В копилке то, что положили, а норма считается от нападений
