@@ -50,7 +50,6 @@ from bot.game.turf import (
     Spot,
     abandoned,
     action_for,
-    calm_left,
     get_spot,
     final_payout,
     owner_of_clan,
@@ -80,7 +79,6 @@ class Holding:
     spot: Spot
     owner: Owner
     taken_at: int = 0
-    fought_at: int = 0
     # Сколько доход накапал владельцу и не было начислено
     due: int = 0
     # Стоит ли на точке хоть один нанятый. Нет — точка не платит
@@ -219,7 +217,6 @@ async def survey(
                 spot=spot,
                 owner=row.owner,
                 taken_at=row.taken_at,
-                fought_at=row.fought_at,
                 due=due,
                 guarded=guarded,
             )
@@ -403,13 +400,6 @@ async def assault(
     here = next(one for one in rows if one.spot.code == code)
     if here.owner.same(mine):
         raise TurfError(f"{spot.title} и так за вами.")
-    left = calm_left(here.fought_at, moment)
-    if left:
-        hours = max(1, left // 3600)
-        raise TurfError(
-            f"За {spot.genitive} недавно дрались — точка отдыхает ещё "
-            f"{hours} ч."
-        )
     held = [one for one in rows if one.owner.same(mine)]
     if len(held) >= MAX_SPOTS_PER_OWNER:
         raise TurfError(
@@ -425,11 +415,7 @@ async def assault(
 
     won, waves, log = _fight(attackers, defenders, rng)
     if won:
-        await db.take_turf(
-            code, mine.kind, mine.key, moment, fought=bool(waves)
-        )
-    else:
-        await db.hold_turf(code, moment)
+        await db.take_turf(code, mine.kind, mine.key, moment)
     logger.info(
         "Штурм точки %s отрядом %s:%s — %s за %s волн",
         code, mine.kind, mine.key, "взяли" if won else "отбили", waves,

@@ -11102,10 +11102,6 @@ function spotCard(one, data) {
     box.appendChild(spotState("За точку уже дерутся."));
     return box;
   }
-  if (one.calm) {
-    box.appendChild(spotState("Точка отдыхает после боя: " + one.calm_text + "."));
-    return box;
-  }
   if (data.side && data.side.nobody) {
     box.appendChild(spotState("Воевать за территории тебе пока не за кого."));
     return box;
@@ -11182,10 +11178,6 @@ function spotPanel(spot) {
     // Деньги идут за то, что точку держат, а не за флажок на карте
     ["Платит", spot.guarded ? "да" : "нет — на ней никого"],
   ];
-  // Отдых — главная причина, по которой тут нечего нажать, и строкой
-  // он честнее погасшей кнопки: на карте его не показывают нарочно,
-  // но на экране точки о нём спрашивают именно здесь
-  if (spot.calm) rows.push(["Отдыхает", "ещё " + spot.calm_text]);
   box.appendChild(paperRows(rows));
 
   (spot.posted || []).forEach((one) => box.appendChild(postedRow(one)));
@@ -11241,12 +11233,9 @@ function spotDeed(spot) {
 /** Почему кнопку дела нажать нельзя. Одна причина — настоящая.
 
     Гасить кнопку и объяснять её не тем — хуже, чем спрятать: боец
-    уходит с готовым, но ложным ответом. Порядок тот же, что у сервера:
-    отдых, чужая драка, свой сбор. */
+    уходит с готовым, но ложным ответом. Порядок тот же, что у
+    сервера: чужая драка, свой сбор. */
 function spotWhyNot(spot) {
-  if (spot.calm) {
-    return "Точка отдыхает после боя: " + spot.calm_text + ".";
-  }
   if (spot.busy) return "За точку уже дерутся. Подожди.";
   if (turfData && turfData.muster) return "Ты уже собираешь отряд.";
   return "Сюда с отрядом не ходят.";

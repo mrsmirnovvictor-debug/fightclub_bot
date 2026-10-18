@@ -25,13 +25,11 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Stats
 from bot.game.turf import (
-    CALM_SECONDS,
     DAY_SECONDS,
     MAX_SPOTS_PER_OWNER,
     SPOTS,
     TOTAL_SPOTS,
     Owner,
-    calm_left,
     days_held,
     get_spot,
     owner_of_clan,
@@ -141,8 +139,8 @@ async def seize(db: Database, don: Player, squad: list[int], code: str) -> int:
         )
         if result.won:
             return moment
-        # Точка отдыхает — следующий заход за её сроком
-        moment += CALM_SECONDS + 60
+        # Отдыха у точки нет: следующий заход — хоть через минуту
+        moment += 60
     raise AssertionError(f"за сорок заходов не взяли {code}")
 
 
@@ -193,10 +191,18 @@ def test_the_owner_is_a_family_or_a_service():
     assert not clan.same(service) and clan.same(owner_of_clan(7))
 
 
-def test_the_calm_holds_a_full_day():
-    assert calm_left(NOW, NOW) == CALM_SECONDS
-    assert calm_left(NOW, NOW + CALM_SECONDS) == 0
-    assert calm_left(0, NOW) == 0, "боя не было — отдыхать не от чего"
+def test_the_spot_keeps_no_hour_of_rest():
+    """Отдыха у точки нет, и часа боя она не помнит.
+
+    Правило держится на том, что хранить нечего: пока в строке точки
+    не завёлся час драки, никакая дверь не сможет сослаться на него.
+    """
+    from bot.database import TurfRow
+    from bot.game import turf as rules
+
+    assert not hasattr(TurfRow(code="bar", owner=Owner()), "fought_at")
+    assert not hasattr(rules, "calm_left")
+    assert not hasattr(rules, "CALM_SECONDS")
 
 
 # ---------- кто воюет ----------
@@ -462,9 +468,6 @@ async def test_the_failed_assault_buries_the_dead_and_leaves_the_rest(db):
     assert (await db.turf_rows())["bar"].owner == owner_of_clan(clan.id)
     assert "Выставленных полегло: 1" in " ".join(siege.summary)
 
-    # И нового боя точка не ждёт: отбившийся гарнизон готов сразу
-    assert calm_left((await db.turf_rows())["bar"].fought_at, NOW) == 0
-
 
 async def test_the_city_reinforces_as_many_spots_as_it_likes(db):
     """Потолок точек — забота семей: город патрулирует хоть весь город."""
@@ -607,11 +610,11 @@ async def test_the_board_offers_freeing_instead_of_a_fight(db, client):
     assert row["action"] == "guard", "теперь туда ставят патрульного"
 
 
-async def test_the_rest_comes_from_a_fight_and_not_from_a_signboard(db):
-    """Отдых даёт драка. Патрульный, вошедший в ничей дом, — нет.
+async def test_the_patrolled_house_is_not_untouchable(db):
+    """Патрульный берёт ничей дом — и семья идёт за ним в ту же минуту.
 
-    Иначе город запирал бы точку на сутки одним вошедшим человеком, и
-    «точка отдыхает после боя» стояло бы там, где боя не было.
+    Отдыха у точек нет вовсе, и вошедший человек не запирает дом на
+    сутки: он только меняет, с кем придётся драться.
     """
     from bot.hire_service import hire, post
     from bot.turf_war import TurfWar
@@ -624,13 +627,8 @@ async def test_the_rest_comes_from_a_fight_and_not_from_a_signboard(db):
     await hire(db, await db.get_player(98), "patrol_5", now=NOW)
     mine = (await db.hirelings_of(98))[0]
     await post(db, await db.get_player(98), int(mine["id"]), "market", now=NOW)
+    assert (await db.turf_rows())["market"].owner == owner_of_service("police")
 
-    row = (await db.turf_rows())["market"]
-    assert row.owner == owner_of_service("police"), "дом стал городским"
-    assert row.fought_at == 0, "драки не было — и отдыхать не от чего"
-    assert calm_left(row.fought_at, NOW) == 0
-
-    # И семья идёт на него в ту же минуту: ждать ей нечего
     rival, rivals, theirs = await family(db, first=20, name="Псы",
                                          sign="silver_wolves")
     await stand(db, rivals, "market")
@@ -639,38 +637,9 @@ async def test_the_rest_comes_from_a_fight_and_not_from_a_signboard(db):
         muster = await war.open_muster(
             await db.get_player(rival.user_id), "market", now=NOW
         )
-        assert muster.spot.code == "market"
+        assert muster.spot.code == "market", "ждать семье нечего"
     finally:
         await war.close()
-
-
-async def test_an_empty_house_taken_without_a_fight_does_not_rest(db):
-    """Дом, взятый без единой волны, суток покоя не даёт.
-
-    Семья бросила точку, другая вошла и забрала её — драки не было, и
-    отдых был бы наградой за пустую вывеску.
-    """
-    from bot.turf_war import TurfWar
-
-    don, _, clan = await family(db)
-    rival, rivals, theirs = await family(db, first=20, name="Псы",
-                                         sign="silver_wolves")
-    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
-    await stand(db, rivals, "bar")
-
-    war = TurfWar(db)
-    try:
-        muster = await war.open_muster(
-            await db.get_player(rival.user_id), "bar", now=NOW
-        )
-        siege = await war.march(muster.id, rival.user_id, now=NOW)
-    finally:
-        await war.close()
-
-    assert siege.won and siege.wave == 0
-    row = (await db.turf_rows())["bar"]
-    assert row.owner == owner_of_clan(theirs.id)
-    assert calm_left(row.fought_at, NOW) == 0, "драки не было — отдыха нет"
 
 
 # ---------- штурм ----------
@@ -692,25 +661,23 @@ async def test_the_won_spot_changes_hands_and_starts_paying(db):
     assert await vault_of(db, mine) == get_spot("bar").income * 3
 
 
-async def test_the_spot_rests_after_the_battle(db):
-    """За точку подрались — сутки её не трогают, кто бы ни победил.
+async def test_the_spot_changes_hands_in_the_same_minute(db):
+    """Взяли точку — отбивать её можно сразу, отдыха у неё нет.
 
-    Проверяем с чужой стороны: своей точке отвечают «и так за вами», а
-    отдых придуман ровно для того, чтобы её не отбивали в ту же минуту.
+    В этом и смысл войны: дом ходит из рук в руки весь вечер. Цена
+    попытки — проигранная драка, а не сутки ожидания.
     """
-    don, squad, _ = await family(db)
-    await assault(db, don, "bar", squad, now=NOW, rng=random.Random(0))
+    don, squad, clan = await family(db)
+    taken = await seize(db, don, squad, "bar")
+    assert (await db.turf_rows())["bar"].owner == owner_of_clan(clan.id)
 
-    rival, foes, _ = await family(
+    rival, foes, theirs = await family(
         db, first=20, name="Бешеные псы", sign="silver_wolves"
     )
-    with pytest.raises(TurfError, match="отдыхает"):
-        await assault(db, rival, "bar", foes, now=NOW + 60, rng=random.Random(1))
-
-    # А через сутки — пожалуйста
-    await assault(
-        db, rival, "bar", foes, now=NOW + CALM_SECONDS, rng=random.Random(2)
-    )
+    # Та же минута: ни одна дверь не говорит про отдых
+    back = await seize(db, rival, foes, "bar")
+    assert back - taken < DAY_SECONDS, "ждать сутки не пришлось"
+    assert (await db.turf_rows())["bar"].owner == owner_of_clan(theirs.id)
 
 
 async def test_your_own_spot_is_not_stormed(db):
@@ -719,7 +686,7 @@ async def test_your_own_spot_is_not_stormed(db):
 
     with pytest.raises(TurfError, match="и так за вами"):
         await assault(
-            db, don, "bar", squad, now=taken + CALM_SECONDS, rng=random.Random(3)
+            db, don, "bar", squad, now=taken + 60, rng=random.Random(3)
         )
 
 
@@ -735,7 +702,7 @@ async def test_four_spots_are_the_ceiling(db):
     moment = NOW
     for number, code in enumerate(("bar", "weapon_shop", "taxi_depot",
                                    "pawnshop")):
-        moment = max(moment, await seize(db, don, squad, code)) + CALM_SECONDS
+        moment = max(moment, await seize(db, don, squad, code)) + 60
         # По человеку от каждого: от одного бойца на точке стоит один
         keeper = squad[number]
         one = await db.get_player(keeper)
@@ -987,17 +954,21 @@ async def test_the_city_map_carries_the_marks_and_the_band(db, client):
 async def test_the_map_band_keeps_quiet_when_there_is_nothing_to_press(
     db, client
 ):
-    """Плашки без кнопки не бывает: отдыхающая точка молчит.
+    """Плашки без кнопки не бывает: точка, за которую уже дерутся, молчит.
 
-    «Точка отдыхает после боя: 14 ч» — ответ на вопрос, которого не
+    «За точку уже дерутся» — ответ на вопрос, которого у двери не
     задавали: нажать всё равно нечего, а место на карте плашка
     занимает и дверь закрывает.
     """
     don, squad, clan = await family(db)
-    await stand(db, squad, "bar")
-    # По бару только что отгремел бой — сутки его не трогают
+    rival, rivals, _ = await family(
+        db, first=20, name="Бешеные псы", sign="silver_wolves"
+    )
     await db.take_turf("bar", "service", "police", NOW)
-    await db.hold_turf("bar", NOW)
+    await stand(db, squad + rivals, "bar")
+    # Чужая семья уже собралась на бар — второго отряда он не ждёт
+    assert (await post(client, rival.user_id, action="call",
+                       spot="bar")).status == 200
 
     city = await (await client.get("/api/map", headers=headers(don.user_id))).json()
     assert city["turf"]["here"] is None
@@ -1169,7 +1140,7 @@ async def test_the_ceiling_holds_in_the_live_panel_too(db, client):
     don, squad, clan = await family(db)
     moment = NOW
     for code in ("bar", "casino", "market", "jewelry_store"):
-        moment = max(moment, await seize(db, don, squad, code)) + CALM_SECONDS
+        moment = max(moment, await seize(db, don, squad, code)) + 60
     await stand(db, squad, "car_dealership")
 
     answer = await post(client, don.user_id, action="call", spot="car_dealership")

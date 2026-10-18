@@ -23,13 +23,12 @@ from __future__ import annotations
 from typing import Any
 
 from bot.game.clock import club_moment
-from bot.game.health import format_term, now_ts
+from bot.game.health import now_ts
 from bot.game.classes import BLOCK_WIDTH
 from bot.game.hirelings import MAX_POSTED
 from bot.game.turf import (
     ABANDON_HOURS,
     ARREST,
-    CALM_HOURS,
     FREE,
     GUARD,
     MAX_GARRISON,
@@ -40,7 +39,6 @@ from bot.game.turf import (
     TOTAL_SPOTS,
     Owner,
     action_for,
-    calm_left,
 )
 from bot.turf_service import MAX_WAVES
 from bot.models import Player
@@ -110,7 +108,6 @@ async def spot_row(
 
     spot = holding.spot
     owner = holding.owner
-    rest = calm_left(holding.fought_at, moment)
     ours = owner.same(mine) and not mine.nobody
     standing = spot.code == here
     # Пустую семейную точку город снимает без боя: драться там не с кем
@@ -142,19 +139,13 @@ async def spot_row(
         # точку берут ногами
         "here": standing,
         "taken_at": club_moment(holding.taken_at) if holding.taken_at else "",
-        # Отдых после боя: точку не отбивают в ту же минуту
-        "calm": rest,
-        # Отдых — сутки, и `format_duration` назвал бы их «1440 мин»
-        "calm_text": format_term(rest) if rest else "",
         # Что эта сторона делает на этой точке: берёт боем, выводит с
         # неё мафию или ставит охрану. Решает правило, а не кнопка
         "action": deed,
         "action_title": ACTION_TITLES.get(deed, ""),
-        "can_storm": bool(
-            standing and deed in (SEIZE, ARREST) and not rest
-        ),
-        # Освобождение идёт без боя, и отдыха точки оно не ждёт: драки
-        # не было — ждать нечего
+        # Отдыха у точки нет: взяли её минуту назад — можно идти и
+        # брать назад. Нужно только стоять у дома и иметь там дело
+        "can_storm": bool(standing and deed in (SEIZE, ARREST)),
         "can_free": bool(standing and deed == FREE),
     }
 
@@ -205,7 +196,6 @@ async def build_turf(
         "vault": await vault_of(db, mine),
         "ceiling": MAX_SPOTS_PER_OWNER,
         "squad": MAX_GARRISON,
-        "calm_hours": CALM_HOURS,
         "abandon_hours": ABANDON_HOURS,
         "said": said,
         # Нанятые: что на руках, что предлагают и кого можно выставить
@@ -232,7 +222,6 @@ def _shut_board(here: str, said: str) -> dict[str, Any]:
         "vault": 0,
         "ceiling": MAX_SPOTS_PER_OWNER,
         "squad": MAX_GARRISON,
-        "calm_hours": CALM_HOURS,
         "abandon_hours": ABANDON_HOURS,
         "said": said,
         "hire": {"side": "", "cap": 0, "hired": 0, "left": 0, "mine": [],
@@ -305,8 +294,6 @@ async def _spot_panel(db, row: dict[str, Any] | None) -> dict[str, Any] | None:
         "action_title": row["action_title"],
         "can_storm": row["can_storm"],
         "can_free": row["can_free"],
-        "calm": row["calm"],
-        "calm_text": row["calm_text"],
         # За точку уже дерутся — второй отряд на неё не собирают.
         # Ставит это `build_war`: кто дерётся, знает война, а не база
         "busy": False,
@@ -546,9 +533,9 @@ def map_marks(body: dict[str, Any]) -> dict[str, Any]:
     }
     row = next((one for one in body["spots"] if one["here"]), None)
     band = _band(body, row) if row else None
-    # Плашки без кнопки не бывает. «Точка отдыхает после боя: 14 ч» —
-    # это ответ на вопрос, которого не задавали: нажимать всё равно
-    # нечего, а место на карте она занимает и дверь закрывает
+    # Плашки без кнопки не бывает: нажимать нечего, а место на карте
+    # она занимает и дверь закрывает. «Держит такой-то» — ответ на
+    # вопрос, которого у двери не задавали
     return {"spots": spots, "here": band if band and band["button"] else None}
 
 
@@ -604,8 +591,6 @@ def _why_not(body: dict[str, Any], row: dict[str, Any]) -> str:
         return "Точка и так ваша."
     if row.get("busy"):
         return "За точку уже дерутся."
-    if row["calm"]:
-        return f"Точка отдыхает после боя: {row['calm_text']}."
     if body["side"]["nobody"]:
         return "Воевать за территории тебе пока не за кого."
     return f"Держит: {row['owner']['title']}."

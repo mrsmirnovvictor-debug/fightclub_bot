@@ -280,8 +280,6 @@ async def test_the_lost_spot_loses_its_hired_for_good(db):
     moment = now_ts()
     don, squad, clan = await family(db)
     await db.take_turf(BAR, "clan", str(clan.id), moment - 14 * 3600)
-    # Драка была давно: иначе точка отдыхала бы и штурма не вышло
-    await db.hold_turf(BAR, moment - 2 * DAY_SECONDS)
     await stand(db, [don.user_id], BAR)
     boss = await rich(db, don.user_id)
     await hire(db, boss, "merc_5", now=moment)

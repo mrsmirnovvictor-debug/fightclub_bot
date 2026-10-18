@@ -57,7 +57,6 @@ from bot.game.turf import (
     Owner,
     Spot,
     action_for,
-    calm_left,
     get_spot,
 )
 from bot.models import Player
@@ -287,12 +286,6 @@ class TurfWar:
                 f"{spot.title} и так за вами." if here.owner.same(mine)
                 else f"{spot.title} под городской охраной: туда ставят "
                      "патрульного, а не ведут отряд."
-            )
-        rest = calm_left(here.fought_at, moment)
-        if rest:
-            raise TurfError(
-                f"За {spot.genitive} недавно дрались — точка отдыхает ещё "
-                f"{max(1, rest // 3600)} ч."
             )
         # Потолок в четыре точки считается здесь, а не на развязке:
         # собрать отряд, дойти и услышать «мест нет» — издевательство.
@@ -617,14 +610,11 @@ class TurfWar:
                 )
             # Отбили точку — выставленные на ней гибнут насовсем
             siege.fallen = await self.db.clear_spot(siege.spot.code)
-            # Волн ноль — драки не было: дом стоял пустой, и отдыхать
-            # ему не от чего. Сутки покоя даёт драка, а не вывеска
             await self.db.take_turf(
                 siege.spot.code,
                 siege.attacker.kind,
                 siege.attacker.key,
                 moment,
-                fought=bool(siege.wave),
             )
         else:
             # Отбились — точка остаётся за прежним хозяином, но убитые

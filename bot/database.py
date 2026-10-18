@@ -641,7 +641,6 @@ CREATE TABLE IF NOT EXISTS turf (
     owner_key  TEXT    NOT NULL DEFAULT '',
     taken_at   INTEGER NOT NULL DEFAULT 0,
     paid_until INTEGER NOT NULL DEFAULT 0,
-    fought_at  INTEGER NOT NULL DEFAULT 0,
     -- С какого часа на точке никого не стоит. Ноль — охрана на месте.
     -- По этому часу и считается, сколько семья держит дом впустую:
     -- сутки без человека, и дом возвращается городу
@@ -992,21 +991,31 @@ class Database:
         await self._migrate_card_log()
 
     async def _migrate_turf(self) -> None:
-        """Дописать час опустения в уже заведённые точки.
+        """Привести живые точки к нынешней форме.
 
-        Точки появились раньше правила «сутки без охраны — и дом снова
-        городской», и на живой базе `CREATE TABLE IF NOT EXISTS` колонку
-        не добавит: таблица уже есть.
+        Две правки, и обе про колонки: час опустения точки появился
+        позже самих точек, а час боя больше не нужен — отдыха у точки
+        нет. На живой базе `CREATE TABLE IF NOT EXISTS` ни того, ни
+        другого не сделает: таблица уже есть.
         """
         async with self.conn.execute("PRAGMA table_info(turf)") as cursor:
             columns = {row["name"] for row in await cursor.fetchall()}
-        if not columns or "empty_since" in columns:
+        if not columns:
             return
-        await self.conn.execute(
-            "ALTER TABLE turf ADD COLUMN empty_since INTEGER NOT NULL DEFAULT 0"
-        )
-        await self.conn.commit()
-        logger.info("База обновлена: добавлена колонка turf.empty_since")
+        if "empty_since" not in columns:
+            await self.conn.execute(
+                "ALTER TABLE turf ADD COLUMN empty_since "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+            await self.conn.commit()
+            logger.info("База обновлена: добавлена колонка turf.empty_since")
+        if "fought_at" in columns:
+            # Отдых точки отменён: дом ходит из рук в руки сколько
+            # угодно. Колонку убираем, а не оставляем лежать с мёртвыми
+            # часами — по ней читали бы правило, которого нет
+            await self.conn.execute("ALTER TABLE turf DROP COLUMN fought_at")
+            await self.conn.commit()
+            logger.info("База обновлена: убрана колонка turf.fought_at")
 
     async def _migrate_card_log(self) -> None:
         """Дописать комментарий к уже записанным операциям по карте.
@@ -3091,7 +3100,6 @@ class Database:
             owner=Owner(str(row["owner_kind"]), str(row["owner_key"])),
             taken_at=int(row["taken_at"]),
             paid_until=int(row["paid_until"]),
-            fought_at=int(row["fought_at"]),
             # Колонку дописали позже: на старой базе её может ещё не быть
             empty_since=int(row["empty_since"]) if "empty_since" in keys else 0,
         )
@@ -3115,38 +3123,29 @@ class Database:
         return self._turf(row) if row else None
 
     async def take_turf(
-        self, code: str, kind: str, key: str, now: int, fought: bool = True
+        self, code: str, kind: str, key: str, now: int
     ) -> None:
-        """Записать нового владельца точки и отправить её отдыхать.
+        """Записать нового владельца точки.
 
-        Отдыхает она от драки, а не от смены вывески: `fought` — была
-        ли драка. Патрульный, вошедший в ничей дом, и пустой дом,
-        взятый без единой волны, никого не задерживают: суток покоя
-        после них нет, потому что отбивать такое не у кого.
+        Отдыха после боя у точки нет: взяли её минуту назад — можно
+        идти и брать назад. Поэтому запись одна, про владельца, и
+        никаких часов неприкосновенности в ней не хранится.
         """
         await self.conn.execute(
             """
             INSERT INTO turf (code, owner_kind, owner_key, taken_at,
-                              paid_until, fought_at)
-            VALUES (?,?,?,?,?,?)
+                              paid_until)
+            VALUES (?,?,?,?,?)
             ON CONFLICT(code) DO UPDATE SET
                 owner_kind = excluded.owner_kind,
                 owner_key  = excluded.owner_key,
                 taken_at   = excluded.taken_at,
-                paid_until = excluded.paid_until,
-                fought_at  = excluded.fought_at
+                paid_until = excluded.paid_until
             """,
-            (code, kind, key, now, now, now if fought else 0),
+            (code, kind, key, now, now),
         )
         await self.conn.commit()
         logger.info("Точка %s теперь за %s:%s", code, kind, key)
-
-    async def hold_turf(self, code: str, now: int) -> None:
-        """Отметить, что за точку дрались, а владелец остался прежним."""
-        await self.conn.execute(
-            "UPDATE turf SET fought_at = ? WHERE code = ?", (now, code)
-        )
-        await self.conn.commit()
 
     async def pay_turf(self, code: str, paid_until: int) -> None:
         """Передвинуть час, до которого доход уже начислен."""
@@ -5148,13 +5147,12 @@ class Database:
 
 @dataclass(frozen=True)
 class TurfRow:
-    """Строка таблицы точек: чья она, с какого часа и когда дрались."""
+    """Строка таблицы точек: чья она и с какого часа."""
 
     code: str
     owner: Owner
     taken_at: int = 0
     paid_until: int = 0
-    fought_at: int = 0
     # С какого часа точка стоит без охраны. Ноль — на ней кто-то есть
     empty_since: int = 0
 
