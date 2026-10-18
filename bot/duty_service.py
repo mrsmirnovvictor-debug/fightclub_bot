@@ -29,6 +29,7 @@ import logging
 from bot.content.items import CATALOGUE
 from bot.database import Database
 from bot.game.gear import Item, Slot
+from bot.game.health import now_ts
 from bot.models import Player
 
 logger = logging.getLogger(__name__)
@@ -134,13 +135,110 @@ def rack_rows(player: Player, job_code: str) -> list[dict]:
     return rows
 
 
+# ---------- склад кабинета ----------
+#
+# Полки у службы такие же, как у семьи: вещь переезжает на склад
+# целиком, со своим износом и модификацией, и так же возвращается. Кто
+# кладёт и кто берёт — решает должность: кабинет один на город, и
+# хозяин у него один.
+
+RACK_SLOTS = 15
+
+
+async def stash(
+    db: Database, player: Player, item_id: int, now: int | None = None
+) -> str:
+    """Положить вещь на склад кабинета."""
+    moment = now_ts() if now is None else now
+    service = office_of(player)
+    if not service:
+        raise DutyError("Склад кабинета — дело должности, а не службы.")
+    owned = player.find_gear(item_id)
+    if owned is None:
+        raise DutyError("Такой вещи у тебя нет.")
+    if owned.is_equipped:
+        raise DutyError("Сперва сними вещь — надетое на полку не кладут.")
+    if owned.item.is_duty:
+        raise DutyError(
+            f"«{owned.title}» и так числится за кабинетом: её сдают, а не "
+            "кладут на полку."
+        )
+    if not await db.stash_service_gear(
+        item_id, player.user_id, service, RACK_SLOTS, moment
+    ):
+        raise DutyError(f"На складе {RACK_SLOTS} ячеек, и все заняты.")
+    player.drop_gear(owned)
+    logger.info(
+        "Боец %s положил вещь %s на склад службы %s",
+        player.user_id, item_id, service,
+    )
+    return f"«{owned.item.title}» лежит на складе кабинета."
+
+
+async def take_stored(
+    db: Database, player: Player, stored_id: int
+) -> str:
+    """Забрать вещь со склада кабинета в рюкзак."""
+    service = office_of(player)
+    if not service:
+        raise DutyError("Склад кабинета — дело должности, а не службы.")
+    code = await db.take_service_item(stored_id, service, player.user_id)
+    if not code:
+        raise DutyError("Этой вещи на складе уже нет.")
+    player.gear = await db.list_gear(player.user_id)
+    item = CATALOGUE.get(code)
+    logger.info(
+        "Боец %s забрал вещь %s со склада службы %s",
+        player.user_id, code, service,
+    )
+    return f"«{item.title if item else code}» у тебя в рюкзаке."
+
+
+def office_of(player: Player) -> str:
+    """Чей кабинет у этого бойца. Пусто — кабинета у него нет.
+
+    Кабинет открывает должность, а не значок: в дежурную часть ходят
+    все сотрудники, за склад и казну отвечает один.
+    """
+    from bot.game.services import service_of_job
+
+    if not kit_for(player.job_code):
+        return ""
+    service = service_of_job(player.job_code)
+    return service.code if service else ""
+
+
+async def store_rows(db: Database, player: Player) -> list[dict]:
+    """Что лежит на складе кабинета — строками для экрана."""
+    from bot.webapp.clans import stored_row
+
+    service = office_of(player)
+    if not service:
+        return []
+    moment = now_ts()
+    rows = [
+        row
+        for row in (
+            stored_row(player, one, moment)
+            for one in await db.service_items(service)
+        )
+        if row
+    ]
+    return rows
+
+
 __all__ = [
     "DutyError",
+    "RACK_SLOTS",
     "collect_the_stray",
     "duty_items",
     "hand_back",
     "kit_for",
+    "office_of",
     "rack_rows",
+    "stash",
+    "store_rows",
     "strangers",
     "take",
+    "take_stored",
 ]

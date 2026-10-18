@@ -1834,8 +1834,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    только кнопка */
 .turf-band {
   position: absolute;
-  right: 12px;
-  bottom: calc(136px + env(safe-area-inset-bottom));
+  right: 6px;
+  bottom: calc(84px + env(safe-area-inset-bottom));
   display: flex;
   align-items: center;
   gap: 6px;

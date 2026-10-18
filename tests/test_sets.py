@@ -59,15 +59,20 @@ def kit_of(count: int) -> Equipment:
         (0, 100), (1, 100), (3, 100),  # комплекта нет — оружие как написано
         (4, 120), (5, 120), (6, 120),
         (7, 135), (8, 135),
-        (9, 150), (11, 150), (12, 150),
+        (9, 150), (10, 150), (11, 150),
+        (12, 165), (13, 165),
     ],
 )
 def test_the_ladder_turns_items_into_percents(items, percent):
-    """Четыре вещи — 120%, семь — 135%, девять и дальше — 150%.
+    """Четыре вещи — 120%, семь — 135%, девять — 150%, двенадцать — 165%.
 
-    Числа владельца, и они же стоят в карточке: ступеней три, между ними
-    оружие не растёт вовсе — до четвёртой вещи оно работает как
+    Числа владельца, и они же стоят в карточке: ступеней четыре, между
+    ними оружие не растёт вовсе — до четвёртой вещи оно работает как
     написано, и это нарочно. Набор начинается там, где его видно.
+
+    Верхняя ступень — про комплект целиком: клеток на бойце тринадцать,
+    и двенадцать вещей одного набора это он весь, с точностью до одного
+    кольца.
     """
     assert power_percent(set_power(items)) == percent
 
@@ -79,14 +84,16 @@ def test_the_ladder_tells_what_is_left_to_the_next_step():
     assert next_step(4) == (7, 1.35)
     assert next_step(6) == (7, 1.35)
     assert next_step(7) == (9, 1.50)
-    assert next_step(9) is None  # выше некуда
-    assert next_step(12) is None
+    assert next_step(9) == (12, 1.65)
+    assert next_step(11) == (12, 1.65)
+    assert next_step(12) is None  # выше некуда: комплект собран
+    assert next_step(13) is None
 
 
 def test_the_steps_only_grow():
     """Лестница идёт вверх и начинается с единицы: вещь не ослабляет оружие."""
     steps = sorted(SET_POWER_LADDER)
-    assert [need for need, _ in steps] == [4, 7, 9]
+    assert [need for need, _ in steps] == [4, 7, 9, 12]
     powers = [power for _, power in steps]
     assert powers == sorted(powers) and min(powers) > 1.0
 
@@ -319,7 +326,8 @@ def test_the_power_lands_in_the_card_as_a_line():
     assert empty["power"] == 100 and empty["next"] == {"need": 4, "power": 120}
 
     line = kit_payload(weapon, kit_of(9))
-    assert line["worn"] == 9 and line["power"] == 150 and line["next"] == {}
+    assert line["worn"] == 9 and line["power"] == 150
+    assert line["next"] == {"need": 12, "power": 165}
     assert "150%" in line["text"] and "Вышибала" in line["text"]
     assert line["weapon"] is True
 

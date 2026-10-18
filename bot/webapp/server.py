@@ -155,7 +155,9 @@ from bot.work_service import start_shift, vacancies
 from bot.duty_service import (
     DutyError,
     hand_back as duty_hand_back,
+    stash as office_stash,
     take as duty_take,
+    take_stored as office_take,
 )
 from bot.driving_service import (
     SchoolError,
@@ -1544,6 +1546,10 @@ async def api_police_action(request: web.Request) -> web.Response:
                 "Форма сдана на склад." if given
                 else "Сдавать нечего: на руках ничего нет."
             )
+        elif action == "stash":
+            said = await office_stash(db, player, _int_field(data, "item_id"))
+        elif action == "unstash":
+            said = await office_take(db, player, _int_field(data, "stored"))
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except (DutyError, PoliceError, WorkError) as error:

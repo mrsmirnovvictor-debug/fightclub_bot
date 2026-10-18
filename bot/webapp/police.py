@@ -139,32 +139,35 @@ async def build_police_board(
     body["vault"] = sheet["vault"]
     body["officers"] = sheet["officers"]
     body["week"] = sheet["week"]
-    body["office"] = office_payload(player, sheet)
+    body["office"] = await office_payload(db, player, sheet)
     return body
 
 
-# Кабинет начальника: стойка с формой и места под машины. Числа те же,
-# что у семьи: пятнадцать ячеек склада и три места в гараже — кабинет
-# для города ровно то же, чем особняк для семьи, и считать их разными
+# Кабинет начальника: форма, склад и места под машины. Числа взяты у
+# семьи: пятнадцать ячеек склада и три места в гараже — кабинет для
+# города ровно то же, чем особняк для семьи, и считать их разными
 # мерками не из чего
-RACK_SLOTS = 15
 GARAGE_SLOTS = 3
 
 
-def office_payload(player: Player, sheet: dict[str, Any]) -> dict[str, Any]:
+async def office_payload(
+    db, player: Player, sheet: dict[str, Any]
+) -> dict[str, Any]:
     """Кабинет начальника. Пусто — боец не в кресле.
 
     Кабинет один на город, и открывает его не значок, а должность: в
     дежурную часть ходят все сотрудники, за форму и казну отвечает
     начальник.
     """
-    from bot.duty_service import rack_rows
+    from bot.duty_service import RACK_SLOTS, rack_rows, store_rows
     from bot.game.work import get_vacancy
+    from bot.webapp.card import item_payload
 
     if player.job_code != CHIEF_JOB:
         return {}
     vacancy = get_vacancy(CHIEF_JOB)
     rack = rack_rows(player, CHIEF_JOB)
+    stored = await store_rows(db, player)
     return {
         "post": vacancy.title if vacancy else "Начальник полиции",
         "vault": sheet["vault"],
@@ -172,9 +175,19 @@ def office_payload(player: Player, sheet: dict[str, Any]) -> dict[str, Any]:
         "week": sheet["week"],
         "salary": vacancy.salary if vacancy else 0,
         "rack": rack,
-        "slots": RACK_SLOTS,
-        "free": max(0, RACK_SLOTS - len(rack)),
         "taken": sum(1 for one in rack if one["taken"]),
+        # Склад кабинета — те же полки, что у семьи: вещь переезжает
+        # сюда целиком и так же возвращается
+        "store": stored,
+        "slots": RACK_SLOTS,
+        "free": max(0, RACK_SLOTS - len(stored)),
+        # Что можно положить: снятое из рюкзака. Надетое на полку не
+        # ложится — сперва его снимают в инвентаре
+        "bag": [
+            item_payload(player, owned)
+            for owned in player.backpack
+            if not owned.item.is_duty
+        ],
         # Машин в городе пока нет — но места под них отведены и видны,
         # как в гараже семьи: пустая полка говорит, что сюда что-то
         # будет, а её отсутствие не говорит ничего

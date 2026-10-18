@@ -10465,6 +10465,12 @@ async def test_the_chiefs_office_holds_the_budget_the_rack_and_the_garage(
     boss = await chief(db)
     await take(db, boss, "chief_helmet")
     await db.add_to_service_vault("police", 2_400)
+    # И одна вещь на складе кабинета: полки у него те же, что у семьи
+    from bot.duty_service import stash
+
+    spare = await db.add_gear(boss.user_id, "wraps")
+    boss.gear = await db.list_gear(boss.user_id)
+    await stash(db, boss, spare.id, now_ts())
     boss = await db.get_player(boss.user_id)
     sheet = build_police(boss)
     sheet.update(await build_police_board(db, boss, now_ts()))
@@ -10478,15 +10484,22 @@ async def test_the_chiefs_office_holds_the_budget_the_rack_and_the_garage(
         await page.locator("#police-tabs .chip", has_text="Кабинет").click()
         heads = await page.locator("#police-body .shelf-head").all_inner_texts()
         assert heads[0] == "Бюджет"
-        assert heads[1].startswith("Склад · 1 из 15")
-        assert heads[2].startswith("Служебный гараж · 0 из 3")
+        assert heads[1] == "Форма начальника · 1 из 13"
+        assert heads[2] == "Склад кабинета · 1 из 15"
+        assert heads[3].startswith("Служебный гараж · 0 из 3")
+
+        # Склад — те же полки, что в особняке: вещь на полке и пустые
+        # клетки под остальные
+        store = page.locator("#police-body .shelf").nth(2)
+        assert await store.locator(".shelf-slot").count() == 15
+        assert await store.locator(".shelf-slot.free").count() == 14
 
         said = await page.locator("#police-body").inner_text()
         assert "2 400" in said.replace("\u00a0", " "), "казна на виду"
 
         # Стойка: одиннадцать вещей, одна на руках
         rows = page.locator("#police-body .neighbour")
-        assert await rows.count() == 11
+        assert await rows.count() == 13
         taken = page.locator("#police-body .neighbour", has_text="Каска")
         assert "на руках" in await taken.inner_text()
         assert await taken.locator(".btn").inner_text() == "Сдать"
@@ -11254,12 +11267,16 @@ async def test_the_city_map_marks_the_spots_and_offers_the_muster(server, db):
         assert "Бар" not in said and "90" not in said
         assert await page.locator("#turf-call").inner_text() == "🚩 Отряд"
 
-        # Стоит она в правом нижнем углу и занимает меньше половины
-        # ширины: закрывать город ей нечем
+        # Стоит она в самом правом нижнем углу карты и занимает меньше
+        # половины ширины: закрывать город ей нечем
         chip = await band.bounding_box()
         screen = await page.locator("#map").bounding_box()
-        assert chip["x"] + chip["width"] >= screen["x"] + screen["width"] - 20
+        assert chip["x"] + chip["width"] >= screen["x"] + screen["width"] - 10
         assert chip["width"] < screen["width"] / 2
+        # И прижата ко дну: над панелью вкладок, но не выше неё вдвое
+        tabs = await page.locator("#bar").bounding_box()
+        assert chip["y"] + chip["height"] <= tabs["y"]
+        assert chip["y"] + chip["height"] >= tabs["y"] - 60
 
         # И нажатия сквозь неё проходят: иначе она закрывала бы дверь
         # соседнего дома, и войти в него было бы нельзя

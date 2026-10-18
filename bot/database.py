@@ -539,6 +539,24 @@ CREATE TABLE IF NOT EXISTS clan_items (
 
 CREATE INDEX IF NOT EXISTS clan_items_clan ON clan_items(clan_id);
 
+-- Склад службы: пятнадцать вещей на кабинет. Устроен как склад семьи —
+-- вещь переезжает сюда из инвентаря целиком, со своим износом и своей
+-- модификацией, — и отличается одним: у службы нет номера, её зовут по
+-- коду (`police`), и кабинет у неё один на город
+CREATE TABLE IF NOT EXISTS service_items (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    service   TEXT    NOT NULL,
+    code      TEXT    NOT NULL,
+    wear      INTEGER NOT NULL DEFAULT 0,
+    max_wear  INTEGER NOT NULL DEFAULT 20,
+    mod       TEXT    NOT NULL DEFAULT '',
+    mod_value INTEGER NOT NULL DEFAULT 0,
+    put_by    INTEGER NOT NULL DEFAULT 0,
+    put_at    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS service_items_service ON service_items(service);
+
 -- Снятая квартира. Строка есть — квартира занята; свободные в базе не
 -- лежат вовсе, их считает планировка (`bot.game.estate`). Один боец —
 -- одна квартира, и это держит сама база, а не проверка в службе
@@ -2624,6 +2642,127 @@ class Database:
         cursor = await self.conn.execute(
             "DELETE FROM clan_items WHERE id = ? AND clan_id = ?",
             (stored_id, clan_id),
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - вещь забрали между запросами
+            await self.conn.commit()
+            return ""
+        await self.conn.execute(
+            """
+            INSERT INTO inventory (user_id, code, wear, max_wear, mod, mod_value)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (
+                user_id,
+                str(row["code"]),
+                int(row["wear"]),
+                int(row["max_wear"]),
+                str(row["mod"]),
+                int(row["mod_value"]),
+            ),
+        )
+        await self.conn.commit()
+        return str(row["code"])
+
+    # ---------- склад службы: кабинет начальника ----------
+    #
+    # Тот же склад, что у семьи, с одной разницей: службу зовут по коду,
+    # а не по номеру. Запросы повторяют клановые нарочно — склад и есть
+    # тот же склад, и сводить их в один общий на двух хозяев значило бы
+    # усложнить обоим ради экономии десяти строк
+
+    async def service_items(self, service: str) -> list[Stored]:
+        """Что лежит на складе службы, сперва положенное раньше."""
+        async with self.conn.execute(
+            """
+            SELECT i.id, i.code, i.wear, i.max_wear, i.mod, i.mod_value,
+                   i.put_by, i.put_at,
+                   (SELECT nickname FROM players WHERE user_id = i.put_by) AS by_name
+            FROM service_items i WHERE i.service = ? ORDER BY i.put_at, i.id
+            """,
+            (service,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            Stored(
+                id=int(row["id"]),
+                code=str(row["code"]),
+                wear=int(row["wear"]),
+                max_wear=int(row["max_wear"]),
+                mod=str(row["mod"]),
+                mod_value=int(row["mod_value"]),
+                by_id=int(row["put_by"]),
+                by_name=str(row["by_name"] or ""),
+                put_at=int(row["put_at"]),
+            )
+            for row in rows
+        ]
+
+    async def stash_service_gear(
+        self, item_id: int, user_id: int, service: str, limit: int, now: int
+    ) -> bool:
+        """Переложить вещь из рюкзака на склад службы.
+
+        False — вещи у бойца нет, она надета или на складе нет места.
+        """
+        async with self.conn.execute(
+            """
+            SELECT code, wear, max_wear, mod, mod_value FROM inventory
+            WHERE id = ? AND user_id = ? AND slot IS NULL
+            """,
+            (item_id, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return False
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM service_items WHERE service = ?",
+            (service,),
+        ) as cursor:
+            crowd = await cursor.fetchone()
+        if int(crowd["n"]) >= limit:
+            return False
+        cursor = await self.conn.execute(
+            "DELETE FROM inventory WHERE id = ? AND user_id = ? AND slot IS NULL",
+            (item_id, user_id),
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - вещь увели между запросами
+            await self.conn.commit()
+            return False
+        await self.conn.execute(
+            """
+            INSERT INTO service_items
+                (service, code, wear, max_wear, mod, mod_value, put_by, put_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                service,
+                str(row["code"]),
+                int(row["wear"]),
+                int(row["max_wear"]),
+                str(row["mod"]),
+                int(row["mod_value"]),
+                user_id,
+                now,
+            ),
+        )
+        await self.conn.commit()
+        return True
+
+    async def take_service_item(
+        self, stored_id: int, service: str, user_id: int
+    ) -> str:
+        """Забрать вещь со склада службы себе в рюкзак."""
+        async with self.conn.execute(
+            "SELECT code, wear, max_wear, mod, mod_value FROM service_items "
+            "WHERE id = ? AND service = ?",
+            (stored_id, service),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return ""
+        cursor = await self.conn.execute(
+            "DELETE FROM service_items WHERE id = ? AND service = ?",
+            (stored_id, service),
         )
         if cursor.rowcount <= 0:  # pragma: no cover - вещь забрали между запросами
             await self.conn.commit()

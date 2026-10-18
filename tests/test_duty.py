@@ -45,14 +45,15 @@ async def chief(db, user_id: int = 90, nickname: str = "Ragnar"):
     return await db.get_player(user_id)
 
 
-def test_the_kit_is_eleven_pieces_and_asks_for_nothing():
-    """Одиннадцать вещей, и ни уровня, ни характеристик под надевание.
+def test_the_kit_fills_every_slot_and_asks_for_nothing():
+    """Тринадцать вещей — по одной на каждую клетку бойца.
 
-    Начальником становятся по диплому и стажу, а не по уровню: форма,
-    которую носить некому, — не награда за должность, а насмешка.
+    Ни уровня, ни характеристик под надевание: начальником становятся
+    по диплому и стажу, а форма, которую носить некому, — не награда за
+    должность, а насмешка.
     """
     kit = kit_for(CHIEF)
-    assert len(kit) == 11
+    assert len(kit) == 13
     assert all(one.level_required == 1 for one in kit)
     assert all(one.requires == Stats() for one in kit)
     assert all(not one.for_classes for one in kit), "кресло одно на все классы"
@@ -60,7 +61,9 @@ def test_the_kit_is_eleven_pieces_and_asks_for_nothing():
     # Купить и продать нельзя: цены у формы нет вовсе
     assert all(not one.on_sale and not one.price for one in kit)
     # Слоты не повторяются: это комплект, а не склад одинаковых вещей
-    assert len({one.slot for one in kit}) == 11
+    assert len({one.slot for one in kit}) == 13
+    # И закрывают они все клетки, включая три кольца
+    assert {one.slot for one in kit} == set(Slot)
 
 
 def test_the_kit_is_a_fifth_above_the_fan_counter():
@@ -131,7 +134,7 @@ async def test_the_rack_says_where_each_piece_is(db):
 
     boss = await chief(db)
     rows = {one["code"]: one for one in rack_rows(boss, CHIEF)}
-    assert len(rows) == 11
+    assert len(rows) == 13
     assert all(one["where"] == "на складе" for one in rows.values())
 
     await take(db, boss, "chief_helmet")
@@ -209,6 +212,93 @@ async def test_the_kit_is_not_for_sale_and_not_for_the_post(db):
     assert [one.code for one in await db.list_gear(boss.user_id)] == ["chief_shield"]
 
 
+async def test_the_full_kit_lifts_the_baton_above_the_ladder(db):
+    """Собранная форма поднимает дубинку: четыре вещи, семь, девять, все.
+
+    Это и есть награда за должность целиком, а не за одну снятую с
+    полки вещь: тринадцать клеток на бойце, и двенадцать вещей набора —
+    это он весь.
+    """
+    from bot.game.equipment import Equipment, OwnedItem
+    from bot.game.sets import FULL_KIT, set_power
+
+    assert FULL_KIT == 12, "клеток тринадцать, больше надеть некуда"
+    assert set_power(3) == 1.0
+    assert set_power(4) == 1.2
+    assert set_power(9) == 1.5
+    assert set_power(FULL_KIT) == 1.65
+
+    kit = kit_for(CHIEF)
+    worn = Equipment(
+        items={
+            one.slot: OwnedItem(item=one, id=number + 1, slot=one.slot)
+            for number, one in enumerate(kit)
+        }
+    )
+    assert worn.kit_worn("chief") == 13
+    baton = worn.items[Slot.WEAPON]
+    grown = worn.grown(baton)
+    assert grown.damage_max > baton.item.damage_max
+    assert grown.damage_max == round(baton.item.damage_max * 1.65)
+
+
+async def test_the_office_store_takes_things_and_gives_them_back(db):
+    """Склад кабинета — те же полки, что у семьи: положил и забрал."""
+    from bot.duty_service import RACK_SLOTS, stash, store_rows, take_stored
+
+    boss = await chief(db)
+    owned = await db.add_gear(boss.user_id, "wraps")
+    boss.gear = await db.list_gear(boss.user_id)
+
+    said = await stash(db, boss, owned.id, NOW)
+    assert "на складе кабинета" in said
+    assert await db.list_gear(boss.user_id) == []
+    rows = await store_rows(db, boss)
+    assert len(rows) == 1 and rows[0]["title"] == "Бинты"
+    assert rows[0]["by"] == "Ragnar", "видно, кто положил"
+
+    back = await take_stored(db, boss, rows[0]["id"])
+    assert "Бинты" in back
+    assert [one.code for one in await db.list_gear(boss.user_id)] == ["wraps"]
+    assert await store_rows(db, boss) == []
+
+    # Полок пятнадцать, и шестнадцатую вещь класть некуда
+    for number in range(RACK_SLOTS):
+        extra = await db.add_gear(boss.user_id, "wraps")
+        boss.gear = await db.list_gear(boss.user_id)
+        await stash(db, boss, extra.id, NOW)
+    last = await db.add_gear(boss.user_id, "wraps")
+    boss.gear = await db.list_gear(boss.user_id)
+    with pytest.raises(DutyError, match="все заняты"):
+        await stash(db, boss, last.id, NOW)
+
+
+async def test_the_office_store_belongs_to_the_post(db):
+    """Склад кабинета — не общая полка: чужой до неё не дотянется."""
+    from bot.duty_service import stash, store_rows, take_stored
+
+    boss = await chief(db)
+    owned = await db.add_gear(boss.user_id, "wraps")
+    boss.gear = await db.list_gear(boss.user_id)
+    await stash(db, boss, owned.id, NOW)
+    stored = (await store_rows(db, boss))[0]
+
+    patrol = await patrolman(db)
+    his = await db.add_gear(patrol.user_id, "wraps")
+    patrol.gear = await db.list_gear(patrol.user_id)
+    with pytest.raises(DutyError, match="дело должности"):
+        await stash(db, patrol, his.id, NOW)
+    with pytest.raises(DutyError, match="дело должности"):
+        await take_stored(db, patrol, stored["id"])
+    assert await store_rows(db, patrol) == []
+
+    # И форму на полку не кладут: она и так числится за кабинетом
+    await take(db, boss, "chief_ring")
+    ring = next(one for one in boss.gear if one.code == "chief_ring")
+    with pytest.raises(DutyError, match="числится за кабинетом"):
+        await stash(db, boss, ring.id, NOW)
+
+
 async def test_the_office_opens_for_the_chief_alone(db):
     """Кабинет открывает должность, а не значок."""
     from bot.webapp.police import build_police_board
@@ -217,8 +307,7 @@ async def test_the_office_opens_for_the_chief_alone(db):
     body = await build_police_board(db, boss, NOW)
     office = body["office"]
     assert office["post"] == "Начальник полиции"
-    assert office["slots"] == 15 and len(office["rack"]) == 11
-    assert office["free"] == 4
+    assert len(office["rack"]) == 13
     assert office["garage"]["slots"] == 3
 
     patrol = await patrolman(db, 84, "Патрульный")

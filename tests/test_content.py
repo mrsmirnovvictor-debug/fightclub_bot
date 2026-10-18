@@ -589,7 +589,9 @@ def test_the_pack_reached_the_hand_with_sixteen_weapons():
     lines = {"tank": "tank", "warrior": "warrior", "rogue": "trickster",
              "assassin": "assassin"}
     assert len(SET_WEAPONS) == 16
-    assert {item.kit for item in SET_WEAPONS} == set(SET_TITLES)
+    # Форма начальника — набор без прилавка: оружие у неё своё, и в
+    # пачку покупных сетовых стволов она не входит
+    assert {item.kit for item in SET_WEAPONS} == set(SET_TITLES) - {"chief"}
 
     # Старшая вещь набора — по ней считается уровень оружия
     top: dict[str, int] = {}
@@ -686,6 +688,10 @@ def test_every_thing_of_a_set_knows_its_set():
         if item.code.startswith("set_"):
             assert item.kit, f"{item.code}: вещь набора без набора"
             assert item.code.startswith(f"set_{item.kit}_"), item.code
+            assert item.kit in SET_TITLES, f"{item.kit}: набор без названия"
+        elif item.is_duty:
+            # Служебная форма — тоже набор, но код у неё свой: она не с
+            # прилавка, и приставка `set_` разводила бы её с покупными
             assert item.kit in SET_TITLES, f"{item.kit}: набор без названия"
         else:
             assert not item.kit, f"{item.code}: набор у вещи вне наборов"

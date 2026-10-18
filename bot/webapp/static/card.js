@@ -9412,6 +9412,7 @@ function renderPolice(data) {
   if (policeTab === "office" && office.post) {
     body.appendChild(officeBudgetBox(office));
     body.appendChild(officeRackBox(office));
+    body.appendChild(officeStoreBox(office));
     // Гараж у кабинета тот же, что у семьи: три места и те же слова
     body.appendChild(garageBox(office.garage || {}, "Служебный гараж"));
     return;
@@ -9470,7 +9471,8 @@ function officeRackBox(office) {
   box.className = "shelf";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = "Склад · " + office.taken + " из " + office.slots;
+  head.textContent = "Форма начальника · " + office.taken
+    + " из " + (office.rack || []).length;
   box.appendChild(head);
 
   const note = document.createElement("p");
@@ -9481,13 +9483,6 @@ function officeRackBox(office) {
   box.appendChild(note);
 
   (office.rack || []).forEach((one) => box.appendChild(rackRow(one)));
-
-  // Пустые ячейки показываем числом: место под будущее есть, и врать
-  // про него не надо
-  const free = document.createElement("p");
-  free.className = "thing-note";
-  free.textContent = "Свободных ячеек: " + office.free + ".";
-  box.appendChild(free);
 
   if ((office.rack || []).some((one) => one.taken)) {
     const buttons = document.createElement("div");
@@ -9541,6 +9536,53 @@ function rackRow(one) {
   }
   row.appendChild(buttons);
   return row;
+}
+
+/** Кабинет: склад на пятнадцать ячеек — тот же, что у семьи.
+
+    Полки, лист вещи и выбор из рюкзака взяты у особняка целиком: склад
+    и есть тот же склад, и рисовать его вторым способом значило бы
+    рассказывать про износ и полки дважды. */
+function officeStoreBox(office) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Склад кабинета · " + (office.store || []).length
+    + " из " + office.slots;
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = "Кабинет один на город: кладёт и забирает начальник. "
+    + "Форму сюда не кладут — она и так числится за креслом.";
+  box.appendChild(note);
+
+  box.appendChild(
+    shelfGrid({
+      slots: office.slots,
+      items: office.store || [],
+      title: (one) => one.title + (one.by ? " · положил " + one.by : ""),
+      onThing: (one) =>
+        openThingSheet({
+          thing: one,
+          note:
+            (one.by ? "Положил " + one.by : "Вещь кабинета")
+            + (one.when ? " · " + one.when : ""),
+          onTake: (thing) =>
+            policeAction({ action: "unstash", stored: thing.id }),
+        }),
+      onFree: () =>
+        openPickSheet({
+          bag: office.bag || [],
+          free: office.free,
+          note: "Свободных ячеек: " + office.free,
+          onPick: (one) => policeAction({ action: "stash", item_id: one.id }),
+        }),
+    })
+  );
+  return box;
 }
 
 /** Служба в полиции: три ступени, и берут на них здесь, а не в агентстве. */
