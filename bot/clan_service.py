@@ -515,6 +515,10 @@ async def stash(
         raise ClanError("Такой вещи у тебя нет.")
     if owned.is_equipped:
         raise ClanError("Сперва сними вещь — надетое на полку не кладут.")
+    if owned.item.is_duty:
+        raise ClanError(
+            f"«{owned.title}» — служебная форма: семье её не передают."
+        )
     if not await db.stash_gear(
         item_id, player.user_id, standing.clan.id, VAULT_SLOTS, moment
     ):

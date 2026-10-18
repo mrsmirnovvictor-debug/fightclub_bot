@@ -88,6 +88,11 @@ async def send(
         raise PostError("Такой вещи у тебя нет.")
     if owned.is_equipped:
         raise PostError("Сперва сними вещь — надетое не отправляют.")
+    if owned.item.is_duty:
+        raise PostError(
+            f"«{owned.title}» — служебная форма. Переслать её нельзя: она "
+            "числится за должностью."
+        )
     if await db.waiting_count(guest.user_id) >= MAX_WAITING:
         raise PostError(
             f"У бойца {guest.nickname} на почте уже {MAX_WAITING} посылок — "

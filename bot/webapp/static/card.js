@@ -9368,6 +9368,15 @@ async function takeLicence() {
   }
 }
 
+// Какую половину участка смотрим: дежурную часть или кабинет
+// начальника. У кабинета своя лента, как у вкладок семьи в особняке
+let policeTab = "duty";
+
+function pickPoliceTab(name) {
+  policeTab = name;
+  if (policeData) renderPolice(policeData);
+}
+
 function renderPolice(data) {
   policeData = data;
   el("police-note").textContent = data.said || data.note;
@@ -9376,18 +9385,38 @@ function renderPolice(data) {
 
   // Срок — первым делом: сидящему всё остальное пока не нужно
   if (data.jail && data.jail.left) body.appendChild(jailBox(data.jail));
-  // Город тоже воюет за точки, и вход в войну у него здесь: в участке,
-  // а не в особняке мафии
+
+  const office = data.office || {};
+  if (!office.post) policeTab = "duty";
+  // Лента вверху: дежурная часть, кабинет начальника и вход в войну.
+  // Кабинет открывает должность, а не значок: в дежурную часть ходят
+  // все сотрудники, за форму и казну отвечает один
   if (data.badge) {
-    const row = document.createElement("div");
-    row.className = "thing-buttons";
-    row.appendChild(
-      button("🚩 Территории", {
-        secondary: true, onClick: () => openTurf("police"),
-      })
-    );
-    body.appendChild(row);
+    const tabs = document.createElement("div");
+    tabs.className = "bubbles";
+    tabs.id = "police-tabs";
+    if (office.post) {
+      tabs.appendChild(
+        chip("🚓 Дежурная часть", policeTab === "duty",
+             () => pickPoliceTab("duty"))
+      );
+      tabs.appendChild(
+        chip("🗄 Кабинет", policeTab === "office",
+             () => pickPoliceTab("office"))
+      );
+    }
+    tabs.appendChild(chip("🚩 Территории", false, () => openTurf("police")));
+    body.appendChild(tabs);
   }
+
+  if (policeTab === "office" && office.post) {
+    body.appendChild(officeBudgetBox(office));
+    body.appendChild(officeRackBox(office));
+    // Гараж у кабинета тот же, что у семьи: три места и те же слова
+    body.appendChild(garageBox(office.garage || {}, "Служебный гараж"));
+    return;
+  }
+
   // Свои дела — всем, сводка по городу — только при значке
   if ((data.mine || []).length) body.appendChild(myCasesBox(data));
   if (data.badge) {
@@ -9407,6 +9436,111 @@ function renderPolice(data) {
   row.className = "thing-buttons";
   row.appendChild(button("Получить права", { onClick: () => takeLicence() }));
   body.appendChild(row);
+}
+
+/** Кабинет: казна города, норма недели и жалованье кресла. */
+function officeBudgetBox(office) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Бюджет";
+  box.appendChild(head);
+  const week = office.week || {};
+  box.appendChild(
+    paperRows([
+      ["В копилке", num(office.vault || 0) + " 💰"],
+      ["На службе", String(office.officers || 0)],
+      ["Задержаний", (week.arrests || 0) + " из " + (week.target || 0)],
+      ["Премия за норму", num(week.bonus || 0) + " 💰"],
+      ["Жалованье кресла", num(office.salary || 0) + " 💰 в неделю"],
+    ])
+  );
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = "Копилка делится поровну между всеми, кто на службе, "
+    + "в понедельник. Норма — половина нападений за неделю.";
+  box.appendChild(said);
+  return box;
+}
+
+/** Кабинет: стойка с формой. Берёт её тот, кто в кресле. */
+function officeRackBox(office) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Склад · " + office.taken + " из " + office.slots;
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = "Форма числится за креслом, а не за тобой: продать, "
+    + "переслать или спрятать её нельзя, а при уходе с должности она "
+    + "вернётся на склад сама.";
+  box.appendChild(note);
+
+  (office.rack || []).forEach((one) => box.appendChild(rackRow(one)));
+
+  // Пустые ячейки показываем числом: место под будущее есть, и врать
+  // про него не надо
+  const free = document.createElement("p");
+  free.className = "thing-note";
+  free.textContent = "Свободных ячеек: " + office.free + ".";
+  box.appendChild(free);
+
+  if ((office.rack || []).some((one) => one.taken)) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Сдать всё", {
+        secondary: true,
+        onClick: () => policeAction({ action: "hand_kit" }),
+      })
+    );
+    box.appendChild(buttons);
+  }
+  return box;
+}
+
+/** Строка стойки: вещь, где она сейчас и кнопка. */
+function rackRow(one) {
+  const row = document.createElement("article");
+  row.className = "neighbour" + (one.taken ? "" : " away");
+  const line = document.createElement("header");
+  line.className = "neighbour-head";
+  const name = document.createElement("span");
+  name.className = "neighbour-name";
+  if (one.picture) {
+    const face = picture(one.picture, one.title, one.icon);
+    face.className = "npc-face";
+    name.appendChild(face);
+  }
+  name.appendChild(document.createTextNode(" " + one.title));
+  const where = document.createElement("span");
+  where.className = "neighbour-clan";
+  where.textContent = one.where;
+  line.append(name, where);
+  row.appendChild(line);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (one.taken) {
+    buttons.appendChild(
+      button("Сдать", {
+        secondary: true,
+        onClick: () => policeAction({ action: "hand_kit", item: one.code }),
+      })
+    );
+  } else {
+    buttons.appendChild(
+      button("Получить", {
+        onClick: () => policeAction({ action: "take_kit", item: one.code }),
+      })
+    );
+  }
+  row.appendChild(buttons);
+  return row;
 }
 
 /** Служба в полиции: три ступени, и берут на них здесь, а не в агентстве. */
@@ -12946,13 +13080,13 @@ function renderEstateTab(estate) {
 }
 
 /** Гараж семьи: три места под автомобили. Пока они пустые. */
-function garageBox(garage) {
+function garageBox(garage, title) {
   const box = document.createElement("section");
   box.className = "shelf";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = "Гараж семьи · " + (garage.cars || []).length
-    + " из " + (garage.slots || 0);
+  head.textContent = (title || "Гараж семьи") + " · "
+    + (garage.cars || []).length + " из " + (garage.slots || 0);
   box.appendChild(head);
 
   const grid = document.createElement("div");
@@ -13724,13 +13858,18 @@ async function answerInvite(payload) {
   await catchUp();
 }
 
+// Своя служба: по ней зажигается подпись под местоположением
+let myService = null;
+
 /** Строка клана в карточке и знаки у ника: и то и другое есть у мафии. */
 function renderClanMarks(card) {
   const clan = card.clan || {};
   // Строку зажигает своя карточка, а не та, что открыта: чужую
   // открывают из списка клуба, и чужой семьёй не распоряжаются
   if (card.is_self) myClan = clan.emblem ? clan : null;
+  if (card.is_self) myService = (card.service || {}).badge ? card.service : null;
   paintClanLine();
+  paintDutyLine();
   // А знаки у ника — того бойца, чья карточка перед глазами
   ["hero-", "bag-"].forEach((prefix) => {
     const box = el(prefix + "clan");
@@ -13761,6 +13900,27 @@ function paintClanLine() {
   rank.className = "clan-line-rank";
   rank.textContent = myClan.rank_title || "";
   line.append(name, rank);
+}
+
+/** Служба под местоположением: значок, служба и должность.
+
+    У мафии такая строка есть с самого начала, и служивому она нужна
+    ровно затем же: должность — это не запись в анкете, а то, кем боец
+    в городе ходит. */
+function paintDutyLine() {
+  const line = el("hero-duty-line");
+  if (!line) return;
+  line.classList.toggle("hidden", !myService);
+  line.textContent = "";
+  if (!myService) return;
+  serviceMarks(myService).forEach((mark) => line.appendChild(mark));
+  const name = document.createElement("span");
+  name.className = "clan-line-name";
+  name.textContent = myService.title;
+  const post = document.createElement("span");
+  post.className = "clan-line-rank";
+  post.textContent = myService.rank_title || "";
+  line.append(name, post);
 }
 
 const INTERIOR_SCREENS = [

@@ -1115,6 +1115,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font: inherit;
   cursor: pointer;
 }
+/* Подпись службы — та же плашка, что у семьи, но не кнопка */
+.duty-line { cursor: default; }
 .clan-line-name { font-weight: 700; }
 .clan-line-rank { color: var(--muted); font-size: 12.5px; }
 

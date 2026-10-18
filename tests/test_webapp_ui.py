@@ -9832,6 +9832,35 @@ async def test_the_mansion_offers_a_clan_and_lists_the_families(server):
         await browser.close()
 
 
+async def test_the_duty_line_names_the_service_and_the_post(server):
+    """У служивого под местоположением своя подпись: значок, служба, чин.
+
+    У мафии такая строка есть с самого начала, и должность — это не
+    запись в анкете, а то, кем боец по городу ходит.
+    """
+    player = make_player()
+    plain = build_card(player, TOKEN, viewer_id=player.user_id)
+    player.job_code = "police_chief"
+    chief = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, plain)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        assert await page.locator("#hero-duty-line").is_hidden()
+        await browser.close()
+
+        browser, page = await open_page(pw, server, chief, images=True)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        line = page.locator("#hero-duty-line")
+        assert await line.is_visible()
+        said = await line.inner_text()
+        assert "Полиция Вегаса" in said and "Начальник" in said
+        assert "полиции" not in said, "служба уже названа — чин не заикается"
+        badge = line.locator(".service-badge")
+        assert (await badge.get_attribute("src")).endswith("/services/police.png")
+        await browser.close()
+
+
 async def test_the_clan_line_in_the_card_opens_the_family(server):
     """Имя семьи стоит в карточке под местоположением и открывает состав.
 
@@ -10420,6 +10449,62 @@ async def open_station(pw, server, who, body):
     return browser, page
 
 
+async def test_the_chiefs_office_holds_the_budget_the_rack_and_the_garage(
+    server, db
+):
+    """Кабинет начальника: бюджет, стойка с формой и гараж.
+
+    Открывает его должность, а не значок: в дежурную часть ходят все
+    сотрудники, за форму и казну отвечает один.
+    """
+    from bot.duty_service import take
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from tests.test_duty import chief, patrolman
+
+    boss = await chief(db)
+    await take(db, boss, "chief_helmet")
+    await db.add_to_service_vault("police", 2_400)
+    boss = await db.get_player(boss.user_id)
+    sheet = build_police(boss)
+    sheet.update(await build_police_board(db, boss, now_ts()))
+
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, boss, sheet)
+
+        chips = await page.locator("#police-tabs .chip").all_inner_texts()
+        assert chips == ["🚓 Дежурная часть", "🗄 Кабинет", "🚩 Территории"]
+
+        await page.locator("#police-tabs .chip", has_text="Кабинет").click()
+        heads = await page.locator("#police-body .shelf-head").all_inner_texts()
+        assert heads[0] == "Бюджет"
+        assert heads[1].startswith("Склад · 1 из 15")
+        assert heads[2].startswith("Служебный гараж · 0 из 3")
+
+        said = await page.locator("#police-body").inner_text()
+        assert "2 400" in said.replace("\u00a0", " "), "казна на виду"
+
+        # Стойка: одиннадцать вещей, одна на руках
+        rows = page.locator("#police-body .neighbour")
+        assert await rows.count() == 11
+        taken = page.locator("#police-body .neighbour", has_text="Каска")
+        assert "на руках" in await taken.inner_text()
+        assert await taken.locator(".btn").inner_text() == "Сдать"
+        free = page.locator("#police-body .neighbour", has_text="Белые перчатки")
+        assert await free.locator(".btn").inner_text() == "Получить"
+        await browser.close()
+
+    # А у патрульного кабинета нет вовсе: ни вкладки, ни стойки
+    patrol = await patrolman(db)
+    plain = build_police(patrol)
+    plain.update(await build_police_board(db, patrol, now_ts()))
+    async with async_playwright() as pw:
+        browser, page = await open_station(pw, server, patrol, plain)
+        chips = await page.locator("#police-tabs .chip").all_inner_texts()
+        assert chips == ["🚩 Территории"]
+        await browser.close()
+
+
 async def test_the_station_opens_the_war_for_the_badge(server, db):
     """Город тоже воюет за точки, и вход в войну у него в участке."""
     from bot.webapp.turf import build_war
@@ -10437,7 +10522,7 @@ async def test_the_station_opens_the_war_for_the_badge(server, db):
         await open_screen(page, "police")
         await page.wait_for_selector("#police-body .shelf")
 
-        await page.locator("#police-body .btn", has_text="Территории").click()
+        await page.locator("#police-tabs .chip", has_text="Территории").click()
         await page.wait_for_selector("#turf:not(.hidden)")
         await page.evaluate("stopTurfPoll()")
         assert await page.locator("#turf-back").inner_text() == "← В участок"

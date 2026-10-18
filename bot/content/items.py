@@ -1180,6 +1180,120 @@ RETIRED_GEAR = frozenset(
 # Снятое с прилавка помечается здесь, одним проходом: иначе про `retired=True`
 # пришлось бы помнить у каждой из тридцати семи вещей, а список выше — и так
 # полный ответ на вопрос «чего в лавке больше нет».
+# ---------- форма начальника полиции ----------
+#
+# Служебный комплект: его не покупают и не выигрывают — его выдают со
+# склада в кабинете начальника, и оно же его забирает, когда боец с
+# должности уходит. Отсюда `duty`: вещь принадлежит креслу, а не бойцу.
+#
+# **Уровня на ней нет.** Начальником становятся по диплому и стажу, а
+# не по уровню, и требовать сверх должности ещё и двадцать очков силы
+# значило бы выдать форму, которую некому носить. По той же причине
+# пусты `requires` и `for_classes`: кресло одно на город, и кто в нём
+# сидит — танк или ассасин, — его дело.
+#
+# **Числа — фанатский «воин» плюс восемнадцать процентов.** Эталон взят
+# не с потолка: это лучшее, что в городе покупают за деньги на десятом
+# уровне, и форма обязана быть заметно сильнее — иначе должность ничего
+# не даёт, — но не вдвое: иначе кроме неё ничего и не нужно. Щит считан
+# от фанатского щита «босса»: в линии воина щита нет.
+#
+# **Набора (`kit`) у формы нарочно нет.** Лестница комплекта подняла бы
+# оружие в полтора раза, и обещанные восемнадцать процентов
+# превратились бы в полсотни.
+CHIEF_JOB = "police_chief"
+
+
+def _chief(
+    code: str,
+    title: str,
+    slot: Slot,
+    icon: str,
+    file: str,
+    **gives,
+) -> Item:
+    """Вещь из формы начальника: картинка и служебность — от должности."""
+    kind = gives.pop("kind", ItemKind.GEAR)
+    instrumental = str(gives.pop("instrumental", ""))
+    return Item(
+        code,
+        title,
+        slot,
+        icon,
+        image=art.set_piece("police", "chief", file),
+        kind=kind,
+        instrumental=instrumental,
+        duty=CHIEF_JOB,
+        reward=True,
+        **gives,
+    )
+
+
+CHIEF_KIT: tuple[Item, ...] = (
+    _chief(
+        "chief_helmet", "Каска начальника", Slot.HEAD, "🪖", "helmet",
+        strength=4, agility=2, intuition=2, hp=65,
+        armor_min=15, armor_max=18,
+        accuracy=0.41, dodge=0.35, crit=0.35, anticrit=0.35,
+    ),
+    _chief(
+        "chief_baton", "Длинная дубинка с рукоятью", Slot.WEAPON, "🏏", "weapon",
+        kind=ItemKind.WEAPON, instrumental="дубинкой",
+        strength=5, damage_min=22, damage_max=37,
+        accuracy=0.59, anticrit=0.54,
+    ),
+    _chief(
+        "chief_shield", "Массивный щит VCPD", Slot.OFFHAND, "🛡", "shield",
+        kind=ItemKind.SHIELD,
+        strength=6, hp=94, armor_min=17, armor_max=21, anticrit=0.71,
+    ),
+    _chief(
+        "chief_tshirt", "Форменная футболка", Slot.SHIRT, "🎽", "tshirt",
+        strength=6, agility=4, intuition=4, hp=35, counter=0.04,
+    ),
+    _chief(
+        "chief_jacket", "Китель с бронежилетом", Slot.JACKET, "🧥", "jacket",
+        strength=6, agility=4, intuition=4, hp=88,
+        armor_min=17, armor_max=19,
+        accuracy=0.41, dodge=0.35, crit=0.35, anticrit=0.35,
+    ),
+    _chief(
+        "chief_belt", "Служебный пояс", Slot.BELT, "🥋", "belt",
+        strength=4, agility=2, intuition=2, hp=35,
+        armor_min=14, armor_max=17,
+        accuracy=0.35, dodge=0.3, crit=0.3, anticrit=0.18,
+    ),
+    _chief(
+        "chief_gloves", "Белые перчатки", Slot.GLOVES, "🧤", "gloves",
+        strength=4, agility=4, intuition=4, hp=24,
+        accuracy=0.3, dodge=0.3, crit=0.3, anticrit=0.06,
+    ),
+    _chief(
+        "chief_pants", "Парадные штаны", Slot.PANTS, "👖", "pants",
+        strength=5, agility=2, intuition=2, hp=47,
+        armor_min=14, armor_max=17,
+        accuracy=0.35, dodge=0.3, crit=0.3, anticrit=0.18,
+    ),
+    _chief(
+        "chief_boots", "Укреплённые берцы", Slot.BOOTS, "🥾", "boots",
+        strength=4, agility=2, intuition=2, hp=41,
+        armor_min=15, armor_max=18,
+        accuracy=0.41, dodge=0.35, crit=0.35, anticrit=0.35, counter=0.05,
+    ),
+    _chief(
+        "chief_necklace", "Жетон на цепи", Slot.NECKLACE, "📿", "necklace",
+        strength=2, agility=1, intuition=1, hp=30,
+        armor_min=12, armor_max=14,
+        accuracy=0.24, dodge=0.24, crit=0.24, anticrit=0.24,
+    ),
+    _chief(
+        "chief_ring", "Кольцо правосудия", Slot.RING_RIGHT, "💍", "ring",
+        strength=3, agility=2, intuition=2, hp=30,
+    ),
+)
+
+
+
 ITEMS: tuple[Item, ...] = tuple(
     replace(item, retired=True) if item.code in RETIRED_GEAR else item
     for item in (
@@ -3377,6 +3491,7 @@ ITEMS: tuple[Item, ...] = tuple(
     *SET_SHIELDS,
     *SET_WEAPONS,
     *JEWEL_PIECES,
+    *CHIEF_KIT,
     )
 )
 

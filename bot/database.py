@@ -1889,8 +1889,15 @@ class Database:
         """Что боец выучил: приём → ступень, на которой он его взял."""
         from bot.content.abilities import get_ability
 
+        # По ступени, а не по порядку изучения: ступень — это и цена
+        # приёма, а смотрят на приёмы снизу вверх, от трёх энергий к
+        # двенадцати. Порядок строк в базе этого не обещает: загрузка
+        # перезаписывает их целиком, и кросс-классовый приём, взятый
+        # позже своего, вставал в середину
         async with self.conn.execute(
-            "SELECT code, tier FROM abilities WHERE user_id = ?", (user_id,)
+            "SELECT code, tier FROM abilities WHERE user_id = ? "
+            "ORDER BY tier, code",
+            (user_id,),
         ) as cursor:
             rows = await cursor.fetchall()
         # Приём, которого больше нет в каталоге, молча пропускаем: правки

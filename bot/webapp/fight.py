@@ -209,22 +209,28 @@ def abilities_payload(fighter: Fighter | None) -> dict[str, Any] | None:
         # Сколько приёмов ещё можно пустить в дело в этом ходу
         "left": max(0, MAX_PER_TURN - fighter.pressed),
         "per_turn": MAX_PER_TURN,
-        "tricks": [
-            {
-                "code": code,
-                "title": ability.title,
-                "icon": ability.icon,
-                "image": ability.picture,
-                "note": ability.note,
-                "cost": fighter.loadout.cost_of(code),
-                "ready": fighter.can_use(code),
-                "armed": code in pressed,
-            }
-            for code, ability in (
-                (code, get_ability(code)) for code in fighter.loadout.slots
-            )
-            if ability is not None
-        ],
+        # По цене, а не по порядку изучения: в бою на приёмы смотрят
+        # снизу вверх — «что я могу себе позволить прямо сейчас», — и
+        # три энергии всегда стоят первыми, двенадцать последними
+        "tricks": sorted(
+            (
+                {
+                    "code": code,
+                    "title": ability.title,
+                    "icon": ability.icon,
+                    "image": ability.picture,
+                    "note": ability.note,
+                    "cost": fighter.loadout.cost_of(code),
+                    "ready": fighter.can_use(code),
+                    "armed": code in pressed,
+                }
+                for code, ability in (
+                    (code, get_ability(code)) for code in fighter.loadout.slots
+                )
+                if ability is not None
+            ),
+            key=lambda one: (one["cost"], one["title"]),
+        ),
     }
 
 

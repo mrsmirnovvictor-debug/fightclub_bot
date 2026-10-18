@@ -21,9 +21,12 @@ def service_badge(player: Player) -> dict[str, Any]:
     здесь не нужно: в клан служивого не пускают, а на службу мафиози не
     берут. Если оба всё-таки сошлись, значит, сломалось не рисование.
     """
+    from bot.game.work import get_vacancy
+
     one = service_of_job(player.job_code)
     if one is None:
         return {}
+    vacancy = get_vacancy(player.job_code)
     return {
         "code": one.code,
         "title": one.title,
@@ -32,7 +35,23 @@ def service_badge(player: Player) -> dict[str, Any]:
         "lawful": one.lawful,
         "house": one.house,
         "note": one.note,
+        # Должность — то же, что чин в семье: под ником стоит «Полиция
+        # Вегаса · Начальник», а не одно голое название службы
+        "post": vacancy.title if vacancy else "",
+        "rank_title": short_post(vacancy.title) if vacancy else "",
     }
 
 
-__all__ = ["service_badge"]
+def short_post(title: str) -> str:
+    """Должность коротко: «Начальник полиции» → «Начальник».
+
+    Название службы стоит в той же строке, и повторять его в должности
+    незачем: «Полиция Вегаса · Начальник полиции» читается как заикание.
+    """
+    for tail in (" полиции", " части"):
+        if title.endswith(tail):
+            return title[: -len(tail)]
+    return title
+
+
+__all__ = ["service_badge", "short_post"]

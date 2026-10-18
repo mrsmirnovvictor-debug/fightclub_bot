@@ -234,6 +234,10 @@ async def stash(
         raise EstateError("Такой вещи у тебя нет.")
     if owned.is_equipped:
         raise EstateError("Сперва сними вещь — надетое в кладовую не кладут.")
+    if owned.item.is_duty:
+        raise EstateError(
+            f"«{owned.title}» — служебная форма: её место на складе службы."
+        )
     if not await db.stash_in_flat(
         item_id, player.user_id, lease.id, lease.slots, moment
     ):

@@ -49,6 +49,13 @@ async def sell_lot(db: Database, player: Player, gear_id: int, price: int) -> in
         raise MarketError(
             f"«{owned.title}» на тебе надета. Сними её — тогда и выставляй."
         )
+    # Служебная форма принадлежит креслу, а не бойцу: иначе достаточно
+    # было бы один раз стать начальником и продать комплект
+    if owned.item.is_duty:
+        raise MarketError(
+            f"«{owned.title}» — служебная форма. Её сдают на склад, а не "
+            "продают."
+        )
     if not price_is_sane(owned.item, price):
         limits = price_range(owned.item)
         raise MarketError(

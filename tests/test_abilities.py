@@ -733,6 +733,27 @@ def test_ordinary_tricks_leave_the_squad_alone():
 # ---------- до трёх приёмов за ход ----------
 
 
+def test_the_fight_panel_sorts_the_tricks_by_their_price():
+    """Приёмы в бою стоят по цене: 3, 6, 9, 12 энергии.
+
+    Порядок изучения тут не годится. Кросс-классовый приём берут
+    позже своего и дороже, и в панели он вставал между трёхэнергетным
+    и шестиэнергетным — смотрят же на них снизу вверх, от того, что
+    по карману прямо сейчас.
+    """
+    from bot.webapp.fight import abilities_payload
+
+    one = make()
+    # Учим вразнобой: сперва дорогой, потом дешёвый
+    one.loadout.learn("crushing_hit", 6)
+    one.loadout.learn("strong_hit", 1)
+    one.loadout.learn("deadly_hit", 10)
+    one.loadout.learn("power_hit", 3)
+
+    panel = abilities_payload(one)
+    assert [trick["cost"] for trick in panel["tricks"]] == [3, 6, 9, 12]
+
+
 def test_three_tricks_a_turn_and_not_a_fourth():
     """Норма на ход — три приёма, четвёртый не пускают."""
     from bot.game.abilities import MAX_PER_TURN

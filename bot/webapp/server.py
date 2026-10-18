@@ -152,6 +152,11 @@ from bot.work_service import quit_job as work_quit
 from bot.work_service import quiz_payload
 from bot.work_service import settle as work_settle
 from bot.work_service import start_shift, vacancies
+from bot.duty_service import (
+    DutyError,
+    hand_back as duty_hand_back,
+    take as duty_take,
+)
 from bot.driving_service import (
     SchoolError,
     answer as school_answer,
@@ -1531,9 +1536,17 @@ async def api_police_action(request: web.Request) -> web.Response:
             # В полицию берут в полиции: тест агентства заменила академия
             place = await hire_at_house(db, player, str(data.get("job") or ""))
             said = f"Ты принят: {place.title}. Форму получишь на месте."
+        elif action == "take_kit":
+            said = await duty_take(db, player, str(data.get("item") or ""))
+        elif action == "hand_kit":
+            given = await duty_hand_back(db, player, str(data.get("item") or ""))
+            said = (
+                "Форма сдана на склад." if given
+                else "Сдавать нечего: на руках ничего нет."
+            )
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
-    except (PoliceError, WorkError) as error:
+    except (DutyError, PoliceError, WorkError) as error:
         return web.json_response({"error": str(error)}, status=409)
     except (TypeError, ValueError):
         return web.json_response({"error": "Непонятный ответ."}, status=400)

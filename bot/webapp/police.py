@@ -96,6 +96,9 @@ async def duty_jobs(db, player: Player, now: int) -> list[dict[str, Any]]:
     return out
 
 
+CHIEF_JOB = "police_chief"
+
+
 async def build_police_board(
     db, player: Player, now: int | None = None
 ) -> dict[str, Any]:
@@ -136,7 +139,47 @@ async def build_police_board(
     body["vault"] = sheet["vault"]
     body["officers"] = sheet["officers"]
     body["week"] = sheet["week"]
+    body["office"] = office_payload(player, sheet)
     return body
+
+
+# Кабинет начальника: стойка с формой и места под машины. Числа те же,
+# что у семьи: пятнадцать ячеек склада и три места в гараже — кабинет
+# для города ровно то же, чем особняк для семьи, и считать их разными
+# мерками не из чего
+RACK_SLOTS = 15
+GARAGE_SLOTS = 3
+
+
+def office_payload(player: Player, sheet: dict[str, Any]) -> dict[str, Any]:
+    """Кабинет начальника. Пусто — боец не в кресле.
+
+    Кабинет один на город, и открывает его не значок, а должность: в
+    дежурную часть ходят все сотрудники, за форму и казну отвечает
+    начальник.
+    """
+    from bot.duty_service import rack_rows
+    from bot.game.work import get_vacancy
+
+    if player.job_code != CHIEF_JOB:
+        return {}
+    vacancy = get_vacancy(CHIEF_JOB)
+    rack = rack_rows(player, CHIEF_JOB)
+    return {
+        "post": vacancy.title if vacancy else "Начальник полиции",
+        "vault": sheet["vault"],
+        "officers": sheet["officers"],
+        "week": sheet["week"],
+        "salary": vacancy.salary if vacancy else 0,
+        "rack": rack,
+        "slots": RACK_SLOTS,
+        "free": max(0, RACK_SLOTS - len(rack)),
+        "taken": sum(1 for one in rack if one["taken"]),
+        # Машин в городе пока нет — но места под них отведены и видны,
+        # как в гараже семьи: пустая полка говорит, что сюда что-то
+        # будет, а её отсутствие не говорит ничего
+        "garage": {"slots": GARAGE_SLOTS, "cars": [], "soon": True},
+    }
 
 
 async def _names(db, sheet: dict) -> dict[int, str]:
