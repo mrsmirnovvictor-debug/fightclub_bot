@@ -11,7 +11,7 @@ import pytest
 
 from bot.config import Config
 from bot.game.combat import Fighter
-from bot.game.economy import MAX_LEVEL
+from bot.game.economy import GEAR_TOP_LEVEL, MAX_LEVEL
 from bot.game.potions import RAID_PASS
 from bot.game.raid import (
     BOSS_ID,
@@ -1044,7 +1044,7 @@ def test_the_hammer_sits_on_the_tenth_rung_of_the_ladder():
     ninth = get_item("splitting_axe")
     tenth = get_item("fan_boss_bat")
 
-    assert hammer.level_required == MAX_LEVEL
+    assert hammer.level_required == GEAR_TOP_LEVEL
     assert hammer.accuracy == tenth.accuracy == round(ninth.accuracy + 0.07, 2)
     assert hammer.anticrit == tenth.anticrit
     assert hammer.requires.endurance == tenth.requires.endurance
@@ -1141,7 +1141,9 @@ def test_the_boss_is_dressed_by_his_own_step_not_the_partys():
     """
     from bot.game.raid import BOSS_GEAR_LEVEL
 
-    assert BOSS_GEAR_LEVEL == MAX_LEVEL
+    # Одевается босс по потолку прилавка, а не по потолку уровней:
+    # вещей выше десятой ступени в городе нет
+    assert BOSS_GEAR_LEVEL == GEAR_TOP_LEVEL
 
     rookies = boss_fighter(CELLAR_BOSS, [3, 3, 3])
     veterans = boss_fighter(CELLAR_BOSS, [10, 10, 10])
@@ -1165,13 +1167,13 @@ def test_the_hammer_makes_the_boss_hit_harder_than_a_dressed_player():
     from bot.game.reference import best_kit, developed_stats, equipment_of
 
     fclass = get_class("tank")
-    gear = equipment_of(dict(best_kit(fclass, MAX_LEVEL)))
+    gear = equipment_of(dict(best_kit(fclass, GEAR_TOP_LEVEL)))
     player = Fighter(
         user_id=1, name="Танк", fclass=fclass,
-        stats=developed_stats(fclass, MAX_LEVEL).merge(gear.bonus),
-        level=MAX_LEVEL, equipment=gear,
+        stats=developed_stats(fclass, GEAR_TOP_LEVEL).merge(gear.bonus),
+        level=GEAR_TOP_LEVEL, equipment=gear,
     )
-    boss = boss_fighter(CELLAR_BOSS, [MAX_LEVEL] * 3)
+    boss = boss_fighter(CELLAR_BOSS, [GEAR_TOP_LEVEL] * 3)
 
     def ceiling(one):
         return one.derived.damage_max + one.equipment.weapon_damage[1] * one.fclass.damage_mult

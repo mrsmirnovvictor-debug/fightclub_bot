@@ -3885,6 +3885,23 @@ class Database:
             row = await cursor.fetchone()
         return (int(row["until"]), int(row["times"])) if row else (0, 0)
 
+    async def inmates(self, now: int) -> list[tuple[int, int, int]]:
+        """Кто сидит сейчас: номер, до какого часа и в который раз.
+
+        Отсидевшие остаются строкой — по ней считается, в который раз
+        человека берут, — и в список они не идут: срок кончился.
+        """
+        async with self.conn.execute(
+            "SELECT user_id, until, times FROM jail WHERE until > ? "
+            "ORDER BY until",
+            (now,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            (int(row["user_id"]), int(row["until"]), int(row["times"]))
+            for row in rows
+        ]
+
     async def put_in_jail(self, user_id: int, until: int, times: int) -> None:
         """Посадить до этого часа и записать, который это раз.
 

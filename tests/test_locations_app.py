@@ -86,9 +86,9 @@ async def test_houses_without_a_trade_say_so(client, db):
         houses["car_dealership"]["soon"]
         and houses["car_dealership"]["services"] == ["work"]
     )
-    # А вот за тюрьмой услуги пока нет вовсе: только обещание
-    assert houses["prison"]["works"] is False
-    assert houses["prison"]["soon"] and houses["prison"]["services"] == []
+    # Тюрьма открылась: свой срок и список сидящих
+    assert houses["prison"]["works"] is True
+    assert houses["prison"]["services"] == ["prison"]
     # А стадион уже открыт: за ним второй рейд города
     assert houses["stadium"]["works"] is True
     assert houses["stadium"]["services"] == ["raid"]

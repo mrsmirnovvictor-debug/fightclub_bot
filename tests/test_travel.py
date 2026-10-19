@@ -596,7 +596,7 @@ def test_houses_without_a_trade_are_still_on_the_map():
     from bot.game.locations import LOCATIONS
 
     coming = [place for place in LOCATIONS if not place.works]
-    # Четыре дома второй и третьей очереди: город вырос картинками
+    # Три дома второй и третьей очереди: город вырос картинками
     # раньше, чем правилами, и это нормально — лишь бы в каждом было
     # сказано, чего в нём ждать. Дома из этого списка выходят по одному:
     # в больнице лечат, на рынке меняются, в страховой оформляют полис, в
@@ -604,8 +604,11 @@ def test_houses_without_a_trade_are_still_on_the_map():
     # стадионе встречают фанатский сектор, у ювелира торгуют украшениями,
     # в автошколе учат на права, в особняке мафии заводят кланы, а в
     # жилых домах снимают квартиры
-    assert {"prison", "dormitory"} <= {place.code for place in coming}
+    assert {"dormitory"} <= {place.code for place in coming}
     assert not {
+        # Тюрьма открылась своим экраном: сидящий видит срок часами, а
+        # всякий вошедший — список тех, кто сидит
+        "prison",
         "hospital", "market", "insurance_office", "strength_gym", "bank",
         "hr_agency", "stadium", "jewelry_store", "driving_school", "vcpd",
         "mafia_mansion", "residential_apartment", "residential_apartment_2",
@@ -623,7 +626,7 @@ def test_houses_without_a_trade_are_still_on_the_map():
     assert not {
         "cadet_corps", "medical_college", "police_school", "university",
     } & {place.code for place in coming}
-    assert len(coming) == 4
+    assert len(coming) == 3, "тюрьма открылась и из списка вышла"
     # Бар — особый случай: за ним уже стоит работа, но обещано сверх неё
     # и другое. У такого дома есть и услуга, и строка «скоро»
     from bot.game.locations import get_location

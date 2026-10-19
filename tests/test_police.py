@@ -532,3 +532,72 @@ async def test_the_handler_files_and_repays(db, client):
     )).json()
     assert "400" in body["said"]
     assert (await db.get_player(victim.user_id)).credits == 400
+
+
+# ---------- тюрьма: свой срок и соседи по камере ----------
+
+
+async def test_the_prison_shows_the_term_and_the_inmates(db, client):
+    """Экран тюрьмы: свой срок часами и все, кто сидит сейчас.
+
+    До сих пор сидящий узнавал, сколько ему осталось, только попытавшись
+    выйти: дорога отвечала отказом и называла срок. Теперь он стоит
+    часами, а рядом — список тех, кто сидит, и час выхода каждого.
+    """
+    from bot.police_service import jail
+
+    first = make_player(60, "Марла", where=PRISON)
+    second = make_player(61, "Тайлер", where=PRISON)
+    free = make_player(62, "Боб", where=PRISON)
+    for one in (first, second, free):
+        await db.save_player(one)
+    await jail(db, 60, NOW)
+    await jail(db, 61, NOW)
+    await jail(db, 61, NOW)  # второй раз: срок длиннее
+
+    body = await (await client.get(
+        "/api/prison", headers=headers(60)
+    )).json()
+    rows = {one["name"]: one for one in body["inmates"]}
+    assert body["total"] == 2 and set(rows) == {"Марла", "Тайлер"}
+    assert body["mine"]["name"] == "Марла" and body["mine"]["mine"] is True
+    assert rows["Марла"]["hours"] == JAIL_TERMS[0]
+    assert rows["Тайлер"]["hours"] == JAIL_TERMS[1], "вторая отсидка длиннее"
+    assert rows["Тайлер"]["left"] > rows["Марла"]["left"]
+    assert body["terms"] == list(JAIL_TERMS)
+
+    # Вольный видит тот же список, но своей строки в нём нет
+    body = await (await client.get(
+        "/api/prison", headers=headers(62)
+    )).json()
+    assert body["mine"] is None and body["total"] == 2
+    assert all(not one["mine"] for one in body["inmates"])
+
+
+async def test_the_prison_is_looked_at_from_inside(db, client):
+    """В тюрьму заходят ногами: с улицы список не смотрят."""
+    away = make_player(63, "Гуляка", where=VCPD)
+    await db.save_player(away)
+
+    answer = await client.get("/api/prison", headers=headers(63))
+    assert answer.status == 409
+
+
+async def test_the_served_term_leaves_the_list(db, client):
+    """Отсидевший уходит из списка сам: его отпускает время.
+
+    Часы тут настоящие: ручка смотрит на сегодняшний час, а `NOW`
+    лежит в будущем — посаженный «вчера» по нему сидел бы до весны.
+    """
+    from bot.game.health import now_ts
+    from bot.police_service import jail
+
+    one = make_player(64, "Отсидевший", where=PRISON)
+    await db.save_player(one)
+    await jail(db, 64, now_ts() - 2 * JAIL_TERMS[0] * 3600)
+
+    body = await (await client.get(
+        "/api/prison", headers=headers(64)
+    )).json()
+    assert body["inmates"] == [] and body["mine"] is None
+    assert "Камеры пусты" in body["note"]

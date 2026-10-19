@@ -8706,7 +8706,9 @@ async def test_a_running_training_counts_down_and_offers_to_leave(server):
 
         assert "Силовая тренировка" in await page.locator(".gym-now-title").inner_text()
         clock = await page.locator("#gym-clock").inner_text()
-        assert clock.startswith("Осталось 14:") or clock.startswith("Осталось 15:")
+        assert clock.startswith("Осталось 00:14:") or clock.startswith(
+            "Осталось 00:15:"
+        )
         assert "Уйти с тренировки" in await page.locator(".gym-now .btn").inner_text()
         assert "не уходи из зала" in (
             await page.locator("#gym-note").inner_text()
@@ -9348,7 +9350,9 @@ async def test_a_running_shift_counts_down_and_says_the_door_is_shut(server):
         await page.wait_for_selector(".shift-clock")
 
         clock = await page.locator("#work-clock").inner_text()
-        assert clock.startswith("Осталось 29:") or clock.startswith("Осталось 30:")
+        assert clock.startswith("Осталось 00:29:") or clock.startswith(
+            "Осталось 00:30:"
+        )
         assert "не выйти" in await page.locator(".shift .screen-note").inner_text()
         # Пока смена идёт, начинать нечего
         assert await page.locator(".shift .btn").count() == 0
@@ -10968,6 +10972,64 @@ async def test_the_family_page_shows_the_garage_and_the_licences(server, db):
         assert str(GOAL_REWARD // 1000) in shop
         await browser.close()
 
+# ---------- тюрьма ----------
+
+
+async def test_the_prison_counts_the_term_and_lists_the_inmates(server, db):
+    """Экран тюрьмы: свой срок часами и соседи по камере.
+
+    Часы тикают на странице, а час выхода считает сервер — как у смены
+    и у сбора в рейд. Отсидка у каждого своя, и видно, чья длиннее.
+    """
+    from bot.game.health import now_ts
+    from bot.police_service import jail
+    from bot.webapp.prison import build_prison
+    from tests.test_robbery import make_player as a_fighter
+
+    now = now_ts()
+    for number, name in ((51, "Марла"), (52, "Тайлер")):
+        one = a_fighter(number, name)
+        await db.save_player(one)
+    await jail(db, 51, now)
+    await jail(db, 52, now)
+    await jail(db, 52, now)  # второй раз: срок вдвое длиннее
+
+    sitting = await db.get_player(51)
+    body = await build_prison(db, sitting, now)
+    card = build_card(sitting, TOKEN, viewer_id=sitting.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/prison*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "prison")
+        await page.wait_for_selector("#prison-body .shelf")
+
+        # Свой срок — первой полкой, часами и с часом выхода
+        mine = await page.locator("#prison .shift").inner_text()
+        assert "Ты сидишь" in mine and "Осталось 02:5" in mine
+        assert "Отсидка 1-я, срок 3 ч" in mine
+
+        # И он идёт: через секунду на экране уже другое число
+        first = await page.locator("#prison .shift-clock").inner_text()
+        await page.wait_for_timeout(1200)
+        assert await page.locator("#prison .shift-clock").inner_text() != first
+
+        rows = page.locator("#prison .neighbour")
+        assert await rows.count() == 2
+        names = await rows.locator(".neighbour-name").all_inner_texts()
+        assert "Марла · ты" in names and "Тайлер" in names
+        # Своя строка обведена: себя в списке ищут первым делом
+        assert await page.locator("#prison .neighbour.me").count() == 1
+        said = await page.locator("#prison-body").inner_text()
+        assert "Отсидка 2-я, срок 6 ч" in said, "вторая отсидка длиннее"
+        assert "3, 6, 12, 24 ч" in said
+        await page.evaluate("stopPrisonClock()")
+        await browser.close()
+
+
 # ---------- война за территории ----------
 
 
@@ -11488,9 +11550,12 @@ async def test_the_map_wears_the_badge_of_the_family_that_holds_it(server, db):
     from bot.webapp.turf import build_war, map_marks
     from tests.test_turf import NOW, family, stand
 
+    from tests.test_turf import patrolled
+
     don, squad, clan = await family(db)
     await db.take_turf("casino", "clan", str(clan.id), NOW)
-    await db.take_turf("pawnshop", "service", "police", NOW)
+    # Городскую точку держит патрульный: без него она городская и так
+    await patrolled(db, "pawnshop", user_id=77, when=NOW)
     await stand(db, squad, "casino")
     don = await db.get_player(don.user_id)
     city = build_map(don, raids={}, turf=map_marks(await build_war(db, don, None, NOW)))

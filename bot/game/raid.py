@@ -33,7 +33,7 @@ from bot.game.classes import (
     block_combo,
 )
 from bot.game.combat import Action, Fighter
-from bot.game.economy import MAX_LEVEL
+from bot.game.economy import GEAR_TOP_LEVEL, MAX_LEVEL
 from bot.game.equipment import (
     Equipment,
     FAN_SHELF,
@@ -175,7 +175,7 @@ def prize_of(code: str) -> tuple[str, str] | None:
 # Часы общие с остальным клубом: `MOSCOW` и `_day_of` берутся из
 # `bot.game.clock`.
 # По какой ступени прилавка одет босс. Своя, а не отрядная: см. boss_kit
-BOSS_GEAR_LEVEL = MAX_LEVEL
+BOSS_GEAR_LEVEL = GEAR_TOP_LEVEL
 
 # Откуда берётся комплект противника: клубный прилавок или фанатский
 # магазин «Северный Вал». Фанатская линия своя у каждого класса, и
@@ -730,7 +730,7 @@ GANG_BUILD = 3
 
 # Уровень гопников твёрдый: они не подстраиваются под отряд, как босс
 # казино, и выше игроков не бывают. Сложность рейда — в их числе
-GANG_LEVEL = MAX_LEVEL
+GANG_LEVEL = GEAR_TOP_LEVEL
 
 # Сколько человек должна собрать стычка. Трое — не прихоть: банда выходит
 # впятером, и вдвоём против пятерых нечего и начинать

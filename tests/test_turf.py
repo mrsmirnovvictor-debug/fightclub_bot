@@ -516,6 +516,34 @@ async def test_the_abandoned_spot_goes_back_to_the_city(db):
     assert "bar" not in await db.turf_rows()
 
 
+async def test_the_city_keeps_a_spot_only_while_someone_stands_on_it(db):
+    """Снял патрульного — дом в тот же миг под городской охраной.
+
+    Сутки ожидания придуманы для семьи: она дом присваивает. Город его
+    не присваивает, а охраняет, и пустая вывеска участка не значит
+    ничего — ни дохода, ни владельца.
+    """
+    from bot.hire_service import hire, post as post_hireling
+    from tests.test_police import cop
+
+    officer = await cop(db, 93, "Ragnar")
+    officer.location = "market"
+    officer.credits = 10_000
+    await db.save_player(officer)
+    await hire(db, await db.get_player(93), "patrol_5", now=NOW)
+    mine = (await db.hirelings_of(93))[0]
+    await post_hireling(db, await db.get_player(93), int(mine["id"]),
+                        "market", now=NOW)
+    assert (await db.turf_rows())["market"].owner == owner_of_service("police")
+
+    # Патрульного сняли — и дом сразу городской, без суток ожидания
+    await db.drop_hireling(int(mine["id"]))
+    rows = await survey(db, NOW + 60)
+    here = next(one for one in rows if one.spot.code == "market")
+    assert here.owner.nobody, "город не держит дом одной вывеской"
+    assert "market" not in await db.turf_rows()
+
+
 async def test_the_guarded_spot_is_not_abandoned(db):
     """Поставил человека — час опустения сброшен, дом остаётся за семьёй."""
     from bot.game.turf import ABANDON_SECONDS
@@ -802,7 +830,7 @@ async def test_the_marks_say_whose_the_spot_is(db, client):
     """Отметка в строке: своя точка — флаг, ничья — круг, служба — щит."""
     don, squad, clan = await family(db)
     await seize(db, don, squad, "bar")
-    await db.take_turf("casino", "service", "police", NOW)
+    await patrolled(db, "casino")
 
     body = await (await client.get(
         "/api/turf", headers=headers(don.user_id)
@@ -811,6 +839,26 @@ async def test_the_marks_say_whose_the_spot_is(db, client):
     assert rows["bar"]["mark"] == "🚩" and rows["bar"]["mine"] is True
     assert rows["casino"]["mark"] == "🛡"
     assert rows["market"]["mark"] == "⚪️"
+
+
+async def patrolled(db, code: str, user_id: int = 90, when: int = NOW) -> None:
+    """Поставить на точку патрульного: без него город её не держит.
+
+    Пустую городскую точку обзор возвращает под обычную охрану в тот же
+    миг — полиция дом не присваивает, а охраняет.
+    """
+    from bot.hire_service import hire, post as post_hireling
+    from tests.test_police import cop
+
+    officer = await cop(db, user_id, "Патрульный")
+    officer.location = code
+    officer.credits = 10_000
+    await db.save_player(officer)
+    await hire(db, await db.get_player(user_id), "patrol_5", now=when)
+    mine = [one for one in await db.hirelings_of(user_id) if not one["spot"]]
+    await post_hireling(
+        db, await db.get_player(user_id), int(mine[0]["id"]), code, now=when
+    )
 
 
 async def post(client, user_id: int, **body):
@@ -916,7 +964,7 @@ async def test_the_city_map_carries_the_marks_and_the_band(db, client):
     там строкой под каждой вывеской, и карта читалась как ведомость.
     """
     don, squad, clan = await family(db)
-    await db.take_turf("casino", "service", "police", NOW)
+    await patrolled(db, "casino")
     await db.take_turf("market", "clan", str(clan.id), NOW)
     await stand(db, squad, "bar")
 
@@ -964,7 +1012,7 @@ async def test_the_map_band_keeps_quiet_when_there_is_nothing_to_press(
     rival, rivals, _ = await family(
         db, first=20, name="Бешеные псы", sign="silver_wolves"
     )
-    await db.take_turf("bar", "service", "police", NOW)
+    await patrolled(db, "bar")
     await stand(db, squad + rivals, "bar")
     # Чужая семья уже собралась на бар — второго отряда он не ждёт
     assert (await post(client, rival.user_id, action="call",

@@ -1888,7 +1888,8 @@ function lotCard(lot) {
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
-  "study", "turf", "crowd", "elections", "trade", "house", "bag", "hero",
+  "study", "turf", "crowd", "elections", "trade", "house", "prison",
+  "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1900,7 +1901,7 @@ const OPENED_FROM = {
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
   tavern: "map", study: "map", turf: "map", crowd: "map",
-  elections: "map", house: "map",
+  elections: "map", house: "map", prison: "map",
 };
 let lastTab = "hero";
 
@@ -1964,6 +1965,10 @@ function showTab(name) {
   } else stopCrowdPoll();
   // Администрация: фаза цикла могла смениться, пока на неё не смотрели
   if (name === "elections") loadElections();
+  // Тюрьма: сроки идут и без нас, но стрелки рисуем, только пока на
+  // них смотрят. Ушёл с экрана — часы гасим
+  if (name === "prison") loadPrison();
+  else stopPrisonClock();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2474,6 +2479,7 @@ const HOUSE_SCREENS = {
   school: () => showTab("school"),
   police: () => showTab("police"),
   mafia: () => showTab("mafia"),
+  prison: () => openPrison(),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -3750,6 +3756,22 @@ function stopWatchingRaid() {
   raidRate = 0;
   if (raidClock) clearInterval(raidClock);
   raidClock = null;
+}
+
+/** Срок в часах, минутах и секундах: 01:59:03.
+
+    Длинные сроки — смена, занятие, тренировка, отсидка — читают именно
+    так: «осталось 119:03» про два часа не говорит ничего, а «01:59:03»
+    говорит всё. Рядом живёт `longClock` — тот же срок словами, для
+    мест, где секунды не нужны вовсе. */
+function fullClock(seconds) {
+  const left = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(left / 3600);
+  const minutes = Math.floor((left % 3600) / 60);
+  const rest = left % 60;
+  return [hours, minutes, rest]
+    .map((one) => String(one).padStart(2, "0"))
+    .join(":");
 }
 
 function clockText(seconds) {
@@ -6662,10 +6684,7 @@ function tickGym() {
     loadGym();
     return;
   }
-  const minutes = Math.floor(left / 60);
-  const seconds = left % 60;
-  shown.textContent =
-    "Осталось " + minutes + ":" + String(seconds).padStart(2, "0");
+  shown.textContent = "Осталось " + fullClock(left);
 }
 
 // ---------- прогресс ----------
@@ -8042,10 +8061,7 @@ function tickWork() {
     loadWork();
     return;
   }
-  const minutes = Math.floor(left / 60);
-  const seconds = left % 60;
-  shown.textContent =
-    "Осталось " + minutes + ":" + String(seconds).padStart(2, "0");
+  shown.textContent = "Осталось " + fullClock(left);
 }
 
 function dayBox(data) {
@@ -10643,6 +10659,146 @@ async function loadBallot() {
   }
 }
 
+// ---------- тюрьма: свой срок и те, кто сидит рядом ----------
+
+let prisonData = null;
+let prisonTimer = null;
+
+async function openPrison() {
+  showTab("prison");
+  await loadPrison();
+}
+
+async function loadPrison() {
+  try {
+    const response = await fetch("api/prison", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Тюрьма не отвечает.");
+    const data = await response.json();
+    if (data.card) render(data.card, true);
+    renderPrison(data);
+  } catch (error) {
+    el("prison-note").textContent = error.message;
+  }
+}
+
+function renderPrison(data) {
+  prisonData = data;
+  el("prison-note").textContent = data.note || "";
+  const body = el("prison-body");
+  body.textContent = "";
+
+  // Свой срок — первой полкой: сидящему всё остальное пока не важно
+  if (data.mine) body.appendChild(myTermBox(data.mine));
+  body.appendChild(inmatesBox(data));
+  startPrisonClock();
+}
+
+/** Свой срок: часы идут на странице, а час выхода считает сервер. */
+function myTermBox(term) {
+  const box = document.createElement("section");
+  box.className = "shift";
+  const head = document.createElement("div");
+  head.className = "shift-head";
+  head.textContent = "Ты сидишь";
+  const clock = document.createElement("div");
+  clock.className = "shift-clock jail-clock";
+  clock.dataset.until = String(term.until);
+  clock.textContent = "Осталось " + fullClock(term.left);
+  box.append(head, clock);
+
+  const note = document.createElement("p");
+  note.className = "screen-note";
+  note.textContent =
+    "Отсидка " + term.times + "-я, срок " + term.hours + " ч. Выйдешь "
+    + term.out_text + ". Из тюрьмы не выходят — ждут.";
+  box.appendChild(note);
+  return box;
+}
+
+/** Кто сидит сейчас: имя, который это раз и сколько осталось. */
+function inmatesBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "За решёткой · " + (data.total || 0);
+  box.appendChild(head);
+
+  if (!(data.inmates || []).length) {
+    const empty = document.createElement("p");
+    empty.className = "shelf-empty";
+    empty.textContent = "Камеры пусты.";
+    box.appendChild(empty);
+    return box;
+  }
+
+  (data.inmates || []).forEach((one) => {
+    const row = document.createElement("article");
+    row.className = "neighbour" + (one.mine ? " me" : "");
+    const line = document.createElement("header");
+    line.className = "neighbour-head";
+    const name = document.createElement("span");
+    name.className = "neighbour-name";
+    name.textContent = one.name + (one.mine ? " · ты" : "");
+    // Часы у каждого свои: час выхода приезжает с сервера, секунды
+    // отсчитывает страница — как у сбора в рейд
+    const left = document.createElement("span");
+    left.className = "neighbour-clan jail-clock";
+    left.dataset.until = String(one.until);
+    left.textContent = fullClock(one.left);
+    line.append(name, left);
+    row.appendChild(line);
+
+    const note = document.createElement("p");
+    note.className = "neighbour-note";
+    note.textContent =
+      "Отсидка " + one.times + "-я, срок " + one.hours + " ч. Выйдет "
+      + one.out_text + ".";
+    row.appendChild(note);
+    box.appendChild(row);
+  });
+
+  const ladder = document.createElement("p");
+  ladder.className = "thing-note";
+  ladder.textContent =
+    "Срок растёт от числа отсидок: " + (data.terms || []).join(", ")
+    + " ч, дальше столько же.";
+  box.appendChild(ladder);
+  return box;
+}
+
+function startPrisonClock() {
+  stopPrisonClock();
+  prisonTimer = setInterval(tickPrison, 1000);
+  tickPrison();
+}
+
+function stopPrisonClock() {
+  if (prisonTimer) clearInterval(prisonTimer);
+  prisonTimer = null;
+}
+
+function tickPrison() {
+  const nodes = document.querySelectorAll("#prison .jail-clock");
+  if (!nodes.length) {
+    stopPrisonClock();
+    return;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  let over = false;
+  nodes.forEach((node) => {
+    const left = Math.max(0, Number(node.dataset.until || 0) - now);
+    if (!left) over = true;
+    const head = node.classList.contains("shift-clock") ? "Осталось " : "";
+    node.textContent = head + fullClock(left);
+  });
+  // Чей-то срок вышел — спрашиваем сервер, кто ещё сидит: решать это
+  // страница не должна
+  if (over) loadPrison();
+}
+
 // ---------- кто здесь: соседи по дому и ограбления ----------
 //
 // Экран один на весь город, и дом у него тот, в котором боец стоит.
@@ -11504,11 +11660,19 @@ function hireBox(data) {
   hire.grades.forEach((one) => {
     const card = document.createElement("article");
     card.className = "hire-card";
+    // Лицо живёт в рамке, а не само по себе: не доехавшая картинка
+    // заменяется значком класса — узлом вместо `img`, — и без рамки
+    // карточка складывалась бы, а кнопка цены растягивалась на её место
+    const frame = document.createElement("div");
+    frame.className = "hire-frame";
     if (one.picture) {
       const face = picture(one.picture, one.title, one.fclass || "");
       face.className = "hire-face";
-      card.appendChild(face);
+      frame.appendChild(face);
+    } else {
+      frame.textContent = one.fclass || "";
     }
+    card.appendChild(frame);
     const title = document.createElement("p");
     title.className = "hire-title";
     title.textContent = one.title;
@@ -12108,10 +12272,7 @@ function tickStudy() {
     loadStudy();
     return;
   }
-  const minutes = Math.floor(left / 60);
-  const seconds = left % 60;
-  shown.textContent =
-    "Осталось " + minutes + ":" + String(seconds).padStart(2, "0");
+  shown.textContent = "Осталось " + fullClock(left);
 }
 
 /** Выпускной билет: десять вопросов на одном экране и одна кнопка.
@@ -14181,7 +14342,7 @@ function paintDutyLine() {
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
-  "trade", "house",
+  "trade", "house", "prison",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -14336,7 +14497,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
-  "crowd", "elections", "shop", "magic",
+  "crowd", "elections", "shop", "magic", "prison",
   "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));

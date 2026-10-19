@@ -2416,6 +2416,22 @@ async def _elections_state(
     return web.json_response(body)
 
 
+async def api_prison(request: web.Request) -> web.Response:
+    """Тюрьма: свой срок и все, кто сидит сейчас.
+
+    Место тут есть: в тюрьму заходят ногами — и сидящий, которого в
+    ней заперли, и всякий, кто пришёл посмотреть на список.
+    """
+    from bot.webapp.prison import build_prison
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    player = await _at(request, Service.PRISON)
+    body = await build_prison(db, player, now_ts())
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
 async def api_elections(request: web.Request) -> web.Response:
     """Выборы: кандидаты, свой голос и что сейчас можно.
 
@@ -2942,6 +2958,7 @@ def create_app(
             web.post("/api/flats", api_house_action),
             web.get("/api/post", api_post),
             web.post("/api/post", api_post_action),
+            web.get("/api/prison", api_prison),
             web.get("/api/turf", api_turf),
             web.post("/api/turf", api_turf_action),
             web.get("/api/study", api_study),

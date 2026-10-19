@@ -5,6 +5,8 @@ import pytest
 
 from bot.game.classes import get_class
 from bot.game.economy import (
+    GEAR_TOP_LEVEL,
+    LATE_LEVEL,
     LEVEL_CREDITS,
     MAX_LEVEL,
     MICRO_UPS_PER_LEVEL,
@@ -31,6 +33,33 @@ def make_player(user_id=1, **kwargs):
 
 def test_exp_curve_grows():
     assert exp_to_next_level(1) < exp_to_next_level(2) < exp_to_next_level(3)
+
+
+def test_the_late_levels_cost_hundreds_of_fights():
+    """С десятого лестница другая: уровень стоит не вечер, а месяц.
+
+    До десятого уровень — это несколько вечеров, и так задумано: боец
+    должен успеть попробовать клуб. Дальше пять уровней, каждый из
+    которых стоит сотни боёв, — иначе потолок упирался бы в календарь
+    регистрации, а не в то, сколько человек дрался.
+    """
+    from bot.game.economy import EXP_BASE_WIN, win_exp
+
+    assert MAX_LEVEL == 15 and LATE_LEVEL == 10
+    # Ранние ступени прежние, поздние — на порядок дороже
+    assert exp_to_next_level(9) == 500
+    assert exp_to_next_level(LATE_LEVEL) == 8_000
+    for level in range(LATE_LEVEL, MAX_LEVEL):
+        assert exp_to_next_level(level) < exp_to_next_level(level + 1)
+
+    # Сотня боёв на уровень: победа над равным даёт около полутора
+    # сотен опыта, и половина боёв проигрывается
+    win = win_exp(250, LATE_LEVEL, LATE_LEVEL)
+    assert win > EXP_BASE_WIN
+    assert exp_to_next_level(LATE_LEVEL) // win >= 50
+
+    # Вещей выше десятой ступени в городе нет, и это другой потолок
+    assert GEAR_TOP_LEVEL == 10 and GEAR_TOP_LEVEL < MAX_LEVEL
 
 
 def test_quarter_of_a_level_gives_an_up():

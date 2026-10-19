@@ -397,7 +397,9 @@ async def test_the_mini_app_starts_the_effect_and_shows_the_clock(client, db):
     assert body["used"]["healed"] == 0
     assert body["used"]["seconds_left"] > EFFECT_SECONDS - 5
     assert [effect["code"] for effect in body["card"]["effects"]] == ["boost_hp"]
-    assert body["card"]["effects"][0]["left_text"] == "2 ч"
+    # Ровно два часа или на минуту меньше: между покупкой и ответом
+    # проходит время, и на медленной машине его видно
+    assert body["card"]["effects"][0]["left_text"] in ("2 ч", "1 ч 59 мин")
 
 
 async def test_the_mini_app_refuses_a_bottle_that_is_not_in_the_bag(client, db):

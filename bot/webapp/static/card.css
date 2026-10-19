@@ -1428,6 +1428,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   margin-bottom: 8px;
 }
 .neighbour.away { opacity: 0.6; }
+/* Своя строка в списке: себя в нём ищут первым делом */
+.neighbour.me { border-color: var(--accent); }
 .neighbour.fight { border-color: #b02020; }
 .neighbour-head {
   display: flex;
@@ -1474,6 +1476,21 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   background: var(--slot);
   text-align: center;
 }
+/* Рамка под лицо. Не доехавшая картинка заменяется значком класса —
+   текстовым узлом вместо `img`, — и стили самой картинки на него уже
+   не действуют: место держит рамка, иначе карточка складывается */
+.hire-frame {
+  width: 100%;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+  font-size: 22px;
+  color: var(--muted);
+}
 /* Лицо нанятого — рисунок в полный рост, и квадратная рамка срезала ему
    голову и ноги: `cover` обрезает всё, что не влезло. Теперь картинка
    идёт в своих пропорциях — ширина по карточке, высота какая выйдет, —
@@ -1484,18 +1501,20 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   height: auto;
   max-height: 200px;
   object-fit: contain;
-  border-radius: 8px;
-  background: var(--panel);
 }
 .hire-title { margin: 0; font-size: 12.5px; font-weight: 700; }
 .hire-note { margin: 0; font-size: 11.5px; color: var(--muted); }
 /* Кнопка цены живёт по ширине своей карточки: общий `min-width` у кнопок
    рассчитан на строку во весь экран, а здесь их три в ряд — и каждая
-   вылезала за свою рамку. `margin-top: auto` ставит все три на одну
-   черту, как бы ни переносились названия ступеней */
+   вылезала за свою рамку. `flex: 0 0 auto` не даёт ей тянуться в
+   высоту: у кнопок клуба стоит `flex: 1 1 auto`, и в колонке карточки
+   она разрасталась на всё свободное место — тем заметнее, чем меньше
+   места заняло лицо. `margin-top: auto` ставит все три на одну черту,
+   как бы ни переносились названия ступеней */
 .hire-card .btn {
   width: 100%;
   min-width: 0;
+  flex: 0 0 auto;
   margin-top: auto;
   padding: 6px 4px;
   font-size: 12.5px;

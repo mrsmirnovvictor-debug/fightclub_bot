@@ -16,9 +16,13 @@ async def test_the_wipe_clears_the_city_and_the_hired(db):
     """Сброс города: владельцы сняты, выставленные распущены."""
     from bot.hire_service import hire, post
 
+    from tests.test_turf import patrolled
+
     don, squad, clan = await family(db)
     await db.take_turf("bar", "clan", str(clan.id), NOW)
-    await db.take_turf("casino", "service", "police", NOW)
+    # Городская точка держится патрульным: без него обзор вернёт её
+    # городу в тот же миг
+    await patrolled(db, "casino", user_id=88, when=NOW)
     await stand(db, [don.user_id], "bar")
     rich = await db.get_player(don.user_id)
     rich.credits = 10_000
