@@ -1520,6 +1520,39 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-size: 12.5px;
 }
 
+/* ---------- турнирная арена ---------- */
+
+/* Пара сетки: двое друг под другом. Прошедший зелёный, вылетевший
+   красный — это и есть переход в следующий круг, нарисованный без
+   линий: дерево плей-оффа в ширину телефона не помещается */
+.bracket {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.bracket.mine { border-color: var(--accent); }
+.bracket-side {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 13.5px;
+}
+.bracket-side + .bracket-side { border-top: 1px solid var(--slot-line); }
+.bracket-name { font-weight: 600; }
+.bracket-mark { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.bracket-side.won .bracket-name,
+.bracket-side.won .bracket-mark { color: var(--hp-green); font-weight: 700; }
+.bracket-side.out .bracket-name,
+.bracket-side.out .bracket-mark { color: var(--hp-red); }
+.bracket-side.out .bracket-name { text-decoration: line-through; }
+.bracket-side.you .bracket-name { text-decoration-color: var(--accent); }
+.bracket-note { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.arena-clock { margin-top: 8px; }
+
 /* ---------- бонусный пулл недели ---------- */
 
 /* Дело недели: заголовок с премией, строка о сделанном и лестница под
@@ -2256,6 +2289,11 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
    показывает то, что сервер уже принял, а не то, что мы нажали. */
 .btn.wide { width: 100%; padding: 11px 10px; }
 .fight-open { display: grid; gap: 8px; margin-bottom: 12px; }
+/* Строка выбора в форме сбора: подпись сверху, чипы под ней. Подпись
+   своя у каждой строки — без неё четыре ряда чипов читались бы как
+   один длинный список, в котором непонятно, что к чему */
+.form-row { display: grid; gap: 4px; }
+.form-label { font-size: 12.5px; color: var(--muted); }
 .fight-card {
   border: 1px solid var(--line);
   border-radius: 8px;

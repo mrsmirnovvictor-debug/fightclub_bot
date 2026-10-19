@@ -1864,7 +1864,8 @@ async def api_battle(request: web.Request) -> web.Response:
 
 async def api_battle_action(request: web.Request) -> web.Response:
     """Действие в групповом бою: собрать, записаться, выйти, ударить."""
-    from bot.game.battle import BattleKind
+    from bot.game.battle import BattleKind, level_range, wait_seconds
+    from bot.game.modes import FightMode
 
     # Отряд собирают там же, где дерутся один на один
     player = await _at(request, Service.FIGHT, own=False)
@@ -1876,9 +1877,16 @@ async def api_battle_action(request: web.Request) -> web.Response:
     action = str(data.get("action", ""))
     try:
         if action == "open":
+            # Четыре вопроса созывающему: чем дерутся, сколько их,
+            # какого уровня зовут и сколько ждут состав
             kind = BattleKind(str(data.get("kind") or BattleKind.TEAM.value))
+            mode = FightMode(str(data.get("mode") or FightMode.ARMED.value))
+            levels = level_range(str(data.get("levels") or ""), player.level)
             await battles.open_lobby(
-                None, None, player, kind, _int_field(data, "size")
+                None, None, player, kind, _int_field(data, "size"),
+                mode=mode,
+                levels=levels,
+                wait=wait_seconds(int(data.get("wait") or 0)),
             )
         elif action == "join":
             # Сторона важна только в командном бою: в мясорубке её нет
@@ -2414,6 +2422,48 @@ async def _elections_state(
     body["ballot"] = ballot_payload(state)
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)
+
+
+async def _arena_state(request: web.Request, player, said: str = "") -> web.Response:
+    from bot.webapp.arena import build_arena
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_arena(db, player, request.app.get(DUELS_KEY), now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_arena(request: web.Request) -> web.Response:
+    """Турнирная арена: расписание, призовой фонд и сетка плей-офф."""
+    player = await _at(request, Service.ARENA)
+    return await _arena_state(request, player)
+
+
+async def api_arena_action(request: web.Request) -> web.Response:
+    """Дела арены: записаться в турнир и выйти на свой бой."""
+    from bot.arena_service import ArenaError, confirm as arena_confirm, sign_up
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.ARENA)
+    try:
+        if action == "join":
+            said = await sign_up(db, player, now_ts())
+        elif action == "ready":
+            said = await arena_confirm(
+                db, request.app.get(DUELS_KEY), player, now_ts()
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except ArenaError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _arena_state(request, fresh, said)
 
 
 async def api_prison(request: web.Request) -> web.Response:
@@ -2958,6 +3008,8 @@ def create_app(
             web.post("/api/flats", api_house_action),
             web.get("/api/post", api_post),
             web.post("/api/post", api_post_action),
+            web.get("/api/arena", api_arena),
+            web.post("/api/arena", api_arena_action),
             web.get("/api/prison", api_prison),
             web.get("/api/turf", api_turf),
             web.post("/api/turf", api_turf_action),

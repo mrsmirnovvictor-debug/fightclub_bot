@@ -263,6 +263,49 @@ async def test_lobby_without_a_second_side_is_cancelled(bot, db):
     await service.shutdown()
 
 
+async def test_the_lobby_waits_as_long_as_the_opener_said(bot, db):
+    """Срок сбора — у сбора, а не у клуба.
+
+    Раньше он был общий и приезжал из настроек бота: три минуты всем,
+    кто бы ни собирал. Теперь созывающий говорит, сколько ждёт, — и
+    по этому сроку тикают часы и в чате, и в карточке.
+    """
+    from bot.game.battle import wait_seconds
+
+    service = make_service(bot, db, lobby_timeout=600)
+    players = await fill(db, 2)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2,
+        wait=wait_seconds(3),
+    )
+    assert lobby.wait == 180
+    assert any("3 мин" in call.text for call in bot.sent)
+
+    # А из чата срок прежний, общий: там его не называют
+    await service.leave(lobby.id, players[0].user_id)
+    second = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    assert second.wait == 600
+    await service.shutdown()
+
+
+async def test_the_royale_starts_on_timeout_with_two(bot, db):
+    """Королевская битва идёт, если к сроку собрались хотя бы двое."""
+    service = make_service(bot, db, lobby_timeout=0)
+    players = await fill(db, 5)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.ROYALE, size=8
+    )
+    await service.join(lobby.id, players[1])
+
+    await lobby.task
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    assert session is not None and len(session.fighters) == 2
+    assert session.kind is BattleKind.ROYALE
+    await service.shutdown()
+
+
 # ---------- сам бой ----------
 
 

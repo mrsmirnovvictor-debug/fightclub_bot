@@ -125,6 +125,9 @@ class Lobby:
     min_level: int
     max_level: int
     opener_id: int
+    # Сколько секунд ждут состав. Срок у каждого сбора свой: его
+    # выбирает тот, кто собирает, — ему и решать, ждать ли своих
+    wait: int = 0
     chat_title: str = ""
     members: dict[int, int] = field(default_factory=dict)  # боец → сторона
     names: dict[int, str] = field(default_factory=dict)
@@ -265,6 +268,7 @@ class BattleService:
         mode: FightMode = FightMode.ARMED,
         levels: tuple[int, int] | None = None,
         chat_title: str = "",
+        wait: int = 0,
     ) -> Lobby:
         if chat_id is not None and (chat_id, thread_id) in self._by_chat:
             raise BattleError("В этой ветке уже собирают бой или дерутся.")
@@ -297,6 +301,9 @@ class BattleService:
             max_level=high,
             opener_id=opener.user_id,
             chat_title=chat_title,
+            # Срок сбора выбирают при созыве; из чата его не называют —
+            # там он общий для клуба, как был
+            wait=wait or self.config.lobby_timeout,
         )
         lobby.members[opener.user_id] = RED
         lobby.names[opener.user_id] = opener.nickname
@@ -308,7 +315,7 @@ class BattleService:
         message = await self.voice.send(
             chat_id,
             thread_id,
-            lobby_card(lobby, self.config.lobby_timeout),
+            lobby_card(lobby, lobby.wait),
             reply_markup=lobby_keyboard(lobby),
         )
         lobby.message_id = message.message_id if message else None
@@ -319,13 +326,13 @@ class BattleService:
         if kind is BattleKind.TEAM:
             if not MIN_TEAM_SIZE <= size <= MAX_TEAM_SIZE:
                 raise BattleError(
-                    f"Команда — от {MIN_TEAM_SIZE} до {MAX_TEAM_SIZE} бойцов. "
+                    f"Сторона — от {MIN_TEAM_SIZE} до {MAX_TEAM_SIZE} бойцов. "
                     "Например: /battle 3"
                 )
         elif not MIN_ROYALE <= size <= MAX_ROYALE:
             raise BattleError(
-                f"В королевскую битву зовут от {MIN_ROYALE} до {MAX_ROYALE} бойцов. "
-                "Например: /royale 6"
+                f"В королевскую битву зовут от {MIN_ROYALE} до {MAX_ROYALE} "
+                "бойцов. Например: /royale 6"
             )
         return size
 
@@ -378,13 +385,13 @@ class BattleService:
         await self.voice.edit(
             lobby.chat_id,
             lobby.message_id,
-            lobby_card(lobby, self.config.lobby_timeout),
+            lobby_card(lobby, lobby.wait),
             reply_markup=lobby_keyboard(lobby),
         )
 
     async def _lobby_timer(self, lobby: Lobby) -> None:
         try:
-            await asyncio.sleep(self.config.lobby_timeout)
+            await asyncio.sleep(lobby.wait)
         except asyncio.CancelledError:  # pragma: no cover - обычная отмена
             return
         if lobby.id not in self._lobbies:

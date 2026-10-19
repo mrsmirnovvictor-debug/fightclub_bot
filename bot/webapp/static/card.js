@@ -1888,7 +1888,7 @@ function lotCard(lot) {
 const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
-  "study", "turf", "crowd", "elections", "trade", "house", "prison",
+  "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
   "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
@@ -1901,7 +1901,7 @@ const OPENED_FROM = {
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
   tavern: "map", study: "map", turf: "map", crowd: "map",
-  elections: "map", house: "map", prison: "map",
+  elections: "map", house: "map", prison: "map", arena: "map",
 };
 let lastTab = "hero";
 
@@ -1969,6 +1969,12 @@ function showTab(name) {
   // них смотрят. Ушёл с экрана — часы гасим
   if (name === "prison") loadPrison();
   else stopPrisonClock();
+  // Арена: круги идут по часам, и пока на неё смотрят — спрашиваем
+  // сервер, не пора ли следующий
+  if (name === "arena") {
+    loadArena();
+    armArenaPoll();
+  } else stopArenaPoll();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2480,6 +2486,7 @@ const HOUSE_SCREENS = {
   police: () => showTab("police"),
   mafia: () => showTab("mafia"),
   prison: () => openPrison(),
+  arena: () => openArena(),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -4667,34 +4674,109 @@ function renderBattle(data) {
   }
 }
 
+// Что выбрано в форме сбора: чем дерутся, сколько зовут, какого
+// уровня и сколько ждут. Живёт между перерисовками — ответ ручки
+// приходит каждые пару секунд, и сбрасывать выбор на каждом было бы
+// издевательством
+const battleForm = {
+  kind: "team",
+  mode: "armed",
+  size: 3,
+  levels: "near",
+  wait: 5,
+};
+
+/** Форма сбора: четыре вопроса и одна кнопка.
+
+    Раньше тут стояли четыре готовые кнопки — «командный на 2», «на 5»
+    и столько же для королевской битвы, — и всё остальное решалось за
+    игрока: оружие, уровни и срок сбора. Теперь спрашиваем. */
 function battleOpenForm(data) {
   const box = document.createElement("div");
   box.className = "fight-open";
+
   const line = document.createElement("p");
   line.className = "fight-line";
   line.textContent =
-    "Командный бой — сторона на сторону, королевская битва — каждый сам за " +
-    "себя. Уровни подбираются по твоему.";
+    "Командный бой — сторона на сторону, королевская битва — каждый сам "
+    + "за себя, и выигрывает последний на ногах.";
   box.appendChild(line);
 
-  data.kinds.forEach((kind) => {
-    const row = document.createElement("div");
-    row.className = "raid-sizes";
-    [kind.min, kind.max].forEach((size) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn wide";
-      btn.textContent =
-        kind.emoji + " " + kind.title + " на " + size;
-      btn.disabled = !data.can_fight;
-      btn.addEventListener("click", () =>
-        battleAction({ action: "open", kind: kind.code, size: size })
-      );
-      row.appendChild(btn);
-    });
-    box.appendChild(row);
-  });
+  // Чем дерутся и какой это бой
+  box.appendChild(formRow("Бой", (data.kinds || []).map((one) => ({
+    code: one.code,
+    title: one.emoji + " " + one.title,
+  })), "kind", () => renderBattle(battleData)));
+  box.appendChild(formRow("Чем", (data.modes || []).map((one) => ({
+    code: one.code,
+    title: one.emoji + " " + one.title,
+  })), "mode"));
+
+  // Сколько бойцов: у команды — с каждой стороны, у королевской — всего
+  const kind = (data.kinds || []).find((one) => one.code === battleForm.kind)
+    || { min: 2, max: 10 };
+  const sizes = [];
+  for (let size = kind.min; size <= kind.max; size += 1) {
+    sizes.push({ code: size, title: String(size) });
+  }
+  if (battleForm.size < kind.min) battleForm.size = kind.min;
+  if (battleForm.size > kind.max) battleForm.size = kind.max;
+  box.appendChild(formRow(
+    battleForm.kind === "team" ? "С каждой стороны" : "Бойцов", sizes, "size"
+  ));
+
+  box.appendChild(formRow("Уровень соперников",
+    (data.levels || []).map((one) => ({ code: one.code, title: one.title })),
+    "levels"));
+  box.appendChild(formRow("На сбор",
+    (data.waits || []).map((one) => ({ code: one.minutes, title: one.title })),
+    "wait"));
+
+  const note = document.createElement("p");
+  note.className = "fight-row-note";
+  const level = (data.levels || []).find((one) => one.code === battleForm.levels);
+  note.textContent =
+    (level ? level.note + " " : "")
+    + "Время вышло, а с каждой стороны есть хоть один — гонг.";
+  box.appendChild(note);
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "btn wide";
+  go.textContent = "⚔️ Собрать состав";
+  go.disabled = !data.can_fight;
+  go.addEventListener("click", () => battleAction({
+    action: "open",
+    kind: battleForm.kind,
+    mode: battleForm.mode,
+    size: battleForm.size,
+    levels: battleForm.levels,
+    wait: battleForm.wait,
+  }));
+  box.appendChild(go);
   return box;
+}
+
+/** Строка выбора: подпись и чипы. Выбранный горит, нажатый меняет. */
+function formRow(label, options, field, after) {
+  const row = document.createElement("div");
+  row.className = "form-row";
+  const name = document.createElement("span");
+  name.className = "form-label";
+  name.textContent = label;
+  row.appendChild(name);
+
+  const chips = document.createElement("div");
+  chips.className = "bubbles";
+  options.forEach((one) => {
+    chips.appendChild(chip(one.title, battleForm[field] === one.code, () => {
+      battleForm[field] = one.code;
+      if (after) after();
+      else renderBattle(battleData);
+    }));
+  });
+  row.appendChild(chips);
+  return row;
 }
 
 function battleLobby(lobby, mine) {
@@ -4703,9 +4785,10 @@ function battleLobby(lobby, mine) {
   const head = document.createElement("p");
   head.className = "fight-line";
   head.textContent =
-    lobby.emoji + " " + lobby.kind_title + " — " +
+    lobby.emoji + " " + lobby.kind_title + " " + lobby.mode.emoji + " — " +
     lobby.total + "/" + lobby.capacity +
-    " · уровни " + lobby.min_level + "–" + lobby.max_level;
+    " · уровни " + lobby.min_level + "–" + lobby.max_level +
+    " · сбор " + lobby.wait_text;
   box.appendChild(head);
 
   lobby.teams.forEach((team) => {
@@ -10659,6 +10742,263 @@ async function loadBallot() {
   }
 }
 
+// ---------- турнирная арена: недельный плей-офф ----------
+
+let arenaData = null;
+let arenaTimer = null;
+let arenaClock = null;
+
+async function openArena() {
+  showTab("arena");
+}
+
+function armArenaPoll() {
+  stopArenaPoll();
+  // Круги идут по часам, и развязку чужого боя приносит тот же ответ:
+  // пока на арену смотрят — спрашиваем раз в пять секунд
+  arenaTimer = setInterval(loadArena, 5000);
+  arenaClock = setInterval(tickArena, 1000);
+}
+
+function stopArenaPoll() {
+  if (arenaTimer) clearInterval(arenaTimer);
+  if (arenaClock) clearInterval(arenaClock);
+  arenaTimer = null;
+  arenaClock = null;
+}
+
+async function loadArena() {
+  try {
+    const response = await fetch("api/arena", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Арена не отвечает.");
+    const data = await response.json();
+    if (data.card) render(data.card, true);
+    renderArena(data);
+  } catch (error) {
+    el("arena-note").textContent = error.message;
+  }
+}
+
+async function arenaAction(payload) {
+  try {
+    const data = await post("api/arena", payload);
+    haptic((feedback) => feedback.impactOccurred("medium"));
+    if (data.card) render(data.card, true);
+    renderArena(data);
+  } catch (error) {
+    popup("Арена", error.message);
+    await loadArena();
+  }
+}
+
+function renderArena(data) {
+  arenaData = data;
+  el("arena-note").textContent = data.said || data.note || "";
+  el("shop-purse-arena").textContent = "";
+  el("shop-purse-arena").appendChild(purse(data.credits || 0));
+  const body = el("arena-body");
+  body.textContent = "";
+
+  body.appendChild(arenaHeadBox(data));
+  // Свой бой — первым делом: на него выходят, и у выхода есть срок
+  if (data.my_match) body.appendChild(myMatchBox(data));
+  (data.rounds || []).forEach((round) => body.appendChild(roundBox(round)));
+  if ((data.rounds || []).length === 0 && (data.players || []).length) {
+    body.appendChild(signedBox(data));
+  }
+}
+
+/** Шапка: пора, часы, призовой фонд и кнопка записи. */
+function arenaHeadBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🏆 " + data.phase_title;
+  box.appendChild(head);
+
+  const rows = [
+    ["Взнос", num(data.entry) + " 💰"],
+    ["Записались", String(data.signed)],
+    ["Призовой фонд", num(data.pot) + " 💰 · клуб добавляет "
+      + data.club_share + "%"],
+    ["Победителю", num(data.prizes.winner) + " 💰"],
+    ["Второму месту", num(data.prizes.runner) + " 💰"],
+  ];
+  if (data.until > 0) {
+    rows.push([arenaWhen(data), fullClock(Math.max(0, data.until - nowSec()))]);
+  }
+  box.appendChild(paperRows(rows));
+
+  if (data.champion) {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = "🥇 " + data.champion.name
+      + (data.runner_up ? " · 🥈 " + data.runner_up.name : "");
+    box.appendChild(said);
+  }
+
+  if (data.phase === "open") {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button(data.joined ? "Ты в списке" : "Записаться · " + num(data.entry) + " 💰", {
+        disabled: !data.can_join,
+        hint: data.joined
+          ? "Ты уже записан: жди гонга."
+          : "Не хватает кредитов на взнос.",
+        onClick: () => arenaAction({ action: "join" }),
+      })
+    );
+    box.appendChild(buttons);
+  }
+  return box;
+}
+
+function arenaWhen(data) {
+  if (data.phase === "open") return "Запись закроется через";
+  if (data.phase === "seeding") return "Первый бой через";
+  if (data.phase === "done") return "Следующая запись через";
+  return "Круг идёт";
+}
+
+/** Свой бой: соперник, часы выхода и кнопка. */
+function myMatchBox(data) {
+  const match = data.my_match;
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "⚔️ Твой бой";
+  box.appendChild(head);
+
+  const you = match.red && match.red.you ? match.red : match.blue;
+  const rival = match.red && match.red.you ? match.blue : match.red;
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = rival
+    ? "Соперник: " + rival.name + " · " + rival.level + " ур."
+    : "Соперника нет — проходишь дальше без боя.";
+  box.appendChild(said);
+
+  if (!rival) return box;
+  if (match.state === "live") {
+    const live = document.createElement("p");
+    live.className = "thing-note";
+    live.textContent = "Бой идёт: вкладка «Клуб», раздел «Бои».";
+    box.appendChild(live);
+    return box;
+  }
+
+  const clock = document.createElement("div");
+  clock.className = "shift-clock arena-clock";
+  clock.dataset.until = String(nowSec() + (match.left || 0));
+  clock.textContent = fullClock(match.left || 0);
+  box.appendChild(clock);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = (you && you.ready)
+    ? "Ты вышел. Ждём соперника: не выйдет — проходишь ты."
+    : "Выйти на бой нужно за " + Math.round(match.confirm / 60)
+      + " мин: не вышел — проходит соперник.";
+  box.appendChild(note);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("🥊 Выйти на бой", {
+      disabled: Boolean(you && you.ready) || !match.left,
+      hint: you && you.ready ? "Ты уже вышел." : "Время вышло.",
+      onClick: () => arenaAction({ action: "ready" }),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Круг сетки: пары одна под другой, прошедший зелёный. */
+function roundBox(round) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = round.title + " · " + round.at_text;
+  box.appendChild(head);
+
+  round.matches.forEach((match) => box.appendChild(matchRow(match)));
+  return box;
+}
+
+/** Пара: двое друг под другом, и видно, кто прошёл. */
+function matchRow(match) {
+  const row = document.createElement("article");
+  row.className = "bracket" + (match.mine ? " mine" : "");
+  [match.red, match.blue].forEach((side) => {
+    const line = document.createElement("div");
+    line.className = "bracket-side"
+      + (side && side.won ? " won" : "")
+      + (side && side.out ? " out" : "")
+      + (side && side.you ? " you" : "");
+    const name = document.createElement("span");
+    name.className = "bracket-name";
+    name.textContent = side
+      ? side.name + (side.you ? " · ты" : "")
+      : (match.bye ? "без соперника" : "—");
+    const mark = document.createElement("span");
+    mark.className = "bracket-mark";
+    mark.textContent = side
+      ? (side.won ? "прошёл" : side.out ? "вылетел" : side.level + " ур.")
+      : "";
+    line.append(name, mark);
+    row.appendChild(line);
+  });
+  if (match.note) {
+    const note = document.createElement("p");
+    note.className = "bracket-note";
+    note.textContent = match.note;
+    row.appendChild(note);
+  }
+  return row;
+}
+
+/** Записавшиеся, пока сетки ещё нет. */
+function signedBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Записались · " + data.signed;
+  box.appendChild(head);
+  (data.players || []).forEach((one) => {
+    const row = document.createElement("div");
+    row.className = "bracket-side" + (one.you ? " you" : "");
+    const name = document.createElement("span");
+    name.className = "bracket-name";
+    name.textContent = one.name + (one.you ? " · ты" : "");
+    const mark = document.createElement("span");
+    mark.className = "bracket-mark";
+    mark.textContent = one.level + " ур.";
+    row.append(name, mark);
+    box.appendChild(row);
+  });
+  return box;
+}
+
+function nowSec() {
+  return Math.floor(Date.now() / 1000);
+}
+
+function tickArena() {
+  const node = document.querySelector("#arena .arena-clock");
+  if (!node) return;
+  const left = Math.max(0, Number(node.dataset.until || 0) - nowSec());
+  node.textContent = fullClock(left);
+  if (!left) loadArena();
+}
+
 // ---------- тюрьма: свой срок и те, кто сидит рядом ----------
 
 let prisonData = null;
@@ -14342,7 +14682,7 @@ function paintDutyLine() {
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
-  "trade", "house", "prison",
+  "trade", "house", "prison", "arena",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -14497,7 +14837,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
-  "crowd", "elections", "shop", "magic", "prison",
+  "crowd", "elections", "shop", "magic", "prison", "arena",
   "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));

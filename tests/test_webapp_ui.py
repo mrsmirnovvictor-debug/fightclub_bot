@@ -4863,12 +4863,13 @@ async def open_squad(pw, server, battle=None):
 
 
 async def test_the_squad_section_offers_both_kinds_of_group_fight(server):
+    """Оба боя стоят первой строкой формы: выбрать можно любой."""
     async with async_playwright() as pw:
         browser, page = await open_squad(pw, server)
 
         body = await page.locator("#battle-body").inner_text()
-        assert "Командный бой на 2" in body
-        assert "Королевская битва на 8" in body
+        assert "Командный бой" in body and "Королевская битва" in body
+        assert "Собрать состав" in body
         assert "Собери состав" in await page.locator("#battle-note").inner_text()
         await browser.close()
 
@@ -10971,6 +10972,136 @@ async def test_the_family_page_shows_the_garage_and_the_licences(server, db):
         assert f"7 из {WEEKLY_GOAL}" in shop
         assert str(GOAL_REWARD // 1000) in shop
         await browser.close()
+
+async def test_the_battle_form_asks_four_questions(server, db):
+    """Форма сбора: чем дерутся, сколько зовут, кого и сколько ждут.
+
+    Раньше тут стояли четыре готовые кнопки, и всё остальное решалось
+    за игрока. Теперь спрашивают — и выбранное уходит на сервер одним
+    нажатием.
+    """
+    from bot.webapp.battle import build_battle
+
+    player = make_player("fight_club")
+    player.level = 7
+    await db.save_player(player)
+    body = build_battle(player, None)
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    sent = []
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, battle=body)
+        await page.route("**/api/battle", lambda route: (
+            sent.append(route.request.post_data)
+            if route.request.method == "POST" else None
+        ) or route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "club")
+        await page.evaluate("pickClubSection('battle')")
+        await page.wait_for_selector("#battle-body .form-row")
+        await page.evaluate("stopWatchingBattle()")
+
+        labels = await page.locator("#battle-body .form-label").all_inner_texts()
+        assert labels == [
+            "Бой", "Чем", "С каждой стороны", "Уровень соперников", "На сбор",
+        ]
+        # Бойцов от двух до десяти — по чипу на число
+        sizes = page.locator("#battle-body .form-row").nth(2)
+        assert await sizes.locator(".chip").all_inner_texts() == [
+            str(one) for one in range(2, 11)
+        ]
+        waits = page.locator("#battle-body .form-row").last
+        assert await waits.locator(".chip").all_inner_texts() == [
+            "3 мин", "5 мин", "10 мин",
+        ]
+
+        # Отвечаем на все четыре и собираем
+        await page.locator("#battle-body .chip", has_text="кулачный").click()
+        await sizes.locator(".chip", has_text="7").click()
+        await page.locator("#battle-body .chip", has_text="Только мой").click()
+        await page.locator("#battle-body .chip", has_text="10 мин").click()
+        await page.locator("#battle-body .btn", has_text="Собрать").click()
+        await page.wait_for_timeout(300)
+
+        assert json.loads(sent[-1]) == {
+            "action": "open", "kind": "team", "mode": "fist", "size": 7,
+            "levels": "same", "wait": 10,
+        }
+
+        # Королевская битва спрашивает то же самое, только бойцов там всего
+        await page.locator("#battle-body .chip", has_text="Королевская").click()
+        await page.wait_for_timeout(200)
+        labels = await page.locator("#battle-body .form-label").all_inner_texts()
+        assert labels[2] == "Бойцов"
+        await browser.close()
+
+
+# ---------- турнирная арена ----------
+
+
+async def test_the_arena_paints_the_bracket_in_two_colours(server, db):
+    """Сетка плей-офф: прошедший зелёный, вылетевший красный.
+
+    Дерево в ширину телефона не помещается, и рисовать его линиями
+    значило бы просить человека возить экран вбок. Круги идут сверху
+    вниз, пара за парой, и переход виден цветом.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from bot.arena_service import sign_up, sweep
+    from bot.game.arena import CONFIRM_SECONDS, round_at
+    from bot.webapp.arena import build_arena
+    from tests.test_robbery import make_player as a_fighter
+
+    msk = timezone(timedelta(hours=3))
+    noon = int(
+        datetime(2026, 10, 18, 13, 0, tzinfo=msk).timestamp()
+    )
+
+    class Duels:
+        async def start_duel(self, *args, on_finish=None, **rest):
+            return None
+
+    for number in range(1, 5):
+        one = a_fighter(number, f"Боец-{number}")
+        one.level = number + 3
+        one.credits = 1_000
+        one.location = "fight_tournament_stadium"
+        await db.save_player(one)
+        await sign_up(db, await db.get_player(number), now=noon)
+
+    live = round_at(noon, 1) + CONFIRM_SECONDS + 1
+    await sweep(db, Duels(), live)
+    me = await db.get_player(1)
+    body = await build_arena(db, me, Duels(), live)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/arena*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "arena")
+        await page.wait_for_selector("#arena-body .bracket")
+        await page.evaluate("stopArenaPoll()")
+
+        said = await page.locator("#arena-body").inner_text()
+        assert "Призовой фонд" in said and "1 200" in said.replace("\u00a0", " ")
+        assert "Победителю" in said and "Второму месту" in said
+
+        # В каждой паре ровно один зелёный и один красный
+        pair = page.locator("#arena-body .bracket").first
+        assert await pair.locator(".bracket-side.won").count() == 1
+        assert await pair.locator(".bracket-side.out").count() == 1
+        assert "прошёл" in await pair.locator(".bracket-side.won").inner_text()
+        assert "вылетел" in await pair.locator(".bracket-side.out").inner_text()
+        # Своя пара обведена, и в ней видно, где ты
+        assert await page.locator("#arena-body .bracket-side.you").count() >= 1
+        await browser.close()
+
 
 # ---------- тюрьма ----------
 

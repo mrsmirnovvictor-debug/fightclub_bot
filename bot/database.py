@@ -663,6 +663,51 @@ CREATE TABLE IF NOT EXISTS service_vault (
     split  TEXT    NOT NULL DEFAULT 'even'
 );
 
+-- Турнирная арена: по строке на неделю. Неделя — дата воскресенья, в
+-- которое играют; расписание внутри дня считается, а не хранится
+CREATE TABLE IF NOT EXISTS arena_weeks (
+    week       TEXT    PRIMARY KEY,
+    -- open — идёт запись, live — сетка посеяна и идут круги,
+    -- done — сыграно, void — не собрались и вернули взносы
+    state      TEXT    NOT NULL DEFAULT 'open',
+    pot        INTEGER NOT NULL DEFAULT 0,
+    rounds     INTEGER NOT NULL DEFAULT 0,
+    winner_id  INTEGER,
+    runner_id  INTEGER,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    ended_at   INTEGER NOT NULL DEFAULT 0
+);
+
+-- Кто записался: уровень на час записи (по нему сеют), место в посеве
+-- и чем турнир для бойца кончился
+CREATE TABLE IF NOT EXISTS arena_players (
+    week      TEXT    NOT NULL,
+    user_id   INTEGER NOT NULL,
+    level     INTEGER NOT NULL DEFAULT 1,
+    seed      INTEGER NOT NULL DEFAULT 0,
+    out_round INTEGER NOT NULL DEFAULT 0,
+    place     INTEGER NOT NULL DEFAULT 0,
+    paid      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (week, user_id)
+);
+
+-- Пары сетки: круг, место в круге, кто с кем и чем кончилось
+CREATE TABLE IF NOT EXISTS arena_matches (
+    week       TEXT    NOT NULL,
+    round      INTEGER NOT NULL,
+    slot       INTEGER NOT NULL,
+    red_id     INTEGER,
+    blue_id    INTEGER,
+    winner_id  INTEGER,
+    -- waiting — ждут выхода, live — дерутся, done — сыграно
+    state      TEXT    NOT NULL DEFAULT 'waiting',
+    red_ready  INTEGER NOT NULL DEFAULT 0,
+    blue_ready INTEGER NOT NULL DEFAULT 0,
+    opened_at  INTEGER NOT NULL DEFAULT 0,
+    note       TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (week, round, slot)
+);
+
 -- Недельный журнал бонусов: по строке на сторону, неделю и мерку.
 -- Стороны тут те же, что у точек, — `clan:3` или `service:police`, — и
 -- журнал на обе один: считается в нём одно и то же, сделанное за
@@ -3409,6 +3454,103 @@ class Database:
         """Отметить, до какого часа владение точкой уже записано."""
         await self.conn.execute(
             "UPDATE turf SET counted_at = ? WHERE code = ?", (upto, code)
+        )
+        await self.conn.commit()
+
+    # ---------- турнирная арена ----------
+
+    async def arena_week(self, week: str) -> dict | None:
+        """Турнир этой недели. Пусто — на неё ещё никто не записывался."""
+        async with self.conn.execute(
+            "SELECT * FROM arena_weeks WHERE week = ?", (week,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def open_arena_week(self, week: str) -> None:
+        """Завести неделю, если её ещё нет. Второй заход ничего не делает."""
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO arena_weeks (week) VALUES (?)", (week,)
+        )
+        await self.conn.commit()
+
+    async def update_arena_week(self, week: str, **fields) -> None:
+        if not fields:  # pragma: no cover - вызов без полей
+            return
+        places = ", ".join(f"{name} = ?" for name in fields)
+        await self.conn.execute(
+            f"UPDATE arena_weeks SET {places} WHERE week = ?",
+            (*fields.values(), week),
+        )
+        await self.conn.commit()
+
+    async def arena_players(self, week: str) -> list[dict]:
+        """Записанные: сильные первыми — по ним и сеется сетка."""
+        async with self.conn.execute(
+            "SELECT * FROM arena_players WHERE week = ? "
+            "ORDER BY level DESC, user_id",
+            (week,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def add_arena_player(
+        self, week: str, user_id: int, level: int, paid: int
+    ) -> bool:
+        """Записать бойца. False — он уже в списке."""
+        cursor = await self.conn.execute(
+            "INSERT OR IGNORE INTO arena_players (week, user_id, level, paid) "
+            "VALUES (?,?,?,?)",
+            (week, user_id, level, paid),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def update_arena_player(
+        self, week: str, user_id: int, **fields
+    ) -> None:
+        if not fields:  # pragma: no cover - вызов без полей
+            return
+        places = ", ".join(f"{name} = ?" for name in fields)
+        await self.conn.execute(
+            f"UPDATE arena_players SET {places} WHERE week = ? AND user_id = ?",
+            (*fields.values(), week, user_id),
+        )
+        await self.conn.commit()
+
+    async def arena_matches(self, week: str, round: int = 0) -> list[dict]:
+        """Пары сетки: всей или одного круга."""
+        query = "SELECT * FROM arena_matches WHERE week = ?"
+        args: tuple = (week,)
+        if round:
+            query += " AND round = ?"
+            args = (week, round)
+        async with self.conn.execute(query + " ORDER BY round, slot", args) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def add_arena_match(
+        self, week: str, round: int, slot: int,
+        red_id: int | None, blue_id: int | None, **fields
+    ) -> None:
+        """Записать пару круга. Второй заход её не задваивает."""
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO arena_matches "
+            "(week, round, slot, red_id, blue_id) VALUES (?,?,?,?,?)",
+            (week, round, slot, red_id, blue_id),
+        )
+        await self.conn.commit()
+        if fields:
+            await self.update_arena_match(week, round, slot, **fields)
+
+    async def update_arena_match(
+        self, week: str, round: int, slot: int, **fields
+    ) -> None:
+        if not fields:  # pragma: no cover - вызов без полей
+            return
+        places = ", ".join(f"{name} = ?" for name in fields)
+        await self.conn.execute(
+            f"UPDATE arena_matches SET {places} "
+            "WHERE week = ? AND round = ? AND slot = ?",
+            (*fields.values(), week, round, slot),
         )
         await self.conn.commit()
 

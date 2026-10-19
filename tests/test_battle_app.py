@@ -127,6 +127,81 @@ async def test_the_size_is_checked_by_the_server(club):
     assert "королевскую битву" in error["error"]
 
 
+async def test_the_opener_answers_four_questions(club):
+    """Сбор собирают по ответам: чем, сколько, с кем и сколько ждать.
+
+    Раньше всё это решалось за игрока: бой был с оружием, уровни
+    брались по его собственному с запасом, а срок сбора был один на
+    клуб. Теперь спрашивают, и ответы видно в самом лобби.
+    """
+    from bot.game.battle import NEAR_SPREAD
+
+    client, battles, db = club
+    one = await db.get_player(42)
+    one.level = 7
+    await db.save_player(one)
+
+    status, body = await act(
+        client, 42, action="open", kind="team", size=6,
+        mode="fist", levels="same", wait=10,
+    )
+    assert status == 200
+    lobby = body["lobby"]
+    assert lobby["mode"]["code"] == "fist"
+    assert lobby["size"] == 6 and lobby["capacity"] == 12
+    assert lobby["min_level"] == lobby["max_level"] == 7
+    assert lobby["wait"] == 600 and lobby["wait_text"] == "10 мин"
+
+    # И то же самое в службе: срок у сбора свой, а не общий для клуба
+    assert battles.lobby_of_user(42).wait == 600
+
+    # «±2 уровня» и «любой» считаются от уровня созывающего
+    await act(client, 42, action="leave")
+    _, body = await act(
+        client, 42, action="open", kind="royale", size=4, levels="near", wait=3,
+    )
+    lobby = body["lobby"]
+    assert lobby["min_level"] == 7 - NEAR_SPREAD
+    assert lobby["max_level"] == 7 + NEAR_SPREAD
+    assert lobby["wait"] == 180
+
+    await act(client, 42, action="leave")
+    _, body = await act(
+        client, 42, action="open", kind="team", size=2, levels="any",
+    )
+    assert body["lobby"]["min_level"] == 1
+    assert body["lobby"]["max_level"] >= 15
+
+
+async def test_the_options_come_with_the_board(club):
+    """Экран получает все четыре списка готовыми: правила держит сервер."""
+    from bot.game.battle import MAX_TEAM_SIZE, MIN_TEAM_SIZE, WAIT_MINUTES
+
+    client, _, _ = club
+    body = await state(client, 42)
+
+    assert [one["code"] for one in body["modes"]] == ["armed", "fist"]
+    assert [one["code"] for one in body["levels"]] == ["any", "near", "same"]
+    assert [one["minutes"] for one in body["waits"]] == list(WAIT_MINUTES)
+    team = next(one for one in body["kinds"] if one["code"] == "team")
+    royale = next(one for one in body["kinds"] if one["code"] == "royale")
+    # Десять с каждой стороны и десять в мясорубке: мерка одна
+    assert (team["min"], team["max"]) == (MIN_TEAM_SIZE, MAX_TEAM_SIZE) == (2, 10)
+    assert (royale["min"], royale["max"]) == (2, 10)
+
+
+async def test_a_full_side_of_ten_is_allowed(club):
+    """Десять с каждой стороны — потолок, одиннадцать уже нет."""
+    client, _, _ = club
+
+    status, body = await act(client, 42, action="open", kind="team", size=10)
+    assert status == 200 and body["lobby"]["capacity"] == 20
+
+    await act(client, 42, action="leave")
+    status, error = await act(client, 42, action="open", kind="team", size=11)
+    assert status == 409 and "Сторона" in error["error"]
+
+
 # ---------- сам бой ----------
 
 
