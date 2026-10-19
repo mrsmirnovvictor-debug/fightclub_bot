@@ -13374,8 +13374,8 @@ function robberyBoxFamily(shop) {
 
   box.appendChild(
     paperRows([
-      ["Лицензий на руках", String(shop.left || 0)],
-      ["Куплено за неделю", (shop.bought || 0) + " из " + (shop.per_week || 0)],
+      ["Нападений на руках", String(shop.left || 0)],
+      ["В лицензии", (shop.pack || 0) + " нападений, без срока"],
       ["Цена", num(shop.price || 0) + " 💰"],
       ["Берут из кармана", (shop.share || 0) + "%"],
     ])
@@ -13384,7 +13384,8 @@ function robberyBoxFamily(shop) {
   const note = document.createElement("p");
   note.className = "thing-note";
   note.textContent =
-    "Лицензия — право на одно нападение или одно вмешательство. "
+    "Лицензия — пачка прав на нападение или вмешательство: "
+    + (shop.pack || 0) + " штук, и они не сгорают. "
     + "Деньги с ограбления идут тому, кто напал: помощникам ничего.";
   box.appendChild(note);
 
@@ -13392,8 +13393,6 @@ function robberyBoxFamily(shop) {
   buttons.className = "thing-buttons";
   buttons.appendChild(
     button("Взять лицензию · " + num(shop.price || 0) + " 💰", {
-      disabled: !shop.can_buy,
-      hint: "На этой неделе больше не выпишут.",
       onClick: () => mafiaAction({ action: "licence", count: 1 }),
     })
   );

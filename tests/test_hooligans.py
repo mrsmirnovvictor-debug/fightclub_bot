@@ -1216,9 +1216,10 @@ def test_the_gang_drops_a_fan_thing_to_the_best_and_a_potion_to_all():
     for seed in range(60):
         code = GANG_SPOILS.item_for(random.Random(seed))
         assert code is None or code in shop
-    # Склянки — ровно те четыре, что заказаны
+    # Склянки — ровно те три, что заказаны. Выносливости среди них нет:
+    # её не поднимает ни вещь, ни склянка
     assert set(GANG_POTIONS) == {
-        "boost_strength", "boost_agility", "boost_endurance", "boost_hp"
+        "boost_strength", "boost_agility", "boost_hp"
     }
     for seed in range(60):
         code = GANG_SPOILS.potion_for(random.Random(seed))
@@ -1255,7 +1256,7 @@ def test_a_prize_is_read_whether_it_is_a_thing_or_a_potion():
     from bot.game.raid import prize_of
 
     assert prize_of("fan_assassin_belt")[1] == "Компактный тактический пояс"
-    assert prize_of("boost_endurance")[1] == "Эликсир выносливости"
+    assert prize_of("boost_hp")[1] == "Эликсир жизней"
     assert prize_of("нет такого") is None
 
 

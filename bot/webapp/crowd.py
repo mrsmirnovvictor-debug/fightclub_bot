@@ -25,7 +25,7 @@ from bot.game.health import format_term, now_ts
 from bot.game.presence import is_online, presence_text
 from bot.game.robbery import (
     LICENCE_PRICE,
-    LICENCES_PER_WEEK,
+    ATTACKS_PER_LICENCE,
     LOOT_SHARE,
     MAX_SIDE,
     SAFE_HOURS,
@@ -301,13 +301,13 @@ async def build_crowd(
         "safe_hours": SAFE_HOURS,
         "max_side": MAX_SIDE,
         "price": LICENCE_PRICE,
-        "per_week": LICENCES_PER_WEEK,
+        "pack": ATTACKS_PER_LICENCE,
         "said": said,
         "crowd": [],
         "fights": [],
         "fight": None,
         "result": None,
-        "licences": {"bought": 0, "spent": 0, "left": 0, "can_buy": 0,
+        "licences": {"left": 0, "bought": 0, "pack": ATTACKS_PER_LICENCE,
                      "price": LICENCE_PRICE},
     }
     if service is None:  # pragma: no cover - бот без службы не поднимается
@@ -397,9 +397,9 @@ def _note(body: dict[str, Any], clan_id: int) -> str:
         return head
     left = body["licences"]["left"]
     tail = (
-        f"Лицензий на руках: {left}."
+        f"Нападений на руках: {left}."
         if left
-        else "Лицензий нет — их берут в особняке."
+        else "Нападений на руках нет — лицензию берут в особняке."
     )
     return f"{head} {tail}"
 

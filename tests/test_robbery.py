@@ -28,15 +28,14 @@ from bot.game.clans import GARAGE_SLOTS
 from bot.game.health import now_ts
 from bot.game.robbery import (
     GOAL_REWARD,
-    LICENCES_PER_WEEK,
+    ATTACKS_PER_LICENCE,
     LICENCE_PRICE,
     MAX_SIDE,
     SAFE_SECONDS,
     WEEKLY_GOAL,
-    can_buy,
     goal_done,
     goal_left,
-    licences_left,
+    attacks_in,
     loot_of,
     safe_left,
 )
@@ -95,14 +94,14 @@ async def family(
 async def licensed(
     db: Database, user_ids: list[int], count: int = 3, when: int | None = None
 ) -> None:
-    """Выписать бойцам лицензии, минуя кассу: тест не про покупку.
+    """Выдать бойцам право на столько нападений, минуя кассу.
 
-    `when` — чью неделю считать. Проверки правил живут в `NOW`, а
-    проверки ручек идут по настоящим часам сервера, и неделя у них своя.
+    Тест не про покупку, а про то, что ею оплачено: `count` — это
+    нападения, а не пачки. `when` тут больше ни на что не влияет —
+    срока у лицензии нет, — и остался ради прежних вызовов.
     """
-    week = week_of(NOW if when is None else when)
     for one in user_ids:
-        await db.buy_licences(one, week, count)
+        await db.buy_licences(one, 0, count)
 
 
 async def stand(
@@ -146,14 +145,13 @@ def test_the_loot_is_a_tenth_of_the_pocket():
     assert loot_of(-50) == 0
 
 
-def test_the_week_gives_ten_licences_and_no_more():
-    """Десять на бойца в неделю: купил десять — до понедельника всё."""
-    assert can_buy(0) == LICENCES_PER_WEEK
-    assert can_buy(4) == LICENCES_PER_WEEK - 4
-    assert can_buy(LICENCES_PER_WEEK) == 0
-    assert can_buy(LICENCES_PER_WEEK + 5) == 0
-    assert licences_left(10, 3) == 7
-    assert licences_left(3, 10) == 0
+def test_one_licence_is_a_pack_of_attacks():
+    """Лицензия — пачка на двадцать пять нападений, и срока у неё нет."""
+    assert ATTACKS_PER_LICENCE == 25
+    assert LICENCE_PRICE == 100
+    assert attacks_in(1) == ATTACKS_PER_LICENCE
+    assert attacks_in(3) == 3 * ATTACKS_PER_LICENCE
+    assert attacks_in(0) == 0 and attacks_in(-2) == 0
 
 
 def test_the_robbed_are_left_alone_for_six_hours():
@@ -187,7 +185,9 @@ async def test_the_licence_is_sold_in_the_mansion_to_family_only(db):
     don, squad, _ = await family(db)
     before = don.credits
     await service.buy(don, 2, now=NOW)
-    assert (await service.licences(don.user_id, NOW))["left"] == 2
+    mine = await service.licences(don.user_id, NOW)
+    assert mine["left"] == 2 * ATTACKS_PER_LICENCE
+    assert mine["bought"] == 2 and mine["pack"] == ATTACKS_PER_LICENCE
     # Деньги списаны из кармана бойца, а не из сейфа семьи
     fresh = await db.get_player(don.user_id)
     assert fresh.credits == before - LICENCE_PRICE * 2
@@ -199,22 +199,27 @@ async def test_the_licence_is_sold_in_the_mansion_to_family_only(db):
         await service.buy(away, 1, now=NOW)
 
 
-async def test_the_tenth_licence_is_the_last_one_this_week(db):
-    """Десять в неделю — и касса закрыта до понедельника."""
+async def test_the_licence_does_not_burn_out_with_the_week(db):
+    """Срока у лицензии нет: купленное лежит, пока не потратят.
+
+    Прежнее правило выдавало десять в неделю и сжигало остаток в
+    понедельник. Теперь неделя лицензии не касается вовсе — её касается
+    только нападение.
+    """
     service = RobberyService(db)
     don, _, _ = await family(db)
     don.credits = 100_000
     await db.save_player(don)
 
-    await service.buy(don, LICENCES_PER_WEEK, now=NOW)
-    assert (await service.licences(don.user_id, NOW))["can_buy"] == 0
-    with pytest.raises(RobberyError, match="больше не дадут"):
-        await service.buy(don, 1, now=NOW)
-
-    # Следующая неделя — свой счёт
+    await service.buy(don, 1, now=NOW)
     later = NOW + 8 * 24 * 3600
-    assert (await service.licences(don.user_id, later))["can_buy"] == (
-        LICENCES_PER_WEEK
+    assert (await service.licences(don.user_id, later))["left"] == (
+        ATTACKS_PER_LICENCE
+    )
+    # И покупать можно сколько угодно: потолок тут цена
+    await service.buy(don, 5, now=later)
+    assert (await service.licences(don.user_id, later))["left"] == (
+        6 * ATTACKS_PER_LICENCE
     )
 
 
@@ -567,8 +572,10 @@ async def test_the_licence_is_bought_on_the_family_page(db, client):
     assert answer.status == 200
     body = await answer.json()
     assert "Лицензий выписано: 2" in body["said"]
+    assert "Нападений на руках: 50" in body["said"]
     shop = body["opened"]["estate"]["robbery"]
-    assert shop["left"] == 2 and shop["can_buy"] == LICENCES_PER_WEEK - 2
+    assert shop["left"] == 2 * ATTACKS_PER_LICENCE and shop["bought"] == 2
+    assert shop["pack"] == ATTACKS_PER_LICENCE
     assert shop["goal"] == WEEKLY_GOAL and shop["reward"] == GOAL_REWARD
 
 

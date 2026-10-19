@@ -280,7 +280,10 @@ async def test_a_potion_is_bought_and_then_drunk_from_the_chat(
 ):
     db, _, session = dispatcher_env
     player = await client.player()
-    player.set_hp(player.max_hp - 100)
+    # Склянка доливает сотню, а у новичка запас меньше: доливается
+    # столько, сколько не хватает, и об этом же говорит письмо
+    missing = min(HEAL.heal, player.max_hp - 1)
+    player.set_hp(player.max_hp - missing)
     await db.save_player(player)
 
     await client.press(BuyCB(code="heal_small", confirm=1).pack())
@@ -290,7 +293,7 @@ async def test_a_potion_is_bought_and_then_drunk_from_the_chat(
     await client.press(DrinkCB(code="heal_small").pack())
     text = session.texts[-1]
 
-    assert "Выпит" in text and f"на <b>{HEAL.heal}</b>" in text
+    assert "Выпит" in text and f"на <b>{missing}</b>" in text
     assert "Это была последняя" in text
     assert await db.list_potions(client.user.id) == {}
 

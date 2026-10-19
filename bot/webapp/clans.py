@@ -43,7 +43,7 @@ from bot.game.clans import (
 from bot.game.equipment import get_item
 from bot.game.robbery import (
     GOAL_REWARD,
-    LICENCES_PER_WEEK,
+    ATTACKS_PER_LICENCE,
     LICENCE_PRICE,
     LOOT_SHARE,
     WEEKLY_GOAL,
@@ -431,11 +431,10 @@ def robbery_payload(
     one = dict(licences or {})
     return {
         "price": one.get("price", LICENCE_PRICE),
-        "per_week": LICENCES_PER_WEEK,
+        # Пачка прав: двадцать пять нападений и никакого срока
+        "pack": one.get("pack", ATTACKS_PER_LICENCE),
         "bought": one.get("bought", 0),
-        "spent": one.get("spent", 0),
         "left": one.get("left", 0),
-        "can_buy": one.get("can_buy", 0),
         "share": round(LOOT_SHARE * 100),
         "goal": WEEKLY_GOAL,
         "attacks": attacks,

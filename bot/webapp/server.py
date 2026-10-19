@@ -2103,16 +2103,14 @@ async def _clan_bonus(db, player) -> dict:
 
 
 async def _licences_of(db, user_id: int) -> dict:
-    """Лицензии бойца на эту неделю — для страницы семьи."""
-    from bot.game.robbery import LICENCE_PRICE, can_buy, licences_left
+    """Лицензии бойца — для страницы семьи. Срока у них нет."""
+    from bot.game.robbery import ATTACKS_PER_LICENCE, LICENCE_PRICE
 
-    week = week_of(now_ts())
-    bought, spent = await db.licences(user_id, week)
+    left, bought = await db.licences(user_id)
     return {
+        "left": left,
         "bought": bought,
-        "spent": spent,
-        "left": licences_left(bought, spent),
-        "can_buy": can_buy(bought),
+        "pack": ATTACKS_PER_LICENCE,
         "price": LICENCE_PRICE,
     }
 
@@ -2190,8 +2188,10 @@ async def api_mansion_action(request: web.Request) -> web.Response:
             if service is None:  # pragma: no cover - служба заводится сама
                 raise ClanError("Сейчас не до этого.")
             count = int(data.get("count", 1) or 1)
-            total = await service.buy(player, count)
-            said = f"Лицензий выписано: {count}. Всего за неделю — {total}."
+            left = await service.buy(player, count)
+            said = (
+                f"Лицензий выписано: {count}. Нападений на руках: {left}."
+            )
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except RobberyError as error:

@@ -518,7 +518,11 @@ def goods_payload(
 def potion_gains_payload(potion: Potion) -> list[dict]:
     """Что эликсир делает — теми же строчками, что и свойства вещи."""
     rows: list[dict] = []
-    if potion.heal:
+    if potion.full:
+        rows.append(
+            {"emoji": "❤️", "title": "Восстановит", "text": "до полного"}
+        )
+    elif potion.heal:
         rows.append(
             {"emoji": "❤️", "title": "Восстановит", "text": f"до +{potion.heal}"}
         )

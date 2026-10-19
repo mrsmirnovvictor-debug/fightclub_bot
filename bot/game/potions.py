@@ -5,6 +5,12 @@
 * восстановление — доливает здоровье прямо сейчас, но не выше потолка;
 * временный эффект — держит прибавку два часа и сам сходит на нет.
 
+**Склянки лечат по прайсу больницы.** Перевязка и полное выздоровление
+стоят там же и дают то же: сто единиц за двадцать пять кредитов и
+полный запас за полтинник. Аптека продаёт не другое лечение, а то же
+самое навынос — и брать за дорогу с собой дороже или дешевле значило бы
+сказать, что здоровье в склянке другое.
+
 Эффект хранится сроком, а не тикающим счётчиком: в базе лежит момент, до
 которого он живёт. Так он переживает перезапуск бота и не требует фоновых
 задач — ровно как отдых между боями.
@@ -19,6 +25,7 @@ from bot.game.art import potion as potion_art
 from bot.game.art import raid_item
 from bot.game.classes import ALL_STATS, Stats
 from bot.game.health import now_ts
+from bot.game.hospital import FULL_PRICE, PATCH_HEAL, PATCH_PRICE
 
 # Сколько держится временный эффект
 EFFECT_SECONDS = 2 * 60 * 60
@@ -54,7 +61,10 @@ class Potion:
     kind: PotionKind
     note: str = ""
     image: str = ""
-    heal: int = 0  # сколько здоровья долить сразу
+    # Сколько здоровья долить сразу. Ноль у лечебной склянки — сколько
+    # угодно, до потолка: та же мерка, что у полного выздоровления в
+    # больнице (`bot.game.hospital`)
+    heal: int = 0
     strength: int = 0
     agility: int = 0
     intuition: int = 0
@@ -75,6 +85,11 @@ class Potion:
         Поле `image` остаётся на случай файла с другим именем.
         """
         return self.image or potion_art(self.code)
+
+    @property
+    def full(self) -> bool:
+        """Доливает ли склянка до потолка, сколько бы ни не хватало."""
+        return self.kind is PotionKind.HEAL and not self.heal
 
     @property
     def bonus(self) -> Stats:
@@ -108,7 +123,9 @@ class Potion:
         if self.is_pass:
             return "Пропуск в подвал"
         parts = []
-        if self.heal:
+        if self.full:
+            parts.append("❤️ до полного")
+        elif self.heal:
             parts.append(f"❤️ +{self.heal} сразу")
         for stat in ALL_STATS:
             value = self.bonus.get(stat)
@@ -143,19 +160,20 @@ POTIONS: tuple[Potion, ...] = (
         "Эликсир восстановления",
         "🧪",
         PotionKind.HEAL,
-        note="Мутная склянка из-под чего-то крепкого. Ставит на ноги.",
-        heal=30,
-        price=30,
+        note=(
+            f"Перевязка навынос: {PATCH_HEAL} единиц здоровья, не вставая "
+            "в очередь."
+        ),
+        heal=PATCH_HEAL,
+        price=PATCH_PRICE,
     ),
     Potion(
         "heal_big",
         "Большой эликсир восстановления",
         "⚗️",
         PotionKind.HEAL,
-        note="Та же дрянь, только бутылка вдвое больше.",
-        heal=60,
-        level_required=3,
-        price=55,
+        note="Полное выздоровление в бутылке: сколько бы ни не хватало.",
+        price=FULL_PRICE,
     ),
     # ---------- временные: держат прибавку два часа ----------
     Potion(
@@ -190,17 +208,6 @@ POTIONS: tuple[Potion, ...] = (
         note="Два часа знаешь, куда он ударит, раньше него самого.",
         image=potion_art("int"),
         intuition=10,
-        seconds=EFFECT_SECONDS,
-        level_required=5,
-        price=200,
-    ),
-    Potion(
-        "boost_endurance",
-        "Эликсир выносливости",
-        "🪨",
-        PotionKind.BOOST,
-        note="Два часа держишь удар, как будто сам из бетона.",
-        endurance=10,
         seconds=EFFECT_SECONDS,
         level_required=5,
         price=200,

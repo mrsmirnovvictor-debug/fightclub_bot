@@ -687,10 +687,18 @@ CREATE TABLE IF NOT EXISTS bonus_paid (
     PRIMARY KEY (side_kind, side_key, week)
 );
 
--- Лицензии на ограбление: сколько боец купил и сколько потратил за эту
--- неделю. Неделя считается так же, как у работы, — от понедельника
--- девяти утра по Москве. Прошлые недели остаются лежать: по ним видно,
--- кто сколько сделал, и цена строки тут — четыре числа
+-- Лицензии на ограбление: пачки прав, у которых нет срока. `attacks` —
+-- сколько нападений ещё осталось, `bought` — сколько пачек боец взял
+-- за всю жизнь, и это число не про остаток, а про то, кто сколько
+-- покупал. Недели тут нет нарочно: лицензия не кончается с ней
+CREATE TABLE IF NOT EXISTS rob_passes (
+    user_id INTEGER PRIMARY KEY,
+    attacks INTEGER NOT NULL DEFAULT 0,
+    bought  INTEGER NOT NULL DEFAULT 0
+);
+
+-- Недельные лицензии старого правила. Таблицу не трогаем: по ней видно,
+-- что с базой уже случалось, а читать её больше некому
 CREATE TABLE IF NOT EXISTS rob_licences (
     user_id INTEGER NOT NULL,
     week    INTEGER NOT NULL,
@@ -3262,43 +3270,53 @@ class Database:
 
     # ---------- ограбление: лицензии, покой и недельный счёт ----------
 
-    async def licences(self, user_id: int, week: int) -> tuple[int, int]:
-        """Куплено и потрачено за эту неделю. Нет строки — ноль и ноль."""
+    async def licences(self, user_id: int) -> tuple[int, int]:
+        """Сколько нападений осталось и сколько пачек куплено всего."""
         async with self.conn.execute(
-            "SELECT bought, spent FROM rob_licences WHERE user_id = ? AND week = ?",
-            (user_id, week),
+            "SELECT attacks, bought FROM rob_passes WHERE user_id = ?",
+            (user_id,),
         ) as cursor:
             row = await cursor.fetchone()
-        return (int(row["bought"]), int(row["spent"])) if row else (0, 0)
+        return (int(row["attacks"]), int(row["bought"])) if row else (0, 0)
 
-    async def buy_licences(self, user_id: int, week: int, count: int) -> None:
-        """Записать покупку. Сколько можно — решает служба, не база."""
+    async def buy_licences(self, user_id: int, count: int, attacks: int) -> None:
+        """Записать покупку: пачки на счёт, нападения в остаток."""
         await self.conn.execute(
             """
-            INSERT INTO rob_licences (user_id, week, bought, spent)
-            VALUES (?,?,?,0)
-            ON CONFLICT(user_id, week) DO UPDATE SET
-                bought = bought + excluded.bought
+            INSERT INTO rob_passes (user_id, attacks, bought) VALUES (?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                attacks = attacks + excluded.attacks,
+                bought  = bought + excluded.bought
             """,
-            (user_id, week, count),
+            (user_id, attacks, count),
         )
         await self.conn.commit()
 
-    async def spend_licence(self, user_id: int, week: int) -> bool:
-        """Списать одну лицензию. False — списывать было нечего.
+    async def spend_licence(self, user_id: int) -> bool:
+        """Списать одно нападение. False — списывать было нечего.
 
         Условие стоит в самом `UPDATE`, а не в проверке перед ним: две
-        кнопки, нажатые разом, иначе потратили бы одну лицензию дважды.
+        кнопки, нажатые разом, иначе потратили бы одно право дважды.
         """
         cursor = await self.conn.execute(
-            """
-            UPDATE rob_licences SET spent = spent + 1
-            WHERE user_id = ? AND week = ? AND spent < bought
-            """,
-            (user_id, week),
+            "UPDATE rob_passes SET attacks = attacks - 1 "
+            "WHERE user_id = ? AND attacks > 0",
+            (user_id,),
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    async def old_licences(self) -> dict[int, int]:
+        """Неиспользованные недельные лицензии старого правила.
+
+        Это для разовой работы: по ней их переносят в бессрочные.
+        """
+        async with self.conn.execute(
+            "SELECT user_id, SUM(bought - spent) AS rest FROM rob_licences "
+            "GROUP BY user_id HAVING rest > 0"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {int(row["user_id"]): int(row["rest"]) for row in rows}
 
     async def robbed_at(self, user_id: int) -> int:
         """Час последнего нападения на бойца. Ноль — не трогали."""
@@ -3518,6 +3536,29 @@ class Database:
     async def wipe_turf(self) -> int:
         """Снять всех владельцев с точек. Возвращает, сколько сняли."""
         cursor = await self.conn.execute("DELETE FROM turf")
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def hands_of_potion(self, code: str) -> dict[int, int]:
+        """У кого на руках эта склянка и сколько. Это для разовых работ.
+
+        Читаем напрямую: снятую с прилавка склянку `list_potions` уже не
+        показывает — она не знает кодов, которых в игре нет, — а
+        вернуть за неё деньги надо как раз по этим строкам.
+        """
+        async with self.conn.execute(
+            "SELECT user_id, count FROM potions WHERE code = ? AND count > 0",
+            (code,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {int(row["user_id"]): int(row["count"]) for row in rows}
+
+    async def drop_potion_everywhere(self, code: str) -> int:
+        """Убрать склянку из всех рюкзаков и снять её действие."""
+        cursor = await self.conn.execute(
+            "DELETE FROM potions WHERE code = ?", (code,)
+        )
+        await self.conn.execute("DELETE FROM effects WHERE code = ?", (code,))
         await self.conn.commit()
         return cursor.rowcount
 

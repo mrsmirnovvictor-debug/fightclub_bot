@@ -6,6 +6,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.game.classes import Stats, get_class
 from bot.game.health import now_ts
+from bot.game.hospital import FULL_PRICE, PATCH_HEAL, PATCH_PRICE
 from bot.game.locations import Service
 from bot.game.raid import CELLAR_BOSS
 from bot.game.potions import (
@@ -61,7 +62,9 @@ def test_every_potion_has_a_price_and_does_something():
         assert potion.price > 0, potion.code
         assert potion.describe(), potion.code
         if potion.kind is PotionKind.HEAL:
-            assert potion.heal > 0 and not potion.seconds
+            # Ноль у лечебной склянки значит «до полного», как у полного
+            # выздоровления в больнице
+            assert (potion.heal > 0 or potion.full) and not potion.seconds
         elif potion.kind is PotionKind.BOOST:
             assert potion.seconds == EFFECT_SECONDS
             assert potion.bonus.total() or potion.hp
@@ -71,21 +74,41 @@ def test_every_potion_has_a_price_and_does_something():
 
 
 def test_the_shelf_holds_exactly_what_was_asked_for():
-    """Два эликсира восстановления и пять временных — больше ничего.
+    """Два эликсира восстановления и четыре временных — больше ничего.
 
-    Временных стало пять: к силе, ловкости, интуиции и жизням прибавилась
-    выносливость — её роняет банда со стадиона, и не ронять то, чего в
-    лавке нет, она не может.
+    Временных четыре: сила, ловкость, интуиция и запас здоровья.
+    Выносливости среди них нет — её не поднимает ни одна вещь в городе,
+    и склянка была единственным исключением из правила.
     """
     heals = [p for p in POTIONS if p.kind is PotionKind.HEAL]
     boosts = [p for p in POTIONS if p.kind is PotionKind.BOOST]
-    assert sorted(p.heal for p in heals) == [30, 60]
-    assert sorted(p.bonus.total() + p.hp for p in boosts) == [10, 10, 10, 10, 60]
+    assert sorted(p.heal for p in heals) == [0, PATCH_HEAL]
+    assert sorted(p.bonus.total() + p.hp for p in boosts) == [10, 10, 10, 60]
 
 
-def test_every_stat_has_its_own_elixir():
-    """Четыре характеристики — четыре склянки, и ни одной лишней."""
-    from bot.game.classes import ALL_STATS
+def test_the_pharmacy_charges_what_the_clinic_charges():
+    """Лечение навынос стоит столько же, сколько лечение в больнице.
+
+    Аптека продаёт не другое здоровье, а то же самое с собой: брать за
+    дорогу дороже или дешевле значило бы сказать, что в склянке оно
+    другое.
+    """
+    small, big = get_potion("heal_small"), get_potion("heal_big")
+    assert (small.heal, small.price) == (PATCH_HEAL, PATCH_PRICE)
+    assert small.level_required == 1, "перевязку продают всякому"
+    assert big.full and big.price == FULL_PRICE
+    assert big.level_required == 1
+    assert "до полного" in big.describe()
+
+
+def test_no_elixir_raises_endurance():
+    """Выносливость не поднимает ни вещь, ни склянка — и это правило.
+
+    Снятый эликсир выносливости был единственным исключением: прибавку
+    он давал, а повторить её было нечем, и на прилавке он обещал то,
+    чего в городе нет.
+    """
+    from bot.game.classes import ALL_STATS, Stat
 
     raised = {
         stat.value
@@ -93,7 +116,10 @@ def test_every_stat_has_its_own_elixir():
         for stat in ALL_STATS
         if potion.bonus.get(stat)
     }
-    assert raised == {stat.value for stat in ALL_STATS}
+    assert Stat.ENDURANCE.value not in raised
+    assert raised == {
+        stat.value for stat in ALL_STATS if stat is not Stat.ENDURANCE
+    }
 
 
 def test_duration_reads_like_a_sentence():
@@ -297,8 +323,8 @@ def test_a_locked_potion_is_shown_but_marked():
 
     assert rows["heal_small"]["unlocked"]
     assert not rows["boost_strength"]["unlocked"]
-    # с первого уровня открыты малый эликсир и оба пропуска
-    assert misc["open"] == 3
+    # с первого уровня открыты обе лечебные склянки и оба пропуска
+    assert misc["open"] == 4
 
 
 def test_the_card_carries_the_bag_of_bottles_and_what_is_running():

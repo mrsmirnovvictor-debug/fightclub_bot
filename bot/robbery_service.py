@@ -60,13 +60,13 @@ from bot.game.fightlog import turn_payload
 from bot.game.health import now_ts
 from bot.game.narrator import strike_lines
 from bot.game.robbery import (
+    ATTACKS_PER_LICENCE,
     GOAL_REWARD,
     LICENCE_PRICE,
     MAX_SIDE,
     TURN_SECONDS,
-    can_buy,
+    attacks_in,
     goal_done,
-    licences_left,
     loot_of,
     safe_left,
 )
@@ -205,24 +205,23 @@ class RobberyService:
     # ---------- лицензии ----------
 
     async def licences(self, user_id: int, now: int | None = None) -> dict[str, int]:
-        """Сколько лицензий куплено, потрачено и сколько ещё продадут."""
-        week = week_of(now_ts() if now is None else now)
-        bought, spent = await self.db.licences(user_id, week)
+        """Сколько нападений на руках и сколько пачек боец взял всего."""
+        left, bought = await self.db.licences(user_id)
         return {
+            "left": left,
             "bought": bought,
-            "spent": spent,
-            "left": licences_left(bought, spent),
-            "can_buy": can_buy(bought),
+            "pack": ATTACKS_PER_LICENCE,
             "price": LICENCE_PRICE,
         }
 
     async def buy(
         self, player: Player, count: int = 1, now: int | None = None
     ) -> int:
-        """Купить лицензии в особняке. Возвращает, сколько их стало.
+        """Купить лицензии в особняке. Возвращает остаток нападений.
 
         Платит боец из своего кармана, а не из сейфа: лицензия — его
-        право на нападение, и добыча тоже пойдёт ему одному.
+        право на нападение, и добыча тоже пойдёт ему одному. Потолка на
+        покупку нет: потолок тут цена, а срока у пачки нет вовсе.
         """
         from bot.game.clans import MANSION
 
@@ -233,27 +232,24 @@ class RobberyService:
             raise RobberyError("Лицензии выдают своим. Сперва вступи в семью.")
         if player.where(moment) != MANSION:
             raise RobberyError("За лицензией приходят в особняк.")
-        week = week_of(moment)
-        bought, _ = await self.db.licences(player.user_id, week)
-        room = can_buy(bought)
-        if room <= 0:
-            raise RobberyError(
-                "На этой неделе лицензий больше не дадут. Жди понедельника."
-            )
-        if count > room:
-            raise RobberyError(f"На этой неделе осталось {room}, не больше.")
         price = LICENCE_PRICE * count
         if player.credits < price:
             raise RobberyError(f"Не хватает: лицензия стоит {LICENCE_PRICE} 💰.")
         player.credits -= price
         await self.db.save_player(player)
-        await self.db.buy_licences(player.user_id, week, count)
-        logger.info("Боец %s купил лицензий: %s", player.user_id, count)
-        return bought + count
+        await self.db.buy_licences(
+            player.user_id, count, attacks_in(count)
+        )
+        left, _ = await self.db.licences(player.user_id)
+        logger.info(
+            "Боец %s купил лицензий: %s, нападений на руках %s",
+            player.user_id, count, left,
+        )
+        return left
 
     async def _spend(self, user_id: int, now: int) -> None:
-        """Списать лицензию. Нечего — так и говорим."""
-        if not await self.db.spend_licence(user_id, week_of(now)):
+        """Списать одно нападение. Нечего — так и говорим."""
+        if not await self.db.spend_licence(user_id):
             raise RobberyError(
                 "Нет лицензии на ограбление. Её берут в особняке, у своих."
             )

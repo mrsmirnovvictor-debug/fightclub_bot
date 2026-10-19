@@ -10925,10 +10925,13 @@ async def test_the_family_page_shows_the_garage_and_the_licences(server, db):
     from bot.game.robbery import GOAL_REWARD, WEEKLY_GOAL
     from bot.webapp.clans import build_clan_page, build_estate, build_mansion
 
+    from bot.game.robbery import ATTACKS_PER_LICENCE, LICENCE_PRICE
+
     don, roster = a_family(vault=400)
     estate = build_estate(
         don, [], cars=[],
-        licences={"bought": 3, "spent": 1, "left": 2, "can_buy": 7, "price": 300},
+        licences={"left": 24, "bought": 1, "pack": ATTACKS_PER_LICENCE,
+                  "price": LICENCE_PRICE},
         attacks=7, paid=0,
     )
     listing = build_mansion(don, [roster.clan], [], TOKEN)
@@ -10957,7 +10960,10 @@ async def test_the_family_page_shows_the_garage_and_the_licences(server, db):
         assert "Гараж семьи · 0 из 3" in heads and "Ограбления" in heads
 
         shop = await page.locator("#mafia-estate .shelf").last.inner_text()
-        assert "3 из 10" in shop and "10%" in shop
+        # Нападений на руках, размер пачки и доля — всё числом
+        assert "24" in shop and "10%" in shop
+        assert f"{ATTACKS_PER_LICENCE} нападений, без срока" in shop
+        assert "не сгорают" in shop
         assert f"7 из {WEEKLY_GOAL}" in shop
         assert str(GOAL_REWARD // 1000) in shop
         await browser.close()

@@ -34,6 +34,20 @@ WIPE_TURF = "2026-10-18-wipe-turf"
 # учёбы и два месяца стажа. Диплом академии выдаём вместе с местом:
 # начальник без бумаги в участке выглядел бы ошибкой, а не тестом
 RAGNAR_CHIEF = "2026-10-18-ragnar-chief"
+
+# Эликсир выносливости снят с прилавка: выносливость не поднимает ни
+# одна вещь в городе, и склянка была единственным исключением из
+# правила, которого никто не просил. Купленное возвращаем деньгами —
+# за снятое с прилавка платить игроку не за что
+DROP_ENDURANCE = "2026-10-19-drop-endurance-potion"
+ENDURANCE_POTION = "boost_endurance"
+ENDURANCE_PRICE = 200
+
+# Лицензия на нападение стала бессрочной пачкой, а была недельной
+# штукой, которая сгорала в понедельник. Недогулянные старые переносим
+# нападение в нападение: за них заплачено, и сжигать их заодно с
+# правилом было бы вторым наказанием ни за что
+LICENCE_PACKS = "2026-10-19-licence-packs"
 CHIEF_NAME = "Ragnar"
 CHIEF_JOB = "police_chief"
 CHIEF_DIPLOMA = "police"
@@ -59,6 +73,12 @@ async def run(db: Database, now: int | None = None) -> list[str]:
 
     if await db.mark_chore(RAGNAR_CHIEF, moment):
         done.append(await _seat_the_chief(db, moment))
+
+    if await db.mark_chore(DROP_ENDURANCE, moment):
+        done.append(await _refund_the_potion(db))
+
+    if await db.mark_chore(LICENCE_PACKS, moment):
+        done.append(await _carry_the_licences(db))
 
     return done
 
@@ -90,4 +110,48 @@ async def _seat_the_chief(db: Database, now: int) -> str:
     )
 
 
-__all__ = ["RAGNAR_CHIEF", "WIPE_TURF", "run"]
+async def _refund_the_potion(db: Database) -> str:
+    """Вернуть деньги за эликсир выносливости и убрать его из рюкзаков."""
+    hands = await db.hands_of_potion(ENDURANCE_POTION)
+    given = 0
+    for user_id, count in hands.items():
+        player = await db.get_player(user_id)
+        if player is None:  # pragma: no cover - бойца удалили
+            continue
+        player.credits += ENDURANCE_PRICE * count
+        await db.save_player(player)
+        given += ENDURANCE_PRICE * count
+    rows = await db.drop_potion_everywhere(ENDURANCE_POTION)
+    logger.info(
+        "Эликсир выносливости снят: строк %s, возвращено %s", rows, given
+    )
+    return (
+        f"эликсир выносливости снят: вернули {given} 💰 "
+        f"на {len(hands)} бойцов"
+    )
+
+
+async def _carry_the_licences(db: Database) -> str:
+    """Перенести неистраченные недельные лицензии в бессрочные."""
+    old = await db.old_licences()
+    for user_id, left in old.items():
+        # Пачек не прибавляем: куплены они были по старому правилу, и
+        # счёт покупок про него ничего не знает
+        await db.buy_licences(user_id, 0, left)
+    logger.info(
+        "Лицензии перенесены: бойцов %s, нападений %s",
+        len(old), sum(old.values()),
+    )
+    return (
+        f"лицензии перенесены: {sum(old.values())} нападений "
+        f"у {len(old)} бойцов"
+    )
+
+
+__all__ = [
+    "DROP_ENDURANCE",
+    "LICENCE_PACKS",
+    "RAGNAR_CHIEF",
+    "WIPE_TURF",
+    "run",
+]

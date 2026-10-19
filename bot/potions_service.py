@@ -126,7 +126,10 @@ async def use_potion(
         if current >= player.max_hp:
             # Склянку не тратим: здоровье и так полное, выливать её незачем
             raise PotionError("Ты и так в полном порядке — склянку побереги.")
-        healed = min(potion.heal, player.max_hp - current)
+        # Полная склянка доливает сколько угодно — как полное
+        # выздоровление в больнице; обычная наливает свою сотню
+        missing = player.max_hp - current
+        healed = missing if potion.full else min(potion.heal, missing)
         player.set_hp(current + healed, moment)
         await db.save_player(player)
         result = PotionResult(potion, healed=healed)

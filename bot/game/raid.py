@@ -762,11 +762,11 @@ GANG_SCHEDULE = Weekly(weekdays=(2, 5), hour=18, hours=6)
 GANG_TURN_SECONDS = 60
 
 # Склянки, которые падают всему отряду разом: по характеристике на
-# каждую и одна на запас здоровья
+# каждую и одна на запас здоровья. Выносливости среди них нет — её не
+# поднимает ни вещь, ни склянка
 GANG_POTIONS: tuple[str, ...] = (
     "boost_strength",
     "boost_agility",
-    "boost_endurance",
     "boost_hp",
 )
 

@@ -73,6 +73,69 @@ async def test_the_chief_seat_waits_if_there_is_no_ragnar(db):
     assert await chores.run(db, now_ts()) == []
 
 
+async def test_the_endurance_potion_is_bought_back(db):
+    """Снятый эликсир возвращают деньгами, а не отнимают молча.
+
+    За снятое с прилавка платить игроку не за что: склянка уходит из
+    рюкзака, а её цена — обратно в карман.
+    """
+    from tests.test_robbery import make_player
+
+    one = make_player(78, "Боец")
+    one.credits = 1_000
+    await db.save_player(one)
+    # Склянку кладём мимо `add_potion`: кода её в игре уже нет
+    await db.conn.execute(
+        "INSERT INTO potions (user_id, code, count) VALUES (?,?,?)",
+        (78, chores.ENDURANCE_POTION, 3),
+    )
+    await db.conn.execute(
+        "INSERT INTO effects (user_id, code, until) VALUES (?,?,?)",
+        (78, chores.ENDURANCE_POTION, NOW + 3600),
+    )
+    await db.conn.commit()
+
+    done = await chores.run(db, now_ts())
+    assert any("эликсир выносливости снят" in line for line in done)
+
+    paid = await db.get_player(78)
+    assert paid.credits == 1_000 + 3 * chores.ENDURANCE_PRICE
+    assert await db.hands_of_potion(chores.ENDURANCE_POTION) == {}
+    assert await db.list_effects(78) == []
+
+    # И второй заход ничего не возвращает: работа сделана один раз
+    assert await chores.run(db, now_ts()) == []
+
+
+async def test_the_old_weekly_licences_carry_over(db):
+    """Недогулянные недельные лицензии становятся бессрочными.
+
+    За них заплачено по старому правилу, и сжигать их заодно с ним
+    было бы вторым наказанием ни за что.
+    """
+    from tests.test_robbery import make_player
+
+    one = make_player(79, "Мафиози")
+    await db.save_player(one)
+    await db.conn.execute(
+        "INSERT INTO rob_licences (user_id, week, bought, spent) "
+        "VALUES (?,?,?,?)", (79, 1, 10, 4),
+    )
+    await db.conn.execute(
+        "INSERT INTO rob_licences (user_id, week, bought, spent) "
+        "VALUES (?,?,?,?)", (79, 2, 3, 3),
+    )
+    await db.conn.commit()
+
+    done = await chores.run(db, now_ts())
+    assert any("лицензии перенесены" in line for line in done)
+
+    left, bought = await db.licences(79)
+    assert left == 6, "шесть неистраченных и ни одной сгоревшей"
+    assert bought == 0, "пачек по новому правилу он ещё не покупал"
+    assert await chores.run(db, now_ts()) == []
+
+
 async def test_the_mark_is_set_and_checked_in_one_breath(db):
     """Отметка и проверка — один запрос: два захода подряд не считаются."""
     assert await db.chore_done(chores.WIPE_TURF) is False
