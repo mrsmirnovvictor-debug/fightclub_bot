@@ -218,6 +218,12 @@ class Player:
     # Сданные курсы: коды дипломов. Диплом не отбирают и не продлевают,
     # поэтому ничего, кроме кода, у него нет — всё прочее знает курс
     diplomas: list[str] = field(default_factory=list)
+    # За рулём. Пусто — боец идёт пешком; `car_until` — до какого часа
+    # машина его, ноль у купленной. Сами машины лежат в таблице `cars`, а
+    # здесь та, что под ним сейчас: о ней спрашивают дорога и карточка,
+    # то есть все и всегда
+    car: str = ""
+    car_until: int = 0
     # Что слетело в последнем действии: вещь сняли, и с ней ушло то, что на
     # ней держалось. Живёт до конца запроса — рассказать об этом игроку.
     dropped_gear: list[OwnedItem] = field(default_factory=list)
@@ -481,6 +487,25 @@ class Player:
     def limping(self) -> bool:
         """Есть ли травма. По городу такой боец идёт вдвое дольше."""
         return self.injury is not None and self.injury.is_active()
+
+    def driving(self, now: int | None = None) -> str:
+        """Код машины под бойцом. Пусто — идёт пешком.
+
+        Срок аренды кончился — значит, боец уже пешком, и сметать для
+        этого ничего не надо: час возврата написан в самой строке.
+        Купленная машина срока не имеет вовсе.
+        """
+        if not self.car:
+            return ""
+        if self.car_until and self.car_until <= (now_ts() if now is None else now):
+            return ""
+        return self.car
+
+    def car_times(self, now: int | None = None) -> int:
+        """Во сколько раз короче дорога за рулём. Пешком — в один."""
+        from bot.game.cars import times_of
+
+        return times_of(self.driving(now))
 
     @property
     def crippled(self) -> bool:

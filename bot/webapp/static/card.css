@@ -290,6 +290,69 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   background: rgba(0, 0, 0, 0.45);
 }
 .avatar.clickable:active { transform: scale(0.99); }
+/* Машина под бойцом: полосой 16:9 по низу образа. Не слот — слоты стоят
+   по бокам, и места среди них у машины нет; а под ногами — ровно её
+   место. Подпись «сменить образ» при этом уезжает наверх: она короткая,
+   а машина широкая, и спорить им за одну полосу незачем */
+.avatar { position: relative; }
+/* Селектор с запасом: `.avatar img` рядом задаёт образу высоту во всю
+   рамку, и по весу он перебил бы одиночный класс — машина растянулась бы
+   на весь образ вместо полосы по низу */
+.avatar img.avatar-car {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-top: 1px solid var(--slot-line);
+}
+.avatar.has-car.clickable::after { top: 0; bottom: auto; }
+
+/* Машина на полке: картинка широкая, и держать её в квадрате нельзя —
+   16:9 в 104 пикселя превращает седан в полоску. Поэтому у машины своя
+   карточка: картинка сверху во всю ширину, под ней имя и цены */
+.car {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.car.driving { border-color: var(--hp-green); }
+.car-pic {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 46px;
+  overflow: hidden;
+}
+.car-pic img { width: 100%; height: 100%; object-fit: cover; }
+.car-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+.car-title { font-weight: 700; }
+/* Скорость — единственное свойство машины, и по ней их выбирают:
+   стоит у имени и зелёным, как всякая прибавка */
+.car-times {
+  color: var(--hp-green);
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.keys { margin: 4px 0 18px; }
 
 .city {
   margin: 12px 0 16px;

@@ -60,6 +60,7 @@ class Service(str, Enum):
     VOTE = "vote"  # администрация: выдвижение в мэры и выборы
     PRISON = "prison"  # тюрьма: свой срок и список сидящих
     ARENA = "arena"  # турнирная арена: недельный плей-офф
+    CARS = "cars"  # автосалон и служебные гаражи: машины города
 
     @property
     def title(self) -> str:
@@ -94,6 +95,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.VOTE: "выдвигаться в мэры",
     Service.PRISON: "сидеть и считать срок",
     Service.ARENA: "драться в недельном турнире",
+    Service.CARS: "брать машину",
 }
 
 
@@ -318,6 +320,17 @@ def _walk_from(start: str) -> dict[str, int]:
 _DISTANCES: dict[str, dict[str, int]] | None = None
 
 
+def road_seconds(walk: int, times: int) -> int:
+    """Дорога за рулём: та же дорога, делённая на машину.
+
+    Правило живёт в `bot.game.cars` — здесь только вход, чтобы карта не
+    знала о машинах больше, чем нужно для одного деления.
+    """
+    from bot.game.cars import road_seconds as by_car
+
+    return by_car(walk, times)
+
+
 def district_hops(source: str, target: str) -> int:
     """Сколько шагов между районами. Ноль — это один и тот же район."""
     global _DISTANCES
@@ -326,12 +339,18 @@ def district_hops(source: str, target: str) -> int:
     return _DISTANCES.get(source, {}).get(target, FAR_AWAY)
 
 
-def travel_seconds(source: str, target: str, limping: bool = False) -> int:
+def travel_seconds(
+    source: str, target: str, limping: bool = False, times: int = 1
+) -> int:
     """Сколько идти от одного места до другого. Ноль — уже на месте.
 
     `limping` — боец травмирован. Со сломанной ногой дорога вдвое
     длиннее, и это единственное, что травма делает с городом: ходить
     она не запрещает, только замедляет.
+
+    `times` — машина под бойцом: во сколько раз она делит дорогу.
+    Считается последней, после травмы: с переломом за рулём всё равно
+    быстрее, чем с переломом пешком.
     """
     if source == target:
         return 0
@@ -339,7 +358,9 @@ def travel_seconds(source: str, target: str, limping: bool = False) -> int:
     if here is None or there is None:  # pragma: no cover - дом не с карты
         return STEP
     seconds = STEP * (district_hops(here.district, there.district) + 1)
-    return seconds * LIMP_TIMES if limping else seconds
+    if limping:
+        seconds *= LIMP_TIMES
+    return road_seconds(seconds, times)
 
 
 # ---------- сама карта ----------
@@ -744,7 +765,10 @@ LOCATIONS: tuple[Location, ...] = (
             (0.412327, 0.241029), (0.5983, 0.244019),
             (0.5983, 0.308612), (0.41339, 0.305024),
         ),
-        services=(Service.POLICE, Service.WORK),
+        # Гараж участка стоит в самом участке, и свой экран ему не
+        # нужен: он рисуется на экране дежурной части. Услуга тут затем,
+        # чтобы ручка машин признавала это место своим
+        services=(Service.POLICE, Service.WORK, Service.CARS),
         soon="дежурная часть и розыск",
         genitive="полицейского участка",
         interior_folder=art.NEW_INTERIORS,
@@ -984,10 +1008,9 @@ LOCATIONS: tuple[Location, ...] = (
             (0.345377, 0.354067), (0.454835, 0.354067),
             (0.45271, 0.409091), (0.34644, 0.409091),
         ),
-        # В салоне теперь продают: место менеджера занимают через
-        # агентство. Сами машины и гаражи всё ещё впереди
-        services=(Service.WORK,),
-        soon="машины и гаражи",
+        # Машины впереди работы: в салон ходят за машиной, а на смену —
+        # по кнопке в шапке, как и во всех прочих домах
+        services=(Service.CARS, Service.WORK),
         genitive="автосалона",
         interior_folder=art.NEW_INTERIORS,
     ),
@@ -1072,8 +1095,9 @@ LOCATIONS: tuple[Location, ...] = (
             (0.299681, 0.611244), (0.407014, 0.588517),
             (0.403826, 0.625), (0.297556, 0.647129),
         ),
-        services=(Service.WORK,),
-        soon="смены за рулём",
+        # Гараж впереди работы: смену водитель начинает здесь же, но
+        # ходят в парк за машиной — на смену встают кнопкой в шапке
+        services=(Service.CARS, Service.WORK),
         genitive="таксопарка",
         interior_folder=art.NEW_INTERIORS,
     ),

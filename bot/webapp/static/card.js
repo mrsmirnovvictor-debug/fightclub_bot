@@ -1889,7 +1889,7 @@ const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
   "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
-  "bag", "hero",
+  "cars", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1901,7 +1901,7 @@ const OPENED_FROM = {
   insurance: "map", gym: "map", bank: "map", hr: "map", work: "map",
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
   tavern: "map", study: "map", turf: "map", crowd: "map",
-  elections: "map", house: "map", prison: "map", arena: "map",
+  elections: "map", house: "map", prison: "map", arena: "map", cars: "map",
 };
 let lastTab = "hero";
 
@@ -1975,6 +1975,11 @@ function showTab(name) {
     loadArena();
     armArenaPoll();
   } else stopArenaPoll();
+  // Салон и гараж: машины берут и сдают чужими руками — в гараже три
+  // места, и занять их могли, пока мы шли
+  if (name === "cars") loadCars();
+  // Ключи при бойце: смотрим их там же, где за руль садятся
+  if (name === "hero") loadKeys();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -2487,6 +2492,7 @@ const HOUSE_SCREENS = {
   mafia: () => showTab("mafia"),
   prison: () => openPrison(),
   arena: () => openArena(),
+  cars: () => openCars(),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -6221,16 +6227,40 @@ function paintAvatar(box, card, clickable) {
   };
   if (!card.avatar.url) {
     box.appendChild(emoji());
-    return;
+  } else {
+    const img = document.createElement("img");
+    img.src = card.avatar.url;
+    img.alt = card.name;
+    img.addEventListener("error", () => {
+      // Образ не доехал — возвращаем значок, но машину из-под бойца не
+      // убираем: она тут не при чём
+      const car = box.querySelector(".avatar-car");
+      box.textContent = "";
+      box.appendChild(emoji());
+      if (car) box.appendChild(car);
+    });
+    box.appendChild(img);
   }
-  const img = document.createElement("img");
-  img.src = card.avatar.url;
-  img.alt = card.name;
-  img.addEventListener("error", () => {
-    box.textContent = "";
-    box.appendChild(emoji());
+  paintAvatarCar(box, card);
+}
+
+/** Машина под бойцом: поверх образа, снизу. Пешком — ничего. */
+function paintAvatarCar(box, card) {
+  box.classList.remove("has-car");
+  if (!card.car || !card.car.image) return;
+  const shot = document.createElement("img");
+  shot.className = "avatar-car";
+  shot.src = card.car.image;
+  shot.alt = card.car.title;
+  shot.title = card.car.title + " · дорога " + card.car.times_text;
+  // Не доехала картинка — просто нет машины: подписью это не заменяют,
+  // иначе под бойцом висела бы строка вместо машины
+  shot.addEventListener("error", () => {
+    shot.remove();
+    box.classList.remove("has-car");
   });
-  box.appendChild(img);
+  box.classList.add("has-car");
+  box.appendChild(shot);
 }
 
 function renderAvatar(card) {
@@ -9650,14 +9680,15 @@ function renderPolice(data) {
     }
     body.appendChild(officeRackBox(office));
     body.appendChild(officeStoreBox(office));
-    // Гараж у кабинета тот же, что у семьи: три места и те же слова
-    body.appendChild(garageBox(office.garage || {}, "Служебный гараж"));
     return;
   }
 
   // Свои дела — всем, сводка по городу — только при значке
   if ((data.mine || []).length) body.appendChild(myCasesBox(data));
   if (data.badge) {
+    // Гараж участка — первым делом: машину берут и сдают, идя мимо, а
+    // сводку читают сидя. Видят его все сотрудники: машины выдают им
+    if ((data.garage || []).length) body.appendChild(stationGarageBox(data));
     body.appendChild(dutyWeekBox(data));
     // Бонусный пулл участка: зарабатывают его все вместе, и счёт
     // недели видит каждый сотрудник, а не только кресло
@@ -10997,6 +11028,275 @@ function tickArena() {
   const left = Math.max(0, Number(node.dataset.until || 0) - nowSec());
   node.textContent = fullClock(left);
   if (!left) loadArena();
+}
+
+// ---------- машины: салон, гараж службы и свои ключи ----------
+//
+// Экран один на три дома. В салоне на полке цены — сутки, месяц и
+// покупка; в гараже участка и парка — места и те, кто в разъезде.
+// Разница в том, что приходит в `shelf`, а не в том, какой это экран.
+
+let carsData = null;
+
+async function openCars() {
+  showTab("cars");
+}
+
+async function loadCars() {
+  try {
+    const response = await fetch("api/cars", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Машины не отвечают.");
+    const data = await response.json();
+    if (data.card) render(data.card, true);
+    renderCars(data);
+  } catch (error) {
+    el("cars-note").textContent = error.message;
+  }
+}
+
+async function carsAction(payload) {
+  try {
+    const data = await post("api/cars", payload);
+    haptic((feedback) => feedback.impactOccurred("medium"));
+    if (data.card) render(data.card, true);
+    renderCars(data);
+  } catch (error) {
+    popup("Машины", error.message);
+    await loadCars();
+  }
+}
+
+function renderCars(data) {
+  carsData = data;
+  el("cars-title").textContent = (data.garage ? "🅿️ " : "🚗 ") + data.title;
+  el("cars-note").textContent = data.said || data.note || "";
+  el("shop-purse-cars").textContent = "";
+  el("shop-purse-cars").appendChild(purse(data.credits || 0));
+
+  const body = el("cars-body");
+  body.textContent = "";
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  (data.shelf || []).forEach((one) => {
+    list.appendChild(data.garage ? garageCar(one) : showcaseCar(one));
+  });
+  body.appendChild(list);
+}
+
+/** Сама машина: картинка 16:9, скорость и подпись. */
+function carPicture(car) {
+  const box = document.createElement("div");
+  box.className = "car-pic";
+  if (!car.image) return box;
+  const img = document.createElement("img");
+  img.src = car.image;
+  img.alt = car.title;
+  img.addEventListener("error", () => {
+    box.textContent = "🚗";
+  });
+  box.appendChild(img);
+  return box;
+}
+
+function carHead(car) {
+  const box = document.createElement("div");
+  box.className = "car-head";
+  const title = document.createElement("span");
+  title.className = "car-title";
+  title.textContent = car.title;
+  const times = document.createElement("span");
+  times.className = "car-times";
+  // Скорость — главное и единственное свойство машины, и стоит она у
+  // имени: по ней машины и выбирают
+  times.textContent = "дорога " + car.times_text;
+  box.append(title, times);
+  return box;
+}
+
+function carCard(car) {
+  const box = document.createElement("article");
+  box.className = "car";
+  box.append(carPicture(car), carHead(car));
+  if (car.note) {
+    const note = document.createElement("p");
+    note.className = "thing-note";
+    note.textContent = car.note;
+    box.appendChild(note);
+  }
+  return box;
+}
+
+/** Машина на витрине салона: три цены и три кнопки. */
+function showcaseCar(one) {
+  const box = carCard(one);
+  if (one.own) {
+    const have = document.createElement("div");
+    have.className = "thing-have";
+    have.textContent = "✓ Твоя насовсем";
+    box.appendChild(have);
+  } else if (one.rented) {
+    const have = document.createElement("div");
+    have.className = "thing-have";
+    have.textContent = "Снята, осталось " + one.left_text;
+    box.appendChild(have);
+  }
+  box.appendChild(
+    paperRows([
+      ["Сутки", num(one.day) + " 💰"],
+      ["Месяц", num(one.month) + " 💰 · " + one.month_days + " суток по цене дня"],
+      ["Купить", num(one.price) + " 💰"],
+    ])
+  );
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (!one.own) {
+    buttons.append(
+      button("Сутки · " + num(one.day) + " 💰", {
+        secondary: true,
+        disabled: !one.can_rent_day,
+        hint: "Не хватает денег на сутки.",
+        onClick: () => carsAction({ action: "rent", code: one.code, span: "day" }),
+      }),
+      button("Месяц · " + num(one.month) + " 💰", {
+        secondary: true,
+        disabled: !one.can_rent_month,
+        hint: "Не хватает денег на месяц.",
+        onClick: () =>
+          carsAction({ action: "rent", code: one.code, span: "month" }),
+      }),
+      button("Купить · " + num(one.price) + " 💰", {
+        disabled: !one.can_buy,
+        hint: "Не хватает денег на покупку.",
+        onClick: () => carsAction({ action: "buy", code: one.code }),
+      })
+    );
+  }
+  if (one.rented) {
+    buttons.appendChild(
+      button("Сдать", {
+        secondary: true,
+        onClick: () => carsAction({ action: "give", code: one.code }),
+      })
+    );
+  }
+  if (buttons.childElementCount) box.appendChild(buttons);
+  return box;
+}
+
+/** Машина в гараже службы: места, кто в разъезде и дадут ли тебе. */
+function garageCar(one, act) {
+  const press = act || carsAction;
+  const box = carCard(one);
+  const rows = [
+    ["Мест в гараже", String(one.seats)],
+    ["Свободно", String(one.free) + " из " + one.seats],
+  ];
+  if (one.price) rows.push(["За смену", num(one.price) + " 💰"]);
+  if (one.holders.length) {
+    rows.push([
+      "В разъезде",
+      one.holders.map((who) => (who.you ? "ты" : who.name)).join(", "),
+    ]);
+  }
+  if (one.mine && one.left_text) rows.push(["У тебя до конца смены", one.left_text]);
+  box.appendChild(paperRows(rows));
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (one.mine) {
+    buttons.appendChild(
+      button("Сдать в гараж", {
+        onClick: () => press({ action: "give", code: one.code }),
+      })
+    );
+  } else {
+    buttons.appendChild(
+      button(one.price ? "Взять · " + num(one.price) + " 💰" : "Взять", {
+        disabled: !one.can_take,
+        hint: one.why || "Сейчас эту машину не дадут.",
+        onClick: () => press({ action: "take", code: one.code }),
+      })
+    );
+  }
+  box.appendChild(buttons);
+  if (one.why && !one.mine) {
+    const why = document.createElement("p");
+    why.className = "thing-note muted";
+    why.textContent = one.why;
+    box.appendChild(why);
+  }
+  return box;
+}
+
+// ---------- ключи: за руль садятся в карточке ----------
+//
+// Машина не вещь: в рюкзаке её нет, и слота у неё нет. Ключи лежат под
+// куклой — там же, где машину и видно: поверх образа, снизу.
+
+let keysData = [];
+
+async function loadKeys() {
+  try {
+    const response = await fetch("api/keys", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    renderKeys(data.keys || []);
+  } catch (error) {
+    // Молча: ключи — не повод для окна с ошибкой
+  }
+}
+
+async function keysAction(payload) {
+  try {
+    const data = await post("api/keys", payload);
+    haptic((feedback) => feedback.impactOccurred("medium"));
+    if (data.card) render(data.card, true);
+    renderKeys(data.keys || []);
+    if (data.said) popup("Машина", data.said);
+  } catch (error) {
+    popup("Машина", error.message);
+    await loadKeys();
+  }
+}
+
+function renderKeys(keys) {
+  keysData = keys;
+  const box = el("hero-keys");
+  const list = el("keys-list");
+  if (!box || !list) return;
+  box.classList.toggle("hidden", keys.length === 0);
+  el("keys-count").textContent = keys.length ? String(keys.length) : "";
+  list.textContent = "";
+  keys.forEach((one) => list.appendChild(keyCard(one)));
+}
+
+function keyCard(one) {
+  const box = carCard(one);
+  if (one.driving) box.classList.add("driving");
+  const rows = [
+    ["Дорога короче", "в " + one.times + " раз"],
+    [one.own ? "Твоя" : "Осталось", one.own ? "насовсем" : one.left_text],
+  ];
+  box.appendChild(paperRows(rows));
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    one.driving
+      ? button("Снять", {
+          secondary: true,
+          onClick: () => keysAction({ action: "park" }),
+        })
+      : button("За руль", {
+          onClick: () => keysAction({ action: "wheel", code: one.code }),
+        })
+  );
+  box.appendChild(buttons);
+  return box;
 }
 
 // ---------- тюрьма: свой срок и те, кто сидит рядом ----------
@@ -13833,6 +14133,44 @@ function renderEstateTab(estate) {
   body.appendChild(robberyBoxFamily(estate.robbery || {}));
 }
 
+/** Гараж участка: две патрульные и машина начальника.
+
+    Карточки те же, что в таксопарке, — гараж один и тот же, — но после
+    кнопки перечитываем участок: экран здесь его, а не машинный. */
+function stationGarageBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  const free = (data.garage || []).reduce((sum, one) => sum + one.free, 0);
+  head.textContent = "🚓 Гараж участка";
+  const count = document.createElement("span");
+  count.className = "shelf-count";
+  count.textContent = "свободно " + free;
+  head.appendChild(count);
+  box.appendChild(head);
+
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  (data.garage || []).forEach((one) => {
+    list.appendChild(garageCar(one, stationCarAction));
+  });
+  box.appendChild(list);
+  return box;
+}
+
+async function stationCarAction(payload) {
+  try {
+    const data = await post("api/cars", payload);
+    haptic((feedback) => feedback.impactOccurred("medium"));
+    if (data.card) render(data.card, true);
+    if (data.said) popup("Гараж участка", data.said);
+  } catch (error) {
+    popup("Гараж участка", error.message);
+  }
+  await loadPolice();
+}
+
 /** Гараж семьи: три места под автомобили. Пока они пустые. */
 function garageBox(garage, title) {
   const box = document.createElement("section");
@@ -13858,7 +14196,8 @@ function garageBox(garage, title) {
   const note = document.createElement("p");
   note.className = "thing-note";
   note.textContent = garage.soon
-    ? "Места под машины отведены. Самих машин в городе пока нет."
+    ? "Места под машины отведены. Свою машину пока держат при себе, "
+      + "а не в общем гараже."
     : "Ставят все, кто в семье. Выводят только старшие.";
   box.appendChild(note);
   return box;
@@ -14682,7 +15021,7 @@ function paintDutyLine() {
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
-  "trade", "house", "prison", "arena",
+  "trade", "house", "prison", "arena", "cars",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -14837,7 +15176,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
-  "crowd", "elections", "shop", "magic", "prison", "arena",
+  "crowd", "elections", "shop", "magic", "prison", "arena", "cars",
   "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));

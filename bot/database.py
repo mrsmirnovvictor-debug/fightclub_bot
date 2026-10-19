@@ -107,6 +107,11 @@ CREATE TABLE IF NOT EXISTS players (
     study_tries     INTEGER NOT NULL DEFAULT 0,
     lesson_until    INTEGER NOT NULL DEFAULT 0,
     diplomas        TEXT    NOT NULL DEFAULT '',
+    -- За рулём: код машины и до какого часа она на руках. Пусто — боец
+    -- идёт пешком. Машины лежат в `cars`, а здесь — та, что под ним
+    -- сейчас: её спрашивают и дорога, и карточка, то есть все и всегда
+    car             TEXT    NOT NULL DEFAULT '',
+    car_until       INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -908,6 +913,21 @@ CREATE INDEX IF NOT EXISTS quests_user ON quests(user_id, state);
 
 -- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
 -- ничего не задваивает, а новая группа получает всё с начала.
+-- Машины бойца: по строке на машину. `until` — до какого часа она его:
+-- ноль у купленной (своя насовсем), срок у снятой в салоне и у
+-- служебной, взятой на смену. Служебных в гараже столько, сколько
+-- мест: сами места не хранятся, они считаются строками этой таблицы
+CREATE TABLE IF NOT EXISTS cars (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    code    TEXT    NOT NULL,
+    until   INTEGER NOT NULL DEFAULT 0,
+    took_at INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (user_id, code)
+);
+
+CREATE INDEX IF NOT EXISTS cars_code ON cars(code);
+
 CREATE TABLE IF NOT EXISTS announcements (
     chat_id   INTEGER NOT NULL,
     code      TEXT    NOT NULL,
@@ -926,7 +946,7 @@ PLAYER_COLUMNS = (
     "job_code, job_since, job_experience, job_week, job_minutes, shift_until, "
     "shift_day, shift_minutes, "
     "study_code, study_since, study_lessons, study_day, study_exam_at, "
-    "study_tries, lesson_until, diplomas"
+    "study_tries, lesson_until, diplomas, car, car_until"
 )
 
 # Колонки, добавленные после первой версии: их дописываем в уже живые базы.
@@ -978,6 +998,9 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("study_tries", "INTEGER NOT NULL DEFAULT 0"),
     ("lesson_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — занятие не идёт
     ("diplomas", "TEXT NOT NULL DEFAULT ''"),  # коды сданных курсов
+    # За рулём: что под бойцом и до какого часа. Пусто — пешком
+    ("car", "TEXT NOT NULL DEFAULT ''"),
+    ("car_until", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -1480,9 +1503,10 @@ class Database:
                 job_code, job_since, job_experience, job_week, job_minutes,
                 shift_until, shift_day, shift_minutes,
                 study_code, study_since, study_lessons, study_day,
-                study_exam_at, study_tries, lesson_until, diplomas
+                study_exam_at, study_tries, lesson_until, diplomas,
+                car, car_until
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -1535,7 +1559,9 @@ class Database:
                 study_exam_at   = excluded.study_exam_at,
                 study_tries     = excluded.study_tries,
                 lesson_until    = excluded.lesson_until,
-                diplomas        = excluded.diplomas
+                diplomas        = excluded.diplomas,
+                car             = excluded.car,
+                car_until       = excluded.car_until
             """,
             (
                 player.user_id,
@@ -1592,6 +1618,8 @@ class Database:
                 player.study_tries,
                 player.lesson_until,
                 ",".join(player.diplomas),
+                player.car,
+                player.car_until,
             ),
         )
         await self.conn.commit()
@@ -4163,6 +4191,88 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # ---------- машины ----------
+
+    async def cars_of(self, user_id: int) -> list[dict]:
+        """Машины бойца: свои и взятые. Порядок — как брали."""
+        async with self.conn.execute(
+            """
+            SELECT id, code, until, took_at FROM cars
+            WHERE user_id = ? ORDER BY took_at, id
+            """,
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def car_row(self, user_id: int, code: str) -> dict | None:
+        """Эта машина у этого бойца. None — нет такой."""
+        async with self.conn.execute(
+            "SELECT id, code, until, took_at FROM cars "
+            "WHERE user_id = ? AND code = ?",
+            (user_id, code),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def put_car(
+        self, user_id: int, code: str, seconds: int, now: int
+    ) -> int:
+        """Записать машину на бойца. Отдаёт её час возврата.
+
+        `seconds` — на сколько берут; ноль значит «насовсем», то есть
+        куплена. Та же машина второй раз — продлеваем: живая аренда
+        продлевается со своего конца, кончившаяся — с этого часа. Своя
+        насовсем срока больше не получает ни при каком продлении.
+        """
+        row = await self.car_row(user_id, code)
+        until = 0 if seconds <= 0 else now + seconds
+        if row is not None and (not row["until"] or not seconds):
+            until = 0
+        elif row is not None:
+            until = max(int(row["until"]), now) + seconds
+        if row is None:
+            await self.conn.execute(
+                "INSERT INTO cars (user_id, code, until, took_at) "
+                "VALUES (?,?,?,?)",
+                (user_id, code, until, now),
+            )
+        else:
+            await self.conn.execute(
+                "UPDATE cars SET until = ? WHERE id = ?", (until, row["id"])
+            )
+        await self.conn.commit()
+        return until
+
+    async def drop_car(self, user_id: int, code: str) -> bool:
+        """Снять машину с бойца: сдал в гараж или кончилась аренда."""
+        cursor = await self.conn.execute(
+            "DELETE FROM cars WHERE user_id = ? AND code = ?", (user_id, code)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def car_holders(self, code: str, now: int) -> list[dict]:
+        """У кого на руках эта машина. Кончившиеся сроки не считаются."""
+        async with self.conn.execute(
+            """
+            SELECT user_id, until, took_at FROM cars
+            WHERE code = ? AND (until = 0 OR until > ?)
+            ORDER BY took_at, user_id
+            """,
+            (code, now),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def sweep_cars(self, now: int) -> int:
+        """Убрать машины, у которых кончился срок. Отдаёт, сколько убрал."""
+        cursor = await self.conn.execute(
+            "DELETE FROM cars WHERE until > 0 AND until <= ?", (now,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount
 
     # ---------- квесты ----------
 

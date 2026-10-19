@@ -308,7 +308,11 @@ async def test_the_office_opens_for_the_chief_alone(db):
     office = body["office"]
     assert office["post"] == "Начальник полиции"
     assert len(office["rack"]) == 13
-    assert office["garage"]["slots"] == 3
+    # Гараж стоит не в кабинете, а в участке: машины выдают сотрудникам
+    assert "garage" not in office
+    assert [one["code"] for one in body["garage"]] == [
+        "vcpd_patrol", "vcpd_chief"
+    ]
 
     patrol = await patrolman(db, 84, "Патрульный")
     plain = await build_police_board(db, patrol, NOW)

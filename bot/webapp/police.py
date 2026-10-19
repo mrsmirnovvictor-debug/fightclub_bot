@@ -142,6 +142,10 @@ async def build_police_board(
     body["officers"] = sheet["officers"]
     body["week"] = sheet["week"]
     body["office"] = await office_payload(db, player, sheet)
+    # Гараж участка: две патрульные и машина начальника. Видят его все
+    # сотрудники — машины выдают им, а не кабинету, — и стоит он на
+    # экране дежурной части, а не за дверью начальника
+    body["garage"] = await garage_shelf(db, player, moment)
     # Бонусный пулл участка видит каждый сотрудник: зарабатывают его
     # вместе. Менять дележ может только начальник — это его настройка,
     # и она лежит у службы, а не у человека
@@ -152,11 +156,28 @@ async def build_police_board(
     return body
 
 
-# Кабинет начальника: форма, склад и места под машины. Числа взяты у
-# семьи: пятнадцать ячеек склада и три места в гараже — кабинет для
-# города ровно то же, чем особняк для семьи, и считать их разными
-# мерками не из чего
-GARAGE_SLOTS = 3
+# Кабинет начальника: форма и склад. Числа взяты у семьи: пятнадцать
+# ячеек склада — кабинет для города ровно то же, чем особняк для семьи,
+# и считать их разными мерками не из чего. Машин в кабинете нет: они
+# стоят в гараже участка, потому что выдают их сотрудникам
+
+
+async def garage_shelf(db, player: Player, now: int) -> list[dict[str, Any]]:
+    """Гараж участка глазами сотрудника: места, разъезды и своя машина.
+
+    Строки собирает экран машин — те же, что в таксопарке: гараж один и
+    тот же, меняется только дом, в котором он стоит.
+    """
+    from bot.car_service import mine as my_cars, release_strangers
+    from bot.game.cars import POLICE_PLACE, garage_of
+    from bot.webapp.cars import garage_row
+
+    await release_strangers(db, POLICE_PLACE, now)
+    own = {one["code"]: one for one in await my_cars(db, player, now)}
+    return [
+        await garage_row(db, car, player, now, own)
+        for car in garage_of(POLICE_PLACE)
+    ]
 
 
 async def office_payload(
@@ -197,10 +218,6 @@ async def office_payload(
             for owned in player.backpack
             if not owned.item.is_duty
         ],
-        # Машин в городе пока нет — но места под них отведены и видны,
-        # как в гараже семьи: пустая полка говорит, что сюда что-то
-        # будет, а её отсутствие не говорит ничего
-        "garage": {"slots": GARAGE_SLOTS, "cars": [], "soon": True},
     }
 
 

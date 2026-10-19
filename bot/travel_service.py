@@ -86,8 +86,11 @@ class Travel:
             )
         # Со смены не уходят: боец на работе, а не гуляет по городу.
         # Замок спадает сам, когда час смены пройдёт, — сторожа у него
-        # нет, как и у дороги
-        if player.on_shift(moment):
+        # нет, как и у дороги.
+        #
+        # Кроме водителя такси: его работа и есть город. Взял машину в
+        # парке — катайся всю смену, в том и смысл места
+        if player.on_shift(moment) and not on_the_clock(player, moment):
             left = format_duration(player.shift_left(moment))
             raise LockedError(
                 f"Ты на смене — до конца {left}. С работы не уходят."
@@ -109,14 +112,30 @@ class Travel:
                 f"Ты на тренировке — до конца {left}. Из зала не уходят."
             )
 
-        # Травмированный идёт вдвое дольше: с переломом не побегаешь
+        # Травмированный идёт вдвое дольше: с переломом не побегаешь.
+        # А за рулём дорога делится на машину — от двух раз до десяти
         player.set_out(
             place.code,
-            travel_seconds(player.location, place.code, player.limping),
+            travel_seconds(
+                player.location, place.code, player.limping,
+                player.car_times(moment),
+            ),
             moment,
         )
         await self.db.save_player(player)
         return place
+
+
+def on_the_clock(player: Player, now: int) -> bool:
+    """Водитель такси за рулём парковой машины: ему город и есть работа.
+
+    Это единственная смена, с которой уходят: таксист, запертый в
+    парке, — не таксист. Своя машина тут не считается — в разъезд
+    отпускает парк, а не кошелёк.
+    """
+    from bot.game.cars import TAXI_CAR, TAXI_JOB
+
+    return player.job_code == TAXI_JOB and player.driving(now) == TAXI_CAR
 
 
 def here_text(place: Location) -> str:

@@ -19,13 +19,16 @@ from bot.game.locations import (
 from bot.models import Player
 
 
-def place_row(place: Location, here: str, limping: bool = False) -> dict:
+def place_row(
+    place: Location, here: str, limping: bool = False, times: int = 1
+) -> dict:
     """Дом на карте: вход, чем занят и сколько до него идти.
 
     Секунды считает сервер, хотя правило простое. Стоит повторить его на
     клиенте — и однажды они разойдутся: человек согласится на десять
-    секунд, а прождёт двадцать. Тем более с травмой: она удваивает
-    дорогу, и знает об этом только сервер.
+    секунд, а прождёт двадцать. Тем более с травмой и машиной: одна
+    удваивает дорогу, вторая делит её на себя, и знает об этом только
+    сервер.
     """
     return {
         "code": place.code,
@@ -40,11 +43,13 @@ def place_row(place: Location, here: str, limping: bool = False) -> dict:
         "soon": place.soon,
         "works": place.works,
         "here": place.code == here,
-        "walk": travel_seconds(here, place.code, limping),
+        "walk": travel_seconds(here, place.code, limping, times),
     }
 
 
-def district_row(district, here: str, limping: bool = False) -> dict:
+def district_row(
+    district, here: str, limping: bool = False, times: int = 1
+) -> dict:
     return {
         "code": district.code,
         "title": district.title,
@@ -53,7 +58,10 @@ def district_row(district, here: str, limping: bool = False) -> dict:
         # Куда ведут стрелки. Города целиком не видно — это единственное,
         # что связывает шесть картинок в один город
         "around": dict(district.around),
-        "places": [place_row(place, here, limping) for place in district.places],
+        "places": [
+            place_row(place, here, limping, times)
+            for place in district.places
+        ],
     }
 
 
@@ -80,6 +88,10 @@ def build_map(
     left = player.road_left(now)
     going = get_location(player.travel_to) if left else None
     limping = player.limping
+    # Машина под бойцом делит дорогу: от двух раз у хэтчбека до
+    # десяти у гиперкара. Карта обязана показывать то время, которое
+    # человек и прождёт
+    times = player.car_times(now)
     return {
         "here": here,
         "here_title": place.title if place else "—",
@@ -93,7 +105,9 @@ def build_map(
             # насколько она пройдена, — а заряд батарейки считается
             # именно от этого. Заново открыв карту в пути, клиент
             # начала дороги уже не помнит
-            "seconds": travel_seconds(here, going.code, limping) if going else 0,
+            "seconds": travel_seconds(here, going.code, limping, times)
+            if going
+            else 0,
             "text": f"В пути до {going.whither} — {format_duration(left)}"
             if going
             else "",
@@ -108,7 +122,8 @@ def build_map(
         # есть: внутрь дома за этим не заходят
         "crowd": crowd or {"total": 0, "online": 0, "fights": 0},
         "districts": [
-            district_row(district, here, limping) for district in DISTRICTS
+            district_row(district, here, limping, times)
+            for district in DISTRICTS
         ],
     }
 

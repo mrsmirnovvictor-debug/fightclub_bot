@@ -556,6 +556,25 @@
     <div id="arena-body"></div>
   </main>
 
+  <!-- ---------- 3b-quater. Машины ---------- -->
+  <!-- Один экран на три дома: салон торгует, участок и парк выдают
+       своим. Что здесь делают, решает не экран, а дом: в салоне на
+       полке цены, в гараже — места и кто в разъезде -->
+  <main id="cars" class="screen hidden">
+    <figure class="interior hidden" id="cars-interior">
+      <img class="interior-pic" id="cars-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="cars-back">← На карту</button>
+      <span class="shop-purse" id="shop-purse-cars"></span>
+    </header>
+    <h1 class="screen-title" id="cars-title">🚗 Автосалон</h1>
+    <p class="screen-note" id="cars-note"></p>
+
+    <div id="cars-body"></div>
+  </main>
+
   <!-- ---------- 3b-bis. Тюрьма ---------- -->
   <!-- Сидящий видит свой срок часами, а не одной строкой в отказе на
        выходе; всякий вошедший — список тех, кто сидит, и когда они
@@ -660,6 +679,14 @@
     </section>
 
     <div class="city" id="hero-city"></div>
+
+    <!-- Ключи: что у бойца есть и что под ним сейчас. Машина не вещь, и
+         в рюкзаке её нет — садятся в неё здесь, под куклой, потому что
+         видно её тоже здесь: поверх образа, снизу -->
+    <section class="keys hidden" id="hero-keys">
+      <h2 class="bag-head">🔑 Ключи <span class="bag-count" id="keys-count"></span></h2>
+      <div class="shelf-list" id="keys-list"></div>
+    </section>
 
     <!-- Имя своей семьи под местоположением: нажатие открывает её состав
          — поднять, разжаловать или выгнать, не идя в особняк. У чужой

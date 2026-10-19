@@ -2466,6 +2466,110 @@ async def api_arena_action(request: web.Request) -> web.Response:
     return await _arena_state(request, fresh, said)
 
 
+async def _cars_state(request: web.Request, player, said: str = "") -> web.Response:
+    from bot.webapp.cars import build_cars
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_cars(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_cars(request: web.Request) -> web.Response:
+    """Машины: витрина салона или гараж службы — смотря где боец стоит."""
+    player = await _at(request, Service.CARS)
+    return await _cars_state(request, player)
+
+
+async def api_cars_action(request: web.Request) -> web.Response:
+    """Дела с машинами: купить, снять, взять в гараже и сдать.
+
+    За руль садятся не здесь: машина надевается в карточке, и ручка у
+    этого своя — в салон за этим ходить не надо.
+    """
+    from bot.car_service import CarError, buy, hand_over, rent, take
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    code = str(data.get("code") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.CARS)
+    try:
+        if action == "buy":
+            said = await buy(db, player, code, now_ts())
+        elif action == "rent":
+            said = await rent(
+                db, player, code, str(data.get("span") or "day"), now_ts()
+            )
+        elif action == "take":
+            said = await take(db, player, code, now_ts())
+        elif action == "give":
+            said = await hand_over(db, player, code, now_ts())
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except CarError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _cars_state(request, fresh, said)
+
+
+async def api_wheel(request: web.Request) -> web.Response:
+    """Сесть за руль и выйти из машины.
+
+    Места тут нет нарочно: машину надевают в карточке, как вещь, —
+    значит, откуда угодно. Ключи на руках и права в кармане — всё,
+    что для этого нужно, и оба проверяет служба.
+    """
+    from bot.car_service import CarError, park, wheel
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    if player.arrive():
+        await db.save_player(player)
+    try:
+        if action == "wheel":
+            said = await wheel(db, player, str(data.get("code") or ""), now_ts())
+        elif action == "park":
+            said = await park(db, player, now_ts())
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except CarError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    config = request.app[CONFIG_KEY]
+    return web.json_response({
+        "said": said,
+        "card": build_card(fresh, config.bot_token, fresh.user_id),
+        "keys": await _keys(db, fresh),
+    })
+
+
+async def api_keys(request: web.Request) -> web.Response:
+    """Свои ключи: что у бойца есть и что под ним сейчас.
+
+    Ручка карточки, а не дома: ключи при бойце, и смотрят их там же,
+    где надевают, — на экране персонажа.
+    """
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    if player.arrive():
+        await db.save_player(player)
+    return web.json_response({"keys": await _keys(db, player)})
+
+
+async def _keys(db, player) -> list[dict]:
+    from bot.car_service import mine as my_cars
+
+    return await my_cars(db, player, now_ts())
+
+
 async def api_prison(request: web.Request) -> web.Response:
     """Тюрьма: свой срок и все, кто сидит сейчас.
 
@@ -3011,6 +3115,10 @@ def create_app(
             web.get("/api/arena", api_arena),
             web.post("/api/arena", api_arena_action),
             web.get("/api/prison", api_prison),
+            web.get("/api/cars", api_cars),
+            web.post("/api/cars", api_cars_action),
+            web.get("/api/keys", api_keys),
+            web.post("/api/keys", api_wheel),
             web.get("/api/turf", api_turf),
             web.post("/api/turf", api_turf_action),
             web.get("/api/study", api_study),

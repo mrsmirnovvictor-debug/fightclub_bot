@@ -71,6 +71,7 @@ from bot.models import Player
 from bot.webapp.auth import sign_avatar
 from bot.webapp.clans import fighter_badges
 from bot.webapp.bank import purse_payload
+from bot.webapp.cars import driving_payload
 from bot.webapp.documents import build_documents
 from bot.webapp.services import service_badge
 
@@ -1083,6 +1084,10 @@ def build_card(
             "tagline": fclass.tagline,
         },
         "avatar": avatar_payload(player, avatar_url),
+        # Машина под бойцом: рисуется поверх образа, снизу. Не слот —
+        # машина не вещь, и места среди слотов ей нет, а под ногами —
+        # ровно её место. Пусто — боец пешком
+        "car": driving_payload(player, moment),
         "hp": {
             "current": current_hp,
             "max": derived.max_hp,

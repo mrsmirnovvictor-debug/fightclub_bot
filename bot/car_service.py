@@ -1,0 +1,359 @@
+"""Машины: купить, снять, взять в гараже и сесть за руль.
+
+Правил тут три, и они вместе отвечают на вопрос «чем машина отличается
+от вещи».
+
+**Машину держит не рюкзак, а строка со сроком.** Купленная — своя
+насовсем, снятая в салоне — до часа, служебная — до конца смены.
+Кончился срок — машины нет, и сметать для этого ничего не надо: час
+написан в самой строке, и всякий, кто на неё смотрит, видит, жива она
+или нет.
+
+**За рулём одна машина.** «Надеть» вторую — значит выйти из первой;
+она от этого не пропадает, а возвращается в гараж бойца.
+
+**Служебную выдаёт должность, а не кошелёк.** Патрульную — любому в
+участке, машину начальника — начальнику, такси — водителю на смене.
+Снял форму — машина вернулась в гараж, и ждать этого никто не обязан.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from bot.database import Database
+from bot.game.cars import (
+    GARAGES,
+    SPANS,
+    TAXI,
+    TAXI_SHIFT_PRICE,
+    Car,
+    garage_of,
+    get_car,
+    may_take,
+    rent_price,
+    rent_seconds,
+    span_title,
+)
+from bot.game.health import format_term, now_ts
+from bot.game.locations import Service
+from bot.models import Player
+
+logger = logging.getLogger(__name__)
+
+
+class CarError(Exception):
+    """За руль нельзя — и человеку видно, почему."""
+
+
+# ---------- что у бойца ----------
+
+
+async def sweep(db: Database, now: int | None = None) -> int:
+    """Убрать машины с кончившимся сроком. Зовётся отовсюду, где смотрят.
+
+    Часов у города нет, и возвращать машину в гараж некому: это делает
+    всякий взгляд на салон, гараж или свои ключи.
+    """
+    return await db.sweep_cars(now_ts() if now is None else now)
+
+
+async def mine(
+    db: Database, player: Player, now: int | None = None
+) -> list[dict]:
+    """Ключи бойца: что у него есть и до какого часа."""
+    moment = now_ts() if now is None else now
+    await sweep(db, moment)
+    out = []
+    for row in await db.cars_of(player.user_id):
+        car = get_car(str(row["code"]))
+        if car is None:  # pragma: no cover - машину убрали из каталога
+            continue
+        left = max(0, int(row["until"]) - moment) if row["until"] else 0
+        out.append({
+            "code": car.code,
+            "title": car.title,
+            "image": car.image,
+            "times": car.times,
+            "note": car.note,
+            "service": car.service,
+            "own": not row["until"],
+            "until": int(row["until"]),
+            "left": left,
+            "left_text": format_term(left) if left else "",
+            "driving": player.driving(moment) == car.code,
+        })
+    return out
+
+
+async def has_car(db: Database, player: Player, code: str, now: int) -> bool:
+    """Есть ли эта машина у бойца прямо сейчас."""
+    row = await db.car_row(player.user_id, code)
+    if row is None:
+        return False
+    return not row["until"] or int(row["until"]) > now
+
+
+# ---------- салон ----------
+
+
+async def buy(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> str:
+    """Купить машину в салоне. Своя — насовсем, срока у неё нет."""
+    moment = now_ts() if now is None else now
+    car = _salon_car(code)
+    if await has_car(db, player, car.code, moment):
+        row = await db.car_row(player.user_id, car.code)
+        if row is not None and not row["until"]:
+            raise CarError("Такая у тебя уже есть.")
+    await _pay(db, player, car.price, moment, f"Покупка {car.title}")
+    await db.put_car(player.user_id, car.code, 0, moment)
+    logger.info("Боец %s купил машину %s", player.user_id, car.code)
+    return f"{car.title} теперь твоя. Ключи в гараже, за руль — в карточке."
+
+
+async def rent(
+    db: Database, player: Player, code: str, span: str,
+    now: int | None = None,
+) -> str:
+    """Снять машину на сутки или на месяц. Срок продлевается с конца."""
+    moment = now_ts() if now is None else now
+    car = _salon_car(code)
+    if span not in SPANS:
+        raise CarError("Снять можно на сутки или на месяц.")
+    row = await db.car_row(player.user_id, car.code)
+    if row is not None and not row["until"]:
+        raise CarError("Эта машина и так твоя — зачем её снимать.")
+    await _pay(
+        db, player, rent_price(car, span), moment,
+        f"Аренда {car.title} на {span_title(span)}",
+    )
+    until = await db.put_car(
+        player.user_id, car.code, rent_seconds(span), moment
+    )
+    logger.info(
+        "Боец %s снял машину %s на %s", player.user_id, car.code, span
+    )
+    left = format_term(max(0, until - moment))
+    return f"{car.title} снята на {span_title(span)}. Осталось {left}."
+
+
+async def hand_over(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> str:
+    """Отдать машину: сдать служебную или бросить аренду раньше срока.
+
+    Денег за недоезженную аренду не возвращают: салон сдал сутки, а не
+    часы. Купленную машину не отдают вовсе — её некому отдавать.
+    """
+    moment = now_ts() if now is None else now
+    car = get_car(code)
+    if car is None:
+        raise CarError("Такой машины в городе нет.")
+    row = await db.car_row(player.user_id, car.code)
+    if row is None:
+        raise CarError("Этой машины у тебя нет.")
+    if not row["until"] and not car.service:
+        raise CarError("Своя машина остаётся своей: её не сдают.")
+    if player.driving(moment) == car.code:
+        await park(db, player, moment)
+    await db.drop_car(player.user_id, car.code)
+    logger.info("Боец %s отдал машину %s", player.user_id, car.code)
+    if car.service:
+        return f"{car.title} вернулась в гараж."
+    return f"{car.title} сдана в салон. Денег за остаток срока не вернут."
+
+
+# ---------- гаражи службы ----------
+
+
+async def take(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> str:
+    """Взять машину из гаража службы. Бесплатно — кроме таксопарка."""
+    moment = now_ts() if now is None else now
+    car = get_car(code)
+    place = player.where(moment)
+    if car is None or car not in garage_of(place):
+        raise CarError("Этой машины в здешнем гараже нет.")
+    if not may_take(car, player.job_code):
+        raise CarError(_denied(car))
+    if await has_car(db, player, car.code, moment):
+        raise CarError("Эта машина у тебя уже на руках.")
+    await sweep(db, moment)
+    taken = await db.car_holders(car.code, moment)
+    if len(taken) >= car.seats:
+        raise CarError(
+            f"Все {car.seats} в разъезде. Дождись, пока вернут."
+        )
+    seconds = 0
+    if car.kind == TAXI:
+        # Такси берут на смену: кончилась смена — машина в парке, и
+        # возвращать её вручную не надо
+        if not player.on_shift(moment):
+            raise CarError("Машину дают на смену. Встань на смену в парке.")
+        seconds = player.shift_left(moment)
+        await _pay(
+            db, player, TAXI_SHIFT_PRICE, moment,
+            f"{car.title} на смену",
+        )
+    until = await db.put_car(player.user_id, car.code, seconds, moment)
+    logger.info("Боец %s взял служебную %s", player.user_id, car.code)
+    if until:
+        return (
+            f"{car.title} твоя до конца смены — "
+            f"{format_term(max(0, until - moment))}."
+        )
+    return f"{car.title} выдана. Сдать — в этом же гараже."
+
+
+async def drop_service_cars(db: Database, player: Player) -> int:
+    """Отобрать служебные машины у того, кто уходит со службы.
+
+    Зовётся при увольнении — своём и городском: ключи от патрульной
+    выдавала служба, и уходит боец без них. Гараж то же делает и сам,
+    когда на него смотрят, но ждать чужого взгляда незачем.
+    """
+    freed = 0
+    for row in await db.cars_of(player.user_id):
+        car = get_car(str(row["code"]))
+        if car is None or not car.service:
+            continue
+        await db.drop_car(player.user_id, car.code)
+        if player.car == car.code:
+            player.car = ""
+            player.car_until = 0
+        freed += 1
+        logger.info(
+            "Служебная %s ушла вместе с должностью бойца %s",
+            car.code, player.user_id,
+        )
+    return freed
+
+
+async def release_strangers(
+    db: Database, place: str, now: int | None = None
+) -> int:
+    """Отобрать служебные машины у тех, кто больше не на службе.
+
+    Ушёл из участка или из парка — машина возвращается в гараж. Часов
+    для этого нет, и делает это всякий взгляд на гараж: машин в нём
+    три, и перебрать их держателей дешевле, чем стеречь увольнения.
+    """
+    moment = now_ts() if now is None else now
+    await sweep(db, moment)
+    freed = 0
+    for car in garage_of(place):
+        for row in await db.car_holders(car.code, moment):
+            holder = await db.get_player(int(row["user_id"]))
+            if holder is not None and may_take(car, holder.job_code):
+                continue
+            await db.drop_car(int(row["user_id"]), car.code)
+            if holder is not None and holder.car == car.code:
+                holder.car = ""
+                holder.car_until = 0
+                await db.save_player(holder)
+            freed += 1
+            logger.info(
+                "Служебная %s отобрана у бойца %s: он больше не на службе",
+                car.code, row["user_id"],
+            )
+    return freed
+
+
+# ---------- за руль ----------
+
+
+async def wheel(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> str:
+    """Сесть за руль. Права обязательны, машина — своя или взятая."""
+    moment = now_ts() if now is None else now
+    car = get_car(code)
+    if car is None:
+        raise CarError("Такой машины в городе нет.")
+    if not player.school.has_licence:
+        raise CarError(
+            "Без водительского удостоверения за руль не сядешь. "
+            "Права — в автошколе и в участке."
+        )
+    await sweep(db, moment)
+    row = await db.car_row(player.user_id, car.code)
+    if row is None:
+        raise CarError("Этой машины у тебя нет.")
+    if row["until"] and int(row["until"]) <= moment:
+        raise CarError("Срок этой машины вышел — она уже не твоя.")
+    player.car = car.code
+    player.car_until = int(row["until"])
+    await db.save_player(player)
+    logger.info("Боец %s сел за руль %s", player.user_id, car.code)
+    return f"{car.title} под тобой. Дорога короче в {car.times} раз."
+
+
+async def park(
+    db: Database, player: Player, now: int | None = None
+) -> str:
+    """Снять машину: дальше пешком."""
+    moment = now_ts() if now is None else now
+    code = player.driving(moment)
+    player.car = ""
+    player.car_until = 0
+    await db.save_player(player)
+    car = get_car(code)
+    if car is None:
+        return "Ты и так пешком."
+    logger.info("Боец %s вышел из %s", player.user_id, car.code)
+    return f"{car.title} осталась в гараже. Дальше пешком."
+
+
+# ---------- внутреннее ----------
+
+
+def _salon_car(code: str) -> Car:
+    """Машина с витрины салона. Служебные здесь не торгуются."""
+    car = get_car(code)
+    if car is None or car.service:
+        raise CarError("Такой машины в салоне нет.")
+    return car
+
+
+def _denied(car: Car) -> str:
+    """Почему гараж не даёт эту машину."""
+    if car.kind == TAXI:
+        return "Машины парка выдают водителям таксопарка."
+    if len(car.jobs) == 1:
+        return "Эта машина — начальника полиции, и ключи от неё одни."
+    return "Служебные машины выдают сотрудникам участка."
+
+
+async def _pay(
+    db: Database, player: Player, price: int, now: int, about: str
+) -> None:
+    """Заплатить за машину тем же кошельком, которым платят всюду."""
+    if price <= 0:
+        return
+    here = player.price_here(price, now, Service.CARS)
+    if not player.can_afford(here, now, Service.CARS):
+        raise CarError(
+            f"Стоит {here} 💰, а {player.purse_note(now, Service.CARS)}."
+        )
+    player.pay(here, now, Service.CARS, about=about)
+    await db.save_player(player)
+
+
+__all__ = [
+    "CarError",
+    "GARAGES",
+    "buy",
+    "drop_service_cars",
+    "hand_over",
+    "has_car",
+    "mine",
+    "park",
+    "release_strangers",
+    "rent",
+    "sweep",
+    "take",
+    "wheel",
+]

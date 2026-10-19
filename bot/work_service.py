@@ -508,12 +508,15 @@ async def _release(
     уносит с работы, и терять его за уход было бы странно.
     """
     # Служебная форма уходит вместе с должностью: она числилась за
-    # креслом, а не за бойцом
+    # креслом, а не за бойцом. Служебная машина — туда же: ключи от
+    # патрульной выдавала служба, и уходит он без них
     from bot.duty_service import hand_back
+    from bot.car_service import drop_service_cars
 
     player.job_experience = player.experience(now)
     await db.leave_job(player.user_id, player.job_experience)
     await hand_back(db, player)
+    await drop_service_cars(db, player)
     await db.block_job(player.user_id, vacancy.code, now + COOLDOWN_SECONDS, reason)
     player.job_code = ""
     player.job_since = 0

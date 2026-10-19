@@ -858,6 +858,15 @@ def city_map(
     return body
 
 
+def empty_cars() -> dict:
+    """Салон, в котором нечего показать: так его видит любой другой экран."""
+    return {
+        "title": "Автосалон", "place": "car_dealership", "garage": False,
+        "credits": 0, "has_licence": False, "job": "", "driving": None,
+        "keys": [], "shelf": [], "note": "", "said": "",
+    }
+
+
 async def open_page(
     pw, server, card, shop=None, query="", topup=None, looks=None, club=None,
     magic=None, fights=None, history=None, fight_log=None, raid=None, market=None,
@@ -865,6 +874,7 @@ async def open_page(
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
+    cars=None, keys=None,
     images=False,
     telegram="",
 ):
@@ -916,6 +926,8 @@ async def open_page(
     ))
     await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
                                                     "ranks": [], "said": ""}))
+    await page.route("**/api/cars", canned(cars or empty_cars()))
+    await page.route("**/api/keys", canned({"keys": keys or []}))
 
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
@@ -10499,7 +10511,9 @@ async def test_the_chiefs_office_holds_the_budget_the_rack_and_the_garage(
         assert heads[1] == "Дележ премии"
         assert heads[2] == "Форма начальника · 1 из 13"
         assert heads[3] == "Склад кабинета · 1 из 15"
-        assert heads[4].startswith("Служебный гараж · 0 из 3")
+        # Гаража в кабинете нет: машины выдают сотрудникам, и стоит он
+        # на экране дежурной части, а не за дверью начальника
+        assert len(heads) == 4
 
         # Склад — те же полки, что в особняке: вещь на полке и пустые
         # клетки под остальные
@@ -10621,13 +10635,20 @@ async def test_the_duty_board_belongs_to_the_badge(server, db):
         browser, page = await open_station(pw, server, officer, sheet)
 
         heads = await page.locator("#police-body .shelf-head").all_inner_texts()
-        assert heads[:5] == [
+        # Гараж участка стоит первым: машину берут, идя мимо, а сводку
+        # читают сидя
+        assert heads[0].startswith("🚓 Гараж участка")
+        assert heads[1:6] == [
             "Дежурная часть", "🏆 Бонусы недели", "В розыске", "Нападения",
             "Служба в полиции",
         ]
 
-        # В копилке то, что положили, а норма считается от нападений
-        duty = await page.locator("#police-body .shelf").first.inner_text()
+        # В копилке то, что положили, а норма считается от нападений.
+        # Полку ищем по заголовку: первой на экране стоит уже не она, а
+        # гараж, и «первая полка» однажды снова окажется другой
+        duty = await page.locator(
+            "#police-body .shelf", has_text="Дежурная часть"
+        ).first.inner_text()
         # Тысячи разделены неразрывным пробелом — так их пишет `num`
         assert "1\u00a0400 💰" in duty and "На службе" in duty
 
@@ -11100,6 +11121,123 @@ async def test_the_arena_paints_the_bracket_in_two_colours(server, db):
         assert "вылетел" in await pair.locator(".bracket-side.out").inner_text()
         # Своя пара обведена, и в ней видно, где ты
         assert await page.locator("#arena-body .bracket-side.you").count() >= 1
+        await browser.close()
+
+
+
+# ---------- машины ----------
+
+
+async def test_the_salon_shows_three_prices_on_every_car(server, db):
+    """Витрина салона: картинка 16:9, скорость у имени и три цены."""
+    from bot.game.driving import School
+    from bot.webapp.cars import build_cars
+    from tests.test_cars import make_player as a_driver
+
+    me = a_driver(credits=4_000)
+    await db.save_player(me)
+    await db.set_school(me.user_id, School(passed_at=1, licence_at=1))
+    me = await db.get_player(me.user_id)
+    body = await build_cars(db, me)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, cars=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "cars")
+        await page.wait_for_selector("#cars-body .car")
+
+        cards = page.locator("#cars-body .car")
+        assert await cards.count() == 10
+        first = cards.first
+        assert "Городской хэтчбек" in await first.inner_text()
+        assert "дорога ×2" in await first.locator(".car-times").inner_text()
+        said = (await first.inner_text()).replace("\u00a0", " ")
+        # Три цены на одной карточке: сутки, месяц и покупка
+        assert "30 💰" in said and "600 💰" in said and "3 000 💰" in said
+        # Кнопок тоже три, и на каждой стоит цена
+        buttons = await first.locator(".btn").all_inner_texts()
+        assert len(buttons) == 3
+        assert buttons[0].startswith("Сутки") and buttons[2].startswith("Купить")
+        # Гиперкар не по карману: кнопка покупки погасла
+        last = cards.nth(9)
+        assert await last.locator(".btn").last.is_disabled()
+        await browser.close()
+
+
+async def test_the_depot_garage_counts_the_seats(server, db):
+    """Гараж парка: три места, и видно, сколько свободно."""
+    from bot.car_service import take
+    from bot.game.cars import TAXI_CAR, TAXI_PLACE
+    from bot.game.driving import School
+    from bot.game.work import SHIFT_SECONDS
+    from bot.webapp.cars import build_cars
+    from tests.test_cars import NOW, make_player as a_driver
+
+    driver = a_driver(1, "Водитель", credits=500, where=TAXI_PLACE)
+    driver.job_code = "taxi_driver"
+    driver.shift_until = NOW + SHIFT_SECONDS
+    await db.save_player(driver)
+    await db.set_school(1, School(passed_at=1, licence_at=1))
+    driver = await db.get_player(1)
+    await take(db, driver, TAXI_CAR, NOW)
+    body = await build_cars(db, await db.get_player(1), NOW)
+    card = build_card(driver, TOKEN, viewer_id=1)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, cars=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "cars")
+        await page.wait_for_selector("#cars-body .car")
+
+        said = await page.locator("#cars-body .car").first.inner_text()
+        assert "Такси" in said and "дорога ×5" in said
+        assert "2 из 3" in said, "одна машина на руках, две свободны"
+        assert "ты" in said, "кто в разъезде — видно по именам"
+        assert await page.locator("#cars-body .btn").first.inner_text() == (
+            "Сдать в гараж"
+        )
+        await browser.close()
+
+
+async def test_the_car_stands_under_the_fighter_in_his_card(server, db):
+    """Машина рисуется поверх образа, снизу, и ключи лежат под куклой."""
+    from bot.car_service import buy, mine, wheel
+    from bot.game.driving import School
+    from tests.test_cars import HATCH, NOW, make_player as a_driver
+
+    me = a_driver()
+    await db.save_player(me)
+    await db.set_school(me.user_id, School(passed_at=1, licence_at=1))
+    me = await db.get_player(me.user_id)
+    await buy(db, me, HATCH, NOW)
+    await wheel(db, me, HATCH, NOW)
+    keys = await mine(db, me, NOW)
+    card = build_card(me, TOKEN, viewer_id=me.user_id, now=NOW)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, keys=keys, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#hero-avatar .avatar-car")
+
+        # Машина стоит внутри рамки образа и прижата к её низу
+        frame = await page.locator("#hero-avatar").bounding_box()
+        shot = await page.locator("#hero-avatar .avatar-car").bounding_box()
+        assert abs(
+            (frame["y"] + frame["height"]) - (shot["y"] + shot["height"])
+        ) < 2
+        # Во всю ширину рамки, не считая самой рамки в пиксель с краю
+        assert abs(frame["width"] - shot["width"]) <= 2
+        # И она шире, чем выше: картинку прислали в 16:9
+        assert shot["width"] > shot["height"] * 1.6
+
+        # Ключи — под куклой, с кнопкой «Снять»: за рулём боец уже сидит
+        await page.wait_for_selector("#hero-keys:not(.hidden)")
+        said = await page.locator("#hero-keys").inner_text()
+        assert "Городской хэтчбек" in said and "насовсем" in said
+        assert await page.locator("#keys-list .btn").inner_text() == "Снять"
         await browser.close()
 
 
