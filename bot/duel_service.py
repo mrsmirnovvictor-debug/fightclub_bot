@@ -831,6 +831,14 @@ class DuelService:
         await self._start_round(session)
 
     async def _finish(self, session: DuelSession, result: RoundResult) -> None:
+        """Закрыть бой: раздать итоги, сказать вслух, записать в историю.
+
+        Каждый шаг развязки отгорожен от остальных. Деньги, травмы,
+        сетка турнира, запись в базу — сорвётся одно, остальное всё
+        равно случится, и бойцы всё равно выйдут из боя с итогом на
+        руках. Висящий бой хуже любой ошибки в нём: из него не выйти,
+        по городу не пройти, и чинится это только перезапуском бота.
+        """
         self._cancel_timer(session)
         # Обычно панель уже погашена итогом раунда. Осталась висеть — гасим
         # здесь, чтобы под законченным боем не остались живые кнопки.
@@ -838,14 +846,30 @@ class DuelService:
             await self._close_panel(session, "🔒 Бой окончен.")
         self._forget(session)
 
-        rewards = await self._apply_results(session, result)
+        rewards = ""
+        try:
+            rewards = await self._apply_results(session, result)
+        except Exception:
+            logger.exception("Итоги боя %s не посчитались", session.id)
         text = finish_report(result, session.fighters, self.rng)
         if rewards:
             text += "\n\n" + rewards
         await self._send(session.chat_id, session.thread_id, text)
         self._remember_result(session, text)
         if session.on_finish is not None:
-            await session.on_finish(session, result)
+            try:
+                await session.on_finish(session, result)
+            except Exception:
+                # Чаще всего это турнирная сетка: её круг доедет
+                # следующим взглядом, а бой кончать нужно сейчас
+                logger.exception("Хозяин боя %s не принял итог", session.id)
+        try:
+            await self._record(session, result)
+        except Exception:
+            logger.exception("Бой %s не записался в историю", session.id)
+
+    async def _record(self, session: DuelSession, result: RoundResult) -> None:
+        """Положить бой в историю: по нему потом читают привычки бойца."""
         await self.db.add_duel(
             chat_id=session.chat_id,
             thread_id=session.thread_id,

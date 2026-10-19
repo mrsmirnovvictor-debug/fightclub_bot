@@ -370,7 +370,9 @@ CREATE TABLE IF NOT EXISTS raid_window (
 
 CREATE TABLE IF NOT EXISTS battles (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id    INTEGER NOT NULL,
+    -- Ветки может не быть вовсе: групповой бой, собранный в мини-аппе,
+    -- идёт без чата, и писать его всё равно нужно
+    chat_id    INTEGER,
     thread_id  INTEGER,
     kind       TEXT    NOT NULL,
     mode       TEXT    NOT NULL DEFAULT 'armed',
@@ -1067,6 +1069,7 @@ class Database:
         await self._settle_genders()
         await self._migrate_inventory()
         await self._migrate_duels()
+        await self._migrate_battles()
         await self._migrate_arenas()
         await self._migrate_raid_windows()
         await self._migrate_clans()
@@ -1358,6 +1361,47 @@ class Database:
         )
         await self.conn.commit()
         logger.info("База обновлена: бой может идти без ветки")
+
+    async def _migrate_battles(self) -> None:
+        """Групповой бой тоже может идти без ветки — chat_id должен пустеть.
+
+        Групповые бои завелись в чате, и ветка у них была всегда. В
+        мини-аппе её нет, а NOT NULL снимается в SQLite только
+        пересборкой таблицы.
+        """
+        async with self.conn.execute("PRAGMA table_info(battles)") as cursor:
+            columns = {row["name"]: row for row in await cursor.fetchall()}
+        chat = columns.get("chat_id")
+        if chat is None or not chat["notnull"]:
+            return
+        await self.conn.executescript(
+            """
+            ALTER TABLE battles RENAME TO battles_old;
+            CREATE TABLE battles (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id    INTEGER,
+                thread_id  INTEGER,
+                kind       TEXT    NOT NULL,
+                mode       TEXT    NOT NULL DEFAULT 'armed',
+                rounds     INTEGER NOT NULL DEFAULT 0,
+                winner_team INTEGER,
+                draw       INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO battles (
+                id, chat_id, thread_id, kind, mode, rounds,
+                winner_team, draw, created_at
+            )
+            SELECT id, chat_id, thread_id, kind, mode, rounds,
+                   winner_team, draw, created_at
+            FROM battles_old;
+            DROP TABLE battles_old;
+            CREATE INDEX IF NOT EXISTS idx_battles_chat
+                ON battles(chat_id, created_at DESC);
+            """
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: групповой бой может идти без ветки")
 
     async def _migrate_arenas(self) -> None:
         """Единственная арена прошлой версии становится первым кулачным рингом."""

@@ -1374,3 +1374,44 @@ def test_the_bar_changes_colour_with_the_damage():
     assert color_bar(0, 100) == "⬛" * BOARD_BAR
     # живой боец не остаётся с пустой полоской, сколько бы ни пропустил
     assert color_bar(1, 1000) == "🟥" + "⬛" * (BOARD_BAR - 1)
+
+
+async def test_a_broken_ending_still_ends_the_duel(bot, db, monkeypatch):
+    """Итоги не посчитались — бой всё равно кончен, и бойцы на воле.
+
+    Развязка трогает деньги, травмы, износ вещей и турнирную сетку.
+    Сорвётся одно — остальное всё равно случится: висящий бой хуже
+    любой ошибки в нём, из него не выйти и по городу не пройти.
+    """
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "rogue"))
+    called: list[str] = []
+
+    async def whistle(session, result):
+        called.append("сетка")
+
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2),
+        on_finish=whistle,
+    )
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("касса сломалась")
+
+    monkeypatch.setattr(service, "_apply_results", boom)
+    for _ in range(40):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await play_round(service, session)
+    else:  # pragma: no cover
+        pytest.fail("бой не закончился за 40 раундов")
+
+    assert not service.is_busy(1) and not service.is_busy(2)
+    assert session.finished and session.summary
+    # и хозяина боя — турнирную сетку — всё равно позвали: её круг
+    # поедет дальше, даже если наград не досталось никому
+    assert called == ["сетка"]
+    for user_id in (1, 2):
+        assert service.result_of_user(user_id) is session
+    await service.shutdown()

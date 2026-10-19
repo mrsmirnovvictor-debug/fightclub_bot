@@ -259,3 +259,74 @@ async def test_a_stranger_cannot_hit_in_someone_elses_battle(club):
     status, error = await act(client, 46, action="turn", attack="head", block="belt")
     assert status == 409
     assert "не в групповом бою" in error["error"]
+
+
+# ---------- итог: бой обязан кончиться ----------
+
+
+async def fight_out(client, battles, rounds: int = 400) -> dict:
+    """Добить групповой бой кнопками аппа. Кто кого — неважно."""
+    body: dict = {}
+    for _ in range(rounds):
+        session = battles.battle_of_user(42)
+        if session is None:
+            return body
+        pairs = [one for pair in session.pairs for one in pair]
+        for user_id in pairs:
+            if not session.fighters[user_id].alive:
+                continue
+            if battles.battle_of_user(42) is None:
+                return body
+            _, body = await act(
+                client, user_id, action="turn", attack="head", block="belt"
+            )
+    raise AssertionError("бой не кончился")
+
+
+async def test_a_battle_born_in_the_app_lands_in_the_history(club):
+    """Бой из аппа идёт без ветки, и записать его всё равно нужно.
+
+    Групповые бои завелись в чате, и `chat_id` у них был всегда. На
+    бое из мини-аппа запись падала об `NOT NULL`, а падала она в самой
+    развязке — бойцы оставались в кончившемся бою навсегда.
+    """
+    client, battles, db = club
+    await start_team(client, battles)
+
+    await fight_out(client, battles)
+
+    # В истории чата такой бой не ищут — ветки у него нет; смотрим саму
+    # таблицу: главное, что строка легла и `chat_id` в ней пустой
+    async with db.conn.execute("SELECT chat_id, kind FROM battles") as cursor:
+        rows = [dict(one) for one in await cursor.fetchall()]
+    assert len(rows) == 1 and rows[0]["chat_id"] is None
+    assert rows[0]["kind"] == "team"
+    for user_id, _ in CLUB[:4]:
+        assert battles.is_busy(user_id) is False
+        assert battles.result_of_user(user_id) is not None
+
+
+async def test_a_broken_ending_still_lets_the_fighters_out(club, monkeypatch):
+    """Развязка сорвалась — бой всё равно кончен, и бойцы на воле.
+
+    Висящий бой хуже любой ошибки в нём: из него не выйти, по городу не
+    пройти, и чинится это только перезапуском бота.
+    """
+    client, battles, _ = club
+    await start_team(client, battles)
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("касса сломалась")
+
+    monkeypatch.setattr(battles, "_apply_results", boom)
+    await fight_out(client, battles)
+
+    for user_id, _ in CLUB[:4]:
+        assert battles.is_busy(user_id) is False
+        session = battles.result_of_user(user_id)
+        assert session is not None and session.finished
+        assert session.summary  # панель не пустая: итог хоть какой-то есть
+    # а в карточке на месте боя стоит итог, и кнопки хода погасли
+    board = await state(client, 42)
+    assert board["battle"]["finished"] is True
+    assert board["battle"]["summary"]

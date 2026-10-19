@@ -1022,18 +1022,41 @@ class RaidService:
         session.prompt_message_id = None
 
     async def _finish(self, session: RaidSession, outcome: RaidOutcome) -> None:
+        """Закрыть рейд: раздать добычу и отпустить отряд.
+
+        Добыча может и не посчитаться, запись в журнал — не лечь, но
+        рейд всё равно кончается, и отряд всё равно выходит с итогом на
+        руках. Висящий рейд хуже любой ошибки в нём: из него не выйти,
+        по городу не пройти, и чинится это только перезапуском бота.
+        """
         self._cancel_timer(session)
         if session.prompt_message_id is not None:
             await self._close_panel(session, "🔒 Рейд окончен.")
         self._forget_raid(session)
 
-        prizes = await self._apply_results(session, outcome)
+        prizes: dict[int, list[str]] = {}
+        try:
+            prizes = await self._apply_results(session, outcome)
+        except Exception:
+            logger.exception("Добыча рейда %s не посчиталась", session.id)
         text = raid_result(session, outcome, prizes, session.shares)
         await self.voice.send(session.chat_id, session.thread_id, text)
         session.finished = True
         session.summary = [plain(line) for line in text.split("\n")]
         for user_id in session.fighters:
             self._results[user_id] = session
+        try:
+            await self._record(session, outcome, prizes)
+        except Exception:
+            logger.exception("Рейд %s не записался в журнал", session.id)
+
+    async def _record(
+        self,
+        session: RaidSession,
+        outcome: RaidOutcome,
+        prizes: dict[int, list[str]],
+    ) -> None:
+        """Закрыть запись рейда в журнале: кто дрался и что взял."""
         await self.db.close_raid_record(
             session.record_id,
             outcome=outcome.end.value,

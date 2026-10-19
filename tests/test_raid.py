@@ -1179,3 +1179,27 @@ def test_the_hammer_makes_the_boss_hit_harder_than_a_dressed_player():
         return one.derived.damage_max + one.equipment.weapon_damage[1] * one.fclass.damage_mult
 
     assert ceiling(boss) > ceiling(player)
+
+
+async def test_a_broken_ending_still_ends_the_raid(bot, db, monkeypatch):
+    """Добыча не посчиталась — рейд всё равно кончен, отряд на воле.
+
+    Висящий рейд хуже любой ошибки в нём: из него не выйти, по городу
+    не пройти, и чинится это только перезапуском бота.
+    """
+    service = make_service(bot, db)
+    players, session = await gather(service, db, count=2)
+    weaken(session)
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("добыча не посчиталась")
+
+    monkeypatch.setattr(service, "_apply_results", boom)
+    await storm(service, session, players)
+
+    assert session.finished and session.summary
+    for player in players:
+        assert service.raid_of_user(player.user_id) is None
+        assert service.is_busy(player.user_id) is False
+        assert service.result_of_user(player.user_id) is session
+    await service.shutdown()

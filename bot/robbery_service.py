@@ -196,7 +196,23 @@ class RobberyService:
         return self._results.get(user_id)
 
     def forget_result(self, user_id: int) -> None:
+        """Закрыть итог — и выйти из драки, если она забыла отпустить.
+
+        Кнопка «Понятно» обязана работать всегда. Драка, которая
+        кончилась, но не развела бойцов, держит их у себя насовсем: ни
+        уйти из дома, ни ударить, ни нажать хоть что-то. Это последний
+        выход из неё, не требующий перезапуска бота.
+        """
         self._results.pop(user_id, None)
+        raid_id = self._busy.get(user_id)
+        if raid_id is None:
+            return
+        raid = self._raids.get(raid_id)
+        if raid is not None and not raid.finished:
+            return
+        self._busy.pop(user_id, None)
+        self._raids.pop(raid_id, None)
+        logger.warning("Боец %s вышел из зависшей драки %s", user_id, raid_id)
 
     def at(self, place: str) -> list[Robbery]:
         """Какие драки идут в этом доме: их видно всем, кто тут стоит."""
@@ -583,7 +599,36 @@ class RobberyService:
         return raid.choices.get(user_id, Choice()).to_action(weapons)
 
     async def _play_round(self, raid: Robbery) -> None:
-        """Свести раунд: по размену на пару, потом слово судьи."""
+        """Свести раунд: по размену на пару, потом слово судьи.
+
+        Сорвалось что угодно — драку всё равно закрываем. Висящая
+        драка хуже любой ошибки в ней: из неё не выйти, по городу не
+        пройти, и чинится это только перезапуском бота.
+        """
+        try:
+            await self._round(raid)
+        except Exception:
+            logger.exception("Раунд драки %s сорвался", raid.id)
+            await self._bail_out(raid)
+
+    async def _bail_out(self, raid: Robbery) -> None:
+        """Отпустить всех из драки, которая сломалась на полуслове."""
+        if raid.id not in self._raids and not any(
+            self._busy.get(one) == raid.id for one in raid.fighters
+        ):
+            return
+        raid.finished = True
+        raid.summary = ["Драка оборвалась: судья развёл всех по углам."]
+        if raid.timer is not None:
+            raid.timer.cancel()
+        self._raids.pop(raid.id, None)
+        for user_id in raid.fighters:
+            self._busy.pop(user_id, None)
+            self._results[user_id] = raid
+        logger.warning("Драка %s оборвана: бойцы отпущены", raid.id)
+
+    async def _round(self, raid: Robbery) -> None:
+        """Сам раунд: по размену на пару, потом слово судьи."""
         for first_id, second_id in raid.pairs:
             first, second = raid.fighters[first_id], raid.fighters[second_id]
             if not (first.alive and second.alive):
@@ -623,16 +668,26 @@ class RobberyService:
             raid.timer.cancel()
         moment = now_ts()
 
-        if raid.kind == "arrest":
-            await self._finish_arrest(raid, moment)
-        else:
-            await self._finish_robbery(raid, moment)
-
-        raid.summary = self._summary(raid, outcome)
-        self._raids.pop(raid.id, None)
-        for user_id in raid.fighters:
-            self._busy.pop(user_id, None)
-            self._results[user_id] = raid
+        # Развязка трогает многое: карман, здоровье, дела, тюрьму,
+        # недельные счета. Сломается что-нибудь одно — бойцы всё равно
+        # должны выйти из драки: иначе им не уйти из дома и не нажать
+        # ни одной кнопки, пока бота не перезапустят
+        try:
+            if raid.kind == "arrest":
+                await self._finish_arrest(raid, moment)
+            else:
+                await self._finish_robbery(raid, moment)
+            raid.summary = self._summary(raid, outcome)
+        except Exception:
+            logger.exception("Развязка драки %s сорвалась", raid.id)
+            raid.summary = raid.summary or [
+                "Драка кончена, но итог посчитать не вышло."
+            ]
+        finally:
+            self._raids.pop(raid.id, None)
+            for user_id in raid.fighters:
+                self._busy.pop(user_id, None)
+                self._results[user_id] = raid
         logger.info(
             "Драка %s (%s) кончена: %s, добыча %s",
             raid.id, raid.kind, "взяли" if raid.won else "отбились", raid.loot,

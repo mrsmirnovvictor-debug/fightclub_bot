@@ -590,3 +590,88 @@ async def test_the_garage_holds_three_places(db, client):
     assert garage["slots"] == GARAGE_SLOTS == 3
     assert garage["free"] == GARAGE_SLOTS and garage["cars"] == []
     assert garage["soon"] is True
+
+
+# ---------- драка обязана кончиться ----------
+
+
+async def test_a_broken_ending_still_lets_the_fighters_out(db, monkeypatch):
+    """Развязка сорвалась — драка всё равно кончена, и бойцы на воле.
+
+    Висящая драка хуже любой ошибки в ней: из неё не выйти, по городу
+    не пройти, и чинится это только перезапуском бота. Поэтому
+    развязка отгорожена, а бойцов отпускают в любом случае.
+    """
+    service = RobberyService(db, rng=random.Random(5))
+    don, _, _ = await family(db)
+    victim = make_player(50, "Прохожий", level=1)
+    await db.save_player(victim)
+    await licensed(db, [don.user_id])
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("касса сломалась")
+
+    monkeypatch.setattr(service, "_finish_robbery", boom)
+    raid = await service.rob(don, victim.user_id, now=NOW)
+    await fight_out(service, raid)
+
+    assert raid.finished and raid.summary
+    for one in (don.user_id, victim.user_id):
+        assert service.of_user(one) is None
+        assert service.result_of(one) is raid
+
+
+async def test_a_broken_round_still_lets_the_fighters_out(db, monkeypatch):
+    """Сорвался сам размен — судья разводит всех по углам."""
+    service = RobberyService(db, rng=random.Random(5))
+    don, _, _ = await family(db)
+    victim = make_player(50, "Прохожий", level=1)
+    await db.save_player(victim)
+    await licensed(db, [don.user_id])
+    raid = await service.rob(don, victim.user_id, now=NOW)
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("размен сломался")
+
+    monkeypatch.setattr(service, "_round", boom)
+    await service.choose(raid.id, don.user_id, "attack", "head")
+    await service.choose(raid.id, don.user_id, "block", "belly")
+    await service.choose(raid.id, victim.user_id, "attack", "head")
+    await service.choose(raid.id, victim.user_id, "block", "belly")
+
+    assert raid.finished
+    assert "оборвалась" in raid.summary[0]
+    for one in (don.user_id, victim.user_id):
+        assert service.of_user(one) is None
+        assert service.result_of(one) is raid
+
+
+async def test_the_done_button_is_the_way_out_of_a_hung_fight(db):
+    """«Понятно» обязана работать всегда — даже у сломанной драки.
+
+    Драка, которая кончилась, но не развела бойцов, держала их у себя
+    насовсем: ни уйти из дома, ни ударить. Эта кнопка — последний выход
+    из неё, не требующий перезапуска бота.
+    """
+    service = RobberyService(db, rng=random.Random(5))
+    don, _, _ = await family(db)
+    victim = make_player(50, "Прохожий", level=1)
+    await db.save_player(victim)
+    await licensed(db, [don.user_id])
+    raid = await service.rob(don, victim.user_id, now=NOW)
+    # Так выглядит зависшая драка: кончена, а бойцы всё ещё в ней
+    raid.finished = True
+
+    service.forget_result(don.user_id)
+
+    assert service.of_user(don.user_id) is None
+    assert service.at(MANSION) == []
+    # Каждый выходит сам, своей кнопкой: пока ограбленный её не нажал,
+    # он всё ещё занят, и второй раз его не возьмут
+    with pytest.raises(RobberyError, match="держат"):
+        await service.rob(await db.get_player(don.user_id), 50, now=NOW)
+    service.forget_result(victim.user_id)
+    # Живую драку эта кнопка не разводит: из неё выходят ногами вперёд
+    second = await service.rob(await db.get_player(don.user_id), 50, now=NOW)
+    service.forget_result(don.user_id)
+    assert service.of_user(don.user_id) is second

@@ -1257,3 +1257,79 @@ async def test_a_loner_is_not_shown_the_war_at_all(db, client):
     # И на карте города у домов нет ни отметок, ни плашки под ногами
     city = await (await client.get("/api/map", headers=headers(9))).json()
     assert city["turf"]["spots"] == {} and city["turf"]["here"] is None
+
+
+# ---------- штурм обязан кончиться ----------
+
+
+async def test_a_broken_assault_still_lets_the_squad_out(db, monkeypatch):
+    """Развязка штурма сорвалась — отряд всё равно выходит из него.
+
+    Висящий штурм хуже любой ошибки в нём: из него не уйти, по городу
+    не пройти, и чинится это только перезапуском бота. Поэтому
+    развязка отгорожена, а отряд разводят в любом случае.
+    """
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db)
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
+    rival, rivals, _ = await family(
+        db, first=20, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    war = TurfWar(db)
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("точка не переписалась")
+
+    monkeypatch.setattr(war, "_settle", boom)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        for one in rivals[1:]:
+            await war.join(muster.id, await db.get_player(one))
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+    finally:
+        await war.close()
+
+    assert siege.finished
+    assert siege.summary == ["Штурм кончен, но итог посчитать не вышло."]
+    for one in rivals:
+        assert war.siege_of_user(one) is None
+        assert war.result_of_user(one) is siege
+
+
+async def test_the_done_button_is_the_way_out_of_a_hung_assault(db):
+    """«Понятно» обязана работать всегда — даже у сломанного штурма.
+
+    А живой сбор она не разводит: из него выходят своей кнопкой, и
+    закрытый итог прошлого штурма тут ничего не решает.
+    """
+    from bot.turf_war import TurfWar
+
+    don, squad, clan = await family(db)
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
+    rival, rivals, _ = await family(
+        db, first=20, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    war = TurfWar(db)
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        # Так выглядит живой сбор: кнопка итога его не трогает
+        war.forget_result(rival.user_id)
+        assert war.muster_of_user(rival.user_id) is muster
+
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+        # А так — зависший штурм: кончен, а отряд всё ещё в нём
+        siege.finished = True
+        war._sieges[siege.id] = siege
+        war._busy[rival.user_id] = siege.id
+
+        war.forget_result(rival.user_id)
+        assert war.siege_of_user(rival.user_id) is None
+    finally:
+        await war.close()

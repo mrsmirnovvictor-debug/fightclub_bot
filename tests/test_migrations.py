@@ -370,3 +370,85 @@ async def test_the_window_upgrade_runs_once_and_keeps_running(old_windows_path):
     ) as cursor:
         assert await cursor.fetchone() is None
     await db.close()
+
+
+# Таблица групповых боёв прошлой версии: ветка была обязательной
+OLD_BATTLES = """
+CREATE TABLE battles (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER NOT NULL,
+    thread_id  INTEGER,
+    kind       TEXT    NOT NULL,
+    mode       TEXT    NOT NULL DEFAULT 'armed',
+    rounds     INTEGER NOT NULL DEFAULT 0,
+    winner_team INTEGER,
+    draw       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+
+@pytest.fixture
+def old_battles_path(tmp_path):
+    """База прошлой версии с одним групповым боем из чата."""
+    path = tmp_path / "battles.db"
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS battles \(.*?\);",
+        "",
+        schema_without(BANK_COLUMNS),
+        flags=re.S,
+    )
+    raw = sqlite3.connect(path)
+    # Таблица идёт первой: на неё в схеме смотрит индекс по ветке, и
+    # без неё он не создастся
+    raw.executescript(OLD_BATTLES + legacy)
+    raw.execute(
+        "INSERT INTO battles (id, chat_id, thread_id, kind, rounds, winner_team) "
+        "VALUES (7, -100, NULL, 'team', 4, 1)"
+    )
+    raw.commit()
+    raw.close()
+    return str(path)
+
+
+async def test_a_group_battle_may_now_go_without_a_thread(old_battles_path):
+    """Главное, ради чего таблицу и пересобрали: бой без ветки.
+
+    Групповые бои завелись в чате, и `chat_id` у них был всегда. Бой из
+    мини-аппа идёт без ветки — и запись о нём падала об `NOT NULL`
+    прямо в развязке, оставляя бойцов в кончившемся бою навсегда.
+    """
+    db = Database(old_battles_path)
+    await db.connect()
+
+    await db.conn.execute(
+        "INSERT INTO battles (chat_id, kind, rounds) VALUES (NULL, 'royale', 3)"
+    )
+    await db.conn.commit()
+    async with db.conn.execute(
+        "SELECT chat_id, kind FROM battles ORDER BY id"
+    ) as cursor:
+        rows = [dict(one) for one in await cursor.fetchall()]
+    # Прежний бой из чата на месте, рядом с ним — бой из аппа
+    assert rows == [
+        {"chat_id": -100, "kind": "team"},
+        {"chat_id": None, "kind": "royale"},
+    ]
+    await db.close()
+
+
+async def test_the_battle_upgrade_runs_once_and_keeps_running(old_battles_path):
+    """Перезапуск не должен ни падать, ни терять записанные бои."""
+    for _ in range(3):
+        db = Database(old_battles_path)
+        await db.connect()
+        await db.close()
+
+    db = Database(old_battles_path)
+    await db.connect()
+    rows = await db.recent_battles(-100)
+    assert len(rows) == 1
+    kept = rows[0]
+    assert kept["id"] == 7 and kept["kind"] == "team" and kept["rounds"] == 4
+    assert kept["winner_team"] == 1 and kept["draw"] == 0
+    await db.close()

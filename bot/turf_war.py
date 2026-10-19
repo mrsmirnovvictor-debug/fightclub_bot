@@ -223,7 +223,24 @@ class TurfWar:
         return self._results.get(user_id)
 
     def forget_result(self, user_id: int) -> None:
+        """Закрыть итог — и выйти из штурма, если он забыл отпустить.
+
+        Кнопка «Понятно» обязана работать всегда. Штурм, который
+        кончился, но не развёл отряд, держит бойцов у себя насовсем: ни
+        уйти с точки, ни ударить. Это последний выход из него, не
+        требующий перезапуска бота. Сбор так не разводят: он живой, и
+        выходят из него своей кнопкой.
+        """
         self._results.pop(user_id, None)
+        war_id = self._busy.get(user_id)
+        if war_id is None or war_id in self._musters:
+            return
+        siege = self._sieges.get(war_id)
+        if siege is not None and not siege.finished:
+            return
+        self._busy.pop(user_id, None)
+        self._sieges.pop(war_id, None)
+        logger.warning("Боец %s вышел из зависшего штурма %s", user_id, war_id)
 
     def is_busy(self, user_id: int) -> bool:
         """Занят ли боец: этим дорога и решает, отпускать ли его.
@@ -555,7 +572,19 @@ class TurfWar:
         return None
 
     async def _close_wave(self, siege: Siege) -> None:
-        """Свести волну: либо исход, либо следующая."""
+        """Свести волну: либо исход, либо следующая.
+
+        Сорвалось что угодно — штурм всё равно закрываем: отряд,
+        оставленный внутри сломанного штурма, не выйдет из него никогда.
+        """
+        try:
+            await self._wave_done(siege)
+        except Exception:
+            logger.exception("Волна штурма %s сорвалась", siege.id)
+            await self._finish(siege, won=False)
+
+    async def _wave_done(self, siege: Siege) -> None:
+        """Сама развязка волны: либо исход, либо следующая."""
         done = self._judge(siege)
         if done is None and siege.wave >= MAX_WAVES:
             # Сорок волн — и судья разводит стороны: точка остаётся за
@@ -589,13 +618,38 @@ class TurfWar:
         return gone
 
     async def _finish(self, siege: Siege, won: bool) -> None:
-        """Свести штурм: записать точку и разложить итог по бойцам."""
+        """Свести штурм: записать точку и разложить итог по бойцам.
+
+        Развязка трогает точку, казну и выставленных — сорваться может
+        что угодно, но отряд всё равно выходит из штурма. Висящий штурм
+        хуже любой ошибки в нём: из него не уйти, по городу не пройти, и
+        чинится это только перезапуском бота.
+        """
         if siege.finished:  # pragma: no cover - две развязки разом
             return
         siege.finished = True
         siege.won = won
         if siege.timer is not None:
             siege.timer.cancel()
+        try:
+            await self._settle(siege, won)
+        except Exception:
+            logger.exception("Развязка штурма %s сорвалась", siege.id)
+            siege.summary = siege.summary or [
+                "Штурм кончен, но итог посчитать не вышло."
+            ]
+        finally:
+            self._sieges.pop(siege.id, None)
+            for user_id in siege.party:
+                self._busy.pop(user_id, None)
+                self._results[user_id] = siege
+        logger.info(
+            "Штурм точки %s кончен: %s за %s волн",
+            siege.spot.code, "взяли" if won else "отбили", siege.wave,
+        )
+
+    async def _settle(self, siege: Siege, won: bool) -> None:
+        """Сама развязка: точка, казна, павшие и строки итога."""
         moment = now_ts()
         if won:
             # Прежнего владельца рассчитываем за неполные сутки: своего
@@ -653,14 +707,6 @@ class TurfWar:
             siege.summary.append(
                 "Точка пустая и дохода не даёт: выставь на ней человека."
             )
-        self._sieges.pop(siege.id, None)
-        for user_id in siege.party:
-            self._busy.pop(user_id, None)
-            self._results[user_id] = siege
-        logger.info(
-            "Штурм точки %s кончен: %s за %s волн",
-            siege.spot.code, "взяли" if won else "отбили", siege.wave,
-        )
 
     async def close(self) -> None:
         """Погасить таймеры: бот выключается."""

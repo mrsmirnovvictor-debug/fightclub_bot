@@ -701,7 +701,28 @@ class BattleService:
         session.prompt_message_id = None
 
     async def _finish(self, session: BattleSession, outcome: BattleOutcome) -> None:
+        """Закрыть бой: раздать итоги и отпустить бойцов.
+
+        Итог может и не посчитаться — травмы, деньги, запись в
+        историю, — но бой всё равно кончается, и бойцы всё равно
+        выходят. Висящий бой хуже любой ошибки в нём: из него не выйти,
+        по городу не пройти, и чинится это только перезапуском бота.
+        """
         self._cancel_timer(session)
+        try:
+            await self._wrap_up(session, outcome)
+        except Exception:
+            logger.exception("Развязка боя %s сорвалась", session.id)
+        finally:
+            self._forget_battle(session)
+            session.finished = True
+            if not session.summary:
+                session.summary = ["Бой кончен, но итог посчитать не вышло."]
+            for user_id in session.fighters:
+                self._results[user_id] = session
+
+    async def _wrap_up(self, session: BattleSession, outcome: BattleOutcome) -> None:
+        """Сама развязка: погасить панель, раздать итоги, сказать вслух."""
         # Обычно панель уже погашена итогом раунда. Осталась висеть — гасим
         # здесь, чтобы под законченным боем не остались живые кнопки.
         if session.prompt_message_id is not None:
@@ -713,10 +734,7 @@ class BattleService:
         if rewards:
             text += "\n\n" + rewards
         await self.voice.send(session.chat_id, session.thread_id, text)
-        session.finished = True
         session.summary = [plain(line) for line in text.split("\n")]
-        for user_id in session.fighters:
-            self._results[user_id] = session
         await self.db.add_battle(session, outcome)
 
     async def _apply_results(
