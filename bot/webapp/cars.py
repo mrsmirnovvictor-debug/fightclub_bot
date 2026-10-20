@@ -74,6 +74,10 @@ def showcase_row(
         rented=bool(mine and mine["until"]),
         left=int(mine["left"]) if mine else 0,
         left_text=mine["left_text"] if mine else "",
+        # Своя машина может стоять в гараже: на витрине это надо
+        # сказать, иначе «Твоя насовсем» без неё в ключах — загадка
+        parked=mine["parked"] if mine else "",
+        parked_text=mine["parked_text"] if mine else "",
         fits=fits,
         can_buy=bool(
             not bought and fits
@@ -179,6 +183,9 @@ async def build_cars(
     # Сколько машин боец держит и сколько ему можно: одну, а с подпиской
     # три. Служебные в счёт не идут — они не его
     held = await kept_count(db, player, moment)
+    # Оставленные на парковке в счёт не идут: в гараже они стоят, а не
+    # в руках. Их видно там, где они стоят, — в особняке и у квартиры
+    stored = sum(1 for one in keys if one["parked"])
     limit = cars_allowed(player.is_pro(moment))
 
     body: dict[str, Any] = {
@@ -191,6 +198,7 @@ async def build_cars(
         "driving": car_row(car) if car else None,
         "keys": keys,
         "held": held,
+        "stored": stored,
         "limit": limit,
         "pro": player.is_pro(moment),
         "pro_limit": PRO_MAX_CARS,
@@ -231,13 +239,22 @@ def _note(body: dict[str, Any], player: Player, moment: int) -> str:
         # Машин на руках столько, сколько держат: витрина гаснет вся, и
         # сказать об этом надо раньше, чем про гашеные кнопки
         tail = (
-            "Сдай или продай одну."
+            "Поставь одну на парковку: стоящая машина места не занимает."
             if body["pro"]
-            else f"С подпиской держат {body['pro_limit']}."
+            else (
+                "Поставь её на парковку — в особняке или у своей квартиры, "
+                f"— и бери вторую. С подпиской держат {body['pro_limit']}."
+            )
         )
         return (
             f"Машин на руках {body['held']} из {body['limit']} — "
             f"больше город не держит. {tail}"
+        )
+    if body["stored"]:
+        return (
+            f"На руках {body['held']} из {body['limit']}, в гаражах "
+            f"стоит ещё {body['stored']}. Стоящая машина места не "
+            f"занимает."
         )
     if body["driving"]:
         return (

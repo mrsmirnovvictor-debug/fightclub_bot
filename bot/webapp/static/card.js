@@ -11134,12 +11134,18 @@ function showcaseCar(one) {
   if (one.own) {
     const have = document.createElement("div");
     have.className = "thing-have";
-    have.textContent = "✓ Твоя насовсем";
+    // Своя машина может стоять в гараже: без этой приписки «Твоя
+    // насовсем» спорило бы с пустыми ключами в карточке
+    have.textContent = one.parked_text
+      ? "✓ Твоя насовсем · стоит: " + one.parked_text
+      : "✓ Твоя насовсем";
     box.appendChild(have);
   } else if (one.rented) {
     const have = document.createElement("div");
     have.className = "thing-have";
-    have.textContent = "Снята, осталось " + one.left_text;
+    have.textContent = one.parked_text
+      ? "Снята, осталось " + one.left_text + " · стоит: " + one.parked_text
+      : "Снята, осталось " + one.left_text;
     box.appendChild(have);
   }
   box.appendChild(
@@ -11155,7 +11161,8 @@ function showcaseCar(one) {
   // а счёт машин, и говорить про деньги тут было бы неправдой
   const full = !one.fits;
   const why = full
-    ? "Машин на руках столько, сколько держат. Сдай или продай одну."
+    ? "Машин на руках столько, сколько держат. Поставь одну на парковку: "
+      + "в особняке или у своей квартиры."
     : "";
   if (!one.own) {
     buttons.append(

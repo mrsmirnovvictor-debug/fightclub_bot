@@ -23,6 +23,7 @@ from bot.car_service import (
     CarError,
     buy,
     hand_over,
+    kept_count,
     mine,
     park,
     release_strangers,
@@ -1093,9 +1094,14 @@ async def test_the_place_is_counted_after_the_rent_runs_out(db):
     assert [one["code"] for one in await mine(db, player, NOW + DAY)] == [HYPER]
 
 
-async def test_a_parked_car_still_takes_the_place(db):
-    """Поставленная на парковку машина своё место занимает: она твоя."""
-    from bot.car_service import leave
+async def test_a_parked_car_frees_the_place(db):
+    """Поставленная на парковку машина места на руках не занимает.
+
+    В этом и смысл гаража: держат одну, а стоять их может сколько
+    войдёт. Из карточки стоящая машина при этом уходит — за ней идут
+    туда, где она стоит.
+    """
+    from bot.car_service import at_hand, leave
     from bot.clan_service import found
     from bot.game.cars import IN_CLAN
 
@@ -1103,10 +1109,19 @@ async def test_a_parked_car_still_takes_the_place(db):
     clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
     don = await db.get_player(1)
     await buy(db, don, HATCH, NOW)
+    with pytest.raises(CarError, match="на руках"):
+        await buy(db, don, HYPER, NOW)
+
     await leave(db, don, HATCH, IN_CLAN, clan.id, NOW)
 
-    with pytest.raises(CarError, match="одна"):
-        await buy(db, don, HYPER, NOW)
+    # Место освободилось: вторую машину уже продают
+    assert "теперь твоя" in await buy(db, await db.get_player(1), HYPER, NOW)
+    fresh = await db.get_player(1)
+    # В ключах только та, что при бойце, — стоящей там нет
+    assert [one["code"] for one in await at_hand(db, fresh, NOW)] == [HYPER]
+    # А в своих машинах — обе: гараж их не отбирает
+    assert {one["code"] for one in await mine(db, fresh, NOW)} == {HATCH, HYPER}
+    assert await kept_count(db, fresh, NOW) == 1
 
 
 async def test_the_service_car_is_not_counted(db):
@@ -1195,3 +1210,101 @@ async def test_the_rent_is_extended_without_a_free_place(db):
 
     assert "снята на месяц" in said
     assert len(await mine(db, await db.get_player(42), NOW)) == 1
+
+
+async def test_the_garage_holds_more_than_the_hands(db):
+    """Держат одну, а стоять их может сколько войдёт в гаражи.
+
+    Три места в особняке и одно при квартире: с одной на руках у бойца
+    выходит пять машин, и ни одна из них не нарушает счёт.
+    """
+    from bot.car_service import at_hand, leave
+    from bot.clan_service import found
+    from bot.estate_service import rent as rent_flat
+    from bot.game.cars import CLAN_PARKING, IN_CLAN, IN_FLAT
+
+    house = "residential_apartment"
+    don = await licensed(db, make_player(1, "Дон", where="mafia_mansion"))
+    clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
+    codes = [one.code for one in SHOWCASE[:CLAN_PARKING + 2]]
+
+    for code in codes[:CLAN_PARKING]:
+        don = await db.get_player(1)
+        await buy(db, don, code, NOW)
+        await leave(db, don, code, IN_CLAN, clan.id, NOW)
+
+    # Четвёртую ставим у своей квартиры: для этого надо в неё зайти
+    don = await db.get_player(1)
+    await buy(db, don, codes[CLAN_PARKING], NOW)
+    don.location = house
+    await db.save_player(don)
+    don = await db.get_player(1)
+    await rent_flat(db, don, 1, now=NOW)
+    lease = await db.lease_of(1)
+    await leave(db, don, codes[CLAN_PARKING], IN_FLAT, lease.id, NOW)
+
+    # Пятая остаётся при бойце — и это его единственное место
+    don = await db.get_player(1)
+    await buy(db, don, codes[CLAN_PARKING + 1], NOW)
+
+    assert len(await mine(db, don, NOW)) == CLAN_PARKING + 2
+    assert await kept_count(db, don, NOW) == 1
+    assert [one["code"] for one in await at_hand(db, don, NOW)] == [
+        codes[CLAN_PARKING + 1]
+    ]
+    # Шестую уже некуда: места в гаражах заняты, а на руках одна
+    with pytest.raises(CarError, match="на руках"):
+        await buy(db, don, SHOWCASE[CLAN_PARKING + 2].code, NOW)
+
+
+async def test_the_keys_in_the_card_hold_only_what_is_at_hand(db, client):
+    """В «Персонаже» висит та машина, что при бойце, а не та, что в гараже."""
+    from bot.car_service import leave
+    from bot.clan_service import found
+    from bot.game.cars import IN_CLAN
+
+    don = await licensed(db, make_player(42, "Дон", where="mafia_mansion"))
+    clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
+    don = await db.get_player(42)
+    await buy(db, don, HATCH, NOW)
+
+    keys = await (await client.get("/api/keys", headers=headers())).json()
+    assert [one["code"] for one in keys["keys"]] == [HATCH]
+    assert keys["limit"] == 1
+
+    await leave(db, await db.get_player(42), HATCH, IN_CLAN, clan.id, NOW)
+
+    keys = await (await client.get("/api/keys", headers=headers())).json()
+    assert keys["keys"] == [], "стоящая машина в ключах не висит"
+    # И за руль её из карточки не взять: сперва забери из гаража
+    answer = await client.post(
+        "/api/keys", json={"action": "wheel", "code": HATCH}, headers=headers()
+    )
+    assert answer.status == 409
+    assert "стоит на парковке" in (await answer.json())["error"]
+
+
+async def test_the_salon_says_where_your_car_stands(db):
+    """Своя машина в гараже отмечена на витрине вместе с местом стоянки."""
+    from bot.car_service import leave
+    from bot.clan_service import found
+    from bot.game.cars import IN_CLAN
+
+    don = await licensed(db, make_player(1, "Дон", where="mafia_mansion"))
+    clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
+    don = await db.get_player(1)
+    await buy(db, don, HATCH, NOW)
+    await leave(db, don, HATCH, IN_CLAN, clan.id, NOW)
+    away = await db.get_player(1)
+    away.location = SALON_PLACE
+    await db.save_player(away)
+
+    body = await build_cars(db, await db.get_player(1), NOW)
+
+    assert body["held"] == 0 and body["stored"] == 1
+    assert "в гаражах стоит ещё 1" in body["note"]
+    rows = {one["code"]: one for one in body["shelf"]}
+    assert rows[HATCH]["own"] is True
+    assert rows[HATCH]["parked_text"] == "парковка особняка"
+    # Витрина при этом открыта: место на руках свободно
+    assert rows[HYPER]["can_buy"] is True

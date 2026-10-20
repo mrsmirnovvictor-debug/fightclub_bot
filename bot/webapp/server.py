@@ -2636,12 +2636,16 @@ async def api_keys(request: web.Request) -> web.Response:
 
 
 async def _keys(db, player) -> dict:
-    """Ключи и потолок: машин у бойца одна, с подпиской три."""
-    from bot.car_service import mine as my_cars
+    """Ключи и потолок: машин у бойца одна, с подпиской три.
+
+    Ключи — только то, что при бойце: оставленная на парковке машина в
+    карточке не висит, за ней идут в гараж. Потолок считает их же.
+    """
+    from bot.car_service import at_hand
     from bot.game.cars import cars_allowed
 
     return {
-        "keys": await my_cars(db, player, now_ts()),
+        "keys": await at_hand(db, player, now_ts()),
         "limit": cars_allowed(player.is_pro(now_ts())),
     }
 

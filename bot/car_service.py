@@ -96,14 +96,32 @@ async def mine(
     return out
 
 
+async def at_hand(
+    db: Database, player: Player, now: int | None = None
+) -> list[dict]:
+    """Машины при бойце: без тех, что оставлены на парковке.
+
+    Это и есть его ключи: поставленную машину из карточки не возьмёшь —
+    за ней идут в гараж, где она стоит.
+    """
+    moment = now_ts() if now is None else now
+    return [one for one in await mine(db, player, moment) if not one["parked"]]
+
+
 async def kept_count(db: Database, player: Player, now: int) -> int:
-    """Сколько машин у бойца на руках. Служебные не в счёт — они не его."""
+    """Сколько машин у бойца на руках — столько и считает потолок.
+
+    Не в счёт две вещи. Служебная — она не его: её выдал гараж на
+    смену. И та, что оставлена на парковке: в гараже она стоит, а не в
+    руках, и место под машину освобождает — в этом и смысл гаража.
+    """
     rows = await db.cars_of(player.user_id)
     return sum(
         1
         for row in rows
         if (car := get_car(str(row["code"]))) is not None
         and not car.service
+        and not row["parked"]
         and (not row["until"] or int(row["until"]) > now)
     )
 
@@ -119,18 +137,23 @@ async def room_for_another(
 
 
 async def _check_room(db: Database, player: Player, now: int) -> None:
-    """Не пустить за второй машиной. Подписка раздвигает счёт до трёх."""
+    """Не пустить за второй машиной. Подписка раздвигает счёт до трёх.
+
+    Выход из отказа есть, и он тут же назван: поставить свою на
+    парковку. Стоящая машина места на руках не занимает.
+    """
     if await room_for_another(db, player, now):
         return
     limit = cars_allowed(player.is_pro(now))
     if player.is_pro(now):
         raise CarError(
             f"Машин на руках {limit} — больше не держат даже с подпиской. "
-            "Сдай или продай одну."
+            "Поставь одну на парковку: в особняке или у своей квартиры."
         )
     raise CarError(
-        f"Машина у бойца одна, и она у тебя уже есть. "
-        f"С подпиской держат {PRO_MAX_CARS}."
+        f"Машина у бойца одна, и она у тебя на руках. Поставь её на "
+        f"парковку — в особняке или у своей квартиры, — и бери вторую. "
+        f"С подпиской держат {PRO_MAX_CARS} разом."
     )
 
 
@@ -549,6 +572,7 @@ __all__ = [
     "buy",
     "drop_service_cars",
     "hand_over",
+    "at_hand",
     "has_car",
     "kept_count",
     "leave",

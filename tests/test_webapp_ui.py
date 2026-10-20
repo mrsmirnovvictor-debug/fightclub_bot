@@ -11228,6 +11228,7 @@ async def test_the_salon_goes_dark_when_the_garage_is_full(server, db):
 
         said = await page.locator("#cars-note").inner_text()
         assert "Машин на руках 1 из 1" in said
+        assert "Поставь её на парковку" in said
         assert "С подпиской держат 3" in said
         # Своя машина отмечена, а у остальных погасли все три кнопки
         cards = page.locator("#cars-body .car")
