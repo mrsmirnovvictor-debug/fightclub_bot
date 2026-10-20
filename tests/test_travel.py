@@ -587,65 +587,53 @@ def test_a_touch_finds_the_door_under_it():
     assert not club.holds(0.55, 0.10), "вывеска над дверью"
 
 
-def test_houses_without_a_trade_are_still_on_the_map():
-    """Стадион и прочие дома второй очереди пока только стоят.
+def test_every_house_of_the_city_has_a_trade_behind_it():
+    """Домов без услуги в городе больше нет — и это новость.
 
-    Зайти в них можно — иначе город выглядит нарисованным наполовину, —
-    но никакой услуги за ними нет, и сервер её не знает.
+    Долго город был нарисован вперёд правил: в половину домов можно было
+    войти, а делать там было нечего, и у каждого такого стояла строка
+    «скоро». Последними вышли из этого списка бизнес-центр (разработка) и
+    общежитие (комната студенту). Теперь за каждой дверью что-то стоит, и
+    тест на то и есть: дом без услуги — это недоделка, а не этап.
     """
-    from bot.game.locations import LOCATIONS
+    from bot.game.locations import LOCATIONS, get_location
 
     coming = [place for place in LOCATIONS if not place.works]
-    # Два дома второй и третьей очереди: город вырос картинками
-    # раньше, чем правилами, и это нормально — лишь бы в каждом было
-    # сказано, чего в нём ждать. Дома из этого списка выходят по одному:
-    # в больнице лечат, на рынке меняются, в страховой оформляют полис, в
-    # зале тренируются, в банке держат деньги, в агентстве нанимают, на
-    # стадионе встречают фанатский сектор, у ювелира торгуют украшениями,
-    # в автошколе учат на права, в особняке мафии заводят кланы, а в
-    # жилых домах снимают квартиры
-    assert {"dormitory"} <= {place.code for place in coming}
-    assert not {
-        # Тюрьма и арена открылись своими экранами: в одной видно срок
-        # и соседей, в другой — недельный турнир
-        "prison", "fight_tournament_stadium",
-        "hospital", "market", "insurance_office", "strength_gym", "bank",
-        "hr_agency", "stadium", "jewelry_store", "driving_school", "vcpd",
-        "mafia_mansion", "residential_apartment", "residential_apartment_2",
-        "residential_apartment_3", "residential_apartment_4",
-        # И дома, которые открылись работой под диплом: в них теперь
-        # нанимают, даже если обещанное сверх того ещё впереди
-        "car_dealership", "taxi_depot", "city_administration",
-        "military_base", "northern_wall_shop",
-    } & {place.code for place in coming}
-    # Бизнес-центр в этот список вернулся: наём уехал к кадровикам, а
-    # своего дела у него пока нет
-    assert "office_building" in {place.code for place in coming}
-    # А четыре школы из него вышли: в корпусе, колледже, академии и
-    # университете теперь учат
-    assert not {
-        "cadet_corps", "medical_college", "police_school", "university",
-    } & {place.code for place in coming}
-    assert len(coming) == 2, "тюрьма и арена открылись и из списка вышли"
-    # Бар — особый случай: за ним уже стоит работа, но обещано сверх неё
-    # и другое. У такого дома есть и услуга, и строка «скоро»
-    from bot.game.locations import get_location
 
+    assert coming == [], (
+        "у этих домов нет услуги: "
+        + ", ".join(place.code for place in coming)
+    )
+    assert all(place.services for place in LOCATIONS)
+
+    # «Скоро» осталось — но теперь оно значит не «тут пусто», а «сверх
+    # того обещано ещё». У такого дома есть и услуга, и строка
+    promised = [place for place in LOCATIONS if place.soon]
+    assert promised, "город не обещал больше ничего — так не бывает"
+    for place in promised:
+        assert place.works, f"{place.code}: «скоро» у дома без услуги"
+
+    # Бар — первый такой дом: за ним стоит работа, а обещано другое
     bar = get_location("bar")
     assert bar.works and bar.soon
-    # И полигон такой же: на него ходят кадеты, а стрельба и спарринги
-    # за ним по-прежнему обещаны
+    # И полигон: на него ходят кадеты, а стрельба и спарринги обещаны
     polygon = get_location("indoor_training_ground")
     assert polygon.works and polygon.soon
-    # А почта своё обещание сдержала: на ней принимают посылки, и «скоро»
-    # у неё больше нет. Услуг у неё две, и почта стоит первой — дверь на
-    # карте открывает тот экран, что в списке первый
+    # И общежитие: комнату дают, а койка пока не лечит
+    dorm = get_location("dormitory")
+    assert dorm.works and dorm.soon
+    assert dorm.services[0] is Service.DORM
+    # А бизнес-центр своё обещание держит наполовину: разработка в нём
+    # сидит, переговорные и звания ещё впереди
+    office = get_location("office_building")
+    assert office.works and office.soon
+    assert office.services[0] is Service.WORK
+    # Почта же сдержала целиком: посылки принимают, и «скоро» у неё нет.
+    # Услуг две, и почта первая — дверь на карте открывает тот экран,
+    # что в списке первый
     post = get_location("post_office")
     assert post.works and not post.soon
     assert post.services[0] is Service.POST and Service.WORK in post.services
-    for place in coming:
-        assert place.soon, f"{place.code}: не сказано, что здесь будет"
-        assert place.services == ()
 
 
 # ---------- бланк разметки ----------

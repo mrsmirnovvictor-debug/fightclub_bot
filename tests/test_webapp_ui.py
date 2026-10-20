@@ -5564,32 +5564,36 @@ async def test_the_arrows_lead_to_the_neighbouring_districts(server):
         await browser.close()
 
 
-async def test_a_house_without_a_trade_says_when_it_opens(server):
-    """Общежитие на карте есть, зайти можно, а услуги пока нет.
+async def test_a_house_that_promises_more_still_opens_its_own_screen(server, db):
+    """«Скоро» у дома больше не значит «внутри пусто».
 
-    Раньше такой дом отвечал всплывашкой, и боец оставался на карте — то
-    есть внутрь не заходил вовсе. Теперь у дома свой экран: вид изнутри и
-    записка о том, чего тут ждать. Домов этих всё меньше: особняк мафии
-    вышел из списка с кланами, автосалон — с местом менеджера.
+    Раньше такой дом открывал общий экран с одной запиской — других у
+    него и не было. Теперь домов без услуги в городе нет вовсе
+    (`tests/test_travel.py`), и строка «скоро» значит лишь, что сверх
+    нынешнего обещано ещё: общежитие даёт комнату, а койка пока не
+    лечит. Дверь на карте обязана вести к услуге, а не к записке.
     """
-    walker = make_player(location="dormitory")
+    from bot.webapp.dorm import build_dorm
+    from tests.test_dorm import student
+
+    walker = await student(db)
+    body = await build_dorm(db, walker)
     card = build_card(walker, TOKEN, viewer_id=walker.user_id)
     async with async_playwright() as pw:
         browser, page = await open_map(
             pw, server, city_map("dormitory"), card, images=True
         )
+        await page.route("**/api/dorm*", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(body, ensure_ascii=False),
+        ))
 
         await page.locator(".zone-house").filter(has_text="Общежитие").click()
-        await page.wait_for_selector("#house:not(.hidden)")
+        await page.wait_for_selector("#dorm:not(.hidden)")
 
-        assert await page.locator("#house-title").inner_text() == "Общежитие"
-        note = await page.locator("#house-soon").inner_text()
-        assert "Скоро" in note
-        # Пока в доме стоишь, на панели горит «Карта»: оттуда и пришли
-        assert "active" in (await page.locator("#tab-map").get_attribute("class"))
-        # Обратно — на карту, кнопкой в углу
-        await page.locator("#house-back").click()
-        await page.wait_for_selector("#map:not(.hidden)")
+        # Экран общежития, а не общая записка «скоро»
+        assert await page.locator("#house:not(.hidden)").count() == 0
+        assert "Комната студенту" in await page.locator("#dorm-note").inner_text()
         await browser.close()
 
 
