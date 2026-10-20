@@ -11151,24 +11151,30 @@ function showcaseCar(one) {
   );
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
+  // Мест под машины нет — причина у кнопки одна на все три: не деньги,
+  // а счёт машин, и говорить про деньги тут было бы неправдой
+  const full = !one.fits;
+  const why = full
+    ? "Машин на руках столько, сколько держат. Сдай или продай одну."
+    : "";
   if (!one.own) {
     buttons.append(
       button("Сутки · " + num(one.day) + " 💰", {
         secondary: true,
         disabled: !one.can_rent_day,
-        hint: "Не хватает денег на сутки.",
+        hint: why || "Не хватает денег на сутки.",
         onClick: () => carsAction({ action: "rent", code: one.code, span: "day" }),
       }),
       button("Месяц · " + num(one.month) + " 💰", {
         secondary: true,
         disabled: !one.can_rent_month,
-        hint: "Не хватает денег на месяц.",
+        hint: why || "Не хватает денег на месяц.",
         onClick: () =>
           carsAction({ action: "rent", code: one.code, span: "month" }),
       }),
       button("Купить · " + num(one.price) + " 💰", {
         disabled: !one.can_buy,
-        hint: "Не хватает денег на покупку.",
+        hint: why || "Не хватает денег на покупку.",
         onClick: () => carsAction({ action: "buy", code: one.code }),
       })
     );
@@ -11244,7 +11250,7 @@ async function loadKeys() {
     });
     if (!response.ok) return;
     const data = await response.json();
-    renderKeys(data.keys || []);
+    renderKeys(data.keys || [], data.limit || 0);
   } catch (error) {
     // Молча: ключи — не повод для окна с ошибкой
   }
@@ -11255,7 +11261,7 @@ async function keysAction(payload) {
     const data = await post("api/keys", payload);
     haptic((feedback) => feedback.impactOccurred("medium"));
     if (data.card) render(data.card, true);
-    renderKeys(data.keys || []);
+    renderKeys(data.keys || [], data.limit || 0);
     if (data.said) popup("Машина", data.said);
   } catch (error) {
     popup("Машина", error.message);
@@ -11263,13 +11269,17 @@ async function keysAction(payload) {
   }
 }
 
-function renderKeys(keys) {
+function renderKeys(keys, limit) {
   keysData = keys;
   const box = el("hero-keys");
   const list = el("keys-list");
   if (!box || !list) return;
   box.classList.toggle("hidden", keys.length === 0);
-  el("keys-count").textContent = keys.length ? String(keys.length) : "";
+  // Счёт со потолком: по нему видно, что машина у бойца не одна из
+  // многих, а одна из отведённых — и сколько их отведено
+  el("keys-count").textContent = keys.length
+    ? String(keys.length) + (limit ? " из " + limit : "")
+    : "";
   list.textContent = "";
   keys.forEach((one) => list.appendChild(keyCard(one)));
 }

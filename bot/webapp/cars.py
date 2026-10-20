@@ -20,6 +20,7 @@ from typing import Any
 from bot.game.cars import (
     BUY_PRICE_DAYS,
     MONTH_PRICE_DAYS,
+    PRO_MAX_CARS,
     SHOWCASE,
     TAXI,
     TAXI_SHIFT_PRICE,
@@ -47,11 +48,19 @@ def car_row(car: Car) -> dict[str, Any]:
 
 
 def showcase_row(
-    car: Car, player: Player, moment: int, own: dict[str, dict]
+    car: Car, player: Player, moment: int, own: dict[str, dict],
+    room: bool = True,
 ) -> dict[str, Any]:
-    """Строка витрины: цены и то, что у бойца уже есть."""
+    """Строка витрины: цены и то, что у бойца уже есть.
+
+    `room` — влезет ли бойцу ещё одна машина. Свою он выкупает и
+    продлевает и без места: это та же машина, а не вторая.
+    """
     mine = own.get(car.code)
     bought = bool(mine and not mine["until"])
+    # Место нужно только под новую машину: продлить снятую и выкупить
+    # её можно, сколько бы их ни было на руках
+    fits = bool(room or mine)
     return dict(
         car_row(car),
         price=car.price,
@@ -65,9 +74,19 @@ def showcase_row(
         rented=bool(mine and mine["until"]),
         left=int(mine["left"]) if mine else 0,
         left_text=mine["left_text"] if mine else "",
-        can_buy=bool(not bought and player.can_afford(car.price, moment, Service.CARS)),
-        can_rent_day=bool(not bought and player.can_afford(car.day, moment, Service.CARS)),
-        can_rent_month=bool(not bought and player.can_afford(car.month, moment, Service.CARS)),
+        fits=fits,
+        can_buy=bool(
+            not bought and fits
+            and player.can_afford(car.price, moment, Service.CARS)
+        ),
+        can_rent_day=bool(
+            not bought and fits
+            and player.can_afford(car.day, moment, Service.CARS)
+        ),
+        can_rent_month=bool(
+            not bought and fits
+            and player.can_afford(car.month, moment, Service.CARS)
+        ),
     )
 
 
@@ -138,7 +157,12 @@ async def build_cars(
     db, player: Player, now: int | None = None
 ) -> dict[str, Any]:
     """Дом с машинами: витрина или гараж, свои ключи и место за рулём."""
-    from bot.car_service import mine as my_cars, release_strangers
+    from bot.car_service import (
+        kept_count,
+        mine as my_cars,
+        release_strangers,
+    )
+    from bot.game.cars import cars_allowed
 
     moment = now_ts() if now is None else now
     here = player.where(moment)
@@ -152,6 +176,10 @@ async def build_cars(
     own = {one["code"]: one for one in keys}
     driving = player.driving(moment)
     car = get_car(driving)
+    # Сколько машин боец держит и сколько ему можно: одну, а с подпиской
+    # три. Служебные в счёт не идут — они не его
+    held = await kept_count(db, player, moment)
+    limit = cars_allowed(player.is_pro(moment))
 
     body: dict[str, Any] = {
         "title": place.title if place else "Машины",
@@ -162,6 +190,10 @@ async def build_cars(
         "job": player.job_code,
         "driving": car_row(car) if car else None,
         "keys": keys,
+        "held": held,
+        "limit": limit,
+        "pro": player.is_pro(moment),
+        "pro_limit": PRO_MAX_CARS,
         "shelf": [],
         "said": "",
     }
@@ -171,7 +203,8 @@ async def build_cars(
         ]
     else:
         body["shelf"] = [
-            showcase_row(one, player, moment, own) for one in SHOWCASE
+            showcase_row(one, player, moment, own, held < limit)
+            for one in SHOWCASE
         ]
     body["note"] = _note(body, player, moment)
     return body
@@ -194,14 +227,27 @@ def _note(body: dict[str, Any], player: Player, moment: int) -> str:
             else "машины выдают своим и бесплатно"
         )
         return f"Гараж: {how}. Свободных мест: {free}."
+    if body["held"] >= body["limit"]:
+        # Машин на руках столько, сколько держат: витрина гаснет вся, и
+        # сказать об этом надо раньше, чем про гашеные кнопки
+        tail = (
+            "Сдай или продай одну."
+            if body["pro"]
+            else f"С подпиской держат {body['pro_limit']}."
+        )
+        return (
+            f"Машин на руках {body['held']} из {body['limit']} — "
+            f"больше город не держит. {tail}"
+        )
     if body["driving"]:
         return (
             f"Ты за рулём: {body['driving']['title']}, "
             f"дорога короче в {body['driving']['times']} раз."
         )
     return (
-        "Машину берут в аренду на сутки или на месяц либо покупают "
-        "насовсем. За руль садятся в карточке, во вкладке «Персонаж»."
+        f"Машину берут в аренду на сутки или на месяц либо покупают "
+        f"насовсем. Держат {body['limit']}, за руль садятся в карточке, "
+        f"во вкладке «Персонаж»."
     )
 
 

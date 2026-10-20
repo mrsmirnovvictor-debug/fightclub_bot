@@ -4353,6 +4353,18 @@ class Database:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
+    async def parked_car(
+        self, car_id: int, parked: str, parked_id: int
+    ) -> dict | None:
+        """Одна машина с парковки по её строке. None — её там нет."""
+        async with self.conn.execute(
+            "SELECT id, user_id, code, until FROM cars "
+            "WHERE id = ? AND parked = ? AND parked_id = ?",
+            (car_id, parked, parked_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
     async def take_parked_car(
         self, car_id: int, parked: str, parked_id: int, user_id: int
     ) -> dict | None:
@@ -4363,12 +4375,7 @@ class Database:
         бойца база не держит (`UNIQUE (user_id, code)`) — тогда
         возвращаем отказ, а не роняем запрос.
         """
-        async with self.conn.execute(
-            "SELECT id, user_id, code, until FROM cars "
-            "WHERE id = ? AND parked = ? AND parked_id = ?",
-            (car_id, parked, parked_id),
-        ) as cursor:
-            row = await cursor.fetchone()
+        row = await self.parked_car(car_id, parked, parked_id)
         if row is None:
             return None
         code = str(row["code"])

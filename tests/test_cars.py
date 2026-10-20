@@ -101,6 +101,15 @@ async def licensed(
     return fresh
 
 
+async def subscribed(db: Database, player: Player, when: int = NOW) -> Player:
+    """Боец с подпиской: ему город разрешает три машины вместо одной."""
+    player.pro_until = when + 30 * DAY
+    await db.save_player(player)
+    fresh = await db.get_player(player.user_id)
+    assert fresh is not None and fresh.is_pro(when)
+    return fresh
+
+
 async def hired(
     db: Database, player: Player, job: str, where: str, shift: int = 0
 ) -> Player:
@@ -572,7 +581,7 @@ async def test_the_salon_is_bought_from_the_salon(db, client):
 
 async def test_the_sweep_takes_only_the_expired(db):
     """Метла убирает кончившиеся аренды и не трогает своё."""
-    player = await licensed(db, make_player())
+    player = await subscribed(db, await licensed(db, make_player()))
     await buy(db, player, HATCH, NOW)
     await rent(db, player, HYPER, "day", NOW)
 
@@ -692,13 +701,15 @@ async def test_the_same_model_twice_does_not_fit_one_fighter(db):
     mate = await licensed(db, make_player(2, "Боец", where="mafia_mansion"))
     await _join(db, mate, clan, NOW)
     don = await db.get_player(1)
-    mate = await db.get_player(2)
+    # Подписка — чтобы отказ был именно про одинаковые модели, а не про
+    # счёт машин: с одной машиной на руках боец и так за второй не идёт
+    mate = await subscribed(db, await db.get_player(2))
     await buy(db, don, HATCH, NOW)
     await buy(db, mate, HATCH, NOW)
     await leave(db, don, HATCH, IN_CLAN, clan.id, NOW)
     standing = (await parked_at(db, IN_CLAN, clan.id, mate, NOW))[0]
 
-    with pytest.raises(CarError, match="уже есть"):
+    with pytest.raises(CarError, match="Такая у тебя уже есть"):
         await take_away(db, mate, standing["id"], IN_CLAN, clan.id, NOW)
 
     # Машина осталась на парковке и за прежним хозяином
@@ -732,23 +743,35 @@ async def test_a_car_taken_from_the_parking_keeps_its_rent(db):
 
 
 async def test_the_mansion_parking_runs_out_of_places(db):
-    """Мест три: четвёртую машину в особняк не поставить."""
+    """Мест три: четвёртую машину в особняк не поставить.
+
+    Четыре машины на одного бойца город и не держит, поэтому ставит их
+    вся семья — по машине с каждого.
+    """
     from bot.car_service import leave
-    from bot.clan_service import found
+    from bot.clan_service import found, _join
     from bot.game.cars import CLAN_PARKING, IN_CLAN
 
     don = await licensed(db, make_player(1, "Дон", where="mafia_mansion"))
     clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
-    don = await db.get_player(1)
     codes = [one.code for one in SHOWCASE[:CLAN_PARKING + 1]]
-    for code in codes:
-        await buy(db, don, code, NOW)
+    squad = [await db.get_player(1)]
+    for number, code in enumerate(codes[1:], start=2):
+        mate = await licensed(
+            db, make_player(number, f"Боец-{number}", where="mafia_mansion")
+        )
+        await _join(db, mate, clan, NOW)
+        squad.append(await db.get_player(number))
+    for one, code in zip(squad, codes):
+        await buy(db, one, code, NOW)
 
-    for code in codes[:CLAN_PARKING]:
-        await leave(db, don, code, IN_CLAN, clan.id, NOW)
+    for one, code in zip(squad[:CLAN_PARKING], codes):
+        await leave(db, one, code, IN_CLAN, clan.id, NOW)
 
     with pytest.raises(CarError, match="Мест нет"):
-        await leave(db, don, codes[CLAN_PARKING], IN_CLAN, clan.id, NOW)
+        await leave(
+            db, squad[CLAN_PARKING], codes[CLAN_PARKING], IN_CLAN, clan.id, NOW
+        )
 
 
 async def test_a_parked_car_is_not_driven(db):
@@ -818,7 +841,9 @@ async def test_the_flat_has_one_place_for_a_car(db):
     from bot.game.cars import FLAT_PARKING, IN_FLAT
 
     house = "residential_apartment"
-    tenant = await licensed(db, make_player(1, "Жилец", where=house))
+    tenant = await subscribed(
+        db, await licensed(db, make_player(1, "Жилец", where=house))
+    )
     await rent_flat(db, tenant, 1, now=NOW)
     lease = await db.lease_of(1)
     await buy(db, tenant, HATCH, NOW)
@@ -1005,3 +1030,168 @@ async def test_the_flat_parking_is_not_shared(db, client):
 
     assert body["parking"]["shared"] is False
     assert body["parking"]["cars"][0]["mine"] is True
+
+
+# ---------- сколько машин держат ----------
+
+
+def test_one_car_for_a_fighter_and_three_for_a_subscriber():
+    """Машина у бойца одна, с подпиской три — и это всё правило."""
+    from bot.game.cars import MAX_CARS, PRO_MAX_CARS, cars_allowed
+
+    assert MAX_CARS == 1 and PRO_MAX_CARS == 3
+    assert cars_allowed(False) == 1 and cars_allowed(True) == 3
+
+
+async def test_the_second_car_does_not_fit(db):
+    """Вторую машину бойцу не продают и не сдают: место одно."""
+    player = await licensed(db, make_player())
+    await buy(db, player, HATCH, NOW)
+
+    with pytest.raises(CarError, match="Машина у бойца одна"):
+        await buy(db, player, HYPER, NOW)
+    with pytest.raises(CarError, match="С подпиской держат 3"):
+        await rent(db, player, HYPER, "day", NOW)
+    assert [one["code"] for one in await mine(db, player, NOW)] == [HATCH]
+
+
+async def test_the_subscription_makes_room_for_three(db):
+    """С подпиской на руках три машины, а четвёртая не влезает и ей."""
+    from bot.game.cars import PRO_MAX_CARS
+
+    player = await subscribed(db, await licensed(db, make_player()))
+    codes = [one.code for one in SHOWCASE[:PRO_MAX_CARS + 1]]
+
+    for code in codes[:PRO_MAX_CARS]:
+        await buy(db, player, code, NOW)
+
+    assert len(await mine(db, player, NOW)) == PRO_MAX_CARS
+    with pytest.raises(CarError, match="даже с подпиской"):
+        await buy(db, player, codes[PRO_MAX_CARS], NOW)
+
+
+async def test_a_freed_place_takes_a_new_car(db):
+    """Сдал аренду — место освободилось, и новую машину уже продают."""
+    player = await licensed(db, make_player())
+    await rent(db, player, HATCH, "day", NOW)
+    with pytest.raises(CarError, match="одна"):
+        await buy(db, player, HYPER, NOW)
+
+    await hand_over(db, player, HATCH, NOW)
+
+    assert "теперь твоя" in await buy(db, player, HYPER, NOW)
+    assert [one["code"] for one in await mine(db, player, NOW)] == [HYPER]
+
+
+async def test_the_place_is_counted_after_the_rent_runs_out(db):
+    """Кончившаяся аренда места не держит: машины больше нет."""
+    player = await licensed(db, make_player())
+    await rent(db, player, HATCH, "day", NOW)
+
+    assert "теперь твоя" in await buy(db, player, HYPER, NOW + DAY)
+    # Старая строка ушла вместе со сроком, новая — одна на руках
+    assert [one["code"] for one in await mine(db, player, NOW + DAY)] == [HYPER]
+
+
+async def test_a_parked_car_still_takes_the_place(db):
+    """Поставленная на парковку машина своё место занимает: она твоя."""
+    from bot.car_service import leave
+    from bot.clan_service import found
+    from bot.game.cars import IN_CLAN
+
+    don = await licensed(db, make_player(1, "Дон", where="mafia_mansion"))
+    clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
+    don = await db.get_player(1)
+    await buy(db, don, HATCH, NOW)
+    await leave(db, don, HATCH, IN_CLAN, clan.id, NOW)
+
+    with pytest.raises(CarError, match="одна"):
+        await buy(db, don, HYPER, NOW)
+
+
+async def test_the_service_car_is_not_counted(db):
+    """Служебная места не занимает: она не его, её выдал гараж."""
+    officer = await hired(
+        db, await licensed(db, make_player(1, "Офицер")),
+        "police_officer", POLICE_PLACE,
+    )
+    await take(db, officer, PATROL_CAR, NOW)
+
+    # Своя машина у него всё ещё влезает, хотя на руках уже патрульная
+    officer.location = SALON_PLACE
+    await db.save_player(officer)
+    assert "теперь твоя" in await buy(db, officer, HATCH, NOW)
+    # А вторая своя — уже нет
+    with pytest.raises(CarError, match="одна"):
+        await buy(db, officer, HYPER, NOW)
+
+
+async def test_the_shared_garage_respects_the_count(db):
+    """С общей парковки не уедешь на второй машине: место одно."""
+    from bot.car_service import leave, parked_at, take_away
+    from bot.clan_service import found, _join
+    from bot.game.cars import IN_CLAN
+
+    don = await licensed(db, make_player(1, "Дон", where="mafia_mansion"))
+    clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
+    mate = await licensed(db, make_player(2, "Боец", where="mafia_mansion"))
+    await _join(db, mate, clan, NOW)
+    don = await db.get_player(1)
+    mate = await db.get_player(2)
+    await buy(db, don, HYPER, NOW)
+    await leave(db, don, HYPER, IN_CLAN, clan.id, NOW)
+    await buy(db, mate, HATCH, NOW)
+    standing = (await parked_at(db, IN_CLAN, clan.id, mate, NOW))[0]
+
+    with pytest.raises(CarError, match="одна"):
+        await take_away(db, mate, standing["id"], IN_CLAN, clan.id, NOW)
+
+    # А своя машина с парковки возвращается всегда: она и так его
+    await leave(db, mate, HATCH, IN_CLAN, clan.id, NOW)
+    his = next(
+        one for one in await parked_at(db, IN_CLAN, clan.id, mate, NOW)
+        if one["mine"]
+    )
+    assert "снова при тебе" in await take_away(
+        db, mate, his["id"], IN_CLAN, clan.id, NOW
+    )
+
+
+async def test_the_salon_says_why_the_buttons_are_dark(db):
+    """Витрина гаснет вся и говорит почему: машин на руках столько, сколько держат."""
+    player = await licensed(db, make_player())
+    await buy(db, player, HATCH, NOW)
+
+    body = await build_cars(db, await db.get_player(42), NOW)
+
+    assert body["held"] == 1 and body["limit"] == 1 and body["pro"] is False
+    assert "Машин на руках 1 из 1" in body["note"]
+    assert "С подпиской держат 3" in body["note"]
+    rows = {one["code"]: one for one in body["shelf"]}
+    assert rows[HYPER]["fits"] is False and rows[HYPER]["can_buy"] is False
+    assert rows[HYPER]["can_rent_day"] is False
+    # Свою снятую машину продлевают и выкупают без места: она не вторая
+    assert rows[HATCH]["own"] is True
+
+
+async def test_a_rented_car_is_bought_out_without_a_free_place(db):
+    """Снятую машину выкупают, сколько бы их ни было: это та же машина."""
+    player = await licensed(db, make_player())
+    await rent(db, player, HATCH, "day", NOW)
+
+    said = await buy(db, await db.get_player(42), HATCH, NOW)
+
+    assert "теперь твоя" in said
+    keys = await mine(db, await db.get_player(42), NOW)
+    assert len(keys) == 1 and keys[0]["own"] is True
+
+
+async def test_the_rent_is_extended_without_a_free_place(db):
+    """Своя аренда продлевается и на полном счёте: новой машины не прибавилось."""
+    player = await licensed(db, make_player())
+    await rent(db, player, HATCH, "day", NOW)
+
+    said = await rent(db, await db.get_player(42), HATCH, "month", NOW)
+
+    assert "снята на месяц" in said
+    assert len(await mine(db, await db.get_player(42), NOW)) == 1

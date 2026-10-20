@@ -11200,6 +11200,44 @@ async def test_the_salon_shows_three_prices_on_every_car(server, db):
         # Гиперкар не по карману: кнопка покупки погасла
         last = cards.nth(9)
         assert await last.locator(".btn").last.is_disabled()
+        # А в записке сверху сказано, сколько машин держат
+        assert "Держат 1" in await page.locator("#cars-note").inner_text()
+        await browser.close()
+
+
+async def test_the_salon_goes_dark_when_the_garage_is_full(server, db):
+    """Машина на руках — витрина гаснет вся, и причина названа словами."""
+    from bot.car_service import buy
+    from bot.game.driving import School
+    from bot.webapp.cars import build_cars
+    from tests.test_cars import HATCH, NOW, make_player as a_driver
+
+    me = a_driver(credits=100_000)
+    await db.save_player(me)
+    await db.set_school(me.user_id, School(passed_at=1, licence_at=1))
+    me = await db.get_player(me.user_id)
+    await buy(db, me, HATCH, NOW)
+    body = await build_cars(db, await db.get_player(me.user_id), NOW)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, cars=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "cars")
+        await page.wait_for_selector("#cars-body .car")
+
+        said = await page.locator("#cars-note").inner_text()
+        assert "Машин на руках 1 из 1" in said
+        assert "С подпиской держат 3" in said
+        # Своя машина отмечена, а у остальных погасли все три кнопки
+        cards = page.locator("#cars-body .car")
+        assert "Твоя насовсем" in await cards.first.inner_text()
+        other = cards.nth(1)
+        for number in range(3):
+            assert await other.locator(".btn").nth(number).is_disabled()
+        # Причина у них не про деньги — денег как раз хватает, — и
+        # сказана она запиской сверху: по погасшей кнопке не нажать
+        assert "денег" not in said
         await browser.close()
 
 

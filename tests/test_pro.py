@@ -161,7 +161,7 @@ def test_the_benefits_are_bare_one_line_promises(db):
     for line in pro.BENEFITS:
         assert line.count(".") == 0 and len(line) <= 60, line
     # А то, ради чего подписку берут, названо
-    for word in ("аналитик", "страховка", "абонемент", "опыта"):
+    for word in ("аналитик", "страховка", "абонемент", "опыта", "машины"):
         assert word in said, f"описание молчит о главном: {word}"
 
 
@@ -304,6 +304,7 @@ def test_the_pro_card_leads_the_mage_counter():
         "Аналитик-помощник во время боя",
         "Страховка жизни и здоровья подключается автоматически",
         "Абонемент в тренажёрный зал на всё время подписки",
+        "Три машины на руках вместо одной",
     ]
     assert magic["pro"]["image"].endswith("/magic/pro.jpeg")
     assert not magic["pro"]["active"]

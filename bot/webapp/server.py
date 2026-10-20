@@ -2618,7 +2618,7 @@ async def api_wheel(request: web.Request) -> web.Response:
     return web.json_response({
         "said": said,
         "card": build_card(fresh, config.bot_token, fresh.user_id),
-        "keys": await _keys(db, fresh),
+        **await _keys(db, fresh),
     })
 
 
@@ -2632,13 +2632,18 @@ async def api_keys(request: web.Request) -> web.Response:
     player = await _own_player(request)
     if player.arrive():
         await db.save_player(player)
-    return web.json_response({"keys": await _keys(db, player)})
+    return web.json_response(await _keys(db, player))
 
 
-async def _keys(db, player) -> list[dict]:
+async def _keys(db, player) -> dict:
+    """Ключи и потолок: машин у бойца одна, с подпиской три."""
     from bot.car_service import mine as my_cars
+    from bot.game.cars import cars_allowed
 
-    return await my_cars(db, player, now_ts())
+    return {
+        "keys": await my_cars(db, player, now_ts()),
+        "limit": cars_allowed(player.is_pro(now_ts())),
+    }
 
 
 async def api_prison(request: web.Request) -> web.Response:

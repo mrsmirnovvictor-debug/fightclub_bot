@@ -25,12 +25,14 @@ from bot.database import Database
 from bot.game.cars import (
     GARAGES,
     PARKINGS,
+    PRO_MAX_CARS,
     SPANS,
     TAXI,
     TAXI_SHIFT_PRICE,
     Car,
     garage_of,
     get_car,
+    cars_allowed,
     may_take,
     parking_slots,
     parking_title,
@@ -94,6 +96,44 @@ async def mine(
     return out
 
 
+async def kept_count(db: Database, player: Player, now: int) -> int:
+    """Сколько машин у бойца на руках. Служебные не в счёт — они не его."""
+    rows = await db.cars_of(player.user_id)
+    return sum(
+        1
+        for row in rows
+        if (car := get_car(str(row["code"]))) is not None
+        and not car.service
+        and (not row["until"] or int(row["until"]) > now)
+    )
+
+
+async def room_for_another(
+    db: Database, player: Player, now: int | None = None
+) -> bool:
+    """Влезет ли бойцу ещё одна машина: одна на руках, с подпиской три."""
+    moment = now_ts() if now is None else now
+    return await kept_count(db, player, moment) < cars_allowed(
+        player.is_pro(moment)
+    )
+
+
+async def _check_room(db: Database, player: Player, now: int) -> None:
+    """Не пустить за второй машиной. Подписка раздвигает счёт до трёх."""
+    if await room_for_another(db, player, now):
+        return
+    limit = cars_allowed(player.is_pro(now))
+    if player.is_pro(now):
+        raise CarError(
+            f"Машин на руках {limit} — больше не держат даже с подпиской. "
+            "Сдай или продай одну."
+        )
+    raise CarError(
+        f"Машина у бойца одна, и она у тебя уже есть. "
+        f"С подпиской держат {PRO_MAX_CARS}."
+    )
+
+
 async def has_car(db: Database, player: Player, code: str, now: int) -> bool:
     """Есть ли эта машина у бойца прямо сейчас."""
     row = await db.car_row(player.user_id, code)
@@ -115,6 +155,9 @@ async def buy(
         row = await db.car_row(player.user_id, car.code)
         if row is not None and not row["until"]:
             raise CarError("Такая у тебя уже есть.")
+    else:
+        # Снятую машину можно выкупить: это та же машина, а не вторая
+        await _check_room(db, player, moment)
     await _pay(db, player, car.price, moment, f"Покупка {car.title}")
     await db.put_car(player.user_id, car.code, 0, moment)
     logger.info("Боец %s купил машину %s", player.user_id, car.code)
@@ -133,6 +176,9 @@ async def rent(
     row = await db.car_row(player.user_id, car.code)
     if row is not None and not row["until"]:
         raise CarError("Эта машина и так твоя — зачем её снимать.")
+    if row is None:
+        # Продление — не вторая машина: счёт растёт только от новой
+        await _check_room(db, player, moment)
     await _pay(
         db, player, rent_price(car, span), moment,
         f"Аренда {car.title} на {span_title(span)}",
@@ -351,6 +397,12 @@ async def take_away(
     """
     moment = now_ts() if now is None else now
     await sweep(db, moment)
+    # Чужая машина с общей парковки — это новая машина на руках, и счёт
+    # у неё общий: своя одна, с подпиской три. Своя же возвращается
+    # всегда: она и так числится за хозяином
+    standing = await db.parked_car(car_id, parked, parked_id)
+    if standing is not None and int(standing["user_id"]) != player.user_id:
+        await _check_room(db, player, moment)
     answer = await db.take_parked_car(car_id, parked, parked_id, player.user_id)
     if answer is None:
         raise CarError("Этой машины на парковке уже нет.")
@@ -498,6 +550,7 @@ __all__ = [
     "drop_service_cars",
     "hand_over",
     "has_car",
+    "kept_count",
     "leave",
     "mine",
     "park",
@@ -506,6 +559,7 @@ __all__ = [
     "take_away",
     "release_strangers",
     "rent",
+    "room_for_another",
     "sweep",
     "take",
     "wheel",
