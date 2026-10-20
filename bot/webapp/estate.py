@@ -161,6 +161,42 @@ def pantry_payload(
     }
 
 
+def parking_payload(
+    lease: Lease | None,
+    cars: list[dict] | None,
+    keys: list[dict] | None,
+    moment: int,
+) -> dict[str, Any]:
+    """Место под машину при своей квартире. Пусто — жилья нет.
+
+    Место одно на квартиру, какой бы она ни была: комнаты считают
+    кладовую, а двор у дома один. Машина на нём остаётся хозяйской —
+    парковка это место, а не передача.
+    """
+    from bot.game.cars import FLAT_PARKING
+
+    if lease is None:
+        return {
+            "mine": False, "slots": 0, "free": 0, "locked": True,
+            "cars": [], "keys": [],
+        }
+    rows = list(cars or [])
+    return {
+        "mine": True,
+        "slots": FLAT_PARKING,
+        "free": max(0, FLAT_PARKING - len(rows)),
+        # Срок вышел — ни поставить, ни забрать: не платил, не входишь
+        "locked": lease.locked(moment),
+        "cars": rows,
+        # Поставить можно то, что при себе: стоящую машину второй раз не
+        # поставить, служебную не поставить вовсе
+        "keys": [
+            one for one in (keys or [])
+            if not one["parked"] and not one["service"]
+        ],
+    }
+
+
 def house_note(player: Player, house: str, moment: int) -> str:
     """Строка сверху экрана: что тут делают."""
     lease = player.flat
@@ -195,6 +231,8 @@ def build_house(
     taken: dict[int, dict],
     items: list[Kept] | None = None,
     now: int | None = None,
+    parking: list[dict] | None = None,
+    keys: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Экран жилого дома: подъезд, своя квартира, сейф и кладовая.
 
@@ -239,6 +277,9 @@ def build_house(
             else {}
         ),
         "pantry": pantry_payload(player, here, items or [], moment),
+        # Место под машину: оно при квартире, и смотрят его там же, где
+        # кладовую, — это та же полка, только для машины
+        "parking": parking_payload(here, parking, keys, moment),
         "note": house_note(player, house, moment),
         "said": "",
     }
@@ -250,6 +291,7 @@ __all__ = [
     "house_note",
     "kept_row",
     "lease_payload",
+    "parking_payload",
     "pantry_payload",
     "rooms_payload",
 ]

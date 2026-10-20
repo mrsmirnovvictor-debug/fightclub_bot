@@ -24,6 +24,7 @@ import logging
 from bot.database import Database
 from bot.game.cars import (
     GARAGES,
+    PARKINGS,
     SPANS,
     TAXI,
     TAXI_SHIFT_PRICE,
@@ -31,6 +32,8 @@ from bot.game.cars import (
     garage_of,
     get_car,
     may_take,
+    parking_slots,
+    parking_title,
     rent_price,
     rent_seconds,
     span_title,
@@ -70,6 +73,7 @@ async def mine(
         if car is None:  # pragma: no cover - машину убрали из каталога
             continue
         left = max(0, int(row["until"]) - moment) if row["until"] else 0
+        parked = str(row["parked"] or "")
         out.append({
             "code": car.code,
             "title": car.title,
@@ -82,6 +86,10 @@ async def mine(
             "left": left,
             "left_text": format_term(left) if left else "",
             "driving": player.driving(moment) == car.code,
+            # Где машина стоит: пусто — при хозяине. За руль из-под
+            # себя не садятся, и страница должна знать об этом сама
+            "parked": parked,
+            "parked_text": parking_title(parked),
         })
     return out
 
@@ -262,6 +270,105 @@ async def release_strangers(
     return freed
 
 
+# ---------- парковки: особняк и своя квартира ----------
+
+
+async def leave(
+    db: Database,
+    player: Player,
+    code: str,
+    parked: str,
+    spot: int,
+    now: int | None = None,
+) -> str:
+    """Оставить машину на парковке. Хозяин у неё тот же — меняется место.
+
+    Служебную не ставят: она принадлежит гаражу службы, и место ей там.
+    За руль поставленной машины не садятся, пока её не заберут, — зато
+    и срок аренды на парковке идёт как обычно: место машину не хранит,
+    оно её держит.
+    """
+    moment = now_ts() if now is None else now
+    car = get_car(code)
+    if car is None or parked not in PARKINGS:
+        raise CarError("Такой машины в городе нет.")
+    if car.service:
+        raise CarError("Служебная машина ночует в гараже службы, а не тут.")
+    await sweep(db, moment)
+    row = await db.car_row(player.user_id, car.code)
+    if row is None or (row["until"] and int(row["until"]) <= moment):
+        raise CarError("Этой машины у тебя нет.")
+    if row["parked"]:
+        raise CarError(f"Она и так стоит: {parking_title(str(row['parked']))}.")
+    if player.driving(moment) == car.code:
+        # Ставят машину вместе с выходом из неё: иначе пришлось бы
+        # сперва идти в карточку и снимать её там
+        await park(db, player, moment)
+    if not await db.park_car(
+        player.user_id, car.code, parked, spot, parking_slots(parked)
+    ):
+        raise CarError(
+            f"Мест нет: на этой парковке их {parking_slots(parked)}."
+        )
+    logger.info(
+        "Боец %s оставил %s на парковке %s:%s",
+        player.user_id, car.code, parked, spot,
+    )
+    return f"{car.title} стоит на парковке. Ключи при тебе."
+
+
+async def pick_up(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> str:
+    """Забрать свою машину с парковки. Чужую не отдают никому."""
+    moment = now_ts() if now is None else now
+    car = get_car(code)
+    if car is None:
+        raise CarError("Такой машины в городе нет.")
+    await sweep(db, moment)
+    row = await db.car_row(player.user_id, car.code)
+    if row is None or not row["parked"]:
+        raise CarError("Этой машины на парковке нет.")
+    await db.unpark_car(player.user_id, car.code)
+    logger.info("Боец %s забрал %s с парковки", player.user_id, car.code)
+    return f"{car.title} снова при тебе. За руль — в карточке."
+
+
+async def parked_at(
+    db: Database, parked: str, spot: int, viewer: Player,
+    now: int | None = None,
+) -> list[dict]:
+    """Что стоит на этой парковке: чьё, какое и до какого часа.
+
+    Видят парковку все, кому она открыта — семья свою, жилец свою, — а
+    забрать может только хозяин машины: она его и на парковке.
+    """
+    moment = now_ts() if now is None else now
+    await sweep(db, moment)
+    out = []
+    for row in await db.parked_cars(parked, spot, moment):
+        car = get_car(str(row["code"]))
+        if car is None:  # pragma: no cover - машину убрали из каталога
+            continue
+        owner = await db.get_player(int(row["user_id"]))
+        left = max(0, int(row["until"]) - moment) if row["until"] else 0
+        out.append({
+            "code": car.code,
+            "title": car.title,
+            "image": car.image,
+            "times": car.times,
+            "times_text": car.times_text,
+            "note": car.note,
+            "user_id": int(row["user_id"]),
+            "owner": owner.nickname if owner else "боец",
+            "mine": int(row["user_id"]) == viewer.user_id,
+            "own": not row["until"],
+            "left": left,
+            "left_text": format_term(left) if left else "",
+        })
+    return out
+
+
 # ---------- за руль ----------
 
 
@@ -284,6 +391,11 @@ async def wheel(
         raise CarError("Этой машины у тебя нет.")
     if row["until"] and int(row["until"]) <= moment:
         raise CarError("Срок этой машины вышел — она уже не твоя.")
+    if row["parked"]:
+        raise CarError(
+            f"Эта машина стоит на парковке ({parking_title(str(row['parked']))}). "
+            "Сперва забери её оттуда."
+        )
     player.car = car.code
     player.car_until = int(row["until"])
     await db.save_player(player)
@@ -349,8 +461,11 @@ __all__ = [
     "drop_service_cars",
     "hand_over",
     "has_car",
+    "leave",
     "mine",
     "park",
+    "parked_at",
+    "pick_up",
     "release_strangers",
     "rent",
     "sweep",

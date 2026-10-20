@@ -403,19 +403,27 @@ def stored_row(player: Player, stored: Stored, moment: int) -> dict[str, Any]:
     return row
 
 
-def garage_payload(cars: list[dict] | None) -> dict[str, Any]:
-    """Гараж семьи: три места под автомобили.
+def garage_payload(
+    cars: list[dict] | None, keys: list[dict] | None = None
+) -> dict[str, Any]:
+    """Парковка особняка: три места под автомобили семьи.
 
-    Машин в игре пока нет, и список стоит пустым — но места уже
-    отведены и видны: пустая полка говорит, что сюда что-то будет, а
-    отсутствие вкладки не говорит ничего.
+    `cars` — что стоит, с хозяином у каждой машины. `keys` — что боец
+    может поставить: его машины, которые при нём. Машина на парковке
+    остаётся его: забрать её может только хозяин, а видит её вся семья —
+    гараж тем и гараж, что в него видно.
     """
     rows = list(cars or [])
     return {
         "slots": GARAGE_SLOTS,
         "free": max(0, GARAGE_SLOTS - len(rows)),
         "cars": rows,
-        "soon": not rows,
+        # Ставить можно то, что при себе: уже стоящую машину второй раз
+        # не поставить, служебную не поставить вовсе
+        "keys": [
+            one for one in (keys or [])
+            if not one["parked"] and not one["service"]
+        ],
     }
 
 
@@ -450,6 +458,7 @@ def build_estate(
     items: list[Stored],
     now: int | None = None,
     cars: list[dict] | None = None,
+    keys: list[dict] | None = None,
     licences: dict[str, int] | None = None,
     attacks: int = 0,
     paid: int = 0,
@@ -495,7 +504,7 @@ def build_estate(
         # Что боец может положить: снятое из рюкзака. Надетое на полку не
         # ложится — сперва его снимают в инвентаре
         "bag": [item_payload(player, owned) for owned in player.backpack],
-        "garage": garage_payload(cars),
+        "garage": garage_payload(cars, keys),
         "robbery": robbery_payload(licences, attacks, paid),
     }
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bot.game.art import BUCKET
+from bot.game.clans import GARAGE_SLOTS
 
 # Папка картинок: по файлу на машину, все в 16:9
 VEHICLES = f"{BUCKET}/vehicles"
@@ -197,6 +198,44 @@ GARAGES: dict[str, tuple[Car, ...]] = {
 # Сутки или месяц: других сроков аренды нет
 SPANS: tuple[str, ...] = ("day", "month")
 
+# ---------- где машина стоит ----------
+#
+# Машина либо при хозяине, либо на парковке. Парковка — это место, а не
+# владение: хозяин у неё тот же, и забрать её может только он. Поэтому
+# «поставить» и «отдать» — разные дела: отданная машина уходит, а
+# поставленная просто стоит в другом месте.
+
+AT_HAND = ""
+IN_CLAN = "clan"  # парковка особняка мафии: место на всю семью
+IN_FLAT = "flat"  # место при своей квартире
+
+PARKINGS: tuple[str, ...] = (IN_CLAN, IN_FLAT)
+
+# Сколько машин влезает. Гараж особняка — имущество семьи, и число
+# мест лежит у неё же; у квартиры место одно: оно при доме, а не стоянка
+CLAN_PARKING = GARAGE_SLOTS
+FLAT_PARKING = 1
+
+PARKING_TITLES: dict[str, str] = {
+    IN_CLAN: "парковка особняка",
+    IN_FLAT: "место при квартире",
+}
+
+PARKING_SLOTS: dict[str, int] = {
+    IN_CLAN: CLAN_PARKING,
+    IN_FLAT: FLAT_PARKING,
+}
+
+
+def parking_title(parked: str) -> str:
+    """Как парковка называется в строке. Пусто — машина при хозяине."""
+    return PARKING_TITLES.get(parked, "")
+
+
+def parking_slots(parked: str) -> int:
+    """Сколько машин влезает на эту парковку."""
+    return PARKING_SLOTS.get(parked, 0)
+
 
 def get_car(code: str) -> Car | None:
     return BY_CODE.get(code or "")
@@ -245,18 +284,25 @@ def garage_of(place: str) -> tuple[Car, ...]:
 
 
 __all__ = [
+    "AT_HAND",
     "BUY_PRICE_DAYS",
+    "CLAN_PARKING",
     "CARS",
     "CHIEF_CAR",
     "CHIEF_JOB",
     "Car",
+    "FLAT_PARKING",
     "GARAGES",
+    "IN_CLAN",
+    "IN_FLAT",
     "MONTH_DAYS",
     "MONTH_PRICE_DAYS",
     "POLICE",
     "POLICE_JOBS",
     "PATROL_CAR",
     "POLICE_PLACE",
+    "PARKINGS",
+    "PARKING_SLOTS",
     "SALON",
     "SALON_PLACE",
     "SHOWCASE",
@@ -270,6 +316,8 @@ __all__ = [
     "garage_of",
     "get_car",
     "may_take",
+    "parking_slots",
+    "parking_title",
     "rent_price",
     "rent_seconds",
     "road_seconds",

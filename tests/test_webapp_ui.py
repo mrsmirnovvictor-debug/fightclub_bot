@@ -346,7 +346,7 @@ def don_mansion(
 
 def flats_state(
     number: int = 0, vault: int = 0, kept=(), bag=("bandana",), paid: bool = True,
-    **changes,
+    cars=(), keys=(), **changes,
 ) -> dict:
     """Ответ жилого дома: подъезд, а при `number` — ещё и своя квартира."""
     from bot.game.estate import GRACE_SECONDS, Kept, RENT_SECONDS, flat_at
@@ -384,9 +384,41 @@ def flats_state(
             "user_id": player.user_id, "nickname": "Растафарайчик",
             "paid_until": until, "rooms": flat.rooms,
         }
-    body = build_house(player, "residential_apartment", taken, items)
+    body = build_house(
+        player, "residential_apartment", taken, items,
+        parking=list(cars), keys=list(keys),
+    )
     body.update(changes)
     return body
+
+
+def parked(code: str = "street_compact", mine: bool = True, owner: str = "ты") -> dict:
+    """Машина на парковке так, как её отдаёт служба."""
+    from bot.game.cars import get_car
+
+    car = get_car(code)
+    return {
+        "code": car.code, "title": car.title, "image": car.image,
+        "times": car.times, "times_text": car.times_text, "note": car.note,
+        "user_id": 42 if mine else 43, "owner": owner, "mine": mine,
+        "own": True, "left": 0, "left_text": "",
+    }
+
+
+def car_keys(*codes: str) -> list[dict]:
+    """Ключи при бойце: то, что он может поставить на парковку."""
+    from bot.game.cars import get_car
+
+    return [
+        {
+            "code": get_car(code).code, "title": get_car(code).title,
+            "image": get_car(code).image, "times": get_car(code).times,
+            "note": "", "service": False, "own": True, "until": 0,
+            "left": 0, "left_text": "", "driving": False,
+            "parked": "", "parked_text": "",
+        }
+        for code in codes
+    ]
 
 
 def quest_log(done=("ring",), taken: str = "", marks=()) -> dict:
@@ -10174,8 +10206,8 @@ async def test_the_safe_and_the_shelves_belong_to_the_whole_family(server):
         assert await page.locator(".vault-sum").inner_text() == "400 💰"
         heads = await page.locator("#mafia-estate .shelf-head").all_inner_texts()
         assert heads == [
-            "Сейф семьи", "Склад семьи · 1 из 30", "Гараж семьи · 0 из 3",
-            "Ограбления",
+            "Сейф семьи", "Склад семьи · 1 из 30",
+            "🅿️ Парковка особняка · 0 из 3", "Ограбления",
         ]
         # Полок тридцать: занятые с картинкой, свободные с плюсом
         assert await page.locator("#shelf-grid .shelf-slot").count() == 30
@@ -10979,11 +11011,15 @@ async def test_the_family_page_shows_the_garage_and_the_licences(server, db):
         await page.locator("#mafia-tabs .chip", has_text="Имущество").click()
         await page.wait_for_selector("#mafia-estate:not(.hidden)")
 
-        # Гараж: три места, и все пустые
-        assert await page.locator("#mafia-estate .car-slot").count() == 3
-        assert await page.locator("#mafia-estate .car-slot.empty").count() == 3
+        # Парковка: три места, и все пустые — ставить нечего
         heads = await page.locator("#mafia-estate .shelf-head").all_inner_texts()
-        assert "Гараж семьи · 0 из 3" in heads and "Ограбления" in heads
+        assert "🅿️ Парковка особняка · 0 из 3" in heads
+        assert "Ограбления" in heads
+        parking = page.locator(
+            "#mafia-estate .shelf", has_text="Парковка особняка"
+        )
+        assert await parking.locator(".car").count() == 0
+        assert "Машину покупают или снимают" in await parking.inner_text()
 
         shop = await page.locator("#mafia-estate .shelf").last.inner_text()
         # Нападений на руках, размер пачки и доля — всё числом
@@ -11238,6 +11274,79 @@ async def test_the_car_stands_under_the_fighter_in_his_card(server, db):
         said = await page.locator("#hero-keys").inner_text()
         assert "Городской хэтчбек" in said and "насовсем" in said
         assert await page.locator("#keys-list .btn").inner_text() == "Снять"
+        await browser.close()
+
+
+
+async def test_the_flat_parking_shows_the_car_and_the_button(server, db):
+    """Место при квартире: машина на нём и кнопка «Забрать»."""
+    player = make_player("residential_apartment")
+    player.flat = Lease(
+        id=1, user_id=player.user_id, house="residential_apartment",
+        number=3, rooms=2, paid_until=now_ts() + 1000,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    flats = flats_state(number=3, cars=[parked()])
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, flats=flats, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.locator("#flats-tabs .chip", has_text="Моя квартира").click()
+        await page.wait_for_selector("#flats-home:not(.hidden)")
+
+        parking = page.locator("#flats-home .shelf", has_text="Место под машину")
+        assert "· 1 из 1" in await parking.locator(".shelf-head").inner_text()
+        said = await parking.inner_text()
+        assert "Городской хэтчбек" in said and "дорога ×2" in said
+        assert "Хозяин" in said and "ты" in said
+        # Картинка машины — та же полоса 16:9, что в салоне
+        shot = await parking.locator(".car-pic img").bounding_box()
+        assert shot["width"] > shot["height"] * 1.6
+        # Место занято: ставить больше нечего, а забрать можно
+        assert await parking.locator(".btn").all_inner_texts() == ["Забрать"]
+        await browser.close()
+
+
+async def test_the_empty_flat_parking_offers_the_keys(server, db):
+    """Место свободно — на нём кнопка с машиной, которая при себе."""
+    player = make_player("residential_apartment")
+    player.flat = Lease(
+        id=1, user_id=player.user_id, house="residential_apartment",
+        number=3, rooms=2, paid_until=now_ts() + 1000,
+    )
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    flats = flats_state(number=3, keys=car_keys("street_compact", "neon_coupe"))
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, flats=flats)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "flats")
+        await page.locator("#flats-tabs .chip", has_text="Моя квартира").click()
+        await page.wait_for_selector("#flats-home:not(.hidden)")
+
+        parking = page.locator("#flats-home .shelf", has_text="Место под машину")
+        buttons = await parking.locator(".btn").all_inner_texts()
+        assert buttons == [
+            "Поставить · Городской хэтчбек", "Поставить · Неоновое купе"
+        ]
+
+        # Кнопка держит саму службу, а не её имя: подменяем и
+        # перерисовываем экран, иначе нажатие уйдёт в прежнюю
+        await page.evaluate(
+            """() => {
+                window.flatAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+                pickFlatsTab("home");
+            }"""
+        )
+        await parking.locator(".btn").first.click()
+        sent = await page.evaluate("window.sent")
+        assert sent == {"action": "park", "car": "street_compact"}
         await browser.close()
 
 
@@ -11983,7 +12092,8 @@ async def test_the_tenant_gets_a_safe_and_a_pantry(server):
 
         heads = await page.locator("#flats-home .shelf-head").all_inner_texts()
         assert heads == [
-            "кв. 3 · двухкомнатная", "Сейф квартиры", "Кладовая · 1 из 12"
+            "кв. 3 · двухкомнатная", "Сейф квартиры", "Кладовая · 1 из 12",
+            "🅿️ Место под машину · 0 из 1",
         ]
         assert await page.locator(".vault-sum").inner_text() == "700 💰"
         assert "Оплачена до" in await page.locator(".lease-term").inner_text()

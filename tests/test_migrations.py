@@ -253,10 +253,14 @@ def test_the_schema_holds_no_index_over_a_migrated_column():
     обязан смотреть на колонку, которая в этой же схеме и заведена с
     самого начала. Колонка из `MIGRATIONS` там означает падение запуска
     на каждой живой базе — и ни один другой тест этого не увидит.
+
+    Дописанных колонок у клуба два списка: свои у бойца и свои у машин,
+    и правило одно на оба.
     """
-    from bot.database import MIGRATIONS
+    from bot.database import MIGRATIONS, Database
 
     migrated = {column for column, _ in MIGRATIONS}
+    migrated |= {column for column, _ in Database.CAR_COLUMNS}
     indexes = re.findall(
         r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]+;", SCHEMA, flags=re.I | re.S
     )
@@ -451,4 +455,87 @@ async def test_the_battle_upgrade_runs_once_and_keeps_running(old_battles_path):
     kept = rows[0]
     assert kept["id"] == 7 and kept["kind"] == "team" and kept["rounds"] == 4
     assert kept["winner_team"] == 1 and kept["draw"] == 0
+    await db.close()
+
+
+async def test_the_dead_family_garage_is_dropped(tmp_path):
+    """Пустая таблица гаража уходит: место машины лежит у самой машины.
+
+    `clan_cars` приехала пустой — писать в неё никто не успел, — и
+    второй источник правды о том, где стоит машина, не нужен. Живая
+    база, где она ещё есть, после обновления работает без неё.
+    """
+    path = tmp_path / "garage.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(
+        schema_without(BANK_COLUMNS)
+        + """
+        CREATE TABLE IF NOT EXISTS clan_cars (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            clan_id INTEGER NOT NULL,
+            code    TEXT    NOT NULL,
+            put_by  INTEGER NOT NULL DEFAULT 0,
+            put_at  INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS clan_cars_clan ON clan_cars(clan_id);
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    db = Database(str(path))
+    await db.connect()
+    async with db.conn.execute(
+        "SELECT name FROM sqlite_master WHERE name = 'clan_cars'"
+    ) as cursor:
+        assert await cursor.fetchone() is None, "мёртвая таблица осталась"
+    # А у машин появились колонки парковки
+    async with db.conn.execute("PRAGMA table_info(cars)") as cursor:
+        columns = {row["name"] for row in await cursor.fetchall()}
+    assert {"parked", "parked_id"} <= columns
+    await db.close()
+
+
+# Таблица машин первой версии: машина жила только при хозяине
+OLD_CARS = """
+CREATE TABLE cars (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    until   INTEGER NOT NULL DEFAULT 0,
+    took_at INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (user_id, code)
+);
+"""
+
+
+async def test_a_car_from_the_old_base_keeps_its_owner(tmp_path):
+    """Купленная до парковок машина остаётся при хозяине, а не на ней."""
+    path = tmp_path / "cars.db"
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS cars \(.*?\);",
+        "",
+        schema_without(BANK_COLUMNS),
+        flags=re.S,
+    )
+    raw = sqlite3.connect(path)
+    # Таблица идёт первой: на неё в схеме смотрят индексы
+    raw.executescript(OLD_CARS + legacy)
+    raw.execute(
+        "INSERT INTO players (user_id, nickname, class_code) "
+        "VALUES (1, 'Тайлер', 'warrior')"
+    )
+    raw.execute(
+        "INSERT INTO cars (user_id, code, until, took_at) "
+        "VALUES (1, 'street_compact', 0, 100)"
+    )
+    raw.commit()
+    raw.close()
+
+    db = Database(str(path))
+    await db.connect()
+    rows = await db.cars_of(1)
+    assert len(rows) == 1
+    assert rows[0]["code"] == "street_compact"
+    assert rows[0]["parked"] == "" and rows[0]["parked_id"] == 0
     await db.close()

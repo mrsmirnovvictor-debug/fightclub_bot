@@ -1337,21 +1337,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .talk-replies { display: grid; gap: 8px; margin-top: 12px; }
 
-/* Гараж семьи: три места в ряд. Пустое — серая рамка со значком:
-   по ней видно, что сюда что-то встанет, а не что тут ничего нет */
-.garage { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.car-slot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 64px;
-  border-radius: 10px;
-  background: var(--slot);
-  border: 1px solid var(--line);
-  font-size: 22px;
-}
-.car-slot.empty { border-style: dashed; opacity: 0.55; }
-
 /* ---------- выборы мэра ---------- */
 
 /* Плашка в правом нижнем углу: идут выборы и сколько ещё идти. Висит

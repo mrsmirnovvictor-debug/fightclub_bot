@@ -13553,6 +13553,17 @@ function renderHome(data) {
   body.appendChild(leaseBox(mine, data));
   body.appendChild(flatVaultBox(data.pantry, data));
   body.appendChild(pantryBox(data.pantry));
+  if (data.parking && data.parking.mine) {
+    body.appendChild(
+      parkingBox(
+        data.parking,
+        flatAction,
+        "🅿️ Место под машину",
+        "Место при квартире одно, и оно твоё: машина стоит во дворе, "
+          + "пока не понадобится."
+      )
+    );
+  }
 }
 
 /** Карточка съёма: адрес, срок и две кнопки — продлить и выселиться. */
@@ -14129,7 +14140,15 @@ function renderEstateTab(estate) {
   const bonus = (mansionData || {}).bonus;
   if (bonus && bonus.rows) body.appendChild(bonusBox(bonus));
   body.appendChild(shelfBox(estate));
-  body.appendChild(garageBox(estate.garage || {}));
+  body.appendChild(
+    parkingBox(
+      estate.garage || {},
+      mafiaAction,
+      "🅿️ Парковка особняка",
+      "Ставит каждый свою, забирает каждый свою: на парковке машина "
+        + "остаётся хозяйской. Видит её вся семья."
+    )
+  );
   body.appendChild(robberyBoxFamily(estate.robbery || {}));
 }
 
@@ -14171,35 +14190,82 @@ async function stationCarAction(payload) {
   await loadPolice();
 }
 
-/** Гараж семьи: три места под автомобили. Пока они пустые. */
-function garageBox(garage, title) {
+/** Парковка: что стоит и что можно поставить.
+ *
+ * Одна вёрстка на два дома — гараж особняка и место при квартире: это
+ * одна и та же полка, только для машин, и разница между ними в числе
+ * мест, а не в том, как они выглядят.
+ *
+ * Машина на парковке остаётся хозяйской: забрать её может только он, а
+ * видеть — все, кому парковка открыта. Поэтому у своей машины кнопка, а
+ * у чужой — имя хозяина. */
+function parkingBox(parking, act, title, note) {
   const box = document.createElement("section");
   box.className = "shelf";
+
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = (title || "Гараж семьи") + " · "
-    + (garage.cars || []).length + " из " + (garage.slots || 0);
+  const cars = parking.cars || [];
+  head.textContent = title + " · " + cars.length + " из " + (parking.slots || 0);
   box.appendChild(head);
 
-  const grid = document.createElement("div");
-  grid.className = "garage";
-  const cars = garage.cars || [];
-  for (let place = 0; place < (garage.slots || 0); place += 1) {
-    const slot = document.createElement("div");
-    const car = cars[place];
-    slot.className = "car-slot" + (car ? "" : " empty");
-    slot.textContent = car ? car.code : "🚗";
-    grid.appendChild(slot);
-  }
-  box.appendChild(grid);
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = parking.locked
+    ? "Квартира заперта: машина стоит на месте, но выехать с него можно "
+      + "только после продления."
+    : note;
+  box.appendChild(said);
 
-  const note = document.createElement("p");
-  note.className = "thing-note";
-  note.textContent = garage.soon
-    ? "Места под машины отведены. Свою машину пока держат при себе, "
-      + "а не в общем гараже."
-    : "Ставят все, кто в семье. Выводят только старшие.";
-  box.appendChild(note);
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  cars.forEach((one) => list.appendChild(parkedCar(one, act, parking.locked)));
+  box.appendChild(list);
+
+  if (!parking.free || parking.locked) return box;
+  const keys = parking.keys || [];
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (!keys.length) {
+    const empty = document.createElement("p");
+    empty.className = "shelf-empty";
+    empty.textContent = cars.length
+      ? "Свободных мест: " + parking.free + ". Других машин при себе нет."
+      : "Место свободно. Машину покупают или снимают в автосалоне.";
+    box.appendChild(empty);
+    return box;
+  }
+  keys.forEach((one) => {
+    buttons.appendChild(
+      button("Поставить · " + one.title, {
+        secondary: true,
+        onClick: () => act({ action: "park", car: one.code }),
+      })
+    );
+  });
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Машина на парковке: чья она и можно ли её забрать. */
+function parkedCar(one, act, locked) {
+  const box = carCard(one);
+  const rows = [
+    ["Хозяин", one.mine ? "ты" : one.owner],
+    [one.own ? "Своя" : "Снята до", one.own ? "насовсем" : one.left_text],
+  ];
+  box.appendChild(paperRows(rows));
+  if (!one.mine) return box;
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Забрать", {
+      disabled: Boolean(locked),
+      hint: "Квартира заперта: сперва продли аренду.",
+      onClick: () => act({ action: "unpark", car: one.code }),
+    })
+  );
+  box.appendChild(buttons);
   return box;
 }
 

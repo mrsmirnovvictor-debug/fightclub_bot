@@ -192,7 +192,7 @@
 | `bot/game/robbery.py` | правила и числа: лицензии, доля, покой, цель |
 | `bot/robbery_service.py` | живая драка: нападение, вмешательство, развязка |
 | `bot/game/battle.py` | пары и судья — общие с групповым боем |
-| `bot/database.py` | `rob_licences`, `rob_shield`, `clan_weeks`, `clan_cars` |
+| `bot/database.py` | `rob_licences`, `rob_shield`, `clan_weeks` |
 | `bot/webapp/crowd.py` | экран дома и счётчик для карты |
 | `bot/webapp/clans.py` | гараж, лицензии и цель на «Имуществе» |
 | `bot/webapp/server.py` | ручки `/api/crowd` (GET и POST) |

@@ -580,7 +580,11 @@ async def test_the_licence_is_bought_on_the_family_page(db, client):
 
 
 async def test_the_garage_holds_three_places(db, client):
-    """Гараж семьи: три места, и пока они пустые."""
+    """Парковка особняка: три места, и пока они пустые.
+
+    Про сами машины — `tests/test_cars.py`: здесь только то, что места
+    отведены и видны своим.
+    """
     don, _, clan = await family(db)
 
     body = await (await client.get(
@@ -589,7 +593,8 @@ async def test_the_garage_holds_three_places(db, client):
     garage = body["opened"]["estate"]["garage"]
     assert garage["slots"] == GARAGE_SLOTS == 3
     assert garage["free"] == GARAGE_SLOTS and garage["cars"] == []
-    assert garage["soon"] is True
+    # Ставить нечего: машин у дона нет ни одной
+    assert garage["keys"] == []
 
 
 # ---------- драка обязана кончиться ----------

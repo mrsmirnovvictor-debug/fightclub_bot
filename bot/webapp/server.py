@@ -2087,10 +2087,14 @@ async def _opened_clan(db, config, player, clan_id: int) -> dict:
         # это дела дома семьи, и смотрят их там же, где сейф
         week = week_of(now_ts())
         attacks, paid = await db.clan_week(clan_id, week)
+        from bot.car_service import mine as my_cars, parked_at
+        from bot.game.cars import IN_CLAN
+
         estate = build_estate(
             player,
             await db.clan_items(clan_id),
-            cars=await db.clan_cars(clan_id),
+            cars=await parked_at(db, IN_CLAN, clan_id, player),
+            keys=await my_cars(db, player),
             licences=await _licences_of(db, player.user_id),
             attacks=attacks,
             paid=paid,
@@ -2189,6 +2193,8 @@ async def api_mansion_action(request: web.Request) -> web.Response:
             said = await clan_stash(db, player, int(data.get("item", 0)))
         elif action == "take":
             said = await clan_take(db, player, int(data.get("item", 0)))
+        elif action in ("park", "unpark"):
+            said = await _clan_parking(db, player, action, data)
         elif action == "licence":
             # Лицензию на ограбление берут здесь и только свои: это
             # дело семьи, хоть платит за неё боец из своего кармана
@@ -2309,7 +2315,19 @@ async def _house_state(
     items = (
         await db.flat_items(player.flat.id) if player.flat is not None else []
     )
-    body = build_house(player, house, await db.leases_in(house), items)
+    from bot.car_service import mine as my_cars, parked_at
+    from bot.game.cars import IN_FLAT
+
+    lease = player.flat
+    parking = (
+        await parked_at(db, IN_FLAT, lease.id, player)
+        if lease is not None and lease.house == house
+        else []
+    )
+    body = build_house(
+        player, house, await db.leases_in(house), items,
+        parking=parking, keys=await my_cars(db, player),
+    )
     body["said"] = said
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)
@@ -2319,6 +2337,29 @@ async def api_house_flats(request: web.Request) -> web.Response:
     """Жилой дом: подъезд, своя квартира, сейф и кладовая."""
     player = await _at(request, Service.ESTATE)
     return await _house_state(request, player)
+
+
+async def _clan_parking(db, player, action: str, data: dict) -> str:
+    """Парковка особняка: оставить свою машину или забрать её.
+
+    Своя семья и своя машина — других прав тут нет: чужую с парковки не
+    выводят ни Дон, ни приближённые, потому что она чужая.
+    """
+    from bot.car_service import CarError, leave, pick_up
+    from bot.game.cars import IN_CLAN
+
+    standing = player.clan
+    if standing is None:
+        raise ClanError("Парковка особняка — для своих. Вступи в семью.")
+    code = str(data.get("car") or "")
+    try:
+        if action == "park":
+            return await leave(
+                db, player, code, IN_CLAN, standing.clan.id, now_ts()
+            )
+        return await pick_up(db, player, code, now_ts())
+    except CarError as error:
+        raise ClanError(str(error)) from error
 
 
 async def api_house_action(request: web.Request) -> web.Response:
@@ -2342,6 +2383,8 @@ async def api_house_action(request: web.Request) -> web.Response:
             said = await flat_stash(db, player, int(data.get("item", 0)))
         elif action == "take":
             said = await flat_take(db, player, int(data.get("item", 0)))
+        elif action in ("park", "unpark"):
+            said = await _flat_parking(db, player, action, data)
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except EstateError as error:
@@ -2350,6 +2393,30 @@ async def api_house_action(request: web.Request) -> web.Response:
         return web.json_response({"error": "Непонятный ответ."}, status=400)
     fresh = await db.get_player(player.user_id) or player
     return await _house_state(request, fresh, said)
+
+
+async def _flat_parking(db, player, action: str, data: dict) -> str:
+    """Место при квартире: оставить машину или забрать её.
+
+    Место одно и только у своего жилья: ставить машину во дворе чужого
+    дома незачем, а неоплаченная квартира заперта вся — вместе с ним.
+    """
+    from bot.car_service import CarError, leave, pick_up
+    from bot.game.cars import IN_FLAT
+
+    lease = player.flat
+    moment = now_ts()
+    if lease is None or lease.house != player.where(moment):
+        raise EstateError("Место под машину есть у своей квартиры, а не у этой.")
+    if lease.locked(moment):
+        raise EstateError("Срок квартиры вышел: сперва оплати, потом ставь.")
+    code = str(data.get("car") or "")
+    try:
+        if action == "park":
+            return await leave(db, player, code, IN_FLAT, lease.id, moment)
+        return await pick_up(db, player, code, moment)
+    except CarError as error:
+        raise EstateError(str(error)) from error
 
 
 # ---------- почта: посылки между бойцами ----------

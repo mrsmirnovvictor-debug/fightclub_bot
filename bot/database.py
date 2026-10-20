@@ -777,19 +777,6 @@ CREATE TABLE IF NOT EXISTS clan_weeks (
     PRIMARY KEY (clan_id, week)
 );
 
--- Гараж семьи: три места под автомобили, как полки на складе. Машин в
--- игре пока нет, и таблица стоит пустой — но место под них отведено
--- здесь, а не в `clan_items`: вещь носят, машину ставят
-CREATE TABLE IF NOT EXISTS clan_cars (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    clan_id INTEGER NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
-    code    TEXT    NOT NULL,
-    put_by  INTEGER NOT NULL DEFAULT 0,
-    put_at  INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS clan_cars_clan ON clan_cars(clan_id);
-
 -- Дежурная часть: по строке на каждое нападение, доведённое до
 -- развязки. Полиция видит их все — прятать от неё нечего. `filed_at`
 -- — заявление жертвы: пока оно не написано, задерживать не за что;
@@ -923,10 +910,20 @@ CREATE TABLE IF NOT EXISTS cars (
     code    TEXT    NOT NULL,
     until   INTEGER NOT NULL DEFAULT 0,
     took_at INTEGER NOT NULL DEFAULT 0,
+    -- Где машина стоит: пусто — при хозяине, `clan` — на парковке
+    -- особняка, `flat` — на месте при своей квартире. `parked_id`
+    -- называет, чья это парковка: семья или съём. Хозяин у машины один
+    -- и тот же, где бы она ни стояла: парковка — место, а не передача
+    parked    TEXT    NOT NULL DEFAULT '',
+    parked_id INTEGER NOT NULL DEFAULT 0,
     UNIQUE (user_id, code)
 );
 
 CREATE INDEX IF NOT EXISTS cars_code ON cars(code);
+-- Индекса по стоянке здесь нет нарочно: колонки `parked` и `parked_id`
+-- дописываются миграцией, а на живой базе `CREATE TABLE IF NOT EXISTS`
+-- не делает ничего — и индекс по ещё не существующей колонке уронил бы
+-- запуск. Он заводится там же, где колонки (`_migrate_cars`)
 
 CREATE TABLE IF NOT EXISTS announcements (
     chat_id   INTEGER NOT NULL,
@@ -1093,6 +1090,7 @@ class Database:
         await self._migrate_inventory()
         await self._migrate_duels()
         await self._migrate_battles()
+        await self._migrate_cars()
         await self._migrate_arenas()
         await self._migrate_raid_windows()
         await self._migrate_clans()
@@ -1425,6 +1423,41 @@ class Database:
         )
         await self.conn.commit()
         logger.info("База обновлена: групповой бой может идти без ветки")
+
+    # Колонки парковки: в первой версии таблицы машин их не было —
+    # машина жила только при хозяине
+    CAR_COLUMNS: tuple[tuple[str, str], ...] = (
+        ("parked", "TEXT NOT NULL DEFAULT ''"),
+        ("parked_id", "INTEGER NOT NULL DEFAULT 0"),
+    )
+
+    async def _migrate_cars(self) -> None:
+        """У машин появилось место стоянки, а у семьи — живой гараж.
+
+        Пустую таблицу `clan_cars` убираем: гараж особняка теперь
+        считается по самим машинам, и второй источник правды о том, где
+        стоит машина, не нужен. Писать в неё никто не успел — она
+        приехала пустой и такой же уходит.
+        """
+        async with self.conn.execute("PRAGMA table_info(cars)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if not columns:
+            return
+        for column, definition in self.CAR_COLUMNS:
+            if column in columns:
+                continue
+            await self.conn.execute(
+                f"ALTER TABLE cars ADD COLUMN {column} {definition}"
+            )
+            logger.info("База обновлена: у машин появилась колонка %s", column)
+        # Индекс по стоянке — только здесь: в схеме он смотрел бы на
+        # колонку, которой на живой базе ещё нет
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS cars_parked ON cars(parked, parked_id)"
+        )
+        await self.conn.execute("DROP INDEX IF EXISTS clan_cars_clan")
+        await self.conn.execute("DROP TABLE IF EXISTS clan_cars")
+        await self.conn.commit()
 
     async def _migrate_arenas(self) -> None:
         """Единственная арена прошлой версии становится первым кулачным рингом."""
@@ -2729,9 +2762,15 @@ class Database:
             "DELETE FROM clan_members WHERE user_id = ?", (user_id,)
         )
         await self.conn.commit()
+        # Машина с парковки особняка уезжает вместе с хозяином: чужой на
+        # ней не свой, а терять её из-за ухода из семьи незачем
+        await self.drive_home(user_id, "clan")
 
     async def delete_clan(self, clan_id: int) -> None:
         """Распустить клан. Люди и заявки уходят за ним по внешнему ключу."""
+        # Парковку освобождаем до роспуска: машины едут к хозяевам, а
+        # внешнего ключа у них нет — они не имущество семьи
+        await self.empty_parking("clan", clan_id)
         await self.conn.execute("DELETE FROM clans WHERE id = ?", (clan_id,))
         await self.conn.commit()
         logger.info("Клан %s распущен", clan_id)
@@ -3249,6 +3288,13 @@ class Database:
             (user_id, lease_id),
         )
         await self.conn.execute("DELETE FROM flat_items WHERE flat_id = ?", (lease_id,))
+        # Машина с парковочного места уезжает к хозяину, как и вещи из
+        # кладовой: пропадать имуществу при выселении не с чего
+        await self.conn.execute(
+            "UPDATE cars SET parked = '', parked_id = 0 "
+            "WHERE parked = 'flat' AND parked_id = ?",
+            (lease_id,),
+        )
         if money:
             await self.conn.execute(
                 "UPDATE players SET credits = credits + ? WHERE user_id = ?",
@@ -4180,25 +4226,13 @@ class Database:
 
     # ---------- гараж семьи ----------
 
-    async def clan_cars(self, clan_id: int) -> list[dict]:
-        """Что стоит в гараже. Машин в игре пока нет — список пуст."""
-        async with self.conn.execute(
-            """
-            SELECT id, code, put_by, put_at FROM clan_cars
-            WHERE clan_id = ? ORDER BY put_at, id
-            """,
-            (clan_id,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
-
     # ---------- машины ----------
 
     async def cars_of(self, user_id: int) -> list[dict]:
         """Машины бойца: свои и взятые. Порядок — как брали."""
         async with self.conn.execute(
             """
-            SELECT id, code, until, took_at FROM cars
+            SELECT id, code, until, took_at, parked, parked_id FROM cars
             WHERE user_id = ? ORDER BY took_at, id
             """,
             (user_id,),
@@ -4209,7 +4243,7 @@ class Database:
     async def car_row(self, user_id: int, code: str) -> dict | None:
         """Эта машина у этого бойца. None — нет такой."""
         async with self.conn.execute(
-            "SELECT id, code, until, took_at FROM cars "
+            "SELECT id, code, until, took_at, parked, parked_id FROM cars "
             "WHERE user_id = ? AND code = ?",
             (user_id, code),
         ) as cursor:
@@ -4265,6 +4299,79 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def park_car(
+        self, user_id: int, code: str, parked: str, parked_id: int, limit: int
+    ) -> bool:
+        """Поставить машину на парковку. False — мест нет или машины нет.
+
+        Счёт занятых мест идёт в самом запросе, вместе с постановкой:
+        между «посмотрели, сколько свободно» и «поставили» успевает
+        проехать чужая машина, и ловить это питоном значило бы ловить с
+        опозданием.
+        """
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM cars WHERE parked = ? AND parked_id = ?",
+            (parked, parked_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if int(row["n"]) >= limit:
+            return False
+        cursor = await self.conn.execute(
+            "UPDATE cars SET parked = ?, parked_id = ? "
+            "WHERE user_id = ? AND code = ? AND parked = ''",
+            (parked, parked_id, user_id, code),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def unpark_car(self, user_id: int, code: str) -> bool:
+        """Забрать машину с парковки. False — её там нет."""
+        cursor = await self.conn.execute(
+            "UPDATE cars SET parked = '', parked_id = 0 "
+            "WHERE user_id = ? AND code = ? AND parked <> ''",
+            (user_id, code),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def parked_cars(self, parked: str, parked_id: int, now: int) -> list[dict]:
+        """Что стоит на этой парковке. Кончившиеся аренды не считаются."""
+        async with self.conn.execute(
+            """
+            SELECT user_id, code, until, took_at FROM cars
+            WHERE parked = ? AND parked_id = ? AND (until = 0 OR until > ?)
+            ORDER BY took_at, id
+            """,
+            (parked, parked_id, now),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def empty_parking(self, parked: str, parked_id: int) -> int:
+        """Выгнать с парковки всё: семьи больше нет или съём кончился.
+
+        Машины не пропадают — они возвращаются к хозяину: парковка это
+        место, а не владение, и терять её вместе с квартирой было бы
+        всё равно что терять вещи из кладовой.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE cars SET parked = '', parked_id = 0 "
+            "WHERE parked = ? AND parked_id = ?",
+            (parked, parked_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def drive_home(self, user_id: int, parked: str) -> int:
+        """Вернуть бойцу его машины с этой парковки: он на ней больше не свой."""
+        cursor = await self.conn.execute(
+            "UPDATE cars SET parked = '', parked_id = 0 "
+            "WHERE user_id = ? AND parked = ?",
+            (user_id, parked),
+        )
+        await self.conn.commit()
+        return cursor.rowcount
 
     async def sweep_cars(self, now: int) -> int:
         """Убрать машины, у которых кончился срок. Отдаёт, сколько убрал."""
