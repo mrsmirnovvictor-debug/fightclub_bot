@@ -11488,9 +11488,13 @@ async def test_the_prison_counts_the_term_and_lists_the_inmates(server, db):
         await open_screen(page, "prison")
         await page.wait_for_selector("#prison-body .shelf")
 
-        # Свой срок — первой полкой, часами и с часом выхода
+        # Свой срок — первой полкой, часами и с часом выхода. Секунду
+        # на часах не загадываем: страница открывается то до первого
+        # тика, то после него, и «02:59:58» с «03:00:00» тут одно и то
+        # же — проверяем форму и порядок числа, а не его хвост
         mine = await page.locator("#prison .shift").inner_text()
-        assert "Ты сидишь" in mine and "Осталось 02:5" in mine
+        assert "Ты сидишь" in mine
+        assert re.search(r"Осталось (03:00:00|02:59:\d\d)", mine), mine
         assert "Отсидка 1-я, срок 3 ч" in mine
 
         # И он идёт: через секунду на экране уже другое число
