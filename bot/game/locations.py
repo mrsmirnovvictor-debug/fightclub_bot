@@ -61,6 +61,7 @@ class Service(str, Enum):
     PRISON = "prison"  # тюрьма: свой срок и список сидящих
     ARENA = "arena"  # турнирная арена: недельный плей-офф
     CARS = "cars"  # автосалон и служебные гаражи: машины города
+    DORM = "dorm"  # общежитие: комната студенту, пока он учится
 
     @property
     def title(self) -> str:
@@ -96,6 +97,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.PRISON: "сидеть и считать срок",
     Service.ARENA: "драться в недельном турнире",
     Service.CARS: "брать машину",
+    Service.DORM: "жить в общежитии",
 }
 
 
@@ -886,6 +888,9 @@ LOCATIONS: tuple[Location, ...] = (
             (0.432519, 0.67823), (0.561105, 0.680622),
             (0.55898, 0.721292), (0.42933, 0.721292),
         ),
+        # Комната студенту, пока он учится. Отдых и восстановление всё
+        # ещё обещаны: койка пока не лечит
+        services=(Service.DORM,),
         soon="отдых и восстановление",
         genitive="общежития",
         interior_folder=art.NEW_INTERIORS,

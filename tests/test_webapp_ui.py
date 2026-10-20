@@ -907,7 +907,7 @@ async def open_page(
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
-    cars=None, keys=None,
+    cars=None, keys=None, dorm=None,
     images=False,
     telegram="",
 ):
@@ -960,6 +960,7 @@ async def open_page(
     await page.route("**/api/clan", canned(clan or {"in_clan": False, "clan": {},
                                                     "ranks": [], "said": ""}))
     await page.route("**/api/cars", canned(cars or empty_cars()))
+    await page.route("**/api/dorm", canned(dorm or {}))
     await page.route("**/api/keys", canned({"keys": keys or []}))
 
     if fight_log is not None:
@@ -11451,6 +11452,106 @@ async def test_the_mansion_parking_lets_anyone_drive_away(server, db):
         sent = await page.evaluate("window.sent")
         # Первой стоит чужая машина: её и увели, по номеру её строки
         assert sent["action"] == "unpark" and sent["id"] == 2
+        await browser.close()
+
+
+
+# ---------- общежитие ----------
+
+
+async def test_the_dorm_offers_a_room_to_a_student(server, db):
+    """Студенту общежитие обещает комнату и показывает условия."""
+    from bot.webapp.dorm import build_dorm
+    from tests.test_dorm import student
+
+    me = await student(db)
+    body = await build_dorm(db, me)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dorm=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dorm")
+        await page.wait_for_selector("#dorm-body .shelf")
+
+        said = await page.locator("#dorm-body").inner_text()
+        assert "бесплатно" in said and "пока учишься" in said
+        assert "4" in said, "число мест под вещи"
+        assert await page.locator("#dorm-body .btn").inner_text() == (
+            "Получить комнату"
+        )
+        assert "Комната студенту" in await page.locator("#dorm-note").inner_text()
+        await browser.close()
+
+
+async def test_the_dorm_room_shows_the_shelves_and_the_safe(server, db):
+    """Своя комната: номер в заголовке, сейф и четыре полки."""
+    from bot.dorm_service import check_in, deposit, stash
+    from bot.webapp.dorm import build_dorm
+    from tests.test_dorm import student, thing
+
+    me = await student(db)
+    await check_in(db, me, now_ts())
+    await stash(db, me, await thing(db, me, "bandana"), now_ts())
+    await deposit(db, me, 300, now_ts())
+    me = await db.get_player(me.user_id)
+    body = await build_dorm(db, me)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dorm=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dorm")
+        await page.wait_for_selector("#dorm-grid")
+
+        heads = await page.locator("#dorm-body .shelf-head").all_inner_texts()
+        assert heads == ["Комната №1", "Сейф комнаты", "Полки · 1 из 4"]
+        assert await page.locator(".vault-sum").inner_text() == "300 💰"
+        # Полок четыре: одна занята, три свободны
+        assert await page.locator("#dorm-grid .shelf-slot").count() == 4
+        assert await page.locator("#dorm-grid .shelf-slot.free").count() == 3
+        await browser.close()
+
+
+async def test_the_locked_room_offers_one_button(server, db):
+    """Учёба кончилась: на экране одна кнопка — забрать у администрации."""
+    from bot.dorm_service import check_in, stash, sweep
+    from bot.webapp.dorm import build_dorm
+    from tests.test_dorm import student, thing
+
+    me = await student(db)
+    await check_in(db, me, now_ts())
+    await stash(db, me, await thing(db, me, "bandana"), now_ts())
+    me.study_code = ""
+    await db.save_player(me)
+    await sweep(db, me, now_ts())
+    body = await build_dorm(db, me)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dorm=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dorm")
+        await page.wait_for_selector("#dorm-body .shelf")
+
+        heads = await page.locator("#dorm-body .shelf-head").all_inner_texts()
+        # Полка одна — сама комната: ни сейфа, ни полок у запертой нет
+        assert len(heads) == 1 and heads[0].startswith("Комната №1")
+        assert "заперта" in await page.locator("#dorm-body .shelf-count").inner_text()
+        buttons = await page.locator("#dorm-body .btn").all_inner_texts()
+        assert buttons == ["Забрать у администрации"]
+
+        await page.evaluate(
+            """() => {
+                window.dormAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+                renderDorm(dormData);
+            }"""
+        )
+        await page.locator("#dorm-body .btn").click()
+        assert await page.evaluate("window.sent") == {"action": "collect"}
         await browser.close()
 
 

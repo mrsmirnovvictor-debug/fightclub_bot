@@ -900,6 +900,34 @@ CREATE INDEX IF NOT EXISTS quests_user ON quests(user_id, state);
 
 -- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
 -- ничего не задваивает, а новая группа получает всё с начала.
+-- Общежитие: комната на студента, пока он учится. Платы и срока в
+-- сутках у неё нет — срок это сама учёба, и записан он курсом. Учёба
+-- кончилась — ставим `closed_at`: комната заперта, а вещи в ней ждут
+-- хозяина у администрации
+CREATE TABLE IF NOT EXISTS dorm_rooms (
+    user_id   INTEGER PRIMARY KEY REFERENCES players(user_id) ON DELETE CASCADE,
+    number    INTEGER NOT NULL,
+    course    TEXT    NOT NULL DEFAULT '',
+    given_at  INTEGER NOT NULL DEFAULT 0,
+    closed_at INTEGER NOT NULL DEFAULT 0,
+    vault     INTEGER NOT NULL DEFAULT 0
+);
+
+-- Что лежит в комнате. Полки те же, что в квартире, и строка та же:
+-- вещь переезжает сюда из рюкзака целиком и так же возвращается
+CREATE TABLE IF NOT EXISTS dorm_items (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id   INTEGER NOT NULL REFERENCES dorm_rooms(user_id) ON DELETE CASCADE,
+    code      TEXT    NOT NULL,
+    wear      INTEGER NOT NULL DEFAULT 0,
+    max_wear  INTEGER NOT NULL DEFAULT 20,
+    mod       TEXT    NOT NULL DEFAULT '',
+    mod_value INTEGER NOT NULL DEFAULT 0,
+    put_at    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS dorm_items_user ON dorm_items(user_id);
+
 -- Машины бойца: по строке на машину. `until` — до какого часа она его:
 -- ноль у купленной (своя насовсем), срок у снятой в салоне и у
 -- служебной, взятой на смену. Служебных в гараже столько, сколько
@@ -4226,6 +4254,218 @@ class Database:
 
     # ---------- гараж семьи ----------
 
+    # ---------- общежитие ----------
+
+    @staticmethod
+    def _room(row) -> "DormRoom":
+        return DormRoom(
+            user_id=int(row["user_id"]),
+            number=int(row["number"]),
+            course=str(row["course"]),
+            given_at=int(row["given_at"]),
+            closed_at=int(row["closed_at"]),
+            vault=int(row["vault"]),
+        )
+
+    async def dorm_room(self, user_id: int) -> "DormRoom | None":
+        """Комната бойца. None — комнаты у него нет."""
+        async with self.conn.execute(
+            "SELECT * FROM dorm_rooms WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._room(row) if row else None
+
+    async def dorm_numbers(self) -> list[int]:
+        """Занятые номера комнат — по ним и выбирают свободный."""
+        async with self.conn.execute(
+            "SELECT number FROM dorm_rooms ORDER BY number"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [int(row["number"]) for row in rows]
+
+    async def give_dorm_room(
+        self, user_id: int, number: int, course: str, now: int
+    ) -> bool:
+        """Выдать комнату. False — у бойца она уже есть."""
+        try:
+            await self.conn.execute(
+                "INSERT INTO dorm_rooms (user_id, number, course, given_at) "
+                "VALUES (?,?,?,?)",
+                (user_id, number, course, now),
+            )
+        except sqlite3.IntegrityError:  # pragma: no cover - вторая комната
+            return False
+        await self.conn.commit()
+        return True
+
+    async def close_dorm_room(self, user_id: int, now: int) -> bool:
+        """Запереть комнату: учёба кончилась. False — она уже заперта."""
+        cursor = await self.conn.execute(
+            "UPDATE dorm_rooms SET closed_at = ? "
+            "WHERE user_id = ? AND closed_at = 0",
+            (now, user_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def move_dorm_vault(self, user_id: int, amount: int) -> bool:
+        """Положить в сейф комнаты или взять из него. False — столько нет."""
+        cursor = await self.conn.execute(
+            "UPDATE dorm_rooms SET vault = vault + ? "
+            "WHERE user_id = ? AND vault + ? >= 0",
+            (amount, user_id, amount),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def dorm_items(self, user_id: int) -> list[Kept]:
+        """Что лежит в комнате, сперва положенное раньше."""
+        async with self.conn.execute(
+            """
+            SELECT id, code, wear, max_wear, mod, mod_value, put_at
+            FROM dorm_items WHERE user_id = ? ORDER BY put_at, id
+            """,
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            Kept(
+                id=int(row["id"]),
+                code=str(row["code"]),
+                wear=int(row["wear"]),
+                max_wear=int(row["max_wear"]),
+                mod=str(row["mod"]),
+                mod_value=int(row["mod_value"]),
+                put_at=int(row["put_at"]),
+            )
+            for row in rows
+        ]
+
+    async def stash_in_dorm(
+        self, item_id: int, user_id: int, limit: int, now: int
+    ) -> bool:
+        """Переложить вещь из рюкзака в комнату. Та же сделка, что в квартире."""
+        async with self.conn.execute(
+            """
+            SELECT code, wear, max_wear, mod, mod_value FROM inventory
+            WHERE id = ? AND user_id = ? AND slot IS NULL
+            """,
+            (item_id, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return False
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM dorm_items WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            crowd = await cursor.fetchone()
+        if int(crowd["n"]) >= limit:
+            return False
+        cursor = await self.conn.execute(
+            "DELETE FROM inventory WHERE id = ? AND user_id = ? AND slot IS NULL",
+            (item_id, user_id),
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - вещь увели между запросами
+            await self.conn.commit()
+            return False
+        await self.conn.execute(
+            """
+            INSERT INTO dorm_items
+                (user_id, code, wear, max_wear, mod, mod_value, put_at)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            (
+                user_id,
+                str(row["code"]),
+                int(row["wear"]),
+                int(row["max_wear"]),
+                str(row["mod"]),
+                int(row["mod_value"]),
+                now,
+            ),
+        )
+        await self.conn.commit()
+        return True
+
+    async def take_dorm_item(self, kept_id: int, user_id: int) -> str:
+        """Забрать вещь из комнаты в рюкзак. Пусто — её там уже нет."""
+        async with self.conn.execute(
+            "SELECT code, wear, max_wear, mod, mod_value FROM dorm_items "
+            "WHERE id = ? AND user_id = ?",
+            (kept_id, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return ""
+        cursor = await self.conn.execute(
+            "DELETE FROM dorm_items WHERE id = ? AND user_id = ?",
+            (kept_id, user_id),
+        )
+        if cursor.rowcount <= 0:  # pragma: no cover - вещь забрали между запросами
+            await self.conn.commit()
+            return ""
+        await self.conn.execute(
+            """
+            INSERT INTO inventory (user_id, code, wear, max_wear, mod, mod_value)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (
+                user_id,
+                str(row["code"]),
+                int(row["wear"]),
+                int(row["max_wear"]),
+                str(row["mod"]),
+                int(row["mod_value"]),
+            ),
+        )
+        await self.conn.commit()
+        return str(row["code"])
+
+    async def clear_dorm_room(self, user_id: int) -> tuple[int, int]:
+        """Отдать хозяину всё из комнаты и освободить её.
+
+        Возвращает (сколько вещей вернулось, сколько кредитов). Вещи
+        едут в рюкзак, деньги из сейфа — наличными: комната кончилась,
+        но имущество остаётся имуществом.
+        """
+        async with self.conn.execute(
+            "SELECT vault FROM dorm_rooms WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return 0, 0
+        money = int(row["vault"])
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM dorm_items WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            counted = await cursor.fetchone()
+        things = int(counted["n"])
+        await self.conn.execute(
+            """
+            INSERT INTO inventory (user_id, code, wear, max_wear, mod, mod_value)
+            SELECT user_id, code, wear, max_wear, mod, mod_value
+            FROM dorm_items WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        await self.conn.execute(
+            "DELETE FROM dorm_items WHERE user_id = ?", (user_id,)
+        )
+        if money:
+            await self.conn.execute(
+                "UPDATE players SET credits = credits + ? WHERE user_id = ?",
+                (money, user_id),
+            )
+        await self.conn.execute(
+            "DELETE FROM dorm_rooms WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
+        logger.info(
+            "Комната общежития бойца %s освобождена: %s вещей и %s кредитов",
+            user_id, things, money,
+        )
+        return things, money
+
     # ---------- машины ----------
 
     async def cars_of(self, user_id: int) -> list[dict]:
@@ -5826,6 +6066,33 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+@dataclass(frozen=True)
+class DormRoom:
+    """Комната общежития: чья, какая и под какой курс выдана.
+
+    Срока в сутках у неё нет — срок это сама учёба. `closed_at` ноль,
+    пока студент учится; поставленный час значит, что комната заперта и
+    вещи в ней ждут хозяина у администрации.
+    """
+
+    user_id: int
+    number: int
+    course: str = ""
+    given_at: int = 0
+    closed_at: int = 0
+    vault: int = 0
+
+    @property
+    def closed(self) -> bool:
+        return self.closed_at > 0
+
+    @property
+    def title(self) -> str:
+        from bot.game.dorm import room_title
+
+        return room_title(self.number)
 
 
 @dataclass(frozen=True)

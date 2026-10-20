@@ -162,6 +162,7 @@ PLACE_NOTES: dict[Service, str] = {
     Service.POST: "Почта",
     Service.STUDY: "Учебное заведение",
     Service.CARS: "Автосалон",
+    Service.DORM: "Общежитие",
 }
 
 

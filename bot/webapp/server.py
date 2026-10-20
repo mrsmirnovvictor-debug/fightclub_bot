@@ -2650,6 +2650,64 @@ async def _keys(db, player) -> dict:
     }
 
 
+async def _dorm_state(request: web.Request, player, said: str = "") -> web.Response:
+    from bot.webapp.dorm import build_dorm
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_dorm(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_dorm(request: web.Request) -> web.Response:
+    """Общежитие: своя комната, её полки и сейф."""
+    player = await _at(request, Service.DORM)
+    return await _dorm_state(request, player)
+
+
+async def api_dorm_action(request: web.Request) -> web.Response:
+    """Дела студента: получить комнату, сейф, полки и выезд."""
+    from bot.dorm_service import (
+        DormError,
+        check_in,
+        collect,
+        deposit as dorm_deposit,
+        stash as dorm_stash,
+        take as dorm_take,
+        withdraw as dorm_withdraw,
+    )
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.DORM)
+    try:
+        if action == "room":
+            said = await check_in(db, player, now_ts())
+        elif action == "deposit":
+            said = await dorm_deposit(db, player, int(data.get("amount", 0)))
+        elif action == "cash":
+            said = await dorm_withdraw(db, player, int(data.get("amount", 0)))
+        elif action == "stash":
+            said = await dorm_stash(db, player, int(data.get("item", 0)))
+        elif action == "take":
+            said = await dorm_take(db, player, int(data.get("item", 0)))
+        elif action == "collect":
+            said = await collect(db, player, now_ts())
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except DormError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _dorm_state(request, fresh, said)
+
+
 async def api_prison(request: web.Request) -> web.Response:
     """Тюрьма: свой срок и все, кто сидит сейчас.
 
@@ -3195,6 +3253,8 @@ def create_app(
             web.get("/api/arena", api_arena),
             web.post("/api/arena", api_arena_action),
             web.get("/api/prison", api_prison),
+            web.get("/api/dorm", api_dorm),
+            web.post("/api/dorm", api_dorm_action),
             web.get("/api/cars", api_cars),
             web.post("/api/cars", api_cars_action),
             web.get("/api/keys", api_keys),

@@ -1889,7 +1889,7 @@ const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
   "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
-  "cars", "bag", "hero",
+  "cars", "dorm", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1902,6 +1902,7 @@ const OPENED_FROM = {
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
   tavern: "map", study: "map", turf: "map", crowd: "map",
   elections: "map", house: "map", prison: "map", arena: "map", cars: "map",
+  dorm: "map",
 };
 let lastTab = "hero";
 
@@ -1978,6 +1979,9 @@ function showTab(name) {
   // Салон и гараж: машины берут и сдают чужими руками — в гараже три
   // места, и занять их могли, пока мы шли
   if (name === "cars") loadCars();
+  // Общежитие: комната могла запереться, пока в него не заходили —
+  // учёба кончается и без нас
+  if (name === "dorm") loadDorm();
   // Ключи при бойце: смотрим их там же, где за руль садятся
   if (name === "hero") loadKeys();
   // Часы смены идут, только пока на работу смотрят
@@ -2493,6 +2497,7 @@ const HOUSE_SCREENS = {
   prison: () => openPrison(),
   arena: () => openArena(),
   cars: () => openCars(),
+  dorm: () => openDorm(),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -11030,6 +11035,232 @@ function tickArena() {
   if (!left) loadArena();
 }
 
+// ---------- общежитие: комната студенту ----------
+//
+// Третье жильё города и первое бесплатное: комнату даёт учёба, а не
+// кошелёк. Поэтому экран устроен вокруг одного вопроса — есть ли у тебя
+// комната, — и всё остальное зависит от ответа.
+
+let dormData = null;
+
+async function openDorm() {
+  showTab("dorm");
+}
+
+async function loadDorm() {
+  try {
+    const response = await fetch("api/dorm", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Общежитие не отвечает.");
+    const data = await response.json();
+    if (data.card) render(data.card, true);
+    renderDorm(data);
+  } catch (error) {
+    el("dorm-note").textContent = error.message;
+  }
+}
+
+async function dormAction(payload) {
+  try {
+    const data = await post("api/dorm", payload);
+    haptic((feedback) => feedback.impactOccurred("light"));
+    if (data.card) render(data.card, true);
+    renderDorm(data);
+  } catch (error) {
+    popup("Общежитие", error.message);
+    await loadDorm();
+  }
+}
+
+function renderDorm(data) {
+  dormData = data;
+  el("dorm-note").textContent = data.said || data.note || "";
+  el("shop-purse-dorm").textContent = "";
+  el("shop-purse-dorm").appendChild(purse(data.credits || 0));
+
+  const body = el("dorm-body");
+  body.textContent = "";
+  const room = data.room || {};
+  if (!room.mine) {
+    body.appendChild(dormOfferBox(data));
+    return;
+  }
+  body.appendChild(dormRoomBox(data));
+  if (room.closed) return;
+  body.appendChild(dormVaultBox(data));
+  body.appendChild(dormShelfBox(room));
+}
+
+/** Комнаты нет: кнопка для студента, записка для всех остальных. */
+function dormOfferBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Комната в общежитии";
+  box.appendChild(head);
+
+  box.appendChild(
+    paperRows([
+      ["Плата", "бесплатно"],
+      ["Срок", "пока учишься"],
+      ["Мест под вещи", String(data.slots || 0)],
+      ["Сейф", "в комнате"],
+    ])
+  );
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Получить комнату", {
+      disabled: !data.can_take,
+      hint: "Комнату дают студенту: сперва запишись на курс.",
+      onClick: () => dormAction({ action: "room" }),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Своя комната: номер, курс и — у запертой — выезд через администрацию. */
+function dormRoomBox(data) {
+  const room = data.room;
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = room.title.charAt(0).toUpperCase() + room.title.slice(1);
+  if (room.closed) {
+    const mark = document.createElement("span");
+    mark.className = "shelf-count";
+    mark.textContent = "заперта";
+    head.appendChild(mark);
+  }
+  box.appendChild(head);
+
+  box.appendChild(
+    paperRows([
+      ["Учёба", room.course_title],
+      ["Выдана", room.given],
+      [room.closed ? "Заперта" : "", room.closed ? room.closed_at : ""],
+      ["Плата", "бесплатно"],
+    ])
+  );
+
+  if (room.closed) {
+    const note = document.createElement("p");
+    note.className = "thing-note";
+    note.textContent =
+      "Администрация отдаёт всё разом: вещи в рюкзак, деньги из сейфа " +
+      "наличными. После этого комнату можно получить снова — под новую учёбу.";
+    box.appendChild(note);
+
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Забрать у администрации", {
+        onClick: () => dormAction({ action: "collect" }),
+      })
+    );
+    box.appendChild(buttons);
+  }
+  return box;
+}
+
+/** Сейф комнаты: те же две кнопки, что у сейфа квартиры. */
+function dormVaultBox(data) {
+  const room = data.room;
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Сейф комнаты";
+  box.appendChild(head);
+  box.appendChild(vaultSum(room.vault));
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Деньги в сейфе лежат отдельно от наличных. Учёба кончится — их " +
+    "отдадут вместе с вещами, у администрации.";
+  box.appendChild(note);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Внести", {
+      onClick: () =>
+        openMoneySheet({
+          title: "Внести в сейф",
+          note:
+            "Из того кошелька, которым ты платишь здесь: " +
+            num(spendable(data)) + " 💰",
+          max: spendable(data),
+          hint: "Платить нечем.",
+          onSum: (amount) => dormAction({ action: "deposit", amount: amount }),
+        }),
+    })
+  );
+  buttons.appendChild(
+    button("Снять", {
+      secondary: true,
+      disabled: !room.vault,
+      hint: "Сейф пуст.",
+      onClick: () =>
+        openMoneySheet({
+          title: "Снять из сейфа",
+          note: "В сейфе " + num(room.vault) + " 💰. Снятое ляжет наличными",
+          max: room.vault,
+          hint: "Сейф пуст.",
+          onSum: (amount) => dormAction({ action: "cash", amount: amount }),
+        }),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Полки комнаты: четыре места, те же клетки, что в кладовой квартиры. */
+function dormShelfBox(room) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Полки · " + room.items.length + " из " + room.slots;
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Кладут и забирают здесь же. Учёба кончится — забытое будет ждать " +
+    "у администрации, а не пропадёт.";
+  box.appendChild(note);
+
+  box.appendChild(
+    shelfGrid({
+      id: "dorm-grid",
+      slots: room.slots,
+      items: room.items,
+      title: (one) => one.title + (one.when ? " · положено " + one.when : ""),
+      onThing: (one) =>
+        openThingSheet({
+          thing: one,
+          note: one.when ? "Лежит с " + one.when : "Лежит в комнате",
+          onTake: (thing) => dormAction({ action: "take", item: thing.id }),
+        }),
+      onFree: () =>
+        openPickSheet({
+          bag: room.bag,
+          free: room.free,
+          note: "Свободных мест: " + room.free,
+          onPick: (one) => dormAction({ action: "stash", item: one.id }),
+        }),
+    })
+  );
+  return box;
+}
+
 // ---------- машины: салон, гараж службы и свои ключи ----------
 //
 // Экран один на три дома. В салоне на полке цены — сутки, месяц и
@@ -15112,7 +15343,7 @@ function paintDutyLine() {
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
-  "trade", "house", "prison", "arena", "cars",
+  "trade", "house", "prison", "arena", "cars", "dorm",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -15267,7 +15498,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 [
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
-  "crowd", "elections", "shop", "magic", "prison", "arena", "cars",
+  "crowd", "elections", "shop", "magic", "prison", "arena", "cars", "dorm",
   "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
