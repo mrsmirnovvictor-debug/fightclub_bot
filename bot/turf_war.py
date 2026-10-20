@@ -45,10 +45,18 @@ from dataclasses import dataclass, field
 
 from bot.database import Database
 from bot.game.classes import Zone, block_combo
-from bot.game.combat import Action, Fighter, random_action, resolve_round
+from bot.game.combat import (
+    Action,
+    Fighter,
+    group_aftermath,
+    heal_line,
+    random_action,
+    resolve_round,
+    spread_heal,
+)
 from bot.game.fightlog import turn_payload
 from bot.game.health import now_ts
-from bot.game.narrator import strike_lines
+from bot.game.narrator import echo_lines, strike_lines
 from bot.game.turf import (
     CLAN,
     GUARD,
@@ -520,7 +528,12 @@ class TurfWar:
         return "Ход принят."
 
     async def use_ability(self, siege_id: int, user_id: int, code: str) -> str:
-        """Нажать приём: заготовка ложится и ждёт своего момента."""
+        """Нажать приём: заготовка ложится и ждёт своего момента.
+
+        Кроме лечения: оно срабатывает в тот же миг, и своё, и отряду.
+        Заготовки от него не остаётся — висеть ей не до чего, а энергия
+        была бы потрачена даром.
+        """
         siege = self._sieges.get(siege_id)
         if siege is None:
             raise TurfError("Этот штурм уже закончился.")
@@ -528,10 +541,19 @@ class TurfWar:
         if fighter is None or not fighter.alive:
             raise TurfError("Приёмы применяет тот, кто стоит на ногах.")
         try:
-            charge = fighter.use(code)
+            ability = fighter.use(code).ability
         except ValueError as error:
             raise TurfError(str(error)) from error
-        return f"{charge.ability.title} наготове."
+        if not ability.heal:
+            return f"{ability.icon} {ability.title} наготове."
+
+        gained = fighter.heal_by(ability.heal)
+        fighter.charges.pop()
+        allies = [
+            one for other_id, one in siege.party.items() if other_id != user_id
+        ]
+        healed = spread_heal(ability, fighter, allies)
+        return heal_line(ability, gained, len(healed))
 
     # ---------- размен ----------
 
@@ -558,10 +580,29 @@ class TurfWar:
         said = strike_lines(
             result, {user_id: fighter, number: foe}, self.rng
         )
+        # Вторая половина приёмов десятой ступени: разлёт достаёт весь
+        # гарнизон, заготовка ложится всему отряду. Разнести это может
+        # только тот, кто знает обе стороны штурма
+        cast = {**siege.party, **siege.wall}
+        said.extend(
+            echo_lines(
+                group_aftermath(result.strikes, cast, self._sides(siege)), cast
+            )
+        )
         siege.said.extend(said)
         siege.rounds.append(turn_payload(result, said))
         if not foe.alive:
             siege.move_on(user_id)
+
+    @staticmethod
+    def _sides(siege: Siege) -> dict[int, int]:
+        """Кто с кем: отряд одной стороной, гарнизон другой.
+
+        Номера защитников отрицательные, и сторон ровно две — значит,
+        приём отряда разлетается по всему гарнизону, а заготовка
+        достаётся всему отряду, включая тех, кто в этой волне не ходил.
+        """
+        return {one: 0 for one in siege.party} | {one: 1 for one in siege.wall}
 
     def _judge(self, siege: Siege) -> bool | None:
         """Кончился ли штурм. None — дерёмся дальше."""

@@ -579,12 +579,22 @@ def squad(*codes, side=0, start=1):
 
 
 def struck(attacker_id, defender_id, ability="", defence=""):
-    """Удар, на котором сработал приём, — так его запоминает движок."""
+    """Удар, на котором сработал приём, — так его запоминает движок.
+
+    `fired` — все приёмы удара, по ним и считается вторая половина:
+    строка судьи одна, и крит занимает её собой.
+    """
     from bot.game.combat import Strike
 
+    fired = tuple(
+        (who, code)
+        for who, code in ((attacker_id, ability), (defender_id, defence))
+        if code
+    )
     return Strike(
         attacker_id=attacker_id, defender_id=defender_id, zone=HEAD,
         outcome=Outcome.HIT, ability=ability, defence_ability=defence,
+        fired=fired,
     )
 
 
@@ -728,6 +738,336 @@ def test_ordinary_tricks_leave_the_squad_alone():
 
     assert group_aftermath([struck(1, 2, ability="strong_hit")], ours, sides) == []
     assert group_aftermath([struck(1, 2, defence="nimble")], ours, sides) == []
+
+
+# ---------- та же половина в живой драке ----------
+#
+# Выше проверен сам движок: кому и на сколько прилетает. Здесь — что
+# его вообще зовут. Драк в городе четыре — групповой бой, рейд,
+# ограбление и штурм точки, — и приём обязан работать во всех: его
+# покупали один раз, а не отдельно на каждую драку.
+
+ZONES = ["head", "chest", "belly", "belt", "legs"]
+
+
+async def group_battle(db, codes, teams, hp=None):
+    """Живой групповой бой: у каждого свой приём десятой ступени и полная шкала."""
+    from bot.game.battle import BattleKind
+    from tests.test_battle_flow import CHAT_ID, THREAD_ID, make_player, make_service
+    from tests.test_duel_flow import FakeBot
+
+    service = make_service(FakeBot(), db)
+    players = []
+    for number, code in enumerate(codes, start=1):
+        one = make_player(number, f"Боец{number}")
+        one.level = 10
+        await db.save_player(one)
+        players.append(one)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=len(codes) // 2
+    )
+    for one, team in zip(players[1:], teams[1:]):
+        await service.join(lobby.id, one, team)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    assert session is not None
+    for number, code in enumerate(codes, start=1):
+        fighter = session.fighters[number]
+        fighter.loadout.slots[code] = 10
+        fighter.energy = MAX_ENERGY
+        if hp:
+            fighter.hp = min(hp, fighter.max_hp)
+    return service, session
+
+
+async def exchange(service, session, hits: dict[int, str] | None = None):
+    """Все, кому досталась пара, бьют и закрываются. `hits` — кому куда бить."""
+    hits = hits or {}
+    number = session.round_number
+    for index, (first, second) in enumerate(list(session.pairs)):
+        if session.round_number != number:
+            return
+        for offset, user_id in enumerate((first, second)):
+            if not session.fighters[user_id].alive:
+                continue
+            zone = hits.get(user_id, ZONES[(index + offset) % 5])
+            await service.handle_choice(session.id, user_id, "attack", zone)
+            await service.handle_choice(
+                session.id, user_id, "block", ZONES[(index + offset + 1) % 5]
+            )
+
+
+async def test_a_mass_hit_in_a_live_battle_reaches_the_other_pairs(db):
+    """«Массовый удар» в бою трое на трое достаёт и тех, кто в других парах."""
+    service, session = await group_battle(
+        db, ["mass_hit"] * 6, [0, 0, 0, 1, 1, 1]
+    )
+    # Пары складываются поперёк сторон: у нашего бойца свой соперник, а
+    # разлёт обязан достать двух остальных
+    hero, rival = session.pairs[0]
+    others = [
+        uid for uid in session.fighters
+        if session.teams[uid] != session.teams[hero] and uid != rival
+    ]
+    before = {uid: session.fighters[uid].hp for uid in others}
+
+    await service.use_ability(session.id, hero, "mass_hit")
+    # Бьём в голову, соперник закрывает пояс — удар дойдёт, и приём сгорит
+    await exchange(service, session, hits={hero: "head", rival: "belt"})
+
+    for uid in others:
+        assert session.fighters[uid].hp < before[uid], "разлёт не долетел"
+    spoken = " ".join(
+        line for payload in session.rounds for line in payload["lines"]
+    )
+    assert "достаёт и остальных" in spoken, "судья промолчал о разлёте"
+    await service.shutdown()
+
+
+async def test_a_fighter_felled_by_the_splash_does_not_strike_back(db):
+    """Павший от разлёта в этом же раунде уже не бьёт.
+
+    Пары размениваются по очереди, а разлёт летит из первой во все
+    остальные. Без проверки на ногах мёртвый боец успевал закрыться
+    блоком и ответить критом — в том же раунде, в котором его вынесли.
+    """
+    service, session = await group_battle(
+        db, ["mass_hit"] * 4, [0, 0, 1, 1]
+    )
+    hero, rival = session.pairs[0]
+    second_pair = session.pairs[1]
+    doomed = next(
+        uid for uid in second_pair if session.teams[uid] != session.teams[hero]
+    )
+    mate = next(uid for uid in second_pair if uid != doomed)
+    session.fighters[doomed].hp = 10  # разлёт в 15 его добьёт
+    standing = session.fighters[mate].hp
+
+    await service.use_ability(session.id, hero, "mass_hit")
+    await exchange(service, session, hits={hero: "head", rival: "belt"})
+
+    assert not session.fighters[doomed].alive, "разлёт его не добил"
+    assert session.fighters[mate].hp == standing, "мёртвый успел ответить"
+    strikes = [
+        one
+        for payload in session.rounds
+        for one in payload["strikes"]
+        if doomed in (one["attacker_id"], one["defender_id"])
+    ]
+    assert not strikes, "павший от разлёта всё равно разменялся"
+    await service.shutdown()
+
+
+async def test_a_heal_in_a_robbery_works_at_once(db):
+    """«Мастер жизни» в ограблении лечит сразу — и себя, и своих.
+
+    Лечение не ждёт удара, и заготовки от него не остаётся: иначе приём
+    висел бы в драке мёртвым грузом, съев энергию и заняв себя до конца.
+    """
+    from bot.robbery_service import RobberyService
+    from tests.test_robbery import (
+        MANSION, NOW, family, licensed, make_player as a_fighter, stand,
+    )
+
+    service = RobberyService(db, rng=random.Random(5))
+    don, squad, _ = await family(db, size=3)
+    victim = a_fighter(50, "Прохожий", level=10)
+    await db.save_player(victim)
+    await licensed(db, squad, count=5)
+    await stand(db, squad + [50], MANSION)
+    raid = await service.rob(await db.get_player(don.user_id), 50, now=NOW)
+    for one in squad[1:]:
+        await service.join(raid.id, await db.get_player(one), now=NOW)
+    for fighter in raid.fighters.values():
+        fighter.loadout.slots["life_master"] = 10
+        fighter.energy = MAX_ENERGY
+        fighter.hp = 50
+
+    said = await service.use_ability(raid.id, don.user_id, "life_master")
+
+    assert "Мастер жизни" in said and "❤️" in said
+    assert "2 бойцам отряда" in said
+    assert raid.fighters[don.user_id].hp > 50, "себя не вылечил"
+    for one in squad[1:]:
+        assert raid.fighters[one].hp > 50, "своих не вылечил"
+    assert raid.fighters[50].hp == 50, "врага лечить незачем"
+    # Заготовка не повисла: приём можно нажать снова, когда накопится
+    assert not raid.fighters[don.user_id].charges
+
+
+async def test_a_mass_hit_in_a_robbery_reaches_the_second_pair(db):
+    """Разлёт в драке двое на двое достаёт и того, кто в другой паре."""
+    from bot.game.classes import get_class
+    from bot.robbery_service import RobberyService
+    from tests.test_robbery import (
+        MANSION, NOW, family, licensed, make_player as a_fighter, stand,
+    )
+
+    service = RobberyService(db, rng=random.Random(5))
+    don, squad, _ = await family(db, size=2)
+    for number, name in ((50, "Прохожий"), (51, "Второй")):
+        one = a_fighter(number, name, level=10)
+        await db.save_player(one)
+    await licensed(db, squad, count=5)
+    await stand(db, squad + [50, 51], MANSION)
+    raid = await service.rob(await db.get_player(don.user_id), 50, now=NOW)
+
+    # Вторая пара: ещё по бойцу с каждой стороны
+    fclass = get_class("warrior")
+    for number, name, side in (
+        (51, "Второй", raid.sides[50]), (squad[1], "Подмога", raid.sides[don.user_id])
+    ):
+        raid.fighters[number] = Fighter(number, name, fclass, fclass.base_stats)
+        raid.sides[number] = side
+        raid.names[number] = name
+    service._open_round(raid)
+    hero = raid.pairs[0][0]
+    rival = raid.pairs[0][1]
+    others = [
+        uid for uid in raid.fighters
+        if raid.sides[uid] != raid.sides[hero] and uid != rival
+    ]
+    before = {uid: raid.fighters[uid].hp for uid in others}
+    raid.fighters[hero].loadout.slots["mass_hit"] = 10
+    raid.fighters[hero].energy = MAX_ENERGY
+
+    await service.use_ability(raid.id, hero, "mass_hit")
+    for uid in list(raid.paired):
+        if raid.finished:
+            break
+        await service.choose(
+            raid.id, uid, "attack", "head" if uid == hero else "belt"
+        )
+        if raid.finished:
+            break
+        await service.choose(raid.id, uid, "block", "belly")
+
+    for uid in others:
+        assert raid.fighters[uid].hp <= before[uid] - 15, "разлёт не долетел"
+
+
+async def test_a_siege_splashes_the_garrison_and_blesses_the_squad(db, monkeypatch):
+    """В штурме разлёт достаёт весь гарнизон, а заготовка ложится отряду."""
+    from bot.game.turf import DAY_SECONDS
+    from bot.hire_service import hire, post
+    from bot.turf_war import TurfWar
+    from tests.test_turf import NOW, family, stand
+
+    don, squad, clan = await family(db)
+    await db.take_turf("bar", "clan", str(clan.id), NOW - 3 * DAY_SECONDS)
+    await stand(db, squad, "bar")
+    # Гарнизон из двух наёмников: разлёту есть куда лететь
+    for number in squad[:2]:
+        one = await db.get_player(number)
+        one.credits = 20_000
+        await db.save_player(one)
+        await hire(db, await db.get_player(number), "merc_9", now=NOW)
+        his = [row for row in await db.hirelings_of(number) if not row["spot"]]
+        await post(db, await db.get_player(number), int(his[0]["id"]), "bar",
+                   now=NOW)
+
+    rival, rivals, _ = await family(
+        db, first=20, name="Бешеные псы", sign="silver_wolves"
+    )
+    await stand(db, rivals, "bar")
+    war = TurfWar(db)
+    # Гарнизон закрывает ноги и бьёт по ним же: тогда удар в голову
+    # дойдёт наверняка, и проверка не зависит от броска костей
+    monkeypatch.setattr(
+        "bot.turf_war.random_action",
+        lambda fighter, rng: Action(attacks=[LEGS], block=[LEGS]),
+    )
+    try:
+        muster = await war.open_muster(
+            await db.get_player(rival.user_id), "bar", now=NOW
+        )
+        for one in rivals[1:]:
+            await war.join(muster.id, await db.get_player(one))
+        siege = await war.march(muster.id, rival.user_id, now=NOW)
+        assert len(siege.wall) == 2, "гарнизон не собрался"
+
+        hero = rival.user_id
+        # «Пролом» в приёме десятой ступени не спрашивает броска: удар
+        # дойдёт и через блок, а значит, дойдёт и вторая половина
+        siege.party[hero].loadout.slots["blood_call"] = 10
+        siege.party[hero].energy = MAX_ENERGY
+        aimed = siege.aim[hero]
+        other = next(one for one in siege.wall if one != aimed)
+        before = siege.wall[other].hp
+
+        await war.use_ability(siege.id, hero, "blood_call")
+        await war.choose(siege.id, hero, "attack", "head")
+        await war.choose(siege.id, hero, "block", "belt")
+
+        mates = [one for one in siege.party if one != hero]
+        assert any(
+            any(c.ability.code == "crit_hit" for c in siege.party[one].charges)
+            for one in mates
+        ), "заготовка отряду не досталась"
+        assert "делится приёмом" in " ".join(siege.said)
+        # Разлёт — у своего приёма, и гарнизон у него весь в противниках
+        assert siege.wall[other].hp == before, "«Призыв к крови» не бьёт по площади"
+
+        # А «Массовый удар» достаёт и второго из гарнизона
+        siege.party[hero].loadout.slots["mass_hit"] = 10
+        siege.party[hero].energy = MAX_ENERGY
+        siege.acted.discard(hero)
+        siege.choices.pop(hero, None)
+        await war.use_ability(siege.id, hero, "mass_hit")
+        await war.choose(siege.id, hero, "attack", "head")
+        await war.choose(siege.id, hero, "block", "belt")
+
+        assert siege.wall[other].hp <= before - 15, "разлёт не достал гарнизон"
+        assert "достаёт и остальных" in " ".join(siege.said)
+    finally:
+        await war.close()
+
+
+def test_the_second_half_survives_a_busy_strike():
+    """Крит занял строку судьи — разлёт всё равно летит.
+
+    Приём в строке удара один: нажатый вместе с «Массовым ударом»
+    дешёвый «Критический удар» забирал её себе, и разлёт тихо пропадал.
+    Двенадцать энергии уходило, а остальные противники этого не
+    замечали. Поэтому вторая половина считается по всем сработавшим
+    приёмам удара, а не по тому, что попало в строку.
+    """
+    from bot.game.combat import group_aftermath
+
+    hero = make(WARRIOR, user_id=1, name="Герой")
+    rival = make(WARRIOR, user_id=10, name="Соперник")
+    other = make(WARRIOR, user_id=11, name="Второй враг")
+    everyone = {1: hero, 10: rival, 11: other}
+    sides = {1: 0, 10: 1, 11: 1}
+    hero.loadout.slots.update({"crit_hit": 3, "mass_hit": 10})
+    hero.energy = MAX_ENERGY
+    hero.use("mass_hit")
+    hero.use("crit_hit")
+    assert hero.energy == MAX_ENERGY - 12 - 6, "оба приёма по карману"
+    before = other.hp
+
+    result = resolve_round(
+        hero, Action(attacks=[HEAD], block=[BELT]),
+        rival, Action(attacks=[BELT], block=[LEGS]),
+        1, random.Random(3),
+    )
+    strike = result.strikes[0]
+    echoes = group_aftermath(result.strikes, everyone, sides)
+
+    assert strike.ability == "crit_hit", "строку занял крит"
+    assert ("mass_hit", 1) in [(code, who) for who, code in strike.fired]
+    assert [one.ability.code for one in echoes] == ["mass_hit"]
+    assert other.hp == before - 15, "разлёт пропал вместе со строкой"
+
+
+def test_the_heal_line_counts_the_mates_in_words():
+    """«Ещё одному бойцу», а не «ещё 1 бойцам»: число склоняется."""
+    from bot.game.combat import heal_line
+
+    ability = CATALOGUE["life_master"]
+    assert heal_line(ability, 18) == "💖 Мастер жизни: +18 ❤️"
+    assert heal_line(ability, 18, 1).endswith("и ещё 1 бойцу отряда")
+    assert heal_line(ability, 18, 2).endswith("и ещё 2 бойцам отряда")
+    assert heal_line(ability, 18, 5).endswith("и ещё 5 бойцам отряда")
 
 
 # ---------- до трёх приёмов за ход ----------

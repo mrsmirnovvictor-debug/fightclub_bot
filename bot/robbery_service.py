@@ -48,7 +48,14 @@ from bot.game.battle import (
     pair_up,
 )
 from bot.game.classes import Zone, block_combo
-from bot.game.combat import Action, Fighter, resolve_round
+from bot.game.combat import (
+    Action,
+    Fighter,
+    group_aftermath,
+    heal_line,
+    resolve_round,
+    spread_heal,
+)
 from bot.game.economy import (
     DRAW_EXP_SHARE,
     LOSS_EXP_SHARE,
@@ -58,7 +65,7 @@ from bot.game.economy import (
 )
 from bot.game.fightlog import turn_payload
 from bot.game.health import now_ts
-from bot.game.narrator import strike_lines
+from bot.game.narrator import echo_lines, strike_lines
 from bot.game.robbery import (
     ATTACKS_PER_LICENCE,
     GOAL_REWARD,
@@ -552,7 +559,12 @@ class RobberyService:
         return ""
 
     async def use_ability(self, raid_id: int, user_id: int, code: str) -> str:
-        """Нажать приём. Жмут до удара и блока, как везде."""
+        """Нажать приём. Жмут до удара и блока, как везде.
+
+        Лечение не ждёт удара: оно срабатывает в тот же миг, и своё, и
+        союзникам. Заготовка от него не остаётся — иначе лечебный приём
+        висел бы в драке мёртвым грузом, съев энергию и заняв себя.
+        """
         raid = self._raids.get(raid_id)
         if raid is None:
             raise RobberyError("Эта драка уже кончилась.")
@@ -560,10 +572,22 @@ class RobberyService:
         if fighter is None or not fighter.alive:
             raise RobberyError("Приёмы применяет тот, кто стоит на ногах.")
         try:
-            charge = fighter.use(code)
+            ability = fighter.use(code).ability
         except ValueError as error:
             raise RobberyError(str(error)) from error
-        return f"{charge.ability.title} наготове."
+        if not ability.heal:
+            return f"{ability.icon} {ability.title} наготове."
+
+        gained = fighter.heal_by(ability.heal)
+        fighter.charges.pop()
+        mine = raid.sides.get(user_id)
+        allies = [
+            one
+            for other_id, one in raid.fighters.items()
+            if other_id != user_id and raid.sides.get(other_id) == mine
+        ]
+        healed = spread_heal(ability, fighter, allies)
+        return heal_line(ability, gained, len(healed))
 
     # ---------- раунд ----------
 
@@ -645,6 +669,14 @@ class RobberyService:
             )
             raid.hurt.update(result.injuries)
             said = strike_lines(result, raid.fighters, self.rng)
+            # Вторая половина приёмов десятой ступени: она летит мимо
+            # пары, и разнести её может только тот, кто знает стороны
+            said.extend(
+                echo_lines(
+                    group_aftermath(result.strikes, raid.fighters, raid.sides),
+                    raid.fighters,
+                )
+            )
             raid.rounds.append(turn_payload(result, said))
 
         outcome = judge(

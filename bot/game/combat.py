@@ -488,6 +488,11 @@ class Strike:
     # защищающегося. По ним судья и рассказывает, что произошло
     ability: str = ""  # приём атакующего
     defence_ability: str = ""  # приём защищающегося
+    # Все приёмы этого удара — боец и код. В строке судьи приём один:
+    # крит занимает её собой, и прибавка к урону в неё уже не попадает.
+    # А вторая половина приёма десятой ступени не должна зависеть от
+    # того, нашлось ли ему место в строке, — она считается отсюда
+    fired: tuple[tuple[int, str], ...] = ()
     defender_hp_after: int = 0
     attacker_hp_after: int = 0
 
@@ -636,6 +641,7 @@ def strike_of(
         if breaker is not None:
             # «Пролом» на то и придуман, чтобы не спрашивать бросок
             strike.ability = attacker.spend_charge(breaker).code
+            strike.fired += ((attacker.user_id, strike.ability),)
             broke = True
         if broke:
             strike.outcome = Outcome.BREAK
@@ -661,6 +667,7 @@ def strike_of(
     if evasion is not None:
         for charge in evasions:
             defender.spend_charge(charge)
+            strike.fired += ((defender.user_id, charge.ability.code),)
         strike.defence_ability = evasion.ability.code
         dodged = True
     if dodged:
@@ -697,6 +704,7 @@ def strike_of(
         best = max(sharp, key=lambda one: _CRIT_RANK[one.ability.effect])
         for charge in sharp:
             attacker.spend_charge(charge)
+            strike.fired += ((attacker.user_id, charge.ability.code),)
         strike.ability = best.ability.code
         strike.outcome = Outcome.CRIT
         damage *= attacker.derived.crit_power
@@ -715,6 +723,7 @@ def strike_of(
     bonuses = attacker.charged_all(Effect.DAMAGE)
     for charge in bonuses:
         damage += attacker.spend_charge(charge).damage
+        strike.fired += ((attacker.user_id, charge.ability.code),)
     if bonuses:
         # Приём в строке удара один, и крит её уже занял: тогда называем
         # самую крупную прибавку — она заметнее
@@ -740,6 +749,7 @@ def _apply_parry(strike: Strike, defender: Fighter) -> None:
     if shield is None:
         return
     strike.defence_ability = defender.spend_charge(shield).code
+    strike.fired += ((defender.user_id, strike.defence_ability),)
     strike.absorbed += strike.damage
     strike.damage = 0
 
@@ -870,6 +880,10 @@ class GroupEcho:
     заготовку союзникам, «Мастер жизни» их лечит. Сам движок про состав
     отряда не знает — стороны ему приносит служба боя, а он отвечает, кого
     и на сколько задело.
+
+    Служб этих четыре, и зовут движок все: групповой бой, рейд,
+    ограбление и штурм точки. Приём покупали один раз, а не отдельно на
+    каждую драку, — значит, и работать он обязан во всех.
     """
 
     owner_id: int
@@ -921,6 +935,21 @@ def spread_heal(
     return healed
 
 
+def heal_line(ability: Ability, gained: int, mates: int = 0) -> str:
+    """Строка о лечении: себе столько, и ещё столько-то бойцам отряда.
+
+    Склонение считается, а не пишется: «ещё 1 бойцам отряда» читается
+    как опечатка, а лечение на одного союзника — обычное дело.
+    """
+    from bot.game.presence import plural
+
+    line = f"{ability.icon} {ability.title}: +{gained} ❤️"
+    if mates:
+        who = plural(mates, "бойцу", "бойцам", "бойцам")
+        line += f", и ещё {mates} {who} отряда"
+    return line
+
+
 def group_aftermath(
     strikes: list[Strike],
     fighters: dict[int, Fighter],
@@ -938,10 +967,10 @@ def group_aftermath(
     """
     echoes: list[GroupEcho] = []
     for strike in strikes:
-        for owner_id, code in (
-            (strike.attacker_id, strike.ability),
-            (strike.defender_id, strike.defence_ability),
-        ):
+        # Читаем все приёмы удара, а не только названный в строке судьи:
+        # строка одна, и крит занимает её собой — а вторая половина
+        # приёма десятой ступени от этого зависеть не должна
+        for owner_id, code in strike.fired:
             if not code:
                 continue
             from bot.content.abilities import CATALOGUE
@@ -1154,9 +1183,12 @@ __all__ = [
     "block_combo",
     "boxing_round",
     "fatigue_multiplier",
+    "group_aftermath",
+    "heal_line",
     "judge_decision",
     "random_action",
     "round_is_over",
+    "spread_heal",
     "resolve_round",
     "turn_in_round",
     "validate_action",

@@ -40,6 +40,7 @@ from bot.game.combat import (
     Action,
     Fighter,
     group_aftermath,
+    heal_line,
     resolve_round,
     spread_heal,
 )
@@ -624,10 +625,7 @@ class BattleService:
             if other_id != user_id and sides.get(other_id) == mine
         ]
         healed = spread_heal(ability, fighter, allies)
-        line = f"{ability.icon} {ability.title}: +{gained} ❤️"
-        if healed:
-            line += f", и ещё {len(healed)} бойцам отряда"
-        return line
+        return heal_line(ability, gained, len(healed))
 
     async def _play_round(self, session: BattleSession) -> None:
         standing = {
@@ -638,6 +636,12 @@ class BattleService:
         said: list[list[str]] = []
         for first_id, second_id in session.pairs:
             first, second = session.fighters[first_id], session.fighters[second_id]
+            # Пару могло разнять до её размена: «Массовый удар» из
+            # соседней пары достаёт всех чужих, и павший от него в этом
+            # же раунде уже не бьёт. Без этой проверки мёртвый успевал
+            # закрыться блоком и ответить критом
+            if not (first.alive and second.alive):
+                continue
             result = resolve_round(
                 first,
                 self._action_of(session, first_id),

@@ -35,6 +35,7 @@ from bot.game.combat import (
     Action,
     Fighter,
     group_aftermath,
+    heal_line,
     resolve_round,
     spread_heal,
 )
@@ -918,10 +919,7 @@ class RaidService:
             one for other_id, one in session.fighters.items() if other_id != user_id
         ]
         healed = spread_heal(ability, fighter, allies)
-        line = f"{ability.icon} {ability.title}: +{gained} ❤️"
-        if healed:
-            line += f", и ещё {len(healed)} бойцам отряда"
-        return line
+        return heal_line(ability, gained, len(healed))
 
     def _judge(self, session: RaidSession) -> RaidOutcome | None:
         return judge_raid(session.enemies.values(), session.fighters)
