@@ -557,7 +557,7 @@ async def test_the_bank_opens_an_account_and_issues_a_card_by_the_handle(client,
     body = await (await client.get("/api/bank", headers=headers())).json()
     assert body["account"]["open"] is False
     assert [tab["code"] for tab in body["tabs"]] == [
-        "new", "accounts", "atm", "log"
+        "new", "accounts", "deposits", "loans", "atm", "log"
     ]
 
     body = await (

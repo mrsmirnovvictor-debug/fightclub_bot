@@ -42,7 +42,7 @@ from bot.game.bank import (
     year_text,
 )
 from bot.game.clock import club_moment
-from bot.game.health import now_ts
+from bot.game.health import format_term, now_ts
 from bot.game.locations import Service
 from bot.models import CardMove, Player
 
@@ -52,6 +52,8 @@ from bot.models import CardMove, Player
 TABS: tuple[tuple[str, str], ...] = (
     ("new", "Новый продукт"),
     ("accounts", "Счета"),
+    ("deposits", "Вклады"),
+    ("loans", "Кредиты"),
     ("atm", "Банкомат"),
     ("log", "Выписка"),
 )
@@ -278,11 +280,157 @@ def statement_payload(
     }
 
 
+def deposit_row(one, moment: int) -> dict[str, Any]:
+    """Вклад на экране: сколько, до какого часа и что принесёт."""
+    left = one.left(moment)
+    return {
+        "id": one.id,
+        "amount": one.amount,
+        "months": one.months,
+        "income": one.income,
+        "total": one.total,
+        "opened": club_moment(one.opened_at) if one.opened_at else "",
+        "until": club_moment(one.paid_until) if one.paid_until else "",
+        "ripe": one.ripe(moment),
+        "left": left,
+        "left_text": format_term(left) if left else "",
+    }
+
+
+def loan_row(loan, moment: int) -> dict[str, Any]:
+    """Кредит на экране: график, долг и пени."""
+    from bot.game.credit import days_between, late_penalty
+
+    if loan is None:
+        return {}
+    days = days_between(loan.penalty_at, moment) if loan.late else 0
+    penalty = loan.penalty + late_penalty(loan.owed, days)
+    left = max(0, loan.due_at - moment)
+    return {
+        "amount": loan.amount,
+        "months": loan.months,
+        "payment": loan.payment,
+        "paid": loan.paid,
+        "pays_left": loan.left,
+        "body_left": loan.body_left,
+        "taken": club_moment(loan.taken_at) if loan.taken_at else "",
+        "due": club_moment(loan.due_at) if loan.due_at else "",
+        "due_in": left,
+        "due_text": format_term(left) if left else "",
+        "late": loan.late,
+        "owed": loan.owed,
+        "penalty": penalty,
+        "debt": loan.owed + penalty,
+        "late_days": days,
+    }
+
+
+def credit_payload(
+    player: Player,
+    moment: int,
+    deposits: list | None = None,
+    loan=None,
+) -> dict[str, Any]:
+    """Вклады и кредиты: что открыто, что можно открыть и почём.
+
+    Калькулятор считается здесь: у страницы нет ни ставки, ни формулы
+    аннуитета, и повторять их на клиенте значило бы однажды разойтись с
+    банком в цене. Страница рисует таблицу, которую ей дали.
+    """
+    from bot.credit_service import weekly_income, why_not
+    from bot.game.credit import (
+        DEPOSIT_MIN,
+        DEPOSIT_MONTHS,
+        DEPOSIT_RATE,
+        LATE_RATE,
+        LOAN_ACCOUNT_AGE,
+        LOAN_MAX,
+        LOAN_MIN,
+        LOAN_RATE,
+        LOAN_TERMS,
+        biggest_loan,
+        deposit_income,
+        monthly_payment,
+        overpay,
+        total_cost,
+    )
+
+    rows = [deposit_row(one, moment) for one in (deposits or [])]
+    weekly = weekly_income(player)
+    denial = why_not(player, moment)
+    # Потолок суммы на каждый срок считается перебором, и считать его
+    # по четыре раза на строку было бы расточительством: один раз на срок
+    tops = {months: biggest_loan(weekly, months) for months in LOAN_TERMS}
+    top = tops[LOAN_TERMS[-1]]
+    calc = []
+    for months in LOAN_TERMS:
+        fits = tops[months]
+        # Чего не дадут, то считают по минимальной сумме: строка всё
+        # равно показывает платёж, от которого банк и отказался
+        amount = fits or LOAN_MIN
+        calc.append(
+            {
+                "months": months,
+                "min": LOAN_MIN,
+                "min_payment": monthly_payment(LOAN_MIN, months),
+                "fits": bool(fits),
+                "top": fits,
+                "payment": monthly_payment(amount, months),
+                "total": total_cost(amount, months),
+                "overpay": overpay(amount, months),
+            }
+        )
+    return {
+        "deposit": {
+            "min": DEPOSIT_MIN,
+            "rate": round(DEPOSIT_RATE * 100),
+            "terms": [
+                {
+                    "months": months,
+                    # Что принесёт самый малый вклад на этот срок: по
+                    # нему и сравнивают сроки
+                    "income": deposit_income(DEPOSIT_MIN, months),
+                }
+                for months in DEPOSIT_MONTHS
+            ],
+            "balance": player.account_balance,
+            "can_open": bool(
+                player.has_account and player.account_balance >= DEPOSIT_MIN
+            ),
+            "rows": rows,
+            "total": sum(one["amount"] for one in rows),
+        },
+        "loan": {
+            "min": LOAN_MIN,
+            "max": LOAN_MAX,
+            "rate": round(LOAN_RATE * 100),
+            "late_rate": round(LATE_RATE * 100),
+            "terms": list(LOAN_TERMS),
+            "week_days": LOAN_ACCOUNT_AGE // (24 * 60 * 60),
+            "weekly": weekly,
+            # Сколько банк даст при этом доходе на самый долгий срок:
+            # потолок считает он, а не страница
+            "top": top,
+            "why": denial,
+            "can_take": bool(not denial and not loan and top),
+            "mine": loan_row(loan, moment),
+            # Калькулятор: по строке на срок. В каждой — платёж за
+            # самый малый кредит, потолок суммы при этом доходе и то,
+            # выносит ли доход такой платёж вообще. Считает банк:
+            # повторять формулу аннуитета на странице значило бы
+            # однажды разойтись с ним в цене
+            "calc": calc,
+        },
+    }
+
+
 def build_bank(
     player: Player,
     now: int | None = None,
     said: str = "",
     statement: dict[str, Any] | None = None,
+    deposits: list | None = None,
+    loan=None,
 ) -> dict[str, Any]:
     """Банк целиком: счёт, карта, банкомат, выписка и прайс скидок.
 
@@ -302,6 +450,8 @@ def build_bank(
         "discounts": discounts_payload(),
         "statement": statement if statement is not None else statement_payload([]),
         "purse": purse_payload(player, moment, Service.BANK),
+        # Вклады и кредиты: то, за что банк и зовётся банком
+        "credit": credit_payload(player, moment, deposits, loan),
         # Переключатель в банке — про настройку, а не про этот дом. «Здесь
         # банк скидки не обещал» на его собственном экране читалось бы
         # как отказ, хотя речь о том, чем платить в городе

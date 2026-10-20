@@ -3299,6 +3299,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   border-left: 3px solid var(--accent);
 }
 .paper.stale { border-left-color: var(--muted); opacity: 0.78; }
+/* Дошедший до срока вклад — зелёной полосой: его можно забирать */
+.paper.ready { border-left-color: var(--hp-green); }
+/* Строка калькулятора, которую доход не выносит: видна, но не предлагается */
+.rows li.dim { opacity: 0.55; }
 .paper-head { display: flex; align-items: baseline; gap: 8px; }
 .paper-title { margin: 0; font-size: 15px; font-weight: 700; flex: 1; min-width: 0; }
 .paper-state {

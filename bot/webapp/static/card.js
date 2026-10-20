@@ -7034,7 +7034,334 @@ function renderBank(data) {
   if (bankTab === "new") body.appendChild(newProductTab(data));
   else if (bankTab === "atm") body.appendChild(atmTab(data));
   else if (bankTab === "log") body.appendChild(statementTab(data));
+  else if (bankTab === "deposits") body.appendChild(depositsTab(data));
+  else if (bankTab === "loans") body.appendChild(loansTab(data));
   else body.appendChild(accountsTab(data));
+}
+
+// ---------- вклады и кредиты ----------
+//
+// То, за что банк и зовётся банком: он платит за чужие деньги и берёт за
+// свои. Считает всё сервер — и доход вклада, и аннуитет: повторять
+// ставку и формулу на странице значило бы однажды разойтись с банком в
+// цене. Страница рисует таблицу, которую ей дали.
+
+function depositsTab(data) {
+  const box = document.createElement("div");
+  const state = (data.credit || {}).deposit || {};
+
+  const shelf = document.createElement("section");
+  shelf.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "💰 Вклад под " + state.rate + "% годовых";
+  shelf.appendChild(head);
+
+  shelf.appendChild(
+    paperRows([
+      ["Минимум", num(state.min) + " 💰"],
+      ["Ставка", state.rate + "% годовых"],
+      ["Срок", "1, 2 или 3 месяца"],
+      ["На счету", num(state.balance) + " 💰"],
+    ])
+  );
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Вклад открывают со счёта и возвращают на счёт. Срок — обещание, а "
+    + "не замок: забрать можно когда угодно, но досрочный вклад процентов "
+    + "не приносит.";
+  shelf.appendChild(note);
+
+  // По кнопке на срок: в каждой — что принесёт самый малый вклад
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  (state.terms || []).forEach((term) => {
+    buttons.appendChild(
+      button(term.months + " мес. · +" + num(term.income) + " 💰 с " + num(state.min), {
+        secondary: true,
+        disabled: !state.can_open,
+        hint: "Вклад открывают со счёта, и на нём нужно не меньше "
+          + num(state.min) + " 💰.",
+        onClick: () =>
+          openMoneySheet({
+            title: "Вклад на " + term.months + " мес.",
+            note: "Со счёта: " + num(state.balance) + " 💰, от " + num(state.min),
+            min: state.min,
+            max: state.balance,
+            hint: "На счету не хватает: вклад открывают от "
+              + num(state.min) + " 💰.",
+            onSum: (amount) =>
+              bankAction({
+                action: "open_deposit",
+                amount: amount,
+                months: term.months,
+              }),
+          }),
+      })
+    );
+  });
+  shelf.appendChild(buttons);
+  box.appendChild(shelf);
+
+  const rows = state.rows || [];
+  const mine = document.createElement("section");
+  mine.className = "shelf";
+  const head2 = document.createElement("h2");
+  head2.className = "shelf-head";
+  head2.textContent = "Мои вклады";
+  const count = document.createElement("span");
+  count.className = "shelf-count";
+  count.textContent = rows.length
+    ? rows.length + " " + plural(rows.length, "вклад", "вклада", "вкладов")
+      + " на " + num(state.total) + " 💰"
+    : "ни одного";
+  head2.appendChild(count);
+  mine.appendChild(head2);
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "shelf-empty";
+    empty.textContent = "Вкладов нет. Их можно открыть сколько угодно: "
+      + "вклад это сделка, а не кошелёк.";
+    mine.appendChild(empty);
+  }
+  rows.forEach((one) => mine.appendChild(depositCard(one)));
+  box.appendChild(mine);
+  return box;
+}
+
+function depositCard(one) {
+  const box = document.createElement("article");
+  box.className = "paper" + (one.ripe ? " ready" : "");
+  box.appendChild(
+    paperRows([
+      ["Вклад", num(one.amount) + " 💰 на " + one.months + " мес."],
+      ["К сроку", num(one.total) + " 💰 · доход " + num(one.income)],
+      [one.ripe ? "Срок" : "Осталось", one.ripe ? "вышел" : one.left_text],
+      ["Открыт", one.opened],
+    ])
+  );
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button(one.ripe ? "Забрать с процентами" : "Забрать досрочно", {
+      secondary: !one.ripe,
+      onClick: () =>
+        one.ripe
+          ? bankAction({ action: "close_deposit", id: one.id })
+          : askConfirm(
+              "Забрать досрочно?",
+              "Проценты не начислят: банк платит за срок, а срок не вышел. "
+                + "Вернётся ровно " + num(one.amount) + " 💰.",
+              "Забрать"
+            ).then((ok) =>
+              ok ? bankAction({ action: "close_deposit", id: one.id }) : null
+            ),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+function loansTab(data) {
+  const box = document.createElement("div");
+  const state = (data.credit || {}).loan || {};
+  const mine = state.mine || {};
+
+  if (mine.amount) {
+    box.appendChild(loanCard(state, mine));
+    return box;
+  }
+
+  const shelf = document.createElement("section");
+  shelf.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🏦 Кредит под " + state.rate + "% годовых";
+  shelf.appendChild(head);
+
+  shelf.appendChild(
+    paperRows([
+      ["Сумма", num(state.min) + " – " + num(state.max) + " 💰"],
+      ["Срок", state.terms[0] + " – " + state.terms[state.terms.length - 1]
+        + " месяцев"],
+      ["Платёж", "аннуитетный, раз в месяц с карты"],
+      ["Твой доход", num(state.weekly) + " 💰 в неделю"],
+      ["Просрочка", state.late_rate + "% в день от платежа"],
+    ])
+  );
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Платёж не может быть больше недельного дохода — это и есть главное "
+    + "условие. Выдача моментальная, на карту; первое списание ровно через "
+    + "месяц.";
+  shelf.appendChild(note);
+
+  if (state.why) {
+    const why = document.createElement("p");
+    why.className = "thing-warn";
+    why.textContent = state.why;
+    shelf.appendChild(why);
+  }
+  box.appendChild(shelf);
+
+  box.appendChild(loanCalc(state));
+  return box;
+}
+
+/** Калькулятор: по строке на срок, с платежом и потолком суммы. */
+function loanCalc(state) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Калькулятор";
+  box.appendChild(head);
+
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Чем дольше срок, тем меньше платёж и больше переплата. Серая строка "
+    + "значит, что такой платёж твой доход не выносит.";
+  box.appendChild(note);
+
+  const list = document.createElement("ul");
+  list.className = "rows paper-rows";
+  list.id = "loan-calc";
+  (state.calc || []).forEach((row) => {
+    const li = document.createElement("li");
+    if (!row.fits) li.className = "dim";
+    const left = document.createElement("span");
+    left.className = "label";
+    left.textContent = row.months + " мес.";
+    const right = document.createElement("span");
+    right.className = "value";
+    right.textContent = row.fits
+      ? "до " + num(row.top) + " 💰 · платёж " + num(row.payment)
+        + " 💰 · переплата " + num(row.overpay)
+      : "платёж от " + num(row.min_payment) + " 💰 — не по доходу";
+    li.append(left, right);
+    list.appendChild(li);
+  });
+  box.appendChild(list);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button(state.can_take ? "Взять кредит" : "Кредит недоступен", {
+      disabled: !state.can_take,
+      hint: state.why || "При твоём доходе банк не даст и минимальной суммы.",
+      onClick: () => openLoanSheet(state),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Створка кредита: сперва срок, потом сумма. */
+function openLoanSheet(state) {
+  const terms = (state.calc || []).filter((row) => row.fits);
+  if (!terms.length) {
+    popup("Кредит", "При твоём доходе банк не даст и минимальной суммы.");
+    return;
+  }
+  openSheet(
+    "Взять кредит",
+    "Сперва срок: от него зависит платёж и потолок суммы.",
+    true
+  );
+  const list = document.createElement("div");
+  list.className = "thing-buttons";
+  terms.forEach((row) => {
+    list.appendChild(
+      button(row.months + " мес. · до " + num(row.top) + " 💰", {
+        secondary: true,
+        onClick: () => {
+          closeSheet();
+          openMoneySheet({
+            title: "Кредит на " + row.months + " мес.",
+            note:
+              "От " + num(state.min) + " до " + num(row.top) + " 💰. Платёж "
+              + "посчитает банк: при потолке — " + num(row.payment) + " 💰 в месяц",
+            min: state.min,
+            max: row.top,
+            hint: "Такую сумму банк не даст.",
+            onSum: (amount) =>
+              bankAction({
+                action: "loan",
+                amount: amount,
+                months: row.months,
+              }),
+          });
+        },
+      })
+    );
+  });
+  el("sheet-list").appendChild(list);
+}
+
+/** Свой кредит: график, долг и пени. */
+function loanCard(state, mine) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🏦 Мой кредит";
+  if (mine.late) {
+    const mark = document.createElement("span");
+    mark.className = "shelf-count";
+    mark.textContent = "просрочка";
+    head.appendChild(mark);
+  }
+  box.appendChild(head);
+
+  const rows = [
+    ["Выдан", num(mine.amount) + " 💰 · " + mine.taken],
+    ["Платёж", num(mine.payment) + " 💰 в месяц"],
+    ["Внесено", mine.paid + " из " + mine.months],
+    ["Осталось выплатить", num(mine.body_left) + " 💰"],
+  ];
+  if (mine.pays_left) {
+    // Час списания уже мог пройти: тогда «через» не о чем говорить
+    rows.push([
+      "Следующее списание",
+      mine.due_text ? mine.due + " · через " + mine.due_text : mine.due,
+    ]);
+  }
+  if (mine.late) {
+    rows.push(["Просрочено", num(mine.owed) + " 💰"]);
+    rows.push([
+      "Пени",
+      num(mine.penalty) + " 💰 · " + state.late_rate + "% в день"
+        + (mine.late_days ? " · дней " + mine.late_days : ""),
+    ]);
+    rows.push(["Всего к оплате", num(mine.debt) + " 💰"]);
+  }
+  box.appendChild(paperRows(rows));
+
+  const note = document.createElement("p");
+  note.className = mine.late ? "thing-warn" : "thing-note";
+  note.textContent = mine.late
+    ? "Пени капают каждый день, пока долг не погашен. Списание идёт с "
+      + "карты само, как только на ней появятся деньги."
+    : "Списание с карты идёт само, ровно через месяц после выдачи и "
+      + "дальше месяц в месяц. Приходить за этим в банк не надо.";
+  box.appendChild(note);
+
+  if (mine.late) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Погасить просрочку · " + num(mine.debt) + " 💰", {
+        onClick: () => bankAction({ action: "repay" }),
+      })
+    );
+    box.appendChild(buttons);
+  }
+  return box;
 }
 
 // ---------- вкладка «Выписка» ----------
@@ -14246,18 +14573,23 @@ function vaultSum(money) {
   return sum;
 }
 
-/** Окно суммы: сколько внести или снять. `opts.onSum(amount)`. */
+/** Окно суммы: сколько внести или снять. `opts.onSum(amount)`.
+ *
+ * `opts.min` — нижняя граница, если она есть: у вклада и кредита суммой
+ * в один кредит ничего не делают, и отказ лучше показать до запроса.
+ */
 function openMoneySheet(opts) {
   const money = Math.max(0, opts.max || 0);
+  const least = Math.max(1, opts.min || 1);
   openSheet(opts.title, opts.note, true);
   const list = el("sheet-list");
 
   const field = document.createElement("input");
   field.type = "number";
   field.inputMode = "numeric";
-  field.min = "1";
+  field.min = String(least);
   field.max = String(money);
-  field.value = money ? "1" : "0";
+  field.value = money >= least ? String(least) : "0";
   field.className = "field-input";
   field.id = "vault-sum";
   list.appendChild(field);
@@ -14266,12 +14598,16 @@ function openMoneySheet(opts) {
   buttons.className = "thing-buttons";
   buttons.appendChild(
     button("Подтвердить", {
-      disabled: !money,
+      disabled: money < least,
       hint: opts.hint,
       onClick: () => {
         const amount = Math.floor(Number(el("vault-sum").value) || 0);
         if (amount <= 0) {
           popup(opts.title, "Напиши число больше нуля.");
+          return;
+        }
+        if (amount < least) {
+          popup(opts.title, "Меньше " + num(least) + " 💰 нельзя.");
           return;
         }
         closeSheet();

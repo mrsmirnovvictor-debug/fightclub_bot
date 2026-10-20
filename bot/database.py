@@ -28,6 +28,7 @@ from bot.game.clans import (
     Stored,
 )
 from bot.game.driving import School
+from bot.game.credit import Deposit, Loan
 from bot.game.estate import Kept, Lease
 from bot.game.post import Parcel
 from bot.game.health import now_ts
@@ -84,6 +85,10 @@ CREATE TABLE IF NOT EXISTS players (
     -- и лежит он там же, где первый: в одной строке с наличными
     account_number  TEXT    NOT NULL DEFAULT '',
     account_balance INTEGER NOT NULL DEFAULT 0,
+    -- Когда счёт открыт: кредит дают тому, кого банк знает хотя бы
+    -- неделю. Ноль у счетов, открытых до этого правила — их банк знает
+    -- давно, и спрашивать с них нечего
+    account_at      INTEGER NOT NULL DEFAULT 0,
     card_at         INTEGER NOT NULL DEFAULT 0,
     card_paid_until INTEGER NOT NULL DEFAULT 0,
     pay_from        TEXT    NOT NULL DEFAULT 'card',
@@ -898,8 +903,38 @@ CREATE TABLE IF NOT EXISTS quests (
 
 CREATE INDEX IF NOT EXISTS quests_user ON quests(user_id, state);
 
--- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
--- ничего не задваивает, а новая группа получает всё с начала.
+-- Вклады: по строке на сделку. Вкладов у бойца может быть несколько —
+-- это не кошелёк, а сделка. Срок обещан, но не заперт: забрать можно
+-- когда угодно, досрочный вклад просто не приносит процентов
+CREATE TABLE IF NOT EXISTS deposits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    amount     INTEGER NOT NULL,
+    months     INTEGER NOT NULL,
+    opened_at  INTEGER NOT NULL DEFAULT 0,
+    paid_until INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS deposits_user ON deposits(user_id);
+
+-- Кредит: один на бойца. Платёж считается от его дохода, и второй
+-- кредит ломал бы само условие. `left_pays` — сколько платежей ещё не
+-- внесено, `due_at` — час следующего списания с карты. `owed` —
+-- платежи, которых на карте не хватило: они ждут денег и обрастают
+-- пенями, а `penalty_at` помнит, по какой час пени уже начислены
+CREATE TABLE IF NOT EXISTS loans (
+    user_id    INTEGER PRIMARY KEY REFERENCES players(user_id) ON DELETE CASCADE,
+    amount     INTEGER NOT NULL,
+    months     INTEGER NOT NULL,
+    payment    INTEGER NOT NULL,
+    left_pays  INTEGER NOT NULL,
+    taken_at   INTEGER NOT NULL DEFAULT 0,
+    due_at     INTEGER NOT NULL DEFAULT 0,
+    owed       INTEGER NOT NULL DEFAULT 0,
+    penalty    INTEGER NOT NULL DEFAULT 0,
+    penalty_at INTEGER NOT NULL DEFAULT 0
+);
+
 -- Общежитие: комната на студента, пока он учится. Платы и срока в
 -- сутках у неё нет — срок это сама учёба, и записан он курсом. Учёба
 -- кончилась — ставим `closed_at`: комната заперта, а вещи в ней ждут
@@ -953,6 +988,8 @@ CREATE INDEX IF NOT EXISTS cars_code ON cars(code);
 -- не делает ничего — и индекс по ещё не существующей колонке уронил бы
 -- запуск. Он заводится там же, где колонки (`_migrate_cars`)
 
+-- Что уже объявляли. Ключ — код объявления и ветка: перезапуск бота
+-- ничего не задваивает, а новая группа получает всё с начала
 CREATE TABLE IF NOT EXISTS announcements (
     chat_id   INTEGER NOT NULL,
     code      TEXT    NOT NULL,
@@ -967,7 +1004,8 @@ PLAYER_COLUMNS = (
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
     "raid_wins, raid_fights, seen_at, location, travel_to, arrives_at, "
     "city, birthplace, pro_until, gender, created_at, "
-    "account_number, account_balance, card_at, card_paid_until, pay_from, "
+    "account_number, account_balance, account_at, "
+    "card_at, card_paid_until, pay_from, "
     "job_code, job_since, job_experience, job_week, job_minutes, shift_until, "
     "shift_day, shift_minutes, "
     "study_code, study_since, study_lessons, study_day, study_exam_at, "
@@ -1000,6 +1038,9 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     # `save_player`, а перевод между бойцами — одной сделкой на две строки
     ("account_number", "TEXT NOT NULL DEFAULT ''"),  # пусто — счёта нет
     ("account_balance", "INTEGER NOT NULL DEFAULT 0"),
+    # Час открытия счёта. Ноль — счёт открыт до этого правила, и банк
+    # знает его давно: кредит такому не задерживают
+    ("account_at", "INTEGER NOT NULL DEFAULT 0"),
     ("card_at", "INTEGER NOT NULL DEFAULT 0"),  # 0 — карты нет
     ("card_paid_until", "INTEGER NOT NULL DEFAULT 0"),
     ("pay_from", f"TEXT NOT NULL DEFAULT '{CARD}'"),
@@ -1560,14 +1601,15 @@ class Database:
                 wins, losses, draws, raid_wins, raid_fights, seen_at,
                 location, travel_to, arrives_at,
                 city, birthplace, pro_until, gender, created_at,
-                account_number, account_balance, card_at, card_paid_until, pay_from,
+                account_number, account_balance, account_at,
+                card_at, card_paid_until, pay_from,
                 job_code, job_since, job_experience, job_week, job_minutes,
                 shift_until, shift_day, shift_minutes,
                 study_code, study_since, study_lessons, study_day,
                 study_exam_at, study_tries, lesson_until, diplomas,
                 car, car_until
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -1602,6 +1644,7 @@ class Database:
                 gender         = excluded.gender,
                 account_number  = excluded.account_number,
                 account_balance = excluded.account_balance,
+                account_at      = excluded.account_at,
                 card_at         = excluded.card_at,
                 card_paid_until = excluded.card_paid_until,
                 pay_from        = excluded.pay_from,
@@ -1660,6 +1703,7 @@ class Database:
                 player.created_at,
                 player.account_number,
                 player.account_balance,
+                player.account_at,
                 player.card_at,
                 player.card_paid_until,
                 player.pay_from,
@@ -1848,18 +1892,23 @@ class Database:
 
     # ---------- Vegas Банк ----------
 
-    async def open_account(self, user_id: int, number: str) -> bool:
+    async def open_account(
+        self, user_id: int, number: str, now: int = 0
+    ) -> bool:
         """Завести счёт. False — счёт уже есть или номер занят.
 
         Проверка `account_number = ''` стоит в самом запросе: два нажатия
         подряд иначе выписали бы бойцу второй номер поверх первого, а
         вместе с ним потеряли бы деньги на старом счету.
+
+        Час открытия пишем тем же запросом: с него банк считает неделю
+        знакомства, без которой кредита не даёт.
         """
         try:
             cursor = await self.conn.execute(
-                "UPDATE players SET account_number = ? "
+                "UPDATE players SET account_number = ?, account_at = ? "
                 "WHERE user_id = ? AND account_number = ''",
-                (number, user_id),
+                (number, now, user_id),
             )
         except sqlite3.IntegrityError:
             # Номер разыгран, а такой уже у кого-то есть: служба разыграет
@@ -4252,7 +4301,135 @@ class Database:
             row = await cursor.fetchone()
         return int(row["total"]) if row else 0
 
-    # ---------- гараж семьи ----------
+    # ---------- вклады и кредиты ----------
+
+    @staticmethod
+    def _deposit(row) -> Deposit:
+        return Deposit(
+            id=int(row["id"]),
+            user_id=int(row["user_id"]),
+            amount=int(row["amount"]),
+            months=int(row["months"]),
+            opened_at=int(row["opened_at"]),
+            paid_until=int(row["paid_until"]),
+        )
+
+    async def deposits_of(self, user_id: int) -> list[Deposit]:
+        """Вклады бойца, сперва те, что кончаются раньше."""
+        async with self.conn.execute(
+            "SELECT * FROM deposits WHERE user_id = ? ORDER BY paid_until, id",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._deposit(row) for row in rows]
+
+    async def deposit_row(self, deposit_id: int, user_id: int) -> Deposit | None:
+        """Один вклад бойца. None — такого у него нет."""
+        async with self.conn.execute(
+            "SELECT * FROM deposits WHERE id = ? AND user_id = ?",
+            (deposit_id, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._deposit(row) if row else None
+
+    async def open_deposit(
+        self, user_id: int, amount: int, months: int, now: int, until: int
+    ) -> int:
+        """Записать вклад. Отдаёт его номер."""
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO deposits (user_id, amount, months, opened_at, paid_until)
+            VALUES (?,?,?,?,?)
+            """,
+            (user_id, amount, months, now, until),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def close_deposit(self, deposit_id: int, user_id: int) -> bool:
+        """Снять вклад. False — его уже сняли."""
+        cursor = await self.conn.execute(
+            "DELETE FROM deposits WHERE id = ? AND user_id = ?",
+            (deposit_id, user_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _loan(row) -> Loan:
+        return Loan(
+            user_id=int(row["user_id"]),
+            amount=int(row["amount"]),
+            months=int(row["months"]),
+            payment=int(row["payment"]),
+            left=int(row["left_pays"]),
+            taken_at=int(row["taken_at"]),
+            due_at=int(row["due_at"]),
+            owed=int(row["owed"]),
+            penalty=int(row["penalty"]),
+            penalty_at=int(row["penalty_at"]),
+        )
+
+    async def loan_of(self, user_id: int) -> Loan | None:
+        """Кредит бойца. None — кредита нет."""
+        async with self.conn.execute(
+            "SELECT * FROM loans WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._loan(row) if row else None
+
+    async def open_loan(
+        self,
+        user_id: int,
+        amount: int,
+        months: int,
+        payment: int,
+        now: int,
+        due_at: int,
+    ) -> bool:
+        """Записать кредит. False — он у бойца уже есть."""
+        try:
+            await self.conn.execute(
+                """
+                INSERT INTO loans (
+                    user_id, amount, months, payment, left_pays,
+                    taken_at, due_at
+                ) VALUES (?,?,?,?,?,?,?)
+                """,
+                (user_id, amount, months, payment, months, now, due_at),
+            )
+        except sqlite3.IntegrityError:  # pragma: no cover - второй кредит
+            return False
+        await self.conn.commit()
+        return True
+
+    async def save_loan(
+        self,
+        user_id: int,
+        left: int,
+        due_at: int,
+        owed: int,
+        penalty: int,
+        penalty_at: int,
+    ) -> None:
+        """Переписать состояние кредита после списаний и пеней."""
+        await self.conn.execute(
+            """
+            UPDATE loans SET left_pays = ?, due_at = ?, owed = ?,
+                             penalty = ?, penalty_at = ?
+            WHERE user_id = ?
+            """,
+            (left, due_at, owed, penalty, penalty_at, user_id),
+        )
+        await self.conn.commit()
+
+    async def close_loan(self, user_id: int) -> bool:
+        """Закрыть кредит: выплачен целиком."""
+        cursor = await self.conn.execute(
+            "DELETE FROM loans WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
 
     # ---------- общежитие ----------
 

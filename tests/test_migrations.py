@@ -33,6 +33,7 @@ from bot.models import Player
 BANK_COLUMNS: tuple[str, ...] = (
     "account_number",
     "account_balance",
+    "account_at",
     "card_at",
     "card_paid_until",
     "pay_from",

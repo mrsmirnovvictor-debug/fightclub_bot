@@ -66,13 +66,15 @@ class Move:
 
 async def open_account(db: Database, player: Player, now: int | None = None) -> str:
     """Открыть счёт. Мгновенно, бесплатно и один на бойца."""
+    moment = now_ts() if now is None else now
     if player.has_account:
         raise BankError("Счёт в Vegas Банке у тебя уже есть — он один на бойца.")
 
     for _ in range(NUMBER_TRIES):
         number = make_number()
-        if await db.open_account(player.user_id, number):
+        if await db.open_account(player.user_id, number, moment):
             player.account_number = number
+            player.account_at = moment
             logger.info("Банк открыл счёт %s бойцу %s", number, player.user_id)
             return number
         # Либо номер занят, либо счёт успели открыть в соседнем окне

@@ -561,9 +561,18 @@ def bank_state(
     balance: int = 3_000,
     cash: int = 1_200,
     prefers: str = "card",
+    job: str = "",
+    deposits: list | None = None,
+    loan=None,
 ) -> dict:
-    """Банк, как его отдаёт сервер: счёт, карта, банкомат и прайс скидок."""
+    """Банк, как его отдаёт сервер: счёт, карта, банкомат и прайс скидок.
+
+    `job` — место работы: от его жалованья банк считает кредит, и без
+    работы кредита нет вовсе. `deposits` и `loan` кладут готовыми: в
+    базу этот сбор не ходит, и подделывать её незачем.
+    """
     from bot.game.classes import Stats
+    from bot.game.credit import LOAN_ACCOUNT_AGE
     from bot.game.health import now_ts
     from bot.models import Player
     from bot.webapp.bank import build_bank
@@ -571,17 +580,52 @@ def bank_state(
     moment = now_ts()
     player = Player(
         user_id=42, nickname="Тайлер", class_code="warrior", location="bank",
-        credits=cash, pay_from=prefers,
+        credits=cash, pay_from=prefers, job_code=job,
         **Stats(strength=10, agility=10, intuition=10, endurance=10).as_dict(),
     )
     if account:
         player.account_number = "VB-1234-5678-9012"
         player.account_balance = balance
+        # Счёт старше недели: иначе банк откажет не по тому поводу,
+        # который проверяет тест
+        player.account_at = moment - LOAN_ACCOUNT_AGE
     if card and account:
         player.card_at = moment - 1_000
         # Не обслужена — значит, оплаченный год позади
         player.card_paid_until = moment + 1_000 if works else moment - 1
-    return build_bank(player, moment)
+    return build_bank(player, moment, deposits=deposits, loan=loan)
+
+
+def made_deposit(amount: int = 2_000, months: int = 3, ripe: bool = False):
+    """Готовый вклад для витрины: дошедший до срока или ещё лежащий."""
+    from bot.game.credit import MONTH, Deposit
+    from bot.game.health import now_ts
+
+    moment = now_ts()
+    opened = moment - MONTH * months if ripe else moment
+    return Deposit(
+        id=1, user_id=42, amount=amount, months=months,
+        opened_at=opened, paid_until=opened + MONTH * months,
+    )
+
+
+def made_loan(amount: int = 10_000, months: int = 12, late: bool = False):
+    """Готовый кредит для витрины: по графику или просроченный."""
+    from bot.game.credit import DAY, MONTH, Loan, monthly_payment
+    from bot.game.health import now_ts
+
+    moment = now_ts()
+    payment = monthly_payment(amount, months)
+    if not late:
+        return Loan(
+            user_id=42, amount=amount, months=months, payment=payment,
+            left=months, taken_at=moment, due_at=moment + MONTH,
+        )
+    return Loan(
+        user_id=42, amount=amount, months=months, payment=payment,
+        left=months - 1, taken_at=moment - MONTH, due_at=moment + MONTH,
+        owed=payment, penalty=0, penalty_at=moment - DAY * 10,
+    )
 
 
 def purse_state(
@@ -9004,13 +9048,16 @@ async def open_bank(pw, server, bank=None):
     return browser, page
 
 
-async def test_the_bank_stands_on_four_tabs(server):
+async def test_the_bank_stands_on_six_tabs(server):
     async with async_playwright() as pw:
         browser, page = await open_bank(pw, server)
         await page.wait_for_selector("#bank-tabs")
 
         tabs = await page.locator("#bank-tabs .chip").all_inner_texts()
-        assert tabs == ["Новый продукт", "Счета", "Банкомат", "Выписка"]
+        assert tabs == [
+            "Новый продукт", "Счета", "Вклады", "Кредиты", "Банкомат",
+            "Выписка",
+        ]
         await browser.close()
 
 
@@ -9121,6 +9168,154 @@ async def test_a_bank_that_gave_everything_stops_offering(server):
 
         assert await page.locator(".offer").count() == 0
         assert "уже есть" in await page.locator("#bank-body .screen-note").first.inner_text()
+        await browser.close()
+
+
+# ---------- вклады и кредиты ----------
+#
+# Считает всё сервер: и доход вклада, и аннуитет. Витрина обязана
+# показать то, что ей дали, и не предлагать того, в чём банк отказал.
+
+
+async def test_the_deposits_tab_names_the_rate_and_the_three_terms(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Вклады").click()
+        await page.wait_for_selector("#bank-body .shelf")
+
+        heads = await page.locator("#bank-body .shelf-head").all_inner_texts()
+        assert "13% годовых" in heads[0]
+        terms = await page.locator("#bank-body .thing-buttons .btn").all_inner_texts()
+        assert [one.split(" мес.")[0] for one in terms] == ["1", "2", "3"]
+        # Своих вкладов нет — и полка говорит об этом, а не прячется
+        assert "Вкладов нет" in await page.locator(".shelf-empty").inner_text()
+        await browser.close()
+
+
+async def test_a_ripe_deposit_offers_the_interest_and_a_young_one_does_not(
+    server,
+):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(deposits=[made_deposit(ripe=True)])
+        )
+        await page.locator("#bank-tabs .chip", has_text="Вклады").click()
+        await page.wait_for_selector(".paper")
+
+        assert await page.locator(".paper.ready").count() == 1
+        rows = await page.locator(".paper .rows .value").all_inner_texts()
+        assert "2\u00a0000 💰 на 3 мес." in rows
+        assert "Забрать с процентами" in await page.locator(
+            ".paper .btn"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_a_deposit_before_its_term_is_taken_back_without_interest(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(deposits=[made_deposit()])
+        )
+        await page.locator("#bank-tabs .chip", has_text="Вклады").click()
+        await page.wait_for_selector(".paper")
+
+        assert await page.locator(".paper.ready").count() == 0
+        assert "Забрать досрочно" in await page.locator(".paper .btn").inner_text()
+        await browser.close()
+
+
+async def test_the_loans_tab_tells_the_unemployed_why_not(server):
+    """Отказ стоит на экране словами, а не спрятанной кнопкой."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(pw, server)
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#bank-body .thing-warn")
+
+        assert "трудоустройстве" in await page.locator(".thing-warn").inner_text()
+        assert "Кредит недоступен" in await page.locator(
+            "#bank-body .thing-buttons .btn"
+        ).inner_text()
+        # Калькулятор всё равно показан: цену знают до отказа
+        rows = await page.locator("#loan-calc li").all_inner_texts()
+        assert len(rows) == 9, "по строке на каждый срок от четырёх до двенадцати"
+        assert await page.locator("#loan-calc li.dim").count() == 9
+        await browser.close()
+
+
+async def test_the_calculator_dims_the_terms_the_income_cannot_carry(server):
+    """Главное условие кредита видно числами: платёж против дохода."""
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(job="bank_head")
+        )
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#loan-calc")
+
+        rows = page.locator("#loan-calc li")
+        assert await rows.count() == 9
+        dim = await page.locator("#loan-calc li.dim").count()
+        assert 0 < dim < 9, "короткие сроки не по доходу, долгие — по"
+        # Серая строка объясняется, а не молчит
+        assert "не по доходу" in await rows.first.inner_text()
+        assert "платёж" in await rows.last.inner_text()
+        assert "Взять кредит" in await page.locator(
+            "#bank-body .thing-buttons .btn"
+        ).inner_text()
+        await browser.close()
+
+
+async def test_taking_a_loan_asks_for_the_term_first(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server, bank=bank_state(job="bank_head")
+        )
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#loan-calc")
+        await page.locator("#bank-body .thing-buttons .btn").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert "Взять кредит" == await page.locator("#sheet-title").inner_text()
+        assert "Сперва срок" in await page.locator("#sheet-note").inner_text()
+        terms = await page.locator("#sheet-list .btn").all_inner_texts()
+        assert terms and all("мес." in one for one in terms)
+        await browser.close()
+
+
+async def test_a_fighter_with_a_loan_sees_the_schedule_not_the_offer(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server,
+            bank=bank_state(job="bank_head", loan=made_loan()),
+        )
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#bank-body .shelf")
+
+        assert "Мой кредит" in await page.locator(".shelf-head").inner_text()
+        # Калькулятора нет: кредит один на бойца
+        assert await page.locator("#loan-calc").count() == 0
+        labels = await page.locator("#bank-body .rows .label").all_inner_texts()
+        assert "Платёж" in labels and "Следующее списание" in labels
+        assert "само" in await page.locator(".thing-note").inner_text()
+        await browser.close()
+
+
+async def test_an_overdue_loan_shows_the_penalty_and_a_way_to_pay_it(server):
+    async with async_playwright() as pw:
+        browser, page = await open_bank(
+            pw, server,
+            bank=bank_state(job="bank_head", loan=made_loan(late=True)),
+        )
+        await page.locator("#bank-tabs .chip", has_text="Кредиты").click()
+        await page.wait_for_selector("#bank-body .shelf")
+
+        assert "просрочка" in await page.locator(".shelf-count").inner_text()
+        labels = await page.locator("#bank-body .rows .label").all_inner_texts()
+        assert "Просрочено" in labels and "Пени" in labels
+        assert "Всего к оплате" in labels
+        assert "капают" in await page.locator(".thing-warn").inner_text()
+        assert "Погасить просрочку" in await page.locator(
+            "#bank-body .thing-buttons .btn"
+        ).inner_text()
         await browser.close()
 
 

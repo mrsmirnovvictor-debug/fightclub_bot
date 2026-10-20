@@ -500,6 +500,14 @@ async def _at(request: web.Request, service: Service, own: bool = True):
     # Свести надо до того, как где-то спросят, чем боец платит
     if player.settle_card(now_ts()):
         await request.app[DB_KEY].save_player(player)
+    # Той же дверью списывается платёж по кредиту: будить бота в день
+    # платежа нечем, а приходить в город — это и есть прийти. Спрашиваем
+    # базу только у тех, у кого есть карта: кредит выдают на неё, и у
+    # большинства бойцов её нет вовсе
+    if player.has_card:
+        from bot.credit_service import settle as settle_loan
+
+        await settle_loan(request.app[DB_KEY], player, now_ts())
     require(player, service)
     # Дверь, в которую вошли, — событие для бармена: часть его заданий в
     # том и состоит, чтобы дойти и посмотреть. Службы о квестах не знают
@@ -1323,6 +1331,8 @@ async def _bank_state(request: web.Request, player, said: str = "") -> web.Respo
         player,
         moment,
         said,
+        deposits=await db.deposits_of(player.user_id),
+        loan=await db.loan_of(player.user_id),
         statement=statement_payload(
             await db.card_log(player.user_id, since, until),
             days=days,
@@ -1341,6 +1351,42 @@ async def api_bank(request: web.Request) -> web.Response:
     """Банк: счёт, карта, банкомат и прайс скидок."""
     player = await _at(request, Service.BANK)
     return await _bank_state(request, player)
+
+
+async def _bank_credit(db, player, action: str, data: dict) -> str:
+    """Вклады и кредиты: открыть, снять, взять, погасить.
+
+    Отказ банка — такой же отказ, как «не хватает кредитов», и едет он
+    тем же путём: ловит его та же сеть, что и прочие банковские.
+    """
+    from bot.bank_service import BankError
+    from bot.credit_service import (
+        CreditError,
+        close_deposit,
+        open_deposit,
+        repay,
+        take_loan,
+    )
+
+    moment = now_ts()
+    try:
+        if action == "open_deposit":
+            return await open_deposit(
+                db, player, _int_field(data, "amount"),
+                int(data.get("months", 0) or 0), moment,
+            )
+        if action == "close_deposit":
+            return await close_deposit(
+                db, player, int(data.get("id", 0) or 0), moment
+            )
+        if action == "loan":
+            return await take_loan(
+                db, player, _int_field(data, "amount"),
+                int(data.get("months", 0) or 0), moment,
+            )
+        return await repay(db, player, moment)
+    except CreditError as error:
+        raise BankError(str(error)) from error
 
 
 async def api_bank_action(request: web.Request) -> web.Response:
@@ -1370,6 +1416,8 @@ async def api_bank_action(request: web.Request) -> web.Response:
                 db, player, str(data.get("number") or ""), _int_field(data, "amount")
             )
             said = f"Переведено {move.amount} 💰 бойцу {name}."
+        elif action in ("open_deposit", "close_deposit", "loan", "repay"):
+            said = await _bank_credit(db, player, action, data)
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except BankError as error:
