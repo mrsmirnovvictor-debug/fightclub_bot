@@ -458,6 +458,29 @@ VACANCIES: tuple[Vacancy, ...] = (
         seats=4, needs=LICENCE,
         note="Везти туда, куда сказали, и молчать про остальное.",
     ),
+
+    # Бизнес-центр: разработка. Ступеней три, и разница между ними не в
+    # дипломе — он один на всех, — а в стаже: младшего берут сразу после
+    # университета, старшего не берут и с дипломом, пока не отработал
+    # своё. Так же устроен банк и так же полиция
+    Vacancy(
+        "dev_senior", "Старший разработчик", "🧠",
+        salary=1_500, hours=STAFF_HOURS, place="office_building",
+        seats=2, needs="it", months=3,
+        note="Отвечать за то, что написали другие.",
+    ),
+    Vacancy(
+        "dev_middle", "Разработчик", "💻",
+        salary=1_000, hours=STAFF_HOURS, place="office_building",
+        seats=4, needs="it", months=1,
+        note="Делать так, чтобы к этому больше не возвращались.",
+    ),
+    Vacancy(
+        "dev_junior", "Младший разработчик", "⌨️",
+        salary=600, hours=STAFF_HOURS, place="office_building",
+        seats=6, needs="it",
+        note="Писать код и спрашивать, пока спрашивать не стыдно.",
+    ),
 )
 
 WORK_IMAGE = f"{MAGIC}/work_contract.jpeg"

@@ -1060,9 +1060,9 @@ async def test_a_holder_who_keeps_the_norm_is_not_touched_by_others(db):
 
 
 def test_the_diploma_jobs_are_the_ones_the_city_promised():
-    """Двадцать мест под диплом: дом, кол-во, требование, стаж и деньги."""
+    """Двадцать три места под диплом: дом, кол-во, требование, стаж, деньги."""
     rows = {one.code: one for one in VACANCIES if one.needs}
-    assert len(rows) == 20
+    assert len(rows) == 23
 
     def check(code, place, seats, needs, months, salary):
         one = rows[code]
@@ -1089,6 +1089,10 @@ def test_the_diploma_jobs_are_the_ones_the_city_promised():
     check("senior_officer", "military_base", 2, "cadet", 1, 700)
     check("junior_officer", "military_base", 4, "cadet", 0, 500)
     check("taxi_driver", "taxi_depot", 4, "licence", 0, 500)
+    # Разработка: один диплом на три ступени, и разделяет их стаж
+    check("dev_senior", "office_building", 2, "it", 3, 1_500)
+    check("dev_middle", "office_building", 4, "it", 1, 1_000)
+    check("dev_junior", "office_building", 6, "it", 0, 600)
     # Пять менеджеров в пяти домах — одно место, пять дверей
     sales = [one for one in rows.values() if one.needs == "management"]
     assert len(sales) == 5
@@ -1328,3 +1332,50 @@ async def test_the_board_says_why_the_service_is_shut(db):
     )
     said = lacking(player, get_vacancy("police_patrol"), moment_at())
     assert "не берут тех, кто в семье" in said and "Коза Ностра" in said
+
+
+async def test_the_office_building_hires_three_steps_of_developers(db):
+    """Бизнес-центр: три ступени разработки на один IT-диплом.
+
+    Доска агентства, а не дом: в центр приходят по вакансии, как в банк
+    и в больницу. Диплом один на всех, разделяет их стаж.
+    """
+    from bot.game.work import agency_board
+
+    devs = [one for one in agency_board() if one.place == "office_building"]
+
+    assert [one.code for one in devs] == [
+        "dev_senior", "dev_middle", "dev_junior"
+    ]
+    assert all(one.needs == "it" for one in devs)
+    assert [one.months for one in devs] == [3, 1, 0]
+    assert [one.salary for one in devs] == [1_500, 1_000, 600]
+    # Каждому диплом назван так же, как его зовёт университет
+    from bot.game.study import get_course
+
+    assert devs[0].education == get_course("it").diploma_title
+
+
+async def test_a_developer_is_hired_with_the_it_diploma(db):
+    """Без диплома в разработку не берут, с диплом́ом — берут младшим."""
+    from bot.game.study import get_course
+    from bot.work_service import apply, lacking
+
+    moment = moment_at(day=5, hour=10)
+    seeker = await stand(db, make_player(location="hr_agency"))
+    junior = get_vacancy("dev_junior")
+
+    assert "Диплом об IT-специальности" in lacking(seeker, junior, moment)
+    # Теста у места под диплом нет: бумага и есть его тест
+    with pytest.raises(WorkError, match="Диплом"):
+        await apply(db, seeker, "dev_junior", [], now=moment)
+
+    seeker.diplomas.append(get_course("it").diploma)
+    await db.save_player(seeker)
+    attempt = await apply(db, seeker, "dev_junior", [], now=moment)
+
+    assert attempt.hired and attempt.vacancy.title == "Младший разработчик"
+    assert (await db.get_player(seeker.user_id)).job_code == "dev_junior"
+    # А на старшего не берут и с дипломом: нужен стаж
+    senior = get_vacancy("dev_senior")
+    assert "от 3 месяцев" in lacking(seeker, senior, moment)
