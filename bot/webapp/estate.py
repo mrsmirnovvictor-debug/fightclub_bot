@@ -178,7 +178,7 @@ def parking_payload(
     if lease is None:
         return {
             "mine": False, "slots": 0, "free": 0, "locked": True,
-            "cars": [], "keys": [],
+            "shared": False, "cars": [], "keys": [],
         }
     rows = list(cars or [])
     return {
@@ -187,6 +187,9 @@ def parking_payload(
         "free": max(0, FLAT_PARKING - len(rows)),
         # Срок вышел — ни поставить, ни забрать: не платил, не входишь
         "locked": lease.locked(moment),
+        # Двор свой: чужой машине тут взяться неоткуда, и уезжать на
+        # чужой — тоже. Общая парковка в городе одна, в особняке
+        "shared": False,
         "cars": rows,
         # Поставить можно то, что при себе: стоящую машину второй раз не
         # поставить, служебную не поставить вовсе

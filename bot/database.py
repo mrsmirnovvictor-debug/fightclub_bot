@@ -4336,10 +4336,15 @@ class Database:
         return cursor.rowcount > 0
 
     async def parked_cars(self, parked: str, parked_id: int, now: int) -> list[dict]:
-        """Что стоит на этой парковке. Кончившиеся аренды не считаются."""
+        """Что стоит на этой парковке. Кончившиеся аренды не считаются.
+
+        Номер строки отдаём наружу: на одной парковке могут стоять два
+        одинаковых хэтчбека разных хозяев, и «забери хэтчбек» тогда
+        ничего не означает.
+        """
         async with self.conn.execute(
             """
-            SELECT user_id, code, until, took_at FROM cars
+            SELECT id, user_id, code, until, took_at FROM cars
             WHERE parked = ? AND parked_id = ? AND (until = 0 OR until > ?)
             ORDER BY took_at, id
             """,
@@ -4347,6 +4352,36 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def take_parked_car(
+        self, car_id: int, parked: str, parked_id: int, user_id: int
+    ) -> dict | None:
+        """Забрать машину с общей парковки себе. None — её там уже нет.
+
+        Хозяина переписываем у той же строки: ни машина, ни срок аренды
+        от смены ключей не меняются. Двух одинаковых моделей на одного
+        бойца база не держит (`UNIQUE (user_id, code)`) — тогда
+        возвращаем отказ, а не роняем запрос.
+        """
+        async with self.conn.execute(
+            "SELECT id, user_id, code, until FROM cars "
+            "WHERE id = ? AND parked = ? AND parked_id = ?",
+            (car_id, parked, parked_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        code = str(row["code"])
+        was = int(row["user_id"])
+        if was != user_id and await self.car_row(user_id, code) is not None:
+            return {"taken": False, "code": code, "owner": was}
+        await self.conn.execute(
+            "UPDATE cars SET user_id = ?, parked = '', parked_id = 0 "
+            "WHERE id = ?",
+            (user_id, car_id),
+        )
+        await self.conn.commit()
+        return {"taken": True, "code": code, "owner": was}
 
     async def empty_parking(self, parked: str, parked_id: int) -> int:
         """Выгнать с парковки всё: семьи больше нет или съём кончился.

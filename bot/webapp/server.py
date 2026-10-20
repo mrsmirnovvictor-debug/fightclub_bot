@@ -2340,24 +2340,28 @@ async def api_house_flats(request: web.Request) -> web.Response:
 
 
 async def _clan_parking(db, player, action: str, data: dict) -> str:
-    """Парковка особняка: оставить свою машину или забрать её.
+    """Парковка особняка: оставить машину или уехать на любой из стоящих.
 
-    Своя семья и своя машина — других прав тут нет: чужую с парковки не
-    выводят ни Дон, ни приближённые, потому что она чужая.
+    Гараж семьи общий: ставят все свои и берут все свои, чья бы машина
+    ни стояла. Чин тут ничего не решает — ни Дона, ни приближённых
+    парковка не спрашивает.
     """
-    from bot.car_service import CarError, leave, pick_up
+    from bot.car_service import CarError, leave, take_away
     from bot.game.cars import IN_CLAN
 
     standing = player.clan
     if standing is None:
         raise ClanError("Парковка особняка — для своих. Вступи в семью.")
-    code = str(data.get("car") or "")
     try:
         if action == "park":
             return await leave(
-                db, player, code, IN_CLAN, standing.clan.id, now_ts()
+                db, player, str(data.get("car") or ""),
+                IN_CLAN, standing.clan.id, now_ts(),
             )
-        return await pick_up(db, player, code, now_ts())
+        return await take_away(
+            db, player, int(data.get("id", 0)),
+            IN_CLAN, standing.clan.id, now_ts(),
+        )
     except CarError as error:
         raise ClanError(str(error)) from error
 

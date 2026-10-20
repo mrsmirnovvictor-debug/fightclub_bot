@@ -14145,8 +14145,8 @@ function renderEstateTab(estate) {
       estate.garage || {},
       mafiaAction,
       "🅿️ Парковка особняка",
-      "Ставит каждый свою, забирает каждый свою: на парковке машина "
-        + "остаётся хозяйской. Видит её вся семья."
+      "Гараж общий: ставят все свои, уезжают все свои — на любой из "
+        + "стоящих. Чин тут ничего не решает."
     )
   );
   body.appendChild(robberyBoxFamily(estate.robbery || {}));
@@ -14194,11 +14194,11 @@ async function stationCarAction(payload) {
  *
  * Одна вёрстка на два дома — гараж особняка и место при квартире: это
  * одна и та же полка, только для машин, и разница между ними в числе
- * мест, а не в том, как они выглядят.
+ * мест и в том, чью машину можно увести.
  *
- * Машина на парковке остаётся хозяйской: забрать её может только он, а
- * видеть — все, кому парковка открыта. Поэтому у своей машины кнопка, а
- * у чужой — имя хозяина. */
+ * `shared` — парковка общая: в особняке уезжают на любой стоящей
+ * машине, и кнопка стоит у каждой. У квартиры парковка своя, и там
+ * чужой машине взяться неоткуда. */
 function parkingBox(parking, act, title, note) {
   const box = document.createElement("section");
   box.className = "shelf";
@@ -14219,7 +14219,9 @@ function parkingBox(parking, act, title, note) {
 
   const list = document.createElement("div");
   list.className = "shelf-list";
-  cars.forEach((one) => list.appendChild(parkedCar(one, act, parking.locked)));
+  cars.forEach((one) =>
+    list.appendChild(parkedCar(one, act, parking.locked, parking.shared))
+  );
   box.appendChild(list);
 
   if (!parking.free || parking.locked) return box;
@@ -14247,22 +14249,28 @@ function parkingBox(parking, act, title, note) {
   return box;
 }
 
-/** Машина на парковке: чья она и можно ли её забрать. */
-function parkedCar(one, act, locked) {
+/** Машина на парковке: чья она и можно ли её забрать.
+ *
+ * На общей парковке кнопка у каждой машины, и у чужой она говорит
+ * прямо: не «забрать», а «уехать». Подпись с хозяином остаётся — по ней
+ * видно, что машина тут не ничья, просто гараж общий. */
+function parkedCar(one, act, locked, shared) {
   const box = carCard(one);
-  const rows = [
-    ["Хозяин", one.mine ? "ты" : one.owner],
-    [one.own ? "Своя" : "Снята до", one.own ? "насовсем" : one.left_text],
-  ];
-  box.appendChild(paperRows(rows));
-  if (!one.mine) return box;
+  box.appendChild(
+    paperRows([
+      ["Поставил", one.mine ? "ты" : one.owner],
+      [one.own ? "Своя" : "Снята до", one.own ? "насовсем" : one.left_text],
+    ])
+  );
+  if (!one.mine && !shared) return box;
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
   buttons.appendChild(
-    button("Забрать", {
+    button(one.mine ? "Забрать" : "Уехать на ней", {
+      secondary: !one.mine,
       disabled: Boolean(locked),
       hint: "Квартира заперта: сперва продли аренду.",
-      onClick: () => act({ action: "unpark", car: one.code }),
+      onClick: () => act({ action: "unpark", car: one.code, id: one.id }),
     })
   );
   box.appendChild(buttons);

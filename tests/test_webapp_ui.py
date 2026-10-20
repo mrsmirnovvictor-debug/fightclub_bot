@@ -400,7 +400,8 @@ def parked(code: str = "street_compact", mine: bool = True, owner: str = "ты")
     return {
         "code": car.code, "title": car.title, "image": car.image,
         "times": car.times, "times_text": car.times_text, "note": car.note,
-        "user_id": 42 if mine else 43, "owner": owner, "mine": mine,
+        "id": 1 if mine else 2, "user_id": 42 if mine else 43,
+        "owner": owner, "mine": mine,
         "own": True, "left": 0, "left_text": "",
     }
 
@@ -11020,6 +11021,7 @@ async def test_the_family_page_shows_the_garage_and_the_licences(server, db):
         )
         assert await parking.locator(".car").count() == 0
         assert "Машину покупают или снимают" in await parking.inner_text()
+        assert "Гараж общий" in await parking.inner_text()
 
         shop = await page.locator("#mafia-estate .shelf").last.inner_text()
         # Нападений на руках, размер пачки и доля — всё числом
@@ -11301,7 +11303,7 @@ async def test_the_flat_parking_shows_the_car_and_the_button(server, db):
         assert "· 1 из 1" in await parking.locator(".shelf-head").inner_text()
         said = await parking.inner_text()
         assert "Городской хэтчбек" in said and "дорога ×2" in said
-        assert "Хозяин" in said and "ты" in said
+        assert "Поставил" in said and "ты" in said
         # Картинка машины — та же полоса 16:9, что в салоне
         shot = await parking.locator(".car-pic img").bounding_box()
         assert shot["width"] > shot["height"] * 1.6
@@ -11347,6 +11349,69 @@ async def test_the_empty_flat_parking_offers_the_keys(server, db):
         await parking.locator(".btn").first.click()
         sent = await page.evaluate("window.sent")
         assert sent == {"action": "park", "car": "street_compact"}
+        await browser.close()
+
+
+
+async def test_the_mansion_parking_lets_anyone_drive_away(server, db):
+    """Гараж особняка общий: у чужой машины кнопка «Уехать на ней».
+
+    Своя машина забирается, чужая — уводится, и обе кнопки стоят рядом:
+    по подписи видно, кто поставил, но замка у неё нет.
+    """
+    from bot.webapp.clans import build_clan_page, build_estate, build_mansion
+
+    don, roster = a_family(vault=0)
+    estate = build_estate(
+        don, [],
+        cars=[parked(mine=False, owner="Марла"), parked("neon_coupe")],
+        keys=car_keys("apex_hypercar"),
+    )
+    listing = build_mansion(don, [roster.clan], [], TOKEN)
+    opened = build_mansion(
+        don, [roster.clan], [], TOKEN,
+        opened=build_clan_page(don, roster, [], [], estate, TOKEN),
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, build_card(
+            don, TOKEN, viewer_id=don.user_id
+        ))
+        await mansion_pages(page, listing, opened)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "mafia")
+        await page.wait_for_selector("#mafia-clans .shelf")
+        await page.locator(".clan-item .clan-open").click()
+        await page.wait_for_selector("#mafia-family:not(.hidden)")
+        await page.locator("#mafia-tabs .chip", has_text="Имущество").click()
+        await page.wait_for_selector("#mafia-estate:not(.hidden)")
+
+        parking = page.locator(
+            "#mafia-estate .shelf", has_text="Парковка особняка"
+        )
+        assert "· 2 из 3" in await parking.locator(".shelf-head").inner_text()
+        said = await parking.inner_text()
+        # Подпись у каждой машины: кто поставил
+        assert "Марла" in said and "ты" in said
+        cars = parking.locator(".car")
+        assert await cars.nth(0).locator(".btn").inner_text() == "Уехать на ней"
+        assert await cars.nth(1).locator(".btn").inner_text() == "Забрать"
+        # И третье место ещё свободно: на нём кнопка со своей машиной
+        assert "Поставить · Элитный гиперкар" in said
+
+        await page.evaluate(
+            """() => {
+                window.mafiaAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+                pickClanTab("estate");
+            }"""
+        )
+        await parking.locator(".car").first.locator(".btn").click()
+        sent = await page.evaluate("window.sent")
+        # Первой стоит чужая машина: её и увели, по номеру её строки
+        assert sent["action"] == "unpark" and sent["id"] == 2
         await browser.close()
 
 

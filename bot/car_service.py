@@ -334,14 +334,48 @@ async def pick_up(
     return f"{car.title} снова при тебе. За руль — в карточке."
 
 
+async def take_away(
+    db: Database,
+    player: Player,
+    car_id: int,
+    parked: str,
+    parked_id: int,
+    now: int | None = None,
+) -> str:
+    """Забрать машину с общей парковки: ключи меняют хозяина.
+
+    На парковке особняка машина общая: кто взял, того она и есть. Это
+    не кража — это и есть смысл общего гаража: поставил свою, уехал на
+    любой. Квартира устроена иначе, и забирать оттуда нечего, кроме
+    своего, — там и парковка своя.
+    """
+    moment = now_ts() if now is None else now
+    await sweep(db, moment)
+    answer = await db.take_parked_car(car_id, parked, parked_id, player.user_id)
+    if answer is None:
+        raise CarError("Этой машины на парковке уже нет.")
+    car = get_car(str(answer["code"]))
+    title = car.title if car else "Машина"
+    if not answer["taken"]:
+        raise CarError(f"Такая у тебя уже есть: {title}.")
+    logger.info(
+        "Боец %s забрал %s с парковки %s:%s (была у %s)",
+        player.user_id, answer["code"], parked, parked_id, answer["owner"],
+    )
+    if int(answer["owner"]) != player.user_id:
+        return f"{title} теперь твоя. Ключи при тебе, за руль — в карточке."
+    return f"{title} снова при тебе. За руль — в карточке."
+
+
 async def parked_at(
     db: Database, parked: str, spot: int, viewer: Player,
     now: int | None = None,
 ) -> list[dict]:
     """Что стоит на этой парковке: чьё, какое и до какого часа.
 
-    Видят парковку все, кому она открыта — семья свою, жилец свою, — а
-    забрать может только хозяин машины: она его и на парковке.
+    Видят парковку все, кому она открыта: семья свою, жилец свою. Чья
+    машина — написано у каждой, но в особняке это только подпись:
+    забрать её может любой свой.
     """
     moment = now_ts() if now is None else now
     await sweep(db, moment)
@@ -353,6 +387,9 @@ async def parked_at(
         owner = await db.get_player(int(row["user_id"]))
         left = max(0, int(row["until"]) - moment) if row["until"] else 0
         out.append({
+            # Номер строки, а не код: двух одинаковых хэтчбеков разных
+            # хозяев кодом не различить
+            "id": int(row["id"]),
             "code": car.code,
             "title": car.title,
             "image": car.image,
@@ -466,6 +503,7 @@ __all__ = [
     "park",
     "parked_at",
     "pick_up",
+    "take_away",
     "release_strangers",
     "rent",
     "sweep",

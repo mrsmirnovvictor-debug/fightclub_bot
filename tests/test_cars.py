@@ -611,9 +611,9 @@ async def test_the_service_car_leaves_with_the_job(db):
 # ---------- парковки: особняк и своя квартира ----------
 
 
-async def test_the_mansion_parking_holds_three_and_keeps_the_owner(db):
-    """Парковка особняка: три места, и машина на них остаётся хозяйской."""
-    from bot.car_service import leave, parked_at, pick_up
+async def test_the_mansion_parking_holds_three_and_shows_who_parked(db):
+    """Парковка особняка: три места, и у каждой машины видно, кто её поставил."""
+    from bot.car_service import leave, parked_at, take_away
     from bot.clan_service import found, _join
     from bot.game.cars import CLAN_PARKING, IN_CLAN
 
@@ -624,14 +624,13 @@ async def test_the_mansion_parking_holds_three_and_keeps_the_owner(db):
     don = await db.get_player(1)
     mate = await db.get_player(2)
     await buy(db, don, HATCH, NOW)
-    await buy(db, mate, HYPER, NOW)
 
     said = await leave(db, don, HATCH, IN_CLAN, clan.id, NOW)
 
     assert "стоит на парковке" in said
     rows = await parked_at(db, IN_CLAN, clan.id, mate, NOW)
     assert len(rows) == 1
-    # Своя семья машину видит, но хозяин у неё прежний
+    # Кто поставил — видно, и своим и чужим
     assert rows[0]["owner"] == "Дон" and rows[0]["mine"] is False
     assert (await parked_at(db, IN_CLAN, clan.id, don, NOW))[0]["mine"] is True
     # Ключи при хозяине: в них видно, что машина стоит
@@ -642,10 +641,94 @@ async def test_the_mansion_parking_holds_three_and_keeps_the_owner(db):
     # Второй раз ту же машину не поставить
     with pytest.raises(CarError, match="и так стоит"):
         await leave(db, don, HATCH, IN_CLAN, clan.id, NOW)
-    # А забрать — только хозяину, и после этого она снова при нём
-    assert "снова при тебе" in await pick_up(db, don, HATCH, NOW)
+    # Хозяин забирает своё — и она снова при нём
+    assert "снова при тебе" in await take_away(
+        db, don, rows[0]["id"], IN_CLAN, clan.id, NOW
+    )
     assert await parked_at(db, IN_CLAN, clan.id, don, NOW) == []
     assert CLAN_PARKING == 3
+
+
+async def test_the_mansion_garage_is_shared_by_the_whole_family(db):
+    """Гараж общий: уехать можно на любой стоящей машине, чья бы она ни была.
+
+    Это не кража, а смысл общего гаража: поставил свою — уехал на
+    любой. Чин тут ничего не решает, и спрашивать его незачем.
+    """
+    from bot.car_service import leave, parked_at, take_away
+    from bot.clan_service import found, _join
+    from bot.game.cars import IN_CLAN
+
+    don = await licensed(db, make_player(1, "Дон", where="mafia_mansion"))
+    clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
+    mate = await licensed(db, make_player(2, "Боец", where="mafia_mansion"))
+    await _join(db, mate, clan, NOW)
+    don = await db.get_player(1)
+    mate = await db.get_player(2)
+    await buy(db, don, HYPER, NOW)
+    await leave(db, don, HYPER, IN_CLAN, clan.id, NOW)
+    standing = (await parked_at(db, IN_CLAN, clan.id, mate, NOW))[0]
+
+    said = await take_away(db, mate, standing["id"], IN_CLAN, clan.id, NOW)
+
+    assert "теперь твоя" in said
+    # Машина сменила хозяина целиком: у рядового она в ключах, у дона нет
+    assert [one["code"] for one in await mine(db, mate, NOW)] == [HYPER]
+    assert await mine(db, await db.get_player(1), NOW) == []
+    assert await parked_at(db, IN_CLAN, clan.id, mate, NOW) == []
+    # И он может сесть за руль: машина при нём, а не на парковке
+    fresh = await db.get_player(2)
+    assert "под тобой" in await wheel(db, fresh, HYPER, NOW)
+
+
+async def test_the_same_model_twice_does_not_fit_one_fighter(db):
+    """Двух одинаковых машин на бойца не бывает — и отказ об этом говорит."""
+    from bot.car_service import leave, parked_at, take_away
+    from bot.clan_service import found, _join
+    from bot.game.cars import IN_CLAN
+
+    don = await licensed(db, make_player(1, "Дон", where="mafia_mansion"))
+    clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
+    mate = await licensed(db, make_player(2, "Боец", where="mafia_mansion"))
+    await _join(db, mate, clan, NOW)
+    don = await db.get_player(1)
+    mate = await db.get_player(2)
+    await buy(db, don, HATCH, NOW)
+    await buy(db, mate, HATCH, NOW)
+    await leave(db, don, HATCH, IN_CLAN, clan.id, NOW)
+    standing = (await parked_at(db, IN_CLAN, clan.id, mate, NOW))[0]
+
+    with pytest.raises(CarError, match="уже есть"):
+        await take_away(db, mate, standing["id"], IN_CLAN, clan.id, NOW)
+
+    # Машина осталась на парковке и за прежним хозяином
+    rows = await parked_at(db, IN_CLAN, clan.id, mate, NOW)
+    assert len(rows) == 1 and rows[0]["user_id"] == 1
+
+
+async def test_a_car_taken_from_the_parking_keeps_its_rent(db):
+    """Снятая машина уезжает с парковки со своим сроком, а не насовсем."""
+    from bot.car_service import leave, parked_at, take_away
+    from bot.clan_service import found, _join
+    from bot.game.cars import IN_CLAN
+
+    don = await licensed(db, make_player(1, "Дон", where="mafia_mansion"))
+    clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
+    mate = await licensed(db, make_player(2, "Боец", where="mafia_mansion"))
+    await _join(db, mate, clan, NOW)
+    don = await db.get_player(1)
+    mate = await db.get_player(2)
+    await rent(db, don, HATCH, "day", NOW)
+    await leave(db, don, HATCH, IN_CLAN, clan.id, NOW)
+    standing = (await parked_at(db, IN_CLAN, clan.id, mate, NOW))[0]
+    assert standing["own"] is False
+
+    await take_away(db, mate, standing["id"], IN_CLAN, clan.id, NOW)
+
+    row = await db.car_row(2, HATCH)
+    assert row["until"] == NOW + DAY, "срок аренды не меняется от смены ключей"
+    # И кончится он для нового хозяина так же, как кончился бы для прежнего
+    assert await mine(db, mate, NOW + DAY) == []
 
 
 async def test_the_mansion_parking_runs_out_of_places(db):
@@ -803,14 +886,18 @@ async def test_the_mansion_parks_a_car_from_the_estate_tab(db, client):
     assert garage["free"] == 2 and garage["keys"] == []
     assert garage["cars"][0]["mine"] is True
 
+    # Забирают по номеру строки, а не по модели: на парковке могут
+    # стоять два одинаковых хэтчбека разных хозяев
     answer = await client.post(
         "/api/mafia",
-        json={"action": "unpark", "car": HATCH, "open": clan.id},
+        json={"action": "unpark", "id": garage["cars"][0]["id"],
+              "open": clan.id},
         headers=headers(),
     )
     assert answer.status == 200
     body = await answer.json()
     assert body["opened"]["estate"]["garage"]["cars"] == []
+    assert "снова при тебе" in body["said"]
 
 
 async def test_the_flat_parks_a_car_from_its_own_screen(db, client):
@@ -863,3 +950,58 @@ async def test_a_car_is_not_parked_at_a_strange_door(db, client):
     assert "своей квартиры" in (await answer.json())["error"]
     body = await (await client.get("/api/flats", headers=headers())).json()
     assert body["parking"]["mine"] is False
+
+
+async def test_a_mate_drives_away_from_the_mansion_through_the_app(db, client):
+    """Рядовой уезжает с общей парковки на машине дона — одной кнопкой."""
+    from bot.car_service import leave
+    from bot.clan_service import found, _join
+    from bot.game.cars import IN_CLAN
+
+    don = await licensed(db, make_player(1, "Дон", where="mafia_mansion"))
+    clan = await found(db, don, "Коза Ностра", "black_ravens", now=NOW)
+    mate = await licensed(db, make_player(42, "Боец", where="mafia_mansion"))
+    await _join(db, mate, clan, NOW)
+    don = await db.get_player(1)
+    await buy(db, don, HYPER, NOW)
+    await leave(db, don, HYPER, IN_CLAN, clan.id, NOW)
+
+    body = await (await client.get(
+        f"/api/mafia?clan={clan.id}", headers=headers()
+    )).json()
+    garage = body["opened"]["estate"]["garage"]
+    assert garage["shared"] is True
+    standing = garage["cars"][0]
+    assert standing["mine"] is False and standing["owner"] == "Дон"
+
+    answer = await client.post(
+        "/api/mafia",
+        json={"action": "unpark", "id": standing["id"], "open": clan.id},
+        headers=headers(),
+    )
+
+    assert answer.status == 200
+    body = await answer.json()
+    assert "теперь твоя" in body["said"]
+    assert body["opened"]["estate"]["garage"]["cars"] == []
+    assert [one["code"] for one in await mine(db, await db.get_player(42), NOW)] == [
+        HYPER
+    ]
+
+
+async def test_the_flat_parking_is_not_shared(db, client):
+    """Двор своей квартиры не общий: чужой машине там взяться неоткуда."""
+    from bot.estate_service import rent as rent_flat
+
+    house = "residential_apartment"
+    tenant = await licensed(db, make_player(42, "Жилец", where=house))
+    await rent_flat(db, tenant, 1, now=NOW)
+    await buy(db, await db.get_player(42), HATCH, NOW)
+    await client.post(
+        "/api/flats", json={"action": "park", "car": HATCH}, headers=headers()
+    )
+
+    body = await (await client.get("/api/flats", headers=headers())).json()
+
+    assert body["parking"]["shared"] is False
+    assert body["parking"]["cars"][0]["mine"] is True
