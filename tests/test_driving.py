@@ -12,6 +12,7 @@
    из этих мест не заменяет другое.
 """
 
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
@@ -35,6 +36,7 @@ from bot.game.driving import (
     EXAM_MINUTES,
     EXAM_SECONDS,
     MISTAKES_ALLOWED,
+    RETAKE_PRICE,
     STUDY_DAYS,
     STUDY_SECONDS,
     TICKET_SIZE,
@@ -382,8 +384,8 @@ async def test_an_option_outside_the_question_is_refused(db):
     assert player.school.step == 0
 
 
-async def test_a_failed_exam_can_be_retaken_for_free(db):
-    """Платят за курс, а не за попытку: пересдача ничего не стоит."""
+async def test_a_failed_exam_is_not_retaken_in_the_same_window(db):
+    """Перебирать билеты подряд, пока не угадаешь, — это не экзамен."""
     player = make_player()
     moment = await sitting(db, player)
     spent = player.credits
@@ -391,10 +393,83 @@ async def test_a_failed_exam_can_be_retaken_for_free(db):
     await answer(db, player, wrong_answer(0), moment)
     await answer(db, player, wrong_answer(1), moment)
 
-    # Тот же день приёма, следующая попытка
+    assert player.school.tried_at == moment, "час попытки остался на бойце"
+    with pytest.raises(SchoolError, match="следующий день приёма"):
+        await start_exam(db, player, moment + 60)
+    assert player.credits == spent, "за отказ денег не берут"
+
+
+async def test_the_retake_costs_a_hundred_in_the_next_window(db):
+    """Первая попытка входит в курс, вторая стоит сотню."""
+    player = make_player()
+    moment = await sitting(db, player)
+
+    await answer(db, player, wrong_answer(0), moment)
+    await answer(db, player, wrong_answer(1), moment)
+    spent = player.credits
+
+    # Суббота, следующий день приёма
+    again = moment_at(day=17)
+    await start_exam(db, player, again)
+
+    assert player.school.sitting(again)
+    assert player.credits == spent - RETAKE_PRICE
+
+
+async def test_a_retake_without_money_is_refused(db):
+    player = make_player(credits=COURSE_PRICE)
+    moment = await sitting(db, player)
+    await answer(db, player, wrong_answer(0), moment)
+    await answer(db, player, wrong_answer(1), moment)
+    assert player.credits < RETAKE_PRICE
+
+    with pytest.raises(SchoolError, match="Пересдача стоит"):
+        await start_exam(db, player, moment_at(day=17))
+
+
+async def test_a_burnt_attempt_is_a_retake_too(db):
+    """Время вышло — попытка была. Следующая платная и в другой день."""
+    player = make_player()
+    moment = await sitting(db, player)
+    burnt = moment + EXAM_SECONDS + 1
+
+    with pytest.raises(SchoolError, match="Время вышло"):
+        await answer(db, player, right_answer(0), burnt)
+
+    assert player.school.tried_at == moment + EXAM_SECONDS
+    spent = player.credits
+    await start_exam(db, player, moment_at(day=17))
+    assert player.credits == spent - RETAKE_PRICE
+
+
+async def test_the_first_attempt_after_the_course_is_free(db):
+    player = make_player()
+    moment = moment_at()
+    await enrolled(db, player, moment - STUDY_SECONDS - 60)
+    spent = player.credits
+
+    await start_exam(db, player, moment)
+
+    assert player.school.sitting(moment)
+    assert player.credits == spent, "первая попытка оплачена курсом"
+
+
+async def test_a_school_that_predates_the_rule_retakes_for_free(db):
+    """У сдававших до этого правила часа попытки нет — и спроса нет."""
+    player = make_player()
+    moment = await sitting(db, player)
+    await answer(db, player, wrong_answer(0), moment)
+    await answer(db, player, wrong_answer(1), moment)
+    # Такой записи и соответствует старая база: попытка была, а час не
+    # записан
+    await db.set_school(player.user_id, replace(player.school, tried_at=0))
+    player.school = await db.school_of(player.user_id)
+    spent = player.credits
+
     await start_exam(db, player, moment + 60)
+
     assert player.school.sitting(moment + 60)
-    assert player.credits == spent, "за пересдачу взяли деньги"
+    assert player.credits == spent
 
 
 # ---------- права ----------
@@ -505,6 +580,34 @@ def test_the_school_screen_shows_the_question_without_its_answer():
     # Ни верного номера, ни пояснения: в билете на странице их нет вовсе
     assert not {"answer", "correct", "comment"} & set(body["question"])
     assert TICKET[0].comment not in str(body)
+
+
+def test_the_screen_tells_a_retake_from_a_first_try():
+    """Три состояния: первая попытка, пересдача, и «сегодня уже сдавал»."""
+    player = make_player()
+    course = School(course_at=moment_at(10, 13))
+
+    # Первая: ничего не стоит, и о пересдаче сказано только ценой
+    player.school = course
+    first = build_school(player, moment_at())
+    assert first["stage"] == "ready"
+    assert first["retake"] is False and first["retake_price"] == 0
+    assert first["full_retake_price"] == RETAKE_PRICE
+    assert first["tried_today"] is False
+
+    # Провалился в это же окно: пересдача есть, но не сегодня
+    player.school = replace(course, tried_at=moment_at(14, 12, 30))
+    today = build_school(player, moment_at())
+    assert today["retake"] and today["retake_price"] == RETAKE_PRICE
+    assert today["tried_today"] is True
+    # Названный час — суббота, а не сегодняшняя среда
+    assert today["retake_at"] == "17.10.26 12:00"
+    assert "следующий день приёма" in today["note"]
+
+    # То же в субботу: окно другое, и садиться можно
+    saturday = build_school(player, moment_at(day=17))
+    assert saturday["retake"] and saturday["tried_today"] is False
+    assert "Пересдача" in saturday["note"]
 
 
 def test_the_station_opens_the_desk_only_to_the_one_who_passed():

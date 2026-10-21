@@ -207,8 +207,15 @@ def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> d
     return build_work(player, moment)
 
 
-def school_state(stage: str = "new", wrong: int = 0, seconds: int = 900) -> dict:
-    """Экран автошколы в нужном шаге — тем же сборщиком, что и в бою."""
+def school_state(
+    stage: str = "new", wrong: int = 0, seconds: int = 900,
+    tried_at: int = 0,
+) -> dict:
+    """Экран автошколы в нужном шаге — тем же сборщиком, что и в бою.
+
+    `tried_at` — час неудачной попытки: по нему школа и решает, пересдача
+    ли это и не в том ли окне боец уже сидел за билетом.
+    """
     from bot.game.driving import EXAM_SECONDS, School
     from bot.game.health import now_ts
     from bot.webapp.driving import build_school
@@ -219,7 +226,9 @@ def school_state(stage: str = "new", wrong: int = 0, seconds: int = 900) -> dict
     if stage == "study":
         player.school = School(course_at=moment)
     elif stage == "ready":
-        player.school = School(course_at=moment - 4 * 24 * 3600)
+        player.school = School(
+            course_at=moment - 4 * 24 * 3600, tried_at=tried_at
+        )
     elif stage == "exam":
         player.school = School(
             course_at=moment - 4 * 24 * 3600,
@@ -233,6 +242,11 @@ def school_state(stage: str = "new", wrong: int = 0, seconds: int = 900) -> dict
     # половина проверок зависела бы от того, среда сегодня или четверг
     if stage in ("ready", "exam"):
         body["open"] = True
+        # По той же причине и «сегодня уже сдавал»: попал ли час попытки
+        # в нынешнее окно, зависит от дня прогона. Само правило проверяет
+        # `tests/test_driving.py`, здесь — то, как экран его показывает
+        if tried_at:
+            body["tried_today"] = tried_at > moment - 3 * 60 * 60
     assert body["stage"] == stage or stage == "new", body["stage"]
     assert seconds == EXAM_SECONDS or stage != "exam" or body["seconds_left"]
     return body
@@ -1856,7 +1870,7 @@ def wardrobe(current: str = "rookie", gender: str = "male") -> dict:
 
 
 async def test_tapping_the_avatar_opens_the_wardrobe(server):
-    """По аватару открывается выбор образа: три своих и три за кредиты."""
+    """По аватару открывается выбор образа: три своих и девять за кредиты."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
@@ -1870,11 +1884,11 @@ async def test_tapping_the_avatar_opens_the_wardrobe(server):
         await page.locator("#hero-avatar").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
 
-        assert await page.locator(".look").count() == 6
+        assert await page.locator(".look").count() == 12
         assert await page.locator(".look.current .look-title").inner_text() == "Новичок"
         # платные подписаны ценой, свои — словом
         tags = await page.locator(".look-tag").all_inner_texts()
-        assert sum(1 for tag in tags if "💰" in tag) == 3
+        assert sum(1 for tag in tags if "💰" in tag) == 9
 
         await page.locator("#sheet-close").click()
         assert await page.locator("#sheet").is_hidden()
@@ -9790,11 +9804,12 @@ async def test_a_gathering_party_is_watched_closely(server):
 # ---------- автошкола ----------
 
 
-async def open_school(pw, server, stage="new", wrong=0):
+async def open_school(pw, server, stage="new", wrong=0, school=None):
     player = make_player("driving_school")
     browser, page = await open_page(
         pw, server, build_card(player, TOKEN, viewer_id=player.user_id),
-        build_shop(player), school=school_state(stage, wrong), images=True,
+        build_shop(player), school=school or school_state(stage, wrong),
+        images=True,
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await open_screen(page, "school")
@@ -9814,6 +9829,55 @@ async def test_the_school_offers_the_course_and_its_price(server):
         assert "по средам и субботам с 12:00 до 15:00 мск" in said
         button = page.locator("#school-body .btn").first
         assert "Записаться" in await button.inner_text()
+        await browser.close()
+
+
+async def test_the_board_names_the_price_of_a_retake_before_the_exam(server):
+    """Цена пересдачи стоит на доске у всех, а не всплывает после провала."""
+    async with async_playwright() as pw:
+        browser, page = await open_school(pw, server)
+        await page.wait_for_selector(".shelf")
+
+        said = await page.locator("#school-body").inner_text()
+        assert "Пересдача" in said and "100 💰" in said
+        assert "в следующий день приёма" in said
+        await browser.close()
+
+
+async def test_a_retake_in_the_same_window_is_shut_and_says_when(server):
+    """Сегодня уже сдавал — кнопка заперта, и назван час следующего приёма."""
+    from bot.game.health import now_ts
+
+    async with async_playwright() as pw:
+        browser, page = await open_school(
+            pw, server,
+            school=school_state("ready", tried_at=now_ts() - 60),
+        )
+        await page.wait_for_selector(".shelf")
+
+        said = await page.locator("#school-body").inner_text()
+        assert "Пересдача:" in said
+        button = page.locator("#school-body .btn").first
+        assert await button.inner_text() == "Сегодня уже сдавал"
+        assert await button.is_disabled()
+        await browser.close()
+
+
+async def test_a_retake_in_a_later_window_shows_its_price_on_the_button(server):
+    """Платное действие не должно удивлять ценой после нажатия."""
+    from bot.game.health import now_ts
+
+    async with async_playwright() as pw:
+        # Попытка была неделю назад: окно давно другое, и сесть можно
+        browser, page = await open_school(
+            pw, server,
+            school=school_state("ready", tried_at=now_ts() - 7 * 24 * 3600),
+        )
+        await page.wait_for_selector(".shelf")
+
+        button = page.locator("#school-body .btn").first
+        assert await button.inner_text() == "Пересдача · 100 💰"
+        assert not await button.is_disabled()
         await browser.close()
 
 
@@ -11477,8 +11541,12 @@ async def test_the_depot_garage_counts_the_seats(server, db):
         await browser.close()
 
 
-async def test_the_car_stands_under_the_fighter_in_his_card(server, db):
-    """Машина рисуется поверх образа, снизу, и ключи лежат под куклой."""
+async def test_the_car_stands_behind_the_fighter_in_his_card(server, db):
+    """Машина рисуется за бойцом, по верхнему краю рамки.
+
+    Слоёв у рамки три: её фон, машина, сам боец. Образ вырезан по фигуре
+    и прозрачен, поэтому машина видна из-за него, а не из-под него.
+    """
     from bot.car_service import buy, mine, wheel
     from bot.game.driving import School
     from tests.test_cars import HATCH, NOW, make_player as a_driver
@@ -11499,21 +11567,34 @@ async def test_the_car_stands_under_the_fighter_in_his_card(server, db):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.wait_for_selector("#hero-avatar .avatar-car")
 
-        # Машина стоит внутри рамки образа и прижата к её низу
+        # Машина стоит внутри рамки образа и прижата к её верху
         frame = await page.locator("#hero-avatar").bounding_box()
         shot = await page.locator("#hero-avatar .avatar-car").bounding_box()
-        assert abs(
-            (frame["y"] + frame["height"]) - (shot["y"] + shot["height"])
-        ) < 2
+        assert abs(frame["y"] - shot["y"]) < 2
         # Во всю ширину рамки, не считая самой рамки в пиксель с краю
         assert abs(frame["width"] - shot["width"]) <= 2
         # И она шире, чем выше: картинку прислали в 16:9
         assert shot["width"] > shot["height"] * 1.6
+        # Боец поверх машины, а не под ней: слои стоят в этом порядке
+        layers = await page.evaluate(
+            """() => {
+                const box = document.getElementById('hero-avatar');
+                const car = box.querySelector('.avatar-car');
+                // Образ или значок на его месте: не доехавшая картинка
+                // всё равно обязана лежать поверх машины
+                const who = box.querySelector('img:not(.avatar-car), .emoji');
+                const z = (node) => Number(getComputedStyle(node).zIndex) || 0;
+                return [z(car), z(who)];
+            }"""
+        )
+        assert layers[0] < layers[1], "машина обязана быть за бойцом"
 
-        # Ключи — под куклой, с кнопкой «Снять»: за рулём боец уже сидит
-        await page.wait_for_selector("#hero-keys:not(.hidden)")
-        said = await page.locator("#hero-keys").inner_text()
+        # Ключи лежат в инвентаре, с кнопкой «Снять»: за рулём боец уже сидит
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#bag-keys:not(.hidden)")
+        said = await page.locator("#bag-keys").inner_text()
         assert "Городской хэтчбек" in said and "насовсем" in said
+        assert "дорога" in said and "undefined" not in said
         assert await page.locator("#keys-list .btn").inner_text() == "Снять"
         await browser.close()
 

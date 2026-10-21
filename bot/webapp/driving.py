@@ -24,6 +24,7 @@ from bot.game.driving import (
     LICENCE_NOTE,
     LICENCE_TITLE,
     MISTAKES_ALLOWED,
+    RETAKE_PRICE,
     STUDY_DAYS,
     TICKET_SIZE,
     exam_text,
@@ -91,6 +92,19 @@ def build_school(player: Player, now: int | None = None) -> dict[str, Any]:
         "window": window.title if window else "",
         "closes_in": window.seconds_left(moment) if window else 0,
         "next_exam": club_moment(coming.start),
+        # Пересдача: платная и не в том окне, в котором провалился.
+        # Страница по этим трём полям и решает, что писать на кнопке
+        "retake": school.retakes,
+        "retake_price": (
+            player.price_here(RETAKE_PRICE, moment, Service.SCHOOL)
+            if school.retakes
+            else 0
+        ),
+        "full_retake_price": RETAKE_PRICE,
+        "tried_today": school.tried_in(window),
+        "retake_at": club_moment(
+            next_exam(window.end).start if window else coming.start
+        ),
         "minutes": EXAM_MINUTES,
         "questions": TICKET_SIZE,
         "mistakes": MISTAKES_ALLOWED,
@@ -99,17 +113,19 @@ def build_school(player: Player, now: int | None = None) -> dict[str, Any]:
         "seconds_left": school.time_left(moment),
         "wrong": school.wrong if school.sitting(moment) else 0,
         "passed_at": club_moment(school.passed_at) if school.passed else "",
-        "note": school_note(stage, school, moment, window is not None),
+        "note": school_note(stage, school, moment, window, coming),
         "said": "",
     }
 
 
-def school_note(stage: str, school, moment: int, open_now: bool) -> str:
+def school_note(stage: str, school, moment: int, window, coming) -> str:
     """Строка сверху экрана: что тут сейчас делают."""
     if stage == NEW:
         return (
             f"Курс — {COURSE_PRICE} 💰 и {STUDY_DAYS} дня на самостоятельное "
-            "изучение ПДД. После них можно садиться за билет."
+            "изучение ПДД. После них можно садиться за билет. Первая "
+            "попытка входит в курс, пересдача — "
+            f"{RETAKE_PRICE} 💰 и в следующий день приёма."
         )
     if stage == STUDY:
         return (
@@ -117,9 +133,28 @@ def school_note(stage: str, school, moment: int, open_now: bool) -> str:
             f"{STUDY_DAYS} полных дня с записи."
         )
     if stage == READY:
+        # Сидел за билетом в это же окно — второй раз в него не сядешь:
+        # перебирать билеты подряд это не экзамен
+        if school.tried_in(window):
+            when = next_exam(window.end)
+            return (
+                "Сегодня ты уже сидел за билетом. Пересдача — в следующий "
+                f"день приёма, {club_moment(when.start)}, и стоит "
+                f"{RETAKE_PRICE} 💰."
+            )
+        if school.retakes:
+            return (
+                f"Пересдача — {RETAKE_PRICE} 💰. Экзамен принимают "
+                f"{exam_text(moment)} — "
+                + (
+                    "можно садиться за билет."
+                    if window
+                    else f"ближайший {club_moment(coming.start)}."
+                )
+            )
         return (
             f"Курс отучен. Экзамен принимают {exam_text(moment)} — "
-            + ("можно садиться за билет." if open_now else "приходи в этот час.")
+            + ("можно садиться за билет." if window else "приходи в этот час.")
         )
     if stage == EXAM:
         return (

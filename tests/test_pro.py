@@ -209,7 +209,7 @@ def test_the_assassin_look_is_drawn_and_not_counted_as_free():
 
     look = get_look(LEGACY_LOOK)
     assert look.pro and look.price == 0
-    assert look.picture.endswith("/avatars/assassin.jpeg")
+    assert look.picture.endswith("/avatars/assassin_transparent.png")
     assert look not in free_looks()
     assert look in LOOKS
 

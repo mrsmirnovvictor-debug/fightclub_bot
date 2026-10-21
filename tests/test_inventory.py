@@ -812,7 +812,7 @@ async def test_wardrobe_shows_what_is_worn_and_what_is_for_sale(db):
         [look for look in LOOKS if not look.pro and look.gender == player.sex]
     )
     assert sum(1 for row in rows if row["price"] == 0) == 3
-    assert sum(1 for row in rows if row["price"] == LOOK_PRICE) == 3
+    assert sum(1 for row in rows if row["price"] == LOOK_PRICE) == 9
     assert {row["gender"] for row in rows} == {player.sex}
 
     # бесплатные свои, платные — нет, и без кредитов они не по карману
@@ -865,7 +865,9 @@ async def test_a_paid_look_is_bought_once_and_stays_forever(db):
 async def test_a_look_you_cannot_afford_is_refused(db):
     from bot.looks_service import LookError, choose_look
 
-    player = make_player(credits=999)
+    from bot.game.looks import LOOK_PRICE
+
+    player = make_player(credits=LOOK_PRICE - 1)
     await db.save_player(player)
 
     with pytest.raises(LookError, match="на счету"):
@@ -874,7 +876,7 @@ async def test_a_look_you_cannot_afford_is_refused(db):
         await choose_look(db, player, "император")
 
     fresh = await db.get_player(player.user_id)
-    assert fresh.credits == 999 and not fresh.look
+    assert fresh.credits == LOOK_PRICE - 1 and not fresh.look
     assert not await db.owned_looks(player.user_id)
 
 
@@ -900,8 +902,8 @@ async def test_mini_app_serves_the_wardrobe_and_charges_for_a_look(client, db):
 
     listing = await client.get("/api/looks", headers=headers(1))
     body = await listing.json()
-    # Шесть своего пола: три открытых и три за кредиты
-    assert listing.status == 200 and len(body["looks"]) == 6
+    # Двенадцать своего пола: три открытых и девять за кредиты
+    assert listing.status == 200 and len(body["looks"]) == 12
 
     response = await client.post(
         "/api/look", json={"code": "veteran"}, headers=headers(1)
@@ -955,15 +957,41 @@ def test_shop_sections_are_named_after_body_parts():
     assert build_shop(make_player(), Service.CLOTHES)["sections"][0]["title"] == "Голова"
 
 
-def test_every_look_points_at_its_own_picture():
-    """Картинка образа лежит под его кодом — переименовали, и всё поехало."""
+def test_every_look_points_at_its_own_transparent_picture():
+    """Картинка образа лежит под его кодом — переименовали, и всё поехало.
+
+    И она png с прозрачным фоном: на карточке образ ложится поверх
+    машины, и непрозрачный квадрат её бы закрыл.
+    """
     from bot.game.art import AVATARS
     from bot.game.looks import LOOKS
 
     pictures = [look.picture for look in LOOKS]
     assert len(set(pictures)) == len(LOOKS)
     for look in LOOKS:
-        assert look.picture == f"{AVATARS}/{look.code}.jpeg"
+        assert look.picture == f"{AVATARS}/{look.code}_transparent.png"
+
+
+def test_a_look_costs_two_hundred_and_not_a_thousand():
+    """Внешность — вкус, а не сила: платить за неё как за броню незачем."""
+    from bot.game.looks import LOOK_PRICE, paid_looks
+
+    assert LOOK_PRICE == 200
+    assert {look.price for look in paid_looks()} == {LOOK_PRICE}
+
+
+def test_the_second_batch_gave_six_looks_to_each_gender():
+    """По шестёрке на пол, и коды у них — имена файлов в бакете."""
+    from bot.game.looks import FEMALE, LOOKS, MALE
+
+    second = [look for look in LOOKS if look.code[:4] in ("male", "fema")]
+    assert len(second) == 12
+    assert sum(1 for look in second if look.gender == MALE) == 6
+    assert sum(1 for look in second if look.gender == FEMALE) == 6
+    # Все платные и по одной цене: они не стартовый набор
+    assert all(look.paid and not look.pro for look in second)
+    # И у каждого своё имя и свой значок — иначе в гардеробе не различить
+    assert len({look.title for look in LOOKS}) == len(LOOKS)
 
 
 def test_a_look_can_override_its_picture():

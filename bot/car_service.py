@@ -81,6 +81,10 @@ async def mine(
             "title": car.title,
             "image": car.image,
             "times": car.times,
+            # Та же строка, что на витрине и в гараже: карточка машины
+            # одна на все экраны, и подпись «дорога вдвое короче» она
+            # берёт отсюда. Без неё в ключах висело «дорога undefined»
+            "times_text": car.times_text,
             "note": car.note,
             "service": car.service,
             "own": not row["until"],

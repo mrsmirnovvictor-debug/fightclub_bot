@@ -265,7 +265,10 @@ CREATE TABLE IF NOT EXISTS driving (
     step       INTEGER NOT NULL DEFAULT 0,
     wrong      INTEGER NOT NULL DEFAULT 0,
     passed_at  INTEGER NOT NULL DEFAULT 0,
-    licence_at INTEGER NOT NULL DEFAULT 0
+    licence_at INTEGER NOT NULL DEFAULT 0,
+    -- Час последней неудачной попытки: по нему считают цену пересдачи и
+    -- то, не в этом ли окне боец уже сидел за билетом
+    tried_at   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS rings (
@@ -1160,6 +1163,7 @@ class Database:
         await self._migrate_duels()
         await self._migrate_battles()
         await self._migrate_cars()
+        await self._migrate_driving()
         await self._migrate_arenas()
         await self._migrate_raid_windows()
         await self._migrate_clans()
@@ -1527,6 +1531,25 @@ class Database:
         await self.conn.execute("DROP INDEX IF EXISTS clan_cars_clan")
         await self.conn.execute("DROP TABLE IF EXISTS clan_cars")
         await self.conn.commit()
+
+    async def _migrate_driving(self) -> None:
+        """У автошколы появился час последней попытки.
+
+        Прежде пересдача была бесплатной и без очереди, и помнить о
+        попытке было нечего. Теперь помнить надо: у тех, кто сдавал до
+        этого правила, час нулевой — их следующая попытка считается
+        первой и ничего не стоит. Наказывать за то, чего база не
+        записала, нечестно.
+        """
+        async with self.conn.execute("PRAGMA table_info(driving)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if not columns or "tried_at" in columns:
+            return
+        await self.conn.execute(
+            "ALTER TABLE driving ADD COLUMN tried_at INTEGER NOT NULL DEFAULT 0"
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: у автошколы появился час последней попытки")
 
     async def _migrate_arenas(self) -> None:
         """Единственная арена прошлой версии становится первым кулачным рингом."""
@@ -5332,7 +5355,8 @@ class Database:
         """Что у бойца с автошколой. Пустая запись — он туда не ходил."""
         async with self.conn.execute(
             """
-            SELECT course_at, exam_until, step, wrong, passed_at, licence_at
+            SELECT course_at, exam_until, step, wrong, passed_at,
+                   licence_at, tried_at
             FROM driving WHERE user_id = ?
             """,
             (user_id,),
@@ -5347,6 +5371,7 @@ class Database:
             wrong=int(row["wrong"]),
             passed_at=int(row["passed_at"]),
             licence_at=int(row["licence_at"]),
+            tried_at=int(row["tried_at"]),
         )
 
     async def set_school(self, user_id: int, school: School) -> None:
@@ -5354,16 +5379,18 @@ class Database:
         await self.conn.execute(
             """
             INSERT INTO driving (
-                user_id, course_at, exam_until, step, wrong, passed_at, licence_at
+                user_id, course_at, exam_until, step, wrong, passed_at,
+                licence_at, tried_at
             )
-            VALUES (?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 course_at  = excluded.course_at,
                 exam_until = excluded.exam_until,
                 step       = excluded.step,
                 wrong      = excluded.wrong,
                 passed_at  = excluded.passed_at,
-                licence_at = excluded.licence_at
+                licence_at = excluded.licence_at,
+                tried_at   = excluded.tried_at
             """,
             (
                 user_id,
@@ -5373,6 +5400,7 @@ class Database:
                 school.wrong,
                 school.passed_at,
                 school.licence_at,
+                school.tried_at,
             ),
         )
         await self.conn.commit()

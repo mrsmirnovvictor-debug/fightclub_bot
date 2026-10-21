@@ -1982,8 +1982,10 @@ function showTab(name) {
   // Общежитие: комната могла запереться, пока в него не заходили —
   // учёба кончается и без нас
   if (name === "dorm") loadDorm();
-  // Ключи при бойце: смотрим их там же, где за руль садятся
-  if (name === "hero") loadKeys();
+  // Ключи при бойце: лежат они в инвентаре, вместе со всем, что боец
+  // носит с собой. Машина могла кончиться арендой, пока туда не
+  // заглядывали, — спрашиваем на каждый заход
+  if (name === "bag") loadKeys();
   // Часы смены идут, только пока на работу смотрят
   if (name === "work") loadWork();
   else stopWorkClock();
@@ -6237,7 +6239,7 @@ function paintAvatar(box, card, clickable) {
     img.src = card.avatar.url;
     img.alt = card.name;
     img.addEventListener("error", () => {
-      // Образ не доехал — возвращаем значок, но машину из-под бойца не
+      // Образ не доехал — возвращаем значок, но машину из-за бойца не
       // убираем: она тут не при чём
       const car = box.querySelector(".avatar-car");
       box.textContent = "";
@@ -6249,7 +6251,12 @@ function paintAvatar(box, card, clickable) {
   paintAvatarCar(box, card);
 }
 
-/** Машина под бойцом: поверх образа, снизу. Пешком — ничего. */
+/** Машина за бойцом: полосой по верхнему краю рамки. Пешком — ничего.
+ *
+ * Слой второй из трёх: над фоном рамки, под самой фигурой. Порядок
+ * держит css (`z-index`), а не порядок узлов, — поэтому машину можно
+ * дописывать последней, не перекладывая образ.
+ */
 function paintAvatarCar(box, card) {
   box.classList.remove("has-car");
   if (!card.car || !card.car.image) return;
@@ -9635,6 +9642,9 @@ function courseBox(data) {
     ["Экзамен", data.schedule],
     ["Билет", data.questions + " вопросов, " + data.minutes + " минут"],
     ["Ошибки", "прощается " + data.mistakes],
+    // Цена пересдачи стоит на доске всегда, а не только у провалившего:
+    // её называют до экзамена, а не после
+    ["Пересдача", data.full_retake_price + " 💰, в следующий день приёма"],
   ];
   box.appendChild(sheetRows(rows));
 
@@ -9651,6 +9661,14 @@ function courseBox(data) {
     when.textContent = "Ближайший экзамен: " + data.next_exam;
     box.appendChild(when);
   }
+  // Сидел за билетом в это же окно — ждать следующего: час следующего
+  // приёма и считает сервер, страница его только показывает
+  if (data.stage === "ready" && data.tried_today) {
+    const again = document.createElement("p");
+    again.className = "screen-note";
+    again.textContent = "Пересдача: " + data.retake_at;
+    box.appendChild(again);
+  }
 
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
@@ -9661,10 +9679,23 @@ function courseBox(data) {
       })
     );
   } else if (data.stage === "ready") {
+    // Три состояния кнопки: открыто и можно, открыто но сегодня уже
+    // сидел, закрыто вовсе. Цену пересдачи пишем прямо на кнопке —
+    // платное действие не должно удивлять ценой после нажатия
+    const shut = !data.open || data.tried_today;
+    const title = data.tried_today
+      ? "Сегодня уже сдавал"
+      : !data.open
+        ? "Экзамен закрыт"
+        : data.retake
+          ? "Пересдача · " + data.retake_price + " 💰"
+          : "Записаться на экзамен";
     buttons.appendChild(
-      button(data.open ? "Записаться на экзамен" : "Экзамен закрыт", {
-        disabled: !data.open,
-        hint: "Экзамен принимают " + data.schedule,
+      button(title, {
+        disabled: shut,
+        hint: data.tried_today
+          ? "Пересдача — в следующий день приёма: " + data.retake_at
+          : "Экзамен принимают " + data.schedule,
         onClick: () => schoolAction({ action: "exam" }),
       })
     );
@@ -11836,7 +11867,7 @@ async function keysAction(payload) {
 
 function renderKeys(keys, limit) {
   keysData = keys;
-  const box = el("hero-keys");
+  const box = el("bag-keys");
   const list = el("keys-list");
   if (!box || !list) return;
   box.classList.toggle("hidden", keys.length === 0);

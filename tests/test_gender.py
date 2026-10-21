@@ -42,10 +42,11 @@ async def stand(db: Database, player: Player) -> Player:
 
 def test_the_club_knows_two_genders_and_dresses_both():
     assert (MALE, FEMALE) == ("male", "female")
-    # Поровну: три открытых и три за кредиты на каждый пол
+    # Поровну: три открытых и девять за кредиты на каждый пол. Вторым
+    # заходом добавили по шестёрке, и поровну они остались
     for gender in (MALE, FEMALE):
         mine = [look for look in looks_of_gender(gender) if not look.pro]
-        assert len(mine) == 6, gender
+        assert len(mine) == 12, gender
         assert sum(1 for look in mine if not look.price) == 3, gender
 
 

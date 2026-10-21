@@ -58,8 +58,23 @@ SERVICES = f"{BUCKET}/services"
 
 
 def avatar(code: str) -> str:
-    """Картинка образа лежит под его же кодом: avatars/rookie.jpeg."""
+    """Картинка из папки образов под своим кодом: avatars/fan_boss.jpeg.
+
+    Остаётся ради тех, кто лежит в этой папке, но образом игрока не
+    является: лица гопников рисовали вместе с фанатской линией одежды, и
+    легли они сюда же. Образы бойцов берут `look_avatar`.
+    """
     return f"{AVATARS}/{code}.jpeg"
+
+
+def look_avatar(code: str) -> str:
+    """Образ бойца: avatars/rookie_transparent.png.
+
+    Фон у образа свой, прозрачный: на карточке он ложится поверх машины,
+    и непрозрачный квадрат её бы закрыл. Отсюда и png вместо jpeg —
+    прозрачности в фотоформате нет.
+    """
+    return f"{AVATARS}/{code}_transparent.png"
 
 
 def npc_avatar(code: str) -> str:
@@ -219,6 +234,7 @@ __all__ = [
     "interior",
     "item",
     "location",
+    "look_avatar",
     "plain_ring",
     "pdd",
     "potion",

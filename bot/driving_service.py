@@ -20,6 +20,7 @@ from bot.game.driving import (
     COURSE_PRICE,
     MISTAKES_ALLOWED,
     POLICE_HOUSE,
+    RETAKE_PRICE,
     SCHOOL_HOUSE,
     STUDY_DAYS,
     STUDY_SECONDS,
@@ -100,12 +101,32 @@ async def start_exam(db: Database, player: Player, now: int | None = None) -> Sc
         )
     if school.sitting(moment):
         raise SchoolError("Экзамен уже идёт.")
-    if exam_window(moment) is None:
+    window = exam_window(moment)
+    if window is None:
         when = next_exam(moment)
         raise SchoolError(
             f"Экзамен принимают {exam_text(moment)}. "
             f"Ближайший — {club_moment(when.start)}."
         )
+    # Пересдача — в следующее окно, а не в это же: перебирать билеты
+    # подряд, пока не угадаешь, это не экзамен
+    if school.tried_in(window):
+        when = next_exam(window.end)
+        raise SchoolError(
+            "Пересдача — в следующий день приёма: сегодня ты уже сидел "
+            f"за билетом. Ближайший — {club_moment(when.start)}."
+        )
+    # И платная: первая попытка входит в курс, за который уплачено
+    if school.retakes:
+        price = player.price_here(RETAKE_PRICE, moment, Service.SCHOOL)
+        if not player.can_afford(price, moment, Service.SCHOOL):
+            raise SchoolError(
+                f"Пересдача стоит {price} 💰, а "
+                f"{player.purse_note(moment, Service.SCHOOL)}."
+            )
+        player.pay(price, moment, Service.SCHOOL, about="Пересдача ПДД")
+        await db.save_player(player)
+        logger.info("Боец %s оплатил пересдачу: %s", player.user_id, price)
     logger.info("Боец %s сел за билет", player.user_id)
     return await _save(db, player, school.begin(moment))
 
@@ -122,9 +143,13 @@ async def answer(
     school = player.school
     if not school.sitting(moment):
         if school.burnt(moment):
-            await _save(db, player, school.closed())
+            # Час попытки — тот, которым она кончилась сама, а не тот, в
+            # который на неё посмотрели: смотрят иногда через неделю
+            await _save(db, player, school.closed(school.exam_until))
             raise SchoolError(
-                "Время вышло: на билет даётся четверть часа. Нужна пересдача."
+                f"Время вышло: на билет даётся четверть часа. "
+                f"Пересдача — в следующий день приёма и стоит "
+                f"{RETAKE_PRICE} 💰."
             )
         raise SchoolError("Экзамен не идёт.")
     one = question(school.step)
@@ -137,7 +162,7 @@ async def answer(
     wrong = school.wrong + (0 if right else 1)
     step = school.step + 1
     if wrong > MISTAKES_ALLOWED:
-        await _save(db, player, school.closed())
+        await _save(db, player, school.closed(moment))
         logger.info("Боец %s провалил экзамен ПДД", player.user_id)
         return Answered(right=right, done=True, passed=False, wrong=wrong, step=step)
     if step >= TICKET_SIZE:

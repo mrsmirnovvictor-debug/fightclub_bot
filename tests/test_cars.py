@@ -1257,8 +1257,31 @@ async def test_the_garage_holds_more_than_the_hands(db):
         await buy(db, don, SHOWCASE[CLAN_PARKING + 2].code, NOW)
 
 
+async def test_the_keys_carry_the_same_words_as_the_showcase(db, client):
+    """Карточка машины одна на все экраны, и подпись к ней тоже одна.
+
+    В ключах её не хватало: витрина писала «дорога вдвое короче», а
+    карточка — «дорога undefined», потому что строку в ключи не клали.
+    """
+    from bot.webapp.cars import car_row
+    from bot.game.cars import get_car
+
+    me = await licensed(db, make_player())
+    await buy(db, me, HATCH, NOW)
+
+    keys = await (await client.get("/api/keys", headers=headers())).json()
+    one = keys["keys"][0]
+    shelf = car_row(get_car(HATCH))
+
+    assert one["times_text"] == shelf["times_text"]
+    assert one["times_text"] and "undefined" not in one["times_text"]
+    # И прочее, из чего карточка машины собрана
+    for field in ("code", "title", "image", "times", "note"):
+        assert one[field] == shelf[field]
+
+
 async def test_the_keys_in_the_card_hold_only_what_is_at_hand(db, client):
-    """В «Персонаже» висит та машина, что при бойце, а не та, что в гараже."""
+    """В ключах висит та машина, что при бойце, а не та, что в гараже."""
     from bot.car_service import leave
     from bot.clan_service import found
     from bot.game.cars import IN_CLAN
