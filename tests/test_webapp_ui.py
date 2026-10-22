@@ -11606,18 +11606,13 @@ async def test_the_car_stands_behind_the_fighter_in_his_card(server, db):
                 const probe = document.createElement('img');
                 box.appendChild(probe);
                 const css = getComputedStyle(probe);
-                // matrix(a, b, c, d, e, f): a — растяжение по ширине
+                // matrix(a, b, c, d, e, f): a — растяжение по ширине.
+                // `none` значит, что образ не масштабируют вовсе
                 const m = css.transform.match(/matrix\(([^,]+)/);
                 const got = {
                     position: css.objectPosition,
                     fit: css.objectFit,
                     scale: m ? Number(m[1]) : 1,
-                    // Браузер отдаёт точку роста в пикселях, не словом
-                    origin: css.transformOrigin,
-                    // `offsetHeight`, а не `getBoundingClientRect`: второй
-                    // отдаёт высоту уже с зумом, и сверять её с точкой
-                    // роста бессмысленно
-                    height: probe.offsetHeight,
                     back: getComputedStyle(box).backgroundColor,
                 };
                 probe.remove();
@@ -11626,13 +11621,10 @@ async def test_the_car_stands_behind_the_fighter_in_his_card(server, db):
         )
         assert look["position"].split(" ")[-1] in ("bottom", "100%")
         assert look["fit"] == "contain", "рамка не режет вырезанную фигуру"
-        # Зум: вокруг фигуры в файле осталось пустое поле, и без него
-        # боец выходил ростом на две трети рамки
-        assert look["scale"] > 1, "образ обязан быть подогнан под рамку"
-        grown_from = float(look["origin"].split(" ")[1].rstrip("px"))
-        assert abs(grown_from - look["height"]) < 2, (
-            "боец обязан расти вверх от нижнего края, а не от середины"
-        )
+        # Зума нет: он съедал пустое поле вокруг фигуры, но на широкой
+        # рамке начинал резать и самого бойца. За рамку образ не выходит
+        # ни на каком экране, и это важнее лишних процентов роста
+        assert look["scale"] == 1, "образ не должен заезжать за края рамки"
         # Фон рамки — тот самый серый, что запечён в картинках вещей и
         # машин: иначе рамка бойца висит заплаткой среди своих же слотов
         assert look["back"] == "rgb(92, 96, 101)"
