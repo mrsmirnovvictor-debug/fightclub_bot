@@ -6262,12 +6262,20 @@ function paintAvatarCar(box, card) {
   if (!card.car || !card.car.image) return;
   const shot = document.createElement("img");
   shot.className = "avatar-car";
-  shot.src = card.car.image;
+  // Вырезанная версия: у рамки свой фон, и студийный фон машины лёг бы
+  // на него заплаткой. Нет вырезанной — берём обычную, с фоном: машина
+  // с заплаткой лучше, чем её отсутствие
+  shot.src = card.car.cutout || card.car.image;
   shot.alt = card.car.title;
   shot.title = card.car.title + " · дорога " + card.car.times_text;
-  // Не доехала картинка — просто нет машины: подписью это не заменяют,
-  // иначе под бойцом висела бы строка вместо машины
+  // Не доехала вырезанная — пробуем обычную, и только потом сдаёмся.
+  // Совсем нет картинки — просто нет машины: подписью это не заменяют,
+  // иначе за бойцом висела бы строка вместо машины
   shot.addEventListener("error", () => {
+    if (card.car.cutout && shot.src !== card.car.image) {
+      shot.src = card.car.image;
+      return;
+    }
     shot.remove();
     box.classList.remove("has-car");
   });

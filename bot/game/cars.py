@@ -95,6 +95,19 @@ class Car:
         return f"{VEHICLES}/{self.file}"
 
     @property
+    def cutout(self) -> str:
+        """Та же машина без фона: vehicles/01_street_compact_transparent.png.
+
+        На витрине и в гараже машина стоит в своей студии — серый фон
+        там часть картинки. А за спиной бойца студия лишняя: там уже
+        есть фон рамки, и второй поверх него ложится заплаткой. Поэтому
+        под аватар идёт вырезанная версия, а имя её считается от того же
+        файла: держать второе имя руками значит однажды их рассинхронить.
+        """
+        stem = self.file.rsplit(".", 1)[0]
+        return f"{VEHICLES}/{stem}_transparent.png"
+
+    @property
     def month(self) -> int:
         return self.day * MONTH_PRICE_DAYS
 

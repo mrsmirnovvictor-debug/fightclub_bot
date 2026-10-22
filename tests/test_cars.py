@@ -525,8 +525,13 @@ async def test_the_screen_warns_about_the_missing_licence(db):
     assert "удостоверения" in body["note"]
 
 
-async def test_the_card_carries_the_car_under_the_fighter(db, client):
-    """Машина уезжает в карточку: её рисуют поверх образа, снизу."""
+async def test_the_card_carries_the_car_behind_the_fighter(db, client):
+    """Машина уезжает в карточку, и туда — вырезанной.
+
+    За спиной бойца студийный фон машины лёг бы заплаткой поверх фона
+    рамки, поэтому в карточку едет версия без фона. На витрине и в
+    гараже машина остаётся со своим фоном — там он часть картинки.
+    """
     player = await licensed(db, make_player())
     await buy(db, player, HATCH, NOW)
     await wheel(db, player, HATCH, NOW)
@@ -536,6 +541,22 @@ async def test_the_card_carries_the_car_under_the_fighter(db, client):
     assert card["car"]["code"] == HATCH
     assert card["car"]["image"].endswith(".png")
     assert card["car"]["times"] == 2 and card["car"]["own"] is True
+    # Вырезанная: то же имя файла с суффиксом, а не второе имя руками
+    assert card["car"]["cutout"].endswith("_transparent.png")
+    assert card["car"]["cutout"] == (
+        card["car"]["image"].removesuffix(".png") + "_transparent.png"
+    )
+
+
+def test_the_showcase_keeps_the_car_on_its_own_background():
+    """Вырезанная версия — только за бойцом, витрине она не нужна."""
+    from bot.game.cars import get_car
+    from bot.webapp.cars import car_row
+
+    row = car_row(get_car(HATCH))
+
+    assert "_transparent" not in row["image"]
+    assert "cutout" not in row, "витрине вырезанная машина ни к чему"
 
 
 async def test_the_wheel_is_taken_from_the_card(db, client):

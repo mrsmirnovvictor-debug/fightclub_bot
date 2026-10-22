@@ -269,10 +269,10 @@ def _note(body: dict[str, Any], player: Player, moment: int) -> str:
 
 
 def driving_payload(player: Player, now: int | None = None) -> dict | None:
-    """Машина под бойцом — для карточки. None — боец пешком.
+    """Машина за бойцом — для карточки. None — боец пешком.
 
-    Карточка рисует её поверх образа, снизу: машина не слот, и места
-    среди слотов ей нет, а под ногами — ровно её место.
+    Карточка рисует её по верхнему краю рамки, за фигурой: машина не
+    слот, и места среди слотов ей нет, а задний план — ровно её место.
     """
     moment = now_ts() if now is None else now
     car = get_car(player.driving(moment))
@@ -281,6 +281,10 @@ def driving_payload(player: Player, now: int | None = None) -> dict | None:
     left = max(0, player.car_until - moment) if player.car_until else 0
     return dict(
         car_row(car),
+        # Вырезанная версия — только сюда: за спиной бойца студийный фон
+        # машины ложился бы заплаткой поверх фона рамки. На витрине и в
+        # гараже машина стоит со своим фоном, как её и рисовали
+        cutout=car.cutout,
         until=player.car_until,
         left=left,
         left_text=format_term(left) if left else "",
