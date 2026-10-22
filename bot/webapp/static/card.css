@@ -15,6 +15,12 @@
   --dmg: #1a63c4;
   --dmg-crit: #cc2f22;
   --gold: #b8860b;
+  /* Фон рамки бойца. Не из темы: машины сняты в студии на ровном сером,
+     и рамка обязана быть того же серого — иначе полоса машины висит
+     заплаткой на фоне другого цвета. Цвет снят с самих фотографий, и по
+     той же причине он один на светлую и тёмную тему: картинка от темы
+     не меняется */
+  --avatar-bg: #4f5258;
 }
 
 /* Telegram обычно сам подставляет цвета темы; тут — тёмные запасные,
@@ -267,8 +273,11 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   min-height: 280px;
   border: 1px solid var(--slot-line);
   border-radius: 6px;
-  background: var(--slot);
+  background: var(--avatar-bg);
   display: flex;
+  /* По центру — это про значок на месте не доехавшего образа. Самого
+     бойца к низу прижимает `object-position` ниже: картинка занимает
+     рамку целиком, и выравнивать её коробку бессмысленно */
   align-items: center;
   justify-content: center;
   overflow: hidden;
@@ -316,13 +325,20 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   height: auto;
   aspect-ratio: 16 / 9;
   object-fit: cover;
-  border-bottom: 1px solid var(--slot-line);
+  /* Линии по низу машины нет нарочно: фон рамки того же серого, что и
+     студийный фон фотографии, и граница резала бы один фон надвое */
   /* Второй слой: над фоном, но под бойцом */
   z-index: 1;
 }
 /* Третий слой. `position` обязателен — без него `z-index` не считается,
-   и боец ушёл бы под машину */
-.avatar img:not(.avatar-car) { position: relative; z-index: 2; }
+   и боец ушёл бы под машину. `object-position: bottom` ставит фигуру на
+   нижний край рамки: свободная высота уходит наверх, где и стоит
+   машина, — то есть ровно туда, где она не мешает */
+.avatar img:not(.avatar-car) {
+  position: relative;
+  z-index: 2;
+  object-position: bottom;
+}
 /* Подпись «сменить образ» остаётся внизу: машина уехала наверх, и
    спорить им за одну полосу больше не о чем */
 .avatar.clickable::after { z-index: 3; }

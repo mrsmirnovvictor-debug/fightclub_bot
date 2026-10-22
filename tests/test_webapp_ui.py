@@ -11589,6 +11589,33 @@ async def test_the_car_stands_behind_the_fighter_in_his_card(server, db):
         )
         assert layers[0] < layers[1], "машина обязана быть за бойцом"
 
+        # Боец стоит на нижнем крае, а не висит посередине: образ обрезан
+        # по бёдра, и центрованный срез читается как отрезанные ноги
+        look = await page.evaluate(
+            """() => {
+                const box = document.getElementById('hero-avatar');
+                // Образ в прогоне не доезжает — картинки тянутся из
+                // бакета, сети нет, — и на его месте стоит значок.
+                // Поэтому правило проверяем на подставной картинке: она
+                // того же вида, что и образ, и ловит тот же селектор
+                const probe = document.createElement('img');
+                box.appendChild(probe);
+                const css = getComputedStyle(probe);
+                const got = {
+                    position: css.objectPosition,
+                    fit: css.objectFit,
+                    back: getComputedStyle(box).backgroundColor,
+                };
+                probe.remove();
+                return got;
+            }"""
+        )
+        assert look["position"].split(" ")[-1] in ("bottom", "100%")
+        assert look["fit"] == "contain", "рамка не режет вырезанную фигуру"
+        # Фон рамки — тот же студийный серый, что и на фотографии машины:
+        # иначе полоса машины висит заплаткой на фоне другого цвета
+        assert look["back"] == "rgb(79, 82, 88)"
+
         # Ключи лежат в инвентаре, с кнопкой «Снять»: за рулём боец уже сидит
         await open_screen(page, "bag")
         await page.wait_for_selector("#bag-keys:not(.hidden)")
