@@ -419,6 +419,14 @@ JEWEL = "hr_jewelry_district_v3"
 CAMPUS = "university_campus_v3"
 PRISON = "prison_taxi_park_v3"
 
+# Четвёртая очередь: пятый столбец вдоль всего восточного края. Имена
+# без суффиксов — так их и выгрузили
+WASH = "car_wash_courthouse"
+USED_CARS = "used_cars_gas_station"
+DOJO = "martial_arts_barbershop"
+BEAUTY = "beauty_restaurant"
+POWER = "power_station"
+
 # Вторую очередь нарисовали в png, первую — в jpeg
 PNG = "png"
 
@@ -426,12 +434,15 @@ PNG = "png"
 # правило: по сетке считается дорога. Каждый район связан со всеми своими
 # соседями по стороне, связи взаимные, а диагоналей нет — ходят по улицам.
 #
-#            ⬅️ запад                          восток ➡️
-#   север ⬆️  Админист. Ювелирный    Кампус     Тюрьма
-#             Деловой  Северный Вал  Стадион    Армейская часть
-#             Старый   Центр         Торговый   Кадетский городок
-#             Автошкола Участок      Деловой    Жилой квартал
-#   юг    ⬇️  Автосалон Учебный      Арена      Особняк мафии
+#            ⬅️ запад                                      восток ➡️
+#   север ⬆️  Админист. Ювелирный    Кампус     Тюрьма      Мойка и суд
+#             Деловой  Северный Вал  Стадион    Армейская   Авторынок
+#             Старый   Центр         Торговый   Кадетский   Школа и барбер
+#             Автошкола Участок      Деловой    Жилой       Салон и ресторан
+#   юг    ⬇️  Автосалон Учебный      Арена      Особняк     Электростанция
+#
+# Пятый столбец — четвёртая очередь: по карте справа от каждого района
+# восточного края, сверху вниз. Сетка от этого стала пять на пять.
 #
 # Сетку стережёт tests/test_travel.py: он раскладывает районы по
 # координатам от центра и проверяет, что каждая связь ведёт туда, куда
@@ -455,6 +466,7 @@ DISTRICTS: tuple[District, ...] = (
     District(PRISON, "Тюрьма и таксопарк", {
         DOWN: BARRACKS,
         LEFT: CAMPUS,
+        RIGHT: WASH,
     }, PNG),
     # ---------- верхний ряд ----------
     District("bank_market_post", "Деловой квартал", {
@@ -477,6 +489,7 @@ DISTRICTS: tuple[District, ...] = (
     District(BARRACKS, "Армейская часть", {
         UP: PRISON,
         LEFT: "stadium_bar",
+        RIGHT: USED_CARS,
         DOWN: CADETS,
     }, PNG),
     # ---------- ряд центра ----------
@@ -500,6 +513,7 @@ DISTRICTS: tuple[District, ...] = (
     District(CADETS, "Кадетский городок", {
         UP: BARRACKS,
         LEFT: "clothes_pharmacy",
+        RIGHT: DOJO,
         DOWN: HOUSES,
     }, PNG),
     # ---------- ряд участка ----------
@@ -523,6 +537,7 @@ DISTRICTS: tuple[District, ...] = (
     District(HOUSES, "Жилой квартал", {
         UP: CADETS,
         LEFT: GYM,
+        RIGHT: BEAUTY,
         DOWN: MAFIA,
     }, PNG),
     # ---------- нижний ряд ----------
@@ -543,6 +558,31 @@ DISTRICTS: tuple[District, ...] = (
     District(MAFIA, "Особняк мафии", {
         UP: HOUSES,
         LEFT: ARENA,
+        RIGHT: POWER,
+    }, PNG),
+    # ---------- восточный столбец ----------
+    District(WASH, "Автомойка и суд", {
+        LEFT: PRISON,
+        DOWN: USED_CARS,
+    }, PNG),
+    District(USED_CARS, "Авторынок и АЗС", {
+        UP: WASH,
+        LEFT: BARRACKS,
+        DOWN: DOJO,
+    }, PNG),
+    District(DOJO, "Школа боевых искусств и барбершоп", {
+        UP: USED_CARS,
+        LEFT: CADETS,
+        DOWN: BEAUTY,
+    }, PNG),
+    District(BEAUTY, "Салон красоты и ресторан", {
+        UP: DOJO,
+        LEFT: HOUSES,
+        DOWN: POWER,
+    }, PNG),
+    District(POWER, "Электростанция", {
+        UP: BEAUTY,
+        LEFT: MAFIA,
     }, PNG),
 )
 
@@ -1107,6 +1147,126 @@ LOCATIONS: tuple[Location, ...] = (
         # ходят в парк за машиной — на смену встают кнопкой в шапке
         services=(Service.CARS, Service.WORK),
         genitive="таксопарка",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    # ---------- восточный столбец: нарисован, но ещё не обжит ----------
+    #
+    # Девять домов без услуг. Город снова вырос картинками вперёд правил,
+    # и это нормально до тех пор, пока у каждого сказано, чего в нём
+    # ждать: пустой дом без обещания — недоделка, с обещанием — этап.
+    #
+    # Двери этих домов сняты не по четырём углам проёма, как у прежних, а
+    # построены прямоугольником вокруг присланной точки входа. Поэтому
+    # подсветка у них стоит на двери примерно, а не в притык: уточнять её
+    # — по самой картинке (`docs/doors.md`).
+    Location(
+        "martial_arts_school",
+        "Школа боевых искусств",
+        district=DOJO,
+        entrance=(
+            (0.393199, 0.291268), (0.520723, 0.291268),
+            (0.520723, 0.345096), (0.393199, 0.345096),
+        ),
+        soon="пояса и спарринги",
+        genitive="школы боевых искусств",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "barbershop",
+        "Барбершоп",
+        district=DOJO,
+        entrance=(
+            (0.54729, 0.654904), (0.674814, 0.654904),
+            (0.674814, 0.708732), (0.54729, 0.708732),
+        ),
+        soon="стрижка и борода",
+        genitive="барбершопа",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "beauty_salon",
+        "Салон красоты",
+        district=BEAUTY,
+        entrance=(
+            (0.435707, 0.27512), (0.563231, 0.27512),
+            (0.563231, 0.328947), (0.435707, 0.328947),
+        ),
+        soon="уход за собой",
+        genitive="салона красоты",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "restaurant",
+        "Ресторан",
+        district=BEAUTY,
+        entrance=(
+            (0.541977, 0.711722), (0.669501, 0.711722),
+            (0.669501, 0.76555), (0.541977, 0.76555),
+        ),
+        soon="ужин и столик",
+        genitive="ресторана",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "used_car_market",
+        "Авторынок",
+        district=USED_CARS,
+        entrance=(
+            (0.54729, 0.293062), (0.674814, 0.293062),
+            (0.674814, 0.34689), (0.54729, 0.34689),
+        ),
+        soon="подержанные машины с рук",
+        genitive="авторынка",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "gas_station",
+        "АЗС",
+        district=USED_CARS,
+        entrance=(
+            (0.722635, 0.595096), (0.850159, 0.595096),
+            (0.850159, 0.648923), (0.722635, 0.648923),
+        ),
+        soon="заправка и мелочи в дорогу",
+        genitive="заправки",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "car_wash",
+        "Автомойка",
+        district=WASH,
+        entrance=(
+            (0.382572, 0.238038), (0.510096, 0.238038),
+            (0.510096, 0.291866), (0.382572, 0.291866),
+        ),
+        soon="мойка машины",
+        genitive="автомойки",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        "courthouse",
+        "Суд",
+        district=WASH,
+        entrance=(
+            (0.57067, 0.663876), (0.698193, 0.663876),
+            (0.698193, 0.717703), (0.57067, 0.717703),
+        ),
+        soon="тяжбы и обжалование срока",
+        genitive="суда",
+        interior_folder=art.NEW_INTERIORS,
+    ),
+    Location(
+        # Код совпадает с кодом района — как у особняка, салона и арены:
+        # район и дом живут в разных справочниках
+        "power_station",
+        "Электростанция",
+        district=POWER,
+        entrance=(
+            (0.488842, 0.780502), (0.616366, 0.780502),
+            (0.616366, 0.83433), (0.488842, 0.83433),
+        ),
+        soon="свет на весь город",
+        genitive="электростанции",
         interior_folder=art.NEW_INTERIORS,
     ),
 )

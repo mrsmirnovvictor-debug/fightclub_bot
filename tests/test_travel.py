@@ -319,7 +319,7 @@ def city_grid() -> dict[str, tuple[int, int]]:
     return at
 
 
-def test_the_city_is_a_grid_four_wide_and_five_tall():
+def test_the_city_is_a_grid_five_wide_and_five_tall():
     """Город — сетка, и по ней же считается дорога.
 
     Раньше связи писались от руки и расходились с рисунком: жилой
@@ -328,7 +328,8 @@ def test_the_city_is_a_grid_four_wide_and_five_tall():
     места.
 
     Третья очередь легла рядом сверху: четыре района над прежним верхним
-    рядом, и сетка из четыре-на-четыре стала четыре-на-пять.
+    рядом, и сетка из четыре-на-четыре стала четыре-на-пять. Четвёртая
+    встала столбцом вдоль восточного края, и сетка стала пять на пять.
     """
     from bot.game.locations import DISTRICTS
 
@@ -337,7 +338,7 @@ def test_the_city_is_a_grid_four_wide_and_five_tall():
     assert len(at) == len(DISTRICTS), "до какого-то района не дошли от центра"
     xs = {x for x, _ in at.values()}
     ys = {y for _, y in at.values()}
-    assert (len(xs), len(ys)) == (4, 5)
+    assert (len(xs), len(ys)) == (5, 5)
     assert len(set(at.values())) == len(at), "два района в одной клетке"
 
 
@@ -361,11 +362,14 @@ def test_the_new_row_stands_above_the_old_one():
         assert top[0] == bottom[0], f"{above} не над {below}: {top} и {bottom}"
         assert top[1] == bottom[1] - 1, f"{above} не на ряд выше {below}"
 
-    # И весь новый ряд — самый северный: выше него ничего нет
+    # И весь новый ряд — самый северный: выше него ничего нет. Пятым в
+    # этом ряду встала автомойка — она из четвёртой очереди, но легла
+    # справа от тюрьмы, то есть в тот же северный ряд
     north = min(y for _, y in at.values())
     assert {code for code, (_, y) in at.items() if y == north} == {
         "city_administration_v3", "hr_jewelry_district_v3",
         "university_campus_v3", "prison_taxi_park_v3",
+        "car_wash_courthouse",
     }
 
 
@@ -470,12 +474,19 @@ def test_every_door_came_from_the_map_it_is_drawn_on():
         )
         ours = [(round(x * 941), round(y * 1672)) for x, y in place.entrance]
         assert ours == corners, f"{code}: дверь уехала с размеченного места"
+
+
+def test_every_card_is_named_the_way_the_bucket_names_it():
     """Имена карт списаны с хранилища, а не придуманы по правилу.
 
     Стройной привычки в них нет: где-то на конце «_district», где-то
     нет, и первая очередь вдобавок в jpeg, а вторая в png. Угадать такое
     нельзя, поэтому список сверяется с выгрузкой целиком — иначе район
     открывается пустой картинкой, а заметит это игрок, а не тест.
+
+    Проверка эта долго жила без своей строки `def`: её тело стояло
+    хвостом внутри соседнего теста и выполнялось в нём. Работала она и
+    так, но звалась чужим именем и падала бы чужим падением.
     """
     from bot.game.locations import DISTRICTS
 
@@ -492,6 +503,10 @@ def test_every_door_came_from_the_map_it_is_drawn_on():
         # и убрать его из адреса нельзя
         "city_administration_v3.png", "hr_jewelry_district_v3.png",
         "university_campus_v3.png", "prison_taxi_park_v3.png",
+        # Четвёртая очередь: восточный столбец, без суффиксов
+        "car_wash_courthouse.png", "used_cars_gas_station.png",
+        "martial_arts_barbershop.png", "beauty_restaurant.png",
+        "power_station.png",
     }
     ours = {district.image.rsplit("/", 1)[-1] for district in DISTRICTS}
 
@@ -587,31 +602,41 @@ def test_a_touch_finds_the_door_under_it():
     assert not club.holds(0.55, 0.10), "вывеска над дверью"
 
 
-def test_every_house_of_the_city_has_a_trade_behind_it():
-    """Домов без услуги в городе больше нет — и это новость.
+def test_a_house_without_a_trade_still_says_what_is_coming():
+    """Город снова вырос картинками вперёд правил — и это нормально.
 
-    Долго город был нарисован вперёд правил: в половину домов можно было
-    войти, а делать там было нечего, и у каждого такого стояла строка
-    «скоро». Последними вышли из этого списка бизнес-центр (разработка) и
-    общежитие (комната студенту). Теперь за каждой дверью что-то стоит, и
-    тест на то и есть: дом без услуги — это недоделка, а не этап.
+    Два дня назад домов без услуги в городе не осталось, и тест
+    утверждал ровно это. Потом приехала четвёртая очередь: пять карт
+    восточного столбца и девять домов на них, за которыми пока ничего не
+    стоит. Правило от этого не изменилось, изменился только его смысл:
+    дом без услуги — этап, но лишь пока у него сказано, чего в нём ждать.
+    Дом, который молчит, — недоделка.
     """
     from bot.game.locations import LOCATIONS, get_location
 
     coming = [place for place in LOCATIONS if not place.works]
 
-    assert coming == [], (
-        "у этих домов нет услуги: "
-        + ", ".join(place.code for place in coming)
-    )
-    assert all(place.services for place in LOCATIONS)
+    # Весь восточный столбец и ничего сверх него
+    assert {place.code for place in coming} == {
+        "martial_arts_school", "barbershop",
+        "beauty_salon", "restaurant",
+        "used_car_market", "gas_station",
+        "car_wash", "courthouse",
+        "power_station",
+    }
+    for place in coming:
+        assert place.soon, f"{place.code}: не сказано, что здесь будет"
+        assert place.services == ()
+        # Зайти в такой дом можно: город не должен выглядеть
+        # наполовину нарисованным
+        assert place.entrance and place.bounds.w > 0
 
-    # «Скоро» осталось — но теперь оно значит не «тут пусто», а «сверх
-    # того обещано ещё». У такого дома есть и услуга, и строка
-    promised = [place for place in LOCATIONS if place.soon]
+    # «Скоро» бывает и у работающего дома — там оно значит «сверх
+    # нынешнего обещано ещё», и услуга при этом обязана быть
+    promised = [place for place in LOCATIONS if place.soon and place.works]
     assert promised, "город не обещал больше ничего — так не бывает"
     for place in promised:
-        assert place.works, f"{place.code}: «скоро» у дома без услуги"
+        assert place.services
 
     # Бар — первый такой дом: за ним стоит работа, а обещано другое
     bar = get_location("bar")
