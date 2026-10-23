@@ -2597,9 +2597,69 @@ async def _cars_state(request: web.Request, player, said: str = "") -> web.Respo
     return web.json_response(body)
 
 
+async def api_used_cars_action(request: web.Request) -> web.Response:
+    """Авторынок: выставить свою машину, снять с продажи и купить чужую.
+
+    Ручка своя, а не общая с салоном: там торгуют с городом, здесь — с
+    другим бойцом, и отказы у них разные.
+    """
+    from bot.used_cars_service import (
+        UsedCarError,
+        buy_car,
+        sell_car,
+        withdraw_car,
+    )
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.USED_CARS)
+    moment = now_ts()
+    try:
+        if action == "sell":
+            await sell_car(
+                db, player, str(data.get("code") or ""),
+                _int_field(data, "price"), moment,
+            )
+            said = "Машина выставлена на рынок."
+        elif action == "withdraw":
+            title = await withdraw_car(
+                db, player, int(data.get("id", 0) or 0), moment
+            )
+            said = f"«{title}» снята с продажи и снова при тебе."
+        elif action == "buy":
+            deal = await buy_car(
+                db, player, int(data.get("id", 0) or 0), moment
+            )
+            said = (
+                f"«{deal['title']}» куплена за {deal['price']} 💰. "
+                f"Продавцу ушло {deal['earned']} 💰, рынку {deal['fee']} 💰."
+            )
+        else:
+            return web.json_response({"error": "Непонятное действие."}, status=400)
+    except UsedCarError as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _cars_state(request, fresh, said)
+
+
 async def api_cars(request: web.Request) -> web.Response:
-    """Машины: витрина салона или гараж службы — смотря где боец стоит."""
-    player = await _at(request, Service.CARS)
+    """Машины: витрина салона, гараж службы или рынок — где боец стоит.
+
+    Услуг у экрана две: салон с гаражами (`CARS`) и авторынок
+    (`USED_CARS`). Экран один на обе — машина везде рисуется одинаково,
+    — а дверь спрашиваем ту, что открыта в этом доме: иначе рынок
+    отвечал бы «иди в салон», стоя на самом рынке.
+    """
+    player = await _own_player(request)
+    place = get_location(player.where(now_ts()))
+    service = (
+        Service.USED_CARS
+        if place and place.allows(Service.USED_CARS)
+        else Service.CARS
+    )
+    player = await _at(request, service)
     return await _cars_state(request, player)
 
 
@@ -3305,6 +3365,7 @@ def create_app(
             web.post("/api/dorm", api_dorm_action),
             web.get("/api/cars", api_cars),
             web.post("/api/cars", api_cars_action),
+            web.post("/api/used-cars", api_used_cars_action),
             web.get("/api/keys", api_keys),
             web.post("/api/keys", api_wheel),
             web.get("/api/turf", api_turf),

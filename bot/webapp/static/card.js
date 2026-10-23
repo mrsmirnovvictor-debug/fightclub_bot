@@ -11653,16 +11653,22 @@ async function loadCars() {
   }
 }
 
-async function carsAction(payload) {
+async function carsAction(payload, where) {
   try {
-    const data = await post("api/cars", payload);
+    const data = await post(where || "api/cars", payload);
     haptic((feedback) => feedback.impactOccurred("medium"));
     if (data.card) render(data.card, true);
     renderCars(data);
+    if (data.said) popup("Машины", data.said);
   } catch (error) {
     popup("Машины", error.message);
     await loadCars();
   }
+}
+
+/** То же, но ручкой рынка: там торгуют не с городом, а друг с другом. */
+function marketAction(payload) {
+  return carsAction(payload, "api/used-cars");
 }
 
 function renderCars(data) {
@@ -11674,12 +11680,130 @@ function renderCars(data) {
 
   const body = el("cars-body");
   body.textContent = "";
+  // Рынок вместо витрины: в этом доме торгуют друг с другом
+  if (data.market) {
+    body.appendChild(marketBox(data.market));
+    return;
+  }
   const list = document.createElement("div");
   list.className = "shelf-list";
   (data.shelf || []).forEach((one) => {
     list.appendChild(data.garage ? garageCar(one) : showcaseCar(one));
   });
   body.appendChild(list);
+}
+
+// ---------- авторынок: машины из рук в руки ----------
+//
+// Три полки, и у каждой своя кнопка: чужое покупают, своё снимают с
+// продажи, своё из гаража выставляют. Цену ставит продавец, но в рамках
+// салона — считает их сервер, страница только показывает.
+
+function marketBox(market) {
+  const box = document.createElement("div");
+
+  box.appendChild(
+    carMarketShelf(
+      "🚗 В продаже",
+      market.lots,
+      "Пока никто ничего не выставил.",
+      (one) => marketLot(one, true)
+    )
+  );
+  if ((market.mine || []).length) {
+    box.appendChild(
+      carMarketShelf("🏷 Моё на продаже", market.mine, "", (one) =>
+        marketLot(one, false)
+      )
+    );
+  }
+  if ((market.offer || []).length) {
+    box.appendChild(
+      carMarketShelf("🔑 Можно выставить", market.offer, "", offerCar)
+    );
+  }
+  return box;
+}
+
+function carMarketShelf(title, rows, empty, make) {
+  const shelf = document.createElement("section");
+  shelf.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = title;
+  const count = document.createElement("span");
+  count.className = "shelf-count";
+  count.textContent = String((rows || []).length);
+  head.appendChild(count);
+  shelf.appendChild(head);
+
+  if (!(rows || []).length) {
+    const none = document.createElement("p");
+    none.className = "shelf-empty";
+    none.textContent = empty;
+    shelf.appendChild(none);
+    return shelf;
+  }
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  rows.forEach((one) => list.appendChild(make(one)));
+  shelf.appendChild(list);
+  return shelf;
+}
+
+/** Лот: чужой покупают, свой снимают с продажи. */
+function marketLot(one, theirs) {
+  const box = carCard(one);
+  box.appendChild(
+    paperRows([
+      ["Цена", num(one.price) + " 💰"],
+      ["В салоне", num(one.salon) + " 💰"],
+      [theirs ? "Продавец" : "Выставлена", theirs ? one.seller : one.listed],
+    ])
+  );
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    theirs
+      ? button("Купить · " + num(one.price) + " 💰", {
+          onClick: () => marketAction({ action: "buy", id: one.id }),
+        })
+      : button("Снять с продажи", {
+          secondary: true,
+          onClick: () => marketAction({ action: "withdraw", id: one.id }),
+        })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Своя машина из гаража: назвать цену и выставить. */
+function offerCar(one) {
+  const box = carCard(one);
+  box.appendChild(
+    paperRows([
+      ["В салоне", num(one.salon) + " 💰"],
+      ["Просить можно", one.hint],
+    ])
+  );
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Выставить на продажу", {
+      onClick: () =>
+        openMoneySheet({
+          title: "Почём продаёшь?",
+          note: one.title + ": " + one.hint,
+          min: one.low,
+          max: one.high,
+          hint: "Цену держат в рамках салона.",
+          onSum: (price) =>
+            marketAction({ action: "sell", code: one.code, price: price }),
+        }),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
 }
 
 /** Сама машина: картинка 16:9, скорость и подпись. */

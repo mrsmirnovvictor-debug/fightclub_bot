@@ -203,12 +203,16 @@ async def build_cars(
         "pro": player.is_pro(moment),
         "pro_limit": PRO_MAX_CARS,
         "shelf": [],
+        "market": None,
         "said": "",
     }
     if garage:
         body["shelf"] = [
             await garage_row(db, one, player, moment, own) for one in garage
         ]
+    elif place and place.allows(Service.USED_CARS):
+        # Рынок вместо витрины: торгуют не с салоном, а друг с другом
+        body["market"] = await market_payload(db, player, moment, keys)
     else:
         body["shelf"] = [
             showcase_row(one, player, moment, own, held < limit)
@@ -216,6 +220,63 @@ async def build_cars(
         ]
     body["note"] = _note(body, player, moment)
     return body
+
+
+async def market_payload(
+    db, player: Player, moment: int, keys: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Авторынок: что стоит на продаже и что боец может выставить.
+
+    Своё и чужое разложено по разным спискам: кнопки у них разные —
+    чужое покупают, своё снимают с продажи.
+    """
+    # `club_time`, а не `club_moment`: час выставления лежит в базе
+    # строкой, как у комиссионки, а не числом секунд
+    from bot.game.clock import club_time
+    from bot.game.used_cars import (
+        MAX_SHARE,
+        MIN_SHARE,
+        price_hint,
+        price_range,
+        sellable,
+    )
+
+    rows = []
+    for lot in await db.car_lots():
+        car = get_car(str(lot["code"]))
+        if car is None:  # pragma: no cover - машину убрали из каталога
+            continue
+        rows.append(dict(
+            car_row(car),
+            id=int(lot["id"]),
+            price=int(lot["price"]),
+            seller=lot["seller"] or "боец без имени",
+            mine=int(lot["seller_id"]) == player.user_id,
+            listed=club_time(lot["listed_at"]),
+            # Салонная цена рядом: по ней и видно, дорого ли просят
+            salon=car.price,
+        ))
+    # Выставить можно только свою насовсем, не на парковке и не под собой
+    driving = player.driving(moment)
+    offer = []
+    for one in keys:
+        car = get_car(str(one["code"]))
+        if car is None or not sellable(car) or not one["own"]:
+            continue
+        if one["parked"] or one["code"] == driving:
+            continue
+        low, high = price_range(car)
+        offer.append(dict(
+            car_row(car), low=low, high=high, hint=price_hint(car),
+            salon=car.price,
+        ))
+    return {
+        "lots": [one for one in rows if not one["mine"]],
+        "mine": [one for one in rows if one["mine"]],
+        "offer": offer,
+        "min_share": MIN_SHARE,
+        "max_share": MAX_SHARE,
+    }
 
 
 def _note(body: dict[str, Any], player: Player, moment: int) -> str:

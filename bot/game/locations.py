@@ -62,6 +62,7 @@ class Service(str, Enum):
     ARENA = "arena"  # турнирная арена: недельный плей-офф
     CARS = "cars"  # автосалон и служебные гаражи: машины города
     DORM = "dorm"  # общежитие: комната студенту, пока он учится
+    USED_CARS = "used_cars"  # авторынок: машины из рук в руки
 
     @property
     def title(self) -> str:
@@ -98,6 +99,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.ARENA: "драться в недельном турнире",
     Service.CARS: "брать машину",
     Service.DORM: "жить в общежитии",
+    Service.USED_CARS: "торговать машинами с рук",
 }
 
 
@@ -1225,9 +1227,10 @@ LOCATIONS: tuple[Location, ...] = (
             (0.361318, 0.159689), (0.433581, 0.154306),
             (0.431456, 0.188995), (0.361318, 0.19378),
         ),
-        # Дилер уже нанимается, а торговля с рук ещё впереди
-        services=(Service.WORK,),
-        soon="подержанные машины с рук",
+        # Рынок и место дилера в нём. Торгуют машинами из рук в руки,
+        # как вещами в комиссионке, — рынок стоит первым, потому что
+        # дверь на карте открывает тот экран, что в списке первый
+        services=(Service.USED_CARS, Service.WORK),
         genitive="авторынка",
         interior="used_car_market_office_interior",
         interior_ext="png",

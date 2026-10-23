@@ -335,6 +335,20 @@ CREATE TABLE IF NOT EXISTS market (
 
 CREATE INDEX IF NOT EXISTS idx_market_seller ON market(seller_id, id DESC);
 
+-- Авторынок: та же комиссионка, но для машин. Износа у машины нет, и
+-- колонок под него тоже: кроме кода и цены, записывать нечего.
+-- Выставленная машина с бойца снята — она стоит на рынке, а не у него
+CREATE TABLE IF NOT EXISTS car_market (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    seller_id INTEGER NOT NULL,
+    code      TEXT    NOT NULL,
+    price     INTEGER NOT NULL,
+    listed_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_car_market_seller
+    ON car_market(seller_id, id DESC);
+
 -- Рейды: отряд живых бойцов против одного босса. Запись заводится в момент
 -- сбора — по ней же считается «один рейд в сутки на созывающего», — и
 -- закрывается итогом, когда бой кончился.
@@ -5821,6 +5835,57 @@ class Database:
         DELETE прошёл первым, а деньги и вещь считаются уже после.
         """
         cursor = await self.conn.execute("DELETE FROM market WHERE id = ?", (lot_id,))
+        await self.conn.commit()
+        return bool(cursor.rowcount)
+
+    # ---------- авторынок ----------
+
+    async def add_car_lot(self, seller_id: int, code: str, price: int) -> int:
+        """Выставить машину на рынок. Отдаёт номер лота."""
+        cursor = await self.conn.execute(
+            "INSERT INTO car_market (seller_id, code, price) VALUES (?,?,?)",
+            (seller_id, code, price),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def car_lots(self) -> list[dict[str, Any]]:
+        """Всё, что стоит на рынке, вместе с прозвищем продавца."""
+        async with self.conn.execute(
+            """
+            SELECT m.id, m.seller_id, m.code, m.price, m.listed_at,
+                   p.nickname AS seller
+            FROM car_market AS m
+            LEFT JOIN players AS p ON p.user_id = m.seller_id
+            ORDER BY m.id DESC
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def car_lot(self, lot_id: int) -> dict[str, Any] | None:
+        async with self.conn.execute(
+            """
+            SELECT m.id, m.seller_id, m.code, m.price, m.listed_at,
+                   p.nickname AS seller
+            FROM car_market AS m
+            LEFT JOIN players AS p ON p.user_id = m.seller_id
+            WHERE m.id = ?
+            """,
+            (lot_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def take_car_lot(self, lot_id: int) -> bool:
+        """Снять лот с рынка. False — его уже забрали.
+
+        Это же и защита от двойной продажи: машину забирает тот, чей
+        DELETE прошёл первым, а деньги считаются уже после.
+        """
+        cursor = await self.conn.execute(
+            "DELETE FROM car_market WHERE id = ?", (lot_id,)
+        )
         await self.conn.commit()
         return bool(cursor.rowcount)
 
