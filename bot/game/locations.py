@@ -183,6 +183,9 @@ class Location:
     # легли первые четырнадцать домов. Районы второй очереди выгрузили
     # в другую, и это единственное, чем они отличаются
     interior_folder: str = ""
+    # Чем нарисован вид изнутри. Первые очереди отдали в jpeg,
+    # четвёртую — в png: тот же разнобой, что и у самих карт
+    interior_ext: str = "jpeg"
 
     def allows(self, service: Service) -> bool:
         return service in self.services
@@ -252,6 +255,7 @@ class Location:
         return art.interior(
             self.interior or f"{self.code}_interior",
             self.interior_folder or art.INTERIORS,
+            self.interior_ext,
         )
 
 
@@ -1164,96 +1168,99 @@ LOCATIONS: tuple[Location, ...] = (
         "Школа боевых искусств",
         district=DOJO,
         entrance=(
-            (0.393199, 0.291268), (0.520723, 0.291268),
-            (0.520723, 0.345096), (0.393199, 0.345096),
+            (0.41339, 0.269737), (0.497343, 0.264354),
+            (0.497343, 0.311603), (0.415515, 0.316388),
         ),
         soon="пояса и спарринги",
         genitive="школы боевых искусств",
-        interior_folder=art.NEW_INTERIORS,
+        interior_ext="png",
     ),
     Location(
         "barbershop",
         "Барбершоп",
         district=DOJO,
         entrance=(
-            (0.54729, 0.654904), (0.674814, 0.654904),
-            (0.674814, 0.708732), (0.54729, 0.708732),
+            (0.567481, 0.606459), (0.65356, 0.619019),
+            (0.65356, 0.686603), (0.567481, 0.672249),
         ),
         soon="стрижка и борода",
         genitive="барбершопа",
-        interior_folder=art.NEW_INTERIORS,
+        interior_ext="png",
     ),
     Location(
         "beauty_salon",
         "Салон красоты",
         district=BEAUTY,
         entrance=(
-            (0.435707, 0.27512), (0.563231, 0.27512),
-            (0.563231, 0.328947), (0.435707, 0.328947),
+            (0.447396, 0.242823), (0.545165, 0.236842),
+            (0.544102, 0.297249), (0.449522, 0.306818),
         ),
         soon="уход за собой",
         genitive="салона красоты",
-        interior_folder=art.NEW_INTERIORS,
+        interior_ext="png",
     ),
     Location(
         "restaurant",
         "Ресторан",
         district=BEAUTY,
         entrance=(
-            (0.541977, 0.711722), (0.669501, 0.711722),
-            (0.669501, 0.76555), (0.541977, 0.76555),
+            (0.571732, 0.657895), (0.649309, 0.664474),
+            (0.648247, 0.741029), (0.57067, 0.733852),
         ),
         soon="ужин и столик",
         genitive="ресторана",
-        interior_folder=art.NEW_INTERIORS,
+        interior_ext="png",
     ),
     Location(
         "used_car_market",
         "Авторынок",
         district=USED_CARS,
         entrance=(
-            (0.54729, 0.293062), (0.674814, 0.293062),
-            (0.674814, 0.34689), (0.54729, 0.34689),
+            (0.361318, 0.159689), (0.433581, 0.154306),
+            (0.431456, 0.188995), (0.361318, 0.19378),
         ),
         soon="подержанные машины с рук",
         genitive="авторынка",
-        interior_folder=art.NEW_INTERIORS,
+        interior="used_car_market_office_interior",
+        interior_ext="png",
     ),
     Location(
         "gas_station",
         "АЗС",
         district=USED_CARS,
         entrance=(
-            (0.722635, 0.595096), (0.850159, 0.595096),
-            (0.850159, 0.648923), (0.722635, 0.648923),
+            (0.750266, 0.572368), (0.821467, 0.583732),
+            (0.817216, 0.627392), (0.749203, 0.615431),
         ),
         soon="заправка и мелочи в дорогу",
         genitive="заправки",
-        interior_folder=art.NEW_INTERIORS,
+        interior="gas_station_driveway_interior",
+        interior_ext="png",
     ),
     Location(
         "car_wash",
         "Автомойка",
         district=WASH,
         entrance=(
-            (0.382572, 0.238038), (0.510096, 0.238038),
-            (0.510096, 0.291866), (0.382572, 0.291866),
+            (0.345377, 0.194378), (0.545165, 0.183612),
+            (0.543039, 0.256579), (0.345377, 0.267943),
         ),
         soon="мойка машины",
         genitive="автомойки",
-        interior_folder=art.NEW_INTERIORS,
+        interior="car_wash_left_interior",
+        interior_ext="png",
     ),
     Location(
         "courthouse",
         "Суд",
         district=WASH,
         entrance=(
-            (0.57067, 0.663876), (0.698193, 0.663876),
-            (0.698193, 0.717703), (0.57067, 0.717703),
+            (0.594049, 0.617823), (0.680128, 0.632177),
+            (0.678002, 0.691388), (0.594049, 0.67823),
         ),
         soon="тяжбы и обжалование срока",
         genitive="суда",
-        interior_folder=art.NEW_INTERIORS,
+        interior_ext="png",
     ),
     Location(
         # Код совпадает с кодом района — как у особняка, салона и арены:
@@ -1261,13 +1268,18 @@ LOCATIONS: tuple[Location, ...] = (
         "power_station",
         "Электростанция",
         district=POWER,
+        # Дверь — проходная, и она пока единственная. Станция закрыта:
+        # внутрь ходят через проходную, а двор, диспетчерская и машинный
+        # зал нарисованы, но входа в них нет вовсе. Их разметка лежит в
+        # docs/doors.md и ждёт, когда станцию откроют
         entrance=(
-            (0.488842, 0.780502), (0.616366, 0.780502),
-            (0.616366, 0.83433), (0.488842, 0.83433),
+            (0.447396, 0.755981), (0.655685, 0.745215),
+            (0.652497, 0.795455), (0.450584, 0.806818),
         ),
-        soon="свет на весь город",
+        soon="проходная откроется, а за ней весь город",
         genitive="электростанции",
-        interior_folder=art.NEW_INTERIORS,
+        interior="power_station_gate_interior",
+        interior_ext="png",
     ),
 )
 

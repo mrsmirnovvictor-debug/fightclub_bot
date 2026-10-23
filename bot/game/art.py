@@ -158,7 +158,7 @@ def location(code: str, ext: str = "jpeg") -> str:
     return f"{LOCATIONS}/{code}.{ext}"
 
 
-def interior(code: str, folder: str = INTERIORS) -> str:
+def interior(code: str, folder: str = INTERIORS, ext: str = "jpeg") -> str:
     """Вид изнутри дома: locations/interiors/pharmacy_interior.jpeg.
 
     Снаружи дом — кусочек нарисованного района, и с карты видно только
@@ -166,9 +166,10 @@ def interior(code: str, folder: str = INTERIORS) -> str:
     аптеки отличается одним заголовком.
 
     Папку приходится называть: интерьеры выгружали двумя заходами и в
-    разные места. Имя файла при этом всё так же считается от кода дома.
+    разные места. Формат — тоже: первые очереди отдали в jpeg, четвёртую
+    в png. Имя файла при этом всё так же считается от кода дома.
     """
-    return f"{folder}/{code}.jpeg"
+    return f"{folder}/{code}.{ext}"
 
 
 def boss(code: str) -> str:

@@ -118,7 +118,22 @@ RENAMED = {
     "weapon_shop": "weapons_shop_interior",
     "clothes_shop": "clothing_shop_interior",
     "casino": "underground_casino_interior",
+    # Четвёртая очередь: у четырёх домов картинку назвали по входу, а не
+    # по дому — мойку сняли в левом боксе, авторынок в офисе, АЗС на
+    # въезде, станцию на проходной
+    "car_wash": "car_wash_left_interior",
+    "used_car_market": "used_car_market_office_interior",
+    "gas_station": "gas_station_driveway_interior",
+    "power_station": "power_station_gate_interior",
 }
+
+
+# Четвёртую очередь отдали в png, прежние — в jpeg
+PNG_INSIDE = frozenset({
+    "martial_arts_school", "barbershop", "beauty_salon", "restaurant",
+    "used_car_market", "gas_station", "car_wash", "courthouse",
+    "power_station",
+})
 
 
 # Четыре дома жилого квартала внутри одинаковые, и вид изнутри у них
@@ -130,19 +145,16 @@ TWINS = {
 }
 
 
-# Дома третьей и четвёртой очереди: вид изнутри им ещё не рисовали.
-# Адрес у них всё равно считается — по коду, как у всех, — и появится
-# файл под этим именем, дом подхватит его сам. Пока файла нет, экран
-# обходится без рамки: страница снимает её, когда картинка не доехала.
+# Дома третьей очереди: вид изнутри им ещё не рисовали. Адрес у них всё
+# равно считается — по коду, как у всех, — и появится файл под этим
+# именем, дом подхватит его сам. Пока файла нет, экран обходится без
+# рамки: страница снимает её, когда картинка не доехала.
+#
+# Четвёртая очередь сюда не попала: восточный столбец приехал с
+# нарисованными интерьерами сразу, хотя услуг за домами ещё нет.
 UNDRAWN = frozenset({
     "city_administration", "hr_agency", "jewelry_store",
     "university", "prison", "taxi_depot",
-    # Восточный столбец: у этих девяти нет ни услуги, ни вида изнутри
-    "martial_arts_school", "barbershop",
-    "beauty_salon", "restaurant",
-    "used_car_market", "gas_station",
-    "car_wash", "courthouse",
-    "power_station",
 })
 
 
@@ -162,11 +174,12 @@ def test_every_house_has_a_view_from_within():
         # очередь — в другую. Имя файла при этом всё так же считается от
         # кода дома, и это здесь главное
         folder = "/interiors" if place.interior_folder else "/locations/interiors"
-        assert place.indoors.endswith(f"{folder}/{name}.jpeg")
+        ext = "png" if place.code in PNG_INSIDE else "jpeg"
+        assert place.indoors.endswith(f"{folder}/{name}.{ext}")
 
 
 def test_the_newest_houses_are_waiting_for_their_view():
-    """У пятнадцати новых домов картинки ещё нет, и это записано здесь.
+    """У шести домов картинки ещё нет, и это записано здесь.
 
     Адрес у них считается по общему правилу, так что нарисуют файл под
     этим именем — дом подхватит его сам, править будет нечего. А пока
@@ -177,7 +190,7 @@ def test_the_newest_houses_are_waiting_for_their_view():
     from bot.game.locations import LOCATIONS, get_location
 
     drawn = {place.code for place in LOCATIONS} - UNDRAWN
-    assert len(drawn) == 33, "список недорисованных разошёлся с городом"
+    assert len(drawn) == 42, "список недорисованных разошёлся с городом"
     for code in UNDRAWN:
         place = get_location(code)
         assert place is not None, code
