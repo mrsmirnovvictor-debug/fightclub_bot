@@ -563,6 +563,43 @@ async def test_a_crash_report_survives_junk_instead_of_json(client):
     assert (await client.post("/api/oops", json=["не", "объект"])).status == 200
 
 
+# Два имени на странице заняты дважды, и это не одобрение, а запись
+# долга. `plural` — одно правило, написанное двумя способами: что из них
+# победит, неважно. `clockText` — настоящий конфликт: тела разные, и
+# второе молча перебивает первое, так что часы, писавшиеся под «время
+# вышло» и «45 сек», показывают «0:00» и «0:45». Чинить это — менять вид
+# экранов, и решать такое надо отдельно.
+TWICE_DEFINED = {"clockText", "plural"}
+
+
+def test_no_two_functions_on_the_page_share_a_name():
+    """Второе объявление молча съедает первое, и заметить это нечем.
+
+    Страница — один большой файл с плоским списком функций, без модулей
+    и без сборщика. Объявил функцию с занятым именем — браузер оставит
+    последнюю, а вызовы первой уедут в неё же. Ошибка тихая: файл
+    разбирается, тесты соседних экранов проходят, а ломается тот, чьё
+    имя увели.
+
+    Так и случилось с авторынком: он завёл `marketAction`, которым уже
+    звалась комиссионка, и три экрана торговли перестали отправлять
+    запросы. Проверка руками это пропустила — она искала `function` и не
+    видела `async function`.
+    """
+    import re
+
+    from bot.webapp.server import STATIC_DIR
+
+    page = (STATIC_DIR / "card.js").read_text(encoding="utf-8")
+    names = re.findall(r"^(?:async )?function (\w+)\(", page, re.M)
+
+    seen, twice = set(), set()
+    for name in names:
+        (twice if name in seen else seen).add(name)
+
+    assert twice <= TWICE_DEFINED, f"имя занято дважды: {twice - TWICE_DEFINED}"
+
+
 def test_the_page_knows_every_shop_and_every_house_in_town():
     """Новый магазин на карте — новая строка на странице, и обе рядом.
 

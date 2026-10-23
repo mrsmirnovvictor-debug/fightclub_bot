@@ -2499,6 +2499,9 @@ const HOUSE_SCREENS = {
   prison: () => openPrison(),
   arena: () => openArena(),
   cars: () => openCars(),
+  // Рынок открывает тот же экран, что салон и гаражи: машина везде
+  // рисуется одинаково, а дом подставляет свою полку
+  used_cars: () => openCars(),
   dorm: () => openDorm(),
 };
 
@@ -11667,7 +11670,7 @@ async function carsAction(payload, where) {
 }
 
 /** То же, но ручкой рынка: там торгуют не с городом, а друг с другом. */
-function marketAction(payload) {
+function carMarketAction(payload) {
   return carsAction(payload, "api/used-cars");
 }
 
@@ -11766,11 +11769,11 @@ function marketLot(one, theirs) {
   buttons.appendChild(
     theirs
       ? button("Купить · " + num(one.price) + " 💰", {
-          onClick: () => marketAction({ action: "buy", id: one.id }),
+          onClick: () => carMarketAction({ action: "buy", id: one.id }),
         })
       : button("Снять с продажи", {
           secondary: true,
-          onClick: () => marketAction({ action: "withdraw", id: one.id }),
+          onClick: () => carMarketAction({ action: "withdraw", id: one.id }),
         })
   );
   box.appendChild(buttons);
@@ -11798,7 +11801,7 @@ function offerCar(one) {
           max: one.high,
           hint: "Цену держат в рамках салона.",
           onSum: (price) =>
-            marketAction({ action: "sell", code: one.code, price: price }),
+            carMarketAction({ action: "sell", code: one.code, price: price }),
         }),
     })
   );
