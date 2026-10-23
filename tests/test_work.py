@@ -155,24 +155,47 @@ def test_the_work_does_not_steal_the_house_from_its_own_screen():
 
 
 def test_the_street_vacancies_are_the_ones_the_city_promised():
-    """Пять мест первой очереди: с улицы, без диплома и без стажа."""
+    """Девять мест с улицы: без диплома, на одном тесте при приёме.
+
+    Пять первой очереди и четыре из восточного столбца. Диплома не
+    просят нигде, но ремесло спрашивают стажем: под ножницы в городе
+    диплома нет, а брать на них прямо с улицы — всё равно что сажать за
+    стойку банка первого встречного.
+    """
     rows = {one.code: one for one in VACANCIES}
     street = [one for one in VACANCIES if not one.needs]
 
-    assert len(street) == 5
+    assert len(street) == 9
     assert (rows["bartender"].salary, rows["bartender"].hours) == (250, 10)
     assert (rows["postman"].salary, rows["postman"].hours) == (200, 8)
     assert (rows["trainer"].salary, rows["trainer"].hours) == (300, 10)
     assert (rows["fight_host"].salary, rows["fight_host"].hours) == (300, 10)
     assert (rows["croupier"].salary, rows["croupier"].hours) == (300, 10)
-    # У этих пяти ни диплома, ни стажа
+    # Восточный столбец: мойщик и официант — улица в чистом виде,
+    # барбер и мастер салона — ремесло, и с них спрашивают месяц стажа
+    assert (rows["car_washer"].salary, rows["car_washer"].seats) == (250, 2)
+    assert (rows["waiter"].salary, rows["waiter"].seats) == (250, 3)
+    assert (rows["barber"].salary, rows["barber"].seats) == (300, 2)
+    assert (rows["beauty_master"].salary, rows["beauty_master"].seats) == (300, 3)
+    assert rows["barber"].months == 1 and rows["beauty_master"].months == 1
+
+    # Диплома не просят ни на одном
     for one in street:
         assert one.education == "не требуется"
-        assert one.months == 0
+    # Стаж спрашивают только у двух ремесленных
+    assert {one.code for one in street if one.months} == {
+        "barber", "beauty_master",
+    }
     # За стойкой двадцать мест: бар — первая работа в городе, и одно
     # место на всех означало бы, что устроиться успевает один
     assert rows["bartender"].seats == 20
-    assert all(one.seats == 1 for one in street if one.code != "bartender")
+    assert all(
+        one.seats == 1
+        for one in street
+        if one.code not in {
+            "bartender", "car_washer", "waiter", "barber", "beauty_master",
+        }
+    )
 
 
 # ---------- тест при приёме ----------
@@ -1060,9 +1083,9 @@ async def test_a_holder_who_keeps_the_norm_is_not_touched_by_others(db):
 
 
 def test_the_diploma_jobs_are_the_ones_the_city_promised():
-    """Двадцать три места под диплом: дом, кол-во, требование, стаж, деньги."""
+    """Двадцать четыре места под диплом: дом, кол-во, требование, стаж, деньги."""
     rows = {one.code: one for one in VACANCIES if one.needs}
-    assert len(rows) == 23
+    assert len(rows) == 24
 
     def check(code, place, seats, needs, months, salary):
         one = rows[code]
@@ -1089,19 +1112,32 @@ def test_the_diploma_jobs_are_the_ones_the_city_promised():
     check("senior_officer", "military_base", 2, "cadet", 1, 700)
     check("junior_officer", "military_base", 4, "cadet", 0, 500)
     check("taxi_driver", "taxi_depot", 4, "licence", 0, 500)
+    # Дилер авторынка — те же продажи, что в салоне и страховой, и
+    # спрос с него тот же: диплом управления и те же шестьсот
+    check("car_dealer", "used_car_market", 2, "management", 0, 600)
     # Разработка: один диплом на три ступени, и разделяет их стаж
     check("dev_senior", "office_building", 2, "it", 3, 1_500)
     check("dev_middle", "office_building", 4, "it", 1, 1_000)
     check("dev_junior", "office_building", 6, "it", 0, 600)
-    # Пять менеджеров в пяти домах — одно место, пять дверей
-    sales = [one for one in rows.values() if one.needs == "management"]
-    assert len(sales) == 5
-    assert {one.place for one in sales} == {
+    # Диплом управления просят в шести домах. Пять из них — менеджеры
+    # по продажам: одно место, пять дверей, всё одинаково. Шестой —
+    # дилер авторынка: деньги и стаж те же, а мест два, потому что
+    # рынок не контора
+    managers = [
+        one for one in rows.values()
+        if one.needs == "management" and one.code != "car_dealer"
+    ]
+    assert len(managers) == 5
+    assert {one.place for one in managers} == {
         "car_dealership", "insurance_office", "driving_school",
         "strength_gym", "northern_wall_shop",
     }
-    for one in sales:
+    for one in managers:
         assert (one.seats, one.months, one.salary) == (3, 0, 600)
+
+    dealer = rows["car_dealer"]
+    assert (dealer.months, dealer.salary) == (0, 600), "спрос как у менеджеров"
+    assert dealer.seats == 2
 
 
 def test_the_requirement_is_named_by_the_diploma_itself():

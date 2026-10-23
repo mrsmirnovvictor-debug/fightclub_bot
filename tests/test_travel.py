@@ -608,21 +608,23 @@ def test_a_house_without_a_trade_still_says_what_is_coming():
     Два дня назад домов без услуги в городе не осталось, и тест
     утверждал ровно это. Потом приехала четвёртая очередь: пять карт
     восточного столбца и девять домов на них, за которыми пока ничего не
-    стоит. Правило от этого не изменилось, изменился только его смысл:
+    стояло. Правило от этого не изменилось, изменился только его смысл:
     дом без услуги — этап, но лишь пока у него сказано, чего в нём ждать.
     Дом, который молчит, — недоделка.
+
+    С тех пор пятеро из девяти начали нанимать и из списка вышли.
+    Осталось четверо, и каждый по-прежнему обязан сказать, чего ждёт.
     """
     from bot.game.locations import LOCATIONS, get_location
 
     coming = [place for place in LOCATIONS if not place.works]
 
-    # Весь восточный столбец и ничего сверх него
+    # Восточный столбец уже начал обживаться: в пяти домах нанимают, и
+    # они из этого списка вышли. Осталось четыре — те, про которые
+    # сказано «описание позже», и закрытая станция
     assert {place.code for place in coming} == {
-        "martial_arts_school", "barbershop",
-        "beauty_salon", "restaurant",
-        "used_car_market", "gas_station",
-        "car_wash", "courthouse",
-        "power_station",
+        "martial_arts_school", "gas_station",
+        "courthouse", "power_station",
     }
     for place in coming:
         assert place.soon, f"{place.code}: не сказано, что здесь будет"
