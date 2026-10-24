@@ -151,19 +151,41 @@ def test_the_spots_stand_on_real_houses():
     """Точка — существующий дом города, а не выдуманный объект."""
     from bot.game.locations import get_location
 
-    assert TOTAL_SPOTS == 10
+    assert TOTAL_SPOTS == 15
     for spot in SPOTS:
         place = get_location(spot.code)
         assert place is not None, spot.code
         assert spot.title == place.title
         assert spot.income > 0
 
-    # Домов, за которые драться не станут, среди точек нет
+    # Домов, за которые драться не станут, среди точек нет. Суд и
+    # электростанция сюда тоже не попали: суд — это власть, а не касса,
+    # а станция закрыта проходной
     codes = {one.code for one in SPOTS}
     assert not codes & {
         "mafia_mansion", "vcpd", "military_base", "hospital", "university",
         "police_school", "medical_college", "cadet_corps",
+        "courthouse", "power_station", "gas_station", "martial_arts_school",
     }
+
+    # Восточный столбец: пять точек, и все внизу лестницы — окраина,
+    # выстроенная вчера, оборотов казино там нет
+    east = {
+        "used_car_market": 140, "restaurant": 100, "beauty_salon": 80,
+        "barbershop": 70, "car_wash": 60,
+    }
+    assert east.keys() <= codes
+    for code, income in east.items():
+        assert get_spot(code).income == income, code
+    # Все пятеро — в нижней половине лестницы: окраина не спорит с
+    # казино и рынком. Авторынок из них богаче всех, но до автосалона
+    # не дотягивает — там торгуют новыми
+    before = sorted(one.income for one in SPOTS if one.code not in east)
+    middle = before[len(before) // 2]
+    assert all(get_spot(code).income < middle for code in east)
+    assert get_spot("used_car_market").income < get_spot("car_dealership").income
+    # И весь столбец вместе приносит меньше, чем прежний город
+    assert sum(east.values()) < sum(before)
 
 
 def test_the_income_counts_whole_days_only():
@@ -234,6 +256,47 @@ async def test_the_service_fights_as_a_family(db):
     medic.job_code = "orderly"
     await db.save_player(medic)
     assert owner_of(medic).nobody
+
+
+async def test_the_new_spots_change_hands_like_the_old_ones(db):
+    """Восточный столбец берут мафией и отбивают полицией.
+
+    Владелец — свойство бойца, а не точки: кто в клане, воюет за клан,
+    кто на светлой службе — за службу. Поэтому новой точке ничего не
+    нужно заводить отдельно, и проверяем мы здесь именно это — что
+    ничего и не забыли.
+    """
+    don, _, clan = await family(db)
+    cop = make_player(9, "Сержант")
+    cop.job_code = "police_patrol"
+    cop.diplomas = ["police"]
+    await db.save_player(cop)
+
+    east = (
+        "car_wash", "used_car_market", "barbershop",
+        "beauty_salon", "restaurant",
+    )
+    for code in east:
+        # Сперва ничья: за ней стоит городская охрана
+        assert await db.turf_row(code) is None, code
+
+        # Берёт семья
+        await db.take_turf(code, "clan", str(clan.id), NOW)
+        held = await db.turf_row(code)
+        assert held.owner.clan_id == clan.id, code
+
+        # Отбивает полиция — тем же путём, никакой особой двери у неё нет
+        await db.take_turf(code, "service", "police", NOW + 60)
+        back = await db.turf_row(code)
+        assert back.owner.service == "police", code
+
+    # А в обходе за службой не числится ни одна, и это не упущение:
+    # полиция дом не присваивает, а охраняет. Сняли с него последнего
+    # патрульного — он в тот же миг под обычной городской охраной.
+    # Новые точки этого правила не отменяют — они под него попали
+    assert await held_by(db, owner_of(cop), NOW) == []
+    for code in east:
+        assert await db.turf_row(code) is None, f"{code}: вывеска осталась"
 
 
 async def test_nobody_holds_a_spot_for_free(db):
