@@ -969,9 +969,15 @@ async def test_a_siege_splashes_the_garrison_and_blesses_the_squad(db, monkeypat
         db, first=20, name="Бешеные псы", sign="silver_wolves"
     )
     await stand(db, rivals, "bar")
-    war = TurfWar(db)
+    # Кости у штурма свои, и они заданы: «Призыв к крови» проламывает
+    # блок без броска, но от удара ещё можно увернуться, а уворот — это
+    # бросок. На незаданных костях гарнизон раз в пару десятков прогонов
+    # уходил с линии, заготовка отряду не доставалась, и тест падал на
+    # ровном месте. Сид тут не для красоты: он и есть «не зависит от
+    # броска костей»
+    war = TurfWar(db, rng=random.Random(5))
     # Гарнизон закрывает ноги и бьёт по ним же: тогда удар в голову
-    # дойдёт наверняка, и проверка не зависит от броска костей
+    # дойдёт наверняка, и мимо блока он не пройдёт
     monkeypatch.setattr(
         "bot.turf_war.random_action",
         lambda fighter, rng: Action(attacks=[LEGS], block=[LEGS]),
