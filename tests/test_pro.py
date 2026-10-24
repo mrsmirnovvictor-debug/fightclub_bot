@@ -26,7 +26,7 @@ from bot.game.pro import (
     promo_is_on,
 )
 from bot.game.store import parse_payload, pro_payload
-from bot.looks_service import LookError, choose_look, wardrobe
+from bot.looks_service import LookError, wardrobe, wear_look
 from bot.models import Player
 from bot.pro_service import (
     ProError,
@@ -186,7 +186,7 @@ async def test_the_assassin_look_is_not_handed_out_any_more(db):
     shelf = {row["code"] for row in await wardrobe(db, player)}
     assert LEGACY_LOOK not in shelf, "подписка образ больше не открывает"
     with pytest.raises(LookError, match="больше не выдают"):
-        await choose_look(db, player, LEGACY_LOOK)
+        await wear_look(db, player, LEGACY_LOOK)
 
 
 async def test_the_assassin_look_stays_with_those_who_got_it(db):
@@ -197,7 +197,7 @@ async def test_the_assassin_look_stays_with_those_who_got_it(db):
 
     shelf = await wardrobe(db, player)
     row = next(r for r in shelf if r["code"] == LEGACY_LOOK)
-    choice = await choose_look(db, player, LEGACY_LOOK)
+    choice = await wear_look(db, player, LEGACY_LOOK)
 
     assert row["owned"] and row["pro"] and row["price"] == 0
     assert not choice.bought and choice.credits == 0

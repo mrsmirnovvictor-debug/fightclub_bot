@@ -33,6 +33,15 @@ LOOK_PRICE = 200
 MALE, FEMALE = "male", "female"
 GENDER_TITLES = {MALE: "Мужские", FEMALE: "Женские"}
 
+# Где образами торгуют: дом — пол, с которым он работает. Мужские лица
+# режут в барбершопе, женские делают в салоне красоты.
+#
+# Прежде образ покупали прямо в карточке, нажав на лицо. Город к тому
+# времени вырос: за оружием, одеждой, лечением и машиной в нём ходят
+# ногами, и одна внешность оставалась товаром из воздуха. Теперь у неё
+# есть адрес — и он же отвечает на вопрос, кому что продают.
+SHOPS: dict[str, str] = {"barbershop": MALE, "beauty_salon": FEMALE}
+
 
 @dataclass(frozen=True)
 class Look:
@@ -207,6 +216,19 @@ def looks_of_gender(gender: str) -> tuple[Look, ...]:
     return tuple(look for look in LOOKS if look.gender == gender)
 
 
+def gender_at(place: str) -> str:
+    """Чьи образы делают в этом доме. Пусто — в этом доме не делают."""
+    return SHOPS.get(place, "")
+
+
+def shop_of(gender: str) -> str:
+    """Дом, в котором делают образы этого пола."""
+    for place, sells in SHOPS.items():
+        if sells == gender:
+            return place
+    return ""  # pragma: no cover - полов в клубе два, и дом есть у каждого
+
+
 __all__ = [
     "BY_CODE",
     "DEFAULT_LOOK",
@@ -215,10 +237,13 @@ __all__ = [
     "LOOKS",
     "LOOK_PRICE",
     "MALE",
+    "SHOPS",
     "Look",
     "free_looks",
+    "gender_at",
     "pro_looks",
     "get_look",
     "looks_of_gender",
     "paid_looks",
+    "shop_of",
 ]

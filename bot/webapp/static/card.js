@@ -1892,7 +1892,7 @@ const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
   "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
-  "cars", "dorm", "charge", "dojo", "bag", "hero",
+  "cars", "dorm", "charge", "dojo", "barber", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1905,7 +1905,7 @@ const OPENED_FROM = {
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
   tavern: "map", study: "map", turf: "map", crowd: "map",
   elections: "map", house: "map", prison: "map", arena: "map", cars: "map",
-  dorm: "map", charge: "map", dojo: "map",
+  dorm: "map", charge: "map", dojo: "map", barber: "map",
 };
 let lastTab = "hero";
 
@@ -1992,6 +1992,9 @@ function showTab(name) {
   // Школа: ведомость растёт в боях, и к ней возвращаются после них —
   // спрашиваем на каждый заход
   if (name === "dojo") loadDojo();
+  // Полка образов: кредитов могло стать больше или меньше, а образ —
+  // купиться в другом доме того же пола
+  if (name === "barber") loadBarber();
   // Ключи при бойце: лежат они в инвентаре, вместе со всем, что боец
   // носит с собой. Машина могла кончиться арендой, пока туда не
   // заглядывали, — спрашиваем на каждый заход
@@ -2515,6 +2518,7 @@ const HOUSE_SCREENS = {
   dorm: () => openDorm(),
   charge: () => openCharge(),
   dojo: () => openDojo(),
+  looks: () => openBarber(),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -6138,7 +6142,7 @@ function openSheet(title, note, middle) {
   el("sheet").classList.remove("hidden");
 }
 
-function lookTile(look) {
+function lookTile(look, onPick) {
   const box = document.createElement("button");
   box.type = "button";
   box.className =
@@ -6177,7 +6181,10 @@ function lookTile(look) {
   }
 
   box.append(pic, title, tag);
-  box.addEventListener("click", () => pickLook(look));
+  // Нажатие приходит снаружи: в карточке плитка надевает образ, на полке
+  // дома — покупает. Плитка от этого не меняется, и рисовать её дважды
+  // было бы незачем
+  box.addEventListener("click", () => (onPick || pickLook)(look));
   return box;
 }
 
@@ -6201,8 +6208,8 @@ async function openLooks() {
     if (!response.ok) throw new Error("Гардероб не открылся.");
     const data = await response.json();
     el("sheet-note").textContent =
-      "Три образа открыты всем, остальные покупаются раз и навсегда. "
-      + "На бой образ не влияет.";
+      "Здесь только свои образы, и смена между ними бесплатна. Новые "
+      + "берут в барбершопе и в салоне красоты. На бой образ не влияет.";
     renderLooks(data.looks);
   } catch (error) {
     el("sheet-note").textContent = error.message;
@@ -6211,26 +6218,12 @@ async function openLooks() {
 
 async function pickLook(look) {
   if (busy || look.current) return;
-  if (!look.owned) {
-    const ok = await confirmAction(
-      "Купить образ «" + look.title + "» за " + num(look.price) + " кредитов?"
-    );
-    if (!ok) return;
-  }
   busy = true;
   try {
     const data = await post("api/look", { code: look.code });
     render(data.card, true);
     renderLooks(data.looks);
-    shopData = null;  // кредитов могло стать меньше
     haptic((feedback) => feedback.notificationOccurred("success"));
-    if (data.chosen.bought) {
-      popup(
-        "Образ куплен",
-        "«" + data.chosen.title + "» теперь твой навсегда. "
-          + "На счету осталось " + num(data.chosen.credits) + " 💰."
-      );
-    }
   } catch (error) {
     popup("Не вышло", error.message);
   } finally {
@@ -12063,6 +12056,85 @@ function keyCard(one) {
   return box;
 }
 
+// ---------- барбершоп и салон красоты: полка образов ----------
+//
+// Экран один, а домов два: в барбершопе мужские лица, в салоне женские.
+// Смотрят полку все, берут с неё только своего пола — кнопка гаснет и
+// говорит почему. Переключаются между своими в карточке, и там это
+// бесплатно: торговли в карточке больше нет.
+
+let barberData = null;
+
+async function openBarber() {
+  showTab("barber");
+}
+
+async function loadBarber() {
+  try {
+    const response = await fetch("api/barber", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Дом не отвечает.");
+    const data = await response.json();
+    if (data.card) render(data.card, true);
+    renderBarber(data);
+  } catch (error) {
+    el("barber-note").textContent = error.message;
+  }
+}
+
+async function barberAction(payload) {
+  try {
+    const data = await post("api/barber", payload);
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderBarber(data);
+  } catch (error) {
+    popup("Образы", error.message);
+    await loadBarber();
+  }
+}
+
+function renderBarber(data) {
+  barberData = data;
+  el("barber-title").textContent = data.title || "Образы";
+  el("barber-note").textContent = data.said || data.note || "";
+  el("shop-purse-barber").textContent = "";
+  el("shop-purse-barber").appendChild(purse(data.credits || 0));
+
+  const body = el("barber-body");
+  body.textContent = "";
+  const grid = document.createElement("div");
+  grid.className = "look-grid";
+  // Плитка та же, что в гардеробе, а нажатие другое: в карточке
+  // образ надевают, здесь покупают
+  (data.shelf || []).forEach((look) =>
+    grid.appendChild(lookTile(look, buyLook))
+  );
+  body.appendChild(grid);
+}
+
+async function buyLook(look) {
+  if (busy) return;
+  if (!look.can_buy) {
+    popup("Образы", look.why || "Этот образ взять нельзя.");
+    return;
+  }
+  const ok = await confirmAction(
+    "Купить образ «" + look.title + "» за " + num(look.price) + " кредитов?" +
+      "\n\nОн станет твоим навсегда и сразу наденется. Переключаться " +
+      "между своими можно в карточке, бесплатно."
+  );
+  if (!ok) return;
+  busy = true;
+  try {
+    await barberAction({ action: "buy", code: look.code });
+    shopData = null; // кредитов стало меньше
+  } finally {
+    busy = false;
+  }
+}
+
 // ---------- школа боевых искусств: приём за дела в бою ----------
 //
 // Уровень даёт приём из трёх и даёт сразу. Школа даёт любой, но за
@@ -16466,7 +16538,7 @@ const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
   "trade", "house", "prison", "arena", "cars", "dorm", "charge",
-  "dojo",
+  "dojo", "barber",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -16622,7 +16694,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
   "crowd", "elections", "shop", "magic", "prison", "arena", "cars", "dorm",
-  "charge", "dojo", "workshop", "club",
+  "charge", "dojo", "barber", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

@@ -30,7 +30,7 @@ from bot.inventory_service import (
     repair_item,
     unequip,
 )
-from bot.looks_service import LookError, choose_look, wardrobe
+from bot.looks_service import LookError, wardrobe, wear_look
 from bot.potions_service import PotionError, buy_potion, use_potion
 from bot.pro_service import ProError, claim_free_pro, promo_taken
 from bot.store_service import StoreError, StoreService
@@ -2043,12 +2043,12 @@ async def api_looks(request: web.Request) -> web.Response:
 
 
 async def api_look(request: web.Request) -> web.Response:
-    """Сменить образ. Платный купится, если кредитов хватает."""
+    """Сменить образ на свой. Торговли здесь нет — она в городе."""
     data = await _payload(request)
     try:
         player = await _own_player(request)
-        choice = await choose_look(
-            request.app[DB_KEY], player, str(data.get("code") or "")
+        choice = await wear_look(
+            request.app[DB_KEY], player, str(data.get("code") or ""), now_ts()
         )
     except (InventoryError, LookError) as error:
         return web.json_response({"error": str(error)}, status=409)
@@ -2067,6 +2067,60 @@ async def api_look(request: web.Request) -> web.Response:
             },
         }
     )
+
+
+async def _barber_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.looks import build_barber
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_barber(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_barber(request: web.Request) -> web.Response:
+    """Барбершоп и салон красоты: полка образов этого дома."""
+    player = await _at(request, Service.LOOKS)
+    return await _barber_state(request, player)
+
+
+async def api_barber_action(request: web.Request) -> web.Response:
+    """Купить образ в этом доме — и уйти с новым лицом."""
+    from bot.looks_service import buy_look
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.LOOKS)
+    try:
+        if action == "buy":
+            choice = await buy_look(
+                db,
+                player,
+                str(data.get("code") or ""),
+                player.where(now_ts()),
+                now_ts(),
+            )
+            said = (
+                f"«{choice.look.title}» теперь твой навсегда и уже на тебе. "
+                f"Осталось {choice.credits} 💰."
+            )
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except LookError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _barber_state(request, fresh, said)
 
 
 async def api_topup(request: web.Request) -> web.Response:
@@ -3452,6 +3506,8 @@ def create_app(
             web.get("/api/magic", api_magic),
             web.post("/api/pro", api_pro),
             web.get("/api/looks", api_looks),
+            web.get("/api/barber", api_barber),
+            web.post("/api/barber", api_barber_action),
             web.post("/api/look", api_look),
             web.get("/api/topup", api_topup),
             web.post("/api/invoice", api_invoice),

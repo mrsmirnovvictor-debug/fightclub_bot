@@ -965,7 +965,7 @@ async def open_page(
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
-    cars=None, keys=None, dorm=None, charge=None, dojo=None,
+    cars=None, keys=None, dorm=None, charge=None, dojo=None, barber=None,
     images=False,
     telegram="",
 ):
@@ -1021,6 +1021,7 @@ async def open_page(
     await page.route("**/api/dorm", canned(dorm or {}))
     await page.route("**/api/charge", canned(charge or {}))
     await page.route("**/api/dojo", canned(dojo or {}))
+    await page.route("**/api/barber", canned(barber or {}))
     await page.route("**/api/keys", canned({"keys": keys or []}))
 
     if fight_log is not None:
@@ -1845,40 +1846,93 @@ async def test_a_stranger_sees_no_plus(server):
 # ---------- образ и снятие вещей ----------
 
 
-def wardrobe(current: str = "rookie", gender: str = "male") -> dict:
-    """Гардероб, как его отдаёт сервер: только образы своего пола."""
+def look_row(look, current: str, owned: bool) -> dict:
+    return {
+        "code": look.code,
+        "title": look.title,
+        "emoji": look.emoji,
+        "image": "",
+        "gender": look.gender,
+        "price": look.price,
+        "note": look.note,
+        "owned": owned,
+        "current": look.code == current,
+        "affordable": True,
+    }
+
+
+def wardrobe(
+    current: str = "rookie", gender: str = "male", bought: tuple = (),
+) -> dict:
+    """Гардероб, как его отдаёт сервер: только свои образы.
+
+    Витриной он быть перестал: платные лица продают в барбершопе и в
+    салоне красоты, а в карточке лежит купленное и открытое всем.
+    """
     from bot.game.looks import LOOKS
 
     return {
         "credits": 1200,
         "looks": [
-            {
-                "code": look.code,
-                "title": look.title,
-                "emoji": look.emoji,
-                "image": "",
-                "gender": look.gender,
-                "price": look.price,
-                "note": look.note,
-                "owned": not look.paid,
-                "current": look.code == current,
-                "affordable": True,
-            }
+            look_row(look, current, True)
             for look in LOOKS
             # Старая выдача видна только своему хозяину, чужой пол — никому
-            if not look.pro and look.gender == gender
+            if not look.pro
+            and look.gender == gender
+            and (not look.paid or look.code in bought)
         ],
     }
 
 
+def barber_shelf(
+    place: str = "barbershop", gender: str = "male", mine: bool = True,
+    current: str = "rookie", bought: tuple = (),
+) -> dict:
+    """Полка дома: все образы его пола, с ценой и причиной отказа."""
+    from bot.game.locations import get_location
+    from bot.game.looks import GENDER_TITLES, LOOK_PRICE, LOOKS
+
+    shelf = []
+    for look in LOOKS:
+        if look.pro or look.gender != gender:
+            continue
+        row = look_row(look, current, not look.paid or look.code in bought)
+        row["can_buy"] = bool(not row["owned"] and mine)
+        row["why"] = (
+            ""
+            if row["can_buy"]
+            else "Этот образ и так твой: надевай в карточке."
+            if row["owned"]
+            else "Здесь делают мужские образы, и берут их мужчины."
+        )
+        shelf.append(row)
+    return {
+        "title": get_location(place).title,
+        "place": place,
+        "sells": gender,
+        "sells_title": GENDER_TITLES[gender],
+        "mine": mine,
+        "price": LOOK_PRICE,
+        "credits": 1200,
+        "shelf": shelf,
+        "note": "Образ покупается раз и навсегда.",
+        "said": "",
+    }
+
+
 async def test_tapping_the_avatar_opens_the_wardrobe(server):
-    """По аватару открывается выбор образа: три своих и девять за кредиты."""
+    """По аватару открывается своё: три открытых и купленное.
+
+    Витрины в гардеробе больше нет — цен на нём не осталось вовсе, и
+    записка говорит, куда идти за новым лицом.
+    """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
     async with async_playwright() as pw:
         browser, page = await open_page(
-            pw, server, card, build_shop(player), looks=wardrobe()
+            pw, server, card, build_shop(player),
+            looks=wardrobe(bought=("veteran",)),
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         assert await page.locator("#sheet").is_hidden()
@@ -1886,11 +1940,14 @@ async def test_tapping_the_avatar_opens_the_wardrobe(server):
         await page.locator("#hero-avatar").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
 
-        assert await page.locator(".look").count() == 12
+        assert await page.locator(".look").count() == 4
         assert await page.locator(".look.current .look-title").inner_text() == "Новичок"
-        # платные подписаны ценой, свои — словом
+        # Цен в гардеробе нет: всё на нём уже своё
         tags = await page.locator(".look-tag").all_inner_texts()
-        assert sum(1 for tag in tags if "💰" in tag) == 9
+        assert not [tag for tag in tags if "💰" in tag]
+        assert "куплен" in tags
+        note = await page.locator("#sheet-note").inner_text()
+        assert "барбершопе" in note and "салоне красоты" in note
 
         await page.locator("#sheet-close").click()
         assert await page.locator("#sheet").is_hidden()
@@ -13894,4 +13951,94 @@ async def test_the_learned_trick_is_taken_when_the_work_is_done(server, db):
         ).locator(".btn").first.click()
 
         assert await page.evaluate("window.sent") == {"action": "learn"}
+        await browser.close()
+
+
+# ---------- барбершоп и салон красоты ----------
+
+
+async def test_the_barbershop_shows_the_shelf_with_prices(server):
+    """Полка дома: двенадцать мужских образов, и платные с ценой."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, barber=barber_shelf()
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "barber")
+        await page.wait_for_selector("#barber-body .look")
+
+        assert await page.locator("#barber-title").inner_text() == "Барбершоп"
+        assert await page.locator("#barber-body .look").count() == 12
+        tags = await page.locator("#barber-body .look-tag").all_inner_texts()
+        assert sum(1 for tag in tags if "💰" in tag) == 9
+        assert await page.locator("#shop-purse-barber").inner_text() != ""
+        await browser.close()
+
+
+async def test_buying_a_look_in_the_shop_asks_first(server):
+    """Покупка спрашивает согласие и уходит кодом образа."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, barber=barber_shelf()
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "barber")
+        await page.wait_for_selector("#barber-body .look")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.confirmAction = async () => true;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        await page.locator(
+            "#barber-body .look", has_text="Ветеран клуба"
+        ).click()
+
+        assert await page.evaluate("window.sent") == {
+            "action": "buy", "code": "veteran",
+        }
+        await browser.close()
+
+
+async def test_a_woman_in_the_barbershop_is_told_why_not(server):
+    """Чужой дом не продаёт и говорит почему — а полку показывает."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    shelf = barber_shelf(mine=False)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, barber=shelf)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "barber")
+        await page.wait_for_selector("#barber-body .look")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+        # Отказ приходит всплывашкой: без Telegram это обычный alert
+        said = []
+
+        def on_dialog(dialog):
+            said.append(dialog.message)
+            asyncio.ensure_future(dialog.dismiss())
+
+        page.on("dialog", on_dialog)
+
+        assert await page.locator("#barber-body .look").count() == 12
+        await page.locator(
+            "#barber-body .look", has_text="Ветеран клуба"
+        ).click()
+
+        assert await page.evaluate("window.sent") is None, "ничего не купили"
+        assert said and "берут их мужчины" in said[0]
         await browser.close()

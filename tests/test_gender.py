@@ -18,7 +18,7 @@ import pytest
 
 from bot.database import Database
 from bot.game.looks import FEMALE, LOOKS, MALE, looks_of_gender
-from bot.looks_service import LookError, choose_look, wardrobe
+from bot.looks_service import LookError, wardrobe, wear_look
 from bot.models import Player
 
 
@@ -94,7 +94,14 @@ async def test_the_gender_of_those_who_chose_is_left_alone(tmp_path):
 # ---------- гардероб ----------
 
 
-async def test_a_woman_sees_only_womens_looks(db):
+async def test_a_woman_sees_only_her_own_womens_looks(db):
+    """Гардероб — это своё, а не витрина.
+
+    Платные образы переехали на полки домов: мужские в барбершоп,
+    женские в салон красоты (`tests/test_looks_shop.py`). В карточке
+    осталось то, что у бойца есть, — у новенькой это три открытых
+    женских.
+    """
     player = await stand(db, make_player(gender=FEMALE))
 
     rows = await wardrobe(db, player)
@@ -102,8 +109,11 @@ async def test_a_woman_sees_only_womens_looks(db):
     assert rows, "гардероб не должен быть пустым"
     assert {row["gender"] for row in rows} == {FEMALE}
     assert {row["code"] for row in rows} == {
-        look.code for look in looks_of_gender(FEMALE)
+        look.code
+        for look in looks_of_gender(FEMALE)
+        if not look.paid and not look.pro
     }
+    assert all(row["owned"] for row in rows)
 
 
 async def test_a_man_sees_only_mens_looks(db):
@@ -125,7 +135,7 @@ async def test_a_bought_look_of_the_other_gender_is_never_taken_away(db):
 
     rows = await wardrobe(db, player)
     row = next(one for one in rows if one["code"] == "queen")
-    choice = await choose_look(db, player, "queen")
+    choice = await wear_look(db, player, "queen")
 
     assert row["owned"] and row["gender"] == FEMALE
     assert not choice.bought and choice.credits == 0
@@ -144,20 +154,20 @@ async def test_a_worn_look_of_the_other_gender_stays_on_the_shelf(db):
     assert [row["code"] for row in rows if row["current"]] == ["runner"]
 
 
-async def test_a_look_of_the_other_gender_is_not_for_sale(db):
-    """Чужого пола нет на полке — и купить его нельзя тоже.
+async def test_a_look_of_the_other_gender_is_not_in_the_wardrobe(db):
+    """Чужого пола нет в гардеробе — и надеть его оттуда нельзя тоже.
 
-    Спрятанная кнопка обходится запросом мимо страницы. Без проверки на
-    сервере боец мог бы купить лицо, которого потом не увидит в своём
-    гардеробе, — и остаться без кредитов и без выбора.
+    Спрятанная кнопка обходится запросом мимо страницы. Деньги при этом
+    не при чём: карточка образами больше не торгует вовсе, и чужое лицо
+    она не наденет ни за какие кредиты.
     """
     player = await stand(db, make_player(gender=MALE, credits=10_000))
 
-    shelf = {row["code"] for row in await wardrobe(db, player)}
+    mine = {row["code"] for row in await wardrobe(db, player)}
 
-    assert "queen" not in shelf
-    with pytest.raises(LookError, match="не из твоего гардероба"):
-        await choose_look(db, player, "queen")
+    assert "queen" not in mine
+    with pytest.raises(LookError, match="ещё не твой"):
+        await wear_look(db, player, "queen")
     assert (await db.get_player(42)).credits == 10_000
 
 
@@ -168,7 +178,7 @@ async def test_the_old_handout_is_hidden_from_everyone_who_lacks_it(db):
 
     assert "assassin" not in shelf
     with pytest.raises(LookError, match="больше не выдают"):
-        await choose_look(db, player, "assassin")
+        await wear_look(db, player, "assassin")
 
 
 def test_every_look_belongs_to_a_gender():
