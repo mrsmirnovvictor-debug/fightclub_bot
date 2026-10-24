@@ -49,6 +49,10 @@ PDD = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/pdd2"
 INTERIORS = f"{LOCATIONS}/interiors"
 # Районы второй очереди: участок, больница, казармы и всё остальное
 NEW_INTERIORS = f"{BUCKET}/interiors"
+# Кибернетическое оружие рейда на военную базу: папка внутри оружейной.
+# Четыре вида на класс, шестнадцать файлов, и имя файла совпадает с кодом
+# вещи — так их и выгрузили
+FUTURISTIC = f"{WEAPONS}/futuristic"
 # Зарядные колонки АЗС: по картинке на колонку. Папка внутри районов —
 # так их и выгрузили, вместе с картами домов
 CHARGERS = f"{LOCATIONS}/charging_stations"
@@ -60,14 +64,18 @@ CLANS = f"{BUCKET}/clans"
 SERVICES = f"{BUCKET}/services"
 
 
-def avatar(code: str) -> str:
+def avatar(code: str, ext: str = "jpeg") -> str:
     """Картинка из папки образов под своим кодом: avatars/fan_boss.jpeg.
 
     Остаётся ради тех, кто лежит в этой папке, но образом игрока не
     является: лица гопников рисовали вместе с фанатской линией одежды, и
     легли они сюда же. Образы бойцов берут `look_avatar`.
+
+    Формат приходится называть: лица гопников выгрузили в jpeg, а лицо
+    охраны военной базы — в jpg. Перегонять чужой бакет не наше дело,
+    поэтому формат пишется у портрета, как у карт районов.
     """
-    return f"{AVATARS}/{code}.jpeg"
+    return f"{AVATARS}/{code}.{ext}"
 
 
 def look_avatar(code: str) -> str:
@@ -137,6 +145,26 @@ def set_piece(line: str, kit: str, slot: str) -> str:
     целиком в png.
     """
     return f"{SETS}/{line}/{kit}/{slot}.png"
+
+
+def army_piece(slot: str) -> str:
+    """Вещь военного набора: items_new/military_energy/helmet.png.
+
+    Папка без ступени, в отличие от `set_piece`: набор один, уровень у
+    него один, и делить его на ступени нечего — это форма охраны базы, а
+    не лестница прилавка.
+    """
+    return f"{SETS}/military_energy/{slot}.png"
+
+
+def energy_weapon(code: str) -> str:
+    """Кибернетическое оружие: weapons/futuristic/warrior_energy_sword.png.
+
+    Имя файла совпадает с кодом вещи: шестнадцать клинков выгрузили
+    именами, по которым их и зовут в игре, и считать адрес от кода тут
+    честнее, чем выписывать его каждой вещи руками.
+    """
+    return f"{FUTURISTIC}/{code}.png"
 
 
 def plain_ring(kit: str, name: str) -> str:

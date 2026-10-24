@@ -35,7 +35,9 @@ from bot.game.classes import (
 from bot.game.combat import Action, Fighter
 from bot.game.economy import GEAR_TOP_LEVEL, MAX_LEVEL
 from bot.game.equipment import (
+    CYBER_SHELF,
     Equipment,
+    MILITARY_LEVEL,
     FAN_SHELF,
     OwnedItem,
     RING_SLOTS,
@@ -177,11 +179,15 @@ def prize_of(code: str) -> tuple[str, str] | None:
 # По какой ступени прилавка одет босс. Своя, а не отрядная: см. boss_kit
 BOSS_GEAR_LEVEL = GEAR_TOP_LEVEL
 
-# Откуда берётся комплект противника: клубный прилавок или фанатский
+# Откуда берётся комплект противника: клубный прилавок, фанатский или
+# своя форма
 # магазин «Северный Вал». Фанатская линия своя у каждого класса, и
 # надевать её противнику — то же, что надеть на него форму
 SHOWCASE_OUTFIT = "showcase"
 FAN_OUTFIT = "fan"
+# Форма охраны военной базы: своя с головы до берцев, и прилавок к ней
+# ничего не добирает — пустых слотов в ней нет
+MILITARY_OUTFIT = "military"
 
 RAID_SLOTS: tuple[int, ...] = (0, 8, 12, 16, 20)
 RAIDS_PER_DAY = 2
@@ -618,10 +624,15 @@ class Boss:
     # четыре файла на тринадцать человек. Пусто — портрет ищется в
     # `bosses/` под кодом, как у босса казино
     portrait: str = ""
+    # Формат портрета. Лица гопников лежат в jpeg, лицо охраны базы — в
+    # jpg: бакет выгружали разными заходами, и формат пишется у портрета
+    portrait_ext: str = "jpeg"
 
     @property
     def image(self) -> str:
-        return art.avatar(self.portrait) if self.portrait else art.boss(self.code)
+        if self.portrait:
+            return art.avatar(self.portrait, self.portrait_ext)
+        return art.boss(self.code)
 
     @property
     def raid_name(self) -> str:
@@ -917,8 +928,124 @@ GANG: tuple[Boss, ...] = (
     GANG_LEADER, *GANG_ROGUES, *GANG_WARRIORS, *GANG_ASSASSINS
 )
 
+# ---------- военная база: десять солдат на полигоне ----------
+#
+# Третий рейд города и первый, в котором противник не подстраивается
+# совсем: ни числом, ни уровнем. Охрана базы — десять солдат
+# двенадцатого уровня, и столько же их будет для одного бойца и для
+# полного отряда. Это и есть его устройство: трудность тут не в том,
+# какой противник, а в том, сколько вас.
+#
+# Отсюда и всё остальное. Кошель делится на отряд — большой отряд рейд
+# облегчает, и платить каждому по целому значило бы платить за то, что
+# стало легче. Прибавки к здоровью у охраны нет: у неё вместо прибавки
+# девять товарищей.
+#
+# Уровень охраны берётся там, где лежит её форма (`MILITARY_LEVEL`):
+# двенадцатый и у солдата, и у вещей на нём. Держать это число в двух
+# местах значило бы однажды одеть солдата не по себе.
+
+# Сколько солдат встречает отряд. Десять — столько же, сколько бойцов
+# помещается в рейд: вдесятером выходит поровну, одному — десять на
+# одного. Пополнения у них нет, потому что состав и так полный
+MILITARY_SQUAD = 10
+
+# Сколько получает отряд за победу — на всех. Делится, как в подвале:
+# каждый лишний боец делает бой заметно легче, а не труднее
+MILITARY_PURSE = 1_200
+
+# Шанс выбить кибернетическое оружие. Падает он лучшему по урону — одно
+# на рейд, не каждому, — и больше его взять негде: в лавках этого
+# оружия нет
+CYBER_CHANCE = 0.15
+
+MILITARY_SPOILS = Spoils(
+    item_shelf=CYBER_SHELF,
+    item_chance=CYBER_CHANCE,
+)
+
+# Понедельник, с шести вечера до полуночи. Раз в неделю и твёрдо: такое
+# расписание выучивают наизусть, и в этом смысл — на базу собираются
+# заранее, всей семьёй
+MILITARY_SCHEDULE = Weekly(weekdays=(0,), hour=18, hours=6)
+
+# Сколько у бойца есть на свой удар. Минута, как в банде: цель каждую
+# волну новая, и прочесть её надо успеть
+MILITARY_TURN_SECONDS = 60
+
+# Повадка охраны: работает по корпусу и закрывает корпус. Выучка у всех
+# десяти одна — это не характеры, а строй, и различать их по человеку
+# значило бы придумывать десять повадок там, где есть одна
+GUARD_TEMPER = Temper(
+    attacks=(("chest", 26), ("belly", 24), ("belt", 19), ("head", 16), ("legs", 15)),
+    guards=(("chest", 25), ("belly", 23), ("belt", 20), ("head", 17), ("legs", 15)),
+)
+
+# Форма охраны: тринадцать вещей на одиннадцать картинок — кольцо одно,
+# а пальцев три. Прилавок к ней не добирает ничего: все слоты заняты, и
+# клубной вещи десятого уровня на солдате двенадцатого не будет
+GUARD_GEAR: tuple[str, ...] = (
+    "military_helmet",
+    "military_necklace",
+    "military_tshirt",
+    "military_armor",
+    "military_belt",
+    "military_gloves",
+    "military_pants",
+    "military_boots",
+    "military_ring",
+    "military_ring_middle",
+    "military_ring_left",
+)
+
+
+# Лицо охраны. Одно на всех десятерых — и это не экономия на арте: на
+# базе стоит не десять характеров, а караул в одной форме. Так же
+# устроена и городская охрана (`hirelings.guard_picture`)
+GUARD_FACE = "npc_military_uniform"
+
+
+def _guard(code: str, name: str) -> Boss:
+    """Один солдат охраны. Различаются они только фамилией.
+
+    Фамилия, а не номер: на табло из десяти строк «Солдат №7» ничего не
+    говорит, а «Рядовой Грачёв» запоминается с первого боя. Всё
+    остальное у них общее — класс, выучка, форма, клинок и лицо.
+    """
+    return Boss(
+        code=code,
+        title=name,
+        emoji="🎖",
+        class_code="warrior",
+        weapon="military_sword",
+        offhand="military_shield",
+        gear=GUARD_GEAR,
+        outfit=MILITARY_OUTFIT,
+        portrait=GUARD_FACE,
+        portrait_ext="jpg",
+        temper=GUARD_TEMPER,
+        manner="Работает по корпусу и держит щит низко.",
+    )
+
+
+# Десять фамилий: по солдату на каждую. Повторов нет — на базе служат
+# люди, а не нумерованные мишени
+MILITARY_GUARDS: tuple[Boss, ...] = (
+    _guard("base_grachev", "Рядовой Грачёв"),
+    _guard("base_zotov", "Рядовой Зотов"),
+    _guard("base_lysenko", "Рядовой Лысенко"),
+    _guard("base_petrenko", "Рядовой Петренко"),
+    _guard("base_savin", "Рядовой Савин"),
+    _guard("base_tarasov", "Рядовой Тарасов"),
+    _guard("base_fomin", "Рядовой Фомин"),
+    _guard("base_chuyko", "Рядовой Чуйко"),
+    _guard("base_shilov", "Рядовой Шилов"),
+    _guard("base_yakovlev", "Рядовой Яковлев"),
+)
+
+
 CELLAR_BOSS = BOSSES[0]
-BOSS_BY_CODE = {boss.code: boss for boss in BOSSES + GANG}
+BOSS_BY_CODE = {boss.code: boss for boss in BOSSES + GANG + MILITARY_GUARDS}
 # У противника свой номер: он не игрок, и с чужим user_id путаться не
 # должен. Банда занимает номера подряд от этого же: лидер — минус первый,
 # и рейд на одного босса остаётся ровно тем, чем был
@@ -947,6 +1074,9 @@ class RaidKind:
     # Дом, в котором рейд идёт. Служба им не пользуется — его спрашивает
     # карта, чтобы знать, под какой вывеской вешать плашку
     house: str
+    # Чем платят за вход. Пустая строка — вход свободный: пропуска не
+    # просят, и покупать его негде. Поле при этом обязательное: рейд без
+    # билета — решение, а не забытая строка, и писать его надо руками
     pass_code: str
     schedule: Schedule
     leader: Boss
@@ -972,6 +1102,11 @@ class RaidKind:
     spoils: Spoils = CELLAR_SPOILS
     # Сколько у бойца есть на свой удар. Ноль — брать из настроек
     turn_seconds: int = 0
+
+    @property
+    def needs_pass(self) -> bool:
+        """Просят ли за вход пропуск."""
+        return bool(self.pass_code)
 
     @property
     def one_on_one(self) -> bool:
@@ -1042,7 +1177,33 @@ HOOLIGAN_RAID = RaidKind(
     turn_seconds=GANG_TURN_SECONDS,
 )
 
-RAID_KINDS: tuple[RaidKind, ...] = (CELLAR_RAID, HOOLIGAN_RAID)
+MILITARY_RAID = RaidKind(
+    code="military",
+    title="Захват военной базы",
+    emoji="🎖",
+    house="indoor_training_ground",
+    # Пропуска у этого рейда нет: на базу не покупают билет, её берут.
+    # Окно и так одно в неделю, а своё за окно боец берёт один раз
+    pass_code="",
+    schedule=MILITARY_SCHEDULE,
+    leader=MILITARY_GUARDS[0],
+    crew=MILITARY_GUARDS[1:],
+    # Пополнения нет: охрана выходит вся и сразу, сколько бы вас ни
+    # пришло. Поэтому и `free_slots` ей не нужен
+    min_party=1,
+    purse=MILITARY_PURSE,
+    # Делится на отряд: каждый лишний боец делает бой легче — охрана от
+    # него не прибавляется
+    split=True,
+    foe_level=MILITARY_LEVEL,
+    # Прибавки к здоровью у охраны нет: вместо неё девять товарищей
+    hp_share=0.0,
+    tagline="Полигон под охраной: десять солдат, и меньше их не станет.",
+    spoils=MILITARY_SPOILS,
+    turn_seconds=MILITARY_TURN_SECONDS,
+)
+
+RAID_KINDS: tuple[RaidKind, ...] = (CELLAR_RAID, HOOLIGAN_RAID, MILITARY_RAID)
 KIND_BY_CODE = {kind.code: kind for kind in RAID_KINDS}
 
 
@@ -1087,6 +1248,25 @@ def boss_level(levels: list[int]) -> int:
     return round(sum(levels) / len(levels)) + LEVELS_ABOVE
 
 
+def _own_kit(fclass, level: int) -> dict:
+    """Пустой прилавок: у такого противника форма своя целиком.
+
+    Охрана базы одета с головы до берцев своим, и добирать ей нечего.
+    Пустой слот у неё означал бы, что в форме чего-то не нарисовали, — и
+    лучше он останется пустым, чем в него встанет клубная вещь на две
+    ступени ниже.
+    """
+    return {}
+
+
+# Чем одевают противника: по виду формы. Клубный прилавок — по
+# умолчанию, фанатский у гопников, своя форма у охраны базы
+OUTFIT_SHELVES = {
+    FAN_OUTFIT: fan_only_kit,
+    MILITARY_OUTFIT: _own_kit,
+}
+
+
 def boss_kit(boss: Boss, level: int = BOSS_GEAR_LEVEL) -> Equipment:
     """Комплект босса — весь его собственный, от шлема до берцев.
 
@@ -1116,7 +1296,7 @@ def boss_kit(boss: Boss, level: int = BOSS_GEAR_LEVEL) -> Equipment:
     сделан руками, и правило класса в нём учтено.
     """
     fclass = FIGHTER_CLASSES[boss.class_code]
-    shelf = fan_only_kit if boss.outfit == FAN_OUTFIT else best_kit
+    shelf = OUTFIT_SHELVES.get(boss.outfit, best_kit)
     kit = {
         slot: item
         for slot, item in shelf(fclass, BOSS_GEAR_LEVEL).items()

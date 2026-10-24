@@ -1310,6 +1310,252 @@ CHIEF_KIT: tuple[Item, ...] = (
 
 
 
+# ---------- форма охраны военной базы ----------
+#
+# Двенадцатый уровень, одиннадцать вещей, и носит их только охрана: в
+# город этот набор не попадает ни за кредиты, ни призом. Это форма
+# противника, и нужна она ровно для того, чтобы солдат на полигоне был
+# одет по своему уровню, а не добирал пустые слоты с клубного прилавка.
+#
+# Числа между комплектом Босса Казино (десятая ступень) и формой
+# начальника полиции: на ступень выше прилавка и заметно ниже служебной
+# формы, которую выдают за должность. Полоса долей у вещи своя
+# (`gear_share_cap`) и упирается в 0.8 — сумма долей каждой вещи ниже.
+MILITARY_LEVEL = 12
+
+
+def _army(
+    code: str,
+    title: str,
+    slot: Slot,
+    icon: str,
+    file: str,
+    **gives,
+) -> Item:
+    """Вещь из формы охраны: картинка по слоту, уровень и награда — общие."""
+    kind = gives.pop("kind", ItemKind.GEAR)
+    instrumental = str(gives.pop("instrumental", ""))
+    return Item(
+        code,
+        title,
+        slot,
+        icon,
+        image=art.army_piece(file),
+        kind=kind,
+        instrumental=instrumental,
+        level_required=MILITARY_LEVEL,
+        # Набором форма не считается: набор даёт прибавку за число вещей
+        # (`bot.game.sets`), а здесь числа и так выставлены под охрану —
+        # прибавка сверху сделала бы солдата сильнее, чем задумано
+        # Не товар и не приз: форму не продают и не выдают. Она есть
+        # только на охране, а в каталоге лежит ради картинки и чисел
+        reward=True,
+        **gives,
+    )
+
+
+MILITARY_KIT: tuple[Item, ...] = (
+    _army(
+        "military_helmet", "Шлем с визором", Slot.HEAD, "🪖", "helmet",
+        strength=3, hp=40, armor_min=11, armor_max=14, anticrit=0.25,
+    ),
+    _army(
+        "military_sword", "Армейский клинок", Slot.WEAPON, "⚔️", "weapon",
+        kind=ItemKind.WEAPON, instrumental="армейским клинком",
+        strength=5, damage_min=24, damage_max=36, accuracy=0.6,
+    ),
+    _army(
+        "military_shield", "Штурмовой щит", Slot.OFFHAND, "🛡", "shield",
+        kind=ItemKind.SHIELD,
+        strength=4, hp=30, armor_min=13, armor_max=16, anticrit=0.3,
+    ),
+    _army(
+        "military_tshirt", "Футболка под броню", Slot.SHIRT, "🎽", "tshirt",
+        strength=4, agility=2, hp=24, counter=0.04,
+    ),
+    _army(
+        "military_armor", "Бронежилет", Slot.JACKET, "🧥", "armor",
+        strength=4, hp=48, armor_min=15, armor_max=19, anticrit=0.2,
+    ),
+    _army(
+        "military_belt", "Разгрузочный пояс", Slot.BELT, "🥋", "belt",
+        strength=3, hp=26, armor_min=10, armor_max=13, accuracy=0.2,
+    ),
+    _army(
+        "military_gloves", "Тактические перчатки", Slot.GLOVES, "🧤", "gloves",
+        strength=3, agility=2, hp=18, accuracy=0.25, crit=0.15,
+    ),
+    _army(
+        "military_pants", "Штаны с наколенниками", Slot.PANTS, "👖", "pants",
+        strength=3, hp=28, armor_min=11, armor_max=14, dodge=0.1,
+    ),
+    _army(
+        "military_boots", "Берцы", Slot.BOOTS, "🥾", "boots",
+        agility=3, hp=22, armor_min=9, armor_max=12, dodge=0.15,
+    ),
+    _army(
+        "military_necklace", "Жетон на цепочке", Slot.NECKLACE, "📿",
+        "necklace",
+        intuition=3, hp=20, armor_min=8, armor_max=10, anticrit=0.15,
+    ),
+    # Колец три, как и клеток под них: форма собирается целиком, а не
+    # «почти целиком», иначе два пальца охране добрал бы клубный
+    # прилавок. Числа у всех трёх одни — это одно и то же кольцо
+    _army(
+        "military_ring", "Кольцо части", Slot.RING_RIGHT, "💍", "ring",
+        strength=4, hp=20, accuracy=0.15,
+    ),
+    _army(
+        "military_ring_middle", "Кольцо части", Slot.RING_MIDDLE, "💍", "ring",
+        strength=4, hp=20, accuracy=0.15,
+    ),
+    _army(
+        "military_ring_left", "Кольцо части", Slot.RING_LEFT, "💍", "ring",
+        strength=4, hp=20, accuracy=0.15,
+    ),
+)
+
+# ---------- кибернетическое оружие ----------
+#
+# Приз рейда на военную базу и единственный способ его получить: ни в
+# лавке, ни у мага, ни за звёзды. Шестнадцать клинков, по четыре на
+# класс, и падает из них любой — какой выпал, тот и твой.
+#
+# **Оружие кросс-классовое, и это не оговорка.** Обычное оружие
+# двенадцатого уровня требовало бы главной характеристики своего класса —
+# тридцати интуиции на кинжал, тридцати силы на топор, — и воин с
+# трофейным кинжалом ассасина остался бы с ним в рюкзаке. Кибернетика
+# цепляется к телу, а не к ремеслу: она спрашивает выносливость, и её к
+# двенадцатому уровню хватает у всех четырёх классов. Поэтому трофей
+# носят все, а бьёт он у каждого по-своему — это считает сам бой
+# (`weapon_in_hands`).
+#
+# Доли идут по полосе двенадцатой ступени (`weapon_share_cap`): шесть
+# десятых у главной. Пары при этом сходятся внутри ступени — уворот
+# трикстера отвечает точности воина, крит ассасина отвечает антикриту
+# танка, — и круг классов на трофее не переворачивается.
+CYBER_SHELF = "cyber"
+CYBER_LEVEL = MILITARY_LEVEL
+
+# Выносливость, которой кибернетика цепляется к телу. Двадцать пять —
+# столько есть у любого класса к двенадцатому уровню, и ни одному из них
+# трофей не закрыт
+CYBER_ENDURANCE = 25
+
+
+def _cyber(
+    code: str,
+    title: str,
+    instrumental: str,
+    icon: str,
+    **gives,
+) -> Item:
+    """Кибернетический клинок: картинка по коду, уровень и полка — общие."""
+    return Item(
+        code,
+        title,
+        Slot.WEAPON,
+        icon,
+        image=art.energy_weapon(code),
+        kind=ItemKind.WEAPON,
+        instrumental=instrumental,
+        level_required=CYBER_LEVEL,
+        requires=Stats(endurance=CYBER_ENDURANCE),
+        # Полка нужна призу: с неё его и берёт бросок рейда. На витрину
+        # клуба она не попадает — там полка безымянная
+        shelf=CYBER_SHELF,
+        reward=True,
+        **gives,
+    )
+
+
+CYBER_WEAPONS: tuple[Item, ...] = (
+    # Воин: широкий урон и точность — его доля в круге
+    _cyber(
+        "warrior_energy_sword", "Энергетический меч", "энергетическим мечом",
+        "⚔️", strength=5, damage_min=24, damage_max=38, accuracy=0.6,
+    ),
+    _cyber(
+        "warrior_energy_axe", "Энергетический топор",
+        "энергетическим топором",
+        "🪓", strength=5, damage_min=26, damage_max=36, accuracy=0.6,
+    ),
+    _cyber(
+        "warrior_energy_mace", "Энергетическая булава",
+        "энергетической булавой",
+        "🔨", strength=6, damage_min=28, damage_max=34, accuracy=0.6,
+    ),
+    _cyber(
+        "warrior_energy_sabre", "Энергетическая сабля",
+        "энергетической саблей",
+        "🗡", strength=5, damage_min=22, damage_max=40, accuracy=0.6,
+    ),
+    # Танк: узкий урон и антикрит — он гасит чужой крит
+    _cyber(
+        "tank_energy_hammer", "Энергетический молот",
+        "энергетическим молотом",
+        "🔨", strength=6, damage_min=29, damage_max=33, anticrit=0.6,
+    ),
+    _cyber(
+        "tank_energy_cleaver", "Энергетический тесак",
+        "энергетическим тесаком",
+        "🪒", strength=5, damage_min=27, damage_max=35, anticrit=0.6,
+    ),
+    _cyber(
+        "tank_energy_greataxe", "Энергетическая секира",
+        "энергетической секирой",
+        "🪓", strength=6, damage_min=28, damage_max=34, anticrit=0.6,
+    ),
+    _cyber(
+        "tank_energy_maul", "Энергетическая кувалда",
+        "энергетической кувалдой",
+        "🔨", strength=6, damage_min=30, damage_max=32, anticrit=0.6,
+    ),
+    # Трикстер: уворот — его доля, а урон средний
+    _cyber(
+        "trickster_energy_baton", "Энергетическая тонфа",
+        "энергетической тонфой",
+        "🏏", agility=5, damage_min=23, damage_max=37, dodge=0.6,
+    ),
+    _cyber(
+        "trickster_energy_hookblade", "Энергетический крюковый клинок",
+        "крюковым клинком",
+        "🪝", agility=5, damage_min=24, damage_max=36, dodge=0.6,
+    ),
+    _cyber(
+        "trickster_energy_staff", "Энергетический посох",
+        "энергетическим посохом",
+        "🥢", agility=6, damage_min=26, damage_max=34, dodge=0.6,
+    ),
+    _cyber(
+        "trickster_energy_sickle", "Энергетический серп",
+        "энергетическим серпом",
+        "🌙", agility=5, damage_min=22, damage_max=38, dodge=0.6,
+    ),
+    # Ассасин: низкий порог и высокий потолок, и крит — его доля
+    _cyber(
+        "assassin_energy_dagger", "Энергетический кинжал",
+        "энергетическим кинжалом",
+        "🗡", intuition=5, damage_min=14, damage_max=46, crit=0.6,
+    ),
+    _cyber(
+        "assassin_energy_karambit", "Энергетический керамбит",
+        "энергетическим керамбитом",
+        "🪒", intuition=5, damage_min=16, damage_max=44, crit=0.6,
+    ),
+    _cyber(
+        "assassin_energy_wakizashi", "Энергетический вакидзаси",
+        "энергетическим вакидзаси",
+        "🔪", intuition=6, damage_min=18, damage_max=42, crit=0.6,
+    ),
+    _cyber(
+        "assassin_energy_push_dagger", "Энергетический тычковый нож",
+        "тычковым ножом",
+        "🔪", intuition=5, damage_min=12, damage_max=48, crit=0.6,
+    ),
+)
+
+
 ITEMS: tuple[Item, ...] = tuple(
     replace(item, retired=True) if item.code in RETIRED_GEAR else item
     for item in (
@@ -3508,6 +3754,8 @@ ITEMS: tuple[Item, ...] = tuple(
     *SET_WEAPONS,
     *JEWEL_PIECES,
     *CHIEF_KIT,
+    *MILITARY_KIT,
+    *CYBER_WEAPONS,
     )
 )
 
@@ -3560,6 +3808,10 @@ MAGIC_ITEMS: tuple[Item, ...] = tuple(
 SHELVES: dict[str, tuple[Item, ...]] = {
     FAN_SHELF: FAN_ITEMS,
     JEWEL_SHELF: JEWEL_ITEMS,
+    # Полка без магазина: с неё берёт только бросок рейда на военную
+    # базу. Дома, который ею торгует, в городе нет и не будет — трофей
+    # добывают, а не покупают
+    CYBER_SHELF: CYBER_WEAPONS,
 }
 
 

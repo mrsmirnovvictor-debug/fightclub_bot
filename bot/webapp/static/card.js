@@ -2004,6 +2004,10 @@ function showTab(name) {
   else stopWorkClock();
   // Кнопка «Работа» встаёт в шапку того дома, что сейчас открыт
   paintWorkEntry(name);
+  // А рядом с ней — «Рейд», если в этом доме он идёт. Дверь дома может
+  // вести не к рейду: на полигоне она ведёт на занятия, и без этой
+  // кнопки штурм пришлось бы искать во вкладке «Клуб»
+  paintRaidEntry(name);
   // Стол на рынке общий: пока на него смотрят — опрашиваем, ушли — молчим
   if (name === "trade") startTradeWatch();
   else stopTradeWatch();
@@ -3071,6 +3075,10 @@ const CLUB_HOUSES = {
   // Второй рейдовый дом. Экран тот же, что у казино, — какой именно
   // рейд в нём собирают, говорит сервер: он смотрит, где боец стоит
   stadium: { title: "🏟 Стадион", start: "raid" },
+  // Третий. На полигоне дверь ведёт на занятия — рейд в нём раз в
+  // неделю, а кадеты ходят каждый день, — и попадают сюда кнопкой
+  // «Рейд» в шапке открытого дома
+  indoor_training_ground: { title: "🎖 Крытый полигон", start: "raid" },
 };
 
 let clubHouse = "club";
@@ -3106,7 +3114,7 @@ function openClub() {
 
 // Дома, в которых идут рейды. Экран у них общий, различается только
 // вывеска: что именно за рейд, решает сервер по месту бойца
-const RAID_HOUSES = ["casino", "stadium"];
+const RAID_HOUSES = ["casino", "stadium", "indoor_training_ground"];
 
 function openRaidHouse(code) {
   clubHouse = RAID_HOUSES.includes(code) ? code : "casino";
@@ -4086,6 +4094,12 @@ async function raidTicket(gate, what) {
   // нет — покупаем тут же, одним «Подтвердить»; окно уже оплачено — не
   // спрашиваем вовсе.
   if (gate.spent) return { go: true, buy: false };
+  // Пропуска у рейда может не быть вовсе: на военную базу билета не
+  // продают. Тогда спрашиваем только про сам штурм
+  if (!gate.pass_code) {
+    const ok = await askConfirm("🎖 " + what, "Идём на штурм?");
+    return { go: ok, buy: false };
+  }
   if (gate.passes > 0) {
     const ok = await askConfirm(
       gate.pass_emoji + " " + what,
@@ -4137,8 +4151,10 @@ function raidOpenForm(data) {
     : gate.spent
       ? "Пропуск за это окно отдан — заходи хоть до самого конца."
       : gate.open
-        ? gate.pass_emoji + " " + gate.pass_title + ", в инвентаре: " +
-          (gate.passes || 0) + " шт."
+        ? gate.pass_code
+          ? gate.pass_emoji + " " + gate.pass_title + ", в инвентаре: " +
+            (gate.passes || 0) + " шт."
+          : "Вход свободный: пропуска тут не спрашивают."
         : "Ближайшее окно " + gate.next_window + ".";
   box.appendChild(note);
 
@@ -8632,6 +8648,27 @@ function paintWorkEntry(screen) {
   btn.className = "work-entry" + (cardData.work.on_shift ? " on" : "");
   btn.textContent = cardData.work.on_shift ? "🕗 Смена" : "💼 Работа";
   btn.addEventListener("click", () => showTab("work"));
+  head.appendChild(btn);
+}
+
+/** Кнопка «Рейд» в шапке дома, в котором идёт рейд.
+
+ * Дверь дома открывает первую его услугу, и это не всегда рейд: на
+ * полигоне она ведёт на занятия кадетов. Кнопка — тот же приём, которым
+ * в казино открывают работу: дом один, дел в нём два.
+ */
+function paintRaidEntry(screen) {
+  document.querySelectorAll(".raid-entry").forEach((one) => one.remove());
+  if (screen === "club") return;
+  if (!inRaidHouse()) return;
+  const head = el(screen) && el(screen).querySelector(".screen-head");
+  if (!head) return;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "work-entry raid-entry";
+  btn.textContent = "🎖 Рейд";
+  btn.addEventListener("click", () => openRaidHouse(myPlace && myPlace.code));
   head.appendChild(btn);
 }
 

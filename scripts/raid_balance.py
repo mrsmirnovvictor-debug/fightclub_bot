@@ -2,6 +2,7 @@
 
     python scripts/raid_balance.py                   # стычка с фанатами
     python scripts/raid_balance.py --raid cellar     # подвал казино
+    python scripts/raid_balance.py --raid military   # военная база
     python scripts/raid_balance.py --level 7         # отряд не десятого уровня
     python scripts/raid_balance.py --fan             # отряд в фанатском
     python scripts/raid_balance.py --runs 400        # больше боёв на клетку
@@ -37,6 +38,7 @@ from bot.game.economy import MAX_LEVEL  # noqa: E402
 from bot.game.raid import (  # noqa: E402
     CELLAR_RAID,
     HOOLIGAN_RAID,
+    MILITARY_RAID,
     RaidEnd,
     RaidKind,
     raid_foes,
@@ -139,11 +141,15 @@ def main() -> None:
     parser.add_argument("--fan", action="store_true", help="отряд в фанатском")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
-        "--raid", default="hooligans", choices=("hooligans", "cellar"),
+        "--raid", default="hooligans",
+        choices=("hooligans", "cellar", "military"),
         help="какой рейд мерить",
     )
     args = parser.parse_args()
-    kind = CELLAR_RAID if args.raid == "cellar" else HOOLIGAN_RAID
+    kind = {
+        "cellar": CELLAR_RAID,
+        "military": MILITARY_RAID,
+    }.get(args.raid, HOOLIGAN_RAID)
     sweep(kind, args.runs, args.level, args.fan, args.seed)
 
 
