@@ -12016,7 +12016,11 @@ async def test_the_war_map_shows_the_spots_and_the_call_to_arms(server, db):
     async with async_playwright() as pw:
         browser, page = await open_war(pw, server, don, board)
 
-        assert await page.locator("#turf .spot").count() == 10
+        # Счёт точек берём у города, а не числом: он растёт вместе с
+        # картой, и зашитое число устаревает молча
+        from bot.game.turf import TOTAL_SPOTS
+
+        assert await page.locator("#turf .spot").count() == TOTAL_SPOTS
         first = page.locator("#turf .spot").first
         assert "Казино" in await first.locator(".spot-title").inner_text()
         assert "300" in await first.locator(".spot-income").inner_text()
