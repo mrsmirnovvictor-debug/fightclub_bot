@@ -682,12 +682,23 @@ def test_the_ticket_is_its_own_pass_and_costs_fifty():
 
 
 def test_every_raid_asks_for_its_own_pass_and_sells_it_somewhere():
-    """Пропуск у каждого рейда свой и лежит в лавке, а не из воздуха."""
-    codes = {kind.pass_code for kind in RAID_KINDS}
+    """Где пропуск просят, он свой и лежит в лавке, а не из воздуха.
 
-    assert len(codes) == len(RAID_KINDS), "два рейда с одним пропуском"
+    Рейд без пропуска бывает: военную базу берут, а не покупают
+    (`docs/raids.md`). Но пустая строка в `pass_code` — решение, и
+    проверяется оно по тому, что рейд о пропуске нигде и не заговорит:
+    у остальных же пропуск обязан быть своим и продаваться.
+    """
+    paid = [kind for kind in RAID_KINDS if kind.needs_pass]
+    free = [kind for kind in RAID_KINDS if not kind.needs_pass]
+    codes = {kind.pass_code for kind in paid}
+
+    assert len(codes) == len(paid), "два рейда с одним пропуском"
     for code in codes:
         assert get_potion(code) is not None
+    # Свободный вход ровно один, и это база: остальные два — по билету
+    assert [kind.code for kind in free] == ["military"]
+    assert all(kind.pass_code == "" for kind in free)
 
 
 async def test_the_casino_ticket_does_not_open_the_stadium(bot, db):
@@ -1186,8 +1197,13 @@ async def test_the_stadium_lobby_is_not_offered_in_the_casino(stadium, db):
     assert (await screen(client, 43))["lobbies"] == []
 
 
-async def test_the_map_counts_both_raids_separately(stadium):
-    """Плашки на карте по дому: у казино своя, у стадиона своя."""
+async def test_the_map_counts_every_raid_separately(stadium):
+    """Плашки на карте по дому: сколько рейдов, столько и плашек.
+
+    Считается по `RAID_KINDS`, а не руками: третий рейд (военная база)
+    добавил третью плашку, и список домов обязан расти вместе с городом.
+    """
+    from bot.game.raid import RAID_KINDS
     from tests.test_fight_app import headers
 
     client, _, _ = stadium
@@ -1195,10 +1211,11 @@ async def test_the_map_counts_both_raids_separately(stadium):
     response = await client.get("/api/map", headers=headers(42))
     body = await response.json()
 
-    assert set(body["raids"]) == {"casino", "stadium"}
-    # расписание в этих тестах снято, значит открыты оба
+    assert set(body["raids"]) == {kind.house for kind in RAID_KINDS}
+    # расписание в этих тестах снято, значит открыты все
     assert body["raids"]["stadium"]["state"] == "open"
     assert body["raids"]["casino"]["state"] == "open"
+    assert body["raids"]["indoor_training_ground"]["state"] == "open"
 
 
 # ---------- добыча ----------
