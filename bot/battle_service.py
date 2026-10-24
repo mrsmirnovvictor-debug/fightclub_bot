@@ -66,6 +66,7 @@ from bot.game.narrator import (
 )
 from bot.game.fightlog import turn_payload
 from bot.injury_service import record_injuries
+from bot.dojo_service import count_deeds
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import LobbyCB, lobby_keyboard
 from bot.messaging import Announcer
@@ -654,6 +655,8 @@ class BattleService:
                 limit=MAX_BATTLE_ROUNDS,
             )
             results.append(result)
+            # Боевые дела этого размена — в ведомость школы
+            await count_deeds(self.db, session.fighters)
             session.hurt.update(result.injuries)
             spoken = strike_lines(result, session.fighters, self.rng)
             # Вторая половина приёмов десятой ступени: она летит мимо пары,

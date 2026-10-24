@@ -75,6 +75,7 @@ from bot.game.raid import (
     raid_foes,
 )
 from bot.injury_service import hurt_player
+from bot.dojo_service import count_deeds
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import raid_lobby_keyboard
 from bot.messaging import Announcer
@@ -777,6 +778,9 @@ class RaidService:
                 self._exchange(session, user_id, Action())
                 if self._judge(session) is not None:
                     break
+            # Боевые дела волны — в ведомость школы: размен считает
+            # `_exchange`, а писать в базу ему нечем — он не умеет ждать
+            await count_deeds(self.db, session.fighters)
             await self._close_wave(session)
 
     async def handle_choice(
@@ -817,6 +821,8 @@ class RaidService:
             self._exchange(
                 session, user_id, choice.to_action(fighter.attacks_per_round)
             )
+            # Боевые дела размена — в ведомость школы
+            await count_deeds(self.db, session.fighters)
             if self._judge(session) is not None or session.wave_over:
                 await self._close_wave(session)
             else:

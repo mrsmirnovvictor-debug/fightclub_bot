@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass, field
 
 from bot.database import Database
+from bot.dojo_service import count_deeds
 from bot.game.battle import (
     BLUE,
     MAX_BATTLE_ROUNDS,
@@ -667,6 +668,9 @@ class RobberyService:
                 # Усталость растянута на всю драку, а не на дуэль
                 limit=MAX_BATTLE_ROUNDS,
             )
+            # Боевые дела этого размена — в ведомость школы: драка в
+            # подворотне такой же бой, как всякий другой
+            await count_deeds(self.db, raid.fighters)
             raid.hurt.update(result.injuries)
             said = strike_lines(result, raid.fighters, self.rng)
             # Вторая половина приёмов десятой ступени: она летит мимо

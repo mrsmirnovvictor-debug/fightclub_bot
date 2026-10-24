@@ -225,6 +225,10 @@ class Fighter:
     charges: list[Charge] = field(default_factory=list)
     # Сколько приёмов пущено в дело в этом ходу: больше трёх не дают
     pressed: int = 0
+    # Боевые дела: что боец сделал своими руками — для школы боевых
+    # искусств. Копятся по ходу боя, а служба боя их отсюда сливает в
+    # базу (`dojo_service.count_deeds`) и этим забирает
+    deeds: dict[Source, int] = field(default_factory=dict)
     derived: DerivedStats = field(init=False)
 
     def __post_init__(self) -> None:
@@ -360,6 +364,15 @@ class Fighter:
     def earn(self, source: Source) -> None:
         """Начислить за событие по рецепту своего класса."""
         self.gain_energy(energy_gain(self.fclass.code, source, self.has_shield))
+
+    def did(self, source: Source) -> None:
+        """Записать дело в память боя — для школы боевых искусств.
+
+        Энергию класс получает только за своё (`ENERGY_SOURCES`), а дело
+        записывается любое: воин, который учится увороту трикстера, иначе
+        не набрал бы на него ни одного.
+        """
+        self.deeds[source] = self.deeds.get(source, 0) + 1
 
     @property
     def out_of_turns(self) -> bool:
@@ -1032,6 +1045,11 @@ def _fill_energy(strikes: list[Strike], fighters: dict[int, Fighter]) -> None:
     классу не свойственно, приносит ему ноль, и это не забывчивость, а
     рычаг — см. `ENERGY_SOURCES`.
 
+    Этим же событием считаются боевые дела для школы боевых искусств
+    (`bot.game.dojo`): одно событие — две ведомости. Разница одна и она
+    в том, кому писать: энергию класс получает только за своё, дело
+    записывается любое.
+
     Пробитый блок (`BREAK`) атакующему засчитывается как удар, защитнику —
     никак: он не удержался.
 
@@ -1048,14 +1066,18 @@ def _fill_energy(strikes: list[Strike], fighters: dict[int, Fighter]) -> None:
                 continue  # удар устроил приём — платить за него не за что
             attacker = fighters[strike.attacker_id]
             attacker.earn(Source.HIT)
+            attacker.did(Source.HIT)
             if strike.outcome is Outcome.CRIT:
                 attacker.earn(Source.CRIT)
+                attacker.did(Source.CRIT)
         elif strike.outcome is Outcome.BLOCK:
             fighters[strike.defender_id].earn(Source.BLOCK)
+            fighters[strike.defender_id].did(Source.BLOCK)
         elif strike.outcome in (Outcome.DODGE, Outcome.COUNTER):
             if strike.defence_ability:
                 continue  # ушёл не сам, а приёмом
             fighters[strike.defender_id].earn(Source.DODGE)
+            fighters[strike.defender_id].did(Source.DODGE)
 
 
 def _fill_running_hp(strikes: list[Strike], before: dict[int, int]) -> None:

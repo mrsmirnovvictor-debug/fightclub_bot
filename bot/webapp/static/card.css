@@ -428,6 +428,26 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   color: var(--hp-green);
 }
 
+/* Полоска набранного в школе: своя, а не заряда машины. Заряд говорит,
+   сколько осталось, а эта — сколько пройдено, и красный на её начале
+   значил бы беду там, где просто начало пути */
+.deed-bar {
+  margin-top: 8px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--slot);
+  border: 1px solid var(--slot-line);
+  overflow: hidden;
+}
+.deed-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+
+/* Приём на полке школы: карточка приёма, под ней цена в делах и кнопка */
+.dojo-pick { display: grid; gap: 8px; margin-bottom: 12px; }
+
 .keys { margin: 4px 0 18px; }
 
 .city {

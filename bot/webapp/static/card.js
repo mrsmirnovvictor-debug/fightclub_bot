@@ -1024,7 +1024,10 @@ function renderSkills(card) {
     ? ""
     : state.next_tier
       ? "Следующий приём — на " + state.next_tier + " уровне."
-      : "Все приёмы изучены.";
+      : // Ступени кончились, а приёмы нет: дальше их берут в школе
+        // боевых искусств — за дела в бою и по наименьшей цене
+        "Все приёмы своих ступеней взяты. Новый берут в школе боевых " +
+        "искусств — за дела в бою.";
 }
 
 function skillCard(trick) {
@@ -1889,7 +1892,7 @@ const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
   "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
-  "cars", "dorm", "charge", "bag", "hero",
+  "cars", "dorm", "charge", "dojo", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1902,7 +1905,7 @@ const OPENED_FROM = {
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
   tavern: "map", study: "map", turf: "map", crowd: "map",
   elections: "map", house: "map", prison: "map", arena: "map", cars: "map",
-  dorm: "map", charge: "map",
+  dorm: "map", charge: "map", dojo: "map",
 };
 let lastTab = "hero";
 
@@ -1986,6 +1989,9 @@ function showTab(name) {
   // Ушли с экрана — часы колонок гасим: тикать им в пустоту незачем
   if (name === "charge") loadCharge();
   else stopChargeClock();
+  // Школа: ведомость растёт в боях, и к ней возвращаются после них —
+  // спрашиваем на каждый заход
+  if (name === "dojo") loadDojo();
   // Ключи при бойце: лежат они в инвентаре, вместе со всем, что боец
   // носит с собой. Машина могла кончиться арендой, пока туда не
   // заглядывали, — спрашиваем на каждый заход
@@ -2508,6 +2514,7 @@ const HOUSE_SCREENS = {
   used_cars: () => openCars(),
   dorm: () => openDorm(),
   charge: () => openCharge(),
+  dojo: () => openDojo(),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -12056,6 +12063,253 @@ function keyCard(one) {
   return box;
 }
 
+// ---------- школа боевых искусств: приём за дела в бою ----------
+//
+// Уровень даёт приём из трёх и даёт сразу. Школа даёт любой, но за
+// работу: сверху ведомость сделанного, под ней обучение с полоской,
+// ниже все приёмы клуба по четырём ветвям. Что забудется, написано на
+// карточке до записи — узнавать об этом после пятисот ударов обидно.
+
+let dojoData = null;
+
+async function openDojo() {
+  showTab("dojo");
+}
+
+async function loadDojo() {
+  try {
+    const response = await fetch("api/dojo", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Школа не отвечает.");
+    const data = await response.json();
+    if (data.card) render(data.card, true);
+    renderDojo(data);
+  } catch (error) {
+    el("dojo-note").textContent = error.message;
+  }
+}
+
+async function dojoAction(payload) {
+  try {
+    const data = await post("api/dojo", payload);
+    haptic((feedback) => feedback.impactOccurred("light"));
+    if (data.card) render(data.card, true);
+    renderDojo(data);
+  } catch (error) {
+    popup("Школа", error.message);
+    await loadDojo();
+  }
+}
+
+function renderDojo(data) {
+  dojoData = data;
+  el("dojo-note").textContent = data.said || data.note || "";
+
+  const body = el("dojo-body");
+  body.textContent = "";
+  if (data.training) body.appendChild(dojoTrainingBox(data.training));
+  body.appendChild(dojoDeedsBox(data));
+  body.appendChild(dojoShelfBox(data));
+}
+
+/** Полоска набранного: число числом, а путь — на глаз. */
+function dojoBar(done, total) {
+  const bar = document.createElement("div");
+  bar.className = "deed-bar";
+  const fill = document.createElement("div");
+  fill.className = "deed-fill";
+  const share = total > 0 ? Math.min(100, (done * 100) / total) : 0;
+  fill.style.width = share + "%";
+  bar.appendChild(fill);
+  return bar;
+}
+
+/** Обучение: приём, полоска и две кнопки — выучить и бросить. */
+function dojoTrainingBox(one) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "В обучении";
+  box.appendChild(head);
+
+  const card = skillCard({
+    code: one.code, title: one.title, icon: one.icon, image: one.image,
+    note: one.note, tier: one.tier, cost: one.price,
+  });
+  card.querySelector(".skill-cost").textContent =
+    one.price + " ⚡ · приём " + one.tier + " ступени";
+  box.appendChild(card);
+
+  box.appendChild(dojoBar(one.done, one.needed));
+  box.appendChild(
+    paperRows([
+      [one.deed_title, one.done + " из " + one.needed],
+      [
+        "Осталось",
+        one.ready ? "ничего, можно учить" : one.left + " " + one.left_name,
+      ],
+      ["Забудется", one.forget ? "«" + one.forget.title + "»" : "ничего"],
+    ])
+  );
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Выучить", {
+      disabled: !one.ready,
+      hint:
+        "Ещё не набрано: нужно " + one.needed + " " + one.deed_name +
+        ", сделано " + one.done + ".",
+      onClick: () => dojoLearn(one),
+    })
+  );
+  buttons.appendChild(
+    button("Бросить", {
+      secondary: true,
+      onClick: () => dojoDrop(one),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Ведомость: что боец сделал в боях за всю жизнь. */
+function dojoDeedsBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Сделано в боях";
+  box.appendChild(head);
+  box.appendChild(
+    paperRows(
+      (data.deeds || []).map((one) => [
+        one.title + " · " + one.branch_title,
+        num(one.count),
+      ])
+    )
+  );
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Считается сделанное самим бойцом в любых боях. Уворот от приёма и " +
+    "крит от приёма в зачёт не идут: приём себя не кормит.";
+  box.appendChild(note);
+  return box;
+}
+
+/** Все приёмы клуба, разложенные по четырём ветвям. */
+function dojoShelfBox(data) {
+  const box = document.createElement("div");
+  const shelf = data.shelf || [];
+  const branches = [];
+  shelf.forEach((one) => {
+    if (!branches.some((row) => row.code === one.branch)) {
+      branches.push({ code: one.branch, title: one.branch_of });
+    }
+  });
+  branches.forEach((branch) => {
+    const section = document.createElement("section");
+    section.className = "shelf";
+    const head = document.createElement("h2");
+    head.className = "shelf-head";
+    const deed = shelf.find((one) => one.branch === branch.code);
+    head.textContent = "Приёмы " + branch.title + " · " + deed.deed_name;
+    section.appendChild(head);
+    shelf
+      .filter((one) => one.branch === branch.code)
+      .forEach((one) => section.appendChild(dojoCard(one)));
+    box.appendChild(section);
+  });
+  return box;
+}
+
+/** Приём на полке школы: цена в энергии, цена в делах и что забудется. */
+function dojoCard(one) {
+  const card = skillCard({
+    code: one.code, title: one.title, icon: one.icon, image: one.image,
+    note: one.note, tier: one.tier, cost: one.price,
+  });
+  card.querySelector(".skill-cost").textContent =
+    one.price + " ⚡ · " + one.needed + " " + one.deed_name;
+  if (one.known) {
+    const mark = document.createElement("span");
+    mark.className = "fork-own";
+    mark.textContent = "выучен";
+    card.querySelector(".skill-title").appendChild(mark);
+  } else if (one.trains) {
+    const mark = document.createElement("span");
+    mark.className = "fork-own";
+    mark.textContent = "в обучении";
+    card.querySelector(".skill-title").appendChild(mark);
+  }
+
+  const box = document.createElement("div");
+  box.className = "dojo-pick";
+  box.appendChild(card);
+  if (!one.known) {
+    box.appendChild(
+      paperRows([
+        [one.deed_name.charAt(0).toUpperCase() + one.deed_name.slice(1),
+         num(one.have) + " из " + one.needed + " сделано за жизнь"],
+        ["Забудется", one.forget ? "«" + one.forget.title + "»" : "ничего"],
+      ])
+    );
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Взять в обучение", {
+        disabled: !one.can_start,
+        hint: one.why || "Этот приём взять нельзя.",
+        onClick: () => dojoStart(one),
+      })
+    );
+    box.appendChild(buttons);
+  }
+  return box;
+}
+
+async function dojoStart(one) {
+  const forget = one.forget
+    ? "\n\nКогда приём будет выучен, «" + one.forget.title +
+      "» забудется навсегда."
+    : "";
+  const was =
+    dojoData && dojoData.training
+      ? "\n\nОбучение «" + dojoData.training.title +
+        "» будет брошено, и сделанные для него дела не перенесутся."
+      : "";
+  const ok = await confirmAction(
+    "Взять «" + one.title + "» в обучение?\n\nНужно " + one.needed + " " +
+      one.deed_name + " в боях." + was + forget
+  );
+  if (!ok) return;
+  await dojoAction({ action: "start", code: one.code });
+}
+
+async function dojoLearn(one) {
+  const forget = one.forget
+    ? "\n\n«" + one.forget.title + "» забудется навсегда: он стоит столько " +
+      "же энергии, и место под приём одно."
+    : "";
+  const ok = await confirmAction(
+    "Выучить «" + one.title + "»?" + forget
+  );
+  if (!ok) return;
+  await dojoAction({ action: "learn" });
+}
+
+async function dojoDrop(one) {
+  const ok = await confirmAction(
+    "Бросить обучение «" + one.title + "»?\n\nСделанные для него дела не " +
+      "сохранятся."
+  );
+  if (!ok) return;
+  await dojoAction({ action: "stop" });
+}
+
 // ---------- АЗС: три колонки на весь город ----------
 //
 // Заряд тратит дорога, а наливают его только здесь. Экран устроен
@@ -16212,6 +16466,7 @@ const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
   "trade", "house", "prison", "arena", "cars", "dorm", "charge",
+  "dojo",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -16367,7 +16622,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
   "crowd", "elections", "shop", "magic", "prison", "arena", "cars", "dorm",
-  "charge", "workshop", "club",
+  "charge", "dojo", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

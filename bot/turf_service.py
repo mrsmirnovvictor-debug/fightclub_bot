@@ -439,6 +439,11 @@ async def assault(
     defenders = await garrison(db, here.owner, levels, moment)
 
     won, waves, log = _fight(attackers, defenders, rng)
+    # Боевые дела штурма — в ведомость школы. Разводил его судья сам, но
+    # бил в нём отряд: удар остаётся ударом, кем бы он ни был разыгран
+    from bot.dojo_service import count_deeds
+
+    await count_deeds(db, {one.user_id: one for one in attackers + defenders})
     if won:
         from bot.bonus_service import accrue, note_spot
 

@@ -965,7 +965,7 @@ async def open_page(
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
-    cars=None, keys=None, dorm=None, charge=None,
+    cars=None, keys=None, dorm=None, charge=None, dojo=None,
     images=False,
     telegram="",
 ):
@@ -1020,6 +1020,7 @@ async def open_page(
     await page.route("**/api/cars", canned(cars or empty_cars()))
     await page.route("**/api/dorm", canned(dorm or {}))
     await page.route("**/api/charge", canned(charge or {}))
+    await page.route("**/api/dojo", canned(dojo or {}))
     await page.route("**/api/keys", canned({"keys": keys or []}))
 
     if fight_log is not None:
@@ -13749,4 +13750,148 @@ async def test_an_empty_car_shows_the_reason_the_wheel_is_dark(server, db):
         # Погасла — и это всё, что страница может сказать: отказ с
         # причиной держит сервер, а не кнопка
         assert await wheel.is_disabled()
+        await browser.close()
+
+
+# ---------- школа боевых искусств ----------
+
+
+async def test_the_school_shows_every_trick_and_what_it_costs(server, db):
+    """Экран школы: ведомость, четыре ветки и цена приёма в делах."""
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    await db.add_deeds(me.user_id, {"hit": 1200, "dodge": 80})
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.wait_for_selector("#dojo-body .shelf")
+
+        heads = await page.locator("#dojo-body .shelf-head").all_inner_texts()
+        assert heads == [
+            "Сделано в боях",
+            "Приёмы Воина · точных ударов",
+            "Приёмы Трикстера · уворотов",
+            "Приёмы Ассасина · критических ударов",
+            "Приёмы Танка · успешных блоков",
+        ]
+        said = await page.locator("#dojo-body").inner_text()
+        # Пробел в числе неразрывный: его ставит `num()`
+        assert "Точных ударов · Воин" in said and "1\u00a0200" in said
+        # Шестнадцать приёмов клуба, и у каждого цена в энергии и в делах
+        assert await page.locator("#dojo-body .skill").count() == 16
+        # `.first` не придирка: «Бог обмана» кладёт союзникам ту же
+        # «Проворность» и называет её в своём описании
+        nimble = page.locator(
+            "#dojo-body .dojo-pick", has_text="Проворность"
+        ).first
+        assert "3 ⚡ · 500 уворотов" in await nimble.inner_text()
+        assert "«Сильный удар»" in await nimble.inner_text(), "что забудется"
+        assert await nimble.locator(".btn").inner_text() == "Взять в обучение"
+        # Свой выученный приём помечен, и кнопки у него нет вовсе
+        own = page.locator("#dojo-body .skill", has_text="Сильный удар").first
+        assert "выучен" in await own.inner_text()
+        await browser.close()
+
+
+async def test_the_school_signs_you_up_for_one_trick(server, db):
+    """Запись: окно спрашивает согласие и уходит кодом приёма."""
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.wait_for_selector("#dojo-body .shelf")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.confirmAction = async () => true;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        await page.locator(
+            "#dojo-body .dojo-pick", has_text="Проворность"
+        ).first.locator(".btn").click()
+
+        assert await page.evaluate("window.sent") == {
+            "action": "start", "code": "nimble",
+        }
+        await browser.close()
+
+
+async def test_the_training_bar_fills_with_the_work_done(server, db):
+    """Обучение: полоска, число набранного и кнопка, которая ждёт конца."""
+    from bot.dojo_service import start
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    await start(db, me, "nimble", now_ts())
+    await db.add_deeds(me.user_id, {"dodge": 125})
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.wait_for_selector("#dojo-body .deed-bar")
+
+        box = page.locator("#dojo-body .shelf", has_text="В обучении").first
+        said = await box.inner_text()
+        assert "125 из 500" in said and "375 уворотов" in said
+        assert "«Сильный удар»" in said
+        # Четверть пути — четверть полоски
+        assert await page.evaluate(
+            "el('dojo-body').querySelector('.deed-fill').style.width"
+        ) == "25%"
+        learn = box.locator(".btn").first
+        assert await learn.inner_text() == "Выучить"
+        assert await learn.is_disabled()
+        await browser.close()
+
+
+async def test_the_learned_trick_is_taken_when_the_work_is_done(server, db):
+    """Набрал — кнопка горит и уходит одним словом «learn»."""
+    from bot.dojo_service import start
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    await start(db, me, "nimble", now_ts())
+    await db.add_deeds(me.user_id, {"dodge": 500})
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.wait_for_selector("#dojo-body .deed-bar")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.confirmAction = async () => true;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        assert "Можно учить" in await page.locator("#dojo-note").inner_text()
+        await page.locator(
+            "#dojo-body .shelf", has_text="В обучении"
+        ).locator(".btn").first.click()
+
+        assert await page.evaluate("window.sent") == {"action": "learn"}
         await browser.close()

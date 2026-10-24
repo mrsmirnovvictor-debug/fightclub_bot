@@ -68,6 +68,7 @@ from bot.game.turf import (
     get_spot,
 )
 from bot.bonus_service import accrue, note_spot
+from bot.dojo_service import count_deeds
 from bot.models import Player
 from bot.raid_service import Choice
 from bot.turf_service import (
@@ -484,6 +485,9 @@ class TurfWar:
                 for user_id in list(siege.alive_ids):
                     if user_id not in siege.acted:
                         self._exchange(siege, user_id, Action())
+                # Боевые дела волны — в ведомость школы: размен считает
+                # `_exchange`, а писать в базу ему нечем — он не умеет ждать
+                await count_deeds(self.db, siege.party)
                 await self._close_wave(siege)
 
     # ---------- кнопки ----------
@@ -523,6 +527,8 @@ class TurfWar:
             self._exchange(
                 siege, user_id, choice.to_action(fighter.attacks_per_round)
             )
+            # Боевые дела размена — в ведомость школы
+            await count_deeds(self.db, siege.party)
             if self._judge(siege) is not None or siege.wave_over:
                 await self._close_wave(siege)
         return "Ход принят."

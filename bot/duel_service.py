@@ -62,6 +62,7 @@ from bot.game.narrator import (
     strike_lines,
 )
 from bot.injury_service import record_injuries
+from bot.dojo_service import count_deeds
 from bot.inventory_service import wear_after_fight
 from bot.keyboards import challenge_keyboard, fight_keyboard, standoff_keyboard
 from bot.messaging import Announcer
@@ -774,6 +775,10 @@ class DuelService:
             self.rng,
             limit=session.mode.turns,
         )
+
+        # Боевые дела этого раунда — в ведомость школы: одной строкой
+        # и из каждого боя, потому что школа не делит бои на зачётные
+        await count_deeds(self.db, session.fighters)
 
         # Слова судьи собираются один раз: и в ветку, и в мини-апп, и в лог
         # уходит ровно то, что он сказал. Позвать разбор дважды — значит

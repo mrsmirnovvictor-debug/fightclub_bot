@@ -2871,6 +2871,60 @@ async def api_charge_action(request: web.Request) -> web.Response:
     return await _charge_state(request, fresh, said)
 
 
+async def _dojo_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.dojo import build_dojo
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_dojo(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_dojo(request: web.Request) -> web.Response:
+    """Школа боевых искусств: ведомость бойца и все приёмы клуба."""
+    player = await _at(request, Service.DOJO)
+    return await _dojo_state(request, player)
+
+
+async def api_dojo_action(request: web.Request) -> web.Response:
+    """Дела в школе: взять приём в обучение, бросить и выучить."""
+    from bot.dojo_service import DojoError, learn as learn_trick, start, stop
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.DOJO)
+    try:
+        if action == "start":
+            said = await start(
+                db, player, str(data.get("code") or ""), now_ts()
+            )
+        elif action == "stop":
+            said = await stop(db, player)
+        elif action == "learn":
+            ability = await learn_trick(db, player, now_ts())
+            said = (
+                f"«{ability.title}» выучен. "
+                f"{ability.note}"
+            )
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except DojoError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _dojo_state(request, fresh, said)
+
+
 async def api_prison(request: web.Request) -> web.Response:
     """Тюрьма: свой срок и все, кто сидит сейчас.
 
@@ -3418,6 +3472,8 @@ def create_app(
             web.get("/api/prison", api_prison),
             web.get("/api/dorm", api_dorm),
             web.post("/api/dorm", api_dorm_action),
+            web.get("/api/dojo", api_dojo),
+            web.post("/api/dojo", api_dojo_action),
             web.get("/api/charge", api_charge),
             web.post("/api/charge", api_charge_action),
             web.get("/api/cars", api_cars),

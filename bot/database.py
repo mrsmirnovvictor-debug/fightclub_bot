@@ -362,6 +362,25 @@ CREATE TABLE IF NOT EXISTS charging (
 
 CREATE INDEX IF NOT EXISTS idx_charging_user ON charging(user_id);
 
+-- Боевая ведомость: что боец сделал своими руками за всю жизнь.
+-- Точные удары, уворот, криты и удержанные блоки — ими платят за приём
+-- в школе боевых искусств
+CREATE TABLE IF NOT EXISTS deeds (
+    user_id INTEGER NOT NULL,
+    deed    TEXT    NOT NULL,
+    count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, deed)
+);
+
+-- На что боец записан в школе. Приём один: ключ — сам боец
+CREATE TABLE IF NOT EXISTS dojo (
+    user_id    INTEGER PRIMARY KEY,
+    code       TEXT    NOT NULL,
+    deed       TEXT    NOT NULL,
+    baseline   INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0
+);
+
 -- Рейды: отряд живых бойцов против одного босса. Запись заводится в момент
 -- сбора — по ней же считается «один рейд в сутки на созывающего», — и
 -- закрывается итогом, когда бой кончился.
@@ -4938,6 +4957,64 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount
+
+    # ---------- школа боевых искусств ----------
+
+    async def add_deeds(self, user_id: int, counts: dict[str, int]) -> None:
+        """Дописать боевые дела в ведомость бойца."""
+        rows = [
+            (user_id, deed, int(count))
+            for deed, count in counts.items()
+            if int(count) > 0
+        ]
+        if not rows:
+            return
+        await self.conn.executemany(
+            "INSERT INTO deeds (user_id, deed, count) VALUES (?,?,?) "
+            "ON CONFLICT(user_id, deed) DO UPDATE SET count = count + ?",
+            [(one[0], one[1], one[2], one[2]) for one in rows],
+        )
+        await self.conn.commit()
+
+    async def deed_counts(self, user_id: int) -> dict[str, int]:
+        """Вся ведомость бойца: дело — сколько сделано."""
+        async with self.conn.execute(
+            "SELECT deed, count FROM deeds WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {str(row["deed"]): int(row["count"]) for row in rows}
+
+    async def dojo_row(self, user_id: int) -> dict | None:
+        """На что боец записан в школе. None — ни на что."""
+        async with self.conn.execute(
+            "SELECT user_id, code, deed, baseline, started_at FROM dojo "
+            "WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def set_dojo(
+        self, user_id: int, code: str, deed: str, baseline: int, now: int
+    ) -> None:
+        """Записать бойца на приём. Прежняя запись заменяется этой."""
+        await self.conn.execute(
+            "INSERT INTO dojo (user_id, code, deed, baseline, started_at) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "code = excluded.code, deed = excluded.deed, "
+            "baseline = excluded.baseline, started_at = excluded.started_at",
+            (user_id, code, deed, max(0, baseline), now),
+        )
+        await self.conn.commit()
+
+    async def clear_dojo(self, user_id: int) -> bool:
+        """Снять запись: выучил или бросил. False — записи и не было."""
+        cursor = await self.conn.execute(
+            "DELETE FROM dojo WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
+        return bool(cursor.rowcount)
 
     async def sweep_cars(self, now: int) -> int:
         """Убрать машины, у которых кончился срок. Отдаёт, сколько убрал."""
