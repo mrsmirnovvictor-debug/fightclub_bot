@@ -14219,3 +14219,39 @@ async def test_a_woman_in_the_barbershop_is_told_why_not(server):
         assert await page.evaluate("window.sent") is None, "ничего не купили"
         assert said and "берут их мужчины" in said[0]
         await browser.close()
+
+
+async def test_the_station_offers_cash_or_card_with_a_discount(server, db):
+    """На станции виден переключатель кошелька и скидка по карте."""
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import carded, drained, driver
+
+    me = await carded(db, await driver(db, credits=1000))
+    me = await drained(db, me, 20)
+    body = await build_charge(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .wallet")
+
+        picks = await page.locator("#charge-body .wallet-pick").all_inner_texts()
+        assert len(picks) == 2
+        assert "Наличные" in picks[0] and "Карта" in picks[1]
+        assert "−15%" in picks[1], "скидка видна на самой кнопке"
+        assert "card" == await page.locator(
+            "#charge-body .wallet-pick.on"
+        ).get_attribute("data-purse")
+        assert "−15% к ценам" in await page.locator(
+            "#charge-body .wallet-note"
+        ).inner_text()
+
+        # И мерки посчитаны по карте: 42 вместо пятидесяти
+        await page.locator("#charge-body .charge-slot").first.click()
+        await page.locator(".charge-car-tile").first.click()
+        await page.wait_for_selector(".charge-steps")
+        squares = await page.locator(".charge-step").all_inner_texts()
+        assert "42 💰" in squares[0] and "63 💰" in squares[1]
+        await browser.close()

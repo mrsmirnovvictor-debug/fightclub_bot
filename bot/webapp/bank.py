@@ -208,6 +208,7 @@ PLACE_TITLES: dict[Service, str] = {
     Service.HEAL: "Больница",
     Service.INSURANCE: "Страховая компания",
     Service.TRAIN: "Тренажёрный зал",
+    Service.CHARGE: "АЗС",
 }
 
 

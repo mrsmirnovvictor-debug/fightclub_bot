@@ -12598,6 +12598,9 @@ function renderCharge(data) {
   const body = el("charge-body");
   body.textContent = "";
   body.appendChild(chargeRow(data));
+  // Чем платить — наличными или картой: цены на мерках считаются по
+  // выбранному кошельку, и переключают его там же, где их видно
+  body.appendChild(walletBar(data.purse, loadCharge));
   startChargeClock();
 }
 
