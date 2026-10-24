@@ -417,16 +417,162 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .charge-fill.high { background: var(--hp-green); }
 .charge-fill.low { background: var(--hp-red); }
 
-/* Колонка АЗС: такая же карточка, что у машины, но картинка в ней
-   пустая чаще, чем полная, и высокий кадр 16:9 под знаком ⚡ выглядел
-   бы дырой */
-.charge-slot .car-pic { aspect-ratio: 16 / 7; font-size: 34px; }
+/* АЗС: три колонки в один ряд — станция и выглядит так. Ряд не
+   рассыпается на узком экране: колонки сжимаются вместе с ним, потому
+   что их всегда три и переносить одну вниз было бы ложью о станции */
+.charge-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 4px 0 16px;
+}
+/* Колонка целиком — кнопка: в ряду из трёх отдельной кнопке под каждой
+   места нет, а нажатие у колонки одно и очевидное */
+.charge-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.charge-slot.mine { border-color: var(--hp-green); }
+.charge-slot.ready { box-shadow: inset 0 0 0 1px var(--hp-green); }
+.charge-pic {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  overflow: hidden;
+}
+.charge-pic img { width: 100%; height: 100%; object-fit: cover; }
+/* Машина встаёт под колонкой, а не вместо неё: так и видно, что
+   заряжают именно её */
+.charge-car {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  overflow: hidden;
+}
+.charge-car img { width: 100%; height: 100%; object-fit: cover; }
+/* Пока наливается — машина дышит зелёным, как шкала здоровья в бою.
+   Дозарядилась — успокаивается: мигающая машина, которую можно
+   забирать, торопила бы зря */
+.charge-car.filling { animation: charging 1.6s ease-in-out infinite; }
+@keyframes charging {
+  0%, 100% { box-shadow: inset 0 0 0 1px var(--slot-line); }
+  50% { box-shadow: inset 0 0 0 2px var(--hp-green); }
+}
+.charge-spark {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 12px;
+  line-height: 1;
+}
+.charge-car.filling .charge-spark {
+  animation: spark 1.6s ease-in-out infinite;
+}
+@keyframes spark {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
 .charge-clock {
-  margin-top: 8px;
   font-weight: 700;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--hp-green);
 }
+.charge-slot.free .charge-clock { color: var(--muted); font-weight: 600; }
+.charge-who {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Окно выбора машины: картинки по две в ряд */
+.charge-cars {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.charge-car-tile {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.charge-car-pic {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--slot-line);
+  border-radius: 6px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  overflow: hidden;
+}
+.charge-car-pic img { width: 100%; height: 100%; object-fit: cover; }
+.charge-car-title { font-weight: 700; font-size: 12.5px; }
+.charge-car-tag { font-size: 11px; color: var(--muted); }
+
+/* Три мерки квадратами в один ряд: выбрали — обвелась, под ними две
+   кнопки */
+.charge-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.charge-step {
+  display: grid;
+  gap: 2px;
+  align-content: center;
+  aspect-ratio: 1 / 1;
+  padding: 6px 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.charge-step.picked { border-color: var(--accent); background: var(--slot); }
+.charge-step.poor { opacity: 0.5; }
+.charge-step-head { font-weight: 700; font-size: 15px; }
+.charge-step-price { font-size: 12px; color: var(--accent); }
+.charge-step-time { font-size: 11px; color: var(--muted); }
+.charge-step-waste { font-size: 10px; color: var(--hp-yellow); }
 
 /* Полоска набранного в школе: своя, а не заряда машины. Заряд говорит,
    сколько осталось, а эта — сколько пройдено, и красный на её начале

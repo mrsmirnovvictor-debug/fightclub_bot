@@ -34,6 +34,7 @@ from bot.game.charge import (
     after_charge,
     charge_price,
     charge_seconds,
+    column_picture,
     percent_left,
     wasted,
 )
@@ -94,8 +95,11 @@ async def slots(
         if row is None:
             out.append({
                 "slot": slot, "busy": False, "mine": False, "code": "",
-                "title": "", "image": "", "owner": "", "percent": 0,
+                "title": "", "car_image": "", "owner": "", "percent": 0,
                 "left": 0, "left_text": "", "ready": False,
+                # Картинка самой колонки: она у слота своя и не зависит
+                # от того, стоит в ней машина или нет
+                "image": column_picture(slot),
             })
             continue
         car = get_car(str(row["code"]))
@@ -107,7 +111,9 @@ async def slots(
             "mine": int(row["user_id"]) == player.user_id,
             "code": car.code if car else str(row["code"]),
             "title": car.title if car else "Машина",
-            "image": car.image if car else "",
+            "image": column_picture(slot),
+            # Машина рисуется под колонкой, а не вместо неё
+            "car_image": car.image if car else "",
             "owner": owner.nickname if owner else "боец",
             "percent": int(row["percent"]),
             "left": left,

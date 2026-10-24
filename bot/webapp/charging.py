@@ -3,10 +3,14 @@
 Правил тут нет — их держат `bot.game.charge` и `bot.charge_service`.
 Здесь перевод в json.
 
-**Экран отвечает на один вопрос: что поставить и во что.** Слева —
-колонки, справа — ключи бойца с их зарядом; кнопка на машине открывает
-выбор колонки и объёма. Прятать её нельзя: занятость колонки и пустой
-кошелёк боец должен видеть причиной, а не отсутствием кнопки.
+**Экран — это три колонки в один ряд.** Станция и выглядит так: ряд
+колонок, под занятой стоит машина, под машиной — сколько ей осталось.
+Списка своих машин на экране нет: он нужен ровно в одну секунду — когда
+выбрана свободная колонка, — и приходит окном выбора.
+
+**Заряжают только то, что при себе.** Машина, оставленная на парковке
+дома, лежит в чужом гараже, и подать её к колонке по телефону нельзя: за
+ней идут ногами. Поэтому в выбор она не попадает вовсе.
 
 **Пролитое считает сервер.** Сколько процентов уйдёт мимо бака, видно
 до оплаты и на каждой мерке отдельно: колонка наливает ровно то, за что
@@ -63,8 +67,10 @@ def car_rows(
             continue
         # Пробег обратно из остатка: мерки считают пролитое от него
         driven = max(0, int(one["range"]) - int(one["km_left"]))
+        # Полную машину заряжать нечем, а на 99% — уже можно: лишнее
+        # пропадёт, и колонка скажет об этом до оплаты
         full = int(one["charge"]) >= 100
-        can = bool(not one["charging"] and not one["parked"] and not full)
+        can = bool(not one["charging"] and not full)
         out.append({
             "code": car.code,
             "title": car.title,
@@ -95,8 +101,6 @@ def _why(one: dict[str, Any], full: bool) -> str:
     """Почему эту машину на колонку не поставить."""
     if one["charging"]:
         return f"Уже на {one['charging_slot']}-й колонке."
-    if one["parked"]:
-        return f"Стоит на парковке: {one['parked_text']}. Сперва забери её."
     if full:
         return "Бак полон — заряжать нечего."
     return ""
@@ -106,13 +110,15 @@ async def build_charge(
     db, player: Player, now: int | None = None
 ) -> dict[str, Any]:
     """Экран АЗС: колонки города и свои машины при них."""
-    from bot.car_service import mine as my_cars
+    from bot.car_service import at_hand
     from bot.charge_service import slots as station_slots
 
     moment = now_ts() if now is None else now
     place = get_location(player.where(moment))
     columns = await station_slots(db, player, moment)
-    keys = await my_cars(db, player, moment)
+    # Только то, что при бойце: оставленную в гараже дома машину к
+    # колонке не подать — за ней надо сходить
+    keys = await at_hand(db, player, moment)
     body: dict[str, Any] = {
         "title": place.title if place else "АЗС",
         "slots": columns,
@@ -147,9 +153,10 @@ def _note(body: dict[str, Any]) -> str:
         )
     if not body["cars"]:
         return (
-            "Колонок тут три, и заряжают они только свои машины. Машину "
-            "берут в автосалоне или на авторынке; привезти её сюда надо "
-            "самому — пустую тащат на буксире."
+            "Колонок тут три, и заряжают они то, что при тебе. Машину с "
+            "парковки дома сюда не подать — за ней надо сходить. А если "
+            "машины нет вовсе, берут её в автосалоне или на авторынке, "
+            "он тут же, по соседству."
         )
     if not body["free"]:
         return (

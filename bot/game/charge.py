@@ -57,6 +57,18 @@ CHARGE_SLOTS = 3
 # Станция стоит на АЗС
 STATION = "gas_station"
 
+# Лица колонок, по порядку слотов. Разница между ними только в картинке:
+# наливают все три одинаково, и называть одну «быстрой» значило бы
+# обещать то, чего в правилах нет
+COLUMN_KINDS: tuple[str, ...] = ("standard", "fast", "premium")
+
+
+def column_picture(slot: int) -> str:
+    """Картинка этой колонки. Колонки нумерованы с единицы."""
+    from bot.game import art
+
+    return art.charger(COLUMN_KINDS[(max(1, slot) - 1) % len(COLUMN_KINDS)])
+
 
 def range_km(car: Car) -> int:
     """Сколько километров машина проходит на полном заряде."""
@@ -133,6 +145,7 @@ def wasted(car: Car, driven: int, percent: int) -> int:
 
 __all__ = [
     "BASE_RANGE",
+    "COLUMN_KINDS",
     "CHARGE_PRICE_PER_PERCENT",
     "CHARGE_SECONDS_PER_PERCENT",
     "CHARGE_SLOTS",
@@ -144,6 +157,7 @@ __all__ = [
     "after_drive",
     "charge_price",
     "charge_seconds",
+    "column_picture",
     "empty",
     "km_for",
     "km_left",

@@ -49,6 +49,9 @@ PDD = "https://pub-ea6a4494c019470aa38328eec255511d.r2.dev/pdd2"
 INTERIORS = f"{LOCATIONS}/interiors"
 # Районы второй очереди: участок, больница, казармы и всё остальное
 NEW_INTERIORS = f"{BUCKET}/interiors"
+# Зарядные колонки АЗС: по картинке на колонку. Папка внутри районов —
+# так их и выгрузили, вместе с картами домов
+CHARGERS = f"{LOCATIONS}/charging_stations"
 # Знаки кланов: по картинке на знак, и знак один на клан
 CLANS = f"{BUCKET}/clans"
 # Значки городских служб: полиция, ФБР, армия, медицина, администрация и
@@ -170,6 +173,11 @@ def interior(code: str, folder: str = INTERIORS, ext: str = "jpeg") -> str:
     в png. Имя файла при этом всё так же считается от кода дома.
     """
     return f"{folder}/{code}.{ext}"
+
+
+def charger(kind: str) -> str:
+    """Колонка АЗС: locations/charging_stations/ev_charger_fast.jpg."""
+    return f"{CHARGERS}/ev_charger_{kind}.jpg"
 
 
 def boss(code: str) -> str:
