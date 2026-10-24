@@ -2959,13 +2959,14 @@ async def api_dojo_action(request: web.Request) -> web.Response:
                 db, player, str(data.get("code") or ""), now_ts()
             )
         elif action == "stop":
-            said = await stop(db, player)
+            said = await stop(db, player, str(data.get("code") or ""), now_ts())
         elif action == "learn":
-            ability = await learn_trick(db, player, now_ts())
-            said = (
-                f"«{ability.title}» выучен. "
-                f"{ability.note}"
+            # Приём называют: набранных может ждать несколько, и
+            # подтверждают они по одному
+            ability = await learn_trick(
+                db, player, str(data.get("code") or ""), now_ts()
             )
+            said = f"«{ability.title}» выучен. {ability.note}"
         else:
             return web.json_response(
                 {"error": "Непонятное действие."}, status=400

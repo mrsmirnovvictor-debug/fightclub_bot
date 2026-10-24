@@ -13,8 +13,15 @@
 в школу и выходил из неё готовым приёмом, а «взять в обучение» ничего не
 значило бы.
 
-**В обучении один приём.** Записался на второй — первый брошен вместе со
-своими делами: учится тело, а не ведомость.
+**Учится разом один приём, а набранный ждёт сколько угодно.** Это два
+разных состояния одной записи, и различает их сама ведомость: дел
+набрано меньше нужного — приём учится, набрано сколько надо — приём
+готов и ждёт подтверждения. Пока он ждёт, боец берётся за следующий:
+новый приём занимает место старого, и торопить с этим выбором незачем.
+
+Отсюда и устройство базы: строк у бойца столько, сколько приёмов он не
+довёл до слота, а «готов или нет» не хранится вовсе — оно считается.
+Хранить его значило бы держать две правды об одном.
 """
 
 from __future__ import annotations
@@ -74,29 +81,56 @@ async def totals(db: Database, user_id: int) -> dict[Source, int]:
     return {source: int(rows.get(source.value, 0)) for source in Source}
 
 
-async def training(
+async def learning(
+    db: Database, player: Player, now: int | None = None
+) -> list[dict]:
+    """Все незакрытые записи бойца: что учится и что уже набрано.
+
+    Запись на приём, который боец успел получить с уровня, снимается
+    тут же: учить выученное незачем, и держать такую строку значило бы
+    однажды предложить забыть приём ради него самого.
+    """
+    counts = await totals(db, player.user_id)
+    out = []
+    for row in await db.dojo_rows(player.user_id):
+        ability = get_ability(str(row["code"]))
+        if ability is None or ability.code in player.loadout:
+            await db.clear_dojo(player.user_id, str(row["code"]))
+            continue
+        deed = deed_of(ability)
+        total = counts[deed]
+        baseline = int(row["baseline"])
+        out.append({
+            "ability": ability,
+            "deed": deed,
+            "done": deeds_done(total, baseline, ability),
+            "needed": needed(ability),
+            "ready": ready(total, baseline, ability),
+            "started_at": int(row["started_at"]),
+            "forget": forget_for(player, ability),
+        })
+    return out
+
+
+async def started(
     db: Database, player: Player, now: int | None = None
 ) -> dict | None:
-    """На что боец записан и сколько уже набрал. None — ни на что."""
-    row = await db.dojo_row(player.user_id)
-    if row is None:
-        return None
-    ability = get_ability(str(row["code"]))
-    if ability is None:  # pragma: no cover - приём убрали из каталога
-        await db.clear_dojo(player.user_id)
-        return None
-    deed = deed_of(ability)
-    total = (await totals(db, player.user_id))[deed]
-    baseline = int(row["baseline"])
-    return {
-        "ability": ability,
-        "deed": deed,
-        "done": deeds_done(total, baseline, ability),
-        "needed": needed(ability),
-        "ready": ready(total, baseline, ability),
-        "started_at": int(row["started_at"]),
-        "forget": forget_for(player, ability),
-    }
+    """Приём, который учится прямо сейчас. None — ни один.
+
+    Набранные сюда не идут: они уже выучены всем, кроме подтверждения, и
+    место в обучении не занимают.
+    """
+    for one in await learning(db, player, now):
+        if not one["ready"]:
+            return one
+    return None
+
+
+async def waiting(
+    db: Database, player: Player, now: int | None = None
+) -> list[dict]:
+    """Набранные приёмы, которые ждут подтверждения."""
+    return [one for one in await learning(db, player, now) if one["ready"]]
 
 
 def forget_for(player: Player, ability: Ability) -> Ability | None:
@@ -114,16 +148,27 @@ def forget_for(player: Player, ability: Ability) -> Ability | None:
 async def start(
     db: Database, player: Player, code: str, now: int | None = None
 ) -> str:
-    """Взять приём в обучение. Прежнее обучение при этом брошено."""
+    """Взять приём в обучение. Разом учится только один."""
     moment = now_ts() if now is None else now
     ability = get_ability(code)
     if ability is None:
         raise DojoError("Такого приёма в школе нет.")
     if code in player.loadout:
         raise DojoError(f"«{ability.title}» боец и так знает.")
-    was = await db.dojo_row(player.user_id)
-    if was is not None and str(was["code"]) == code:
-        raise DojoError(f"«{ability.title}» и так в обучении.")
+    rows = await learning(db, player, moment)
+    mine = next((one for one in rows if one["ability"].code == code), None)
+    if mine is not None:
+        raise DojoError(
+            f"«{ability.title}» уже набран — осталось подтвердить."
+            if mine["ready"]
+            else f"«{ability.title}» и так в обучении."
+        )
+    busy = next((one for one in rows if not one["ready"]), None)
+    if busy is not None:
+        raise DojoError(
+            f"Разом учат один приём, и это «{busy['ability'].title}»: "
+            f"{busy['done']} из {busy['needed']}. Доучи его или брось."
+        )
     deed = deed_of(ability)
     total = (await totals(db, player.user_id))[deed]
     await db.set_dojo(player.user_id, code, deed.value, total, moment)
@@ -131,40 +176,60 @@ async def start(
         "Боец %s взял в обучение %s (нужно %s %s)",
         player.user_id, code, needed(ability), deed.value,
     )
-    dropped = ""
-    if was is not None:
-        old = get_ability(str(was["code"]))
-        if old is not None:
-            dropped = (
-                f" «{old.title}» брошен: дела, сделанные для него, не "
-                f"переносятся."
-            )
     return (
         f"«{ability.title}» в обучении: нужно {needed(ability)} "
-        f"{deed_name(deed, needed(ability))}.{dropped}"
+        f"{deed_name(deed, needed(ability))}."
     )
 
 
-async def stop(db: Database, player: Player) -> str:
-    """Бросить обучение. Сделанные дела при этом пропадают."""
-    row = await db.dojo_row(player.user_id)
-    if row is None:
+async def stop(
+    db: Database, player: Player, code: str = "", now: int | None = None
+) -> str:
+    """Бросить обучение. Сделанные дела при этом пропадают.
+
+    Набранный приём бросить нельзя: он уже выучен всем, кроме
+    подтверждения, и ждать он может сколько угодно — выбрасывать за
+    бойца то, за что он отработал пятьсот ударов, школа не станет.
+    """
+    moment = now_ts() if now is None else now
+    rows = await learning(db, player, moment)
+    if code:
+        one = next((row for row in rows if row["ability"].code == code), None)
+    else:
+        one = next((row for row in rows if not row["ready"]), None)
+    if one is None:
         raise DojoError("Боец ни на что не записан.")
-    ability = get_ability(str(row["code"]))
-    await db.clear_dojo(player.user_id)
-    logger.info("Боец %s бросил обучение %s", player.user_id, row["code"])
-    title = f"«{ability.title}»" if ability else "Приём"
-    return f"{title} брошен. Дела, сделанные для него, не сохранились."
+    if one["ready"]:
+        raise DojoError(
+            f"«{one['ability'].title}» уже набран: его подтверждают, а не "
+            f"бросают. Ждать он может сколько угодно."
+        )
+    await db.clear_dojo(player.user_id, one["ability"].code)
+    logger.info(
+        "Боец %s бросил обучение %s", player.user_id, one["ability"].code
+    )
+    return (
+        f"«{one['ability'].title}» брошен. Дела, сделанные для него, не "
+        f"сохранились."
+    )
 
 
 async def learn(
-    db: Database, player: Player, now: int | None = None
+    db: Database, player: Player, code: str = "", now: int | None = None
 ) -> Ability:
     """Выучить набранный приём. Прежний с той же ценой забывается."""
     moment = now_ts() if now is None else now
-    state = await training(db, player, moment)
-    if state is None:
-        raise DojoError("Боец ни на что не записан: сперва выбери приём.")
+    rows = await learning(db, player, moment)
+    if code:
+        state = next(
+            (one for one in rows if one["ability"].code == code), None
+        )
+        if state is None:
+            raise DojoError("На этот приём боец не записывался.")
+    else:
+        state = next((one for one in rows if one["ready"]), None)
+        if state is None:
+            raise DojoError("Набранных приёмов нет: сперва отработай своё.")
     ability: Ability = state["ability"]
     if not state["ready"]:
         left = state["needed"] - state["done"]
@@ -172,9 +237,7 @@ async def learn(
             f"Рано: до «{ability.title}» осталось {left} "
             f"{deed_name(state['deed'], left)}."
         )
-    if ability.code in player.loadout:  # pragma: no cover - записались и выучили
-        raise DojoError(f"«{ability.title}» боец и так знает.")
-    forget = forget_for(player, ability)
+    forget = state["forget"]
     try:
         if forget is None:
             player.loadout.learn(ability.code, ability.tier)
@@ -183,7 +246,7 @@ async def learn(
     except ValueError as error:
         raise DojoError(str(error)) from error
     await db.save_abilities(player.user_id, player.loadout)
-    await db.clear_dojo(player.user_id)
+    await db.clear_dojo(player.user_id, ability.code)
     logger.info(
         "Боец %s выучил в школе %s вместо %s",
         player.user_id, ability.code, forget.code if forget else "ничего",
@@ -192,18 +255,16 @@ async def learn(
 
 
 def catalogue(player: Player) -> tuple[Ability, ...]:
-    """Все приёмы школы: по ветвям, внутри ветви — по ступеням.
+    """Приёмы, которые бойцу ещё можно выучить.
 
-    В школе лежат все приёмы клуба — и свои, и чужих классов: в этом её
-    смысл. Уже выученные из списка не уходят, они просто помечены.
-
-    Порядок не алфавитный, а по ветвям: приём выбирают от дела, которым
-    за него платить, и четыре лестницы рядом читаются, а шестнадцать
-    приёмов вперемешку — нет.
+    Выученные из списка уходят: учить их второй раз нельзя, и лежат они
+    на своей вкладке. Порядок — по ветвям, внутри ветви по ступеням:
+    приём выбирают от дела, которым за него платить, и четыре лестницы
+    рядом читаются, а шестнадцать приёмов вперемешку — нет.
     """
     return tuple(
         sorted(
-            ABILITIES,
+            (one for one in ABILITIES if one.code not in player.loadout),
             key=lambda one: (BRANCHES.index(branch_of(one)), one.tier),
         )
     )
@@ -215,9 +276,11 @@ __all__ = [
     "count_deeds",
     "forget_for",
     "learn",
+    "learning",
     "price",
     "start",
+    "started",
     "stop",
     "totals",
-    "training",
+    "waiting",
 ]

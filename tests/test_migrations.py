@@ -544,3 +544,58 @@ async def test_a_car_from_the_old_base_keeps_its_owner(tmp_path):
     # правила не было вовсе
     assert rows[0]["driven"] == 0
     await db.close()
+
+
+# Таблица школы первой версии: записывались в неё по одному приёму, и
+# ключом был сам боец
+OLD_DOJO = """
+CREATE TABLE dojo (
+    user_id    INTEGER PRIMARY KEY,
+    code       TEXT    NOT NULL,
+    deed       TEXT    NOT NULL,
+    baseline   INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+async def test_a_dojo_record_survives_the_key_change(tmp_path):
+    """Запись в школе остаётся на месте, когда в ключ добавился приём.
+
+    Учится разом один приём, но набранный ждёт подтверждения сколько
+    угодно долго, и всё это время боец учит следующий. Прежний ключ
+    (боец) этого не различал, а дописать колонку в первичный ключ SQLite
+    не умеет — только собрать таблицу заново и перелить строки.
+    """
+    path = tmp_path / "dojo.db"
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS dojo \(.*?\);",
+        "",
+        schema_without(BANK_COLUMNS),
+        flags=re.S,
+    )
+    raw = sqlite3.connect(path)
+    raw.executescript(OLD_DOJO + legacy)
+    raw.execute(
+        "INSERT INTO players (user_id, nickname, class_code) "
+        "VALUES (1, 'Тайлер', 'warrior')"
+    )
+    raw.execute(
+        "INSERT INTO dojo (user_id, code, deed, baseline, started_at) "
+        "VALUES (1, 'nimble', 'dodge', 120, 500)"
+    )
+    raw.commit()
+    raw.close()
+
+    db = Database(str(path))
+    await db.connect()
+    rows = await db.dojo_rows(1)
+    # Ключ стал составным, и вторая запись рядом с первой встаёт
+    await db.set_dojo(1, "crit_hit", "crit", 7, 900)
+    both = await db.dojo_rows(1)
+    await db.close()
+
+    assert len(rows) == 1
+    assert rows[0]["code"] == "nimble" and rows[0]["baseline"] == 120
+    assert rows[0]["started_at"] == 500
+    assert [one["code"] for one in both] == ["nimble", "crit_hit"]

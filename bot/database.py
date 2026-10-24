@@ -372,14 +372,22 @@ CREATE TABLE IF NOT EXISTS deeds (
     PRIMARY KEY (user_id, deed)
 );
 
--- На что боец записан в школе. Приём один: ключ — сам боец
+-- На что боец записан в школе. Строк у него может быть несколько, и
+-- это не недосмотр: учится разом один приём, но набранный ждёт
+-- подтверждения сколько угодно долго, и всё это время боец учит
+-- следующий. Готов приём или ещё нет — видно из самой ведомости
+-- (`deeds` минус `baseline`), и хранить это отдельно значило бы держать
+-- две правды об одном
 CREATE TABLE IF NOT EXISTS dojo (
-    user_id    INTEGER PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
     code       TEXT    NOT NULL,
     deed       TEXT    NOT NULL,
     baseline   INTEGER NOT NULL DEFAULT 0,
-    started_at INTEGER NOT NULL DEFAULT 0
+    started_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, code)
 );
+
+CREATE INDEX IF NOT EXISTS idx_dojo_user ON dojo(user_id, started_at);
 
 -- Рейды: отряд живых бойцов против одного босса. Запись заводится в момент
 -- сбора — по ней же считается «один рейд в сутки на созывающего», — и
@@ -1216,6 +1224,7 @@ class Database:
         await self._migrate_turf()
         await self._migrate_service_vault()
         await self._migrate_card_log()
+        await self._migrate_dojo()
 
     async def _migrate_turf(self) -> None:
         """Привести живые точки к нынешней форме.
@@ -1398,6 +1407,41 @@ class Database:
         )
         await self.conn.commit()
         logger.info("База обновлена: рейды вынесены из личного счёта бойцов")
+
+    async def _migrate_dojo(self) -> None:
+        """В ключ записи добавился приём — таблицу приходится пересобрать.
+
+        Записывались в школу по одному приёму, и ключом был сам боец.
+        Потом правило разошлось: учится разом один, но набранный приём
+        ждёт подтверждения сколько угодно долго, и всё это время боец
+        учит следующий. Дописать колонку в первичный ключ SQLite не
+        умеет — только собрать таблицу заново и перелить строки.
+        """
+        async with self.conn.execute("PRAGMA table_info(dojo)") as cursor:
+            rows = await cursor.fetchall()
+        if not rows or sum(1 for row in rows if row["pk"]) != 1:
+            return
+        await self.conn.executescript(
+            """
+            ALTER TABLE dojo RENAME TO dojo_old;
+            CREATE TABLE dojo (
+                user_id    INTEGER NOT NULL,
+                code       TEXT    NOT NULL,
+                deed       TEXT    NOT NULL,
+                baseline   INTEGER NOT NULL DEFAULT 0,
+                started_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, code)
+            );
+            INSERT INTO dojo (user_id, code, deed, baseline, started_at)
+                SELECT user_id, code, deed, baseline, started_at
+                FROM dojo_old;
+            DROP TABLE dojo_old;
+            CREATE INDEX IF NOT EXISTS idx_dojo_user
+                ON dojo(user_id, started_at);
+            """
+        )
+        await self.conn.commit()
+        logger.info("База обновлена: набранный приём ждёт, пока учится другой")
 
     async def _migrate_raid_windows(self) -> None:
         """В ключ окна добавился рейд — таблицу приходится пересобрать.
@@ -4984,12 +5028,22 @@ class Database:
             rows = await cursor.fetchall()
         return {str(row["deed"]): int(row["count"]) for row in rows}
 
-    async def dojo_row(self, user_id: int) -> dict | None:
-        """На что боец записан в школе. None — ни на что."""
+    async def dojo_rows(self, user_id: int) -> list[dict]:
+        """На что боец записан в школе, по порядку записи."""
         async with self.conn.execute(
             "SELECT user_id, code, deed, baseline, started_at FROM dojo "
-            "WHERE user_id = ?",
+            "WHERE user_id = ? ORDER BY started_at, code",
             (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def dojo_row(self, user_id: int, code: str) -> dict | None:
+        """Одна запись бойца. None — на этот приём он не записывался."""
+        async with self.conn.execute(
+            "SELECT user_id, code, deed, baseline, started_at FROM dojo "
+            "WHERE user_id = ? AND code = ?",
+            (user_id, code),
         ) as cursor:
             row = await cursor.fetchone()
         return dict(row) if row else None
@@ -4997,21 +5051,22 @@ class Database:
     async def set_dojo(
         self, user_id: int, code: str, deed: str, baseline: int, now: int
     ) -> None:
-        """Записать бойца на приём. Прежняя запись заменяется этой."""
+        """Записать бойца на приём. Та же запись перезаводится заново."""
         await self.conn.execute(
             "INSERT INTO dojo (user_id, code, deed, baseline, started_at) "
             "VALUES (?,?,?,?,?) "
-            "ON CONFLICT(user_id) DO UPDATE SET "
-            "code = excluded.code, deed = excluded.deed, "
-            "baseline = excluded.baseline, started_at = excluded.started_at",
+            "ON CONFLICT(user_id, code) DO UPDATE SET "
+            "deed = excluded.deed, baseline = excluded.baseline, "
+            "started_at = excluded.started_at",
             (user_id, code, deed, max(0, baseline), now),
         )
         await self.conn.commit()
 
-    async def clear_dojo(self, user_id: int) -> bool:
+    async def clear_dojo(self, user_id: int, code: str) -> bool:
         """Снять запись: выучил или бросил. False — записи и не было."""
         cursor = await self.conn.execute(
-            "DELETE FROM dojo WHERE user_id = ?", (user_id,)
+            "DELETE FROM dojo WHERE user_id = ? AND code = ?",
+            (user_id, code),
         )
         await self.conn.commit()
         return bool(cursor.rowcount)

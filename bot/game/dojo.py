@@ -100,9 +100,23 @@ DEED_FORMS: dict[Source, tuple[str, str, str]] = {
 }
 
 
+# И как его называют заданием: «нужно точно ударить 500 раз»
+DEED_ACTS: dict[Source, str] = {
+    Source.HIT: "точно ударить",
+    Source.DODGE: "увернуться",
+    Source.CRIT: "нанести критический удар",
+    Source.BLOCK: "заблокировать удар",
+}
+
+
 def deed_name(source: Source, count: int) -> str:
     """Название дела при этом числе."""
     return plural(count, *DEED_FORMS[source])
+
+
+def deed_act(source: Source) -> str:
+    """Что надо делать, чтобы это дело копилось."""
+    return DEED_ACTS[source]
 
 
 def branch_of(ability: Ability) -> str:
@@ -144,11 +158,13 @@ __all__ = [
     "BRANCHES",
     "BRANCH_TITLES",
     "DEEDS",
+    "DEED_ACTS",
     "DEED_FORMS",
     "DEED_OF",
     "DEED_TITLES",
     "TIERS",
     "branch_of",
+    "deed_act",
     "deed_name",
     "deed_of",
     "done",

@@ -12137,12 +12137,23 @@ async function buyLook(look) {
 
 // ---------- школа боевых искусств: приём за дела в бою ----------
 //
-// Уровень даёт приём из трёх и даёт сразу. Школа даёт любой, но за
-// работу: сверху ведомость сделанного, под ней обучение с полоской,
-// ниже все приёмы клуба по четырём ветвям. Что забудется, написано на
-// карточке до записи — узнавать об этом после пятисот ударов обидно.
+// Вкладок две, и они отвечают на разные вопросы. «Ваши приёмы» — что у
+// бойца есть, «Обучение» — что он может взять и как идёт набор.
+//
+// Пока приём учится, каталог с экрана уходит: разом учат один, и
+// держать перед глазами шестнадцать кнопок, из которых ни одна не
+// нажимается, незачем. Набранный приём при этом место не занимает — он
+// висит с кнопкой «Изучить» сколько угодно долго, и боец тем временем
+// берётся за следующий.
 
 let dojoData = null;
+let dojoTab = "known";
+// Фильтр каталога по цене в энергии. Ноль — все приёмы
+let dojoCost = 0;
+const DOJO_TABS = [
+  ["known", "Ваши приёмы"],
+  ["study", "Обучение"],
+];
 
 async function openDojo() {
   showTab("dojo");
@@ -12174,77 +12185,59 @@ async function dojoAction(payload) {
   }
 }
 
+function pickDojoTab(name) {
+  dojoTab = name;
+  if (dojoData) renderDojo(dojoData);
+}
+
 function renderDojo(data) {
   dojoData = data;
   el("dojo-note").textContent = data.said || data.note || "";
 
+  const tabs = el("dojo-tabs");
+  tabs.textContent = "";
+  DOJO_TABS.forEach(([code, label]) => {
+    tabs.appendChild(chip(label, dojoTab === code, () => pickDojoTab(code)));
+  });
+
   const body = el("dojo-body");
   body.textContent = "";
-  if (data.training) body.appendChild(dojoTrainingBox(data.training));
-  body.appendChild(dojoDeedsBox(data));
-  body.appendChild(dojoShelfBox(data));
+  if (dojoTab === "known") {
+    body.appendChild(dojoKnownBox(data));
+    body.appendChild(dojoDeedsBox(data));
+    return;
+  }
+  body.appendChild(dojoStudyBox(data));
 }
 
-/** Полоска набранного: число числом, а путь — на глаз. */
-function dojoBar(done, total) {
-  const bar = document.createElement("div");
-  bar.className = "deed-bar";
-  const fill = document.createElement("div");
-  fill.className = "deed-fill";
-  const share = total > 0 ? Math.min(100, (done * 100) / total) : 0;
-  fill.style.width = share + "%";
-  bar.appendChild(fill);
-  return bar;
-}
-
-/** Обучение: приём, полоска и две кнопки — выучить и бросить. */
-function dojoTrainingBox(one) {
+/** Вкладка «Ваши приёмы»: что боец знает и почём они ему. */
+function dojoKnownBox(data) {
   const box = document.createElement("section");
   box.className = "shelf";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = "В обучении";
+  const known = data.known || [];
+  head.textContent = "Приёмы · " + known.length + " из " + (data.slots || 4);
   box.appendChild(head);
-
-  const card = skillCard({
-    code: one.code, title: one.title, icon: one.icon, image: one.image,
-    note: one.note, tier: one.tier, cost: one.price,
-  });
-  card.querySelector(".skill-cost").textContent =
-    one.price + " ⚡ · приём " + one.tier + " ступени";
-  box.appendChild(card);
-
-  box.appendChild(dojoBar(one.done, one.needed));
-  box.appendChild(
-    paperRows([
-      [one.deed_title, one.done + " из " + one.needed],
-      [
-        "Осталось",
-        one.ready ? "ничего, можно учить" : one.left + " " + one.left_name,
-      ],
-      ["Забудется", one.forget ? "«" + one.forget.title + "»" : "ничего"],
-    ])
-  );
-
-  const buttons = document.createElement("div");
-  buttons.className = "thing-buttons";
-  buttons.appendChild(
-    button("Выучить", {
-      disabled: !one.ready,
-      hint:
-        "Ещё не набрано: нужно " + one.needed + " " + one.deed_name +
-        ", сделано " + one.done + ".",
-      onClick: () => dojoLearn(one),
-    })
-  );
-  buttons.appendChild(
-    button("Бросить", {
-      secondary: true,
-      onClick: () => dojoDrop(one),
-    })
-  );
-  box.appendChild(buttons);
+  if (!known.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent =
+      "Приёмов пока нет: первый даёт класс, остальные — уровень и эта " +
+      "школа.";
+    box.appendChild(empty);
+    return box;
+  }
+  known.forEach((one) => box.appendChild(dojoTrickCard(one)));
   return box;
+}
+
+/** Карточка приёма: картинка, цена в энергии и что он делает. */
+function dojoTrickCard(one) {
+  const card = skillCard(one);
+  card.querySelector(".skill-cost").textContent =
+    one.price + " ⚡ · приём " + one.tier + " ступени · " + one.branch_of;
+  return card;
 }
 
 /** Ведомость: что боец сделал в боях за всю жизнь. */
@@ -12272,114 +12265,283 @@ function dojoDeedsBox(data) {
   return box;
 }
 
-/** Все приёмы клуба, разложенные по четырём ветвям. */
-function dojoShelfBox(data) {
+/** Вкладка «Обучение»: набранное, идущее и каталог. */
+function dojoStudyBox(data) {
   const box = document.createElement("div");
+  (data.ready || []).forEach((one) => box.appendChild(dojoReadyCard(one)));
+  if (data.started) {
+    box.appendChild(dojoProgressCard(data.started));
+    return box;
+  }
   const shelf = data.shelf || [];
-  const branches = [];
-  shelf.forEach((one) => {
-    if (!branches.some((row) => row.code === one.branch)) {
-      branches.push({ code: one.branch, title: one.branch_of });
+  if (!shelf.length) {
+    if (!(data.ready || []).length) {
+      const empty = document.createElement("p");
+      empty.className = "thing-note";
+      empty.textContent = "Учиться больше нечему: все приёмы клуба твои.";
+      box.appendChild(empty);
     }
-  });
-  branches.forEach((branch) => {
-    const section = document.createElement("section");
-    section.className = "shelf";
-    const head = document.createElement("h2");
-    head.className = "shelf-head";
-    const deed = shelf.find((one) => one.branch === branch.code);
-    head.textContent = "Приёмы " + branch.title + " · " + deed.deed_name;
-    section.appendChild(head);
-    shelf
-      .filter((one) => one.branch === branch.code)
-      .forEach((one) => section.appendChild(dojoCard(one)));
-    box.appendChild(section);
-  });
+    return box;
+  }
+  box.appendChild(dojoFilter(data));
+  box.appendChild(dojoShelf(data));
   return box;
 }
 
-/** Приём на полке школы: цена в энергии, цена в делах и что забудется. */
-function dojoCard(one) {
-  const card = skillCard({
-    code: one.code, title: one.title, icon: one.icon, image: one.image,
-    note: one.note, tier: one.tier, cost: one.price,
-  });
-  card.querySelector(".skill-cost").textContent =
-    one.price + " ⚡ · " + one.needed + " " + one.deed_name;
-  if (one.known) {
-    const mark = document.createElement("span");
-    mark.className = "fork-own";
-    mark.textContent = "выучен";
-    card.querySelector(".skill-title").appendChild(mark);
-  } else if (one.trains) {
-    const mark = document.createElement("span");
-    mark.className = "fork-own";
-    mark.textContent = "в обучении";
-    card.querySelector(".skill-title").appendChild(mark);
-  }
+/** Набранный приём: ждёт подтверждения столько, сколько нужно. */
+function dojoReadyCard(one) {
+  const box = document.createElement("section");
+  box.className = "shelf dojo-ready";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Набрано: можно изучить";
+  box.appendChild(head);
+  box.appendChild(dojoTrickCard(one));
+  box.appendChild(dojoBar(one.done, one.needed));
+  box.appendChild(
+    paperRows([
+      [one.deed_title, one.done + " из " + one.needed],
+      ["Забудется", one.forget ? "«" + one.forget.title + "»" : "ничего"],
+    ])
+  );
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Изучить", { onClick: () => dojoAskLearn(one) })
+  );
+  box.appendChild(buttons);
+  return box;
+}
 
+/** Приём в обучении: шкала и сколько осталось. */
+function dojoProgressCard(one) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "В обучении";
+  box.appendChild(head);
+  box.appendChild(dojoTrickCard(one));
+  box.appendChild(dojoBar(one.done, one.needed));
+
+  const count = document.createElement("div");
+  count.className = "dojo-count";
+  count.textContent =
+    one.deed_title + " " + num(one.done) + "/" + num(one.needed);
+  box.appendChild(count);
+
+  box.appendChild(
+    paperRows([
+      ["Осталось", one.left + " " + one.left_name],
+      ["Забудется", one.forget ? "«" + one.forget.title + "»" : "ничего"],
+    ])
+  );
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent =
+    "Дела считаются в любых боях. Разом учат один приём — заходи и " +
+    "смотри, как идёт.";
+  box.appendChild(note);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Бросить", {
+      secondary: true,
+      onClick: () => dojoAskStop(one),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Фильтр каталога по цене в энергии. */
+function dojoFilter(data) {
   const box = document.createElement("div");
-  box.className = "dojo-pick";
-  box.appendChild(card);
-  if (!one.known) {
+  box.className = "bubbles";
+  box.appendChild(chip("Все", !dojoCost, () => pickDojoCost(0)));
+  (data.costs || []).forEach((cost) => {
     box.appendChild(
-      paperRows([
-        [one.deed_name.charAt(0).toUpperCase() + one.deed_name.slice(1),
-         num(one.have) + " из " + one.needed + " сделано за жизнь"],
-        ["Забудется", one.forget ? "«" + one.forget.title + "»" : "ничего"],
-      ])
+      chip(cost + " ⚡", dojoCost === cost, () => pickDojoCost(cost))
     );
-    const buttons = document.createElement("div");
-    buttons.className = "thing-buttons";
-    buttons.appendChild(
-      button("Взять в обучение", {
-        disabled: !one.can_start,
-        hint: one.why || "Этот приём взять нельзя.",
-        onClick: () => dojoStart(one),
-      })
-    );
-    box.appendChild(buttons);
-  }
+  });
   return box;
 }
 
-async function dojoStart(one) {
-  const forget = one.forget
-    ? "\n\nКогда приём будет выучен, «" + one.forget.title +
-      "» забудется навсегда."
-    : "";
-  const was =
-    dojoData && dojoData.training
-      ? "\n\nОбучение «" + dojoData.training.title +
-        "» будет брошено, и сделанные для него дела не перенесутся."
-      : "";
-  const ok = await confirmAction(
-    "Взять «" + one.title + "» в обучение?\n\nНужно " + one.needed + " " +
-      one.deed_name + " в боях." + was + forget
-  );
-  if (!ok) return;
-  await dojoAction({ action: "start", code: one.code });
+function pickDojoCost(cost) {
+  dojoCost = cost;
+  if (dojoData) renderDojo(dojoData);
 }
 
-async function dojoLearn(one) {
-  const forget = one.forget
-    ? "\n\n«" + one.forget.title + "» забудется навсегда: он стоит столько " +
-      "же энергии, и место под приём одно."
-    : "";
-  const ok = await confirmAction(
-    "Выучить «" + one.title + "»?" + forget
+/** Каталог: компактные строки с кнопкой «+». */
+function dojoShelf(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  const rows = (data.shelf || []).filter(
+    (one) => !dojoCost || one.price === dojoCost
   );
-  if (!ok) return;
-  await dojoAction({ action: "learn" });
+  head.textContent = dojoCost
+    ? "Приёмы по " + dojoCost + " ⚡ · " + rows.length
+    : "Можно выучить · " + rows.length;
+  box.appendChild(head);
+  rows.forEach((one) => box.appendChild(dojoShelfLine(one)));
+  return box;
 }
 
-async function dojoDrop(one) {
+/** Строка каталога: значок, имя, цена, описание и кнопка «+». */
+function dojoShelfLine(one) {
+  const row = document.createElement("div");
+  row.className = "dojo-line";
+
+  const pic = document.createElement("div");
+  pic.className = "dojo-line-pic";
+  pic.appendChild(slotPicture(one, one.icon));
+  row.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "dojo-line-body";
+  const title = document.createElement("div");
+  title.className = "dojo-line-title";
+  title.textContent = one.title;
+  const cost = document.createElement("span");
+  cost.className = "dojo-line-cost";
+  cost.textContent = one.price + " ⚡";
+  title.appendChild(cost);
+  const note = document.createElement("div");
+  note.className = "dojo-line-note";
+  note.textContent = one.note;
+  const price = document.createElement("div");
+  price.className = "dojo-line-deed";
+  price.textContent = num(one.needed) + " " + one.deed_name;
+  body.append(title, note, price);
+  row.appendChild(body);
+
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "dojo-plus";
+  plus.textContent = "+";
+  plus.setAttribute("aria-label", "Взять в обучение");
+  plus.addEventListener("click", () => dojoAskStart(one));
+  row.appendChild(plus);
+  return row;
+}
+
+/** Полоска набранного: число числом, а путь — на глаз. */
+function dojoBar(done, total) {
+  const bar = document.createElement("div");
+  bar.className = "deed-bar";
+  const fill = document.createElement("div");
+  fill.className = "deed-fill";
+  const share = total > 0 ? Math.min(100, (done * 100) / total) : 0;
+  fill.style.width = share + "%";
+  bar.appendChild(fill);
+  return bar;
+}
+
+/** Окно «+»: что придётся делать и сколько раз. */
+function dojoAskStart(one) {
+  openSheet("Взять в обучение", "", true);
+  const list = el("sheet-list");
+  list.appendChild(dojoTrickCard(one));
+
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent =
+    "Чтобы выучить этот приём, вам нужно будет " + one.deed_act + " " +
+    num(one.needed) + " раз. Дела считаются в любых боях.";
+  list.appendChild(said);
+  if (one.forget) {
+    const warn = document.createElement("p");
+    warn.className = "fork-warn";
+    warn.textContent =
+      "Когда приём будет изучен, «" + one.forget.title +
+      "» забудется навсегда: он стоит столько же энергии.";
+    list.appendChild(warn);
+  }
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.append(
+    button("Начать изучать", {
+      onClick: () => {
+        closeSheet();
+        dojoAction({ action: "start", code: one.code });
+      },
+    }),
+    button("Отмена", { secondary: true, onClick: () => closeSheet() })
+  );
+  list.appendChild(buttons);
+}
+
+/** Окно «Изучить»: что уйдёт и что придёт — с картинками. */
+function dojoAskLearn(one) {
+  openSheet(one.title, "", true);
+  const list = el("sheet-list");
+
+  const swap = document.createElement("div");
+  swap.className = "dojo-swap";
+  if (one.forget) {
+    swap.appendChild(dojoSwapSide(one.forget, "Забудется"));
+    const arrow = document.createElement("div");
+    arrow.className = "dojo-swap-arrow";
+    arrow.textContent = "→";
+    swap.appendChild(arrow);
+  }
+  swap.appendChild(dojoSwapSide(one, "Выучится"));
+  list.appendChild(swap);
+
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = one.forget
+    ? "«" + one.forget.title + "» забудется навсегда: место под приём с " +
+      "этой ценой одно."
+    : "Место под приём с этой ценой свободно — забывать нечего.";
+  list.appendChild(said);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.append(
+    button("Подтвердить", {
+      onClick: () => {
+        closeSheet();
+        dojoAction({ action: "learn", code: one.code });
+      },
+    }),
+    button("Отменить", { secondary: true, onClick: () => closeSheet() })
+  );
+  list.appendChild(buttons);
+}
+
+/** Одна сторона обмена: картинка приёма и подпись под ней. */
+function dojoSwapSide(one, label) {
+  const box = document.createElement("div");
+  box.className = "dojo-swap-side";
+  const tag = document.createElement("div");
+  tag.className = "dojo-swap-tag";
+  tag.textContent = label;
+  const pic = document.createElement("div");
+  pic.className = "skill-pic";
+  pic.appendChild(slotPicture(one, one.icon));
+  const title = document.createElement("div");
+  title.className = "dojo-swap-title";
+  title.textContent = one.title;
+  const cost = document.createElement("div");
+  cost.className = "dojo-line-cost";
+  cost.textContent = one.price + " ⚡";
+  box.append(tag, pic, title, cost);
+  return box;
+}
+
+/** Окно «Бросить»: дела пропадут, и об этом надо сказать прямо. */
+async function dojoAskStop(one) {
   const ok = await confirmAction(
     "Бросить обучение «" + one.title + "»?\n\nСделанные для него дела не " +
       "сохранятся."
   );
   if (!ok) return;
-  await dojoAction({ action: "stop" });
+  await dojoAction({ action: "stop", code: one.code });
 }
 
 // ---------- АЗС: три колонки на весь город ----------

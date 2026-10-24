@@ -32,10 +32,12 @@ from bot.dojo_service import (
     count_deeds,
     forget_for,
     learn,
+    learning,
     start,
+    started,
     stop,
     totals,
-    training,
+    waiting,
 )
 from bot.game.abilities import (
     MAX_ABILITIES,
@@ -301,29 +303,89 @@ async def test_the_count_starts_from_the_day_you_signed_up(db):
     said = await start(db, player, "nimble", NOW)
 
     assert "500 уворотов" in said
-    state = await training(db, player, NOW)
+    state = await started(db, player, NOW)
     assert state["done"] == 0 and state["needed"] == 500
     assert state["ready"] is False
 
     await db.add_deeds(player.user_id, {Source.DODGE.value: 500})
-    state = await training(db, player, NOW)
+    assert await started(db, player, NOW) is None, "набранный не учится"
+    state = (await waiting(db, player, NOW))[0]
     assert state["done"] == 500 and state["ready"] is True
 
 
-async def test_only_one_trick_is_in_training(db):
-    """Записался на второй — первый брошен вместе со своими делами."""
+async def test_only_one_trick_is_learned_at_a_time(db):
+    """Второй приём в обучение не берут, пока первый не доучен."""
     player = await student(db)
     await start(db, player, "nimble", NOW)
     await db.add_deeds(player.user_id, {Source.DODGE.value: 200})
 
+    with pytest.raises(DojoError, match="Разом учат один приём"):
+        await start(db, player, "crit_hit", NOW)
+
+    state = await started(db, player, NOW)
+    assert state["ability"].code == "nimble" and state["done"] == 200
+    # И второй раз на тот же приём не записывают
+    with pytest.raises(DojoError, match="и так в обучении"):
+        await start(db, player, "nimble", NOW)
+
+
+async def test_a_full_bar_frees_the_place_for_the_next_trick(db):
+    """Набранный приём ждёт сколько угодно, а боец учит следующий.
+
+    «Отменить» в окне подтверждения прогресса не отменяет: приём висит
+    набранным, пока его не подтвердят, и место в обучении не занимает.
+    """
+    player = await student(db)
+    await start(db, player, "nimble", NOW)
+    await db.add_deeds(player.user_id, {Source.DODGE.value: 500})
+
+    # Первый набран — и место свободно
     said = await start(db, player, "crit_hit", NOW)
 
-    assert "Проворность" in said and "брошен" in said
-    state = await training(db, player, NOW)
-    assert state["ability"].code == "crit_hit"
-    # Вернулся к первому — дела для него считаются заново
+    assert "500 критических ударов" in said
+    assert (await started(db, player, NOW))["ability"].code == "crit_hit"
+    hanging = await waiting(db, player, NOW)
+    assert [one["ability"].code for one in hanging] == ["nimble"]
+    assert len(await learning(db, player, NOW)) == 2
+
+    # И ждёт он действительно сколько угодно: набрали второй, а первый
+    # всё там же
+    await db.add_deeds(player.user_id, {Source.CRIT.value: 500})
+    assert await started(db, player, NOW) is None
+    assert {one["ability"].code for one in await waiting(db, player, NOW)} == {
+        "nimble", "crit_hit",
+    }
+
+    # Подтверждают их по одному, и каждый забирает своё место
+    await learn(db, player, "crit_hit", NOW)
+    assert "crit_hit" in player.loadout and "strong_hit" not in player.loadout
+    assert [one["ability"].code for one in await waiting(db, player, NOW)] == [
+        "nimble"
+    ]
+
+
+async def test_a_ready_trick_is_not_thrown_away(db):
+    """Набранный приём подтверждают, а не бросают."""
+    player = await student(db)
     await start(db, player, "nimble", NOW)
-    assert (await training(db, player, NOW))["done"] == 0
+    await db.add_deeds(player.user_id, {Source.DODGE.value: 500})
+
+    with pytest.raises(DojoError, match="подтверждают, а не"):
+        await stop(db, player, "nimble", NOW)
+
+    assert len(await waiting(db, player, NOW)) == 1
+
+
+async def test_a_learned_trick_leaves_the_school(db):
+    """Выученный приём из школы уходит: второй раз его не учат."""
+    player = await student(db)
+    await start(db, player, "nimble", NOW)
+    await db.add_deeds(player.user_id, {Source.DODGE.value: 500})
+    await learn(db, player, "nimble", NOW)
+
+    assert "nimble" not in {one.code for one in catalogue(player)}
+    with pytest.raises(DojoError, match="и так знает"):
+        await start(db, player, "nimble", NOW)
 
 
 async def test_the_school_does_not_teach_what_you_know(db):
@@ -348,12 +410,12 @@ async def test_training_is_dropped_by_hand_too(db):
     await start(db, player, "nimble", NOW)
     await db.add_deeds(player.user_id, {Source.DODGE.value: 300})
 
-    said = await stop(db, player)
+    said = await stop(db, player, "nimble", NOW)
 
     assert "брошен" in said
-    assert await training(db, player, NOW) is None
+    assert await started(db, player, NOW) is None
     with pytest.raises(DojoError, match="ни на что не записан"):
-        await stop(db, player)
+        await stop(db, player, "nimble", NOW)
 
 
 # ---------- выучить ----------
@@ -366,10 +428,12 @@ async def test_the_trick_is_not_given_before_the_work_is_done(db):
     await db.add_deeds(player.user_id, {Source.DODGE.value: 499})
 
     with pytest.raises(DojoError, match="осталось 1 уворот"):
-        await learn(db, player, NOW)
+        await learn(db, player, "nimble", NOW)
 
-    with pytest.raises(DojoError, match="ни на что не записан"):
-        await learn(db, await student(db, user_id=7, nickname="Марла"), NOW)
+    with pytest.raises(DojoError, match="не записывался"):
+        await learn(db, player, "crit_hit", NOW)
+    with pytest.raises(DojoError, match="Набранных приёмов нет"):
+        await learn(db, await student(db, user_id=7, nickname="Марла"), now=NOW)
 
 
 async def test_the_learned_trick_costs_the_least_and_eats_its_twin(db):
@@ -378,7 +442,7 @@ async def test_the_learned_trick_costs_the_least_and_eats_its_twin(db):
     await start(db, player, "nimble", NOW)
     await db.add_deeds(player.user_id, {Source.DODGE.value: 500})
 
-    ability = await learn(db, player, NOW)
+    ability = await learn(db, player, "nimble", NOW)
 
     assert ability.code == "nimble"
     assert "nimble" in player.loadout
@@ -388,7 +452,7 @@ async def test_the_learned_trick_costs_the_least_and_eats_its_twin(db):
     assert "strong_hit" not in player.loadout
     assert len(player.loadout) == MAX_ABILITIES
     # Записи больше нет: учиться дальше — заново
-    assert await training(db, player, NOW) is None
+    assert await learning(db, player, NOW) == []
     fresh = await db.get_player(player.user_id)
     assert "nimble" in fresh.loadout and "strong_hit" not in fresh.loadout
 
@@ -414,7 +478,7 @@ async def test_a_free_slot_eats_nobody(db):
     await db.add_deeds(player.user_id, {Source.CRIT.value: 1000})
 
     assert forget_for(player, get_ability("breach")) is None
-    await learn(db, player, NOW)
+    await learn(db, player, "breach", NOW)
 
     assert "strong_hit" in player.loadout and "breach" in player.loadout
     assert player.loadout.cost_of("breach") == TIER_COST[3]
@@ -432,20 +496,29 @@ async def test_the_school_screen_shows_the_ledger_and_the_shelf(db):
     body = await build_dojo(db, player, NOW)
 
     assert body["title"] == get_location(SCHOOL).title
-    assert body["training"] is None
+    assert body["started"] is None and body["ready"] == []
+    # Вкладка «Ваши приёмы»: четыре своих, с ценой по своей ступени
+    assert [one["code"] for one in body["known"]] == [
+        code for code, _ in WARRIOR_PATH
+    ]
+    assert [one["price"] for one in body["known"]] == [3, 6, 9, 12]
     hits = next(one for one in body["deeds"] if one["deed"] == "hit")
     assert hits["count"] == 1200 and hits["branch_title"] == "Воин"
-    assert len(body["shelf"]) == 16
+    # Вкладка «Обучение»: двенадцать невыученных и четыре цены для фильтра
+    assert len(body["shelf"]) == 16 - MAX_ABILITIES == 12
+    assert body["costs"] == [3, 6, 9, 12]
+    assert {one["price"] for one in body["shelf"]} == {3, 6, 9, 12}
     nimble = next(one for one in body["shelf"] if one["code"] == "nimble")
     assert nimble["price"] == 3 and nimble["needed"] == 500
     assert nimble["branch_title"] == "Трикстер"
     assert nimble["deed_name"] == "уворотов"
+    assert nimble["deed_act"] == "увернуться"
     assert deed_name(Source.DODGE, 1) == "уворот"
-    assert nimble["can_start"] is True
+    assert nimble["taken"] is False
     assert nimble["forget"]["title"] == get_ability("strong_hit").title
-    # Свой выученный приём помечен и взять его нельзя
-    own = next(one for one in body["shelf"] if one["code"] == "strong_hit")
-    assert own["known"] is True and own["can_start"] is False
+    assert nimble["forget"]["image"], "забываемый приём приходит с картинкой"
+    # Выученные в каталог не идут вовсе: второй раз их не учат
+    assert "strong_hit" not in {one["code"] for one in body["shelf"]}
     assert "дешевле всего" in body["note"]
 
 
@@ -457,18 +530,24 @@ async def test_the_screen_shows_the_training_and_the_bar(db):
 
     body = await build_dojo(db, player, NOW)
 
-    state = body["training"]
+    state = body["started"]
     assert state["code"] == "nimble" and state["done"] == 120
     assert state["needed"] == 500 and state["left"] == 380
     assert state["ready"] is False
     assert state["deed_title"] == "Уворотов"
     assert state["forget"]["code"] == "strong_hit"
     assert "120 из 500" in body["note"]
+    # Пока учится один — выбирать нечего: каталог пуст
+    assert body["shelf"] == []
 
     await db.add_deeds(player.user_id, {Source.DODGE.value: 400})
     ready = await build_dojo(db, player, NOW)
-    assert ready["training"]["ready"] is True
-    assert "Можно учить" in ready["note"]
+    assert ready["started"] is None, "набранный больше не учится"
+    assert [one["code"] for one in ready["ready"]] == ["nimble"]
+    assert ready["ready"][0]["ready"] is True
+    assert "Набрано и ждёт" in ready["note"]
+    # И каталог вернулся: место в обучении свободно
+    assert len(ready["shelf"]) == 12
 
 
 async def test_the_school_opens_only_inside_it(db, client):
@@ -478,7 +557,7 @@ async def test_the_school_opens_only_inside_it(db, client):
 
     answer = await client.get("/api/dojo", headers=headers())
     assert answer.status == 200
-    assert len((await answer.json())["shelf"]) == 16
+    assert len((await answer.json())["shelf"]) == 12
 
     answer = await client.post(
         "/api/dojo", json={"action": "start", "code": "nimble"},

@@ -591,8 +591,91 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   transition: width 0.3s;
 }
 
-/* Приём на полке школы: карточка приёма, под ней цена в делах и кнопка */
-.dojo-pick { display: grid; gap: 8px; margin-bottom: 12px; }
+/* Вкладки школы стоят по центру: их две, и прижатые к краю они
+   читаются как начало списка, который не поместился */
+#dojo-tabs { justify-content: center; }
+
+/* Каталог обучения — строки, а не карточки: приёмов шестнадцать, и
+   выбирают в них по описанию, а не по картинке */
+.dojo-line {
+  display: grid;
+  grid-template-columns: 44px 1fr 36px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+.dojo-line-pic {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  background: var(--slot);
+  border: 1px solid var(--slot-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  overflow: hidden;
+}
+.dojo-line-pic img { width: 100%; height: 100%; object-fit: cover; }
+.dojo-line-body { min-width: 0; }
+.dojo-line-title { font-weight: 700; font-size: 13px; }
+.dojo-line-cost {
+  margin-left: 6px;
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.dojo-line-note {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.3;
+}
+.dojo-line-deed {
+  font-size: 11.5px;
+  font-weight: 700;
+  margin-top: 3px;
+}
+/* Кнопка «плюс»: круглая и большая на палец — из неё начинается учёба */
+.dojo-plus {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Набранный приём обведён: он ждёт одного нажатия */
+.dojo-ready { border: 1px solid var(--hp-green); border-radius: 12px; padding: 10px; }
+/* Сколько набрано — числом под шкалой: «Точных ударов 120/500» */
+.dojo-count {
+  margin-top: 6px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Окно подтверждения: что уйдёт и что придёт, картинками рядом */
+.dojo-swap {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 8px;
+  align-items: center;
+}
+.dojo-swap-side { display: grid; gap: 4px; text-align: center; }
+.dojo-swap-side .skill-pic { width: 100%; }
+.dojo-swap-tag { font-size: 11px; color: var(--muted); }
+.dojo-swap-title { font-weight: 700; font-size: 12.5px; }
+.dojo-swap-arrow { font-size: 20px; color: var(--muted); }
 
 .keys { margin: 4px 0 18px; }
 

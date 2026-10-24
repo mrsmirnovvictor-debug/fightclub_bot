@@ -13929,8 +13929,8 @@ async def test_an_empty_car_shows_the_reason_the_wheel_is_dark(server, db):
 # ---------- школа боевых искусств ----------
 
 
-async def test_the_school_shows_every_trick_and_what_it_costs(server, db):
-    """Экран школы: ведомость, четыре ветки и цена приёма в делах."""
+async def test_the_school_has_two_tabs_and_opens_on_your_tricks(server, db):
+    """Вкладок две: свои приёмы и обучение. Первой стоит своё."""
     from bot.webapp.dojo import build_dojo
     from tests.test_dojo_school import student
 
@@ -13945,35 +13945,27 @@ async def test_the_school_shows_every_trick_and_what_it_costs(server, db):
         await open_screen(page, "dojo")
         await page.wait_for_selector("#dojo-body .shelf")
 
-        heads = await page.locator("#dojo-body .shelf-head").all_inner_texts()
-        assert heads == [
-            "Сделано в боях",
-            "Приёмы Воина · точных ударов",
-            "Приёмы Трикстера · уворотов",
-            "Приёмы Ассасина · критических ударов",
-            "Приёмы Танка · успешных блоков",
+        assert await page.locator("#dojo-tabs .chip").all_inner_texts() == [
+            "Ваши приёмы", "Обучение",
         ]
+        assert await page.locator("#dojo-tabs .chip.on").inner_text() == (
+            "Ваши приёмы"
+        )
+        heads = await page.locator("#dojo-body .shelf-head").all_inner_texts()
+        assert heads == ["Приёмы · 4 из 4", "Сделано в боях"]
+        # Свои приёмы — с ценой по своей ступени
         said = await page.locator("#dojo-body").inner_text()
-        # Пробел в числе неразрывный: его ставит `num()`
+        assert "Сильный удар" in said and "3 ⚡ · приём 1 ступени" in said
         assert "Точных ударов · Воин" in said and "1\u00a0200" in said
-        # Шестнадцать приёмов клуба, и у каждого цена в энергии и в делах
-        assert await page.locator("#dojo-body .skill").count() == 16
-        # `.first` не придирка: «Бог обмана» кладёт союзникам ту же
-        # «Проворность» и называет её в своём описании
-        nimble = page.locator(
-            "#dojo-body .dojo-pick", has_text="Проворность"
-        ).first
-        assert "3 ⚡ · 500 уворотов" in await nimble.inner_text()
-        assert "«Сильный удар»" in await nimble.inner_text(), "что забудется"
-        assert await nimble.locator(".btn").inner_text() == "Взять в обучение"
-        # Свой выученный приём помечен, и кнопки у него нет вовсе
-        own = page.locator("#dojo-body .skill", has_text="Сильный удар").first
-        assert "выучен" in await own.inner_text()
+        # Каталога на этой вкладке нет
+        assert await page.locator("#dojo-body .dojo-line").count() == 0
         await browser.close()
 
 
-async def test_the_school_signs_you_up_for_one_trick(server, db):
-    """Запись: окно спрашивает согласие и уходит кодом приёма."""
+async def test_the_study_tab_lists_what_you_can_learn_and_filters_it(
+    server, db
+):
+    """«Обучение»: компактные строки с «+» и фильтр по цене в энергии."""
     from bot.webapp.dojo import build_dojo
     from tests.test_dojo_school import student
 
@@ -13986,26 +13978,74 @@ async def test_the_school_signs_you_up_for_one_trick(server, db):
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "dojo")
         await page.wait_for_selector("#dojo-body .shelf")
+
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
+        await page.wait_for_selector("#dojo-body .dojo-line")
+
+        # Двенадцать невыученных, у каждого «+» и цена в делах
+        assert await page.locator("#dojo-body .dojo-line").count() == 12
+        assert await page.locator("#dojo-body .dojo-plus").count() == 12
+        nimble = page.locator(
+            "#dojo-body .dojo-line", has_text="Проворность"
+        ).first
+        said = await nimble.inner_text()
+        assert "3 ⚡" in said and "500 уворотов" in said
+
+        # Фильтр по цене: «Все» плюс четыре цены
+        chips = await page.locator("#dojo-body .bubbles .chip").all_inner_texts()
+        assert chips == ["Все", "3 ⚡", "6 ⚡", "9 ⚡", "12 ⚡"]
+        await page.locator("#dojo-body .chip", has_text="6 ⚡").click()
+        await page.wait_for_selector("#dojo-body .dojo-line")
+        assert await page.locator("#dojo-body .dojo-line").count() == 3
+        assert await page.locator(
+            "#dojo-body .shelf-head"
+        ).inner_text() == "Приёмы по 6 ⚡ · 3"
+        await browser.close()
+
+
+async def test_the_plus_tells_what_it_takes_and_starts_the_study(server, db):
+    """«+» спрашивает согласие словами задания и начинает учёбу."""
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
+        await page.wait_for_selector("#dojo-body .dojo-line")
         await page.evaluate(
             "window.sent = null;"
-            "window.confirmAction = async () => true;"
             "window.post = async (url, payload) => {"
             "  window.sent = payload; return {};"
             "};"
         )
 
         await page.locator(
-            "#dojo-body .dojo-pick", has_text="Проворность"
-        ).first.locator(".btn").click()
+            "#dojo-body .dojo-line", has_text="Проворность"
+        ).first.locator(".dojo-plus").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
 
+        said = await page.locator("#sheet-list").inner_text()
+        assert "вам нужно будет увернуться 500 раз" in said
+        assert "«Сильный удар» забудется навсегда" in said
+        assert await page.locator("#sheet-list .btn").all_inner_texts() == [
+            "Начать изучать", "Отмена",
+        ]
+
+        await page.locator("#sheet-list .btn").first.click()
         assert await page.evaluate("window.sent") == {
             "action": "start", "code": "nimble",
         }
         await browser.close()
 
 
-async def test_the_training_bar_fills_with_the_work_done(server, db):
-    """Обучение: полоска, число набранного и кнопка, которая ждёт конца."""
+async def test_the_study_tab_shows_only_the_bar_while_it_fills(server, db):
+    """Пока приём учится, на вкладке только он — со шкалой и числом."""
     from bot.dojo_service import start
     from bot.webapp.dojo import build_dojo
     from tests.test_dojo_school import student
@@ -14020,24 +14060,29 @@ async def test_the_training_bar_fills_with_the_work_done(server, db):
         browser, page = await open_page(pw, server, card, dojo=body)
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "dojo")
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
         await page.wait_for_selector("#dojo-body .deed-bar")
 
-        box = page.locator("#dojo-body .shelf", has_text="В обучении").first
-        said = await box.inner_text()
-        assert "125 из 500" in said and "375 уворотов" in said
-        assert "«Сильный удар»" in said
-        # Четверть пути — четверть полоски
+        heads = await page.locator("#dojo-body .shelf-head").all_inner_texts()
+        assert heads == ["В обучении"]
+        said = await page.locator("#dojo-body").inner_text()
+        assert "Уворотов 125/500" in said
+        assert "375 уворотов" in said and "«Сильный удар»" in said
+        # Четверть пути — четверть шкалы
         assert await page.evaluate(
             "el('dojo-body').querySelector('.deed-fill').style.width"
         ) == "25%"
-        learn = box.locator(".btn").first
-        assert await learn.inner_text() == "Выучить"
-        assert await learn.is_disabled()
+        # Выбирать нечего: каталога и фильтра на экране нет
+        assert await page.locator("#dojo-body .dojo-line").count() == 0
+        assert await page.locator("#dojo-body .chip").count() == 0
+        assert await page.locator("#dojo-body .btn").all_inner_texts() == [
+            "Бросить"
+        ]
         await browser.close()
 
 
-async def test_the_learned_trick_is_taken_when_the_work_is_done(server, db):
-    """Набрал — кнопка горит и уходит одним словом «learn»."""
+async def test_a_full_bar_asks_to_confirm_the_swap_with_pictures(server, db):
+    """Набрал — «Изучить», и окно показывает, что уйдёт и что придёт."""
     from bot.dojo_service import start
     from bot.webapp.dojo import build_dojo
     from tests.test_dojo_school import student
@@ -14052,21 +14097,37 @@ async def test_the_learned_trick_is_taken_when_the_work_is_done(server, db):
         browser, page = await open_page(pw, server, card, dojo=body)
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "dojo")
-        await page.wait_for_selector("#dojo-body .deed-bar")
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
+        await page.wait_for_selector("#dojo-body .dojo-ready")
         await page.evaluate(
             "window.sent = null;"
-            "window.confirmAction = async () => true;"
             "window.post = async (url, payload) => {"
             "  window.sent = payload; return {};"
             "};"
         )
 
-        assert "Можно учить" in await page.locator("#dojo-note").inner_text()
-        await page.locator(
-            "#dojo-body .shelf", has_text="В обучении"
-        ).locator(".btn").first.click()
+        ready = page.locator("#dojo-body .dojo-ready")
+        assert await ready.locator(".shelf-head").inner_text() == (
+            "Набрано: можно изучить"
+        )
+        # Набранный приём место в обучении не занимает: каталог рядом
+        assert await page.locator("#dojo-body .dojo-line").count() == 12
+        await ready.locator(".btn", has_text="Изучить").click()
+        await page.wait_for_selector(".dojo-swap")
 
-        assert await page.evaluate("window.sent") == {"action": "learn"}
+        sides = await page.locator(".dojo-swap-side").all_inner_texts()
+        assert len(sides) == 2
+        assert "Забудется" in sides[0] and "Сильный удар" in sides[0]
+        assert "Выучится" in sides[1] and "Проворность" in sides[1]
+        assert await page.locator(".dojo-swap-side .skill-pic").count() == 2
+        assert await page.locator("#sheet-list .btn").all_inner_texts() == [
+            "Подтвердить", "Отменить",
+        ]
+
+        await page.locator("#sheet-list .btn").first.click()
+        assert await page.evaluate("window.sent") == {
+            "action": "learn", "code": "nimble",
+        }
         await browser.close()
 
 
