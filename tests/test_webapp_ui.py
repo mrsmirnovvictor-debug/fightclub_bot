@@ -965,7 +965,7 @@ async def open_page(
     insurance=None, gym=None, bank=None, hr=None, work=None, school=None,
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
-    cars=None, keys=None, dorm=None,
+    cars=None, keys=None, dorm=None, charge=None,
     images=False,
     telegram="",
 ):
@@ -1019,6 +1019,7 @@ async def open_page(
                                                     "ranks": [], "said": ""}))
     await page.route("**/api/cars", canned(cars or empty_cars()))
     await page.route("**/api/dorm", canned(dorm or {}))
+    await page.route("**/api/charge", canned(charge or {}))
     await page.route("**/api/keys", canned({"keys": keys or []}))
 
     if fight_log is not None:
@@ -13586,4 +13587,166 @@ async def test_a_house_with_several_jobs_lists_them_all(server):
         assert "Эти места занимают в HR-агентстве" in await page.locator(
             "#work-body .screen-note"
         ).last.inner_text()
+        await browser.close()
+
+
+# ---------- АЗС: три колонки ----------
+
+
+async def test_the_station_shows_three_columns_and_the_charge(server, db):
+    """Экран АЗС: три колонки, свои машины и заряд числом и полоской."""
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import drained, driver
+
+    me = await driver(db, credits=1000)
+    me = await drained(db, me, 40)
+    body = await build_charge(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .shelf")
+
+        heads = await page.locator("#charge-body .shelf-head").all_inner_texts()
+        assert heads == ["Колонки · свободно 3 из 3", "Твои машины"]
+        assert await page.locator("#charge-body .charge-slot").count() == 3
+        said = await page.locator("#charge-body").inner_text()
+        assert "свободна" in said and "40%" in said
+        assert "160 км из 400" in said
+        # Полоска заряда ровно на сорок процентов: число читается точнее,
+        # а полоска — быстрее
+        assert await page.evaluate(
+            "el('charge-body').querySelector('.charge-fill').style.width"
+        ) == "40%"
+        assert "Поставить машину" in said
+        await browser.close()
+
+
+async def test_the_station_asks_how_much_to_pour_and_warns_of_the_spill(
+    server, db
+):
+    """Окно мерок: три кнопки с ценой, временем и пролитым мимо."""
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import SUV, drained, driver
+
+    me = await driver(db, credits=1000)
+    me = await drained(db, me, 40)
+    body = await build_charge(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .shelf")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        # Со второй полки — от машины: она сама спрашивает колонку
+        await page.locator(
+            "#charge-body .car", has_text="Бронированный внедорожник"
+        ).locator(".btn").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        assert "В какую колонку" in await page.locator("#sheet-note").inner_text()
+        await page.locator("#sheet-list .btn", has_text="2-я колонка").click()
+
+        await page.wait_for_selector("#sheet-list .btn")
+        steps = await page.locator("#sheet-list .btn").all_inner_texts()
+        assert steps[0] == "+50% · 50 💰 · 10 мин"
+        assert steps[1] == "+75% · 75 💰 · 15 мин (мимо 15%)"
+        assert steps[2] == "+100% · 100 💰 · 20 мин (мимо 40%)"
+
+        await page.locator("#sheet-list .btn").first.click()
+        sent = await page.evaluate("window.sent")
+        assert sent == {
+            "action": "plug", "code": SUV, "slot": 2, "percent": 50,
+        }
+        await browser.close()
+
+
+async def test_the_column_gives_the_car_back_when_it_is_ready(server, db):
+    """Своя машина в колонке: таймер, а кнопка «Забрать» ждёт конца."""
+    from bot.charge_service import plug
+    from bot.webapp.charging import build_charge
+    from tests.test_charge import drained, driver
+
+    me = await driver(db, credits=1000)
+    me = await drained(db, me, 20)
+    moment = now_ts()
+    await plug(db, me, "armored_suv", 1, 50, moment)
+    me = await db.get_player(me.user_id)
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    # Сперва зарядка идёт: кнопка погасшая и часы тикают
+    going = await build_charge(db, me, moment)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=going)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .charge-clock")
+
+        clock = page.locator("#charge-body .charge-clock").first
+        assert "Осталось" in await clock.inner_text()
+        taking = page.locator(
+            "#charge-body .charge-slot", has_text="1-я колонка"
+        ).locator(".btn")
+        assert await taking.inner_text() == "Забрать машину"
+        assert await taking.is_disabled()
+        await browser.close()
+
+    # А как дозарядилась — отдаёт по нажатию
+    ready = await build_charge(db, me, moment + 600)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, charge=ready)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "charge")
+        await page.wait_for_selector("#charge-body .charge-clock")
+        await page.evaluate(
+            "window.sent = null;"
+            "window.post = async (url, payload) => {"
+            "  window.sent = payload; return {};"
+            "};"
+        )
+
+        assert "можно забирать" in await page.locator(
+            "#charge-body .charge-clock"
+        ).first.inner_text()
+        await page.locator(
+            "#charge-body .charge-slot", has_text="1-я колонка"
+        ).locator(".btn").click()
+        assert await page.evaluate("window.sent") == {
+            "action": "collect", "slot": 1,
+        }
+        await browser.close()
+
+
+async def test_an_empty_car_shows_the_reason_the_wheel_is_dark(server, db):
+    """В ключах у пустой машины «За руль» погасла и говорит почему."""
+    from bot.car_service import mine
+    from tests.test_charge import drained, driver
+
+    me = await driver(db)
+    me = await drained(db, me, 0)
+    keys = await mine(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, keys=keys)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.wait_for_selector(".keys .car")
+
+        said = await page.locator(".keys .car").first.inner_text()
+        assert "Заряд" in said and "0% · 0 км" in said
+        wheel = page.locator(".keys .car .btn").first
+        assert await wheel.inner_text() == "За руль"
+        # Погасла — и это всё, что страница может сказать: отказ с
+        # причиной держит сервер, а не кнопка
+        assert await wheel.is_disabled()
         await browser.close()

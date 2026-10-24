@@ -1889,7 +1889,7 @@ const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
   "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
-  "cars", "dorm", "bag", "hero",
+  "cars", "dorm", "charge", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1902,7 +1902,7 @@ const OPENED_FROM = {
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
   tavern: "map", study: "map", turf: "map", crowd: "map",
   elections: "map", house: "map", prison: "map", arena: "map", cars: "map",
-  dorm: "map",
+  dorm: "map", charge: "map",
 };
 let lastTab = "hero";
 
@@ -1982,6 +1982,10 @@ function showTab(name) {
   // Общежитие: комната могла запереться, пока в него не заходили —
   // учёба кончается и без нас
   if (name === "dorm") loadDorm();
+  // АЗС: колонки общие на город, и занять их могли, пока мы ехали.
+  // Ушли с экрана — часы колонок гасим: тикать им в пустоту незачем
+  if (name === "charge") loadCharge();
+  else stopChargeClock();
   // Ключи при бойце: лежат они в инвентаре, вместе со всем, что боец
   // носит с собой. Машина могла кончиться арендой, пока туда не
   // заглядывали, — спрашиваем на каждый заход
@@ -2503,6 +2507,7 @@ const HOUSE_SCREENS = {
   // рисуется одинаково, а дом подставляет свою полку
   used_cars: () => openCars(),
   dorm: () => openDorm(),
+  charge: () => openCharge(),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -12021,8 +12026,15 @@ function keyCard(one) {
   const rows = [
     ["Дорога короче", "в " + one.times + " раз"],
     [one.own ? "Твоя" : "Осталось", one.own ? "насовсем" : one.left_text],
+    // Заряд — второе число машины после скорости: от него зависит, доедет
+    // она вообще или встанет на полпути
+    ["Заряд", one.charge + "% · " + one.km_left + " км"],
   ];
+  if (one.charging) {
+    rows.push(["На колонке", one.charging_slot + "-я · АЗС"]);
+  }
   box.appendChild(paperRows(rows));
+  box.appendChild(chargeBar(one.charge));
 
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
@@ -12033,11 +12045,365 @@ function keyCard(one) {
           onClick: () => keysAction({ action: "park" }),
         })
       : button("За руль", {
+          disabled: Boolean(one.empty || one.charging),
+          hint: one.charging
+            ? "Машина стоит на колонке АЗС. Сперва забери её оттуда."
+            : "Заряд кончился — она не поедет. Заряжают на АЗС, у авторынка.",
           onClick: () => keysAction({ action: "wheel", code: one.code }),
         })
   );
   box.appendChild(buttons);
   return box;
+}
+
+// ---------- АЗС: три колонки на весь город ----------
+//
+// Заряд тратит дорога, а наливают его только здесь. Экран устроен
+// вокруг двух списков: колонки города сверху, свои машины снизу. В
+// обе стороны ведёт одно и то же окно мерок — и из колонки выбирают
+// машину, и из машины колонку, потому что бойцу бывает удобно и так и
+// так: он то приехал заряжать конкретную машину, то увидел свободную
+// колонку.
+
+let chargeData = null;
+let chargeTimer = null;
+
+async function openCharge() {
+  showTab("charge");
+}
+
+async function loadCharge() {
+  try {
+    const response = await fetch("api/charge", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("АЗС не отвечает.");
+    const data = await response.json();
+    if (data.card) render(data.card, true);
+    renderCharge(data);
+  } catch (error) {
+    el("charge-note").textContent = error.message;
+  }
+}
+
+async function chargeAction(payload) {
+  try {
+    const data = await post("api/charge", payload);
+    haptic((feedback) => feedback.impactOccurred("light"));
+    if (data.card) render(data.card, true);
+    renderCharge(data);
+  } catch (error) {
+    popup("АЗС", error.message);
+    await loadCharge();
+  }
+}
+
+function renderCharge(data) {
+  chargeData = data;
+  el("charge-note").textContent = data.said || data.note || "";
+  el("shop-purse-charge").textContent = "";
+  el("shop-purse-charge").appendChild(purse(data.credits || 0));
+
+  const body = el("charge-body");
+  body.textContent = "";
+  body.appendChild(chargeSlotsBox(data));
+  body.appendChild(chargeCarsBox(data));
+  startChargeClock();
+}
+
+/** Колонки города: занятые с таймером, свободные с кнопкой. */
+function chargeSlotsBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent =
+    "Колонки · свободно " + (data.free || 0) + " из " + (data.count || 0);
+  box.appendChild(head);
+  (data.slots || []).forEach((one) => box.appendChild(chargeSlotCard(one)));
+  return box;
+}
+
+/** Одна колонка: чья машина в ней стоит и сколько ей осталось. */
+function chargeSlotCard(one) {
+  const box = document.createElement("article");
+  box.className = "car charge-slot" + (one.mine ? " driving" : "");
+  const pic = document.createElement("div");
+  pic.className = "car-pic";
+  if (one.busy && one.image) {
+    const img = document.createElement("img");
+    img.src = one.image;
+    img.alt = one.title;
+    img.addEventListener("error", () => {
+      pic.textContent = "🚗";
+    });
+    pic.appendChild(img);
+  } else {
+    pic.textContent = one.busy ? "🚗" : "⚡";
+  }
+  box.appendChild(pic);
+
+  const line = document.createElement("div");
+  line.className = "car-head";
+  const title = document.createElement("span");
+  title.className = "car-title";
+  title.textContent = one.slot + "-я колонка";
+  const tag = document.createElement("span");
+  tag.className = "car-times";
+  tag.textContent = one.busy ? one.title : "свободна";
+  line.append(title, tag);
+  box.appendChild(line);
+
+  if (one.busy) {
+    const clock = document.createElement("div");
+    clock.className = "charge-clock";
+    clock.dataset.slot = String(one.slot);
+    clock.dataset.until = String(Math.floor(Date.now() / 1000) + one.left);
+    clock.textContent = one.ready
+      ? "Заряжено, можно забирать"
+      : "Осталось " + fullClock(one.left);
+    box.appendChild(clock);
+    box.appendChild(
+      paperRows([
+        ["Заряжают", "+" + one.percent + "%"],
+        ["Хозяин", one.mine ? "ты" : one.owner],
+      ])
+    );
+  }
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (one.busy && one.mine) {
+    buttons.appendChild(
+      button("Забрать машину", {
+        disabled: !one.ready,
+        hint: "Ещё заряжается. Зарядка идёт и без тебя — вернись позже.",
+        onClick: () => chargeAction({ action: "collect", slot: one.slot }),
+      })
+    );
+  } else if (one.busy) {
+    buttons.appendChild(
+      button("Занята", {
+        disabled: true,
+        secondary: true,
+        hint: "Тут стоит чужая машина. Её заберёт хозяин.",
+      })
+    );
+  } else {
+    buttons.appendChild(
+      button("Поставить машину", {
+        onClick: () => chargeCarSheet(one.slot),
+      })
+    );
+  }
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Свои машины у колонки: заряд числом и кнопка зарядки. */
+function chargeCarsBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "Твои машины";
+  box.appendChild(head);
+  const cars = data.cars || [];
+  if (!cars.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent =
+      "Машин при тебе нет. Берут их в автосалоне и на авторынке — " +
+      "он тут же, по соседству.";
+    box.appendChild(empty);
+    return box;
+  }
+  cars.forEach((one) => box.appendChild(chargeCarCard(one, data)));
+  return box;
+}
+
+/** Машина у колонки: сколько в ней осталось и чем это мерить. */
+function chargeCarCard(one, data) {
+  const box = document.createElement("article");
+  box.className = "car";
+  const pic = document.createElement("div");
+  pic.className = "car-pic";
+  if (one.image) {
+    const img = document.createElement("img");
+    img.src = one.image;
+    img.alt = one.title;
+    img.addEventListener("error", () => {
+      pic.textContent = "🚗";
+    });
+    pic.appendChild(img);
+  } else {
+    pic.textContent = "🚗";
+  }
+  box.appendChild(pic);
+
+  const line = document.createElement("div");
+  line.className = "car-head";
+  const title = document.createElement("span");
+  title.className = "car-title";
+  title.textContent = one.title;
+  const tag = document.createElement("span");
+  tag.className = "car-times";
+  tag.textContent = one.charge + "%";
+  line.append(title, tag);
+  box.appendChild(line);
+
+  box.appendChild(chargeBar(one.charge));
+  box.appendChild(
+    paperRows([
+      ["Хватит на", one.km_left + " км из " + one.range],
+      ["На колонке", one.charging ? one.slot + "-я · " + one.left_text : ""],
+    ])
+  );
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Зарядить", {
+      disabled: !one.can_charge || !data.free,
+      hint: one.why || "Все колонки заняты. Освободятся — заряжай.",
+      onClick: () => chargeSlotSheet(one),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Полоска заряда: число числом, а запас — на глаз. */
+function chargeBar(percent) {
+  const bar = document.createElement("div");
+  bar.className = "charge-bar";
+  const fill = document.createElement("div");
+  fill.className =
+    "charge-fill" + (percent <= 25 ? " low" : percent >= 75 ? " high" : "");
+  fill.style.width = Math.max(0, Math.min(100, percent)) + "%";
+  bar.appendChild(fill);
+  return bar;
+}
+
+/** Окно выбора машины: пришли от свободной колонки. */
+function chargeCarSheet(slot) {
+  const data = chargeData || {};
+  const cars = (data.cars || []).filter((one) => one.can_charge);
+  openSheet(
+    slot + "-я колонка",
+    cars.length
+      ? "Какую машину ставим?"
+      : "Ставить нечего: заряжать можно только машину при себе, и " +
+        "только не полную.",
+    true
+  );
+  const list = el("sheet-list");
+  cars.forEach((one) => {
+    list.appendChild(
+      button(one.title + " · " + one.charge + "%", {
+        onClick: () => {
+          closeSheet();
+          chargeStepSheet(one, slot);
+        },
+      })
+    );
+  });
+  list.appendChild(
+    button("Отменить", { secondary: true, onClick: () => closeSheet() })
+  );
+}
+
+/** Окно выбора колонки: пришли от своей машины. */
+function chargeSlotSheet(car) {
+  const data = chargeData || {};
+  const free = (data.slots || []).filter((one) => !one.busy);
+  // Колонка одна свободна — выбирать не из чего, и окно было бы
+  // лишним нажатием
+  if (free.length === 1) {
+    chargeStepSheet(car, free[0].slot);
+    return;
+  }
+  openSheet(car.title, "В какую колонку ставим?", true);
+  const list = el("sheet-list");
+  free.forEach((one) => {
+    list.appendChild(
+      button(one.slot + "-я колонка", {
+        onClick: () => {
+          closeSheet();
+          chargeStepSheet(car, one.slot);
+        },
+      })
+    );
+  });
+  list.appendChild(
+    button("Отменить", { secondary: true, onClick: () => closeSheet() })
+  );
+}
+
+/** Окно мерок: сколько налить, за сколько и сколько прольётся мимо. */
+function chargeStepSheet(car, slot) {
+  openSheet(
+    car.title + " · " + slot + "-я колонка",
+    "Заряд " + car.charge + "%. Сверх полного бака заряд пропадает.",
+    true
+  );
+  const list = el("sheet-list");
+  (car.steps || []).forEach((step) => {
+    const text =
+      "+" + step.percent + "% · " + num(step.price) + " 💰 · " + step.time_text;
+    list.appendChild(
+      button(step.waste ? text + " (мимо " + step.waste + "%)" : text, {
+        disabled: !step.afford,
+        hint: "Столько кредитов у тебя нет.",
+        onClick: () => {
+          closeSheet();
+          chargeAction({
+            action: "plug",
+            code: car.code,
+            slot: slot,
+            percent: step.percent,
+          });
+        },
+      })
+    );
+  });
+  list.appendChild(
+    button("Отменить", { secondary: true, onClick: () => closeSheet() })
+  );
+}
+
+function startChargeClock() {
+  stopChargeClock();
+  chargeTimer = setInterval(tickCharge, 1000);
+  tickCharge();
+}
+
+function stopChargeClock() {
+  if (chargeTimer) clearInterval(chargeTimer);
+  chargeTimer = null;
+}
+
+/** Часы колонок: дошли до нуля — спрашиваем сервер заново. */
+function tickCharge() {
+  const clocks = document.querySelectorAll("#charge-body .charge-clock");
+  if (!clocks.length) {
+    stopChargeClock();
+    return;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  let ripe = false;
+  clocks.forEach((clock) => {
+    const left = Math.max(0, Number(clock.dataset.until || 0) - now);
+    if (!left) {
+      if (clock.textContent.indexOf("Осталось") === 0) ripe = true;
+      clock.textContent = "Заряжено, можно забирать";
+      return;
+    }
+    clock.textContent = "Осталось " + fullClock(left);
+  });
+  // Кнопка «Забрать» гаснет на сервере, и зажечь её может только он:
+  // дотикали — перерисовываем экран целиком
+  if (ripe) loadCharge();
 }
 
 // ---------- тюрьма: свой срок и те, кто сидит рядом ----------
@@ -15845,7 +16211,7 @@ function paintDutyLine() {
 const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
-  "trade", "house", "prison", "arena", "cars", "dorm",
+  "trade", "house", "prison", "arena", "cars", "dorm", "charge",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -16001,7 +16367,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
   "crowd", "elections", "shop", "magic", "prison", "arena", "cars", "dorm",
-  "workshop", "club",
+  "charge", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

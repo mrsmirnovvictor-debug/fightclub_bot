@@ -493,7 +493,7 @@ async def test_the_dead_family_garage_is_dropped(tmp_path):
     # А у машин появились колонки парковки
     async with db.conn.execute("PRAGMA table_info(cars)") as cursor:
         columns = {row["name"] for row in await cursor.fetchall()}
-    assert {"parked", "parked_id"} <= columns
+    assert {"parked", "parked_id", "driven"} <= columns
     await db.close()
 
 
@@ -539,4 +539,8 @@ async def test_a_car_from_the_old_base_keeps_its_owner(tmp_path):
     assert len(rows) == 1
     assert rows[0]["code"] == "street_compact"
     assert rows[0]["parked"] == "" and rows[0]["parked_id"] == 0
+    # И выезжает она с полным баком: пробег у старой машины нулевой, и
+    # это не поблажка, а единственное честное число — заряда до этого
+    # правила не было вовсе
+    assert rows[0]["driven"] == 0
     await db.close()

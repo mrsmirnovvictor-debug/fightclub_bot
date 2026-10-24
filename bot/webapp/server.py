@@ -2816,6 +2816,61 @@ async def api_dorm_action(request: web.Request) -> web.Response:
     return await _dorm_state(request, fresh, said)
 
 
+async def _charge_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.charging import build_charge
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_charge(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_charge(request: web.Request) -> web.Response:
+    """АЗС: три колонки города и свои машины при них."""
+    player = await _at(request, Service.CHARGE)
+    return await _charge_state(request, player)
+
+
+async def api_charge_action(request: web.Request) -> web.Response:
+    """Дела у колонки: поставить машину и забрать её заряженной."""
+    from bot.charge_service import ChargeError, collect, plug
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.CHARGE)
+    try:
+        if action == "plug":
+            said = await plug(
+                db,
+                player,
+                str(data.get("code") or ""),
+                int(data.get("slot", 0)),
+                int(data.get("percent", 0)),
+                now_ts(),
+            )
+        elif action == "collect":
+            said = await collect(
+                db, player, int(data.get("slot", 0)), now_ts()
+            )
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except ChargeError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _charge_state(request, fresh, said)
+
+
 async def api_prison(request: web.Request) -> web.Response:
     """Тюрьма: свой срок и все, кто сидит сейчас.
 
@@ -3363,6 +3418,8 @@ def create_app(
             web.get("/api/prison", api_prison),
             web.get("/api/dorm", api_dorm),
             web.post("/api/dorm", api_dorm_action),
+            web.get("/api/charge", api_charge),
+            web.post("/api/charge", api_charge_action),
             web.get("/api/cars", api_cars),
             web.post("/api/cars", api_cars_action),
             web.post("/api/used-cars", api_used_cars_action),

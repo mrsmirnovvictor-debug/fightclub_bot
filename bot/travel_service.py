@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import logging
 
+from bot.car_service import spend_charge
 from bot.database import Database
+from bot.game.charge import km_for
 from bot.game.health import format_duration, format_term, now_ts
 from bot.game.police import PRISON, jail_left
 from bot.game.locations import (
@@ -114,6 +116,10 @@ class Travel:
 
         # Травмированный идёт вдвое дольше: с переломом не побегаешь.
         # А за рулём дорога делится на машину — от двух раз до десяти
+        # Расстояние считаем пешим шагом: заряд тратит дорога, а не
+        # время за рулём. Снять его надо до `set_out` — после него боец
+        # уже «в пути», и откуда он выехал, спрашивать поздно
+        on_foot = travel_seconds(player.location, place.code)
         player.set_out(
             place.code,
             travel_seconds(
@@ -123,6 +129,9 @@ class Travel:
             moment,
         )
         await self.db.save_player(player)
+        # Доехать боец доедет — он выезжал заряженным, — а на том конце
+        # выйдет, если бак опустел по дороге
+        await spend_charge(self.db, player, km_for(on_foot), moment)
         return place
 
 

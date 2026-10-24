@@ -398,6 +398,36 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   white-space: nowrap;
 }
 
+/* Заряд машины: число у имени, запас — полоской под ним. Полоска нужна
+   рядом с числом, а не вместо: «12%» читается точнее, чем короткий
+   огрызок, а огрызок виден быстрее, чем число */
+.charge-bar {
+  margin-top: 8px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--slot);
+  border: 1px solid var(--slot-line);
+  overflow: hidden;
+}
+.charge-fill {
+  height: 100%;
+  background: var(--hp-yellow);
+  transition: width 0.3s;
+}
+.charge-fill.high { background: var(--hp-green); }
+.charge-fill.low { background: var(--hp-red); }
+
+/* Колонка АЗС: такая же карточка, что у машины, но картинка в ней
+   пустая чаще, чем полная, и высокий кадр 16:9 под знаком ⚡ выглядел
+   бы дырой */
+.charge-slot .car-pic { aspect-ratio: 16 / 7; font-size: 34px; }
+.charge-clock {
+  margin-top: 8px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--hp-green);
+}
+
 .keys { margin: 4px 0 18px; }
 
 .city {

@@ -349,6 +349,19 @@ CREATE TABLE IF NOT EXISTS car_market (
 CREATE INDEX IF NOT EXISTS idx_car_market_seller
     ON car_market(seller_id, id DESC);
 
+-- Зарядка на АЗС: три колонки на весь город. Слот — он же ключ: двух
+-- машин в одной колонке не бывает, и очередь к ней — часть игры
+CREATE TABLE IF NOT EXISTS charging (
+    slot      INTEGER PRIMARY KEY,
+    user_id   INTEGER NOT NULL,
+    code      TEXT    NOT NULL,
+    percent   INTEGER NOT NULL,
+    ready_at  INTEGER NOT NULL,
+    started_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_charging_user ON charging(user_id);
+
 -- Рейды: отряд живых бойцов против одного босса. Запись заводится в момент
 -- сбора — по ней же считается «один рейд в сутки на созывающего», — и
 -- закрывается итогом, когда бой кончился.
@@ -1516,6 +1529,10 @@ class Database:
     CAR_COLUMNS: tuple[tuple[str, str], ...] = (
         ("parked", "TEXT NOT NULL DEFAULT ''"),
         ("parked_id", "INTEGER NOT NULL DEFAULT 0"),
+        # Сколько машина проехала с последней зарядки. Ноль — полный
+        # бак, и это же делает миграцию бесплатной: у купленных до
+        # этого правила пробег нулевой, то есть заряд полный
+        ("driven", "INTEGER NOT NULL DEFAULT 0"),
     )
 
     async def _migrate_cars(self) -> None:
@@ -4686,8 +4703,8 @@ class Database:
         """Машины бойца: свои и взятые. Порядок — как брали."""
         async with self.conn.execute(
             """
-            SELECT id, code, until, took_at, parked, parked_id FROM cars
-            WHERE user_id = ? ORDER BY took_at, id
+            SELECT id, code, until, took_at, parked, parked_id, driven
+            FROM cars WHERE user_id = ? ORDER BY took_at, id
             """,
             (user_id,),
         ) as cursor:
@@ -4697,8 +4714,8 @@ class Database:
     async def car_row(self, user_id: int, code: str) -> dict | None:
         """Эта машина у этого бойца. None — нет такой."""
         async with self.conn.execute(
-            "SELECT id, code, until, took_at, parked, parked_id FROM cars "
-            "WHERE user_id = ? AND code = ?",
+            "SELECT id, code, until, took_at, parked, parked_id, driven "
+            "FROM cars WHERE user_id = ? AND code = ?",
             (user_id, code),
         ) as cursor:
             row = await cursor.fetchone()
@@ -4732,6 +4749,59 @@ class Database:
             )
         await self.conn.commit()
         return until
+
+    async def set_driven(self, user_id: int, code: str, driven: int) -> None:
+        """Записать пробег машины с последней зарядки."""
+        await self.conn.execute(
+            "UPDATE cars SET driven = ? WHERE user_id = ? AND code = ?",
+            (max(0, driven), user_id, code),
+        )
+        await self.conn.commit()
+
+    # ---------- зарядка на АЗС ----------
+
+    async def charging_rows(self) -> list[dict]:
+        """Все занятые колонки, по порядку слотов."""
+        async with self.conn.execute(
+            "SELECT slot, user_id, code, percent, ready_at, started_at "
+            "FROM charging ORDER BY slot"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def charging_row(self, slot: int) -> dict | None:
+        async with self.conn.execute(
+            "SELECT slot, user_id, code, percent, ready_at, started_at "
+            "FROM charging WHERE slot = ?",
+            (slot,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def plug_in(
+        self, slot: int, user_id: int, code: str, percent: int,
+        ready_at: int, now: int,
+    ) -> bool:
+        """Занять колонку. False — её заняли первой."""
+        try:
+            await self.conn.execute(
+                "INSERT INTO charging "
+                "(slot, user_id, code, percent, ready_at, started_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (slot, user_id, code, percent, ready_at, now),
+            )
+        except sqlite3.IntegrityError:
+            return False
+        await self.conn.commit()
+        return True
+
+    async def unplug(self, slot: int) -> bool:
+        """Освободить колонку. False — она уже пуста."""
+        cursor = await self.conn.execute(
+            "DELETE FROM charging WHERE slot = ?", (slot,)
+        )
+        await self.conn.commit()
+        return bool(cursor.rowcount)
 
     async def drop_car(self, user_id: int, code: str) -> bool:
         """Снять машину с бойца: сдал в гараж или кончилась аренда."""
@@ -4798,7 +4868,7 @@ class Database:
         """
         async with self.conn.execute(
             """
-            SELECT id, user_id, code, until, took_at FROM cars
+            SELECT id, user_id, code, until, took_at, driven FROM cars
             WHERE parked = ? AND parked_id = ? AND (until = 0 OR until > ?)
             ORDER BY took_at, id
             """,

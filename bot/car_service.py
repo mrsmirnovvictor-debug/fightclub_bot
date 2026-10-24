@@ -40,6 +40,7 @@ from bot.game.cars import (
     rent_seconds,
     span_title,
 )
+from bot.game.charge import after_drive, empty, percent_left
 from bot.game.health import format_term, now_ts
 from bot.game.locations import Service
 from bot.models import Player
@@ -67,8 +68,17 @@ async def mine(
     db: Database, player: Player, now: int | None = None
 ) -> list[dict]:
     """Ключи бойца: что у него есть и до какого часа."""
+    from bot.game.charge import km_left, range_km
+
     moment = now_ts() if now is None else now
     await sweep(db, moment)
+    # Колонки спрашиваем один раз: их на город три, а машин у бойца
+    # может быть до трёх, и три запроса за тем же ответом ни к чему
+    at_station = {
+        str(one["code"]): one
+        for one in await db.charging_rows()
+        if int(one["user_id"]) == player.user_id
+    }
     out = []
     for row in await db.cars_of(player.user_id):
         car = get_car(str(row["code"]))
@@ -76,6 +86,8 @@ async def mine(
             continue
         left = max(0, int(row["until"]) - moment) if row["until"] else 0
         parked = str(row["parked"] or "")
+        driven = int(row["driven"])
+        plug = at_station.get(car.code)
         out.append({
             "code": car.code,
             "title": car.title,
@@ -96,6 +108,19 @@ async def mine(
             # себя не садятся, и страница должна знать об этом сама
             "parked": parked,
             "parked_text": parking_title(parked),
+            # Заряд: процент для глаза, километры для расчёта. Пустая
+            # машина своя и при бойце, но за руль не пустит
+            "charge": percent_left(car, driven),
+            "km_left": km_left(car, driven),
+            "range": range_km(car),
+            "empty": empty(car, driven),
+            # На колонке: машина при бойце, но до конца зарядки её не
+            # забрать — ни за руль, ни на парковку, ни на продажу
+            "charging": bool(plug),
+            "charging_slot": int(plug["slot"]) if plug else 0,
+            "charging_left": (
+                max(0, int(plug["ready_at"]) - moment) if plug else 0
+            ),
         })
     return out
 
@@ -159,6 +184,21 @@ async def _check_room(db: Database, player: Player, now: int) -> None:
         f"парковку — в особняке или у своей квартиры, — и бери вторую. "
         f"С подпиской держат {PRO_MAX_CARS} разом."
     )
+
+
+async def _check_free(db: Database, player: Player, code: str) -> None:
+    """Не дать распорядиться машиной, которая стоит на колонке.
+
+    Пока идёт зарядка, машина при бойце только по бумагам: ключи от
+    неё у колонки. Её не берут за руль, не ставят на парковку, не
+    сдают в салон и не выставляют на рынок — сперва забирают с АЗС.
+    """
+    for one in await db.charging_rows():
+        if int(one["user_id"]) == player.user_id and str(one["code"]) == code:
+            raise CarError(
+                "Эта машина стоит на колонке АЗС. Сперва забери её "
+                "оттуда — зарядка идёт и без тебя."
+            )
 
 
 async def has_car(db: Database, player: Player, code: str, now: int) -> bool:
@@ -237,6 +277,7 @@ async def hand_over(
         raise CarError("Этой машины у тебя нет.")
     if not row["until"] and not car.service:
         raise CarError("Своя машина остаётся своей: её не сдают.")
+    await _check_free(db, player, car.code)
     if player.driving(moment) == car.code:
         await park(db, player, moment)
     await db.drop_car(player.user_id, car.code)
@@ -373,6 +414,7 @@ async def leave(
         raise CarError("Этой машины у тебя нет.")
     if row["parked"]:
         raise CarError(f"Она и так стоит: {parking_title(str(row['parked']))}.")
+    await _check_free(db, player, car.code)
     if player.driving(moment) == car.code:
         # Ставят машину вместе с выходом из неё: иначе пришлось бы
         # сперва идти в карточку и снимать её там
@@ -456,6 +498,8 @@ async def parked_at(
     машина — написано у каждой, но в особняке это только подпись:
     забрать её может любой свой.
     """
+    from bot.game.charge import km_left
+
     moment = now_ts() if now is None else now
     await sweep(db, moment)
     out = []
@@ -481,6 +525,11 @@ async def parked_at(
             "own": not row["until"],
             "left": left,
             "left_text": format_term(left) if left else "",
+            # Заряд виден до того, как за машиной пошли: на общей
+            # парковке особняка берут чужую, и пустая там такая же
+            # машина, как полная, — отличить их можно только числом
+            "charge": percent_left(car, int(row["driven"])),
+            "km_left": km_left(car, int(row["driven"])),
         })
     return out
 
@@ -512,6 +561,12 @@ async def wheel(
             f"Эта машина стоит на парковке ({parking_title(str(row['parked']))}). "
             "Сперва забери её оттуда."
         )
+    await _check_free(db, player, car.code)
+    if empty(car, int(row["driven"])):
+        raise CarError(
+            f"{car.title} без заряда — она не поедет. Заряжают на АЗС, "
+            f"у авторынка."
+        )
     player.car = car.code
     player.car_until = int(row["until"])
     await db.save_player(player)
@@ -533,6 +588,47 @@ async def park(
         return "Ты и так пешком."
     logger.info("Боец %s вышел из %s", player.user_id, car.code)
     return f"{car.title} осталась в гараже. Дальше пешком."
+
+
+async def spend_charge(
+    db: Database, player: Player, km: int, now: int | None = None
+) -> str:
+    """Списать заряд за проеханное. Пусто — ничего не случилось.
+
+    Зовётся, когда боец отправляется в путь за рулём: заряд тратит
+    расстояние, а не время, и считается оно в километрах пешего шага.
+    Кончился — боец выходит прямо на дороге и доезжает... то есть
+    доходит сам. Машина при этом никуда не девается: она его, просто
+    пустая, и до колонки её ведут на буксире — в игре это значит, что
+    сесть за руль снова можно только заряженной.
+    """
+    moment = now_ts() if now is None else now
+    code = player.driving(moment)
+    car = get_car(code)
+    if car is None or km <= 0:
+        return ""
+    row = await db.car_row(player.user_id, code)
+    if row is None:  # pragma: no cover - служебная не записана на бойца
+        return ""
+    driven = after_drive(car, int(row["driven"]), km)
+    await db.set_driven(player.user_id, code, driven)
+    if not empty(car, driven):
+        return ""
+    # Бак пуст: дальше пешком. Выходим сразу, не дожидаясь следующей
+    # двери, — иначе боец «ехал бы» на пустой машине до самого города
+    player.car = ""
+    player.car_until = 0
+    await db.save_player(player)
+    logger.info("У бойца %s кончился заряд %s", player.user_id, code)
+    return (
+        f"{car.title} встала: заряд кончился. Дальше пешком, "
+        f"а машину — на зарядку."
+    )
+
+
+def charge_of(car, row) -> int:
+    """Заряд машины в процентах по её строке из базы."""
+    return percent_left(car, int(row["driven"]) if row else 0)
 
 
 # ---------- внутреннее ----------
@@ -574,6 +670,7 @@ __all__ = [
     "CarError",
     "GARAGES",
     "buy",
+    "charge_of",
     "drop_service_cars",
     "hand_over",
     "at_hand",
@@ -588,6 +685,7 @@ __all__ = [
     "release_strangers",
     "rent",
     "room_for_another",
+    "spend_charge",
     "sweep",
     "take",
     "wheel",
