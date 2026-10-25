@@ -594,14 +594,6 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* Рассказ о рейде: во всю ширину под заголовком раздела. Это первое,
    что боец читает о рейде, и читает он его один раз — поэтому строка
    обычная, а не мелкая подпись */
-.raid-story {
-  grid-column: 1 / -1;
-  margin: 6px 0 0;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--muted);
-}
-
 /* Вкладки школы стоят по центру: их две, и прижатые к краю они
    читаются как начало списка, который не поместился */
 #dojo-tabs { justify-content: center; }
@@ -2991,13 +2983,25 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* ---------- рейд ---------- */
 /* Заголовок раздела и кнопка «i» рядом: под ней разворачивается всё, что
    известно о боссе. */
+/* Шапка рейда: заголовок и «i» в строку, рассказ — строкой ниже.
+   Шапка — флексбокс, и рассказ занимает в ней целую строку сам
+   (`flex: 0 0 100%`), а не чужим `grid-column`: от него строка не
+   переносилась вовсе, и рассказ ложился поверх заголовка */
 .raid-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
 }
 .raid-head .shelf-head { margin: 0; flex: 1; min-width: 0; }
+.raid-story {
+  flex: 0 0 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
 .boss-stats {
   border: 1px solid var(--line);
   border-radius: 8px;

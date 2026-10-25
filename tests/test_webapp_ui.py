@@ -3936,6 +3936,14 @@ async def test_the_raid_tells_its_story_and_opens_the_numbers(server):
         assert "2 раза в день" in head
         assert await page.locator(".boss-stats").count() == 0
 
+        # Рассказ стоит строкой ниже, а не поверх заголовка: шапка —
+        # флексбокс, и целую строку рассказ должен занимать сам
+        title = await page.locator(".raid-head .shelf-head").bounding_box()
+        story = await page.locator(".raid-story").bounding_box()
+        info = await page.locator("#boss-info").bounding_box()
+        assert story["y"] >= title["y"] + title["height"]
+        assert story["y"] >= info["y"] + info["height"]
+
         await page.locator("#boss-info").click()
         await page.wait_for_selector(".boss-stats")
 
