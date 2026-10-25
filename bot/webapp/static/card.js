@@ -11248,10 +11248,8 @@ function renderArena(data) {
   body.appendChild(arenaHeadBox(data));
   // Свой бой — первым делом: на него выходят, и у выхода есть срок
   if (data.my_match) body.appendChild(myMatchBox(data));
-  (data.rounds || []).forEach((round) => body.appendChild(roundBox(round)));
-  if ((data.rounds || []).length === 0 && (data.players || []).length) {
-    body.appendChild(signedBox(data));
-  }
+  if ((data.rounds || []).length) body.appendChild(bracketBoard(data));
+  else if ((data.players || []).length) body.appendChild(signedBox(data));
 }
 
 /** Шапка: пора, часы, призовой фонд и кнопка записи. */
@@ -11275,14 +11273,6 @@ function arenaHeadBox(data) {
     rows.push([arenaWhen(data), fullClock(Math.max(0, data.until - nowSec()))]);
   }
   box.appendChild(paperRows(rows));
-
-  if (data.champion) {
-    const said = document.createElement("p");
-    said.className = "thing-note";
-    said.textContent = "🥇 " + data.champion.name
-      + (data.runner_up ? " · 🥈 " + data.runner_up.name : "");
-    box.appendChild(said);
-  }
 
   if (data.phase === "open") {
     const buttons = document.createElement("div");
@@ -11363,49 +11353,151 @@ function myMatchBox(data) {
   return box;
 }
 
-/** Круг сетки: пары одна под другой, прошедший зелёный. */
-function roundBox(round) {
+/** Доска плей-офф: круг — колонка, слева направо, финал золотой.
+ *
+ * Прежде круги шли списком сверху вниз, и переход рисовался одним
+ * цветом: дерево в ширину телефона не помещается. Оно и не помещается —
+ * зато ездит вбок, и тогда видно главное, чего список не показывал:
+ * откуда боец пришёл и куда ведёт его следующая линия.
+ */
+function bracketBoard(data) {
   const box = document.createElement("section");
   box.className = "shelf";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = round.title + " · " + round.at_text;
+  head.textContent = "🥊 Плей-офф";
   box.appendChild(head);
 
-  round.matches.forEach((match) => box.appendChild(matchRow(match)));
+  const board = document.createElement("div");
+  board.className = "bracket-board";
+  // Финал — круг с одной парой, и неважно, который он по счёту:
+  // в турнире на двоих финал и есть первый круг
+  (data.rounds || []).forEach((round) => {
+    board.appendChild(
+      bracketColumn(round, round.matches.length === 1, data)
+    );
+  });
+  box.appendChild(board);
+  // Доска открывается там, где дело: на своей паре, а у доигранного
+  // турнира — на финале. Иначе человек листал бы её вбок за собой
+  requestAnimationFrame(() => showOnBoard(board, data));
   return box;
 }
 
-/** Пара: двое друг под другом, и видно, кто прошёл. */
-function matchRow(match) {
-  const row = document.createElement("article");
-  row.className = "bracket" + (match.mine ? " mine" : "");
-  [match.red, match.blue].forEach((side) => {
-    const line = document.createElement("div");
-    line.className = "bracket-side"
-      + (side && side.won ? " won" : "")
-      + (side && side.out ? " out" : "")
-      + (side && side.you ? " you" : "");
-    const name = document.createElement("span");
-    name.className = "bracket-name";
-    name.textContent = side
-      ? side.name + (side.you ? " · ты" : "")
-      : (match.bye ? "без соперника" : "—");
-    const mark = document.createElement("span");
-    mark.className = "bracket-mark";
-    mark.textContent = side
-      ? (side.won ? "прошёл" : side.out ? "вылетел" : side.level + " ур.")
-      : "";
-    line.append(name, mark);
-    row.appendChild(line);
+/** Подвинуть доску к своей паре, а у доигранного турнира — к финалу. */
+function showOnBoard(board, data) {
+  const mine = board.querySelector(".bracket.mine");
+  const target = (mine || (data.champion
+    ? board.querySelector(".bracket-col.final")
+    : null));
+  if (!target) return;
+  const column = target.closest(".bracket-col");
+  if (!column) return;
+  const shift = column.getBoundingClientRect().left
+    - board.getBoundingClientRect().left;
+  board.scrollLeft = Math.max(0, board.scrollLeft + shift - 8);
+}
+
+/** Колонка круга: заголовок с часом и пары, растянутые поровну.
+ *
+ * Поровну — чтобы пара следующего круга сама встала против середины
+ * своих двух. Тогда локти между колонками рисует рамка псевдоэлемента,
+ * а не счёт пикселей в JS.
+ */
+function bracketColumn(round, last, data) {
+  const col = document.createElement("div");
+  col.className = "bracket-col" + (last ? " final" : "");
+
+  const head = document.createElement("div");
+  head.className = "bracket-col-head";
+  const title = document.createElement("span");
+  title.className = "bracket-col-title";
+  title.textContent = round.title;
+  const at = document.createElement("span");
+  at.className = "bracket-col-at";
+  at.textContent = round.at_text;
+  head.append(title, at);
+  col.appendChild(head);
+
+  const cells = document.createElement("div");
+  cells.className = "bracket-cells";
+  round.matches.forEach((match) => {
+    const cell = document.createElement("div");
+    cell.className = "bracket-cell";
+    // Кубок стоит над финальной парой: за него и дерутся
+    if (last) {
+      const cup = document.createElement("div");
+      cup.className = "bracket-cup";
+      cup.textContent = "🏆";
+      cell.appendChild(cup);
+    }
+    cell.appendChild(matchCard(match));
+    if (match.bye) {
+      const bye = document.createElement("p");
+      bye.className = "bracket-bye";
+      bye.textContent = "Без боя";
+      cell.appendChild(bye);
+    }
+    // Записка судьи — всё, кроме «без боя»: про это уже сказал ярлык
+    if (match.note && !match.bye) {
+      const note = document.createElement("p");
+      note.className = "bracket-note";
+      note.textContent = match.note;
+      cell.appendChild(note);
+    }
+    if (last && data.champion) {
+      const champ = document.createElement("p");
+      champ.className = "bracket-champ";
+      champ.textContent = "Победитель — " + data.champion.name;
+      cell.appendChild(champ);
+    }
+    cells.appendChild(cell);
   });
-  if (match.note) {
-    const note = document.createElement("p");
-    note.className = "bracket-note";
-    note.textContent = match.note;
-    row.appendChild(note);
+  col.appendChild(cells);
+  return col;
+}
+
+/** Пара: двое друг под другом, у каждого клетка исхода. */
+function matchCard(match) {
+  const card = document.createElement("article");
+  card.className = "bracket" + (match.mine ? " mine" : "");
+  [match.red, match.blue].forEach((side) => {
+    card.appendChild(bracketSide(side, match));
+  });
+  return card;
+}
+
+/** Строка пары: имя и клетка — галка, крест или уровень. */
+function bracketSide(side, match) {
+  const line = document.createElement("div");
+  line.className = "bracket-side"
+    + (side && side.won ? " won" : "")
+    + (side && side.out ? " out" : "")
+    + (side && side.you ? " you" : "");
+  const name = document.createElement("span");
+  name.className = "bracket-name";
+  name.textContent = side
+    ? side.name + (side.you ? " · ты" : "")
+    : (match.bye ? "Нет соперника" : "—");
+  const mark = document.createElement("span");
+  mark.className = "bracket-mark";
+  // Пока пара не сыграна, в клетке стоит уровень и цвета нет: судить
+  // до боя нечего, а знать, кто сильнее на бумаге, — полезно
+  if (!side) {
+    mark.textContent = match.bye ? "—" : "·";
+    mark.title = match.bye ? "соперника нет" : "круга ещё не было";
+  } else if (side.won) {
+    mark.textContent = "✔";
+    mark.title = "прошёл";
+  } else if (side.out) {
+    mark.textContent = "✘";
+    mark.title = "вылетел";
+  } else {
+    mark.textContent = String(side.level);
+    mark.title = side.level + " ур.";
   }
-  return row;
+  line.append(name, mark);
+  return line;
 }
 
 /** Записавшиеся, пока сетки ещё нет. */

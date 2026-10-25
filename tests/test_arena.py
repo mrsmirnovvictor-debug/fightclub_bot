@@ -315,6 +315,32 @@ async def test_the_board_paints_the_bracket(db):
         assert second["my_match"]["confirm"] == CONFIRM_SECONDS
 
 
+async def test_the_board_stands_the_rounds_ahead_empty(db):
+    """Круги впереди стоят на доске пустыми: видно, сколько их всего.
+
+    Иначе дерево росло бы по колонке в полчаса, и до самого финала было
+    бы не понять, сколько кругов осталось.
+    """
+    duels = Duels()
+    await sign(db, range(1, 6))  # пятеро — сетка на восемь, три круга
+    live = round_at(NOON, 1) + CONFIRM_SECONDS + 1
+    await sweep(db, duels, live)
+
+    body = await build_arena(db, await db.get_player(1), duels, live)
+    rounds = body["rounds"]
+    assert [one["title"] for one in rounds] == [
+        "Четвертьфиналы", "Полуфиналы", "Финал"
+    ]
+    # Первый круг сыгран, остальные ждут: по паре на две прошлых
+    assert [len(one["matches"]) for one in rounds] == [4, 2, 1]
+    ahead = rounds[1]["matches"][0]
+    assert ahead["red"] is None and ahead["blue"] is None
+    assert ahead["state"] == "waiting"
+    # Прочерк — не «без боя»: соперник найдётся, круга ещё не было
+    assert ahead["bye"] is False
+    assert any(one["bye"] for one in rounds[0]["matches"])
+
+
 async def test_the_arena_is_looked_at_from_inside(db, client):
     """На арену ходят ногами: с улицы сетку не смотрят."""
     away = make_player(11, "Прохожий")

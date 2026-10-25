@@ -11444,12 +11444,12 @@ async def test_the_battle_form_asks_four_questions(server, db):
 # ---------- турнирная арена ----------
 
 
-async def test_the_arena_paints_the_bracket_in_two_colours(server, db):
-    """Сетка плей-офф: прошедший зелёный, вылетевший красный.
+async def test_the_arena_paints_the_bracket_as_a_tree(server, db):
+    """Сетка плей-офф: круг — колонка, исход — клетка с галкой.
 
-    Дерево в ширину телефона не помещается, и рисовать его линиями
-    значило бы просить человека возить экран вбок. Круги идут сверху
-    вниз, пара за парой, и переход виден цветом.
+    Дерево в ширину телефона не помещается, и доска ездит вбок: это
+    дешевле, чем список пар, из которого не видно, откуда боец пришёл.
+    Финальная колонка золотая и с кубком — за него и дерутся.
     """
     from datetime import datetime, timedelta, timezone
 
@@ -11495,12 +11495,31 @@ async def test_the_arena_paints_the_bracket_in_two_colours(server, db):
         assert "Призовой фонд" in said and "1 200" in said.replace("\u00a0", " ")
         assert "Победителю" in said and "Второму месту" in said
 
+        # Круг — колонка: четверо дерутся в двух, и последняя золотая
+        columns = page.locator("#arena-body .bracket-col")
+        assert await columns.count() == 2
+        heads = await columns.locator(".bracket-col-title").all_inner_texts()
+        # Заголовки колонок набраны капителью, оттого и крик
+        assert heads == ["ПОЛУФИНАЛЫ", "ФИНАЛ"]
+        assert "final" in (await columns.nth(1).get_attribute("class"))
+        assert await columns.nth(1).locator(".bracket-cup").count() == 1
+
         # В каждой паре ровно один зелёный и один красный
         pair = page.locator("#arena-body .bracket").first
         assert await pair.locator(".bracket-side.won").count() == 1
         assert await pair.locator(".bracket-side.out").count() == 1
-        assert "прошёл" in await pair.locator(".bracket-side.won").inner_text()
-        assert "вылетел" in await pair.locator(".bracket-side.out").inner_text()
+        won = pair.locator(".bracket-side.won .bracket-mark")
+        out = pair.locator(".bracket-side.out .bracket-mark")
+        assert await won.inner_text() == "✔"
+        assert await out.inner_text() == "✘"
+        assert await won.get_attribute("title") == "прошёл"
+        assert await out.get_attribute("title") == "вылетел"
+
+        # Несыгранная пара цвета не носит: в клетке уровень
+        final = page.locator("#arena-body .bracket-col.final .bracket")
+        assert await final.locator(".bracket-side.won").count() == 0
+        assert await final.locator(".bracket-side.out").count() == 0
+
         # Своя пара обведена, и в ней видно, где ты
         assert await page.locator("#arena-body .bracket-side.you").count() >= 1
         await browser.close()

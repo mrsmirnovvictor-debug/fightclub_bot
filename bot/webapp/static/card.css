@@ -1906,35 +1906,187 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 
 /* ---------- турнирная арена ---------- */
 
-/* Пара сетки: двое друг под другом. Прошедший зелёный, вылетевший
-   красный — это и есть переход в следующий круг, нарисованный без
-   линий: дерево плей-оффа в ширину телефона не помещается */
-.bracket {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
-  padding: 8px 10px;
-  margin-bottom: 8px;
+/* Доска плей-офф: круг — колонка, слева направо. Пары внутри колонки
+   растянуты поровну (flex: 1 1 0), поэтому середина пары следующего
+   круга сама приходится на стык двух своих — на этом и держатся локти
+   ниже: их рисует рамка псевдоэлемента, без единой картинки и без
+   счёта пикселей. В ширину телефона дерево не лезет: турнир из
+   тридцати двух — пять колонок, и доска ездит вбок */
+.bracket-board {
+  /* Цвет проводов сетки. Не из темы: линии связывают карточки поверх
+     фона и обязаны читаться и на светлой, и на тёмной */
+  --wire: #1fa8bc;
+  display: flex;
+  align-items: stretch;
+  gap: 28px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  -webkit-overflow-scrolling: touch;
 }
-.bracket.mine { border-color: var(--accent); }
-.bracket-side {
+.bracket-col {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: 166px;
+}
+.bracket-col-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
-  padding: 4px 0;
-  font-size: 13.5px;
+  gap: 6px;
+  min-height: 18px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.bracket-col-title { font-weight: 700; }
+.bracket-col-at { white-space: nowrap; }
+.bracket-cells {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+.bracket-cell {
+  position: relative;
+  display: flex;
+  /* Поровну — но не теснее своего содержимого: `min-height` тут не
+     ставится нарочно, потому что `auto` у флекс-клетки и значит «не
+     ужимать меньше карточки». С жёстким полом ярлык «без боя» вылезал
+     из клетки и ложился на соседнюю пару */
+  flex: 1 1 0;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* Локоть: от середины пары вправо и до стыка с соседней. Верхняя пара
+   ведёт линию вниз, нижняя — вверх, и обе приходят в одну точку —
+   туда, где стоит их общая пара следующего круга */
+.bracket-col:not(:last-child) .bracket-cell::after {
+  content: "";
+  position: absolute;
+  left: 100%;
+  width: 14px;
+  height: 50%;
+  border-right: 2px solid var(--wire);
+}
+.bracket-col:not(:last-child) .bracket-cell:nth-child(odd)::after {
+  top: 50%;
+  border-top: 2px solid var(--wire);
+  border-top-right-radius: 8px;
+}
+.bracket-col:not(:last-child) .bracket-cell:nth-child(even)::after {
+  bottom: 50%;
+  border-bottom: 2px solid var(--wire);
+  border-bottom-right-radius: 8px;
+}
+.bracket-col:not(:first-child) .bracket-cell::before {
+  content: "";
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  width: 14px;
+  border-top: 2px solid var(--wire);
+}
+
+/* Пара: двое друг под другом, у каждого клетка исхода */
+.bracket {
+  border: 1.5px solid var(--wire);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 4px 6px;
+}
+.bracket.mine {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(26, 109, 208, 0.22);
+}
+.bracket-side {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 13px;
 }
 .bracket-side + .bracket-side { border-top: 1px solid var(--slot-line); }
-.bracket-name { font-weight: 600; }
-.bracket-mark { color: var(--muted); font-size: 12px; white-space: nowrap; }
-.bracket-side.won .bracket-name,
-.bracket-side.won .bracket-mark { color: var(--hp-green); font-weight: 700; }
-.bracket-side.out .bracket-name,
-.bracket-side.out .bracket-mark { color: var(--hp-red); }
-.bracket-side.out .bracket-name { text-decoration: line-through; }
-.bracket-side.you .bracket-name { text-decoration-color: var(--accent); }
-.bracket-note { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.bracket-name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bracket-mark {
+  flex: 0 0 auto;
+  min-width: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--slot-line);
+  border-radius: 5px;
+  background: var(--slot);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.bracket-side.won .bracket-mark {
+  border-color: var(--hp-green);
+  background: var(--hp-green);
+  color: #fff;
+}
+.bracket-side.out .bracket-mark {
+  border-color: var(--hp-red);
+  background: var(--hp-red);
+  color: #fff;
+}
+.bracket-side.out .bracket-name { color: var(--muted); }
+.bracket-side.you .bracket-name { color: var(--accent); }
+.bracket-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* «Без боя» — ярлык под парой, в которой соперника не нашлось */
+.bracket-bye {
+  align-self: center;
+  margin: 6px 0 0;
+  padding: 1px 8px;
+  border: 1px solid var(--gold);
+  border-radius: 999px;
+  color: var(--gold);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Финал: золото, кубок над парой и имя победителя под ней */
+.bracket-col.final .bracket-col-head { color: var(--gold); }
+.bracket-col.final .bracket {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(184, 134, 11, 0.22);
+}
+.bracket-cup {
+  margin-bottom: 6px;
+  font-size: 26px;
+  line-height: 1;
+  text-align: center;
+}
+.bracket-champ {
+  margin: 8px 0 0;
+  padding: 3px 6px;
+  border: 1.5px solid var(--gold);
+  border-radius: 8px;
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+}
 .arena-clock { margin-top: 8px; }
 
 /* ---------- бонусный пулл недели ---------- */

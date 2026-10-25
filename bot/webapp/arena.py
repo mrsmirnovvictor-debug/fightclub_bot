@@ -3,10 +3,11 @@
 Правил тут нет — их держат `bot.game.arena` и `bot.arena_service`.
 Здесь перевод в json.
 
-**Сетка рисуется кругами, а не линиями.** На телефоне дерево плей-оффа
-в ширину не помещается, и рисовать его линиями значило бы просить
-человека возить экран вбок. Круги идут сверху вниз, пара за парой:
-прошедший зелёный, вылетевший красный — это и есть переход.
+**Сетка едет деревом.** В ширину телефона плей-офф не помещается, и
+доска ездит вбок: круг — колонка, пара — карточка, исход — клетка с
+галкой или крестом. Круги, до которых турнир ещё не дошёл, стоят
+пустыми (`_blank_match`): сетка затем и нужна, чтобы видеть, куда
+ведёт линия, а не только где уже дрались.
 
 **Часы идут на странице.** До открытия записи, до гонга, до конца
 подтверждения — всё это сроки, и каждый приезжает часом, а тикает
@@ -35,7 +36,7 @@ from bot.game.arena import (
     prizes,
     round_at,
 )
-from bot.game.bracket import round_title
+from bot.game.bracket import bracket_size, round_title
 from bot.game.clock import club_moment
 from bot.game.health import format_term, now_ts
 from bot.models import Player
@@ -88,6 +89,27 @@ def match_payload(
         "left": confirm_left(int(match["opened_at"] or 0), moment),
         "confirm": CONFIRM_SECONDS,
         "bye": bool(match["red_id"] is None) != bool(match["blue_id"] is None),
+    }
+
+
+def _blank_match(slot: int) -> dict[str, Any]:
+    """Пустая пара: круг, до которого турнир ещё не дошёл.
+
+    Такие пары рисуются на доске серыми прочерками — иначе дерево росло
+    бы на глазах по колонке в полчаса, и до самого финала было бы не
+    видно, сколько кругов впереди.
+    """
+    return {
+        "slot": slot,
+        "red": None,
+        "blue": None,
+        "state": "waiting",
+        "note": "",
+        "winner_id": None,
+        "mine": False,
+        "left": 0,
+        "confirm": CONFIRM_SECONDS,
+        "bye": False,
     }
 
 
@@ -157,22 +179,9 @@ async def build_arena(
             )
             for one in players
         ],
-        "rounds": [
-            {
-                "number": number,
-                "title": round_title(len(by_round.get(number, []))),
-                "at": round_at(moment, number),
-                "at_text": club_moment(round_at(moment, number), "%H:%M"),
-                "matches": [
-                    match_payload(one, people, player.user_id, moment)
-                    for one in sorted(
-                        by_round.get(number, []), key=lambda row: row["slot"]
-                    )
-                ],
-            }
-            for number in range(1, rounds + 1)
-            if by_round.get(number)
-        ],
+        "rounds": _rounds(
+            rounds, by_round, people, player.user_id, moment, len(players)
+        ),
         "my_match": (
             match_payload(mine, people, player.user_id, moment) if mine else None
         ),
@@ -182,6 +191,36 @@ async def build_arena(
     }
     body["note"] = _note(body, phase)
     return body
+
+
+def _rounds(
+    rounds: int,
+    by_round: dict[int, list[dict]],
+    people: dict[int, dict],
+    viewer_id: int,
+    moment: int,
+    signed: int,
+) -> list[dict[str, Any]]:
+    """Круги турнира целиком: сыгранные парами, остальные — прочерками."""
+    size = bracket_size(signed)
+    board: list[dict[str, Any]] = []
+    for number in range(1, rounds + 1):
+        pairs = sorted(by_round.get(number, []), key=lambda row: row["slot"])
+        cards = [
+            match_payload(one, people, viewer_id, moment) for one in pairs
+        ] or [
+            _blank_match(slot) for slot in range(max(1, size // 2 ** number))
+        ]
+        board.append(
+            {
+                "number": number,
+                "title": round_title(len(cards)),
+                "at": round_at(moment, number),
+                "at_text": club_moment(round_at(moment, number), "%H:%M"),
+                "matches": cards,
+            }
+        )
+    return board
 
 
 def _until(phase: str, moment: int) -> int:
