@@ -19,6 +19,7 @@ from bot.game.classes import Stats
 from bot.game.equipment import CATALOGUE, OwnedItem, Slot
 from bot.game.health import now_ts
 from bot.game.potions import ActiveEffect
+from bot.game.raid import CELLAR_RAID
 from bot.game.store import PACKS
 from bot.game.clans import Clan, Rank, Standing
 from bot.game.estate import Lease
@@ -876,6 +877,10 @@ EMPTY_RAID = {
     "kind": {
         "code": "cellar", "title": "Ограбление Босса Казино", "emoji": "🩸",
         "tagline": "Он тут всё построил и всех похоронил.", "house": "casino",
+        # Рассказ о рейде берём настоящий: он стоит под заголовком, и
+        # переписывать его в стенде значило бы проверять свою же выдумку
+        "story": CELLAR_RAID.story,
+        "clones": False,
         "min_party": 1, "max_party": 10, "purse": 100, "split": True,
         "alone": True, "foes": 1, "grows": False, "foe_level": 0,
         "schedule": "сегодня с 8:00 до 10:00 и с 16:00 до 18:00 мск",
@@ -3914,21 +3919,30 @@ async def test_the_stadium_tells_the_party_what_it_is_walking_into(server):
         await browser.close()
 
 
-async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
-    """Заголовок раздела и кнопка «i»: под ней всё, с чем босс выйдет."""
+async def test_the_raid_tells_its_story_and_opens_the_numbers(server):
+    """Под заголовком — рассказ о рейде, под «i» — одни числа.
+
+    Прежде под куклой босса стояли две строки: его повадка и объяснение,
+    как он подстраивается под отряд. Про рейд теперь рассказывает
+    рассказ под заголовком, а карточка под «i» осталась числами —
+    уровень, здоровье, урон, броня.
+    """
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server)
 
         head = await page.locator(".raid-head").inner_text()
         assert "Ограбление Босса Казино" in head
+        assert "Доход от казино растёт с каждым днём" in head
+        assert "2 раза в день" in head
         assert await page.locator(".boss-stats").count() == 0
 
         await page.locator("#boss-info").click()
         await page.wait_for_selector(".boss-stats")
 
         card = await page.locator(".boss-stats").inner_text()
-        assert "Он тут всё построил" in card
-        assert "на 4 уровня выше отряда" in card  # прикидка, а не живой босс
+        # Под куклой ничего не пишем: ни повадки, ни объяснений
+        assert "Он тут всё построил" not in card
+        assert "выше отряда" not in card
         for line in ("Уровень", "304", "Кувалда", "15–25", "🪨 Сопротивление", "31%"):
             assert line in card
         assert "Броня: Голова" in card and "Броня: Ноги" not in card  # нулевую не пишем
@@ -3947,14 +3961,21 @@ async def test_the_raid_names_the_boss_and_opens_his_numbers(server):
         await browser.close()
 
 
-async def test_the_boss_card_of_a_live_raid_says_so(server):
+async def test_the_boss_card_stays_numbers_only_in_a_live_raid(server):
+    """И в идущем рейде под куклой числа, а не рассказ о нём."""
     async with async_playwright() as pw:
         browser, page = await open_raid(pw, server, raid_with_wave())
 
         await page.locator("#boss-info").click()
         await page.wait_for_selector(".boss-stats")
 
-        assert "босс идущего рейда" in await page.locator(".boss-stats").inner_text()
+        card = await page.locator(".boss-stats").inner_text()
+        assert "босс идущего рейда" not in card
+        assert "Уровень" in card and "Броня" in card
+        # Рассказ при этом на месте — он у рейда, а не у босса
+        assert "Доход от казино растёт" in await page.locator(
+            ".raid-head"
+        ).inner_text()
         await browser.close()
 
 
@@ -14254,4 +14275,45 @@ async def test_the_station_offers_cash_or_card_with_a_discount(server, db):
         await page.wait_for_selector(".charge-steps")
         squares = await page.locator(".charge-step").all_inner_texts()
         assert "42 💰" in squares[0] and "63 💰" in squares[1]
+        await browser.close()
+
+
+async def test_the_raid_house_keeps_the_raid_button_in_the_header(server):
+    """Кнопка «Рейд» стоит в шапке дома рядом с «Работой».
+
+    Прежде дверь казино открывала раздел рейда, и войти в него иначе было
+    нельзя: переключился на «Бои» — возвращайся через карту. Теперь во
+    всяком рейдовом доме в шапке стоит та же кнопка, что и на полигоне, —
+    а пока раздел рейда открыт, она горит, как «Смена» у работы.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_raid(pw, server)
+
+        # Пришли в казино: раздел рейда открыт, и кнопка это показывает
+        assert await page.locator(".raid-entry").count() == 1
+        assert await page.locator(".raid-entry").inner_text() == "🎖 Рейд"
+        assert "on" in (
+            await page.locator(".raid-entry").get_attribute("class")
+        )
+        # Шапка у неё та же, что у «Работы»: обе лежат в .screen-head,
+        # рядом с кнопкой выхода на карту
+        head = page.locator("#club .screen-head")
+        assert await head.locator(".raid-entry").count() == 1
+        assert await head.locator(".back").count() == 1
+
+        # Ушли в рюкзак — кнопка уехала с ним: она рисуется в шапке того
+        # экрана, что открыт
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+        assert await page.locator("#club .raid-entry").count() == 0
+        assert await page.locator("#bag .screen-head").count() == 0
+
+        # Вернулись в клуб — и кнопка снова в шапке, и снова горит
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club:not(.hidden)")
+        assert "on" in (
+            await page.locator(".raid-entry").get_attribute("class")
+        )
+        await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
         await browser.close()

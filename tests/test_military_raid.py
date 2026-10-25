@@ -161,9 +161,11 @@ def test_ten_guards_come_out_whoever_knocks():
     # характеров
     faces = {one.image for one in MILITARY_GUARDS}
     assert len(faces) == 1
+    # Фон прозрачный, как у образов бойцов: в рамке караул ложится на тот
+    # же студийный серый
     assert faces == {
         "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/avatars/"
-        "npc_military_uniform.jpg"
+        "npc_military_uniform_transparent.png"
     }
 
 
@@ -324,6 +326,58 @@ def test_the_trophy_tops_the_ladder_without_breaking_it():
         assert mine < club * 1.6, f"{item.code}: обходит лавку больше чем вдвое"
 
 
+# ---------- экран: один солдат за всех ----------
+
+
+def test_the_clones_show_one_card_for_all_ten():
+    """Под «i» стоит один солдат: остальные девять — его копии.
+
+    Десять одинаковых кукол подряд не рассказывают ничего, чего не
+    рассказала первая, — а вот про банду фанатов так сказать нельзя: там
+    у каждого свой класс, своё оружие и свои числа.
+    """
+    from bot.game.raid import CELLAR_RAID, HOOLIGAN_RAID
+    from bot.webapp.raid import shown_roster
+
+    assert MILITARY_RAID.clones is True
+    assert HOOLIGAN_RAID.clones is False and CELLAR_RAID.clones is False
+
+    ten = MILITARY_RAID.roster(10)
+    assert len(ten) == 10
+    assert len(shown_roster(MILITARY_RAID, ten)) == 1
+    # Банда показывается целиком, босс казино и так один
+    gang = HOOLIGAN_RAID.roster(3)
+    assert len(shown_roster(HOOLIGAN_RAID, gang)) == len(gang) > 1
+    assert len(shown_roster(CELLAR_RAID, CELLAR_RAID.roster(1))) == 1
+
+
+def test_the_story_of_the_base_names_the_clones_and_the_hours():
+    """Рассказ о рейде: секретное оружие, десять клонов и понедельник."""
+    story = MILITARY_RAID.story
+
+    assert "секретного оружия" in story
+    assert "клонированных солдат из 10 человек" in story
+    assert "каждый понедельник с 18:00 до 00:00" in story
+
+
+async def test_the_screen_of_the_base_carries_one_soldier(db, bot):
+    """Экран базы: рассказ, один солдат под «i» и десять на табло волны."""
+    from bot.webapp.raid import build_raid
+
+    service = make_service(db, bot)
+    player = (await soldier_hunters(db, 1))[0]
+
+    body = build_raid(player, service, 0, MILITARY_RAID)
+
+    assert body["kind"]["story"] == MILITARY_RAID.story
+    assert body["kind"]["clones"] is True
+    assert len(body["roster"]) == 1, "десять одинаковых кукол незачем"
+    assert body["boss"] is body["roster"][0]
+    assert body["boss"]["title"] == MILITARY_GUARDS[0].title
+    # А вот противников на минимальный отряд по-прежнему десять
+    assert body["kind"]["foes"] == 10
+
+
 # ---------- вход ----------
 
 
@@ -415,6 +469,28 @@ async def test_the_raid_screen_shows_the_base_without_a_ticket(db, bot):
     # Плашка на карте есть у каждого рейдового дома, и у базы тоже
     plates = await plates_payload(player, service)
     assert BASE in plates
+
+
+def test_the_sword_of_the_guard_holds_the_chiefs_level():
+    """Клинок охраны не слабее дубинки начальника полиции.
+
+    Караул на секретном складе вооружён не хуже, чем кабинет в участке,
+    и заметно лучше фанатской биты — иначе рейд двенадцатого уровня
+    встречал бы оружием десятого.
+    """
+    sword = CATALOGUE["military_sword"]
+    chief = CATALOGUE["chief_baton"]
+    gang = CATALOGUE["fan_boss_bat"]
+
+    def middle(item):
+        return (item.damage_min + item.damage_max) / 2
+
+    assert middle(sword) >= middle(chief) > middle(gang)
+    assert sword.accuracy >= chief.accuracy
+    assert sword.anticrit >= chief.anticrit
+    assert sword.strength >= chief.strength
+    # И по полосе своей ступени он всё ещё проходит
+    assert sword.accuracy <= weapon_share_cap(MILITARY_LEVEL)
 
 
 def test_the_level_of_the_guards_matches_their_uniform():

@@ -397,6 +397,10 @@ def kind_row(kind: RaidKind) -> dict[str, Any]:
         "title": kind.title,
         "emoji": kind.emoji,
         "tagline": kind.tagline,
+        # Рассказ о рейде: он стоит под заголовком раздела и объясняет
+        # дело словами. Числа рядом с ним страница собирает сама
+        "story": kind.story,
+        "clones": kind.clones,
         "house": kind.house,
         "min_party": kind.min_party,
         "max_party": kind.max_party,
@@ -478,8 +482,18 @@ def preview_cards(player: Player, kind: RaidKind) -> list[dict[str, Any]]:
             live=False,
             kind=kind,
         )
-        for boss in kind.roster(len(levels))
+        for boss in shown_roster(kind, kind.roster(len(levels)))
     ]
+
+
+def shown_roster(kind: RaidKind, foes: list) -> list:
+    """Кого показывать под кнопкой «i».
+
+    Обычно всех: в банде у каждого свой класс, своё оружие и свои числа.
+    Клонов — одного: остальные девять его копии, и девять одинаковых
+    кукол подряд не рассказывают ничего, чего не рассказала первая.
+    """
+    return list(foes)[:1] if kind.clones else list(foes)
 
 
 def build_raid(
@@ -523,7 +537,7 @@ def build_raid(
                 live=True,
                 kind=session.kind,
             )
-            for number in session.order
+            for number in shown_roster(session.kind, session.order)
         ]
         body["boss"] = body["roster"][0]
         return body

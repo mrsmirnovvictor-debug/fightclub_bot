@@ -666,6 +666,11 @@ BOSSES: tuple[Boss, ...] = (
             "boss_necklace",
         ),
         genitive="Босса Казино",
+        # Портрет перерисовали с прозрачным фоном и переложили в папку
+        # образов: прежний лежал в `bosses/` и был с фоном. Код босса при
+        # этом не трогаем — по нему лежит вся прошлая история рейдов
+        portrait="boss_transparent",
+        portrait_ext="png",
         tagline="Он тут всё построил и всех похоронил.",
         raid_title="Ограбление Босса Казино",
         # Кувалда ходит сверху, щит стоит у лица: в своей стойке он
@@ -819,16 +824,16 @@ def _hooligan(code: str, nick: str, kind: str) -> Boss:
         # Трикстер выходит с зонтом и лёгким щитом: доску лидера он не
         # поднимет, а щиток под руку — его вес. Блок от щитка всё равно
         # на три зоны, и пустая рука у трикстера кончилась
-        "rogue": ("🤸", "fan_rogue", "fan_rogue_umbrella", ROGUE_SHIELD,
+        "rogue": ("🤸", "fan_rogue_transparent", "fan_rogue_umbrella", ROGUE_SHIELD,
                   ROGUE_TEMPER,
                   "Метит по ногам и сам закрывается низко."),
         # Воину щит положен — тот же, что и лидеру: в фанатской линии он
         # один на двоих
-        "warrior": ("⚔️", "fan_warrior", "fan_warrior_bat", FAN_SHIELD,
+        "warrior": ("⚔️", "fan_warrior_transparent", "fan_warrior_bat", FAN_SHIELD,
                     WARRIOR_TEMPER,
                     "Работает по корпусу, широко и без выдумки."),
         # У ассасина нож в каждой руке — и бьёт он поэтому дважды за ход
-        "assassin": ("🗡️", "fan_assassin", "fan_assassin_knife",
+        "assassin": ("🗡️", "fan_assassin_transparent", "fan_assassin_knife",
                      "fan_assassin_knife", ASSASSIN_TEMPER,
                      "Два ножа ходят в живот и под ремень."),
     }[kind]
@@ -843,6 +848,9 @@ def _hooligan(code: str, nick: str, kind: str) -> Boss:
         outfit=FAN_OUTFIT,
         build_level=GANG_BUILD,
         portrait=portrait,
+        # Лица гопников перерисовали с прозрачным фоном: в рамке они
+        # теперь ложатся на тот же студийный серый, что и образы бойцов
+        portrait_ext="png",
         temper=temper,
         manner=manner,
     )
@@ -862,7 +870,8 @@ GANG_LEADER = Boss(
     weapon="fan_boss_bat",
     offhand=FAN_SHIELD,
     outfit=FAN_OUTFIT,
-    portrait="fan_boss",
+    portrait="fan_boss_transparent",
+    portrait_ext="png",
     tagline="Держит сектор и отвечает за всех, кто в нём орёт.",
     temper=Temper(
         attacks=(("head", 23), ("chest", 23), ("belly", 20), ("belt", 18), ("legs", 16)),
@@ -1001,8 +1010,12 @@ GUARD_GEAR: tuple[str, ...] = (
 
 # Лицо охраны. Одно на всех десятерых — и это не экономия на арте: на
 # базе стоит не десять характеров, а караул в одной форме. Так же
-# устроена и городская охрана (`hirelings.guard_picture`)
-GUARD_FACE = "npc_military_uniform"
+# устроена и городская охрана (`hirelings.guard_picture`).
+#
+# Фон у портрета прозрачный, как у образов бойцов: в рамке он ложится на
+# тот же студийный серый, и караул выглядит как боец, а не как
+# фотография в паспорте
+GUARD_FACE = "npc_military_uniform_transparent"
 
 
 def _guard(code: str, name: str) -> Boss:
@@ -1022,7 +1035,7 @@ def _guard(code: str, name: str) -> Boss:
         gear=GUARD_GEAR,
         outfit=MILITARY_OUTFIT,
         portrait=GUARD_FACE,
-        portrait_ext="jpg",
+        portrait_ext="png",
         temper=GUARD_TEMPER,
         manner="Работает по корпусу и держит щит низко.",
     )
@@ -1098,6 +1111,13 @@ class RaidKind:
     foe_level: int = 0
     hp_share: float = BOSS_HP_SHARE
     tagline: str = ""
+    # Рассказ о рейде: что это за дело, с кем драться и когда пускают.
+    # Стоит под заголовком раздела и объясняет рейд словами, а не
+    # числами — числа боец и так видит рядом
+    story: str = ""
+    # Противники одинаковы: под «i» хватит одного, остальные его копии.
+    # На табло волны при этом стоят все — там видно, кто ещё на ногах
+    clones: bool = False
     # Что падает за победу сверх кредитов
     spoils: Spoils = CELLAR_SPOILS
     # Сколько у бойца есть на свой удар. Ноль — брать из настроек
@@ -1149,6 +1169,12 @@ CELLAR_RAID = RaidKind(
     schedule=CELLAR_SCHEDULE,
     leader=CELLAR_BOSS,
     tagline=CELLAR_BOSS.tagline,
+    story=(
+        "Доход от казино растёт с каждым днём. Босс хранит его в своём "
+        "сейфе. Совершите налёт на казино и сразитесь с боссом, чтобы "
+        "заработать до 100 кр. Возможность есть 2 раза в день, но время "
+        "всегда разное."
+    ),
     spoils=CELLAR_SPOILS,
 )
 
@@ -1173,6 +1199,12 @@ HOOLIGAN_RAID = RaidKind(
     # Прибавки к здоровью у банды нет: у неё вместо прибавки лишние тела
     hp_share=0.0,
     tagline="Фанатский сектор вываливается со стадиона и ищет, с кем поговорить.",
+    story=(
+        "Матчи на стадионе проходят каждую среду и субботу с 18:00 до "
+        "00:00. После матча фанатом хлебом не корми — дай подраться. "
+        "Есть шанс получить фирменную экипировку из магазина «Северный "
+        "вал»."
+    ),
     spoils=GANG_SPOILS,
     turn_seconds=GANG_TURN_SECONDS,
 )
@@ -1199,6 +1231,15 @@ MILITARY_RAID = RaidKind(
     # Прибавки к здоровью у охраны нет: вместо неё девять товарищей
     hp_share=0.0,
     tagline="Полигон под охраной: десять солдат, и меньше их не станет.",
+    story=(
+        "Военные занимаются разработкой секретного оружия и хранят его на "
+        "складе военного полигона. Чтобы добраться до него, нужно пройти "
+        "через отряд клонированных солдат из 10 человек, они несут службу "
+        "каждый понедельник с 18:00 до 00:00."
+    ),
+    # Охрана — клоны, и это не фигура речи: один солдат под «i» описывает
+    # всех десятерых, потому что они и собраны одинаковыми
+    clones=True,
     spoils=MILITARY_SPOILS,
     turn_seconds=MILITARY_TURN_SECONDS,
 )

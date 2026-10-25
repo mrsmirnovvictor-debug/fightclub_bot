@@ -585,24 +585,28 @@ def test_the_gang_looks_at_you_from_the_avatars_folder():
     """Портреты гопников лежат среди образов, а не среди боссов.
 
     Их четыре на тринадцать человек — по лицу на класс: рисовали их
-    вместе с фанатской линией одежды, и там же они и выгружены. Босс
-    казино по-прежнему смотрит из своей папки.
+    вместе с фанатской линией одежды, и там же они и выгружены.
+
+    Фон у портретов прозрачный, как у образов бойцов: в рамке они лежат
+    на том же студийном сером. Отсюда и png вместо jpeg — прозрачности в
+    фотоформате нет. Босс казино переехал туда же: его перерисовали тем
+    же заходом.
     """
     from bot.game import art
     from bot.game.raid import GANG
 
-    assert GANG[0].image == f"{art.AVATARS}/fan_boss.jpeg"
+    assert GANG[0].image == f"{art.AVATARS}/fan_boss_transparent.png"
     faces = {one.image for one in GANG}
     assert faces == {
-        f"{art.AVATARS}/fan_boss.jpeg",
-        f"{art.AVATARS}/fan_rogue.jpeg",
-        f"{art.AVATARS}/fan_warrior.jpeg",
-        f"{art.AVATARS}/fan_assassin.jpeg",
+        f"{art.AVATARS}/fan_boss_transparent.png",
+        f"{art.AVATARS}/fan_rogue_transparent.png",
+        f"{art.AVATARS}/fan_warrior_transparent.png",
+        f"{art.AVATARS}/fan_assassin_transparent.png",
     }
     # и лицо у всех одного класса общее
     assert len({one.image for one in GANG_ROGUES}) == 1
-    # а подвал как смотрел из bosses/, так и смотрит
-    assert CELLAR_RAID.leader.image == art.boss("cellar_boss")
+    # а подвал смотрит оттуда же и тоже без фона
+    assert CELLAR_RAID.leader.image == f"{art.AVATARS}/boss_transparent.png"
 
 
 def test_each_hooligan_has_his_own_habits():
@@ -679,6 +683,31 @@ def test_the_ticket_is_its_own_pass_and_costs_fifty():
     assert CELLAR_RAID.pass_code == RAID_PASS
     assert ticket.price == 50
     assert ticket.is_pass is True  # его не пьют, его предъявляют
+
+
+def test_every_raid_tells_what_it_is_about():
+    """У каждого рейда свой рассказ, и он стоит под заголовком.
+
+    Прежде рейд объяснялся числами под куклой противника — «он на
+    четыре уровня выше отряда», — и это объясняло бой, но не дело. Текст
+    теперь у рейда, а не у босса: что это за место, с кем драться и когда
+    пускают.
+    """
+    from bot.webapp.raid import kind_row
+
+    stories = {kind.code: kind.story for kind in RAID_KINDS}
+
+    assert len(set(stories.values())) == len(RAID_KINDS), "рассказ на двоих"
+    for code, story in stories.items():
+        assert story, f"{code}: рейд молчит о себе"
+        assert story.strip() == story and story.endswith(".")
+        assert len(story) > 80, f"{code}: рассказ в одну строку"
+        # Расписание в рассказе названо словами, а не одними числами
+        assert "18:00" in story or "раза в день" in story, code
+    # И уезжает он на страницу вместе с остальным про рейд
+    assert kind_row(HOOLIGAN_RAID)["story"] == HOOLIGAN_RAID.story
+    assert "Северный вал" in HOOLIGAN_RAID.story
+    assert "каждую среду и субботу" in HOOLIGAN_RAID.story
 
 
 def test_every_raid_asks_for_its_own_pass_and_sells_it_somewhere():

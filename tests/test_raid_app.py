@@ -318,7 +318,9 @@ async def test_the_boss_stands_in_slots_like_a_fighter(cellar):
 
     boss = (await state(client, 42))["boss"]
 
-    assert boss["avatar"]["url"].endswith("bosses/cellar_boss.png")
+    # Портрет без фона и из папки образов: в рамке он ложится на тот же
+    # студийный серый, что и образ бойца
+    assert boss["avatar"]["url"].endswith("avatars/boss_transparent.png")
     left = boss["slots"]["left"]
     right = boss["slots"]["right"]
     assert [row["slot"] for row in left] == [

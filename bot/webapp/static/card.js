@@ -4000,12 +4000,25 @@ function raidHead(kind) {
   info.className = "info-btn";
   info.id = "boss-info";
   info.textContent = "i";
-  info.title = kind.alone ? "Характеристики босса" : "Состав банды";
+  info.title = kind.alone
+    ? "Характеристики босса"
+    : kind.clones
+      ? "Характеристики солдата"
+      : "Состав банды";
   info.addEventListener("click", () => {
     bossOpen = !bossOpen;
     renderRaid(raidData);
   });
   box.appendChild(info);
+
+  // Рассказ о рейде — под заголовком, во всю ширину: что это за дело, с
+  // кем драться и когда пускают. Числа боец видит ниже, в условиях
+  if (kind.story) {
+    const story = document.createElement("p");
+    story.className = "raid-story";
+    story.textContent = kind.story;
+    box.appendChild(story);
+  }
   return box;
 }
 
@@ -4023,32 +4036,13 @@ function bossStats(boss) {
   }
 
   // Кукла босса — тем же кодом, что и карточка бойца: аватар в середине,
-  // слоты по бокам, под пустыми — подложки
+  // слоты по бокам, под пустыми — подложки.
+  //
+  // Под куклой ничего не пишем. Прежде тут стояли две строки — повадка
+  // противника и объяснение, как он подстраивается под отряд, — но про
+  // сам рейд теперь рассказывает его рассказ под заголовком, а здесь
+  // место для чисел: уровень, здоровье, урон, броня
   if (boss.slots) box.appendChild(sheetDoll(boss));
-  if (boss.tagline) {
-    const line = document.createElement("p");
-    line.className = "screen-note";
-    line.textContent = boss.tagline;
-    box.appendChild(line);
-  }
-
-  const note = document.createElement("p");
-  note.className = "screen-note";
-  if (boss.live) {
-    note.textContent = boss.alone
-      ? "Это босс идущего рейда."
-      : "Он в банде, с которой вы дерётесь прямо сейчас.";
-  } else if (boss.alone) {
-    note.textContent =
-      "Так он выйдет на твой уровень: он всегда на " + boss.levels_above +
-      " уровня выше отряда, а здоровья набирает с каждым бойцом.";
-  } else {
-    note.textContent =
-      "Он стоит на своём " + boss.level + "-м уровне и под отряд не " +
-      "подстраивается. Сложность в числе: за каждого бойца сверх трёх " +
-      "банда приводит ещё одного.";
-  }
-  box.appendChild(note);
 
   const rows = document.createElement("div");
   rows.className = "boss-rows";
@@ -8659,14 +8653,17 @@ function paintWorkEntry(screen) {
  */
 function paintRaidEntry(screen) {
   document.querySelectorAll(".raid-entry").forEach((one) => one.remove());
-  if (screen === "club") return;
   if (!inRaidHouse()) return;
   const head = el(screen) && el(screen).querySelector(".screen-head");
   if (!head) return;
 
+  // Рейд уже открыт — кнопка горит, как «Смена» у работы. Гасить её на
+  // этом экране значило бы делать шапку в казино не такой, как на
+  // полигоне, а однообразие тут и есть смысл кнопки
+  const here = screen === "club" && clubSection === "raid";
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "work-entry raid-entry";
+  btn.className = "work-entry raid-entry" + (here ? " on" : "");
   btn.textContent = "🎖 Рейд";
   btn.addEventListener("click", () => openRaidHouse(myPlace && myPlace.code));
   head.appendChild(btn);

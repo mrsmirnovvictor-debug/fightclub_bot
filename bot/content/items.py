@@ -1359,10 +1359,16 @@ MILITARY_KIT: tuple[Item, ...] = (
         "military_helmet", "Шлем с визором", Slot.HEAD, "🪖", "helmet",
         strength=3, hp=40, armor_min=11, armor_max=14, anticrit=0.25,
     ),
+    # Клинок охраны держит уровень дубинки начальника полиции, а не
+    # фанатской биты: караул на секретном складе вооружён не хуже, чем
+    # кабинет в участке. По урону это тридцать два средним против
+    # двадцати девяти у начальника и двадцати пяти у банды, и вторая доля
+    # у него та же — антикрит: удар сверху гасит чужой крит
     _army(
         "military_sword", "Армейский клинок", Slot.WEAPON, "⚔️", "weapon",
         kind=ItemKind.WEAPON, instrumental="армейским клинком",
-        strength=5, damage_min=24, damage_max=36, accuracy=0.6,
+        strength=5, damage_min=26, damage_max=38,
+        accuracy=0.6, anticrit=0.54,
     ),
     _army(
         "military_shield", "Штурмовой щит", Slot.OFFHAND, "🛡", "shield",
