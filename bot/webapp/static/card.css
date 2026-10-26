@@ -2874,10 +2874,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .zone-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0 8px;
+  gap: 0 6px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 10px;
+  padding: 10px 8px;
 }
 /* Со вторым оружием столбцов три: два удара и защита */
 .zone-columns.three { grid-template-columns: 1fr 1fr 1fr; }
@@ -2940,12 +2940,16 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Зазор и поля тут считанные: на 320 пикселях в три столбца «Голова+
+   Корпус» помещается впритык, и лишняя пара пикселей по бокам режет ей
+   хвост многоточием. Шрифт ужать нельзя — он и так на своём полу
+   (`--zone-font`), ниже которого не разобрать */
 .zone {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-size: var(--zone-font);
-  padding: 6px 2px;
+  padding: 6px 1px;
   border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
