@@ -9579,7 +9579,8 @@ async def test_a_taken_vacancy_names_its_holder_and_offers_nothing(server):
 
         taken = page.locator(".vacancy.taken")
         assert await taken.count() == 1
-        assert "Занято: Марла-0." in await taken.locator(
+        # У крупье два кресла, и заняты оба: называем обоих
+        assert "Все места заняты: Марла-0, Марла-1." in await taken.locator(
             ".vacancy-state"
         ).inner_text()
         assert await taken.locator(".btn").count() == 0
@@ -13391,8 +13392,8 @@ async def test_the_quests_tab_lists_all_ten_with_their_marks(server):
         await browser.close()
 
 
-async def test_the_university_shows_four_specialities_with_their_price(server):
-    """Приёмная: четыре курса, цена, срок и диплом в конце.
+async def test_the_university_shows_five_specialities_with_their_price(server):
+    """Приёмная: пять курсов, цена, срок и диплом в конце.
 
     Карточка курса устроена как бланк: по ней и видно, во что боец
     вписывается, — две недели по два часа и экзамен в десять вопросов.
@@ -13410,12 +13411,13 @@ async def test_the_university_shows_four_specialities_with_their_price(server):
         titles = await page.locator(".course-title").all_inner_texts()
         assert [one.split(" ", 1)[1] for one in titles] == [
             "Банковское дело", "Информационные технологии",
-            "Менеджмент", "Государственное управление",
+            "Менеджмент", "Юриспруденция", "Государственное управление",
         ]
         prices = await page.locator(".course-price").all_inner_texts()
         assert prices == [
             num_space("2 000") + " 💰", num_space("2 000") + " 💰",
-            num_space("1 800") + " 💰", num_space("2 500") + " 💰",
+            num_space("1 800") + " 💰", num_space("1 800") + " 💰",
+            num_space("2 500") + " 💰",
         ]
 
         first = page.locator(".course").first
@@ -13641,38 +13643,37 @@ async def test_the_diploma_lies_in_the_papers_without_a_pro_note(server):
 
 
 async def test_the_diploma_vacancy_says_what_it_wants(server):
-    """Место под диплом: документ, стаж и сколько кресел свободно."""
+    """Место под диплом: документ, стаж и сколько кресел свободно.
+
+    Места банка, больницы, части и суда на доску не попадают вовсе —
+    туда приходят наниматься в сам дом. На доске под диплом остались
+    разработка, продажи, администрация и таксопарк.
+    """
     async with async_playwright() as pw:
-        browser, page = await open_hr(pw, server, hr=hr_state(diplomas=("banking",)))
+        browser, page = await open_hr(pw, server, hr=hr_state(diplomas=("it",)))
         await page.wait_for_selector(".vacancy")
 
-        cashier = page.locator(".vacancy", has_text="Кассир в Банке")
-        facts = await cashier.locator(".vacancy-fact").all_inner_texts()
-        assert any("Диплом об экономическом образовании" in one for one in facts)
-        assert any("2, свободно 2" in one for one in facts)
+        junior = page.locator(".vacancy", has_text="Младший разработчик")
+        facts = await junior.locator(".vacancy-fact").all_inner_texts()
+        assert any("Диплом об IT-специальности" in one for one in facts)
+        assert any("6, свободно 6" in one for one in facts)
         # Опыта это место не требует — строки «Опыт» на нём нет вовсе
         assert not any(one.startswith("Опыт") for one in facts)
         # Диплом есть, теста нет: берут сразу
-        assert await cashier.locator(".btn").inner_text() == "Устроиться"
+        assert await junior.locator(".btn").inner_text() == "Устроиться"
 
         # А у бармена всё наоборот: тест есть, диплома не нужно
         barman = page.locator(".vacancy", has_text="Бармен")
         assert await barman.locator(".btn").inner_text() == "Подать заявку"
         bar_facts = await barman.locator(".vacancy-fact").all_inner_texts()
         assert any("не требуется" in one for one in bar_facts)
-        # За стойкой двадцать мест, и это на карточке написано
-        assert any("20, свободно 20" in one for one in bar_facts)
+        # За стойкой пять мест, и это на карточке написано
+        assert any("5, свободно 5" in one for one in bar_facts)
 
-        # А у места с одним креслом строки «Мест» нет вовсе: «1 место,
-        # свободно 1» ничего не добавляет. Сверяем первую строку поля
-        # целиком: «Место» тоже начинается с «Мест», и `startswith`
-        # поймал бы его заодно
-        post = page.locator(".vacancy", has_text="Сотрудник почты")
-        labels = [
-            one.splitlines()[0]
-            for one in await post.locator(".vacancy-fact").all_inner_texts()
-        ]
-        assert "Мест" not in labels and "Место" in labels
+        # Кассира и управляющего на доске нет: в банк приходят в банк
+        said = await page.locator("#hr-body").inner_text()
+        assert "Кассир в Банке" not in said
+        assert "Управляющий филиалом" not in said
         await browser.close()
 
 
@@ -13680,21 +13681,21 @@ async def test_the_board_says_what_is_missing_instead_of_a_button(server):
     """Нет диплома или стажа — вместо кнопки сказано, чего не хватает."""
     async with async_playwright() as pw:
         browser, page = await open_hr(
-            pw, server, hr=hr_state(diplomas=("banking",), months=1)
+            pw, server, hr=hr_state(diplomas=("it",), months=1)
         )
         await page.wait_for_selector(".vacancy")
 
-        # Диплом есть, стажа мало: управляющим не берут, и сказано почему
-        head = page.locator(".vacancy", has_text="Управляющий филиалом")
+        # Диплом есть, стажа мало: старшим не берут, и сказано почему
+        head = page.locator(".vacancy", has_text="Старший разработчик")
         assert await head.locator(".btn").count() == 0
         said = await head.locator(".vacancy-state").inner_text()
         assert "Нужен опыт от 2 месяцев, а у тебя 1 месяц." == said
 
-        # А диплома врача нет вовсе — и сказано, какой нужен
-        doctor = page.locator(".vacancy", has_text="Санитар")
-        assert await doctor.locator(".btn").count() == 0
-        assert "Нужен документ: Диплом медицинского колледжа." in (
-            await doctor.locator(".vacancy-state").inner_text()
+        # А диплома управленца нет вовсе — и сказано, какой нужен
+        clerk = page.locator(".vacancy", has_text="Секретарь")
+        assert await clerk.locator(".btn").count() == 0
+        assert "Нужен документ: Диплом государственного управленца." in (
+            await clerk.locator(".vacancy-state").inner_text()
         )
         await browser.close()
 
