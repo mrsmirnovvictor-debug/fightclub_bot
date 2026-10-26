@@ -501,14 +501,6 @@ class RaidService:
         if seen:  # пропуск за это окно уже отдан, ходи сколько хочешь
             return
 
-        if not kind.needs_pass:
-            # Вход свободный: на военную базу билета не продают. Окно всё
-            # равно занимаем — по нему считается «своё за это окно взято»
-            await self.db.start_raid_window(
-                player.user_id, window.start, kind.code
-            )
-            return
-
         ticket = get_potion(kind.pass_code)
         if player.potion_count(kind.pass_code) <= 0 and not buy:
             raise RaidError(

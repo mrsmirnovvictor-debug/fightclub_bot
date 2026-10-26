@@ -35,6 +35,9 @@ RAID_PASS = "raid_pass"
 # Пропуск на стычку с фанатами. Пропуск под каждый рейд свой: талон
 # казино на стадионе не спрашивают, и наоборот
 STADIUM_PASS = "stadium_pass"
+# Пропуск на военный полигон. Дороже билета на матч на полсотни: за
+# базой и приз другой — кибероружие, которого нет ни в одной лавке
+BASE_PASS = "base_pass"
 
 # Ярлык раздела на витрине: эликсиры лежат отдельно от того, что надевают
 SECTION_CODE = "misc"
@@ -252,6 +255,18 @@ POTIONS: tuple[Potion, ...] = (
         price=50,
         max_wear=1,
     ),
+    Potion(
+        BASE_PASS,
+        "Пропуск на полигон",
+        "🪪",
+        PotionKind.PASS,
+        note=(
+            "Карточка с магнитной полосой и штампом части. Необходима для "
+            "запуска и участия в рейде «Захват военной базы»."
+        ),
+        price=100,
+        max_wear=1,
+    ),
 )
 
 BY_CODE: dict[str, Potion] = {potion.code: potion for potion in POTIONS}
@@ -304,6 +319,7 @@ def effects_hp(effects: list[ActiveEffect], now: int | None = None) -> int:
 
 
 __all__ = [
+    "BASE_PASS",
     "BY_CODE",
     "EFFECT_SECONDS",
     "POTIONS",

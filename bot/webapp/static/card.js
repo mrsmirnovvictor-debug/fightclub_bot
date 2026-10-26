@@ -4088,12 +4088,6 @@ async function raidTicket(gate, what) {
   // нет — покупаем тут же, одним «Подтвердить»; окно уже оплачено — не
   // спрашиваем вовсе.
   if (gate.spent) return { go: true, buy: false };
-  // Пропуска у рейда может не быть вовсе: на военную базу билета не
-  // продают. Тогда спрашиваем только про сам штурм
-  if (!gate.pass_code) {
-    const ok = await askConfirm("🎖 " + what, "Идём на штурм?");
-    return { go: ok, buy: false };
-  }
   if (gate.passes > 0) {
     const ok = await askConfirm(
       gate.pass_emoji + " " + what,
@@ -4145,10 +4139,8 @@ function raidOpenForm(data) {
     : gate.spent
       ? "Пропуск за это окно отдан — заходи хоть до самого конца."
       : gate.open
-        ? gate.pass_code
-          ? gate.pass_emoji + " " + gate.pass_title + ", в инвентаре: " +
-            (gate.passes || 0) + " шт."
-          : "Вход свободный: пропуска тут не спрашивают."
+        ? gate.pass_emoji + " " + gate.pass_title + ", в инвентаре: " +
+          (gate.passes || 0) + " шт."
         : "Ближайшее окно " + gate.next_window + ".";
   box.appendChild(note);
 

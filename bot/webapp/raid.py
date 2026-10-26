@@ -425,18 +425,13 @@ async def gate_payload(
     Отсюда страница знает, что показать в окне согласия: тратить пропуск
     из рюкзака, покупать его или вовсе не звать — своё уже взято.
     """
-    # Пропуска у рейда может не быть вовсе: на военную базу не покупают
-    # билет, её берут. Тогда поля пропуска уезжают пустыми, и окно
-    # согласия на странице спрашивает только про сам штурм
-    ticket = get_potion(kind.pass_code) if kind.needs_pass else None
+    ticket = get_potion(kind.pass_code)
     body: dict[str, Any] = {
         "pass_code": kind.pass_code,
         "pass_title": ticket.title if ticket else "",
         "pass_price": ticket.price if ticket else 0,
         "pass_emoji": ticket.emoji if ticket else "",
-        "passes": (
-            player.potion_count(kind.pass_code) if kind.needs_pass else 0
-        ),
+        "passes": player.potion_count(kind.pass_code),
         "schedule": kind.schedule_text(),
         "open": False,
         "window": "",

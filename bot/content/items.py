@@ -1354,10 +1354,18 @@ def _army(
     )
 
 
+# Числа формы меряются не на глаз, а против лидера банды фанатов: солдат
+# обязан стоять на десять-пятнадцать процентов выше него по сводной мощи
+# (`scripts/foe_power.py`, `test_the_guard_stands_above_the_gang_leader`).
+# Сперва было наоборот: форма двенадцатой ступени держала хуже фанатской
+# десятой — 612 здоровья против 848 и броня 42 против 71, — и десять
+# солдат выходили слабее пятерых гопников с лидером. Правилось это
+# запасом здоровья и бронёй; клинок остался прежним, он и так на уровне
+# дубинки начальника полиции.
 MILITARY_KIT: tuple[Item, ...] = (
     _army(
         "military_helmet", "Шлем с визором", Slot.HEAD, "🪖", "helmet",
-        strength=3, hp=40, armor_min=11, armor_max=14, anticrit=0.25,
+        strength=3, hp=90, armor_min=15, armor_max=19, anticrit=0.25,
     ),
     # Клинок охраны держит уровень дубинки начальника полиции, а не
     # фанатской биты: караул на секретном складе вооружён не хуже, чем
@@ -1373,51 +1381,51 @@ MILITARY_KIT: tuple[Item, ...] = (
     _army(
         "military_shield", "Штурмовой щит", Slot.OFFHAND, "🛡", "shield",
         kind=ItemKind.SHIELD,
-        strength=4, hp=30, armor_min=13, armor_max=16, anticrit=0.3,
+        strength=4, hp=66, armor_min=18, armor_max=22, anticrit=0.3,
     ),
     _army(
         "military_tshirt", "Футболка под броню", Slot.SHIRT, "🎽", "tshirt",
-        strength=4, agility=2, hp=24, counter=0.04,
+        strength=4, agility=2, hp=54, counter=0.04,
     ),
     _army(
         "military_armor", "Бронежилет", Slot.JACKET, "🧥", "armor",
-        strength=4, hp=48, armor_min=15, armor_max=19, anticrit=0.2,
+        strength=4, hp=106, armor_min=20, armor_max=25, anticrit=0.2,
     ),
     _army(
         "military_belt", "Разгрузочный пояс", Slot.BELT, "🥋", "belt",
-        strength=3, hp=26, armor_min=10, armor_max=13, accuracy=0.2,
+        strength=3, hp=58, armor_min=14, armor_max=18, accuracy=0.2,
     ),
     _army(
         "military_gloves", "Тактические перчатки", Slot.GLOVES, "🧤", "gloves",
-        strength=3, agility=2, hp=18, accuracy=0.25, crit=0.15,
+        strength=3, agility=2, hp=40, accuracy=0.25, crit=0.15,
     ),
     _army(
         "military_pants", "Штаны с наколенниками", Slot.PANTS, "👖", "pants",
-        strength=3, hp=28, armor_min=11, armor_max=14, dodge=0.1,
+        strength=3, hp=62, armor_min=15, armor_max=19, dodge=0.1,
     ),
     _army(
         "military_boots", "Берцы", Slot.BOOTS, "🥾", "boots",
-        agility=3, hp=22, armor_min=9, armor_max=12, dodge=0.15,
+        agility=3, hp=48, armor_min=13, armor_max=16, dodge=0.15,
     ),
     _army(
         "military_necklace", "Жетон на цепочке", Slot.NECKLACE, "📿",
         "necklace",
-        intuition=3, hp=20, armor_min=8, armor_max=10, anticrit=0.15,
+        intuition=3, hp=44, armor_min=11, armor_max=14, anticrit=0.15,
     ),
     # Колец три, как и клеток под них: форма собирается целиком, а не
     # «почти целиком», иначе два пальца охране добрал бы клубный
     # прилавок. Числа у всех трёх одни — это одно и то же кольцо
     _army(
         "military_ring", "Кольцо части", Slot.RING_RIGHT, "💍", "ring",
-        strength=4, hp=20, accuracy=0.15,
+        strength=4, hp=44, armor_min=6, armor_max=9, accuracy=0.15,
     ),
     _army(
         "military_ring_middle", "Кольцо части", Slot.RING_MIDDLE, "💍", "ring",
-        strength=4, hp=20, accuracy=0.15,
+        strength=4, hp=44, armor_min=6, armor_max=9, accuracy=0.15,
     ),
     _army(
         "military_ring_left", "Кольцо части", Slot.RING_LEFT, "💍", "ring",
-        strength=4, hp=20, accuracy=0.15,
+        strength=4, hp=44, armor_min=6, armor_max=9, accuracy=0.15,
     ),
 )
 

@@ -711,23 +711,17 @@ def test_every_raid_tells_what_it_is_about():
 
 
 def test_every_raid_asks_for_its_own_pass_and_sells_it_somewhere():
-    """Где пропуск просят, он свой и лежит в лавке, а не из воздуха.
+    """У каждого рейда свой пропуск, и он лежит в лавке, а не из воздуха.
 
-    Рейд без пропуска бывает: военную базу берут, а не покупают
-    (`docs/raids.md`). Но пустая строка в `pass_code` — решение, и
-    проверяется оно по тому, что рейд о пропуске нигде и не заговорит:
-    у остальных же пропуск обязан быть своим и продаваться.
+    Пропуск на троих один означал бы, что билет на матч пускает и на
+    полигон, — а дорога на базу стоит дороже стадиона.
     """
-    paid = [kind for kind in RAID_KINDS if kind.needs_pass]
-    free = [kind for kind in RAID_KINDS if not kind.needs_pass]
-    codes = {kind.pass_code for kind in paid}
+    codes = {kind.pass_code for kind in RAID_KINDS}
 
-    assert len(codes) == len(paid), "два рейда с одним пропуском"
+    assert len(codes) == len(RAID_KINDS), "два рейда с одним пропуском"
     for code in codes:
-        assert get_potion(code) is not None
-    # Свободный вход ровно один, и это база: остальные два — по билету
-    assert [kind.code for kind in free] == ["military"]
-    assert all(kind.pass_code == "" for kind in free)
+        assert code, "рейд без пропуска: вход должен быть платным"
+        assert get_potion(code) is not None, f"{code}: пропуска нет в лавке"
 
 
 async def test_the_casino_ticket_does_not_open_the_stadium(bot, db):

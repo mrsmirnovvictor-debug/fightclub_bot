@@ -13,8 +13,8 @@
 4. **Трофей носят все четыре класса.** Он кросс-классовый, и спрашивает
    выносливость, а не ремесло: иначе воин с кинжалом ассасина остался бы
    с ним в рюкзаке.
-5. **Вход свободный.** Пропуска на базу не продают — окно при этом
-   считается как у всех.
+5. **Пропуск свой и дороже фанатского на полсотни.** Сто кредитов за
+   вход: за базой стоит оружие, которого нет ни в одной лавке.
 """
 
 from __future__ import annotations
@@ -39,8 +39,11 @@ from bot.game.equipment import (
 )
 from bot.game.gear import ALL_SLOTS, weapon_share_cap, weapon_share_floor
 from bot.game.locations import Service, get_location
+from bot.game.potions import BASE_PASS, STADIUM_PASS, get_potion
 from bot.game.raid import (
     CYBER_CHANCE,
+    GANG_LEADER,
+    GANG_LEVEL,
     MILITARY_GUARDS,
     MILITARY_PURSE,
     MILITARY_RAID,
@@ -53,6 +56,7 @@ from bot.game.raid import (
 )
 from bot.game.reference import developed_stats
 from bot.raid_service import RaidError, RaidService
+from scripts.foe_power import armor_mean
 from tests.test_battle_flow import make_player
 from tests.test_duel_flow import FakeBot
 
@@ -92,8 +96,10 @@ def make_service(db, bot, **over) -> RaidService:
     )
 
 
-async def soldier_hunters(db, count: int = 2, level: int = 12) -> list:
-    """Отряд на базу. Пропусков им не надо: на базе их не спрашивают."""
+async def soldier_hunters(
+    db, count: int = 2, level: int = 12, passes: bool = True
+) -> list:
+    """Отряд на базу с пропусками: без них на полигон не пускают."""
     out = []
     for index in range(count):
         player = make_player(index + 1, f"Боец{index + 1}")
@@ -101,6 +107,10 @@ async def soldier_hunters(db, count: int = 2, level: int = 12) -> list:
         player.location = BASE
         player.credits = 500
         await db.save_player(player)
+        if passes:
+            player.potions[BASE_PASS] = await db.add_potion(
+                player.user_id, BASE_PASS
+            )
         out.append(player)
     return out
 
@@ -381,13 +391,25 @@ async def test_the_screen_of_the_base_carries_one_soldier(db, bot):
 # ---------- вход ----------
 
 
-async def test_the_base_asks_for_no_pass(db, bot):
-    """Пропуска на базу не продают: вход свободный."""
+def test_the_pass_to_the_base_costs_fifty_more_than_the_stadium():
+    """Пропуск на полигон дороже билета на матч ровно на полсотни.
+
+    Разница не из воздуха: за базой стоит кибероружие, которого нет ни в
+    одной лавке, и вход на неё обязан стоить дороже стадиона, откуда
+    приносят фанатскую вещь с прилавка.
+    """
+    ticket = get_potion(BASE_PASS)
+    stadium = get_potion(STADIUM_PASS)
+
+    assert MILITARY_RAID.pass_code == BASE_PASS
+    assert ticket.price == stadium.price + 50 == 100
+    assert ticket.is_pass is True  # его не пьют, его предъявляют
+
+
+async def test_the_base_takes_the_pass_at_the_gate(db, bot):
+    """Пропуск отдают на входе: один заход — один пропуск."""
     service = make_service(db, bot)
     squad = await soldier_hunters(db, 2)
-
-    assert MILITARY_RAID.needs_pass is False
-    assert MILITARY_RAID.pass_code == ""
 
     lobby = await service.open_raid(
         CHAT_ID, THREAD_ID, squad[0], MILITARY_RAID, chat_title="Клуб"
@@ -395,17 +417,27 @@ async def test_the_base_asks_for_no_pass(db, bot):
 
     assert lobby is not None
     fresh = await db.get_player(squad[0].user_id)
-    assert fresh.credits == 500, "за вход не платят"
-    assert not fresh.potions, "и пропуска не тратят"
+    assert fresh.credits == 500, "пропуск был в рюкзаке, покупать нечего"
+    assert fresh.potion_count(BASE_PASS) == 0, "пропуск отдан на входе"
 
 
-async def test_the_window_is_taken_even_without_a_pass(db, bot):
-    """Окно занимается и без билета — по нему и считается «своё взято».
+async def test_without_a_pass_the_base_sends_you_to_the_shop(db, bot):
+    """Без пропуска и без согласия на покупку на полигон не пускают."""
+    service = make_service(db, bot)
+    player = (await soldier_hunters(db, 1, passes=False))[0]
 
-    В подвале и на стадионе окно занимает отданный пропуск. На базе
-    пропуска нет, и если бы окно не занималось вовсе, правило «одна
-    победа за окно» на базе не работало бы — заходить можно было бы
-    сколько угодно.
+    with pytest.raises(RaidError, match="Пропуск на полигон"):
+        await service.open_raid(
+            CHAT_ID, THREAD_ID, player, MILITARY_RAID, chat_title="Клуб"
+        )
+
+
+async def test_the_pass_is_taken_once_per_window(db, bot):
+    """Пропуск отдают раз за окно: второй заход в то же окно бесплатный.
+
+    Окно у базы одно в неделю, и правило «своё за окно берут один раз»
+    держится именно отданным пропуском: пока он числится за этим окном,
+    ходить можно сколько угодно.
     """
     service = make_service(db, bot, raid_any_time=False)
     player = (await soldier_hunters(db, 1))[0]
@@ -424,13 +456,14 @@ async def test_the_window_is_taken_even_without_a_pass(db, bot):
         assert seen is not None, "окно не занято"
         assert not seen["won"], "победы ещё не было"
         # Второй заход в то же окно проходит так же молча: пропуск за
-        # него уже «отдан», а ходить можно сколько угодно
+        # него уже отдан, а ходить можно сколько угодно
         await service._admit(player, kind=MILITARY_RAID)
     finally:
         rules.now_ts = was
 
     fresh = await db.get_player(player.user_id)
-    assert fresh.credits == 500 and not fresh.potions
+    assert fresh.credits == 500, "второй пропуск не покупали"
+    assert fresh.potion_count(BASE_PASS) == 0, "и не брали из рюкзака дважды"
 
 
 async def test_the_purse_is_split_between_the_squad(db, bot):
@@ -449,8 +482,8 @@ async def test_the_purse_is_split_between_the_squad(db, bot):
 # ---------- экран ----------
 
 
-async def test_the_raid_screen_shows_the_base_without_a_ticket(db, bot):
-    """Экран рейда: охрана, расписание и «вход свободный» вместо билета."""
+async def test_the_raid_screen_shows_the_base_with_its_pass(db, bot):
+    """Экран рейда: охрана, расписание и пропуск на полигон в окне входа."""
     from bot.webapp.raid import gate_payload, kind_row, plates_payload
 
     service = make_service(db, bot)
@@ -462,13 +495,40 @@ async def test_the_raid_screen_shows_the_base_without_a_ticket(db, bot):
     assert row["code"] == "military" and row["house"] == BASE
     assert row["foes"] == 10 and row["min_party"] == 1
     assert row["purse"] == MILITARY_PURSE
-    assert gate["pass_code"] == "" and gate["pass_title"] == ""
-    assert gate["pass_price"] == 0 and gate["passes"] == 0
-    assert gate["can_afford"] is True, "за свободный вход всегда хватает"
+    assert gate["pass_code"] == BASE_PASS
+    assert gate["pass_title"] == "Пропуск на полигон"
+    assert gate["pass_price"] == 100 and gate["passes"] == 1
+    assert gate["can_afford"] is True, "пятисот хватает на сотню"
     assert gate["schedule"] == "по понедельникам с 18:00 до 00:00 мск"
     # Плашка на карте есть у каждого рейдового дома, и у базы тоже
     plates = await plates_payload(player, service)
     assert BASE in plates
+
+
+def test_the_guard_stands_above_the_gang_leader():
+    """Солдат сильнее лидера банды фанатов на десять-пятнадцать процентов.
+
+    Мерка — `scripts/foe_power.py`: живучесть на урон в ход. Живучесть
+    считается по правилам боя: выносливость режет удар всегда, броня —
+    не больше трёх пятых остатка (`MAX_ARMOR_SHARE`), и брони у обоих
+    заведомо больше этого потолка.
+
+    Полоса узкая нарочно. Шире — и договор перестаёт что-либо держать:
+    форму охраны правят числом за раз, и без полосы солдат однажды
+    окажется либо слабее гопника, либо крепче босса казино.
+    """
+    from scripts.foe_power import power
+
+    guard = power(MILITARY_GUARDS[0], MILITARY_LEVEL)
+    leader = power(GANG_LEADER, GANG_LEVEL)
+
+    assert 1.10 <= guard / leader <= 1.15, round(guard / leader, 3)
+    # Сильнее он по живучести, а не только по клинку: прежде форма
+    # двенадцатой ступени держала хуже фанатской десятой
+    one = boss_fighter(MILITARY_GUARDS[0], [10], 0.0, level=MILITARY_LEVEL)
+    major = boss_fighter(GANG_LEADER, [10], 0.0, level=GANG_LEVEL)
+    assert one.max_hp > major.max_hp
+    assert armor_mean(one) > armor_mean(major)
 
 
 def test_the_sword_of_the_guard_holds_the_chiefs_level():

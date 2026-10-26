@@ -46,7 +46,7 @@ from bot.game.equipment import (
     shelf_of,
 )
 from bot.game.health import now_ts
-from bot.game.potions import RAID_PASS, STADIUM_PASS, get_potion
+from bot.game.potions import BASE_PASS, RAID_PASS, STADIUM_PASS, get_potion
 from bot.game.reference import (
     best_kit,
     developed_stats,
@@ -1087,9 +1087,9 @@ class RaidKind:
     # Дом, в котором рейд идёт. Служба им не пользуется — его спрашивает
     # карта, чтобы знать, под какой вывеской вешать плашку
     house: str
-    # Чем платят за вход. Пустая строка — вход свободный: пропуска не
-    # просят, и покупать его негде. Поле при этом обязательное: рейд без
-    # билета — решение, а не забытая строка, и писать его надо руками
+    # Чем платят за вход: свой пропуск у каждого рейда. Талон казино на
+    # стадионе не спрашивают, и наоборот — поэтому поле обязательное и
+    # пишется руками, а не достаётся по умолчанию от соседа
     pass_code: str
     schedule: Schedule
     leader: Boss
@@ -1122,11 +1122,6 @@ class RaidKind:
     spoils: Spoils = CELLAR_SPOILS
     # Сколько у бойца есть на свой удар. Ноль — брать из настроек
     turn_seconds: int = 0
-
-    @property
-    def needs_pass(self) -> bool:
-        """Просят ли за вход пропуск."""
-        return bool(self.pass_code)
 
     @property
     def one_on_one(self) -> bool:
@@ -1214,9 +1209,9 @@ MILITARY_RAID = RaidKind(
     title="Захват военной базы",
     emoji="🎖",
     house="indoor_training_ground",
-    # Пропуска у этого рейда нет: на базу не покупают билет, её берут.
-    # Окно и так одно в неделю, а своё за окно боец берёт один раз
-    pass_code="",
+    # Пропуск свой, как у всякого рейда, и дороже фанатского билета на
+    # полсотни: за базой стоит кибероружие, которого нет ни в одной лавке
+    pass_code=BASE_PASS,
     schedule=MILITARY_SCHEDULE,
     leader=MILITARY_GUARDS[0],
     crew=MILITARY_GUARDS[1:],
