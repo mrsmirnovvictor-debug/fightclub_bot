@@ -35,11 +35,19 @@ async_playwright = pytest.importorskip(
 
 
 def find_chromium() -> str | None:
-    """Плейрайт в этом окружении держит браузеры отдельно от пакета."""
+    """Плейрайт в этом окружении держит браузеры отдельно от пакета.
+
+    Папка с бинарником зовётся по-разному: у сборок постарше это
+    `chrome-linux`, у новых — `chrome-linux64`. Ищем обе: иначе на новой
+    машине браузер «не находится», и все проверки витрины молча
+    пропускаются — а молчание выглядит точно как зелёный прогон.
+    """
     roots = [os.environ.get("PLAYWRIGHT_BROWSERS_PATH"), "/opt/pw-browsers"]
+    layouts = ("chromium-*/chrome-linux/chrome", "chromium-*/chrome-linux64/chrome")
     for root in filter(None, roots):
-        for chrome in sorted(Path(root).glob("chromium-*/chrome-linux/chrome")):
-            return str(chrome)
+        for layout in layouts:
+            for chrome in sorted(Path(root).glob(layout)):
+                return str(chrome)
     return None
 
 
