@@ -105,15 +105,16 @@ def owner_of(player: Player) -> Owner:
     """За кого воюет этот боец. Пустой владелец — ни за кого.
 
     Семья и служба несовместимы, поэтому выбирать не из чего: кто в
-    клане — воюет за клан, кто на светлой службе — за службу. Врач и
-    секретарь не воюют ни за кого: у них служба без права силы.
+    клане — воюет за клан, кто на службе с правом силы — за службу.
+    Врач, судья и секретарь не воюют ни за кого: в семью их не берут,
+    но и на точки города они не выходят (`Service.force`).
     """
     if player.clan is not None:
         return owner_of_clan(player.clan.clan.id)
     from bot.game.services import service_of_job
 
     service = service_of_job(player.job_code)
-    if service is not None and service.lawful:
+    if service is not None and service.force:
         return owner_of_service(service.code)
     return Owner()
 

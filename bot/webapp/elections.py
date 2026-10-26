@@ -55,6 +55,49 @@ def ballot_payload(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def seats_payload(db, player: Player, now: int) -> list[dict[str, Any]]:
+    """Кресла начальников: кто сидит, кто подал и в какой вилке платят.
+
+    Отдаётся только мэру: назначает он, и список кандидатов со всего
+    города — его рабочая бумага, а не общая. Чужому экрану он не нужен,
+    а лишний список людей на экране — это лишний список людей.
+    """
+    from bot.game.locations import get_location
+    from bot.game.work import VACANCIES
+    from bot.work_service import candidates_for
+
+    out: list[dict[str, Any]] = []
+    taken = await db.taken_jobs()
+    for one in VACANCIES:
+        if not one.appointed:
+            continue
+        holder: dict[str, Any] = {}
+        for row in taken.get(one.code, []):
+            sitting = await db.get_player(int(row["user_id"]))
+            if sitting is not None:
+                holder = {
+                    "user_id": sitting.user_id,
+                    "name": sitting.nickname,
+                    "salary": sitting.job_salary or one.salary,
+                }
+        place = get_location(one.place)
+        out.append(
+            {
+                "code": one.code,
+                "title": one.title,
+                "emoji": one.emoji,
+                "place_title": place.title if place else one.place,
+                "education": one.education,
+                "pay_min": one.salary,
+                "pay_max": one.salary_max,
+                "pay_text": one.pay_text,
+                "holder": holder,
+                "candidates": await candidates_for(db, one.code, now),
+            }
+        )
+    return out
+
+
 def build_elections(
     player: Player, state: dict[str, Any], now: int | None = None,
     said: str = "",
@@ -79,6 +122,9 @@ def build_elections(
         "counting": phase == COUNTING,
         "said": said,
         "note": _note(state),
+        # Кресла начальников: кладёт их сюда сервер, и только мэру
+        "seats": [],
+        "is_mayor": bool(state["mayor"]["user_id"] == player.user_id),
     }
 
 
@@ -108,4 +154,5 @@ def _note(state: dict[str, Any]) -> str:
     return f"Список кандидатов закрыт. Голосование — в воскресенье с восьми. {chair}"
 
 
-__all__ = ["ballot_payload", "build_elections"]
+__all__ = [
+    "seats_payload","ballot_payload", "build_elections"]

@@ -32,6 +32,7 @@ from bot.game.work import (
     PASS_SHARE,
     SHIFT_HOURS,
     SHIFT_SECONDS,
+    STAFF_HOURS,
     VACANCIES,
     WEEK_SECONDS,
     get_vacancy,
@@ -47,6 +48,7 @@ from bot.webapp.work import build_work
 from bot.work_service import (
     WorkError,
     apply,
+    hire_at_house,
     quit_job,
     quiz_payload,
     settle,
@@ -166,17 +168,22 @@ def test_the_street_vacancies_are_the_ones_the_city_promised():
     street = [one for one in VACANCIES if not one.needs]
 
     assert len(street) == 9
-    assert (rows["bartender"].salary, rows["bartender"].hours) == (250, 10)
-    assert (rows["postman"].salary, rows["postman"].hours) == (200, 8)
-    assert (rows["trainer"].salary, rows["trainer"].hours) == (300, 10)
-    assert (rows["fight_host"].salary, rows["fight_host"].hours) == (300, 10)
-    assert (rows["croupier"].salary, rows["croupier"].hours) == (300, 10)
+    # Норма на улице такая же, как в конторе: десять часов у всех, и у
+    # почты тоже — прежде она одна стояла на восьми
+    for one in street:
+        assert one.hours == STAFF_HOURS, one.code
+    assert (rows["bartender"].salary, rows["bartender"].seats) == (250, 5)
+    assert (rows["postman"].salary, rows["postman"].seats) == (250, 3)
+    assert (rows["trainer"].salary, rows["trainer"].seats) == (300, 3)
+    assert (rows["fight_host"].salary, rows["fight_host"].seats) == (300, 3)
+    assert (rows["croupier"].salary, rows["croupier"].seats) == (300, 2)
     # Восточный столбец: мойщик и официант — улица в чистом виде,
-    # барбер и мастер салона — ремесло, и с них спрашивают месяц стажа
+    # барбер и мастер салона — ремесло, и с них спрашивают месяц стажа.
+    # Ремесло и платит лучше: триста пятьдесят против трёхсот
     assert (rows["car_washer"].salary, rows["car_washer"].seats) == (250, 2)
     assert (rows["waiter"].salary, rows["waiter"].seats) == (250, 3)
-    assert (rows["barber"].salary, rows["barber"].seats) == (300, 2)
-    assert (rows["beauty_master"].salary, rows["beauty_master"].seats) == (300, 3)
+    assert (rows["barber"].salary, rows["barber"].seats) == (350, 2)
+    assert (rows["beauty_master"].salary, rows["beauty_master"].seats) == (350, 2)
     assert rows["barber"].months == 1 and rows["beauty_master"].months == 1
 
     # Диплома не просят ни на одном
@@ -186,16 +193,11 @@ def test_the_street_vacancies_are_the_ones_the_city_promised():
     assert {one.code for one in street if one.months} == {
         "barber", "beauty_master",
     }
-    # За стойкой двадцать мест: бар — первая работа в городе, и одно
-    # место на всех означало бы, что устроиться успевает один
-    assert rows["bartender"].seats == 20
-    assert all(
-        one.seats == 1
-        for one in street
-        if one.code not in {
-            "bartender", "car_washer", "waiter", "barber", "beauty_master",
-        }
-    )
+    # Мест на улице везде несколько: одно место на всех означало бы,
+    # что устроиться успевает ровно один боец за всю жизнь города, а
+    # остальным на доске написано «занято»
+    for one in street:
+        assert 2 <= one.seats <= 5, f"{one.code}: мест {one.seats}"
 
 
 # ---------- тест при приёме ----------
@@ -295,35 +297,38 @@ async def test_a_failed_test_leaves_the_other_doors_open(db):
 
 
 async def test_a_taken_vacancy_is_gone_from_the_board(db):
-    """Место с одним креслом: занял первый — второму отказ."""
-    first = await stand(db, make_player())
-    second = await stand(db, make_player(2, "Марла"))
-    await apply(db, first, "postman", right_answers("postman"), moment_at())
+    """Места кончились — доска говорит, кто их занял, и не берёт больше."""
+    now = moment_at()
+    for number in range(3):  # на почте три места
+        one = await stand(db, make_player(300 + number, f"Почтальон-{number}"))
+        await apply(db, one, "postman", right_answers("postman"), now)
 
-    board = await vacancies(db, second, moment_at())
+    late = await stand(db, make_player(2, "Марла"))
+    board = await vacancies(db, late, now)
     row = next(one for one in board if one["vacancy"].code == "postman")
 
-    assert row["taken_by"] == "Тайлер"
-    with pytest.raises(WorkError, match="занято"):
-        await apply(db, second, "postman", right_answers("postman"), moment_at())
+    assert row["taken_seats"] == 3 and row["free_seats"] == 0
+    assert "Почтальон-0" in row["taken_by"]
+    with pytest.raises(WorkError, match="заняты все 3"):
+        await apply(db, late, "postman", right_answers("postman"), now)
 
 
-async def test_the_bar_hires_twenty_and_turns_away_the_twenty_first(db):
-    """За стойкой двадцать мест: занявший не закрывает бар остальным."""
+async def test_the_bar_hires_five_and_turns_away_the_sixth(db):
+    """За стойкой пять мест: занявший не закрывает бар остальным."""
     now = moment_at()
-    for number in range(20):
+    for number in range(5):
         one = await stand(db, make_player(400 + number, f"Бармен-{number}"))
         await apply(db, one, "bartender", right_answers("bartender"), now)
 
     board = await vacancies(db, await stand(db, make_player(500, "Марла")), now)
     row = next(one for one in board if one["vacancy"].code == "bartender")
-    assert row["taken_seats"] == 20 and row["free_seats"] == 0
+    assert row["taken_seats"] == 5 and row["free_seats"] == 0
 
     late = await stand(db, make_player(501, "Опоздавший"))
-    with pytest.raises(WorkError, match="заняты все 20") as refusal:
+    with pytest.raises(WorkError, match="заняты все 5") as refusal:
         await apply(db, late, "bartender", right_answers("bartender"), now)
-    # Двадцать имён в отказе — стена текста, а не ответ: называем четверых
-    assert "и ещё 16" in str(refusal.value)
+    # Все имена в отказ не лезут: называем четверых и считаем остальных
+    assert "и ещё 1" in str(refusal.value)
 
 
 async def test_the_second_barman_is_stopped_by_the_base_not_by_python(db):
@@ -613,9 +618,11 @@ def test_the_norm_pays_in_full_and_overtime_pays_double():
     # И дальше растёт ровно так же: восемь смен за неделю — шесть часов сверх
     assert trainer.payout(16) == 300 + 6 * 60
 
-    # У почты норма восемь часов при двухстах: ставка двадцать пять
+    # На почте норма та же десятка при двухстах пятидесяти: ставка
+    # двадцать пять, и переработка считается с неё же
     postman = get_vacancy("postman")
-    assert postman.hour_rate == 25 and postman.payout(10) == 300
+    assert postman.hour_rate == 25 and postman.payout(10) == 250
+    assert postman.payout(12) == 250 + 2 * 50
 
 
 def test_the_overtime_rate_is_the_exact_one_not_the_one_on_the_board():
@@ -974,7 +981,7 @@ async def test_the_screen_counts_the_overtime_before_payday(client, db):
     # к этой строке неделя успевала бы кончиться, расчёт — пройти, а
     # бойца с невыполненной нормой — уволить
     end = moment_at(day=11, hour=12)
-    job = build_work(await db.get_player(42), end)["job"]
+    job = (await build_work(db, await db.get_player(42), end))["job"]
     assert job["worked"] == 12 and job["overtime"] == 2
     assert job["hour_rate"] == 50, "час сверх нормы стоит две ставки"
     assert job["overtime_pay"] == 100 and job["payout"] == 350
@@ -982,7 +989,7 @@ async def test_the_screen_counts_the_overtime_before_payday(client, db):
     # А пока норма не перейдена, переработки нет вовсе
     player.job_minutes = 600
     await db.save_player(player)
-    job = build_work(await db.get_player(42), end)["job"]
+    job = (await build_work(db, await db.get_player(42), end))["job"]
     assert job["overtime"] == 0 and job["overtime_pay"] == 0
 
 
@@ -1083,9 +1090,9 @@ async def test_a_holder_who_keeps_the_norm_is_not_touched_by_others(db):
 
 
 def test_the_diploma_jobs_are_the_ones_the_city_promised():
-    """Двадцать четыре места под диплом: дом, кол-во, требование, стаж, деньги."""
+    """Двадцать семь мест под диплом: дом, кол-во, требование, стаж, деньги."""
     rows = {one.code: one for one in VACANCIES if one.needs}
-    assert len(rows) == 24
+    assert len(rows) == 27
 
     def check(code, place, seats, needs, months, salary):
         one = rows[code]
@@ -1096,48 +1103,48 @@ def test_the_diploma_jobs_are_the_ones_the_city_promised():
         assert one.salary == salary, code
 
     check("bank_head", "bank", 1, "banking", 2, 1_500)
-    check("bank_cashier", "bank", 2, "banking", 0, 500)
-    check("bank_clerk", "bank", 4, "banking", 1, 700)
+    check("bank_cashier", "bank", 6, "banking", 0, 600)
+    check("bank_clerk", "bank", 4, "banking", 1, 1_000)
     check("mayor_adviser", "city_administration", 2, "gov", 1, 700)
     check("clerk", "city_administration", 4, "gov", 0, 500)
     check("police_chief", "vcpd", 1, "police", 2, 1_500)
     # Полицейская лестница: начальник один, офицеров и патрульных город
-    # не считает — в патруль берут всех, кто кончил академию
+    # не считает — в патруль берут всех, кто кончил академию. Так же
+    # устроены больница, часть и суд
     check("police_officer", "vcpd", 0, "police", 1, 700)
     check("police_patrol", "vcpd", 0, "police", 0, 500)
     check("head_doctor", "hospital", 1, "medic", 2, 1_500)
-    check("district_doctor", "hospital", 2, "medic", 1, 700)
-    check("orderly", "hospital", 4, "medic", 0, 500)
+    check("district_doctor", "hospital", 0, "medic", 1, 700)
+    check("orderly", "hospital", 0, "medic", 0, 500)
     check("army_head", "military_base", 1, "cadet", 2, 1_500)
-    check("senior_officer", "military_base", 2, "cadet", 1, 700)
-    check("junior_officer", "military_base", 4, "cadet", 0, 500)
+    check("senior_officer", "military_base", 0, "cadet", 1, 700)
+    check("junior_officer", "military_base", 0, "cadet", 0, 500)
+    check("chief_judge", "courthouse", 1, "law", 2, 1_500)
+    check("judge_aide", "courthouse", 0, "law", 1, 700)
+    check("court_clerk", "courthouse", 0, "law", 0, 500)
     check("taxi_driver", "taxi_depot", 4, "licence", 0, 500)
-    # Дилер авторынка — те же продажи, что в салоне и страховой, и
-    # спрос с него тот же: диплом управления и те же шестьсот
-    check("car_dealer", "used_car_market", 2, "management", 0, 600)
+    # Авторынок — те же продажи, что в салоне и страховой, и спрос тот
+    # же: диплом управления, те же шестьсот и те же три места
+    check("car_dealer", "used_car_market", 3, "management", 0, 600)
     # Разработка: один диплом на три ступени, и разделяет их стаж
-    check("dev_senior", "office_building", 2, "it", 3, 1_500)
+    check("dev_senior", "office_building", 2, "it", 2, 1_500)
     check("dev_middle", "office_building", 4, "it", 1, 1_000)
     check("dev_junior", "office_building", 6, "it", 0, 600)
     # Диплом управления просят в шести домах. Пять из них — менеджеры
     # по продажам: одно место, пять дверей, всё одинаково. Шестой —
     # дилер авторынка: деньги и стаж те же, а мест два, потому что
     # рынок не контора
-    managers = [
-        one for one in rows.values()
-        if one.needs == "management" and one.code != "car_dealer"
-    ]
-    assert len(managers) == 5
+    managers = [one for one in rows.values() if one.needs == "management"]
+    assert len(managers) == 6
     assert {one.place for one in managers} == {
         "car_dealership", "insurance_office", "driving_school",
-        "strength_gym", "northern_wall_shop",
+        "strength_gym", "northern_wall_shop", "used_car_market",
     }
+    # Шесть домов, одно место, всё одинаково — и зовётся оно везде
+    # одинаково тоже: менеджер по продажам
     for one in managers:
         assert (one.seats, one.months, one.salary) == (3, 0, 600)
-
-    dealer = rows["car_dealer"]
-    assert (dealer.months, dealer.salary) == (0, 600), "спрос как у менеджеров"
-    assert dealer.seats == 2
+        assert one.title == "Менеджер по продажам"
 
 
 def test_the_requirement_is_named_by_the_diploma_itself():
@@ -1175,16 +1182,17 @@ def test_the_months_are_counted_down_not_up(db):
 
 async def test_without_the_diploma_the_door_is_shut(db):
     """Диплома нет — не берут, и говорят, какого именно."""
-    player = await stand(db, make_player())
+    player = await stand(db, make_player(location="bank"))
 
     with pytest.raises(WorkError, match="Нужен документ"):
-        await apply(db, player, "bank_cashier", [], moment_at())
+        await hire_at_house(db, player, "bank_cashier", moment_at())
     assert not player.works
 
     # С дипломом — берут, и без всякого теста: его сдали в училище
     player.diplomas = ["banking"]
-    attempt = await apply(db, player, "bank_cashier", [], moment_at())
-    assert attempt.hired is True
+    await db.save_player(player)
+    place = await hire_at_house(db, player, "bank_cashier", moment_at())
+    assert place.code == "bank_cashier"
     assert player.job_code == "bank_cashier"
 
 
@@ -1206,18 +1214,22 @@ async def test_the_top_seat_waits_for_the_experience(db):
     """Диплом есть, стажа нет — на управляющего не берут."""
     from bot.game.work import MONTH_SECONDS
 
-    player = await stand(db, make_player())
+    from bot.work_service import bid_for_post
+
+    player = await stand(db, make_player(location="bank"))
     player.diplomas = ["banking"]
 
     with pytest.raises(
         WorkError, match="Нужен опыт от 2 месяцев, а у тебя 0 месяцев"
     ):
-        await apply(db, player, "bank_head", [], moment_at())
+        await bid_for_post(db, player, "bank_head", moment_at())
 
-    # Два месяца стажа — и дверь открыта
+    # Два месяца стажа — и заявку принимают. Дальше решает мэр: в
+    # кресло начальника не устраиваются, в него назначают
     player.job_experience = 2 * MONTH_SECONDS
-    attempt = await apply(db, player, "bank_head", [], moment_at())
-    assert attempt.hired is True
+    await db.save_player(player)
+    seat = await bid_for_post(db, player, "bank_head", moment_at())
+    assert seat.appointed and await db.bids_of(player.user_id) == ["bank_head"]
 
 
 async def test_the_experience_counts_the_current_job_too(db):
@@ -1248,7 +1260,7 @@ async def test_the_experience_stays_when_the_job_is_gone(db):
 
 
 async def test_the_patrol_takes_everyone_and_the_chief_is_one(db):
-    """Патрульных город не считает, а начальник полиции ровно один."""
+    """Патрульных город не считает, а в кресло начальника назначают."""
     from bot.game.work import MONTH_SECONDS
     from bot.work_service import hire_at_house
 
@@ -1262,33 +1274,33 @@ async def test_the_patrol_takes_everyone_and_the_chief_is_one(db):
     taken = await db.taken_jobs()
     assert len(taken["police_patrol"]) == 6, "шестому тоже нашлась форма"
 
-    # Начальник один: второму отказывают
-    first = await stand(db, make_player(250, "Первый"))
-    first.diplomas = ["police"]
-    first.location = "vcpd"
-    first.job_experience = 3 * MONTH_SECONDS
-    await hire_at_house(db, first, "police_chief", now)
-
-    second = await stand(db, make_player(251, "Второй"))
-    second.diplomas = ["police"]
-    second.location = "vcpd"
-    second.job_experience = 3 * MONTH_SECONDS
-    with pytest.raises(WorkError, match="Место занято"):
-        await hire_at_house(db, second, "police_chief", now)
+    # А в кресло начальника в участке не устраиваются вовсе: оно одно
+    # на город, и сажает в него мэр
+    chief = await stand(db, make_player(250, "Первый"))
+    chief.diplomas = ["police"]
+    chief.location = "vcpd"
+    chief.job_experience = 3 * MONTH_SECONDS
+    with pytest.raises(WorkError, match="назначает мэр"):
+        await hire_at_house(db, chief, "police_chief", now)
 
 
 async def test_the_board_counts_the_free_seats(db):
     """Доска показывает, сколько кресел занято и кем."""
     now = moment_at()
     taken = await stand(db, make_player(300, "Марла"))
-    taken.diplomas = ["medic"]
-    await apply(db, taken, "orderly", [], now)
+    taken.diplomas = ["banking"]
+    taken.location = "bank"
+    await db.save_player(taken)
+    await hire_at_house(db, taken, "bank_cashier", now)
 
     seeker = await stand(db, make_player(301, "Тайлер"))
-    rows = {one["vacancy"].code: one for one in await vacancies(db, seeker, now)}
+    rows = {
+        one["vacancy"].code: one
+        for one in await vacancies(db, seeker, now, board=VACANCIES)
+    }
 
-    row = rows["orderly"]
-    assert row["taken_seats"] == 1 and row["free_seats"] == 3
+    row = rows["bank_cashier"]
+    assert row["taken_seats"] == 1 and row["free_seats"] == 5
     assert row["holders"] == ["Марла"]
     # У соискателя без диплома место закрыто, и сказано чем
     assert "Нужен документ" in row["lacks"]
@@ -1297,16 +1309,23 @@ async def test_the_board_counts_the_free_seats(db):
 # ---------- служба и семья ----------
 
 
-def test_the_light_side_is_police_and_army_only():
-    """Пометка стоит на месте, а не на доме: уборщица в участке не служба."""
+def test_the_light_side_covers_the_badge_the_gown_and_the_coat():
+    """Светлая сторона — участок, часть, больница и суд. И только они.
+
+    Пометка стоит на месте, а не на доме: в клане не состоят ни
+    патрульный, ни санитар, ни секретарь суда, — а секретарь
+    администрации состоит сколько угодно.
+    """
     lawful = {one.code for one in VACANCIES if one.lawful}
     assert lawful == {
         "police_chief", "police_officer", "police_patrol",
         "army_head", "senior_officer", "junior_officer",
+        "head_doctor", "district_doctor", "orderly",
+        "chief_judge", "judge_aide", "court_clerk",
     }
-    # Врач и секретарь работают со всеми: лечить и выдавать бумагу мафиози
-    # никто не запрещал
-    for code in ("head_doctor", "orderly", "clerk", "mayor_adviser"):
+    # Администрация и банк работают со всеми: бумагу и кредит мафиози
+    # выдают, как и всякому
+    for code in ("clerk", "mayor_adviser", "bank_head", "bank_cashier"):
         assert not get_vacancy(code).lawful, code
 
 
@@ -1327,8 +1346,14 @@ def test_the_service_and_the_vacancy_agree_on_the_light_side():
     # дома ещё не открыты
     opened = [one for one in SERVICES if one.jobs]
     assert {one.code for one in opened} == {
-        "police", "army", "medical", "administration"
+        "police", "army", "medical", "court", "administration"
     }
+    # Право силы — не то же самое, что светлая сторона: на точки города
+    # выходят трое, а в семью не берут пятерых
+    from bot.game.services import FORCE, LAWFUL
+
+    assert FORCE == {"police", "army", "fbi"}
+    assert FORCE < LAWFUL
 
 
 async def test_the_mafia_is_not_taken_into_the_service(db):
@@ -1344,14 +1369,25 @@ async def test_the_mafia_is_not_taken_into_the_service(db):
         rank=Rank.DON,
     )
 
-    for code in ("police_patrol", "junior_officer"):
+    player.diplomas = ["police", "cadet", "medic", "law"]
+    for code, house in (
+        ("police_patrol", "vcpd"),
+        ("junior_officer", "military_base"),
+        ("orderly", "hospital"),
+        ("court_clerk", "courthouse"),
+    ):
+        player.location = house
+        await db.save_player(player)
         with pytest.raises(WorkError, match="не берут тех, кто в семье"):
-            await apply(db, player, code, [], moment_at())
+            await hire_at_house(db, player, code, moment_at())
     assert not player.works
+    player.location = HR
+    await db.save_player(player)
 
-    # А врачом и барменом — пожалуйста: это не светлая сторона
-    player.diplomas = ["police", "cadet", "medic"]
-    assert (await apply(db, player, "orderly", [], moment_at())).hired
+    # А барменом — пожалуйста: за стойкой светлой стороны нет
+    assert (
+        await apply(db, player, "bartender", right_answers("bartender"), moment_at())
+    ).hired
 
 
 async def test_the_board_says_why_the_service_is_shut(db):
@@ -1384,7 +1420,7 @@ async def test_the_office_building_hires_three_steps_of_developers(db):
         "dev_senior", "dev_middle", "dev_junior"
     ]
     assert all(one.needs == "it" for one in devs)
-    assert [one.months for one in devs] == [3, 1, 0]
+    assert [one.months for one in devs] == [2, 1, 0]
     assert [one.salary for one in devs] == [1_500, 1_000, 600]
     # Каждому диплом назван так же, как его зовёт университет
     from bot.game.study import get_course
@@ -1414,4 +1450,247 @@ async def test_a_developer_is_hired_with_the_it_diploma(db):
     assert (await db.get_player(seeker.user_id)).job_code == "dev_junior"
     # А на старшего не берут и с дипломом: нужен стаж
     senior = get_vacancy("dev_senior")
-    assert "от 3 месяцев" in lacking(seeker, senior, moment)
+    assert "от 2 месяцев" in lacking(seeker, senior, moment)
+
+
+# ---------- кресла начальников: заявка и назначение ----------
+
+
+async def seat_mayor(db: Database, player: Player) -> Player:
+    """Посадить бойца в кресло мэра — назначать может только он."""
+    await db.seat_mayor(player.user_id, moment_at(), "2026-10-04")
+    return player
+
+
+def with_diploma(user_id: int, name: str, diploma: str, **over) -> Player:
+    one = make_player(user_id, name, location=over.pop("location", "bank"))
+    one.diplomas = [diploma]
+    # Стаж начальнику нужен: два месяца отложенного опыта
+    one.job_experience = over.pop("experience", 3 * MONTH)
+    return one
+
+
+MONTH = 30 * 24 * 60 * 60
+
+
+async def test_the_chief_chairs_are_appointed_not_taken():
+    """Пять кресел в городе назначает мэр, и у каждого своя вилка."""
+    appointed = [one for one in VACANCIES if one.appointed]
+
+    assert {one.code for one in appointed} == {
+        "bank_head", "police_chief", "head_doctor", "army_head", "chief_judge",
+    }
+    for one in appointed:
+        assert (one.salary, one.salary_max) == (1_500, 2_300), one.code
+        assert one.seats == 1, one.code
+        # Назначают в доме: в агентстве таких мест нет вовсе
+        assert one.at_house, one.code
+        assert one.fits_pay(1_500) and one.fits_pay(2_300)
+        assert not one.fits_pay(1_499) and not one.fits_pay(2_301)
+    assert get_vacancy("bartender").appointed is False
+    assert get_vacancy("bartender").fits_pay(250)
+
+
+async def test_the_agency_does_not_hire_where_the_house_hires(db):
+    """Место дома в агентстве не занимают — даже запросом мимо страницы."""
+    seeker = await stand(db, with_diploma(60, "Кассир", "banking"))
+
+    with pytest.raises(WorkError, match="приходи в банк"):
+        await apply(db, seeker, "bank_cashier", [], moment_at())
+    # А в самом банке — пожалуйста
+    place = await hire_at_house(db, seeker, "bank_cashier", moment_at())
+    assert place.code == "bank_cashier"
+    assert (await db.get_player(60)).job_code == "bank_cashier"
+
+
+async def test_a_bid_is_not_a_job(db):
+    """Заявка ничего не занимает: кресло пустует, боец работает дальше."""
+    from bot.work_service import bid_for_post
+
+    one = await stand(db, with_diploma(61, "Соискатель", "banking"))
+    await hire_at_house(db, one, "bank_cashier", moment_at())
+
+    await bid_for_post(db, one, "bank_head", moment_at())
+
+    assert await db.bids_of(61) == ["bank_head"]
+    fresh = await db.get_player(61)
+    assert fresh.job_code == "bank_cashier", "заявка не снимает с места"
+    assert not (await db.taken_jobs()).get("bank_head")
+
+
+async def test_a_bid_without_the_diploma_is_refused(db):
+    """На кресло подают с бумагой и стажем, а не с одним желанием."""
+    from bot.work_service import bid_for_post
+
+    green = await stand(db, make_player(62, "Новичок", location="bank"))
+    with pytest.raises(WorkError, match="Нужен документ"):
+        await bid_for_post(db, green, "bank_head", moment_at())
+
+    fresh = await stand(
+        db, with_diploma(63, "Выпускник", "banking", experience=0)
+    )
+    with pytest.raises(WorkError, match="опыт"):
+        await bid_for_post(db, fresh, "bank_head", moment_at())
+
+
+async def test_the_mayor_seats_the_chief_and_names_the_pay(db):
+    """Мэр сажает подавшего и называет жалованье из вилки."""
+    from bot.work_service import (
+        appoint, bid_for_post, candidates_for, my_vacancy,
+    )
+
+    mayor = await seat_mayor(db, await stand(db, make_player(70, "Мэр")))
+    one = await stand(db, with_diploma(71, "Банкир", "banking"))
+    await bid_for_post(db, one, "bank_head", moment_at())
+
+    people = await candidates_for(db, "bank_head", moment_at())
+    assert [row["user_id"] for row in people] == [71]
+    assert people[0]["asked"] is True and not people[0]["lacks"]
+
+    seat, chosen = await appoint(db, mayor, "bank_head", 71, 2_000, moment_at())
+
+    assert seat.salary == 2_000, "вилка названа мэром"
+    assert chosen.job_code == "bank_head" and chosen.job_salary == 2_000
+    assert await db.bids_of(71) == [], "заявки сняты назначением"
+    # И платят ему по назначенному, а не по нижнему краю вилки
+    assert seat.payout(seat.hours) == 2_000
+    assert my_vacancy(await db.get_player(71)).salary == 2_000
+
+
+async def test_the_pay_must_lie_inside_the_fork(db):
+    """Ни ниже вилки, ни выше: кресло стоит столько, сколько стоит."""
+    from bot.work_service import appoint, bid_for_post
+
+    mayor = await seat_mayor(db, await stand(db, make_player(72, "Мэр")))
+    one = await stand(db, with_diploma(73, "Банкир", "banking"))
+    await bid_for_post(db, one, "bank_head", moment_at())
+
+    for wrong in (1_000, 2_400):
+        with pytest.raises(WorkError, match="от 1500 до 2300"):
+            await appoint(db, mayor, "bank_head", 73, wrong, moment_at())
+
+
+async def test_nobody_but_the_mayor_appoints(db):
+    """Назначает мэр. Не мэр — не назначает, как бы ни просил."""
+    from bot.work_service import appoint
+
+    await seat_mayor(db, await stand(db, make_player(74, "Мэр")))
+    stranger = await stand(db, make_player(75, "Прохожий"))
+    await stand(db, with_diploma(76, "Банкир", "banking"))
+
+    with pytest.raises(WorkError, match="Назначает начальников мэр"):
+        await appoint(db, stranger, "bank_head", 76, 1_500, moment_at())
+
+
+async def test_without_bids_the_mayor_picks_from_everyone_with_the_paper(db):
+    """Не подал никто — мэр смотрит на всех с дипломом. Нет и таких — пусто."""
+    from bot.work_service import candidates_for
+
+    await stand(db, make_player(77, "Без бумаги"))
+    assert await candidates_for(db, "chief_judge", moment_at()) == []
+
+    lawyer = with_diploma(78, "Юрист", "law", location="courthouse")
+    await stand(db, lawyer)
+    people = await candidates_for(db, "chief_judge", moment_at())
+
+    assert [row["user_id"] for row in people] == [78]
+    assert people[0]["asked"] is False, "заявки не было — город показал всех"
+
+
+async def test_the_new_chief_replaces_the_old_one_with_a_payslip(db):
+    """Сменили — значит рассчитали: прежний уходит с деньгами за недоделю."""
+    from bot.work_service import appoint
+
+    mayor = await seat_mayor(db, await stand(db, make_player(80, "Мэр")))
+    first = await stand(db, with_diploma(81, "Первый", "banking"))
+    second = await stand(db, with_diploma(82, "Второй", "banking"))
+
+    await appoint(db, mayor, "bank_head", 81, 1_500, moment_at())
+    await appoint(db, mayor, "bank_head", 82, 2_300, moment_at())
+
+    before = await db.get_player(81)
+    after = await db.get_player(82)
+    assert not before.works and before.job_salary == 0
+    assert after.job_code == "bank_head" and after.job_salary == 2_300
+    assert len((await db.taken_jobs())["bank_head"]) == 1
+
+
+# ---------- суд ----------
+
+
+def test_the_courthouse_opened_with_three_benches():
+    """Суд открылся: три места под диплом юриста и светлая сторона."""
+    from bot.game.locations import Service as Door, get_location
+    from bot.game.study import get_course
+
+    court = get_location("courthouse")
+    assert court.works and court.allows(Door.WORK)
+
+    rows = [one for one in VACANCIES if one.place == "courthouse"]
+    assert [one.code for one in rows] == [
+        "chief_judge", "judge_aide", "court_clerk"
+    ]
+    for one in rows:
+        assert one.needs == "law", one.code
+        assert one.lawful, f"{one.code}: мантия и семья несовместимы"
+        assert one.at_house, f"{one.code}: в суд приходят в суд"
+        assert one.hours == STAFF_HOURS
+
+    # Диплом выдаёт университет, и зовётся он так же, как на доске
+    law = get_course("law")
+    assert (law.price, law.weeks, law.place) == (1_800, 2, "university")
+    assert get_vacancy("court_clerk").education == law.diploma_title
+
+
+async def test_the_court_hires_in_the_court(db):
+    """Секретарём суда берут в суде, а не в агентстве."""
+    clerk = await stand(db, with_diploma(90, "Секретарь", "law", location="courthouse", experience=0))
+
+    with pytest.raises(WorkError, match="приходи в суд"):
+        await apply(db, clerk, "court_clerk", [], moment_at())
+
+    place = await hire_at_house(db, clerk, "court_clerk", moment_at())
+    assert place.code == "court_clerk"
+    assert (await db.get_player(90)).job_code == "court_clerk"
+
+
+# ---------- экраны ----------
+
+
+async def test_the_house_screen_offers_the_job_and_the_bid(db):
+    """Экран банка: кассира берут кнопкой, на управляющего подают заявку."""
+    from bot.webapp.work import build_work
+
+    seeker = await stand(db, with_diploma(91, "Соискатель", "banking"))
+    body = await build_work(db, seeker, moment_at())
+
+    rows = {one["code"]: one for one in body["vacancies"]}
+    assert set(rows) == {"bank_head", "bank_cashier", "bank_clerk"}
+
+    cashier = rows["bank_cashier"]
+    assert cashier["at_house"] and cashier["can_take"] and not cashier["appointed"]
+    assert cashier["pay_text"] == "600 💰"
+
+    chief = rows["bank_head"]
+    assert chief["appointed"] and chief["can_bid"] and not chief["can_take"]
+    assert chief["pay_text"] == "1500–2300 💰"
+    assert chief["bid"] is False
+
+
+async def test_only_the_mayor_sees_the_chairs(db):
+    """Кресла с кандидатами уезжают на экран мэра и ничей больше."""
+    from bot.webapp.elections import seats_payload
+    from bot.work_service import bid_for_post
+
+    mayor = await seat_mayor(db, await stand(db, make_player(92, "Мэр")))
+    one = await stand(db, with_diploma(93, "Банкир", "banking"))
+    await bid_for_post(db, one, "bank_head", moment_at())
+
+    seats = {
+        row["code"]: row for row in await seats_payload(db, mayor, moment_at())
+    }
+    assert len(seats) == 5
+    chair = seats["bank_head"]
+    assert chair["pay_min"] == 1_500 and chair["pay_max"] == 2_300
+    assert chair["holder"] == {}
+    assert [one["user_id"] for one in chair["candidates"]] == [93]

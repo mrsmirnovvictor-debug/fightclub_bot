@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS players (
     job_experience  INTEGER NOT NULL DEFAULT 0,
     job_week        INTEGER NOT NULL DEFAULT 0,
     job_minutes     INTEGER NOT NULL DEFAULT 0,
+    job_salary      INTEGER NOT NULL DEFAULT 0,
     shift_until     INTEGER NOT NULL DEFAULT 0,
     shift_day       TEXT    NOT NULL DEFAULT '',
     shift_minutes   INTEGER NOT NULL DEFAULT 0,
@@ -210,6 +211,16 @@ CREATE TABLE IF NOT EXISTS injuries (
 -- Запрет подавать заявку: неделя после отказа на тесте и после
 -- увольнения. Строка на пару «боец и вакансия»: отказ в баре не мешает
 -- проситься на почту
+-- Заявки на кресло начальника: город не нанимает их сам, их назначает
+-- мэр. Заявка живёт до назначения или до того, как боец её заберёт;
+-- на одно кресло от бойца одна
+CREATE TABLE IF NOT EXISTS job_bids (
+    user_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    at      INTEGER NOT NULL,
+    PRIMARY KEY (user_id, code)
+);
+
 CREATE TABLE IF NOT EXISTS job_blocks (
     user_id INTEGER NOT NULL,
     code    TEXT    NOT NULL,
@@ -1063,7 +1074,8 @@ PLAYER_COLUMNS = (
     "city, birthplace, pro_until, gender, created_at, "
     "account_number, account_balance, account_at, "
     "card_at, card_paid_until, pay_from, "
-    "job_code, job_since, job_experience, job_week, job_minutes, shift_until, "
+    "job_code, job_since, job_experience, job_week, job_minutes, job_salary, "
+    "shift_until, "
     "shift_day, shift_minutes, "
     "study_code, study_since, study_lessons, study_day, study_exam_at, "
     "study_tries, lesson_until, diplomas, car, car_until"
@@ -1109,6 +1121,8 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("job_experience", "INTEGER NOT NULL DEFAULT 0"),
     ("job_week", "INTEGER NOT NULL DEFAULT 0"),  # начало оплачиваемой недели
     ("job_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за неделю
+    # Жалованье из вилки, назначенное мэром. Ноль — оклад твёрдый
+    ("job_salary", "INTEGER NOT NULL DEFAULT 0"),
     ("shift_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — смена не идёт
     ("shift_day", "TEXT NOT NULL DEFAULT ''"),  # какие это сутки по Москве
     ("shift_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за сутки
@@ -1721,12 +1735,12 @@ class Database:
                 account_number, account_balance, account_at,
                 card_at, card_paid_until, pay_from,
                 job_code, job_since, job_experience, job_week, job_minutes,
-                shift_until, shift_day, shift_minutes,
+                job_salary, shift_until, shift_day, shift_minutes,
                 study_code, study_since, study_lessons, study_day,
                 study_exam_at, study_tries, lesson_until, diplomas,
                 car, car_until
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -1770,6 +1784,7 @@ class Database:
                 job_since       = excluded.job_since,
                 job_week        = excluded.job_week,
                 job_minutes     = excluded.job_minutes,
+                job_salary      = excluded.job_salary,
                 shift_until     = excluded.shift_until,
                 shift_day       = excluded.shift_day,
                 shift_minutes   = excluded.shift_minutes,
@@ -1829,6 +1844,7 @@ class Database:
                 player.job_experience,
                 player.job_week,
                 player.job_minutes,
+                player.job_salary,
                 player.shift_until,
                 player.shift_day,
                 player.shift_minutes,
@@ -2148,7 +2164,7 @@ class Database:
         """
         cursor = await self.conn.execute(
             "UPDATE players SET job_code = ?, job_since = ?, job_week = ?, "
-            "job_minutes = 0, shift_until = 0, shift_day = '', "
+            "job_minutes = 0, job_salary = 0, shift_until = 0, shift_day = '', "
             "shift_minutes = 0 "
             "WHERE user_id = ? AND job_code = '' "
             "AND (SELECT COUNT(*) FROM players WHERE job_code = ?) < ?",
@@ -2156,6 +2172,71 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    # ---------- заявки на кресло ----------
+
+    async def place_bid(self, user_id: int, code: str, at: int) -> None:
+        """Подать заявку на назначаемое кресло. Повторная — та же одна."""
+        await self.conn.execute(
+            "INSERT INTO job_bids (user_id, code, at) VALUES (?,?,?) "
+            "ON CONFLICT(user_id, code) DO UPDATE SET at = excluded.at",
+            (user_id, code, at),
+        )
+        await self.conn.commit()
+
+    async def drop_bid(self, user_id: int, code: str = "") -> None:
+        """Забрать заявку. Без кода — все заявки этого бойца."""
+        if code:
+            await self.conn.execute(
+                "DELETE FROM job_bids WHERE user_id = ? AND code = ?",
+                (user_id, code),
+            )
+        else:
+            await self.conn.execute(
+                "DELETE FROM job_bids WHERE user_id = ?", (user_id,)
+            )
+        await self.conn.commit()
+
+    async def clear_bids(self, code: str) -> None:
+        """Снять все заявки на кресло: назначение их исчерпало."""
+        await self.conn.execute("DELETE FROM job_bids WHERE code = ?", (code,))
+        await self.conn.commit()
+
+    async def bids_for(self, code: str) -> list[dict]:
+        """Кто подал на это кресло — в порядке подачи."""
+        async with self.conn.execute(
+            "SELECT b.user_id, b.at, p.nickname, p.level, p.diplomas, "
+            "p.job_code, p.job_experience, p.job_since "
+            "FROM job_bids b JOIN players p ON p.user_id = b.user_id "
+            "WHERE b.code = ? ORDER BY b.at, b.user_id",
+            (code,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def bids_of(self, user_id: int) -> list[str]:
+        """На какие кресла этот боец подал."""
+        async with self.conn.execute(
+            "SELECT code FROM job_bids WHERE user_id = ? ORDER BY at",
+            (user_id,),
+        ) as cursor:
+            return [str(row["code"]) for row in await cursor.fetchall()]
+
+    async def players_with_diploma(self, diploma: str) -> list[dict]:
+        """Кто в городе вообще с таким дипломом — для пустого списка заявок.
+
+        Мэр назначает из подавших, а когда не подал никто — из любого
+        с нужной бумагой: кресло начальника пустым город не держит.
+        """
+        async with self.conn.execute(
+            "SELECT user_id, nickname, level, diplomas, job_code, "
+            "job_experience, job_since FROM players "
+            "WHERE diplomas <> '' ORDER BY nickname",
+        ) as cursor:
+            rows = [dict(row) for row in await cursor.fetchall()]
+        return [
+            row for row in rows
+            if diploma in str(row["diplomas"] or "").split(",")
+        ]
 
     async def taken_jobs(self) -> dict[str, list[dict]]:
         """Кто на каких местах: код работы → список занявших.
@@ -2193,8 +2274,8 @@ class Database:
         """
         await self.conn.execute(
             "UPDATE players SET job_code = '', job_since = 0, job_week = 0, "
-            "job_minutes = 0, shift_until = 0, shift_day = '', shift_minutes = 0, "
-            "job_experience = ? "
+            "job_minutes = 0, job_salary = 0, shift_until = 0, shift_day = '', "
+            "shift_minutes = 0, job_experience = ? "
             "WHERE user_id = ?",
             (max(0, experience), user_id),
         )

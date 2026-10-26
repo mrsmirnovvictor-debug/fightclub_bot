@@ -8487,6 +8487,39 @@ function renderWork(data) {
   body.appendChild(payBox(data.job));
 }
 
+/** Кнопки места: устроиться тут же или подать заявку на кресло.
+ *
+ * Кресло начальника не занимают — на него подают заявку, а сажает мэр
+ * и сам называет жалованье из вилки. Поэтому у такого места кнопка
+ * другая, и отменить её можно тем же нажатием.
+ */
+function houseHire(one) {
+  if (!one.at_house || one.mine) return null;
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (one.appointed) {
+    buttons.appendChild(
+      button(one.bid ? "Отозвать заявку" : "Подать заявку", {
+        disabled: !one.can_bid && !one.bid,
+        hint: one.lacks || "Сюда не подают.",
+        onClick: () => workAction({
+          action: one.bid ? "unbid" : "bid", job: one.code,
+        }),
+      })
+    );
+    return buttons;
+  }
+  buttons.appendChild(
+    button("Устроиться", {
+      disabled: !one.can_take,
+      hint: one.lacks
+        || (one.limited && !one.free_seats ? "Мест нет." : "Работа одна на бойца."),
+      onClick: () => workAction({ action: "hire", job: one.code }),
+    })
+  );
+  return buttons;
+}
+
 /** Идёт смена: часы тикают на странице, а время считает сервер. */
 function shiftBox(data) {
   const box = document.createElement("section");
@@ -8587,11 +8620,12 @@ function strangerBox(data) {
     const facts = document.createElement("div");
     facts.className = "vacancy-facts";
     [
-      ["Жалованье", num(one.salary) + " 💰 в неделю"],
+      ["Жалованье", one.pay_text + " в неделю"],
       ["Норма", one.hours + " ч в неделю"],
       ["Образование", one.needs ? one.education : ""],
       ["Опыт", one.months ? one.months_text : ""],
-      ["Мест", one.seats > 1 ? String(one.seats) : ""],
+      ["Мест", one.limited ? one.seats + ", занято " + one.taken_seats : "без счёта"],
+      ["Работают", one.taken_by || ""],
     ].filter(([, value]) => value).forEach(([name, value]) => {
       const row = document.createElement("div");
       row.className = "vacancy-fact";
@@ -8603,14 +8637,26 @@ function strangerBox(data) {
       facts.appendChild(row);
     });
     box.appendChild(facts);
+    const buttons = houseHire(one);
+    if (buttons) box.appendChild(buttons);
+    if (one.lacks) {
+      const why = document.createElement("p");
+      why.className = "screen-note";
+      why.textContent = one.lacks;
+      box.appendChild(why);
+    }
   });
 
+  // Где берут: в доме или в агентстве — у разных мест по-разному, и
+  // сказать это надо один раз на весь экран
   const note = document.createElement("p");
   note.className = "screen-note";
-  note.textContent =
-    here.length > 1
-      ? "Эти места занимают в HR-агентстве, а не здесь."
-      : "Это место занимают в HR-агентстве, а не здесь.";
+  const agency = here.filter((one) => !one.at_house).length;
+  note.textContent = agency
+    ? (agency > 1
+        ? "Эти места занимают в HR-агентстве, а не здесь."
+        : "Это место занимают в HR-агентстве, а не здесь.")
+    : "Сюда берут на месте: диплом заменяет тест агентства.";
   box.appendChild(note);
   return box;
 }
@@ -10288,7 +10334,7 @@ function dutyJobsBox(data) {
     who.textContent = one.emoji + " " + one.title + (one.mine ? " · твоё" : "");
     const pay = document.createElement("span");
     pay.className = "case-sum";
-    pay.textContent = num(one.salary) + " 💰/нед";
+    pay.textContent = one.pay_text + "/нед";
     line.append(who, pay);
     row.appendChild(line);
 
@@ -10303,7 +10349,21 @@ function dutyJobsBox(data) {
     ].filter(Boolean).join(" · ");
     row.appendChild(said);
 
-    if (one.can_take) {
+    if (one.appointed && !one.mine) {
+      // Кресло начальника не занимают: подают заявку, а сажает мэр
+      const buttons = document.createElement("div");
+      buttons.className = "thing-buttons";
+      buttons.appendChild(
+        button(one.bid ? "Отозвать заявку" : "Подать заявку", {
+          disabled: !one.can_bid && !one.bid,
+          hint: one.lacks || "Сюда не подают.",
+          onClick: () => policeAction({
+            action: one.bid ? "unbid" : "bid", job: one.code,
+          }),
+        })
+      );
+      row.appendChild(buttons);
+    } else if (one.can_take) {
       const buttons = document.createElement("div");
       buttons.className = "thing-buttons";
       buttons.appendChild(
@@ -10958,7 +11018,96 @@ function renderElections(data) {
   body.textContent = "";
   body.appendChild(cycleBox(data));
   if (data.can_nominate) body.appendChild(nominateBox(data));
+  // Кресла начальников видит только мэр: назначает он, и список
+  // кандидатов со всего города — его бумага, а не общая
+  (data.seats || []).forEach((seat) => body.appendChild(seatBox(seat)));
   body.appendChild(candidatesBox(data));
+}
+
+/** Кресло начальника: кто сидит, кто подал и за сколько посадить.
+ *
+ * Жалованье тут не кнопка, а поле: вилка широкая, и называет число мэр.
+ * Поле заполнено тем, что платят сейчас, — чаще всего менять его и не
+ * нужно.
+ */
+function seatBox(seat) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = seat.emoji + " " + seat.title;
+  box.appendChild(head);
+
+  box.appendChild(
+    paperRows([
+      ["Дом", seat.place_title],
+      ["Образование", seat.education],
+      ["Вилка", seat.pay_text + " в неделю"],
+      [
+        "Сейчас в кресле",
+        seat.holder.name
+          ? seat.holder.name + " · " + num(seat.holder.salary) + " 💰"
+          : "пусто",
+      ],
+    ])
+  );
+
+  const line = document.createElement("div");
+  line.className = "sell-line";
+  const pay = document.createElement("input");
+  pay.className = "sell-price";
+  pay.type = "number";
+  pay.min = String(seat.pay_min);
+  pay.max = String(seat.pay_max);
+  pay.step = "100";
+  pay.value = String(seat.holder.salary || seat.pay_min);
+  const label = document.createElement("span");
+  label.className = "thing-note";
+  label.textContent = "💰 в неделю";
+  line.append(pay, label);
+  box.appendChild(line);
+
+  const people = seat.candidates || [];
+  if (!people.length) {
+    const empty = document.createElement("p");
+    empty.className = "thing-note";
+    empty.textContent =
+      "Назначать некого: заявок нет, и диплома такого ни у кого в городе нет.";
+    box.appendChild(empty);
+    return box;
+  }
+
+  const asked = people.some((one) => one.asked);
+  const note = document.createElement("p");
+  note.className = "thing-note";
+  note.textContent = asked
+    ? "Подали заявку:"
+    : "Заявок нет, поэтому город показывает всех с нужным дипломом:";
+  box.appendChild(note);
+
+  people.forEach((one) => {
+    const row = document.createElement("div");
+    row.className = "bracket-side";
+    const name = document.createElement("span");
+    name.className = "bracket-name";
+    name.textContent = one.name + " · " + one.level + " ур. · "
+      + one.months + " мес";
+    row.appendChild(name);
+    const take = button("Назначить", {
+      disabled: Boolean(one.lacks),
+      hint: one.lacks || "",
+      onClick: () => electionAction({
+        action: "appoint",
+        job: seat.code,
+        user: one.user_id,
+        salary: Number(pay.value || seat.pay_min),
+      }),
+    });
+    take.classList.add("btn-small");
+    row.appendChild(take);
+    box.appendChild(row);
+  });
+  return box;
 }
 
 /** Где сейчас цикл: фаза, отсчёт и кто в кресле. */

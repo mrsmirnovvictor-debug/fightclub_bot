@@ -72,6 +72,7 @@ async def duty_jobs(db, player: Player, now: int) -> list[dict[str, Any]]:
     from bot.work_service import vacancies
 
     rows = await vacancies(db, player, now, board=hired_at_house("vcpd"))
+    bids = await db.bids_of(player.user_id)
     out = []
     for row in rows:
         one = row["vacancy"]
@@ -80,6 +81,15 @@ async def duty_jobs(db, player: Player, now: int) -> list[dict[str, Any]]:
             "title": one.title,
             "emoji": one.emoji,
             "salary": one.salary,
+            "salary_max": one.salary_max,
+            "pay_text": one.pay_text,
+            # Кресло начальника не занимают: на него подают заявку, а
+            # сажает мэр — он же называет жалованье из вилки
+            "appointed": one.appointed,
+            "bid": one.code in bids,
+            "can_bid": bool(
+                one.appointed and not row["lacks"] and not row["mine"]
+            ),
             "hours": one.hours,
             "note": one.note,
             "months": one.months,
@@ -91,7 +101,7 @@ async def duty_jobs(db, player: Player, now: int) -> list[dict[str, Any]]:
             "mine": row["mine"],
             "lacks": row["lacks"],
             "can_take": bool(
-                not row["lacks"] and not player.works
+                not row["lacks"] and not player.works and not one.appointed
                 and (not row["limited"] or row["free_seats"])
             ),
         })

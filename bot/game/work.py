@@ -1,16 +1,26 @@
-"""Работа: пять вакансий города, смена в два часа и жалованье по понедельникам.
+"""Работа: места города, смена в два часа и жалованье по понедельникам.
 
 Первый в клубе источник дохода, который не зависит ни от боя, ни от
 уровня. Кредиты до этого приносил только рост бойца — девяносто за
 уровень, — и заканчивался этот источник вместе с ростом. Работа платит за
 время и за постоянство: пришёл на неделе — получил в понедельник.
 
-**Вакансия одна на город, а не на бойца.** Бармен в клубе один: взяли —
-вакансия пропала из агентства, уволили — вернулась. Это главное свойство
-всей затеи, и из него же берётся её главный изъян: рабочих мест в городе
-пять, а бойцов может быть сколько угодно.
+**Мест у вакансии счётное число, и считает их город, а не боец.** За
+стойкой бара пять, кассиров в банке шесть, а патрульных город не считает
+вовсе — в патруль берут всех, кто кончил академию. Заняты все — вакансия
+пропала с доски, ушёл один — вернулась.
 
 **Работа одна на бойца.** Вторую не берут, пока не ушли с первой.
+
+**Нанимают в двух местах.** С улицы и в контору берут в агентстве, по
+мини-тесту; в банк, в больницу, в часть, в суд и в полицию — в самом
+доме, по диплому (`at_house`). Второго экзамена на том же пороге не
+сдают: его роль играет училище.
+
+**Пять кресел не занимают, в них назначают.** Управляющего банком,
+начальника полиции, главного врача, начальника части и главного судью
+сажает мэр из подавших заявку — он же называет жалованье из вилки
+(`salary_max`). Город решает не только кто будет начальником, но и почём.
 
 **Смена — два часа, и больше двух часов в рабочий день не работают.**
 Пока смена идёт, боец заперт в своём доме: он на работе, а не гуляет по
@@ -31,8 +41,8 @@
 триста оклада и сто двадцать сверхурочных.
 
 **Меньше половины нормы — увольняют, но платят.** Платят за то, что
-отработано: клуб не обкрадывает уходящего. А увольняют потому, что место
-одно на город, и держать его за тем, кто не ходит, значит держать его
+отработано: клуб не обкрадывает уходящего. А увольняют потому, что мест
+счётное число, и держать одно за тем, кто не ходит, значит держать его
 пустым.
 
 Часов, которые ходили бы по базе в понедельник в девять, здесь нет — как
@@ -42,7 +52,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from math import ceil
 
@@ -192,6 +202,11 @@ class Vacancy:
     salary: int  # кредиты за неделю при выполненной норме
     hours: int  # недельная норма в часах
     place: str  # код локации, где работают
+    # Верх вилки. Ноль — оклад твёрдый и спорить о нём не с кем. Больше
+    # оклада — это кресло назначает мэр и сам же называет жалованье
+    # где-то между `salary` и `salary_max`: начальник в городе один, и
+    # город решает не только кто им будет, но и почём
+    salary_max: int = 0
     # Ноль — мест сколько угодно: в патруль берут всех, кто кончил
     # академию, и считать их городу незачем
     seats: int = 1
@@ -208,6 +223,24 @@ class Vacancy:
     def limited(self) -> bool:
         """Считает ли город эти места. Нет — берут всех подходящих."""
         return self.seats > 0
+
+    @property
+    def appointed(self) -> bool:
+        """Назначает ли на это кресло мэр. Нет — устраиваются сами."""
+        return self.salary_max > self.salary
+
+    def fits_pay(self, salary: int) -> bool:
+        """Лежит ли названное жалованье в вилке этого кресла."""
+        if not self.appointed:
+            return salary == self.salary
+        return self.salary <= salary <= self.salary_max
+
+    @property
+    def pay_text(self) -> str:
+        """Жалованье строкой: твёрдое число или вилка."""
+        if not self.appointed:
+            return f"{self.salary} 💰"
+        return f"{self.salary}–{self.salary_max} 💰"
 
     @property
     def cap(self) -> int:
@@ -235,6 +268,16 @@ class Vacancy:
     def per_hour(self) -> float:
         """Во сколько обходится час: по нему и сравнивают вакансии."""
         return round(self.salary / self.hours, 1)
+
+    def with_pay(self, salary: int) -> "Vacancy":
+        """То же место, но с назначенным жалованьем.
+
+        Ноль — оклад справочный: у места с твёрдым окладом назначать
+        нечего, а у кресла начальника ноль значит «мэр ещё не называл».
+        """
+        if not salary or salary == self.salary:
+            return self
+        return replace(self, salary=salary)
 
     def keep_hours(self) -> int:
         """Сколько часов надо отработать, чтобы не уволили."""
@@ -283,32 +326,33 @@ class Vacancy:
 
 
 VACANCIES: tuple[Vacancy, ...] = (
-    # Бар — первая работа в городе: сюда приходят, когда денег нет
-    # вовсе. Одно место на всех означало, что устроиться успевает
-    # ровно один человек за всю жизнь города, а остальным на доске
-    # написано «занято». Поэтому за стойкой двадцать мест
+    # Мест на улице везде несколько. Одно место на всех означало, что
+    # устроиться успевает ровно один человек за всю жизнь города, а
+    # остальным на доске написано «занято». Бар при этом держит пять:
+    # это первая работа в городе, сюда приходят, когда денег нет вовсе
     Vacancy(
         "bartender", "Бармен", "🍸", salary=250, hours=10, place="bar",
-        seats=20,
+        seats=5,
         note="Наливать, слушать и не запоминать.",
     ),
     Vacancy(
-        "postman", "Сотрудник почты", "📮", salary=200, hours=8,
-        place="post_office",
+        "postman", "Сотрудник почты", "📮", salary=250, hours=STAFF_HOURS,
+        place="post_office", seats=3,
         note="Разбирать, что принесли, и выдавать, за чем пришли.",
     ),
     Vacancy(
         "trainer", "Персональный тренер", "🏋️", salary=300, hours=10,
-        place="strength_gym",
+        place="strength_gym", seats=3,
         note="Считать подходы вслух и не давать бросить.",
     ),
     Vacancy(
         "fight_host", "Распорядитель боёв", "🥊", salary=300, hours=10,
-        place="fight_club",
+        place="fight_club", seats=3,
         note="Сводить пары, держать счёт и разнимать.",
     ),
     Vacancy(
         "croupier", "Крупье", "🎲", salary=300, hours=10, place="casino",
+        seats=2,
         note="Раздавать, считать и не смотреть в глаза.",
     ),
 
@@ -322,20 +366,20 @@ VACANCIES: tuple[Vacancy, ...] = (
     # Банк: банковское дело
     Vacancy(
         "bank_head", "Управляющий филиалом Банка «Vegas»", "🏦",
-        salary=1_500, hours=STAFF_HOURS, place="bank",
-        seats=1, needs="banking", months=2,
+        salary=1_500, salary_max=2_300, hours=STAFF_HOURS, place="bank",
+        seats=1, needs="banking", months=2, at_house=True,
         note="Подписывать то, что до тебя никто не решился подписать.",
     ),
     Vacancy(
         "bank_cashier", "Кассир в Банке", "💵",
-        salary=500, hours=STAFF_HOURS, place="bank",
-        seats=2, needs="banking",
+        salary=600, hours=STAFF_HOURS, place="bank",
+        seats=6, needs="banking", at_house=True,
         note="Считать чужое вслух и не ошибаться.",
     ),
     Vacancy(
         "bank_clerk", "Менеджер по работе с клиентами", "🗂",
-        salary=700, hours=STAFF_HOURS, place="bank",
-        seats=4, needs="banking", months=1,
+        salary=1_000, hours=STAFF_HOURS, place="bank",
+        seats=4, needs="banking", months=1, at_house=True,
         note="Объяснять ставку тому, кто пришёл спорить.",
     ),
 
@@ -356,7 +400,7 @@ VACANCIES: tuple[Vacancy, ...] = (
     # Полиция: полицейская академия
     Vacancy(
         "police_chief", "Начальник полиции", "🎖",
-        salary=1_500, hours=STAFF_HOURS, place="vcpd",
+        salary=1_500, salary_max=2_300, hours=STAFF_HOURS, place="vcpd",
         seats=1, needs="police", months=2,
         lawful=True, at_house=True,
         note="Отвечать за город, когда отвечать больше некому.",
@@ -379,43 +423,47 @@ VACANCIES: tuple[Vacancy, ...] = (
     # Больница: медицинский колледж
     Vacancy(
         "head_doctor", "Главный врач", "🩺",
-        salary=1_500, hours=STAFF_HOURS, place="hospital",
+        salary=1_500, salary_max=2_300, hours=STAFF_HOURS, place="hospital",
         seats=1, needs="medic", months=2,
+        lawful=True, at_house=True,
         note="Решать первым и объясняться потом.",
     ),
     Vacancy(
         "district_doctor", "Участковый врач", "⚕️",
         salary=700, hours=STAFF_HOURS, place="hospital",
-        seats=2, needs="medic", months=1,
+        seats=0, needs="medic", months=1,
+        lawful=True, at_house=True,
         note="Смотреть тех, кто дошёл сам, и тех, кого принесли.",
     ),
     Vacancy(
         "orderly", "Санитар", "🧤",
         salary=500, hours=STAFF_HOURS, place="hospital",
-        seats=4, needs="medic",
+        seats=0, needs="medic",
+        lawful=True, at_house=True,
         note="Донести, удержать и не упасть самому.",
     ),
 
     # Армейская часть: кадетский корпус
     Vacancy(
         "army_head", "Начальник армейской части", "⭐",
-        salary=1_500, hours=STAFF_HOURS, place="military_base",
+        salary=1_500, salary_max=2_300, hours=STAFF_HOURS,
+        place="military_base",
         seats=1, needs="cadet", months=2,
-        lawful=True,
+        lawful=True, at_house=True,
         note="Отдавать приказ, за который отвечать тебе.",
     ),
     Vacancy(
         "senior_officer", "Старший офицер", "🎗",
         salary=700, hours=STAFF_HOURS, place="military_base",
-        seats=2, needs="cadet", months=1,
-        lawful=True,
+        seats=0, needs="cadet", months=1,
+        lawful=True, at_house=True,
         note="Держать роту между приказом и здравым смыслом.",
     ),
     Vacancy(
         "junior_officer", "Младший офицер", "🪖",
         salary=500, hours=STAFF_HOURS, place="military_base",
-        seats=4, needs="cadet",
-        lawful=True,
+        seats=0, needs="cadet",
+        lawful=True, at_house=True,
         note="Строить, вести и считать по головам на обратном пути.",
     ),
 
@@ -478,23 +526,49 @@ VACANCIES: tuple[Vacancy, ...] = (
     ),
     Vacancy(
         "barber", "Барбер", "💈",
-        salary=300, hours=STAFF_HOURS, place="barbershop",
+        salary=350, hours=STAFF_HOURS, place="barbershop",
         seats=2, months=1,
         note="Стричь молча и слушать, когда заговорят.",
     ),
     Vacancy(
         "beauty_master", "Мастер салона", "💅",
-        salary=300, hours=STAFF_HOURS, place="beauty_salon",
-        seats=3, months=1,
+        salary=350, hours=STAFF_HOURS, place="beauty_salon",
+        seats=2, months=1,
         note="Привести в порядок того, кто завтра снова полезет в драку.",
     ),
     # Дилер стоит особняком: это продажи, как в салоне и страховой, и
     # спрос с него тот же — диплом управления и те же шестьсот
     Vacancy(
-        "car_dealer", "Дилер", "🔑",
+        "car_dealer", "Менеджер по продажам", "🔑",
         salary=600, hours=STAFF_HOURS, place="used_car_market",
-        seats=2, needs="management",
+        seats=3, needs="management",
         note="Продать подержанное так, чтобы вернулись за вторым.",
+    ),
+
+    # Суд: юриспруденция. Устроен как участок и часть — своим домом и
+    # своей светлой стороной, а главного судью, как и всякого
+    # начальника в городе, назначает мэр
+    Vacancy(
+        "chief_judge", "Главный судья", "⚖️",
+        salary=1_500, salary_max=2_300, hours=STAFF_HOURS,
+        place="courthouse",
+        seats=1, needs="law", months=2,
+        lawful=True, at_house=True,
+        note="Сказать последнее слово, когда все остальные сказали своё.",
+    ),
+    Vacancy(
+        "judge_aide", "Помощник судьи", "📜",
+        salary=700, hours=STAFF_HOURS, place="courthouse",
+        seats=0, needs="law", months=1,
+        lawful=True, at_house=True,
+        note="Готовить дело так, чтобы судье осталось только решить.",
+    ),
+    Vacancy(
+        "court_clerk", "Секретарь суда", "🖋",
+        salary=500, hours=STAFF_HOURS, place="courthouse",
+        seats=0, needs="law",
+        lawful=True, at_house=True,
+        note="Записывать слово в слово и не поднимать головы.",
     ),
 
     # Бизнес-центр: разработка. Ступеней три, и разница между ними не в
@@ -504,7 +578,7 @@ VACANCIES: tuple[Vacancy, ...] = (
     Vacancy(
         "dev_senior", "Старший разработчик", "🧠",
         salary=1_500, hours=STAFF_HOURS, place="office_building",
-        seats=2, needs="it", months=3,
+        seats=2, needs="it", months=2,
         note="Отвечать за то, что написали другие.",
     ),
     Vacancy(

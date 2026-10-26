@@ -34,6 +34,7 @@ from bot.content.work_quiz import grade, pass_mark, quiz_for
 from bot.database import Database
 from bot.game.bank import WAGE
 from bot.game.health import now_ts
+from bot.game.locations import get_location
 from bot.game.work import (
     COOLDOWN_SECONDS,
     DAY_HOURS,
@@ -213,7 +214,169 @@ async def release_the_absent(db: Database, now: int | None = None) -> list[str]:
 
 
 def my_vacancy(player: Player) -> Vacancy | None:
-    return get_vacancy(player.job_code) if player.works else None
+    """Место этого бойца — и с тем жалованьем, какое назначено ему.
+
+    Жалованье возвращается вместе с местом, а не рядом с ним: у кресел
+    начальников оклад не твёрдый, его называет мэр из вилки, и всё, что
+    считает деньги — расчёт недели, сверхурочные, строка на экране, —
+    обязано считать по этому числу, а не по нижнему краю вилки.
+    """
+    if not player.works:
+        return None
+    one = get_vacancy(player.job_code)
+    if one is None:
+        return None
+    return one.with_pay(player.job_salary)
+
+
+# ---------- кресла начальников: заявка и назначение ----------
+#
+# Начальника город не нанимает, а назначает: мэр смотрит поданные
+# заявки и сажает в кресло одного, называя ему жалованье из вилки. Это
+# и вся разница с остальными местами — ни теста, ни «кто первый нажал».
+
+
+async def bid_for_post(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> Vacancy:
+    """Подать заявку на кресло начальника.
+
+    Заявка — не приём: она ничего не занимает и ни с кем не спорит. На
+    своё нынешнее место она не влияет тоже — боец работает дальше, пока
+    мэр не решит.
+    """
+    moment = now_ts() if now is None else now
+    vacancy = get_vacancy(code)
+    if vacancy is None or not vacancy.appointed:
+        raise WorkError("На это место заявок не подают: сюда устраиваются.")
+    if player.job_code == code:
+        raise WorkError("Ты и так в этом кресле.")
+    lack = lacking(player, vacancy, moment)
+    if lack:
+        raise WorkError(lack)
+    await db.place_bid(player.user_id, code, moment)
+    logger.info("Боец %s подал заявку на %s", player.user_id, code)
+    return vacancy
+
+
+async def withdraw_bid(db: Database, player: Player, code: str) -> Vacancy:
+    """Забрать свою заявку."""
+    vacancy = get_vacancy(code)
+    if vacancy is None or not vacancy.appointed:
+        raise WorkError("Такого кресла в городе нет.")
+    await db.drop_bid(player.user_id, code)
+    return vacancy
+
+
+async def candidates_for(
+    db: Database, code: str, now: int | None = None
+) -> list[dict]:
+    """Из кого мэру выбирать: подавшие заявку, а если никто — все с дипломом.
+
+    Порядок тут не вежливость, а правило города: кресло пустым не
+    держат. Подал заявку — стоишь первым; не подал никто — мэр смотрит
+    на всех, у кого есть нужная бумага, и сажает любого.
+    """
+    moment = now_ts() if now is None else now
+    vacancy = get_vacancy(code)
+    if vacancy is None or not vacancy.appointed:
+        return []
+    rows = await db.bids_for(code)
+    asked = True
+    if not rows:
+        asked = False
+        rows = await db.players_with_diploma(vacancy.needs)
+    out: list[dict] = []
+    for row in rows:
+        one = await db.get_player(int(row["user_id"]))
+        if one is None:  # pragma: no cover - боец удалил персонажа
+            continue
+        if one.job_code == code:
+            continue
+        out.append(
+            {
+                "user_id": one.user_id,
+                "name": one.nickname,
+                "level": one.level,
+                "asked": asked,
+                "months": one.experience_months(moment),
+                "job": one.job_code,
+                "lacks": lacking(one, vacancy, moment),
+            }
+        )
+    return out
+
+
+async def appoint(
+    db: Database,
+    mayor: Player,
+    code: str,
+    user_id: int,
+    salary: int,
+    now: int | None = None,
+) -> tuple[Vacancy, Player]:
+    """Посадить бойца в кресло начальника на названное жалованье.
+
+    Прежнего, если он там сидел, сначала рассчитывают: уходит он не с
+    пустыми руками, а с деньгами за отработанное. Запрета на новую
+    заявку ему при этом не ставят — его не уволили за безделье, его
+    сменили, и завтра он может подать снова.
+    """
+    moment = now_ts() if now is None else now
+    vacancy = get_vacancy(code)
+    if vacancy is None or not vacancy.appointed:
+        raise WorkError("Это кресло мэр не назначает.")
+    seat = await db.mayor()
+    if int(seat.get("user_id") or 0) != mayor.user_id:
+        raise WorkError("Назначает начальников мэр города, а не всякий.")
+    if not vacancy.fits_pay(salary):
+        raise WorkError(
+            f"Жалованье тут от {vacancy.salary} до {vacancy.salary_max} 💰."
+        )
+    chosen = await db.get_player(user_id)
+    if chosen is None:
+        raise WorkError("Такого бойца в городе нет.")
+    lack = lacking(chosen, vacancy, moment)
+    if lack:
+        raise WorkError(f"{chosen.nickname}: {lack}")
+
+    # Старое место назначенного освобождается само: работа одна на бойца
+    if chosen.works:
+        if chosen.job_code == code:
+            raise WorkError(f"{chosen.nickname} уже в этом кресле.")
+        old = get_vacancy(chosen.job_code)
+        await settle(db, chosen, moment)
+        chosen = await db.get_player(user_id) or chosen
+        if chosen.works and old is not None:
+            await _pay(db, chosen, old.with_pay(chosen.job_salary), moment, False)
+            await db.leave_job(chosen.user_id, chosen.experience(moment))
+            chosen = await db.get_player(user_id) or chosen
+
+    # Кресло одно: сидящего в нём рассчитывают и снимают
+    for holder in (await db.taken_jobs()).get(code, []):
+        before = await db.get_player(int(holder["user_id"]))
+        if before is None:  # pragma: no cover - боец удалил персонажа
+            await db.leave_job(int(holder["user_id"]))
+            continue
+        await _pay(db, before, vacancy.with_pay(before.job_salary), moment, False)
+        await db.leave_job(before.user_id, before.experience(moment))
+        logger.info("Мэр снял бойца %s с %s", before.user_id, code)
+
+    if not await db.take_job(
+        chosen.user_id, code, moment, week_of(moment), vacancy.cap
+    ):  # pragma: no cover - кресло только что освободили сами
+        raise WorkError("Кресло занято. Попробуй ещё раз.")
+    fresh = await db.get_player(chosen.user_id) or chosen
+    fresh.job_salary = salary
+    if not fresh.has_account:
+        await open_account(db, fresh)
+    await db.save_player(fresh)
+    await db.clear_bids(code)
+    logger.info(
+        "Мэр %s назначил бойца %s на %s за %s",
+        mayor.user_id, fresh.user_id, code, salary,
+    )
+    return vacancy.with_pay(salary), fresh
 
 
 # ---------- приём на работу ----------
@@ -232,6 +395,11 @@ async def hire_at_house(
     vacancy = get_vacancy(code)
     if vacancy is None or not vacancy.at_house:
         raise WorkError("Сюда на эту работу не берут.")
+    if vacancy.appointed:
+        raise WorkError(
+            "В это кресло не устраиваются: на него назначает мэр. "
+            "Подай заявку — и жди решения."
+        )
     if player.where(moment) != vacancy.place:
         raise WorkError("За формой приходят на место, а не из кармана.")
     if player.works:
@@ -280,6 +448,17 @@ async def apply(
     vacancy = get_vacancy(code)
     if vacancy is None:
         raise WorkError("Такой вакансии в агентстве нет.")
+    if vacancy.at_house:
+        # Агентство такие места и не показывает: в полицию приходят в
+        # полицию, в банк — в банк. Проверка тут потому, что спрятанная
+        # кнопка обходится запросом мимо страницы
+        place = get_location(vacancy.place)
+        raise WorkError(
+            "Это место занимают на работе, а не в агентстве: приходи "
+            f"{'в ' + place.title.lower() if place else 'на место'}."
+        )
+    if vacancy.appointed:  # pragma: no cover - все такие места и так at_house
+        raise WorkError("Это кресло не занимают: на него назначает мэр.")
     if player.works:
         mine = my_vacancy(player)
         raise WorkError(

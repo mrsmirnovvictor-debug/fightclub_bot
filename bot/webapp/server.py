@@ -146,7 +146,14 @@ from bot.webapp.bank import (
     statement_payload,
 )
 from bot.webapp.work import build_hr, build_work
-from bot.work_service import WorkError, hire_at_house
+from bot.work_service import (
+    WorkError,
+    appoint,
+    bid_for_post,
+    candidates_for,
+    hire_at_house,
+    withdraw_bid,
+)
 from bot.work_service import apply as work_apply
 from bot.work_service import quit_job as work_quit
 from bot.work_service import quiz_payload
@@ -181,7 +188,11 @@ from bot.webapp.study import build_study, exam_payload
 from bot.webapp.turf import build_war, map_marks
 from bot.webapp.crowd import build_crowd, crowd_marks
 from bot.webapp.police import build_police_board
-from bot.webapp.elections import ballot_payload, build_elections
+from bot.webapp.elections import (
+    ballot_payload,
+    build_elections,
+    seats_payload,
+)
 from bot.election_service import (
     ElectionError,
     nominate as election_nominate,
@@ -1587,6 +1598,15 @@ async def api_police_action(request: web.Request) -> web.Response:
             # В полицию берут в полиции: тест агентства заменила академия
             place = await hire_at_house(db, player, str(data.get("job") or ""))
             said = f"Ты принят: {place.title}. Форму получишь на месте."
+        elif action == "bid":
+            seat = await bid_for_post(db, player, str(data.get("job") or ""))
+            said = (
+                f"Заявка подана: {seat.title}. Назначает мэр — "
+                "он и назовёт жалованье."
+            )
+        elif action == "unbid":
+            seat = await withdraw_bid(db, player, str(data.get("job") or ""))
+            said = f"Заявка отозвана: {seat.title}."
         elif action == "take_kit":
             said = await duty_take(db, player, str(data.get("item") or ""))
         elif action == "hand_kit":
@@ -1697,7 +1717,7 @@ async def api_hr_action(request: web.Request) -> web.Response:
 async def api_work(request: web.Request) -> web.Response:
     """Рабочее место: смена, часы за сутки и за неделю."""
     player, said = await _worker(request, Service.WORK)
-    body = build_work(player)
+    body = await build_work(request.app[DB_KEY], player)
     body["said"] = said
     return web.json_response(body)
 
@@ -1716,6 +1736,20 @@ async def api_work_action(request: web.Request) -> web.Response:
                 "Из дома не выйти, пока она не кончится."
             )
             del until
+        elif action == "hire":
+            # В банк, в больницу, в часть и в суд берут на месте: тест
+            # агентства тут заменил диплом
+            place = await hire_at_house(db, player, str(data.get("job") or ""))
+            said = f"Ты принят: {place.title}."
+        elif action == "bid":
+            seat = await bid_for_post(db, player, str(data.get("job") or ""))
+            said = (
+                f"Заявка подана: {seat.title}. Назначает мэр — "
+                "он и назовёт жалованье."
+            )
+        elif action == "unbid":
+            seat = await withdraw_bid(db, player, str(data.get("job") or ""))
+            said = f"Заявка отозвана: {seat.title}."
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except WorkError as error:
@@ -1723,7 +1757,7 @@ async def api_work_action(request: web.Request) -> web.Response:
 
     fresh = await db.get_player(player.user_id) or player
     config = request.app[CONFIG_KEY]
-    body = build_work(fresh)
+    body = await build_work(db, fresh)
     body["said"] = said
     body["card"] = build_card(fresh, config.bot_token, fresh.user_id)
     return web.json_response(body)
@@ -2590,8 +2624,11 @@ async def _elections_state(
 ) -> web.Response:
     db = request.app[DB_KEY]
     config = request.app[CONFIG_KEY]
-    state = await election_state(db, player, now_ts())
-    body = build_elections(player, state, now_ts(), said)
+    moment = now_ts()
+    state = await election_state(db, player, moment)
+    body = build_elections(player, state, moment, said)
+    if body["is_mayor"]:
+        body["seats"] = await seats_payload(db, player, moment)
     body["ballot"] = ballot_payload(state)
     body["card"] = build_card(player, config.bot_token, player.user_id)
     return web.json_response(body)
@@ -3022,9 +3059,21 @@ async def api_elections_action(request: web.Request) -> web.Response:
             )
         elif action == "vote":
             said = await election_vote(db, player, _int_field(data, "user"))
+        elif action == "appoint":
+            seat, chosen = await appoint(
+                db,
+                player,
+                str(data.get("job") or ""),
+                _int_field(data, "user"),
+                _int_field(data, "salary"),
+            )
+            said = (
+                f"{chosen.nickname} назначен: {seat.title}. "
+                f"Жалованье — {seat.salary} 💰 в неделю."
+            )
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
-    except ElectionError as error:
+    except (ElectionError, WorkError) as error:
         return web.json_response({"error": str(error)}, status=409)
     except (TypeError, ValueError):
         return web.json_response({"error": "Непонятный ответ."}, status=400)

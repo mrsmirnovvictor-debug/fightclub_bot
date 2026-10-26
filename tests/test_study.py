@@ -136,7 +136,7 @@ def test_five_houses_open_for_the_study():
         assert get_location(code).allows(Service.STUDY), code
 
     # Четыре приёмные читают курсы, полигон — нет: туда только ходят
-    assert len(courses_at(UNIVERSITY)) == 4
+    assert len(courses_at(UNIVERSITY)) == 5
     assert len(courses_at(CORPS)) == 1
     assert courses_at(RANGE) == ()
 
@@ -152,11 +152,15 @@ def test_the_courses_say_what_the_city_promised():
     prices = {one.code: one.price for one in COURSES}
     assert prices == {
         "cadet": 1_000, "medic": 1_000, "police": 1_000,
-        "banking": 2_000, "it": 2_000, "management": 1_800, "gov": 2_500,
+        "banking": 2_000, "it": 2_000, "management": 1_800,
+        "law": 1_800, "gov": 2_500,
     }
     weeks = {one.code: one.weeks for one in COURSES}
     assert weeks["cadet"] == weeks["medic"] == weeks["police"] == 1
-    assert all(weeks[code] == 2 for code in ("banking", "it", "management", "gov"))
+    assert all(
+        weeks[code] == 2
+        for code in ("banking", "it", "management", "law", "gov")
+    )
 
     # Неделя — это пять будней, две недели — десять занятий
     assert get_course("cadet").lessons == LESSONS_PER_WEEK
@@ -441,14 +445,14 @@ async def test_the_diploma_lies_in_the_papers(db):
 
 
 async def test_the_reception_shows_what_the_house_reads(db):
-    """Университет показывает четыре специальности, полигон — ни одной."""
+    """Университет показывает пять специальностей, полигон — ни одной."""
     player = await stand(db, make_player(location=UNIVERSITY))
     body = build_study(player, moment_at())
 
     assert body["title"] == "Университет"
-    assert len(body["courses"]) == 4
+    assert len(body["courses"]) == 5
     assert {one["code"] for one in body["courses"]} == {
-        "banking", "it", "management", "gov"
+        "banking", "it", "management", "law", "gov"
     }
     assert all(one["open"] for one in body["courses"])
     assert body["study"] == {}

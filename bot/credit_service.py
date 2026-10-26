@@ -121,10 +121,15 @@ async def close_deposit(
 
 
 def weekly_income(player: Player) -> int:
-    """Недельный доход бойца: жалованье его места. Без работы — ноль."""
-    from bot.game.work import get_vacancy
+    """Недельный доход бойца: жалованье его места. Без работы — ноль.
 
-    vacancy = get_vacancy(player.job_code) if player.works else None
+    У кресла начальника оклад не твёрдый: его называет мэр из вилки, и
+    в долг банк считает по назначенному, а не по нижнему краю. Иначе
+    управляющему с двумя тремя сотнями сверху давали бы как младшему.
+    """
+    from bot.work_service import my_vacancy
+
+    vacancy = my_vacancy(player)
     return vacancy.salary if vacancy else 0
 
 

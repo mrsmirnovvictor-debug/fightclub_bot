@@ -45,6 +45,8 @@ def vacancy_payload(one: Vacancy) -> dict[str, Any]:
         "title": one.title,
         "emoji": one.emoji,
         "salary": one.salary,
+        "salary_max": one.salary_max,
+        "pay_text": one.pay_text,
         "hours": one.hours,
         "shifts": one.shifts,
         "per_hour": one.per_hour,
@@ -170,8 +172,14 @@ def build_hr(player: Player, rows: list[dict], now: int | None = None) -> dict[s
     }
 
 
-def build_work(player: Player, now: int | None = None) -> dict[str, Any]:
-    """Рабочее место: смена, часы за сутки и за неделю."""
+async def build_work(db, player: Player, now: int | None = None) -> dict[str, Any]:
+    """Рабочее место: смена, часы за сутки и за неделю.
+
+    Здесь же и приём на те места, что занимают в самом доме: в банк, в
+    больницу, в часть и в суд приходят в банк, в больницу, в часть и в
+    суд. Прежде такие места экран только перечислял и отсылал в
+    агентство, которого они и не показывают.
+    """
     moment = now_ts() if now is None else now
     here = get_location(player.where(moment))
     at_work = vacancies_at(player.where(moment))
@@ -183,8 +191,9 @@ def build_work(player: Player, now: int | None = None) -> dict[str, Any]:
         "job": job if mine else {},
         "shift": shift,
         # Что тут вообще работают. В банке таких мест три, и экран
-        # чужака перечисляет их все: за любым из них идти в агентство
-        "vacancies": [vacancy_payload(one) for one in at_work],
+        # перечисляет их все: за одними идут в агентство, другие
+        # занимают прямо тут
+        "vacancies": await house_board(db, player, at_work, moment),
         # Встать на смену можно на своём месте, не на смене и если сутки
         # ещё не отработаны
         "can_start": bool(mine) and not shift and not job.get("day_full", False),
@@ -192,6 +201,47 @@ def build_work(player: Player, now: int | None = None) -> dict[str, Any]:
         "note": _work_note(mine, bool(shift), job, at_work, here, moment),
         "said": "",
     }
+
+
+async def house_board(
+    db, player: Player, at_work: tuple[Vacancy, ...], moment: int
+) -> list[dict[str, Any]]:
+    """Места этого дома: что каждое даёт и что с ним у этого бойца."""
+    from bot.work_service import vacancies as work_rows
+
+    if not at_work:
+        return []
+    rows = await work_rows(db, player, moment, board=at_work)
+    mine = await db.bids_of(player.user_id)
+    out = []
+    for row in rows:
+        one: Vacancy = row["vacancy"]
+        body = vacancy_payload(one)
+        free = not row["limited"] or row["free_seats"] > 0
+        body.update(
+            {
+                "at_house": one.at_house,
+                "taken_by": row["taken_by"],
+                "taken_seats": row["taken_seats"],
+                "free_seats": row["free_seats"],
+                "limited": row["limited"],
+                "mine": row["mine"],
+                "lacks": row["lacks"],
+                # Кресло начальника не занимают — на него подают заявку,
+                # а сажает мэр
+                "appointed": one.appointed,
+                "bid": one.code in mine,
+                "can_take": bool(
+                    one.at_house and not one.appointed and not row["lacks"]
+                    and not player.works and free
+                ),
+                "can_bid": bool(
+                    one.appointed and not row["lacks"] and not row["mine"]
+                ),
+            }
+        )
+        out.append(body)
+    return out
 
 
 def _work_note(
@@ -212,15 +262,18 @@ def _work_note(
     if at_work:
         # Перечисляем все здешние места: в банке их три, и сказать про
         # одно значило бы спрятать два
-        names = ", ".join(one.title.lower() for one in at_work)
+        # Названия как написаны: «Банк «Vegas»» в нижнем регистре
+        # превращается в «банк «vegas»», а это имя, а не слово
+        names = ", ".join(one.title for one in at_work)
         soon = here.soon if here is not None and here.soon else ""
-        said = (
-            f"Здесь работают: {names}. Эти места занимают через "
-            "HR-агентство."
+        where = (
+            "Сюда берут на месте."
+            if all(one.at_house for one in at_work)
+            else "Эти места занимают через HR-агентство."
             if len(at_work) > 1
-            else f"Здесь работает {names}, и это место занимают через "
-            "HR-агентство."
+            else "Это место занимают через HR-агентство."
         )
+        said = f"Здесь работают: {names}. {where}"
         if soon:
             said += f" А ещё сюда обещают: {soon}."
         return said
@@ -231,6 +284,7 @@ __all__ = [
     "board_payload",
     "build_hr",
     "build_work",
+    "house_board",
     "job_payload",
     "shift_payload",
     "vacancy_payload",

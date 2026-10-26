@@ -1289,6 +1289,7 @@ LOCATIONS: tuple[Location, ...] = (
             (0.594049, 0.617823), (0.680128, 0.632177),
             (0.678002, 0.691388), (0.594049, 0.67823),
         ),
+        services=(Service.WORK,),
         soon="тяжбы и обжалование срока",
         genitive="суда",
         interior_ext="png",

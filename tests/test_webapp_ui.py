@@ -195,7 +195,26 @@ def hr_state(
     return build_hr(player, rows, moment)
 
 
-def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> dict:
+class EmptyCity:
+    """База, в которой никто нигде не работает и заявок ни на что нет.
+
+    Экранам работы в этих проверках нужна не база, а ответ сервера:
+    кто где сидит, они и так рисуют по готовому json.
+    """
+
+    async def taken_jobs(self) -> dict:
+        return {}
+
+    async def job_blocks_of(self, user_id: int, now: int) -> dict:
+        return {}
+
+    async def bids_of(self, user_id: int) -> list:
+        return []
+
+
+async def work_state(
+    job: str = "bartender", shift: bool = False, today: int = 0
+) -> dict:
     """Рабочее место, как его отдаёт сервер."""
     from bot.game.health import now_ts
     from bot.game.work import get_vacancy, work_day
@@ -213,7 +232,7 @@ def work_state(job: str = "bartender", shift: bool = False, today: int = 0) -> d
         player.shift_minutes = today
         if shift:
             player.shift_until = moment + 1_800
-    return build_work(player, moment)
+    return await build_work(EmptyCity(), player, moment)
 
 
 def school_state(
@@ -1014,7 +1033,7 @@ async def open_page(
     # Без звёздочки на конце, и это не придирка: `**/api/work*` ловит и
     # `/api/workshop`, а перехват в Playwright выигрывает последний — и
     # мастерская начинала получать ответ рабочего места
-    await page.route("**/api/work", canned(work or work_state()))
+    await page.route("**/api/work", canned(work or await work_state()))
     await page.route("**/api/school", canned(school or school_state()))
     await page.route("**/api/police", canned(police or police_state()))
     await page.route("**/api/mafia", canned(mafia or mansion_state()))
@@ -9692,7 +9711,7 @@ async def test_the_workplace_offers_the_shift(server):
 
 async def test_a_day_already_worked_offers_nothing(server):
     async with async_playwright() as pw:
-        browser, page = await open_work(pw, server, work=work_state(today=120))
+        browser, page = await open_work(pw, server, work=await work_state(today=120))
         await page.wait_for_selector(".shift")
 
         assert await page.locator(".shift .btn").is_disabled()
@@ -9702,7 +9721,7 @@ async def test_a_day_already_worked_offers_nothing(server):
 
 async def test_a_running_shift_counts_down_and_says_the_door_is_shut(server):
     async with async_playwright() as pw:
-        browser, page = await open_work(pw, server, work=work_state(shift=True))
+        browser, page = await open_work(pw, server, work=await work_state(shift=True))
         await page.wait_for_selector(".shift-clock")
 
         clock = await page.locator("#work-clock").inner_text()
@@ -9718,7 +9737,7 @@ async def test_a_running_shift_counts_down_and_says_the_door_is_shut(server):
 async def test_a_stranger_at_the_workplace_is_sent_to_the_agency(server):
     async with async_playwright() as pw:
         browser, page = await open_work(
-            pw, server, work=work_state(job=""), job=""
+            pw, server, work=await work_state(job=""), job=""
         )
         await page.wait_for_selector("#work:not(.hidden)")
 
@@ -13680,13 +13699,20 @@ async def test_the_board_says_what_is_missing_instead_of_a_button(server):
         await browser.close()
 
 
-async def test_a_house_with_several_jobs_lists_them_all(server):
-    """В банке три места, и чужак на рабочем экране видит все три."""
+async def test_a_house_with_several_jobs_hires_on_the_spot(server, db):
+    """В банке три места: два занимают кнопкой, в третье подают заявку.
+
+    Прежде экран дома только перечислял места и отсылал в агентство,
+    которое их и не показывает. Теперь в банк приходят в банк.
+    """
     from bot.webapp.work import build_work
 
     player = make_player("bank")
+    player.diplomas = ["banking"]
+    player.job_experience = 3 * 30 * 24 * 60 * 60
+    await db.save_player(player)
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    work = build_work(player)
+    work = await build_work(db, player)
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, work=work)
@@ -13698,7 +13724,15 @@ async def test_a_house_with_several_jobs_lists_them_all(server):
         assert len(heads) == 3
         assert any("Кассир в Банке" in one for one in heads)
         assert any("Управляющий филиалом" in one for one in heads)
-        assert "Эти места занимают в HR-агентстве" in await page.locator(
+        # Кнопки: две «Устроиться» и одна «Подать заявку» — в кресло
+        # управляющего не устраиваются, туда назначает мэр
+        labels = await page.locator("#work-body .btn").all_inner_texts()
+        assert labels.count("Устроиться") == 2
+        assert labels.count("Подать заявку") == 1
+        # И вилка жалованья стоит там же, где у остальных число
+        said = await page.locator("#work-body").inner_text()
+        assert "1500–2300" in said.replace("\u00a0", " ")
+        assert "Сюда берут на месте" in await page.locator(
             "#work-body .screen-note"
         ).last.inner_text()
         await browser.close()
