@@ -197,8 +197,15 @@ def test_the_car_shortens_the_road_after_the_limp():
 # ---------- права ----------
 
 
-async def test_without_a_licence_the_wheel_stays_empty(db):
-    """Машину купить можно без прав, ехать на ней — нельзя."""
+async def test_without_a_licence_the_wheel_turns_anyway(db):
+    """Без прав за руль пускают — и сразу говорят, чем это кончится.
+
+    Запрещать вместо штрафа значило бы решать за человека, стоит ли ему
+    рисковать. Город решает иначе: едешь без прав — патруль остановит и
+    выпишет штраф дороже самих прав.
+    """
+    from bot.game.police import FINE_NO_LICENCE
+
     player = make_player()
     await db.save_player(player)
 
@@ -206,9 +213,10 @@ async def test_without_a_licence_the_wheel_stays_empty(db):
     keys = await mine(db, player, NOW)
     assert [one["code"] for one in keys] == [HATCH]
 
-    with pytest.raises(CarError, match="удостоверения"):
-        await wheel(db, player, HATCH, NOW)
-    assert player.driving(NOW) == ""
+    said = await wheel(db, player, HATCH, NOW)
+
+    assert player.driving(NOW) == HATCH
+    assert "Прав у тебя нет" in said and str(FINE_NO_LICENCE) in said
 
 
 async def test_the_licence_opens_the_door_to_the_car(db):

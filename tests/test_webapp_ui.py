@@ -14387,3 +14387,91 @@ async def test_the_raid_house_keeps_the_raid_button_in_the_header(server):
         await page.locator(".raid-entry").click()
         await page.wait_for_selector("#club-raid:not(.hidden)")
         await browser.close()
+
+
+# ---------- номера, угон и патруль ----------
+
+
+async def test_the_wash_shows_the_plate_and_offers_a_new_one(server, db):
+    """Автомойка: знак крупно, розыск красным и цена нового номера."""
+    from bot.car_service import buy, steal, wheel
+    from bot.police_service import file_theft
+    from bot.webapp.wash import build_wash
+    from tests.test_theft import NOW, make_player as a_driver, mafioso, stand
+
+    owner = await stand(db, a_driver(1, "Жертва", seen=0))
+    await buy(db, owner, "street_compact", NOW)
+    await wheel(db, owner, "street_compact", NOW)
+    row = await db.car_row(1, "street_compact")
+    # Угоняют там, где стоит хозяин, а номер перебивают на мойке
+    thief = await mafioso(db, a_driver(2, "Вор"))
+    await steal(db, thief, int(row["id"]), NOW)
+    victim = await db.get_player(1)
+    victim.location = "vcpd"
+    await db.save_player(victim)
+    await file_theft(db, victim, int(row["id"]), NOW)
+
+    fresh = await db.get_player(2)
+    fresh.location = "car_wash"
+    await db.save_player(fresh)
+    body = await build_wash(db, fresh, NOW)
+    card = build_card(fresh, TOKEN, viewer_id=fresh.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(fresh))
+        await page.route("**/api/wash", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "wash")
+        await page.wait_for_selector("#wash-body .shelf")
+
+        plate = page.locator("#wash-body .plate")
+        assert await plate.inner_text() == str(row["plate"])
+        # В розыске — красная рамка: по этому знаку машину и ищут
+        assert "wanted" in (await plate.get_attribute("class"))
+        said = await page.locator("#wash-body").inner_text()
+        assert "в розыске" in said
+        assert "Перебить номер" in said and "500" in said.replace(" ", " ")
+        await browser.close()
+
+
+async def test_the_traffic_sheet_offers_the_fine_and_the_seizure(server, db):
+    """Автоучёт в участке: без прав — штраф, в розыске — изъятие."""
+    from bot.car_service import buy, steal, wheel
+    from bot.police_service import file_theft
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from tests.test_theft import (
+        NOW, make_player as a_driver, mafioso, officer, stand,
+    )
+
+    owner = await stand(db, a_driver(1, "Жертва", seen=0))
+    await buy(db, owner, "street_compact", NOW)
+    await wheel(db, owner, "street_compact", NOW)
+    row = await db.car_row(1, "street_compact")
+    thief = await mafioso(db, a_driver(2, "Вор", where="bar"))
+    await steal(db, thief, int(row["id"]), NOW)
+    victim = await db.get_player(1)
+    victim.location = "vcpd"
+    await db.save_player(victim)
+    await file_theft(db, victim, int(row["id"]), NOW)
+
+    cop = await officer(db)
+    body = build_police(cop)
+    body.update(await build_police_board(db, cop, NOW))
+    card = build_card(cop, TOKEN, viewer_id=cop.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, police=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector("#police-body .shelf")
+
+        said = await page.locator("#police-body").inner_text()
+        assert "Автоучёт" in said and str(row["plate"]) in said
+        assert "в розыске" in said and "без прав" in said
+        # Угнанную изымают, и кнопка об этом говорит прямо
+        seize = page.locator("#police-body .btn", has_text="Изъять")
+        assert await seize.count() == 1
+        await browser.close()

@@ -1892,7 +1892,7 @@ const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
   "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
-  "cars", "dorm", "charge", "dojo", "barber", "bag", "hero",
+  "cars", "dorm", "charge", "dojo", "barber", "wash", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1905,7 +1905,7 @@ const OPENED_FROM = {
   school: "map", police: "map", mafia: "map", flats: "map", post: "map",
   tavern: "map", study: "map", turf: "map", crowd: "map",
   elections: "map", house: "map", prison: "map", arena: "map", cars: "map",
-  dorm: "map", charge: "map", dojo: "map", barber: "map",
+  dorm: "map", charge: "map", dojo: "map", barber: "map", wash: "map",
 };
 let lastTab = "hero";
 
@@ -1992,6 +1992,9 @@ function showTab(name) {
   // Школа: ведомость растёт в боях, и к ней возвращаются после них —
   // спрашиваем на каждый заход
   if (name === "dojo") loadDojo();
+  // Мойка: номера машин могли смениться в другом доме — у угнанной
+  // меняется хозяин, а с ним и то, что показывать
+  if (name === "wash") loadWash();
   // Полка образов: кредитов могло стать больше или меньше, а образ —
   // купиться в другом доме того же пола
   if (name === "barber") loadBarber();
@@ -2523,6 +2526,7 @@ const HOUSE_SCREENS = {
   charge: () => openCharge(),
   dojo: () => openDojo(),
   looks: () => openBarber(),
+  wash: () => openWash(),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -10136,7 +10140,13 @@ function renderPolice(data) {
 
   // Свои дела — всем, сводка по городу — только при значке
   if ((data.mine || []).length) body.appendChild(myCasesBox(data));
+  // Угнанное у тебя: заявление пишут здесь, и пишет его хозяин
+  if ((data.stolen || []).length) body.appendChild(stolenBox(data));
+  // Стоянка у участка: городская и безопасная — отсюда не угоняют
+  if ((data.parking || []).length) body.appendChild(stationParkingBox(data));
   if (data.badge) {
+    // Автоучёт: кто на чём ездит, с номерами. Штраф и изъятие — тут же
+    if ((data.traffic || []).length) body.appendChild(trafficBox(data));
     // Гараж участка — первым делом: машину берут и сдают, идя мимо, а
     // сводку читают сидя. Видят его все сотрудники: машины выдают им
     if ((data.garage || []).length) body.appendChild(stationGarageBox(data));
@@ -10159,6 +10169,148 @@ function renderPolice(data) {
   row.className = "thing-buttons";
   row.appendChild(button("Получить права", { onClick: () => takeLicence() }));
   body.appendChild(row);
+}
+
+/** Угнанное у тебя: номер, час и заявление. */
+function stolenBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🚗 Угон";
+  box.appendChild(head);
+
+  data.stolen.forEach((one) => {
+    const row = document.createElement("article");
+    box.appendChild(row);
+    row.className = "case";
+    const line = document.createElement("header");
+    line.className = "case-head";
+    const who = document.createElement("span");
+    who.className = "case-who";
+    who.textContent = one.title + " · " + one.plate;
+    const when = document.createElement("span");
+    when.className = "case-sum";
+    when.textContent = one.at;
+    line.append(who, when);
+    row.appendChild(line);
+
+    const said = document.createElement("p");
+    said.className = "case-note";
+    said.textContent = one.filed
+      ? "Заявление написано: машину ищут по номеру."
+      : "Заявления нет — пока его нет, город в это дело не лезет.";
+    row.appendChild(said);
+
+    if (!one.can_file) return;
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Заявить об угоне", {
+        onClick: () => policeAction({ action: "file_theft", car: one.id }),
+      })
+    );
+    row.appendChild(buttons);
+  });
+  return box;
+}
+
+/** Стоянка у участка: поставить своё и забрать своё. */
+function stationParkingBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🅿️ Стоянка у участка";
+  box.appendChild(head);
+
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = "Под фонарём и на виду: отсюда машину не угонят.";
+  box.appendChild(said);
+
+  data.parking.forEach((one) => {
+    const row = document.createElement("div");
+    row.className = "bracket-side";
+    const name = document.createElement("span");
+    name.className = "bracket-name";
+    name.textContent = one.title + " · " + one.plate;
+    row.appendChild(name);
+    const act = button(one.here ? "Забрать" : "Поставить", {
+      onClick: () => policeAction({
+        action: one.here ? "unpark" : "park", car: one.code,
+      }),
+    });
+    act.classList.add("btn-small");
+    row.appendChild(act);
+    box.appendChild(row);
+  });
+  return box;
+}
+
+/** Автоучёт: все машины города, их номера и что с ними не так. */
+function trafficBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🚦 Автоучёт · " + data.traffic.length;
+  box.appendChild(head);
+
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = "Штраф за руль без прав — " + num(data.fine)
+    + " 💰. Машину в розыске изымают и возвращают хозяину.";
+  box.appendChild(said);
+
+  data.traffic.forEach((one) => {
+    const row = document.createElement("article");
+    row.className = "case" + (one.wanted ? " mine" : "");
+    const line = document.createElement("header");
+    line.className = "case-head";
+    const who = document.createElement("span");
+    who.className = "case-who";
+    who.textContent = one.plate + " · " + one.owner;
+    const mark = document.createElement("span");
+    mark.className = "case-sum";
+    mark.textContent = one.licence ? "права есть" : "без прав";
+    line.append(who, mark);
+    row.appendChild(line);
+
+    const said = document.createElement("p");
+    said.className = "case-note";
+    said.textContent = [
+      one.title,
+      one.where,
+      one.wanted ? "в розыске" : one.stolen ? "числится угнанной" : "",
+      one.online ? "в городе" : "не в сети",
+    ].filter(Boolean).join(" · ");
+    row.appendChild(said);
+
+    if (!one.can_fine && !one.can_seize) {
+      box.appendChild(row);
+      return;
+    }
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    if (one.can_fine) {
+      buttons.appendChild(
+        button("Оштрафовать", {
+          onClick: () => policeAction({ action: "fine", car: one.id }),
+        })
+      );
+    }
+    if (one.can_seize) {
+      buttons.appendChild(
+        button("Изъять", {
+          onClick: () => policeAction({ action: "seize", car: one.id }),
+        })
+      );
+    }
+    row.appendChild(buttons);
+    box.appendChild(row);
+  });
+  return box;
 }
 
 /** Кабинет: казна города, норма недели и жалованье кресла. */
@@ -12422,6 +12574,93 @@ const DOJO_TABS = [
   ["study", "Обучение"],
 ];
 
+// ---------- автомойка: номера машин ----------
+//
+// Мыть машины город пока обещает, а номера перебивает уже сейчас. Это
+// и весь экран: свои машины, их знаки и цена нового.
+
+let washData = null;
+
+async function openWash() {
+  showTab("wash");
+}
+
+async function loadWash() {
+  try {
+    const response = await fetch("api/wash", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Мойка не отвечает.");
+    const data = await response.json();
+    if (data.card) render(data.card, true);
+    renderWash(data);
+  } catch (error) {
+    el("wash-note").textContent = error.message;
+  }
+}
+
+async function washAction(payload) {
+  try {
+    const data = await post("api/wash", payload);
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderWash(data);
+    if (data.said) popup("Автомойка", data.said);
+  } catch (error) {
+    popup("Автомойка", error.message);
+    await loadWash();
+  }
+}
+
+function renderWash(data) {
+  washData = data;
+  el("wash-title").textContent = "🧽 " + data.title;
+  el("wash-note").textContent = data.said || data.note || "";
+  el("shop-purse-wash").textContent = "";
+  el("shop-purse-wash").appendChild(purse(data.credits || 0));
+
+  const body = el("wash-body");
+  body.textContent = "";
+  body.appendChild(walletBar(data.purse, loadWash));
+  (data.cars || []).forEach((one) => body.appendChild(plateBox(one, data)));
+}
+
+/** Машина на мойке: номер крупно, прошлое строкой и кнопка. */
+function plateBox(one, data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = one.title;
+  box.appendChild(head);
+
+  const plate = document.createElement("div");
+  plate.className = "plate" + (one.wanted ? " wanted" : "");
+  plate.textContent = one.plate || "без номера";
+  box.appendChild(plate);
+
+  if (one.stolen) {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = one.wanted
+      ? "Машина в розыске: полиция изымет её при первой проверке."
+      : "Машина числится угнанной. Хозяин заявит — её начнут искать.";
+    box.appendChild(said);
+  }
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Перебить номер · " + num(data.price) + " 💰", {
+      disabled: !one.can_restamp,
+      hint: one.why,
+      onClick: () => washAction({ action: "restamp", code: one.code }),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
 async function openDojo() {
   showTab("dojo");
 }
@@ -13481,6 +13720,31 @@ function neighbourCard(one, data) {
     why.className = "neighbour-why";
     why.textContent = one.why;
     box.appendChild(why);
+  }
+
+  // Машина под соседом: её уводят отдельной кнопкой, и в сети он для
+  // этого быть не обязан — важно, что он оставил её на себе
+  const car = one.car || {};
+  if (car.code) {
+    const line = document.createElement("p");
+    line.className = "neighbour-note";
+    line.textContent = "🚗 " + car.title + " · " + car.plate;
+    box.appendChild(line);
+    if (car.can_steal) {
+      const buttons = document.createElement("div");
+      buttons.className = "thing-buttons";
+      buttons.appendChild(
+        button("🔑 Угнать машину", {
+          onClick: () => crowdAction({ action: "steal", car: car.id }),
+        })
+      );
+      box.appendChild(buttons);
+    } else if (car.why) {
+      const why = document.createElement("p");
+      why.className = "neighbour-why";
+      why.textContent = car.why;
+      box.appendChild(why);
+    }
   }
   return box;
 }
@@ -16995,7 +17259,7 @@ const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
   "trade", "house", "prison", "arena", "cars", "dorm", "charge",
-  "dojo", "barber",
+  "dojo", "barber", "wash",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -17151,7 +17415,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
   "crowd", "elections", "shop", "magic", "prison", "arena", "cars", "dorm",
-  "charge", "dojo", "barber", "workshop", "club",
+  "charge", "dojo", "barber", "wash", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

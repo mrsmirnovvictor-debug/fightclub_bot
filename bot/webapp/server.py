@@ -204,6 +204,9 @@ from bot.police_service import (
     choose_split as police_split,
     collect as police_collect,
     file_report as police_report,
+    file_theft,
+    fine_driver,
+    seize_car,
     settle_week as police_settle,
 )
 from bot.robbery_service import RobberyError, RobberyService
@@ -1607,6 +1610,26 @@ async def api_police_action(request: web.Request) -> web.Response:
         elif action == "unbid":
             seat = await withdraw_bid(db, player, str(data.get("job") or ""))
             said = f"Заявка отозвана: {seat.title}."
+        elif action == "fine":
+            said = await fine_driver(db, player, _int_field(data, "car"))
+        elif action == "seize":
+            said = await seize_car(db, player, _int_field(data, "car"))
+        elif action == "file_theft":
+            said = await file_theft(db, player, _int_field(data, "car"))
+        elif action in ("park", "unpark"):
+            # Стоянка у участка: городская, безопасная и своя у каждого
+            from bot.car_service import CarError, leave, pick_up
+            from bot.game.cars import IN_POLICE
+
+            code = str(data.get("car") or "")
+            try:
+                said = (
+                    await leave(db, player, code, IN_POLICE, 0)
+                    if action == "park"
+                    else await pick_up(db, player, code)
+                )
+            except CarError as error:
+                return web.json_response({"error": str(error)}, status=409)
         elif action == "take_kit":
             said = await duty_take(db, player, str(data.get("item") or ""))
         elif action == "hand_kit":
@@ -2962,6 +2985,50 @@ async def api_charge_action(request: web.Request) -> web.Response:
     return await _charge_state(request, fresh, said)
 
 
+async def _wash_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.wash import build_wash
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_wash(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_wash(request: web.Request) -> web.Response:
+    """Автомойка: свои машины и их номера."""
+    player = await _at(request, Service.WASH)
+    return await _wash_state(request, player)
+
+
+async def api_wash_action(request: web.Request) -> web.Response:
+    """Перебить номер: новый знак и чистое прошлое машины."""
+    from bot.car_service import CarError, restamp
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.WASH)
+    try:
+        if action == "restamp":
+            said = await restamp(db, player, str(data.get("code") or ""))
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except CarError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _wash_state(request, fresh, said)
+
+
 async def _dojo_state(
     request: web.Request, player, said: str = ""
 ) -> web.Response:
@@ -3132,6 +3199,16 @@ async def api_crowd_action(request: web.Request) -> web.Response:
         elif action == "arrest":
             raid = await service.arrest(player, _int_field(data, "user"))
             said = f"Задержание: {raid.names.get(raid.victim, 'он')} не уйдёт."
+        elif action == "steal":
+            # Угон не драка: машину уводят у того, кто оставил её на
+            # себе. Ни лицензии, ни драки для этого не нужно — нужна
+            # семья и зазевавшийся хозяин
+            from bot.car_service import CarError, steal
+
+            try:
+                said = await steal(db, player, _int_field(data, "car"))
+            except CarError as error:
+                return web.json_response({"error": str(error)}, status=409)
         elif action == "turn":
             raid = service.of_user(player.user_id)
             if raid is None:
@@ -3582,6 +3659,8 @@ def create_app(
             web.post("/api/dojo", api_dojo_action),
             web.get("/api/charge", api_charge),
             web.post("/api/charge", api_charge_action),
+            web.get("/api/wash", api_wash),
+            web.post("/api/wash", api_wash_action),
             web.get("/api/cars", api_cars),
             web.post("/api/cars", api_cars_action),
             web.post("/api/used-cars", api_used_cars_action),

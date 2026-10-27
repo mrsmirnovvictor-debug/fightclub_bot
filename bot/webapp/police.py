@@ -21,9 +21,15 @@ from typing import Any
 from bot.game.clock import club_moment
 from bot.game.health import format_term, now_ts
 from bot.game.locations import get_location
-from bot.game.police import ARREST_FEE, QUOTA_BONUS, jail_left
+from bot.game.police import (
+    ARREST_FEE,
+    FINE_NO_LICENCE,
+    QUOTA_BONUS,
+    jail_left,
+)
 from bot.game.turf import owner_of_service
 from bot.models import Player
+from bot.police_service import traffic_sheet
 from bot.webapp.bonus import build_bonus
 
 
@@ -111,6 +117,60 @@ async def duty_jobs(db, player: Player, now: int) -> list[dict[str, Any]]:
 CHIEF_JOB = "police_chief"
 
 
+async def stolen_rows(db, player: Player, now: int) -> list[dict[str, Any]]:
+    """Что у бойца угнали: номер, когда и написано ли заявление."""
+    from bot.game.cars import get_car
+
+    out = []
+    for row in await db.stolen_from(player.user_id, now):
+        car = get_car(str(row["code"]))
+        out.append(
+            {
+                "id": int(row["id"]),
+                "code": str(row["code"]),
+                "title": car.title if car else str(row["code"]),
+                "plate": str(row["plate"]),
+                "at": club_moment(int(row["stolen_at"])) if row["stolen_at"] else "",
+                "filed": bool(row["stolen_filed"]),
+                # Кто на ней ездит, пострадавшему не говорим: это дело
+                # полиции, а не повод идти разбираться самому
+                "can_file": not row["stolen_filed"],
+            }
+        )
+    return out
+
+
+async def parking_rows(db, player: Player, now: int) -> list[dict[str, Any]]:
+    """Стоянка у участка: что поставить и что забрать.
+
+    Своё и только своё: в отличие от гаража особняка, городская стоянка
+    ничего никому не передаёт — она просто безопасна.
+    """
+    from bot.car_service import mine as my_cars
+    from bot.game.cars import IN_POLICE, POLICE_PARKING, get_car
+
+    rows = await my_cars(db, player, now)
+    out = []
+    for row in rows:
+        car = get_car(str(row["code"]))
+        if car is None or car.service:
+            continue
+        parked = str(row.get("parked") or "")
+        if parked and parked != IN_POLICE:
+            continue
+        out.append(
+            {
+                "code": str(row["code"]),
+                "title": car.title,
+                "plate": str(row.get("plate") or ""),
+                "here": parked == IN_POLICE,
+                "stolen": bool(row.get("stolen_from")),
+            }
+        )
+    return out
+
+
+
 async def build_police_board(
     db, player: Player, now: int | None = None
 ) -> dict[str, Any]:
@@ -137,6 +197,13 @@ async def build_police_board(
         "quota_bonus": QUOTA_BONUS,
         "jail": await term_of(db, player.user_id, moment),
         "jobs": await duty_jobs(db, player, moment),
+        # Угнанное у этого бойца: по нему он и пишет заявление. Видит
+        # это каждый — своё дело, а не городская сводка
+        "stolen": await stolen_rows(db, player, moment),
+        # Стоянка у участка: городская и безопасная, как двор особняка
+        "parking": await parking_rows(db, player, moment),
+        "traffic": [],
+        "fine": FINE_NO_LICENCE,
     }
     if not badge:
         return body
@@ -159,6 +226,10 @@ async def build_police_board(
     # Бонусный пулл участка видит каждый сотрудник: зарабатывают его
     # вместе. Менять дележ может только начальник — это его настройка,
     # и она лежит у службы, а не у человека
+    # Автоучёт: все живые машины города с номерами и хозяевами. Это
+    # рабочая бумага патруля — по ней и видно, кого останавливать
+    body["traffic"] = await traffic_sheet(db, player, moment)
+    body["fine"] = FINE_NO_LICENCE
     body["bonus"] = await build_bonus(
         db, owner_of_service("police"), moment,
         can_split=player.job_code == CHIEF_JOB,

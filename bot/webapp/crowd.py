@@ -243,6 +243,46 @@ async def neighbour_row(
             mine and online and not same and not rest and not busy
             and one.can_fight(moment)
         ),
+        # Машина под соседом: её угоняют, и для этого в сети он быть не
+        # обязан. Поля заполняет `car_mark` — тут только место под них
+        "car": {},
+    }
+
+
+async def car_mark(
+    db, player: Player, one: Player, moment: int
+) -> dict[str, Any]:
+    """Машина под этим соседом: что за неё и можно ли её увести.
+
+    Угон не спрашивает, в сети ли хозяин: машина стоит в городе, а не в
+    кармане. Зато спрашивает, не поставил ли он её на охраняемое место
+    и бил ли ты его только что, — это решает `stealable`.
+    """
+    from bot.car_service import stealable
+    from bot.game.cars import get_car
+
+    code = one.driving(moment)
+    if not code:
+        return {}
+    row = await db.car_row(one.user_id, code)
+    if row is None:
+        return {}
+    full = dict(
+        row,
+        user_id=one.user_id,
+        driving=code,
+        seen_at=one.seen_at,
+        location=one.where(moment),
+    )
+    car = get_car(code)
+    why = await stealable(db, player, full, moment)
+    return {
+        "id": int(row["id"]),
+        "code": code,
+        "title": car.title if car else code,
+        "plate": str(row.get("plate") or ""),
+        "can_steal": not why,
+        "why": why,
     }
 
 
@@ -344,6 +384,7 @@ async def build_crowd(
         )
         row["clan"] = name
         row["can_rob"] = row["can_rob"] and bool(left)
+        row["car"] = await car_mark(db, player, one, moment)
         # Сотруднику говорим про ордер, остальным — про лицензию: у них
         # разные кнопки, и причина отказа у каждой своя
         row["why"] = (
