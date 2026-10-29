@@ -39,9 +39,13 @@ from bot.game.police import FINE_NO_LICENCE
 from bot.models import Player
 from bot.police_service import (
     PoliceError,
+    claim_car,
+    deliver,
     file_theft,
     fine_driver,
-    seize_car,
+    found_cars,
+    take_from_thief,
+    theft_suspects,
     traffic_sheet,
 )
 
@@ -360,36 +364,100 @@ async def test_the_traffic_sheet_shows_the_city_and_its_sins(db):
     assert len(sheet) == 1
     line = sheet[0]
     assert line["plate"] == str(row["plate"]) and line["owner"] == "Вор"
-    assert line["stolen"] and line["wanted"] and line["can_seize"]
-    assert not line["licence"]
+    assert line["stolen"] and line["wanted"] and not line["licence"]
+    assert line["place"] == "bar", "в учёте видно, где машина"
     # Гражданскому автоучёт не отдают вовсе
     assert await traffic_sheet(db, await db.get_player(2), NOW) == []
 
 
-async def test_the_wanted_car_is_seized_and_returned(db):
-    """Изымают то, что в розыске, и возвращают хозяину."""
+async def test_the_sleeping_thief_loses_the_car_without_a_fight(db):
+    """Угонщика нет в сети — машину забирают молча и везут в участок."""
     owner = await stand(db, make_player(1, "Жертва", seen=0))
     row = await with_car(db, owner)
-    thief = await mafioso(db, make_player(2, "Вор"))
+    thief = await mafioso(db, make_player(2, "Вор", seen=0))
     await steal(db, thief, int(row["id"]), NOW)
     cop = await officer(db)
 
     # Без заявления город в это дело не лезет
     with pytest.raises(PoliceError, match="не в розыске"):
-        await seize_car(db, cop, int(row["id"]), NOW)
+        await take_from_thief(db, cop, int(row["id"]), NOW)
 
-    fresh = await db.get_player(1)
-    fresh.location = STATION
-    await db.save_player(fresh)
-    await file_theft(db, fresh, int(row["id"]), NOW)
+    victim = await db.get_player(1)
+    victim.location = STATION
+    await db.save_player(victim)
+    await file_theft(db, victim, int(row["id"]), NOW)
 
-    said = await seize_car(db, cop, int(row["id"]), NOW)
+    # До машины надо доехать: она там, где угонщик
+    with pytest.raises(PoliceError, match="не здесь"):
+        await take_from_thief(db, cop, int(row["id"]), NOW)
 
-    assert "Жертва" in said
-    assert [one["code"] for one in await db.cars_of(1)] == [HATCH]
-    assert await db.cars_of(2) == []
-    back = await db.car_row(1, HATCH)
-    assert not back["stolen_from"] and not back["stolen_filed"]
+    cop.location = "bar"
+    await db.save_player(cop)
+    said = await take_from_thief(db, cop, int(row["id"]), NOW)
+
+    assert "в участок" in said
+    assert await db.cars_of(2) == [], "у вора машины больше нет"
+    kept = await db.car_row(1, HATCH)
+    assert kept is not None and kept["parked"] == "impound"
+    assert str(kept["at_place"]) == STATION
+
+
+async def test_the_owner_takes_the_car_from_the_station(db):
+    """Машина лежит в участке до востребования, и берёт её хозяин."""
+    owner = await stand(db, make_player(1, "Жертва", seen=0))
+    row = await with_car(db, owner)
+    thief = await mafioso(db, make_player(2, "Вор", seen=0))
+    await steal(db, thief, int(row["id"]), NOW)
+    victim = await db.get_player(1)
+    victim.location = STATION
+    await db.save_player(victim)
+    await file_theft(db, victim, int(row["id"]), NOW)
+    cop = await officer(db)
+    cop.location = "bar"
+    await db.save_player(cop)
+    await take_from_thief(db, cop, int(row["id"]), NOW)
+
+    # Чужую из участка не отдают
+    stranger = await stand(db, make_player(5, "Прохожий", where=STATION))
+    with pytest.raises(PoliceError, match="не твоя"):
+        await claim_car(db, stranger, int(row["id"]), NOW)
+
+    mine = await db.get_player(1)
+    said = await claim_car(db, mine, int(row["id"]), NOW)
+
+    assert str(row["plate"]) in said
+    kept = await db.car_row(1, HATCH)
+    assert not kept["parked"] and not kept["at_place"]
+
+
+async def test_the_abandoned_car_is_driven_to_the_station(db):
+    """Брошенную у здания машину полиция отвозит в участок."""
+    from bot.car_service import leave_here
+
+    owner = await stand(db, make_player(1, "Жертва", seen=0))
+    row = await with_car(db, owner)
+    thief = await mafioso(db, make_player(2, "Вор", seen=0))
+    await steal(db, thief, int(row["id"]), NOW)
+    thief = await db.get_player(2)
+    await leave_here(db, thief, HATCH, NOW)
+    victim = await db.get_player(1)
+    victim.location = STATION
+    await db.save_player(victim)
+    await file_theft(db, victim, int(row["id"]), NOW)
+
+    cop = await officer(db)
+    sheet = await found_cars(db, cop, NOW)
+    assert len(sheet) == 1 and sheet[0]["street"]
+    assert sheet[0]["where"] == "bar", "участок говорит, где машина"
+    assert not sheet[0]["can_deliver"], "до неё ещё надо доехать"
+
+    cop.location = "bar"
+    await db.save_player(cop)
+    said = await deliver(db, cop, int(row["id"]), NOW)
+
+    assert "в участок" in said
+    kept = await db.car_row(1, HATCH)
+    assert kept["parked"] == "impound" and str(kept["at_place"]) == STATION
 
 
 # ---------- перебитый номер ----------
@@ -433,3 +501,357 @@ async def test_the_empty_pocket_keeps_the_old_plate(db):
         await restamp(db, player, HATCH, NOW)
 
     assert str((await db.car_row(1, HATCH))["plate"]) == str(row["plate"])
+
+
+# ---------- машина у здания ----------
+
+
+async def test_the_car_is_left_at_the_building_and_seen_by_all(db):
+    """Оставленная машина стоит у здания, и видит её каждый, кто придёт."""
+    from bot.car_service import here_rows, leave_here, pick_here
+
+    owner = await stand(db, make_player(1, "Хозяин"))
+    row = await with_car(db, owner)
+
+    said = await leave_here(db, owner, HATCH, NOW)
+
+    assert "у здания" in said
+    fresh = await db.car_row(1, HATCH)
+    assert fresh["parked"] == "street" and str(fresh["at_place"]) == "bar"
+    assert (await db.get_player(1)).driving(NOW) == "", "за рулём её больше нет"
+
+    # Видит её и чужой, кто сюда пришёл
+    stranger = await stand(db, make_player(2, "Прохожий"))
+    seen = await here_rows(db, stranger, NOW)
+    assert [one["plate"] for one in seen] == [str(row["plate"])]
+    assert seen[0]["mine"] is False and seen[0]["owner"] == "Хозяин"
+
+    # Чужую не забрать, свою — пожалуйста
+    with pytest.raises(CarError, match="чужая"):
+        await pick_here(db, stranger, int(row["id"]), NOW)
+    mine = await db.get_player(1)
+    await pick_here(db, mine, int(row["id"]), NOW)
+    assert not (await db.car_row(1, HATCH))["parked"]
+
+
+async def test_the_street_is_not_a_parking(db):
+    """Брошенную у здания уводят: улица — не охраняемое место."""
+    from bot.car_service import leave_here
+
+    owner = await stand(db, make_player(1, "Хозяин", seen=NOW))
+    row = await with_car(db, owner)
+    await leave_here(db, owner, HATCH, NOW)
+    thief = await mafioso(db, make_player(2, "Вор"))
+
+    # Хозяин в сети, а машина брошена: драться за неё не надо
+    said = await steal(db, thief, int(row["id"]), NOW)
+
+    assert str(row["plate"]) in said
+    assert [one["code"] for one in await db.cars_of(2)] == [HATCH]
+
+
+async def test_the_patrol_car_hides_nowhere(db):
+    """Служебную угоняют, но ни спрятать, ни перебить её нельзя."""
+    from bot.car_service import leave, leave_here, restamp, take
+    from bot.game.cars import IN_FLAT, PATROL_CAR
+
+    cop = make_player(1, "Патруль", where="vcpd")
+    cop.job_code = "police_patrol"
+    cop.diplomas = ["police"]
+    await db.save_player(cop)
+    await take(db, cop, PATROL_CAR, NOW)
+
+    with pytest.raises(CarError, match="гараже службы"):
+        await leave(db, cop, PATROL_CAR, IN_FLAT, 1, NOW)
+    with pytest.raises(CarError, match="городской"):
+        await restamp(db, cop, PATROL_CAR, NOW)
+
+    # А у здания — можно, и оттуда её уводят
+    said = await leave_here(db, cop, PATROL_CAR, NOW)
+    assert "у здания" in said
+    row = await db.car_row(1, PATROL_CAR)
+    thief = await mafioso(db, make_player(2, "Вор", where="vcpd"))
+    await steal(db, thief, int(row["id"]), NOW)
+    assert [one["code"] for one in await db.cars_of(2)] == [PATROL_CAR]
+
+
+# ---------- патруль на месте ----------
+
+
+async def test_the_street_row_carries_the_buttons_of_the_place(db):
+    """Кнопки живут у здания: забрать своё, угнать чужое, увезти в участок."""
+    from bot.car_service import here_rows, leave_here
+
+    row = await a_theft(db)
+    thief = await db.get_player(2)
+    await leave_here(db, thief, HATCH, NOW)
+
+    # Патрульный в участке машину не видит: она у бара
+    cop = await officer(db)
+    assert await here_rows(db, cop, NOW) == []
+
+    # Пришёл туда, где она стоит, — и кнопка появилась
+    cop.location = "bar"
+    await db.save_player(cop)
+    seen = await here_rows(db, cop, NOW)
+    assert [one["can_deliver"] for one in seen] == [True]
+    assert [one["plate"] for one in seen] == [str(row["plate"])]
+
+    # Прохожему без семьи угонять нечем, и сказано почему
+    passer = await stand(db, make_player(3, "Прохожий"))
+    plain = await here_rows(db, passer, NOW)
+    assert plain[0]["can_steal"] is False and "семью" in plain[0]["why"]
+    assert plain[0]["can_deliver"] is False, "без значка машин не возят"
+
+    # Мафии — угнать: улица не стоянка, и драться за неё не надо
+    second = await mafioso(db, make_player(4, "Вор второй"))
+    assert [one["can_steal"] for one in await here_rows(db, second, NOW)] == [True]
+    await steal(db, second, int(row["id"]), NOW)
+    assert [one["code"] for one in await db.cars_of(4)] == [HATCH]
+
+    # Хозяину — забрать своё, и только у того же здания
+    owner = await stand(db, make_player(6, "Хозяин"))
+    his = await with_car(db, owner, SEDAN)
+    await leave_here(db, owner, SEDAN, NOW)
+    assert [
+        one["can_steal"] for one in await here_rows(db, await db.get_player(6), NOW)
+        if int(one["id"]) == int(his["id"])
+    ] == [False], "свою не угоняют"
+
+
+async def test_the_badge_sees_the_stolen_car_in_his_hands(db):
+    """Угнанную держат на руках — и у дома это видно значку, а не всем."""
+    from bot.robbery_service import RobberyService
+    from bot.webapp.crowd import build_crowd, wanted_car_mark
+
+    row = await a_theft(db)
+    assert await theft_suspects(db) == {2}
+    # Хозяину машины ордер не выписывают: он её себе не угонял
+    assert 1 not in await theft_suspects(db)
+
+    cop = await officer(db)
+    thief = await db.get_player(2)
+    cop.location = thief.where(NOW)
+    await db.save_player(cop)
+
+    # Тот же дом глазами прохожего: ни ордера, ни отметки о розыске
+    passer = await stand(db, make_player(3, "Прохожий", where=thief.where(NOW)))
+    service = RobberyService(db)
+    try:
+        body = await build_crowd(db, cop, service, NOW)
+        plain = await build_crowd(db, passer, service, NOW)
+    finally:
+        await service.close()
+
+    seen = next(one for one in body["crowd"] if one["user_id"] == 2)
+    assert seen["wanted"] is True, "держит угнанную — значит, под ордером"
+    assert seen["can_arrest"] is True, "он в сети: его задерживают дракой"
+    assert seen["wanted_car"]["plate"] == str(row["plate"])
+    assert seen["wanted_car"]["can_take"] is False, "в сети — только дракой"
+
+    mine = next(one for one in plain["crowd"] if one["user_id"] == 2)
+    assert mine["wanted"] is False and mine["wanted_car"] == {}
+
+    # Угонщик вышел из игры — машину забирают молча
+    thief.seen_at = NOW - 10 * 3_600
+    await db.save_player(thief)
+    mark = await wanted_car_mark(db, cop, await db.get_player(2), NOW)
+    assert mark["can_take"] is True
+
+
+# ---------- сверка номеров ----------
+
+
+async def test_the_restamped_plate_is_known_to_the_base(db):
+    """Перебитый номер прячет машину от розыска, но не от базы."""
+    from bot.car_service import restamp
+    from bot.police_service import theft_of
+
+    owner = await stand(db, make_player(1, "Жертва", seen=0))
+    row = await with_car(db, owner)
+    first = str(row["plate"])
+    thief = await mafioso(db, make_player(2, "Вор"))
+    await steal(db, thief, int(row["id"]), NOW)
+    victim = await db.get_player(1)
+    victim.location = STATION
+    await db.save_player(victim)
+    await file_theft(db, victim, int(row["id"]), NOW)
+
+    rich = await db.get_player(2)
+    rich.location = "car_wash"
+    await db.save_player(rich)
+    await restamp(db, rich, HATCH, NOW)
+
+    fresh = await db.car_by_id(int(row["id"]))
+    assert str(fresh["plate"]) != first
+    assert str(fresh["plate_first"]) == first, "выданный номер остался в базе"
+    assert not fresh["stolen_filed"], "с машины розыск снят"
+
+    # И всё же она в розыске: сверка номера с базой её узнаёт
+    case = await theft_of(db, fresh)
+    assert case is not None and str(case["plate"]) == first
+
+    cop = await officer(db)
+    line = next(
+        one for one in await traffic_sheet(db, cop, NOW)
+        if int(one["id"]) == int(row["id"])
+    )
+    assert line["restamped"] and line["plate_first"] == first
+
+
+# ---------- суд ----------
+
+
+async def judge_at_court(db: Database, user_id: int = 8) -> Player:
+    """Судья в зале: приговоры выносит он."""
+    one = make_player(user_id, "Судья", where="courthouse")
+    one.job_code = "chief_judge"
+    await db.save_player(one)
+    return one
+
+
+async def a_theft(
+    db: Database,
+    thief_id: int = 2,
+    owner_id: int = 1,
+    code: str = HATCH,
+) -> dict:
+    """Угон с заявлением: дело, готовое к суду."""
+    owner = await stand(db, make_player(owner_id, "Жертва", seen=0))
+    row = await with_car(db, owner, code)
+    thief = await mafioso(db, make_player(thief_id, "Вор"))
+    await steal(db, thief, int(row["id"]), NOW)
+    victim = await db.get_player(owner_id)
+    victim.location = STATION
+    await db.save_player(victim)
+    await file_theft(db, victim, int(row["id"]), NOW)
+    return row
+
+
+async def test_the_court_sentences_by_the_ladder(db):
+    """Первый угон — штраф, второй — штраф и срок, третий — вдвое."""
+    from bot.court_service import CourtError, docket, sentence
+    from bot.game.court import FINES, JAIL_HOURS
+
+    row = await a_theft(db)
+    judge = await judge_at_court(db)
+
+    cases = await docket(db, NOW)
+    assert len(cases) == 1
+    assert cases[0]["times"] == 1
+    assert (cases[0]["fine"], cases[0]["jail_hours"]) == (FINES[0], JAIL_HOURS[0])
+
+    said = await sentence(db, judge, int(cases[0]["id"]), NOW)
+    assert "300" in said
+
+    # Второй раз по тому же делу приговор не выносят
+    with pytest.raises(CourtError, match="уже вынесен"):
+        await sentence(db, judge, int(cases[0]["id"]), NOW)
+    assert await docket(db, NOW) == []
+    del row
+
+
+async def test_only_the_robe_sentences(db):
+    """Приговор выносит судья и только в зале суда."""
+    from bot.court_service import CourtError, docket, sentence
+
+    await a_theft(db)
+    cases = await docket(db, NOW)
+    clerk = make_player(7, "Секретарь", where="courthouse")
+    clerk.job_code = "court_clerk"
+    await db.save_player(clerk)
+
+    with pytest.raises(CourtError, match="выносит судья"):
+        await sentence(db, clerk, int(cases[0]["id"]), NOW)
+
+    judge = await judge_at_court(db)
+    judge.location = "bar"
+    await db.save_player(judge)
+    with pytest.raises(CourtError, match="в суде"):
+        await sentence(db, judge, int(cases[0]["id"]), NOW)
+
+
+async def test_the_fine_comes_off_the_card_and_blocks_the_account(db):
+    """Штраф берут со счёта; не хватило — счёт заблокирован до пополнения."""
+    from bot.bank_service import deposit, open_account
+    from bot.court_service import apply_pending, sentence
+    from bot.game.court import FINES
+
+    await a_theft(db)
+    thief = await db.get_player(2)
+    await open_account(db, thief)
+    thief.account_balance = 100
+    thief.credits = 10_000
+    await db.save_player(thief)
+    judge = await judge_at_court(db)
+    cases = await db.theft_cases(judged=False)
+
+    await sentence(db, judge, int(cases[0]["id"]), NOW)
+
+    fresh = await db.get_player(2)
+    assert fresh.account_balance == 0
+    assert fresh.account_debt == FINES[0] - 100
+    assert fresh.account_blocked and not fresh.card_works(NOW)
+    assert fresh.credits == 10_000, "наличные при счёте не трогают"
+
+    # Пополнение гасит долг первым делом
+    await deposit(db, fresh, 500, NOW)
+    assert fresh.account_debt == 0 and not fresh.account_blocked
+    assert await apply_pending(db, fresh, NOW) == "", "приговор исполнен"
+
+
+async def test_without_an_account_the_fine_turns_into_hours(db):
+    """Счёта нет — берут наличными; не хватило — час за каждые 300 кр."""
+    from bot.court_service import sentence
+    from bot.game.court import EXTRA_PER, FINES
+
+    await a_theft(db)
+    thief = await db.get_player(2)
+    thief.credits = 50
+    await db.save_player(thief)
+    judge = await judge_at_court(db)
+    cases = await db.theft_cases(judged=False)
+
+    await sentence(db, judge, int(cases[0]["id"]), NOW)
+
+    fresh = await db.get_player(2)
+    assert fresh.credits == 0
+    assert fresh.account_debt == 0, "долг пишут только на счёт"
+    until, _ = await db.jail_term(2)
+    unpaid = FINES[0] - 50
+    assert until == NOW + -(-unpaid // EXTRA_PER) * 3_600
+    assert fresh.location == "prison"
+
+
+async def test_the_absent_thief_serves_on_his_return(db):
+    """Приговор заочный: исполняется, когда угонщик появится в городе."""
+    from bot.car_service import leave_here
+    from bot.court_service import apply_pending, pending_for, sentence
+
+    await a_theft(db)
+    thief = await db.get_player(2)
+    thief.credits = 10_000
+    await db.save_player(thief)
+    judge = await judge_at_court(db)
+    cases = await db.theft_cases(judged=False)
+
+    # Приговор выносят, и он исполняется сразу: угонщик в городе есть
+    await sentence(db, judge, int(cases[0]["id"]), NOW)
+    assert await pending_for(db, 2) == []
+
+    # Угнанную бросают у здания: руки свободны под вторую
+    await leave_here(db, await db.get_player(2), HATCH, NOW)
+
+    # Второй угон — и снова заочно, но теперь с решёткой
+    row = await a_theft(db, thief_id=2, owner_id=3, code=SEDAN)
+    second = await db.theft_cases(judged=False)
+    await db.judge_theft(int(second[0]["id"]), judge.user_id, 600, 3, NOW)
+    assert len(await pending_for(db, 2)) == 1
+
+    said = await apply_pending(db, await db.get_player(2), NOW)
+
+    assert "600" in said and "3 ч" in said
+    assert await pending_for(db, 2) == []
+    until, _ = await db.jail_term(2)
+    assert until == NOW + 3 * 3_600
+    del row

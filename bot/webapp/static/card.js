@@ -1892,7 +1892,8 @@ const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
   "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
-  "cars", "dorm", "charge", "dojo", "barber", "wash", "bag", "hero",
+  "cars", "dorm", "charge", "dojo", "barber", "wash", "court",
+  "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1906,6 +1907,7 @@ const OPENED_FROM = {
   tavern: "map", study: "map", turf: "map", crowd: "map",
   elections: "map", house: "map", prison: "map", arena: "map", cars: "map",
   dorm: "map", charge: "map", dojo: "map", barber: "map", wash: "map",
+  court: "map",
 };
 let lastTab = "hero";
 
@@ -1995,6 +1997,8 @@ function showTab(name) {
   // Мойка: номера машин могли смениться в другом доме — у угнанной
   // меняется хозяин, а с ним и то, что показывать
   if (name === "wash") loadWash();
+  // Суд: дела заводит город, и к открытию экрана их могло прибавиться
+  if (name === "court") loadCourt();
   // Полка образов: кредитов могло стать больше или меньше, а образ —
   // купиться в другом доме того же пола
   if (name === "barber") loadBarber();
@@ -2082,6 +2086,7 @@ function renderMap(data) {
   paintRoad();
   paintTurfBand();
   paintCrowdChip();
+  paintCarsChip();
 }
 
 // ---------- война за территории на карте ----------
@@ -2527,6 +2532,7 @@ const HOUSE_SCREENS = {
   dojo: () => openDojo(),
   looks: () => openBarber(),
   wash: () => openWash(),
+  court: () => openCourt(),
 };
 
 // Дом, за которым услуги ещё нет. Раньше он отвечал всплывашкой, и боец
@@ -10142,10 +10148,14 @@ function renderPolice(data) {
   if ((data.mine || []).length) body.appendChild(myCasesBox(data));
   // Угнанное у тебя: заявление пишут здесь, и пишет его хозяин
   if ((data.stolen || []).length) body.appendChild(stolenBox(data));
+  // Изъятое лежит в участке до востребования: своё забирают здесь
+  if ((data.impound || []).length) body.appendChild(impoundBox(data));
   // Стоянка у участка: городская и безопасная — отсюда не угоняют
   if ((data.parking || []).length) body.appendChild(stationParkingBox(data));
   if (data.badge) {
-    // Автоучёт: кто на чём ездит, с номерами. Штраф и изъятие — тут же
+    // Розыск машин: где стоит каждая и что с ней делать на месте
+    if ((data.found || []).length) body.appendChild(wantedCarsBox(data));
+    // Автоучёт: кто на чём ездит, с номерами. Штраф — тут же
     if ((data.traffic || []).length) body.appendChild(trafficBox(data));
     // Гараж участка — первым делом: машину берут и сдают, идя мимо, а
     // сводку читают сидя. Видят его все сотрудники: машины выдают им
@@ -10211,6 +10221,104 @@ function stolenBox(data) {
       })
     );
     row.appendChild(buttons);
+  });
+  return box;
+}
+
+/** Изъятое: лежит в участке, пока хозяин не придёт. */
+function impoundBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🔐 Изъятое";
+  box.appendChild(head);
+
+  data.impound.forEach((one) => {
+    const row = document.createElement("div");
+    row.className = "bracket-side";
+    const name = document.createElement("span");
+    name.className = "bracket-name";
+    name.textContent = one.title + " · " + one.plate + " · " + one.owner;
+    row.appendChild(name);
+    if (one.mine) {
+      const take = button("Забрать", {
+        onClick: () => policeAction({ action: "claim", car: one.id }),
+      });
+      take.classList.add("btn-small");
+      row.appendChild(take);
+    }
+    box.appendChild(row);
+  });
+  return box;
+}
+
+/** Розыск машин: где стоит каждая и что с ней делать на месте. */
+function wantedCarsBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🔎 Розыск машин · " + data.found.length;
+  box.appendChild(head);
+
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = "Машину возвращает не кнопка, а сотрудник: доедь "
+    + "туда, где она стоит.";
+  box.appendChild(said);
+
+  data.found.forEach((one) => {
+    const row = document.createElement("article");
+    row.className = "case" + (one.here ? " mine" : "");
+    const line = document.createElement("header");
+    line.className = "case-head";
+    const who = document.createElement("span");
+    who.className = "case-who";
+    who.textContent = one.plate + " · " + one.title;
+    const where = document.createElement("span");
+    where.className = "case-sum";
+    where.textContent = one.lost ? "след потерян" : one.where_title;
+    line.append(who, where);
+    row.appendChild(line);
+
+    const note = document.createElement("p");
+    note.className = "case-note";
+    note.textContent = one.lost
+      ? "Номер, скорее всего, перебит: ищи по автоучёту."
+      : [
+          one.street ? "брошена у здания" : "у " + one.holder,
+          one.street ? "" : (one.online ? "он в городе" : "его нет в сети"),
+        ].filter(Boolean).join(" · ");
+    row.appendChild(note);
+
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    if (one.can_deliver) {
+      buttons.appendChild(
+        button("Доставить в участок", {
+          onClick: () => policeAction({ action: "deliver", car: one.car }),
+        })
+      );
+    }
+    if (one.can_take) {
+      buttons.appendChild(
+        button("Забрать у угонщика", {
+          onClick: () => policeAction({ action: "take", car: one.car }),
+        })
+      );
+    }
+    if (one.can_arrest) {
+      buttons.appendChild(
+        button("Задержать", {
+          onClick: () => crowdAction({
+            action: "arrest", user: one.holder_id,
+          }),
+        })
+      );
+    }
+    if (buttons.children.length) row.appendChild(buttons);
+    box.appendChild(row);
   });
   return box;
 }
@@ -10287,26 +10395,25 @@ function trafficBox(data) {
     ].filter(Boolean).join(" · ");
     row.appendChild(said);
 
-    if (!one.can_fine && !one.can_seize) {
+    // Перебитый номер виден только полиции: город выдавал другой, и
+    // в базе он остался. Это и есть сверка с базой
+    if (one.restamped) {
+      const fake = document.createElement("p");
+      fake.className = "case-note hot";
+      fake.textContent = "Номер перебит: в базе — " + one.plate_first;
+      row.appendChild(fake);
+    }
+    if (!one.can_fine) {
       box.appendChild(row);
       return;
     }
     const buttons = document.createElement("div");
     buttons.className = "thing-buttons";
-    if (one.can_fine) {
-      buttons.appendChild(
-        button("Оштрафовать", {
-          onClick: () => policeAction({ action: "fine", car: one.id }),
-        })
-      );
-    }
-    if (one.can_seize) {
-      buttons.appendChild(
-        button("Изъять", {
-          onClick: () => policeAction({ action: "seize", car: one.id }),
-        })
-      );
-    }
+    buttons.appendChild(
+      button("Оштрафовать", {
+        onClick: () => policeAction({ action: "fine", car: one.id }),
+      })
+    );
     row.appendChild(buttons);
     box.appendChild(row);
   });
@@ -12397,6 +12504,7 @@ function garageCar(one, act) {
 // куклой — там же, где машину и видно: поверх образа, снизу.
 
 let keysData = [];
+let keysHere = [];
 
 async function loadKeys() {
   try {
@@ -12405,7 +12513,7 @@ async function loadKeys() {
     });
     if (!response.ok) return;
     const data = await response.json();
-    renderKeys(data.keys || [], data.limit || 0);
+    renderKeys(data.keys || [], data.limit || 0, data.here || []);
   } catch (error) {
     // Молча: ключи — не повод для окна с ошибкой
   }
@@ -12416,7 +12524,7 @@ async function keysAction(payload) {
     const data = await post("api/keys", payload);
     haptic((feedback) => feedback.impactOccurred("medium"));
     if (data.card) render(data.card, true);
-    renderKeys(data.keys || [], data.limit || 0);
+    renderKeys(data.keys || [], data.limit || 0, data.here || []);
     if (data.said) popup("Машина", data.said);
   } catch (error) {
     popup("Машина", error.message);
@@ -12424,12 +12532,13 @@ async function keysAction(payload) {
   }
 }
 
-function renderKeys(keys, limit) {
+function renderKeys(keys, limit, here) {
   keysData = keys;
+  keysHere = here || [];
   const box = el("bag-keys");
   const list = el("keys-list");
   if (!box || !list) return;
-  box.classList.toggle("hidden", keys.length === 0);
+  box.classList.toggle("hidden", keys.length === 0 && keysHere.length === 0);
   // Счёт со потолком: по нему видно, что машина у бойца не одна из
   // многих, а одна из отведённых — и сколько их отведено
   el("keys-count").textContent = keys.length
@@ -12437,6 +12546,9 @@ function renderKeys(keys, limit) {
     : "";
   list.textContent = "";
   keys.forEach((one) => list.appendChild(keyCard(one)));
+  // Машины у этого здания: своя — с кнопкой «Забрать», чужая просто
+  // видна. Улица общая, и прятать с неё нечего
+  keysHere.forEach((one) => list.appendChild(hereCard(one)));
 }
 
 function keyCard(one) {
@@ -12471,7 +12583,74 @@ function keyCard(one) {
           onClick: () => keysAction({ action: "wheel", code: one.code }),
         })
   );
+  // Оставить машину можно у любого здания: она останется там и будет
+  // видна каждому, кто туда придёт. Это не парковка — это улица
+  buttons.appendChild(
+    button("Оставить машину", {
+      secondary: true,
+      disabled: Boolean(one.charging),
+      hint: "Машина стоит на колонке АЗС. Сперва забери её оттуда.",
+      onClick: () => askConfirm(
+        "🚗 " + one.title,
+        "Оставить её здесь? Увести её сможет кто угодно из мафии.",
+      ).then((ok) => ok && keysAction({ action: "leave", code: one.code })),
+    })
+  );
   box.appendChild(buttons);
+  return box;
+}
+
+/** Что стоит у этого здания: своё забирают, чужое просто видно. */
+function hereCard(one) {
+  const box = document.createElement("article");
+  box.className = "thing";
+  const head = document.createElement("h3");
+  head.className = "thing-title";
+  head.textContent = one.title + " · " + one.plate;
+  box.appendChild(head);
+
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = [
+    one.mine ? "твоя" : "хозяин: " + one.owner,
+    one.impound ? "изъята, в участке" : "",
+    one.wanted ? "в розыске" : "",
+  ].filter(Boolean).join(" · ");
+  box.appendChild(said);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (one.mine && !one.impound) {
+    buttons.appendChild(
+      button("Забрать", {
+        onClick: () => keysAction({ action: "pick", car: one.id }),
+      })
+    );
+  }
+  // Улица — не стоянка: брошенную уводят отсюда же, и мафии для этого
+  // не нужен ни бой, ни спящий хозяин
+  if (one.can_steal) {
+    buttons.appendChild(
+      button("🔑 Угнать", {
+        onClick: () => keysAction({ action: "steal", car: one.id }),
+      })
+    );
+  }
+  // Патрулю — увезти разыскиваемую в участок: хозяин заберёт её там
+  if (one.can_deliver) {
+    buttons.appendChild(
+      button("🚔 В участок", {
+        onClick: () => keysAction({ action: "deliver", car: one.id }),
+      })
+    );
+  }
+  if (buttons.children.length) box.appendChild(buttons);
+  if (!one.mine && !one.can_steal && one.why) {
+    const why = document.createElement("p");
+    why.className = "thing-note";
+    why.textContent = one.why;
+    box.appendChild(why);
+  }
   return box;
 }
 
@@ -12573,6 +12752,147 @@ const DOJO_TABS = [
   ["known", "Ваши приёмы"],
   ["study", "Обучение"],
 ];
+
+// ---------- суд: дела об угоне ----------
+//
+// Судья видит список дел и выносит приговор одной кнопкой: мера на ней
+// написана заранее. Остальные видят только свои приговоры и долг.
+
+let courtData = null;
+
+async function openCourt() {
+  showTab("court");
+}
+
+async function loadCourt() {
+  try {
+    const response = await fetch("api/court", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Суд не отвечает.");
+    const data = await response.json();
+    if (data.card) render(data.card, true);
+    renderCourt(data);
+  } catch (error) {
+    el("court-note").textContent = error.message;
+  }
+}
+
+async function courtAction(payload) {
+  try {
+    const data = await post("api/court", payload);
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    if (data.card) render(data.card, true);
+    renderCourt(data);
+    if (data.said) popup("Суд", data.said);
+  } catch (error) {
+    popup("Суд", error.message);
+    await loadCourt();
+  }
+}
+
+function renderCourt(data) {
+  courtData = data;
+  el("court-title").textContent = "⚖️ " + data.title;
+  el("court-note").textContent = data.said || data.note || "";
+
+  const body = el("court-body");
+  body.textContent = "";
+  (data.cases || []).forEach((one) => body.appendChild(caseBox(one)));
+  if ((data.mine || []).length) body.appendChild(myVerdictsBox(data));
+  body.appendChild(ladderBox(data));
+}
+
+/** Дело к рассмотрению: кто, что увёл и что за это положено. */
+function caseBox(one) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "⚖️ " + one.thief + " · " + one.plate;
+  box.appendChild(head);
+
+  box.appendChild(
+    paperRows([
+      ["Хозяин", one.owner],
+      ["Машина", one.title || one.code],
+      ["Угон по счёту", String(one.times)],
+      ["Машина изъята", one.seized ? "да" : "нет"],
+      ["Мера", one.sentence],
+    ])
+  );
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Вынести приговор", {
+      onClick: () => askConfirm(
+        "⚖️ Приговор",
+        one.thief + ": " + one.sentence + ". Выносим?",
+      ).then((ok) => ok && courtAction({ action: "sentence", case: one.id })),
+    })
+  );
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Свои приговоры: что вынесли и исполнено ли. */
+function myVerdictsBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "📜 Твои приговоры";
+  box.appendChild(head);
+
+  data.mine.forEach((one) => {
+    const row = document.createElement("div");
+    row.className = "bracket-side";
+    const name = document.createElement("span");
+    name.className = "bracket-name";
+    name.textContent = one.plate + " · " + one.sentence;
+    const mark = document.createElement("span");
+    mark.className = "bracket-mark";
+    mark.textContent = one.served ? "исполнен" : "ждёт";
+    row.append(name, mark);
+    box.appendChild(row);
+  });
+
+  if (data.debt) {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = "Долг по штрафу — " + num(data.debt)
+      + " 💰. Счёт заблокирован, пока он не погашен.";
+    box.appendChild(said);
+  }
+  return box;
+}
+
+/** Лестница наказаний: за первый угон, за второй, за третий и дальше. */
+function ladderBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "📏 Чем кончается угон";
+  box.appendChild(head);
+  box.appendChild(
+    paperRows((data.ladder || []).map((one) => [
+      one.times === (data.ladder || []).length
+        ? one.times + "-й и дальше"
+        : one.times + "-й угон",
+      one.jail_hours
+        ? num(one.fine) + " 💰 и " + one.jail_hours + " ч"
+        : num(one.fine) + " 💰",
+    ]))
+  );
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = "Штраф берут со счёта. Нет счёта — из наличных; не "
+    + "хватило и там — час решётки за каждые " + num(data.extra_per) + " 💰.";
+  box.appendChild(said);
+  return box;
+}
 
 // ---------- автомойка: номера машин ----------
 //
@@ -13746,6 +14066,31 @@ function neighbourCard(one, data) {
       box.appendChild(why);
     }
   }
+
+  // Угнанное в его руках — для значка. Спящему машину не возвращают
+  // дракой: её просто забирают, того, кто в сети, задерживают
+  const wanted = one.wanted_car || {};
+  if (wanted.id) {
+    const line = document.createElement("p");
+    line.className = "neighbour-note";
+    line.textContent = "🔎 в розыске: " + wanted.title + " · " + wanted.plate;
+    box.appendChild(line);
+    if (wanted.can_take) {
+      const buttons = document.createElement("div");
+      buttons.className = "thing-buttons";
+      buttons.appendChild(
+        button("🚔 Забрать машину", {
+          onClick: () => crowdAction({ action: "take", car: wanted.id }),
+        })
+      );
+      box.appendChild(buttons);
+    } else {
+      const why = document.createElement("p");
+      why.className = "neighbour-why";
+      why.textContent = "Он в городе — молча машину не забрать. Задерживай.";
+      box.appendChild(why);
+    }
+  }
   return box;
 }
 
@@ -13983,6 +14328,20 @@ function paintCrowdChip() {
     ? "⚔️ " + here.fights + " · 👥 " + here.online
     : "👥 " + here.online + " из " + here.total;
   chip.classList.toggle("hot", Boolean(here.fights));
+}
+
+// Машины у этого здания — второй значок в том же углу. Оставленная
+// машина стоит на улице, и видит её всякий, кто сюда пришёл
+function paintCarsChip() {
+  const chip = el("map-cars");
+  if (!chip) return;
+  const cars = (mapData && mapData.cars) || [];
+  const going = Boolean(mapData && mapData.road && mapData.road.going);
+  const shown = Boolean(cars.length) && !going;
+  chip.classList.toggle("hidden", !shown);
+  if (!shown) return;
+  chip.textContent = "🚗 " + cars.length;
+  chip.classList.toggle("hot", cars.some((one) => one.wanted));
 }
 
 // ---------- война за территории ----------
@@ -17259,7 +17618,7 @@ const INTERIOR_SCREENS = [
   "club", "shop", "magic", "workshop", "hospital", "insurance", "gym", "bank",
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
   "trade", "house", "prison", "arena", "cars", "dorm", "charge",
-  "dojo", "barber", "wash",
+  "dojo", "barber", "wash", "court",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -17415,7 +17774,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
   "crowd", "elections", "shop", "magic", "prison", "arena", "cars", "dorm",
-  "charge", "dojo", "barber", "wash", "workshop", "club",
+  "charge", "dojo", "barber", "wash", "court", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });
@@ -17423,6 +17782,9 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
 el("turf-back").addEventListener("click", () => showTab(turfFrom));
 // Счётчик соседей в углу карты: нажал — открылся список дома
 el("map-crowd").addEventListener("click", () => showTab("crowd"));
+// Значок машин ведёт в ключи: оставленная машина лежит там же, где
+// своя, — под куклой бойца, и там же её забирают
+el("map-cars").addEventListener("click", () => showTab("bag"));
 // Плашка выборов: нажал — бюллетень открылся снова
 el("vote-chip").addEventListener("click", () => openBallot());
 startVoteClock();

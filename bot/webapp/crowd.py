@@ -246,6 +246,9 @@ async def neighbour_row(
         # Машина под соседом: её угоняют, и для этого в сети он быть не
         # обязан. Поля заполняет `car_mark` — тут только место под них
         "car": {},
+        # Угнанная машина в его руках — для значка. Заполняет
+        # `wanted_car_mark`, и видит её только патруль
+        "wanted_car": {},
     }
 
 
@@ -286,6 +289,35 @@ async def car_mark(
     }
 
 
+async def wanted_car_mark(
+    db, player: Player, one: Player, moment: int
+) -> dict[str, Any]:
+    """Разыскиваемая машина в руках этого соседа — глазами патрульного.
+
+    Угнанную держат на руках, а не под рулём: отдельная отметка нужна
+    именно поэтому. Спящему угонщику машину не возвращают дракой — её
+    просто забирают; того, кто в сети, задерживают.
+    """
+    from bot.game.cars import get_car
+    from bot.police_service import serves_in_police, theft_of
+
+    if not serves_in_police(player) or one.user_id == player.user_id:
+        return {}
+    for row in await db.cars_of(one.user_id):
+        if row["until"] and int(row["until"]) <= moment:
+            continue
+        if await theft_of(db, dict(row)) is None:
+            continue
+        car = get_car(str(row["code"]))
+        return {
+            "id": int(row["id"]),
+            "title": car.title if car else str(row["code"]),
+            "plate": str(row["plate"] or ""),
+            "can_take": not is_online(one.seen_at, moment),
+        }
+    return {}
+
+
 def _why_not_arrest(row: dict[str, Any]) -> str:
     """Почему нельзя задержать этого."""
     if not row["wanted"]:
@@ -322,7 +354,7 @@ async def build_crowd(
     """Дом целиком: кто в нём стоит, что в нём идёт и что можно нажать."""
     from bot.game.locations import get_location
 
-    from bot.police_service import serves_in_police
+    from bot.police_service import serves_in_police, theft_suspects
 
     moment = now_ts() if now is None else now
     here = player.where(moment)
@@ -330,6 +362,11 @@ async def build_crowd(
     clan_id = player.clan.clan.id if player.clan else 0
     badge = serves_in_police(player)
     hunted = {int(one["suspect_id"]) for one in await db.wanted()}
+    # Угон — тоже ордер: кто держит разыскуемую машину, того задерживают
+    # так же, как грабителя. Считаем это только для значка: остальным
+    # список розыска ни к чему
+    if badge:
+        hunted |= await theft_suspects(db)
 
     body: dict[str, Any] = {
         "place": here,
@@ -385,6 +422,8 @@ async def build_crowd(
         row["clan"] = name
         row["can_rob"] = row["can_rob"] and bool(left)
         row["car"] = await car_mark(db, player, one, moment)
+        if badge:
+            row["wanted_car"] = await wanted_car_mark(db, player, one, moment)
         # Сотруднику говорим про ордер, остальным — про лицензию: у них
         # разные кнопки, и причина отказа у каждой своя
         row["why"] = (
@@ -454,4 +493,5 @@ __all__ = [
     "raid_payload",
     "raid_row",
     "side_rows",
+    "wanted_car_mark",
 ]

@@ -199,14 +199,17 @@ from bot.election_service import (
     state as election_state,
     vote as election_vote,
 )
+from bot.court_service import CourtError, apply_pending
 from bot.police_service import (
     PoliceError,
     choose_split as police_split,
     collect as police_collect,
     file_report as police_report,
+    claim_car,
+    deliver as deliver_car,
     file_theft,
     fine_driver,
-    seize_car,
+    take_from_thief,
     settle_week as police_settle,
 )
 from bot.robbery_service import RobberyError, RobberyService
@@ -388,6 +391,8 @@ async def _city(request: web.Request, player) -> dict:
     board = await build_war(
         request.app[DB_KEY], player, request.app.get(WAR_KEY), now_ts()
     )
+    from bot.car_service import here_rows
+
     return build_map(
         player,
         raids=plates,
@@ -395,6 +400,8 @@ async def _city(request: web.Request, player) -> dict:
         crowd=await crowd_marks(
             request.app[DB_KEY], player, request.app.get(ROB_KEY)
         ),
+        # Машины у этого здания: счётчик в углу карты, рядом с людьми
+        cars=await here_rows(request.app[DB_KEY], player),
     )
 
 
@@ -454,6 +461,13 @@ async def api_card(request: web.Request) -> web.Response:
         # спрашивают, и тратить чужие кредиты, открыв чужую карточку, —
         # именно та ошибка, от которой спасает это условие
         said = await settle(db, player)
+        # Приговор суда исполняется в тот миг, когда осуждённый
+        # появился в городе: выносят его и заочно, а ждать, пока он
+        # сам придёт в суд, город не станет
+        verdict = await apply_pending(db, player)
+        if verdict:
+            player = await db.get_player(player.user_id) or player
+            said = f"{said} {verdict}".strip()
     card = build_card(player, config.bot_token, viewer.user_id)
     if said:
         card["said"] = said
@@ -1612,8 +1626,12 @@ async def api_police_action(request: web.Request) -> web.Response:
             said = f"Заявка отозвана: {seat.title}."
         elif action == "fine":
             said = await fine_driver(db, player, _int_field(data, "car"))
-        elif action == "seize":
-            said = await seize_car(db, player, _int_field(data, "car"))
+        elif action == "deliver":
+            said = await deliver_car(db, player, _int_field(data, "car"))
+        elif action == "take":
+            said = await take_from_thief(db, player, _int_field(data, "car"))
+        elif action == "claim":
+            said = await claim_car(db, player, _int_field(data, "car"))
         elif action == "file_theft":
             said = await file_theft(db, player, _int_field(data, "car"))
         elif action in ("park", "unpark"):
@@ -2817,7 +2835,13 @@ async def api_wheel(request: web.Request) -> web.Response:
     значит, откуда угодно. Ключи на руках и права в кармане — всё,
     что для этого нужно, и оба проверяет служба.
     """
-    from bot.car_service import CarError, park, wheel
+    from bot.car_service import (
+        CarError,
+        leave_here,
+        park,
+        pick_here,
+        wheel,
+    )
 
     data = await _payload(request)
     action = str(data.get("action") or "")
@@ -2830,6 +2854,31 @@ async def api_wheel(request: web.Request) -> web.Response:
             said = await wheel(db, player, str(data.get("code") or ""), now_ts())
         elif action == "park":
             said = await park(db, player, now_ts())
+        elif action == "leave":
+            # Оставить машину у того здания, где боец стоит: это не
+            # парковка, а улица, и видно её всем, кто сюда придёт
+            said = await leave_here(
+                db, player, str(data.get("code") or ""), now_ts()
+            )
+        elif action == "pick":
+            said = await pick_here(db, player, _int_field(data, "car"), now_ts())
+        elif action == "steal":
+            # Брошенную у здания уводят оттуда же: улица — не стоянка
+            from bot.car_service import steal
+
+            said = await steal(db, player, _int_field(data, "car"), now_ts())
+        elif action == "deliver":
+            # Патруль увозит брошенную разыскиваемую машину в участок.
+            # Делает это он на месте, у того же крыльца: в участке
+            # кнопки возврата нет, есть только адрес
+            from bot.police_service import PoliceError, deliver
+
+            try:
+                said = await deliver(
+                    db, player, _int_field(data, "car"), now_ts()
+                )
+            except PoliceError as error:
+                return web.json_response({"error": str(error)}, status=409)
         else:
             return web.json_response({"error": "Непонятное действие."}, status=400)
     except CarError as error:
@@ -2866,9 +2915,16 @@ async def _keys(db, player) -> dict:
     from bot.car_service import at_hand
     from bot.game.cars import cars_allowed
 
+    from bot.car_service import here_rows
+
+    moment = now_ts()
     return {
-        "keys": await at_hand(db, player, now_ts()),
-        "limit": cars_allowed(player.is_pro(now_ts())),
+        "keys": await at_hand(db, player, moment),
+        "limit": cars_allowed(player.is_pro(moment)),
+        # Что стоит у этого здания: своё забирают отсюда же, а чужое
+        # видно всем — улица общая
+        "here": await here_rows(db, player, moment),
+        "place": player.where(moment),
     }
 
 
@@ -3027,6 +3083,50 @@ async def api_wash_action(request: web.Request) -> web.Response:
 
     fresh = await db.get_player(player.user_id) or player
     return await _wash_state(request, fresh, said)
+
+
+async def _court_state(
+    request: web.Request, player, said: str = ""
+) -> web.Response:
+    from bot.webapp.court import build_court
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_court(db, player, now_ts())
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_court(request: web.Request) -> web.Response:
+    """Суд: дела об угоне и свои приговоры."""
+    player = await _at(request, Service.COURT)
+    return await _court_state(request, player)
+
+
+async def api_court_action(request: web.Request) -> web.Response:
+    """Вынести приговор по делу об угоне."""
+    from bot.court_service import sentence
+
+    data = await _payload(request)
+    action = str(data.get("action") or "")
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.COURT)
+    try:
+        if action == "sentence":
+            said = await sentence(db, player, _int_field(data, "case"))
+        else:
+            return web.json_response(
+                {"error": "Непонятное действие."}, status=400
+            )
+    except CourtError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+
+    fresh = await db.get_player(player.user_id) or player
+    return await _court_state(request, fresh, said)
 
 
 async def _dojo_state(
@@ -3208,6 +3308,18 @@ async def api_crowd_action(request: web.Request) -> web.Response:
             try:
                 said = await steal(db, player, _int_field(data, "car"))
             except CarError as error:
+                return web.json_response({"error": str(error)}, status=409)
+        elif action == "take":
+            # Угонщик не в сети — машину забирают молча, без драки.
+            # Делают это там, где он стоит: участок адрес знает, а
+            # ехать по нему сотруднику
+            from bot.police_service import PoliceError, take_from_thief
+
+            try:
+                said = await take_from_thief(
+                    db, player, _int_field(data, "car")
+                )
+            except PoliceError as error:
                 return web.json_response({"error": str(error)}, status=409)
         elif action == "turn":
             raid = service.of_user(player.user_id)
@@ -3661,6 +3773,8 @@ def create_app(
             web.post("/api/charge", api_charge_action),
             web.get("/api/wash", api_wash),
             web.post("/api/wash", api_wash_action),
+            web.get("/api/court", api_court),
+            web.post("/api/court", api_court_action),
             web.get("/api/cars", api_cars),
             web.post("/api/cars", api_cars_action),
             web.post("/api/used-cars", api_used_cars_action),

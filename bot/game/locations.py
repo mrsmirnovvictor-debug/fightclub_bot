@@ -67,6 +67,7 @@ class Service(str, Enum):
     DOJO = "dojo"  # школа боевых искусств: приёмы за дела в бою
     LOOKS = "looks"  # барбершоп и салон красоты: образы бойца
     WASH = "wash"  # автомойка: номера машин перебивают здесь
+    COURT = "court"  # суд: приговоры по делам об угоне
 
     @property
     def title(self) -> str:
@@ -108,6 +109,7 @@ SERVICE_TITLES: dict[Service, str] = {
     Service.DOJO: "учиться приёмам",
     Service.LOOKS: "менять внешность",
     Service.WASH: "перебивать номера",
+    Service.COURT: "судить и обжаловать",
 }
 
 
@@ -1292,7 +1294,9 @@ LOCATIONS: tuple[Location, ...] = (
             (0.594049, 0.617823), (0.680128, 0.632177),
             (0.678002, 0.691388), (0.594049, 0.67823),
         ),
-        services=(Service.WORK,),
+        # Суд уже судит: дела об угоне идут сюда. Тяжбы и обжалование
+        # срока по-прежнему обещаны — это другое дело
+        services=(Service.COURT, Service.WORK),
         soon="тяжбы и обжалование срока",
         genitive="суда",
         interior_ext="png",

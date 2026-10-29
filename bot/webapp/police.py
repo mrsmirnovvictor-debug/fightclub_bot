@@ -29,7 +29,7 @@ from bot.game.police import (
 )
 from bot.game.turf import owner_of_service
 from bot.models import Player
-from bot.police_service import traffic_sheet
+from bot.police_service import found_cars, impound_rows, traffic_sheet
 from bot.webapp.bonus import build_bonus
 
 
@@ -202,7 +202,10 @@ async def build_police_board(
         "stolen": await stolen_rows(db, player, moment),
         # Стоянка у участка: городская и безопасная, как двор особняка
         "parking": await parking_rows(db, player, moment),
+        # Изъятое: машины лежат в участке, пока хозяин не придёт
+        "impound": await impound_rows(db, player, moment),
         "traffic": [],
+        "found": [],
         "fine": FINE_NO_LICENCE,
     }
     if not badge:
@@ -229,6 +232,8 @@ async def build_police_board(
     # Автоучёт: все живые машины города с номерами и хозяевами. Это
     # рабочая бумага патруля — по ней и видно, кого останавливать
     body["traffic"] = await traffic_sheet(db, player, moment)
+    # Розыск машин: где стоит каждая и что с ней делать на месте
+    body["found"] = await found_cars(db, player, moment)
     body["fine"] = FINE_NO_LICENCE
     body["bonus"] = await build_bonus(
         db, owner_of_service("police"), moment,

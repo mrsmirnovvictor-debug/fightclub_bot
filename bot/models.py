@@ -208,6 +208,10 @@ class Player:
     # Жалованье, назначенное мэром. Ноль — оклад у места твёрдый и берут
     # его из справочника: вилка есть только у начальственных кресел
     job_salary: int = 0
+    # Долг по судебному штрафу. Пока он есть, счёт заблокирован: картой
+    # не платят, наличные со счёта не снимают, а всё, что на счёт
+    # приходит, уходит в долг (`bot.court_service`)
+    account_debt: int = 0
     shift_until: int = 0  # 0 — смена не идёт
     shift_day: str = ""  # какие это сутки по Москве, в виде «2026-09-30»
     shift_minutes: int = 0
@@ -753,8 +757,24 @@ class Player:
         Поэтому `now` в ноль означает «нет», а не «да». Вопрос этот
         задают перед списанием, и ошибка в пользу карты сняла бы деньги
         не с того кошелька.
+
+        Судебный долг запирает её так же, как неоплаченный год: счёт
+        заблокирован до погашения, и платить им нельзя (`account_debt`).
         """
+        if self.account_debt > 0:
+            return False
         return self.has_card and 0 < now < self.card_paid_until
+
+    @property
+    def account_blocked(self) -> bool:
+        """Заблокирован ли счёт судебным долгом."""
+        return self.account_debt > 0
+
+    def repay_debt(self, amount: int) -> int:
+        """Погасить долг этими деньгами. Отдаёт, сколько ушло в долг."""
+        paid = min(max(0, amount), self.account_debt)
+        self.account_debt -= paid
+        return paid
 
     def settle_card(self, now: int) -> int:
         """Списать со счёта год обслуживания, если он подошёл.

@@ -87,6 +87,17 @@ from bot.raid_service import Choice
 logger = logging.getLogger(__name__)
 
 
+async def _robbery_warrant(db, suspect_id: int) -> bool:
+    """Есть ли на нём ордер по ограблению — отдельно от угона.
+
+    Разница важна в развязке: за ограбление сажают тут же, а за угон
+    судит суд, и задержание само по себе срока не даёт.
+    """
+    from bot.police_service import has_warrant
+
+    return await has_warrant(db, suspect_id)
+
+
 class RobberyError(Exception):
     """Отказ по ограблению, который показывают игроку как есть."""
 
@@ -130,6 +141,9 @@ class Robbery:
     jailed: list[dict] = field(default_factory=list)
     # Сколько награбленного вернулось в участок
     recovered: int = 0
+    # Номера машин, изъятых при задержании: их увозят в участок, а
+    # наказание за угон назначает суд
+    seized: list[str] = field(default_factory=list)
     timer: asyncio.Task | None = None
     started_at: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -369,7 +383,11 @@ class RobberyService:
         suspect = await self.db.get_player(suspect_id)
         if suspect is None:
             raise RobberyError("Такого бойца нет.")
-        if not await has_warrant(self.db, suspect_id):
+        from bot.police_service import has_theft_warrant
+
+        if not await has_warrant(self.db, suspect_id) and not (
+            await has_theft_warrant(self.db, suspect_id)
+        ):
             raise RobberyError("На него нет ордера: заявления никто не писал.")
         here = officer.where(moment)
         if suspect.where(moment) != here or suspect.in_transit(moment):
@@ -766,13 +784,19 @@ class RobberyService:
         if not raid.won:
             # Отбился — ордер остаётся, и его возьмут в следующий раз
             return
-        from bot.police_service import reward_arrest
+        from bot.police_service import reward_arrest, seize_held_cars
 
+        # Разыскиваемые машины уезжают в участок вместе с задержанием:
+        # наказание за угон назначает суд, а машину возвращают сразу
+        raid.seized = await seize_held_cars(
+            self.db, raid.attacker, raid.victim, moment
+        )
         raid.recovered = await self.db.close_cases(
             raid.victim, raid.attacker, moment
         )
-        await reward_arrest(self.db, raid.attacker, raid.recovered, moment)
-        await self._lock_up(raid, [raid.victim], moment)
+        if raid.recovered or await _robbery_warrant(self.db, raid.victim):
+            await reward_arrest(self.db, raid.attacker, raid.recovered, moment)
+            await self._lock_up(raid, [raid.victim], moment)
 
     @staticmethod
     def _badge_on(raid: Robbery, side: int) -> bool:

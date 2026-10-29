@@ -33,6 +33,7 @@ from bot.game.bank import (
     CASH_OUT,
     FEE,
     GOT,
+    PAY,
     PURSES,
     SENT,
     TOP_UP,
@@ -159,10 +160,21 @@ async def deposit(
         raise BankError("Наличные изменились. Попробуй ещё раз.")
     player.credits -= amount
     player.account_balance += amount
+    # Судебный долг гасится первым: счёт заблокирован до тех пор, пока
+    # он есть, и класть на него деньги «мимо» долга бессмысленно
+    paid = player.repay_debt(amount)
+    if paid:
+        player.account_balance -= paid
     await db.log_card(
         player.user_id, amount, TOP_UP, "Внесение наличных",
         player.account_balance, now,
     )
+    if paid:
+        await db.log_card(
+            player.user_id, -paid, PAY, "Судебный штраф",
+            player.account_balance, now,
+        )
+    await db.save_player(player)
     return Move(amount, player.credits, player.account_balance)
 
 
@@ -171,6 +183,11 @@ async def withdraw(
 ) -> Move:
     """Снять со счёта наличные в банкомате. Без комиссии."""
     _require_account(player)
+    if player.account_blocked:
+        raise BankError(
+            f"Счёт заблокирован судебным штрафом: долг {player.account_debt} 💰. "
+            "Пополни счёт — долг спишется, и счёт откроется."
+        )
     amount = _sane(amount)
     if amount > player.account_balance:
         raise BankError(

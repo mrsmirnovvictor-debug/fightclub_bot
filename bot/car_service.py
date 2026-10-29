@@ -24,6 +24,8 @@ import logging
 from bot.database import Database
 from bot.game.cars import (
     GARAGES,
+    IN_IMPOUND,
+    IN_STREET,
     RESTAMP_PRICE,
     STEAL_WINDOW,
     PARKINGS,
@@ -44,7 +46,7 @@ from bot.game.cars import (
 )
 from bot.game.charge import after_drive, empty, percent_left
 from bot.game.health import format_term, now_ts
-from bot.game.locations import Service
+from bot.game.locations import Service, get_location
 from bot.game.police import FINE_NO_LICENCE
 from bot.models import Player
 
@@ -672,6 +674,119 @@ def _denied(car: Car) -> str:
     return "Служебные машины выдают сотрудникам участка."
 
 
+# ---------- машина у здания ----------
+#
+# Между «при хозяине» и «на охраняемой стоянке» есть третье: машину
+# оставляют у здания. Это не парковка — это улица: её видно всем, кто
+# сюда придёт, и увести её может кто угодно из семьи.
+
+
+async def leave_here(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> str:
+    """Оставить машину у того здания, где боец стоит.
+
+    Служебную — можно: ей закрыты охраняемые стоянки, но не улица. На
+    том и держится угон патрульной: спрятать её негде.
+    """
+    moment = now_ts() if now is None else now
+    car = get_car(code)
+    if car is None:
+        raise CarError("Такой машины в городе нет.")
+    await sweep(db, moment)
+    row = await db.car_row(player.user_id, car.code)
+    if row is None or (row["until"] and int(row["until"]) <= moment):
+        raise CarError("Этой машины у тебя нет.")
+    if row["parked"]:
+        raise CarError(
+            f"Она и так стоит: {parking_title(str(row['parked']))}."
+        )
+    if player.in_transit(moment):
+        raise CarError("В пути машину не бросают: сперва дойди.")
+    await _check_free(db, player, car.code)
+    here = player.where(moment)
+    place = get_location(here)
+    if player.driving(moment) == car.code:
+        await park(db, player, moment)
+    if not await db.drop_car_at(player.user_id, car.code, here, moment):
+        raise CarError("Машина уже не твоя.")
+    logger.info("Боец %s оставил %s у %s", player.user_id, car.code, here)
+    return (
+        f"{car.title} осталась у здания: {place.title if place else here}. "
+        "Забрать её можно там же — и не только тебе."
+    )
+
+
+async def pick_here(
+    db: Database, player: Player, car_id: int, now: int | None = None
+) -> str:
+    """Забрать свою машину оттуда, где она брошена."""
+    moment = now_ts() if now is None else now
+    await sweep(db, moment)
+    row = await db.car_by_id(car_id)
+    if row is None or str(row["parked"]) != IN_STREET:
+        raise CarError("Этой машины тут нет.")
+    if int(row["user_id"]) != player.user_id:
+        raise CarError("Это чужая машина.")
+    if str(row["at_place"]) != player.where(moment):
+        raise CarError("Она стоит у другого здания.")
+    await _check_room(db, player, moment)
+    await db.unpark_car(player.user_id, str(row["code"]))
+    car = get_car(str(row["code"]))
+    logger.info("Боец %s забрал %s от здания", player.user_id, row["code"])
+    return f"{car.title if car else 'Машина'} снова при тебе."
+
+
+async def here_rows(
+    db: Database, player: Player, now: int | None = None
+) -> list[dict]:
+    """Что стоит у этого здания: чьё, какое и что с ним не так.
+
+    Показывается всем, кто сюда пришёл: улица — общее место, и машина
+    на ней видна так же, как люди в доме. Кнопки у строки разные:
+    хозяину — забрать, мафии — угнать, патрулю — доставить в участок.
+    """
+    from bot.police_service import serves_in_police
+
+    moment = now_ts() if now is None else now
+    await sweep(db, moment)
+    out = []
+    for row in await db.cars_at(player.where(moment), moment):
+        car = get_car(str(row["code"]))
+        if car is None:  # pragma: no cover - машину убрали из каталога
+            continue
+        mine = int(row["user_id"]) == player.user_id
+        street = str(row["parked"]) == IN_STREET
+        # Брошенную уводит мафия — тут же, у этого крыльца. И тут же её
+        # забирает патруль, если по ней есть заявление: участок машину
+        # не телепортирует, он за ней приезжает
+        why = "" if mine or not street else await stealable(
+            db, player, dict(row, location=player.where(moment)), moment
+        )
+        out.append({
+            "id": int(row["id"]),
+            "code": car.code,
+            "title": car.title,
+            "image": car.image,
+            "plate": str(row["plate"] or ""),
+            "owner": str(row["nickname"]),
+            "owner_id": int(row["user_id"]),
+            "mine": mine,
+            "street": street,
+            "impound": str(row["parked"]) == IN_IMPOUND,
+            "service": car.service,
+            "stolen": bool(row["stolen_from"]),
+            "wanted": bool(row["stolen_filed"]),
+            "can_steal": bool(street and not mine and not why),
+            "why": why,
+            "can_deliver": bool(
+                street and not mine and serves_in_police(player)
+                and bool(row["stolen_filed"])
+            ),
+        })
+    return out
+
+
 # ---------- угон ----------
 #
 # Угоняют надетую машину и только её. Поставил на стоянку — она в
@@ -696,9 +811,16 @@ async def stealable(
         return "Это твоя машина."
     if row["until"] and int(row["until"]) <= now:
         return "Срок этой машины вышел — уводить нечего."
-    if row["parked"]:
+    spot = str(row["parked"] or "")
+    if spot == IN_STREET:
+        # Брошенная у здания машина — улица, а не стоянка: уводят её
+        # прямо оттуда, и хозяина для этого спрашивать не надо
+        if str(row["at_place"] or "") != thief.where(now):
+            return "Эта машина не здесь."
+        return ""
+    if spot:
         return (
-            f"Она стоит на охраняемом месте ({parking_title(str(row['parked']))}). "
+            f"Она стоит на охраняемом месте ({parking_title(spot)}). "
             "Оттуда не уводят."
         )
     if str(row.get("driving") or "") != str(row["code"]):
@@ -736,6 +858,13 @@ async def steal(
     taken = await db.steal_car(car_id, thief.user_id, moment)
     if taken is None:
         raise CarError("Машину уже увели.")
+    # Дело заводится сразу, а в суд оно пойдёт с заявления хозяина:
+    # номер в деле тот, что стоял на машине в этот час, — перебитый
+    # знак дела не закрывает
+    await db.open_theft(
+        thief.user_id, int(taken["owner"]), car_id,
+        str(taken["plate"]), str(taken["code"]), moment,
+    )
     car = get_car(str(taken["code"]))
     title = car.title if car else "Машина"
     logger.info(
@@ -799,6 +928,9 @@ async def _pay(
 
 __all__ = [
     "CarError",
+    "here_rows",
+    "leave_here",
+    "pick_here",
     "restamp",
     "steal",
     "stealable",

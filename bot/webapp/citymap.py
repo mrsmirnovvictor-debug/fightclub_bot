@@ -71,6 +71,7 @@ def build_map(
     raids: dict | None = None,
     turf: dict | None = None,
     crowd: dict | None = None,
+    cars: list | None = None,
 ) -> dict:
     """Город целиком: где боец, куда идёт и что где стоит.
 
@@ -121,6 +122,10 @@ def build_map(
         # углу карты — единственное место, откуда видно, что рядом кто-то
         # есть: внутрь дома за этим не заходят
         "crowd": crowd or {"total": 0, "online": 0, "fights": 0},
+        # Машины, брошенные у этого здания. Стоят они на улице, и видит
+        # их всякий, кто сюда пришёл: счётчик в углу карты — там же,
+        # где и люди
+        "cars": cars or [],
         "districts": [
             district_row(district, here, limping, times)
             for district in DISTRICTS

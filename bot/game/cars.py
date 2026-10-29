@@ -241,8 +241,19 @@ AT_HAND = ""
 IN_CLAN = "clan"  # парковка особняка мафии: место на всю семью
 IN_FLAT = "flat"  # место при своей квартире
 IN_POLICE = "police"  # стоянка у участка: городская, под фонарём
+# Брошена у здания: машина стоит там, где её оставили, и видно её всем,
+# кто туда придёт. Это не парковка — это улица, и угоняют с неё как
+# из-под хозяина
+IN_STREET = "street"
+# Изъята полицией и лежит в участке до востребования: хозяин приходит и
+# забирает. Ни угнать, ни сесть за руль, пока не забрал
+IN_IMPOUND = "impound"
 
+# Охраняемые места: только эти три. Улица и участок-хранилище сюда не
+# входят — с улицы уводят, а из хранилища забирает хозяин
 PARKINGS: tuple[str, ...] = (IN_CLAN, IN_FLAT, IN_POLICE)
+# Все места, где машина может стоять не при хозяине
+SPOTS: tuple[str, ...] = (IN_CLAN, IN_FLAT, IN_POLICE, IN_STREET, IN_IMPOUND)
 
 # Сколько машин влезает. Гараж особняка — имущество семьи, и число
 # мест лежит у неё же; у квартиры место одно: оно при доме, а не
@@ -255,12 +266,20 @@ PARKING_TITLES: dict[str, str] = {
     IN_CLAN: "парковка особняка",
     IN_FLAT: "место при квартире",
     IN_POLICE: "стоянка у участка",
+    IN_STREET: "у здания",
+    IN_IMPOUND: "изъята, в участке",
 }
+
+# Сколько машин влезает к одному зданию. Улица большая, и считать
+# места на ней незачем: это не парковка, а «оставил и ушёл»
+STREET_SLOTS = 50
 
 PARKING_SLOTS: dict[str, int] = {
     IN_CLAN: CLAN_PARKING,
     IN_FLAT: FLAT_PARKING,
     IN_POLICE: POLICE_PARKING,
+    IN_STREET: STREET_SLOTS,
+    IN_IMPOUND: STREET_SLOTS,
 }
 
 # Стоянка — и есть безопасное место. Поставленную машину не угоняют
@@ -343,7 +362,11 @@ def garage_of(place: str) -> tuple[Car, ...]:
 
 __all__ = [
     "AT_HAND",
+    "IN_IMPOUND",
     "IN_POLICE",
+    "IN_STREET",
+    "SPOTS",
+    "STREET_SLOTS",
     "POLICE_PARKING",
     "RESTAMP_PRICE",
     "SAFE_PARKINGS",

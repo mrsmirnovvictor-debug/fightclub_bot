@@ -214,6 +214,28 @@ CREATE TABLE IF NOT EXISTS injuries (
 -- Заявки на кресло начальника: город не нанимает их сам, их назначает
 -- мэр. Заявка живёт до назначения или до того, как боец её заберёт;
 -- на одно кресло от бойца одна
+-- Дела об угоне: по ним судит суд, а не участок. Номер в деле тот,
+-- что стоял на машине в час угона: перебитый знак дело не закрывает
+CREATE TABLE IF NOT EXISTS theft_cases (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    thief_id   INTEGER NOT NULL,
+    owner_id   INTEGER NOT NULL,
+    car_id     INTEGER NOT NULL,
+    plate      TEXT    NOT NULL DEFAULT '',
+    code       TEXT    NOT NULL DEFAULT '',
+    stolen_at  INTEGER NOT NULL DEFAULT 0,
+    filed_at   INTEGER NOT NULL DEFAULT 0,
+    seized_at  INTEGER NOT NULL DEFAULT 0,
+    judged_at  INTEGER NOT NULL DEFAULT 0,
+    judge_id   INTEGER NOT NULL DEFAULT 0,
+    fine       INTEGER NOT NULL DEFAULT 0,
+    jail_hours INTEGER NOT NULL DEFAULT 0,
+    served_at  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS theft_thief ON theft_cases(thief_id);
+CREATE INDEX IF NOT EXISTS theft_owner ON theft_cases(owner_id);
+
 CREATE TABLE IF NOT EXISTS job_bids (
     user_id INTEGER NOT NULL,
     code    TEXT    NOT NULL,
@@ -1075,7 +1097,7 @@ PLAYER_COLUMNS = (
     "account_number, account_balance, account_at, "
     "card_at, card_paid_until, pay_from, "
     "job_code, job_since, job_experience, job_week, job_minutes, job_salary, "
-    "shift_until, "
+    "account_debt, shift_until, "
     "shift_day, shift_minutes, "
     "study_code, study_since, study_lessons, study_day, study_exam_at, "
     "study_tries, lesson_until, diplomas, car, car_until"
@@ -1123,6 +1145,9 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("job_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за неделю
     # Жалованье из вилки, назначенное мэром. Ноль — оклад твёрдый
     ("job_salary", "INTEGER NOT NULL DEFAULT 0"),
+    # Долг по судебному штрафу. Пока он есть, счёт заблокирован: карта
+    # не платит, а всё, что приходит на счёт, уходит в долг
+    ("account_debt", "INTEGER NOT NULL DEFAULT 0"),
     ("shift_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — смена не идёт
     ("shift_day", "TEXT NOT NULL DEFAULT ''"),  # какие это сутки по Москве
     ("shift_minutes", "INTEGER NOT NULL DEFAULT 0"),  # отработано за сутки
@@ -1620,6 +1645,13 @@ class Database:
         ("stolen_from", "INTEGER NOT NULL DEFAULT 0"),
         ("stolen_at", "INTEGER NOT NULL DEFAULT 0"),
         ("stolen_filed", "INTEGER NOT NULL DEFAULT 0"),
+        # Где машина брошена: код дома. Пусто — она не на улице.
+        # Сюда же пишется участок, когда машину изымают на хранение
+        ("at_place", "TEXT NOT NULL DEFAULT ''"),
+        # Номер, который город выдал при выпуске. Перебитый знак от
+        # него отличается — по этому полиция подделку и узнаёт
+        ("plate_first", "TEXT NOT NULL DEFAULT ''"),
+        ("restamped", "INTEGER NOT NULL DEFAULT 0"),
     )
 
     async def _migrate_cars(self) -> None:
@@ -1752,12 +1784,12 @@ class Database:
                 account_number, account_balance, account_at,
                 card_at, card_paid_until, pay_from,
                 job_code, job_since, job_experience, job_week, job_minutes,
-                job_salary, shift_until, shift_day, shift_minutes,
+                job_salary, account_debt, shift_until, shift_day, shift_minutes,
                 study_code, study_since, study_lessons, study_day,
                 study_exam_at, study_tries, lesson_until, diplomas,
                 car, car_until
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -1802,6 +1834,7 @@ class Database:
                 job_week        = excluded.job_week,
                 job_minutes     = excluded.job_minutes,
                 job_salary      = excluded.job_salary,
+                account_debt    = excluded.account_debt,
                 shift_until     = excluded.shift_until,
                 shift_day       = excluded.shift_day,
                 shift_minutes   = excluded.shift_minutes,
@@ -1862,6 +1895,7 @@ class Database:
                 player.job_week,
                 player.job_minutes,
                 player.job_salary,
+                player.account_debt,
                 player.shift_until,
                 player.shift_day,
                 player.shift_minutes,
@@ -4865,7 +4899,8 @@ class Database:
         async with self.conn.execute(
             """
             SELECT id, code, until, took_at, parked, parked_id, driven,
-                   plate, stolen_from, stolen_at, stolen_filed
+                   plate, stolen_from, stolen_at, stolen_filed,
+                   at_place, plate_first, restamped
             FROM cars WHERE user_id = ? ORDER BY took_at, id
             """,
             (user_id,),
@@ -4877,7 +4912,8 @@ class Database:
         """Эта машина у этого бойца. None — нет такой."""
         async with self.conn.execute(
             "SELECT id, code, until, took_at, parked, parked_id, driven, "
-            "plate, stolen_from, stolen_at, stolen_filed "
+            "plate, stolen_from, stolen_at, stolen_filed, "
+            "at_place, plate_first, restamped "
             "FROM cars WHERE user_id = ? AND code = ?",
             (user_id, code),
         ) as cursor:
@@ -4919,17 +4955,25 @@ class Database:
             plate = await self._fresh_plate()
             if plate:
                 await self.conn.execute(
-                    "UPDATE cars SET plate = ? WHERE id = ?", (plate, car_id)
+                    "UPDATE cars SET plate = ?, plate_first = ? WHERE id = ?",
+                    (plate, plate, car_id),
                 )
         if rows:
             await self.conn.commit()
         return len(rows)
 
     async def set_plate(self, car_id: int, plate: str) -> bool:
-        """Перебить номер. False — такой знак в городе уже есть."""
+        """Перебить номер. False — такой знак в городе уже есть.
+
+        Выданный городом знак (`plate_first`) остаётся при машине: по
+        нему полиция и узнаёт подделку. Стереть его нельзя — иначе
+        перебитый номер делал бы машину новой, а он делает её краденой.
+        """
         try:
             cursor = await self.conn.execute(
-                "UPDATE cars SET plate = ? WHERE id = ?", (plate, car_id)
+                "UPDATE cars SET plate = ?, restamped = restamped + 1 "
+                "WHERE id = ?",
+                (plate, car_id),
             )
         except sqlite3.IntegrityError:
             return False
@@ -4942,7 +4986,8 @@ class Database:
             """
             SELECT c.id, c.user_id, c.code, c.until, c.took_at, c.parked,
                    c.parked_id, c.driven, c.plate, c.stolen_from,
-                   c.stolen_at, c.stolen_filed,
+                   c.stolen_at, c.stolen_filed, c.at_place, c.plate_first,
+                   c.restamped,
                    p.nickname, p.car AS driving, p.seen_at,
                    p.location, p.travel_to, p.arrives_at
             FROM cars c JOIN players p ON p.user_id = c.user_id
@@ -4989,6 +5034,7 @@ class Database:
             """
             SELECT c.id, c.user_id, c.code, c.until, c.parked, c.parked_id,
                    c.plate, c.stolen_from, c.stolen_at, c.stolen_filed,
+                   c.at_place, c.plate_first, c.restamped,
                    p.nickname, p.car AS driving, p.seen_at,
                    p.credits, p.location,
                    COALESCE(d.licence_at, 0) AS licence_at
@@ -5002,6 +5048,212 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # ---------- машина на улице и в участке ----------
+
+    async def drop_car_at(
+        self, user_id: int, code: str, place: str, now: int
+    ) -> bool:
+        """Оставить машину у здания. Хозяин прежний, место — город."""
+        cursor = await self.conn.execute(
+            "UPDATE cars SET parked = 'street', parked_id = 0, at_place = ? "
+            "WHERE user_id = ? AND code = ?",
+            (place, user_id, code),
+        )
+        await self.conn.commit()
+        if cursor.rowcount:
+            await self.conn.execute(
+                "UPDATE players SET car = '', car_until = 0 "
+                "WHERE user_id = ? AND car = ?",
+                (user_id, code),
+            )
+            await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def impound_car(
+        self, car_id: int, place: str, now: int, owner_id: int = 0
+    ) -> dict | None:
+        """Изъять машину на хранение в участок и вернуть её хозяину.
+
+        Хозяином снова становится потерпевший, но машина не у него на
+        руках: она лежит в участке, пока он за ней не придёт. Угон при
+        этом с неё снимается — дело уже у суда, а не у машины.
+
+        `owner_id` — кому возвращать, если на самой машине отметки
+        угона уже нет: у перебитой её стирает новый номер, и хозяина
+        тогда называет дело, а не строка.
+        """
+        async with self.conn.execute(
+            "SELECT id, user_id, code, plate, stolen_from FROM cars "
+            "WHERE id = ?",
+            (car_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        holder = int(row["user_id"])
+        owner = owner_id or int(row["stolen_from"]) or holder
+        # У хозяина за время угона могла завестись такая же машина:
+        # тогда возвращать некуда, и машина просто пропадает из города
+        async with self.conn.execute(
+            "SELECT 1 FROM cars WHERE user_id = ? AND code = ? AND id <> ?",
+            (owner, str(row["code"]), car_id),
+        ) as cursor:
+            double = await cursor.fetchone() is not None
+        if double:
+            await self.conn.execute("DELETE FROM cars WHERE id = ?", (car_id,))
+        else:
+            await self.conn.execute(
+                "UPDATE cars SET user_id = ?, parked = 'impound', "
+                "parked_id = 0, at_place = ?, took_at = ?, "
+                "stolen_from = 0, stolen_at = 0, stolen_filed = 0 "
+                "WHERE id = ?",
+                (owner, place, now, car_id),
+            )
+        await self.conn.execute(
+            "UPDATE players SET car = '', car_until = 0 "
+            "WHERE user_id = ? AND car = ?",
+            (holder, str(row["code"])),
+        )
+        await self.conn.commit()
+        return {
+            "id": car_id,
+            "code": str(row["code"]),
+            "plate": str(row["plate"]),
+            "owner": owner,
+            "holder": holder,
+            "kept": not double,
+        }
+
+    async def cars_at(self, place: str, now: int) -> list[dict]:
+        """Что стоит у этого здания: брошенное и сданное на хранение."""
+        async with self.conn.execute(
+            """
+            SELECT c.id, c.user_id, c.code, c.plate, c.plate_first,
+                   c.restamped, c.parked, c.at_place, c.until,
+                   c.stolen_from, c.stolen_filed, p.nickname
+            FROM cars c JOIN players p ON p.user_id = c.user_id
+            WHERE c.at_place = ? AND c.parked IN ('street', 'impound')
+              AND (c.until = 0 OR c.until > ?)
+            ORDER BY c.took_at, c.id
+            """,
+            (place, now),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def street_cars(self, now: int) -> list[dict]:
+        """Все брошенные машины города: где стоят и чьи."""
+        async with self.conn.execute(
+            """
+            SELECT c.id, c.user_id, c.code, c.plate, c.plate_first,
+                   c.restamped, c.at_place, c.stolen_from, c.stolen_filed,
+                   p.nickname
+            FROM cars c JOIN players p ON p.user_id = c.user_id
+            WHERE c.parked = 'street' AND (c.until = 0 OR c.until > ?)
+            ORDER BY c.took_at, c.id
+            """,
+            (now,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    # ---------- дела об угоне ----------
+
+    async def open_theft(
+        self, thief_id: int, owner_id: int, car_id: int, plate: str,
+        code: str, now: int,
+    ) -> int:
+        """Завести дело об угоне. Судит по нему суд, а не участок."""
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO theft_cases
+                (thief_id, owner_id, car_id, plate, code, stolen_at)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (thief_id, owner_id, car_id, plate, code, now),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid)
+
+    async def file_theft_case(self, car_id: int, owner_id: int, now: int) -> bool:
+        """Заявление хозяина: с него дело идёт в суд и в розыск."""
+        cursor = await self.conn.execute(
+            "UPDATE theft_cases SET filed_at = ? "
+            "WHERE car_id = ? AND owner_id = ? AND filed_at = 0",
+            (now, car_id, owner_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def mark_theft_seized(self, car_id: int, now: int) -> None:
+        """Машина изъята: дело ждёт приговора, а не возврата."""
+        await self.conn.execute(
+            "UPDATE theft_cases SET seized_at = ? "
+            "WHERE car_id = ? AND seized_at = 0 AND judged_at = 0",
+            (now, car_id),
+        )
+        await self.conn.commit()
+
+    async def theft_cases(
+        self, judged: bool | None = None, thief_id: int = 0
+    ) -> list[dict]:
+        """Дела об угоне: все, ждущие приговора или одного угонщика."""
+        where = ["filed_at <> 0"]
+        args: list = []
+        if judged is True:
+            where.append("judged_at <> 0")
+        elif judged is False:
+            where.append("judged_at = 0")
+        if thief_id:
+            where.append("thief_id = ?")
+            args.append(thief_id)
+        async with self.conn.execute(
+            "SELECT * FROM theft_cases WHERE " + " AND ".join(where)
+            + " ORDER BY stolen_at, id",
+            tuple(args),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def theft_case(self, case_id: int) -> dict | None:
+        async with self.conn.execute(
+            "SELECT * FROM theft_cases WHERE id = ?", (case_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def judge_theft(
+        self, case_id: int, judge_id: int, fine: int, hours: int, now: int
+    ) -> bool:
+        """Вынести приговор. False — по делу его уже выносили."""
+        cursor = await self.conn.execute(
+            "UPDATE theft_cases SET judged_at = ?, judge_id = ?, fine = ?, "
+            "jail_hours = ? WHERE id = ? AND judged_at = 0",
+            (now, judge_id, fine, hours, case_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def serve_theft(self, case_id: int, now: int) -> bool:
+        """Отметить приговор исполненным: деньги взяты, срок пошёл."""
+        cursor = await self.conn.execute(
+            "UPDATE theft_cases SET served_at = ? "
+            "WHERE id = ? AND judged_at <> 0 AND served_at = 0",
+            (now, case_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def theft_count(self, thief_id: int, before: int) -> int:
+        """Который это угон по счёту: по нему и считается наказание."""
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS total FROM theft_cases "
+            "WHERE thief_id = ? AND judged_at <> 0 AND judged_at <= ?",
+            (thief_id, before),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
 
     # ---------- угон ----------
 
@@ -5033,7 +5285,8 @@ class Database:
                 return None
         cursor = await self.conn.execute(
             "UPDATE cars SET user_id = ?, parked = '', parked_id = 0, "
-            "took_at = ?, stolen_from = ?, stolen_at = ?, stolen_filed = 0 "
+            "at_place = '', took_at = ?, stolen_from = ?, stolen_at = ?, "
+            "stolen_filed = 0 "
             "WHERE id = ? AND user_id = ?",
             (thief_id, now, int(row["stolen_from"]) or owner, now, car_id, owner),
         )
@@ -5149,10 +5402,12 @@ class Database:
         elif row is not None:
             until = max(int(row["until"]), now) + seconds
         if row is None:
+            plate = await self._fresh_plate()
             await self.conn.execute(
-                "INSERT INTO cars (user_id, code, until, took_at, plate) "
-                "VALUES (?,?,?,?,?)",
-                (user_id, code, until, now, await self._fresh_plate()),
+                "INSERT INTO cars "
+                "(user_id, code, until, took_at, plate, plate_first) "
+                "VALUES (?,?,?,?,?,?)",
+                (user_id, code, until, now, plate, plate),
             )
         else:
             await self.conn.execute(
@@ -5263,7 +5518,7 @@ class Database:
     async def unpark_car(self, user_id: int, code: str) -> bool:
         """Забрать машину с парковки. False — её там нет."""
         cursor = await self.conn.execute(
-            "UPDATE cars SET parked = '', parked_id = 0 "
+            "UPDATE cars SET parked = '', parked_id = 0, at_place = '' "
             "WHERE user_id = ? AND code = ? AND parked <> ''",
             (user_id, code),
         )

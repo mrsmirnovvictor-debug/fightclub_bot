@@ -998,6 +998,7 @@ async def open_page(
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
     cars=None, keys=None, dorm=None, charge=None, dojo=None, barber=None,
+    court=None,
     images=False,
     telegram="",
 ):
@@ -1054,7 +1055,12 @@ async def open_page(
     await page.route("**/api/charge", canned(charge or {}))
     await page.route("**/api/dojo", canned(dojo or {}))
     await page.route("**/api/barber", canned(barber or {}))
-    await page.route("**/api/keys", canned({"keys": keys or []}))
+    # Ключи — либо один список машин на руках, либо весь ответ целиком:
+    # у этого экрана есть и вторая полка, «У этого здания»
+    await page.route("**/api/keys", canned(
+        keys if isinstance(keys, dict) else {"keys": keys or []}
+    ))
+    await page.route("**/api/court", canned(court or {}))
 
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
@@ -11770,7 +11776,11 @@ async def test_the_car_stands_behind_the_fighter_in_his_card(server, db):
         said = await page.locator("#bag-keys").inner_text()
         assert "Городской хэтчбек" in said and "насовсем" in said
         assert "дорога" in said and "undefined" not in said
-        assert await page.locator("#keys-list .btn").inner_text() == "Снять"
+        # Кнопок у машины две: «Снять» — потому что боец за рулём, и
+        # «Оставить машину» — потому что улица рядом с любым домом
+        assert await page.locator("#keys-list .btn").all_inner_texts() == [
+            "Снять", "Оставить машину",
+        ]
         await browser.close()
 
 
@@ -14017,6 +14027,100 @@ async def test_an_empty_car_shows_the_reason_the_wheel_is_dark(server, db):
         await browser.close()
 
 
+async def test_the_street_row_shows_the_buttons_of_the_badge_and_the_family(
+    server, db
+):
+    """У брошенной машины кнопки по лицу: своя, мафии и патрулю."""
+    from bot.car_service import here_rows, leave_here
+    from bot.police_service import deliver  # noqa: F401 - ручка той же кнопки
+    from tests.test_theft import HATCH, NOW, a_theft, officer
+
+    row = await a_theft(db)
+    thief = await db.get_player(2)
+    await leave_here(db, thief, HATCH, NOW)
+    cop = await officer(db)
+    cop.location = "bar"
+    await db.save_player(cop)
+    body = {"keys": [], "limit": 1, "here": await here_rows(db, cop, NOW)}
+    card = build_card(cop, TOKEN, viewer_id=cop.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, keys=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.wait_for_selector(".keys .thing")
+
+        said = await page.locator("#bag-keys").inner_text()
+        assert str(row["plate"]) in said and "в розыске" in said
+        # Патрулю — увезти её в участок, и это та же кнопка, что у ключей
+        await page.evaluate(
+            """() => {
+                window.keysAction = (payload) => {
+                    window.sent = payload;
+                    return Promise.resolve();
+                };
+            }"""
+        )
+        take = page.locator("#bag-keys .btn", has_text="В участок")
+        assert await take.count() == 1
+        await take.click()
+        await page.wait_for_function("() => window.sent")
+        assert await page.evaluate("window.sent") == {
+            "action": "deliver", "car": int(row["id"]),
+        }
+        await browser.close()
+
+
+# ---------- суд ----------
+
+
+async def test_the_court_shows_the_docket_to_the_robe_and_the_ladder_to_all(
+    server, db
+):
+    """Судья видит дела, остальные — свой приговор. Лестница видна обоим."""
+    from bot.court_service import sentence
+    from bot.webapp.court import build_court
+    from tests.test_theft import NOW, a_theft, judge_at_court
+
+    row = await a_theft(db)
+    judge = await judge_at_court(db)
+    body = await build_court(db, judge, NOW)
+    card = build_card(judge, TOKEN, viewer_id=judge.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, court=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "court")
+        await page.wait_for_selector("#court-body .shelf")
+
+        said = await page.locator("#court-body").inner_text()
+        assert str(row["plate"]) in said and "Вор" in said
+        # Мера написана заранее: судья решает, быть приговору или нет
+        assert "300" in said and "1-й" in said.replace(" ", " ")
+        verdict = page.locator("#court-body .btn", has_text="Приговор")
+        assert await verdict.count() == 1
+        await browser.close()
+
+    # А тот же экран глазами осуждённого: своё дело и ни одного чужого
+    await sentence(db, judge, int((await db.theft_cases(judged=False))[0]["id"]), NOW)
+    thief = await db.get_player(2)
+    mine = await build_court(db, thief, NOW)
+    card = build_card(thief, TOKEN, viewer_id=thief.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, court=mine)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "court")
+        await page.wait_for_selector("#court-body .shelf")
+
+        said = await page.locator("#court-body").inner_text()
+        assert "300" in said and str(row["plate"]) in said
+        assert await page.locator(
+            "#court-body .btn", has_text="Приговор"
+        ).count() == 0, "приговоры выносит мантия, а не осуждённый"
+        await browser.close()
+
+
 # ---------- школа боевых искусств ----------
 
 
@@ -14436,8 +14540,8 @@ async def test_the_wash_shows_the_plate_and_offers_a_new_one(server, db):
         await browser.close()
 
 
-async def test_the_traffic_sheet_offers_the_fine_and_the_seizure(server, db):
-    """Автоучёт в участке: без прав — штраф, в розыске — изъятие."""
+async def test_the_traffic_sheet_offers_the_fine_and_the_address(server, db):
+    """Автоучёт в участке: без прав — штраф, в розыске — адрес, а не кнопка."""
     from bot.car_service import buy, steal, wheel
     from bot.police_service import file_theft
     from bot.webapp.driving import build_police
@@ -14471,7 +14575,10 @@ async def test_the_traffic_sheet_offers_the_fine_and_the_seizure(server, db):
         said = await page.locator("#police-body").inner_text()
         assert "Автоучёт" in said and str(row["plate"]) in said
         assert "в розыске" in said and "без прав" in said
-        # Угнанную изымают, и кнопка об этом говорит прямо
-        seize = page.locator("#police-body .btn", has_text="Изъять")
-        assert await seize.count() == 1
+        # Розыск машин говорит, где она стоит: кнопки возврата нет
+        assert "Розыск машин" in said and "Бар" in said
+        for gone in ("Изъять", "Вернуть"):
+            assert await page.locator(
+                "#police-body .btn", has_text=gone
+            ).count() == 0, f"кнопки «{gone}» в участке быть не должно"
         await browser.close()

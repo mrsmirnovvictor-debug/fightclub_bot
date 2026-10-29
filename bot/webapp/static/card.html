@@ -98,6 +98,9 @@
 
       <!-- Кто здесь: счётчик соседей в углу. Нажал — открылся список -->
       <button type="button" class="crowd-chip hidden" id="map-crowd"></button>
+
+      <!-- Машины у этого здания: стоят на улице, видны каждому -->
+      <button type="button" class="crowd-chip cars hidden" id="map-cars"></button>
     </div>
   </main>
 
@@ -608,6 +611,23 @@
     <p class="screen-note" id="dojo-note"></p>
 
     <div id="dojo-body"></div>
+  </main>
+
+  <!-- ---------- 3b-nonies. Суд ---------- -->
+  <!-- Дела об угоне: судья выносит приговор по лестнице, остальные
+       видят только свои приговоры и долг по штрафу -->
+  <main id="court" class="screen hidden">
+    <figure class="interior hidden" id="court-interior">
+      <img class="interior-pic" id="court-pic" alt="">
+    </figure>
+
+    <header class="screen-head">
+      <button type="button" class="back" id="court-back">← На карту</button>
+    </header>
+    <h1 class="screen-title" id="court-title">⚖️ Суд</h1>
+    <p class="screen-note" id="court-note"></p>
+
+    <div id="court-body"></div>
   </main>
 
   <!-- ---------- 3b-octies. Автомойка ---------- -->

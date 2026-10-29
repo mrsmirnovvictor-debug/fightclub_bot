@@ -25,6 +25,7 @@ import logging
 from bot.database import Database
 from bot.game.health import now_ts
 from bot.game.bank import PAY
+from bot.game.cars import IN_IMPOUND, IN_STREET
 from bot.game.presence import is_online
 from bot.game.police import (
     ARREST_FEE,
@@ -44,6 +45,8 @@ from bot.models import Player
 logger = logging.getLogger(__name__)
 
 POLICE = "police"
+# Дом участка: за машиной и с заявлением приходят сюда
+STATION = "vcpd"
 
 
 class PoliceError(Exception):
@@ -76,7 +79,7 @@ async def file_report(
 ) -> str:
     """Написать заявление о нападении. С этой минуты есть ордер."""
     moment = now_ts() if now is None else now
-    if player.where(moment) != "vcpd":
+    if player.where(moment) != STATION:
         raise PoliceError("Заявление пишут в участке.")
     if not await db.file_case(case_id, player.user_id, moment):
         raise PoliceError("По этому делу заявление уже не принять.")
@@ -100,6 +103,86 @@ async def has_warrant(db: Database, suspect_id: int) -> bool:
 # живые машины города с номерами и хозяевами; по нему полиция и решает,
 # кого остановить. Работает он и по тем, кто вышел из игры: машина
 # стоит в городе, а не в кармане.
+
+
+async def open_thefts(db: Database) -> list[dict]:
+    """Дела об угоне, по которым машину ещё не вернули."""
+    return [
+        one
+        for one in await db.theft_cases(judged=None)
+        if not one["seized_at"]
+    ]
+
+
+async def theft_of(db: Database, row: dict) -> dict | None:
+    """Дело, по которому эту машину ищут. None — за ней ничего нет.
+
+    Ищут двумя путями, и это главное место во всём угоне. Первый —
+    прямой: на машине стоит отметка розыска. Второй — через базу: номер
+    перебит, отметки нет, но выданный городом знак (`plate_first`) в
+    деле записан, и сверка его узнаёт. Перебитый номер прячет машину от
+    учёта, но не от бумаг.
+    """
+    for case in await open_thefts(db):
+        if int(case["car_id"]) == int(row["id"]) and row["stolen_filed"]:
+            return case
+        if row["restamped"] and str(case["plate"]) == str(row["plate_first"]):
+            return case
+    return None
+
+
+async def has_theft_warrant(db: Database, suspect_id: int) -> bool:
+    """Держит ли этот разыскиваемую машину: по ней и задерживают."""
+    for case in await open_thefts(db):
+        row = await db.car_by_id(int(case["car_id"]))
+        if row is None or int(row["user_id"]) != suspect_id:
+            continue
+        if await theft_of(db, row) is not None:
+            return True
+    return False
+
+
+async def theft_suspects(db: Database) -> set[int]:
+    """Кто держит разыскуемую машину: по ней его и задерживают.
+
+    Один запрос на весь дом: список соседей считают пачкой, и спрашивать
+    про каждого отдельно было бы тем же самым, но дороже.
+    """
+    out: set[int] = set()
+    for case in await open_thefts(db):
+        row = await db.car_by_id(int(case["car_id"]))
+        if row is None:
+            continue
+        if int(row["user_id"]) == int(case["owner_id"]):
+            continue
+        if await theft_of(db, row) is not None:
+            out.add(int(row["user_id"]))
+    return out
+
+
+async def seize_held_cars(
+    db: Database, officer_id: int, thief_id: int, now: int
+) -> list[str]:
+    """Забрать у задержанного все разыскиваемые машины — в участок."""
+    taken: list[str] = []
+    for case in await open_thefts(db):
+        row = await db.car_by_id(int(case["car_id"]))
+        if row is None or int(row["user_id"]) != thief_id:
+            continue
+        if await theft_of(db, row) is None:
+            continue
+        back = await db.impound_car(
+            int(row["id"]), STATION, now, int(case["owner_id"])
+        )
+        if back is None:  # pragma: no cover - строку только что читали
+            continue
+        await db.mark_theft_seized(int(row["id"]), now)
+        taken.append(str(back["plate"]))
+        logger.info(
+            "Сотрудник %s изъял %s у задержанного %s",
+            officer_id, back["plate"], thief_id,
+        )
+    return taken
 
 
 async def traffic_sheet(
@@ -141,14 +224,17 @@ async def traffic_sheet(
                 "stolen": bool(row["stolen_from"]),
                 "wanted": bool(row["stolen_filed"]),
                 "online": is_online(int(row["seen_at"] or 0), moment),
-                # Штрафуют того, кто едет без прав; изымают то, что
-                # числится в розыске. Себя не штрафуют: патрульный без
-                # прав — тоже нарушитель, но не сам себе
+                # Штрафуют того, кто едет без прав. Себя не штрафуют:
+                # патрульный без прав — тоже нарушитель, но не сам себе
                 "can_fine": bool(
                     driving and not licence
                     and int(row["user_id"]) != officer.user_id
                 ),
-                "can_seize": bool(row["stolen_filed"]),
+                # Перебитый номер виден только полиции: город выдавал
+                # другой, и в базе он остался. Это и есть сверка с базой
+                "restamped": bool(row["restamped"]),
+                "plate_first": str(row["plate_first"] or ""),
+                "place": str(row["at_place"] or "") or str(row["location"] or ""),
             }
         )
     return out
@@ -199,38 +285,207 @@ async def fine_driver(
     )
 
 
-async def seize_car(
-    db: Database, officer: Player, car_id: int, now: int | None = None
-) -> str:
-    """Изъять угнанную машину и вернуть хозяину.
+async def found_cars(
+    db: Database, officer: Player, now: int | None = None
+) -> list[dict]:
+    """Где сейчас разыскиваемые машины: в чьих руках и у какого здания.
 
-    Возвращают по заявлению: без него угон — дело двоих, и город в него
-    не лезет. Поэтому изымается то, что числится в розыске, а не всё, у
-    чего однажды сменился хозяин.
+    Это и есть вся работа по угону: участок не возвращает машину
+    кнопкой — он говорит, где она, а ехать туда сотруднику.
     """
+    from bot.game.cars import get_car, parking_title
+    from bot.game.locations import get_location
+
     moment = now_ts() if now is None else now
     if not serves_in_police(officer):
-        raise PoliceError("Изымает машины полиция.")
+        return []
+    out: list[dict] = []
+    for case in await open_thefts(db):
+        row = await db.car_by_id(int(case["car_id"]))
+        if row is None:
+            continue
+        # Перебитый номер уводит машину из розыска: отметки на ней уже
+        # нет, и участок видит только то, что след потерян. Найти её
+        # теперь можно лишь сверкой номеров в автоучёте
+        lost = await theft_of(db, row) is None
+        car = get_car(str(row["code"]))
+        spot = str(row["parked"] or "")
+        at_street = spot == IN_STREET
+        where = str(row["at_place"] or "") if at_street else str(
+            row["location"] or ""
+        )
+        if lost:
+            where = ""
+        place = get_location(where)
+        holder = int(row["user_id"])
+        online = is_online(int(row["seen_at"] or 0), moment)
+        # Машина у хозяина — дело уже кончилось само: он её забрал
+        mine_again = holder == int(case["owner_id"])
+        out.append(
+            {
+                "case": int(case["id"]),
+                "car": int(row["id"]),
+                "plate": str(case["plate"]),
+                "now_plate": str(row["plate"]),
+                "restamped": bool(row["restamped"]),
+                "title": car.title if car else str(row["code"]),
+                "holder_id": holder,
+                "holder": str(row["nickname"]),
+                "online": online,
+                "where": where,
+                "where_title": place.title if place else where,
+                "street": at_street,
+                "parked": parking_title(spot),
+                "returned": mine_again,
+                "lost": lost,
+                # Брошенную доставляют в участок, при угонщике — берут
+                # его самого: в сети дракой, не в сети молча
+                "can_deliver": bool(
+                    at_street and not mine_again and not lost
+                    and where == officer.where(moment)
+                ),
+                "can_take": bool(
+                    not at_street and not mine_again and not lost
+                    and not online and where == officer.where(moment)
+                ),
+                "can_arrest": bool(
+                    not at_street and not mine_again and not lost
+                    and online and where == officer.where(moment)
+                ),
+                "here": where == officer.where(moment),
+            }
+        )
+    return out
+
+
+async def deliver(
+    db: Database, officer: Player, car_id: int, now: int | None = None
+) -> str:
+    """Доставить брошенную машину в участок. Хозяин заберёт её там."""
+    moment = now_ts() if now is None else now
+    if not serves_in_police(officer):
+        raise PoliceError("Машины доставляет полиция.")
     row = await db.car_by_id(car_id)
     if row is None:
         raise PoliceError("Такой машины в городе нет.")
-    if not row["stolen_filed"]:
+    if str(row["parked"]) != IN_STREET:
+        raise PoliceError("Эта машина не брошена: её так просто не заберёшь.")
+    if await theft_of(db, row) is None:
         raise PoliceError("Эта машина не в розыске: заявления по ней нет.")
-    back = await db.return_car(car_id, moment)
-    if back is None:  # pragma: no cover - розыск без угона не бывает
-        raise PoliceError("Возвращать нечего.")
-    owner = await db.get_player(int(back["owner"]))
-    name = owner.nickname if owner else "хозяину"
-    logger.info(
-        "Сотрудник %s изъял %s (%s) у бойца %s",
-        officer.user_id, back["code"], back["plate"], back["thief"],
+    if str(row["at_place"]) != officer.where(moment):
+        raise PoliceError("Машина не здесь: до неё надо доехать.")
+    case = await theft_of(db, row)
+    back = await db.impound_car(
+        car_id, STATION, moment, int(case["owner_id"]) if case else 0
     )
+    if back is None:  # pragma: no cover - строку только что читали
+        raise PoliceError("Машину уже забрали.")
+    await db.mark_theft_seized(car_id, moment)
+    owner = await db.get_player(int(back["owner"]))
+    logger.info(
+        "Сотрудник %s доставил %s в участок", officer.user_id, back["plate"]
+    )
+    name = owner.nickname if owner else "хозяину"
     if not back["kept"]:
         return (
-            f"Машина {back['plate']} изъята. У хозяина такая уже есть, "
-            "так что с угонщика она просто снята."
+            f"Машина {back['plate']} доставлена в участок. У хозяина такая "
+            "уже есть, так что хранить её некому."
         )
-    return f"Машина {back['plate']} изъята и возвращена: {name}."
+    return (
+        f"Машина {back['plate']} доставлена в участок. {name} заберёт её "
+        "здесь."
+    )
+
+
+async def take_from_thief(
+    db: Database, officer: Player, car_id: int, now: int | None = None
+) -> str:
+    """Забрать машину у угонщика, которого нет в сети.
+
+    Он не в игре — задержание проходит молча: машина уезжает в участок,
+    а дело остаётся ждать суда. С тем, кто в сети, так нельзя: его
+    задерживают дракой.
+    """
+    moment = now_ts() if now is None else now
+    if not serves_in_police(officer):
+        raise PoliceError("Задержание — дело полиции.")
+    row = await db.car_by_id(car_id)
+    if row is None:
+        raise PoliceError("Такой машины в городе нет.")
+    if await theft_of(db, row) is None:
+        raise PoliceError("Эта машина не в розыске: заявления по ней нет.")
+    where = str(row["at_place"] or "") if str(row["parked"]) == IN_STREET \
+        else str(row["location"] or "")
+    if where != officer.where(moment):
+        raise PoliceError("Машина не здесь: до неё надо доехать.")
+    if is_online(int(row["seen_at"] or 0), moment):
+        raise PoliceError(
+            "Угонщик в городе — молча машину не забрать. Задерживай."
+        )
+    case = await theft_of(db, row)
+    back = await db.impound_car(
+        car_id, STATION, moment, int(case["owner_id"]) if case else 0
+    )
+    if back is None:  # pragma: no cover - строку только что читали
+        raise PoliceError("Машину уже забрали.")
+    await db.mark_theft_seized(car_id, moment)
+    logger.info(
+        "Сотрудник %s забрал %s у спящего угонщика %s",
+        officer.user_id, back["plate"], back["holder"],
+    )
+    return (
+        f"Машина {back['plate']} изъята и доставлена в участок. Угонщик "
+        "спал — брать его дракой не пришлось."
+    )
+
+
+async def claim_car(
+    db: Database, owner: Player, car_id: int, now: int | None = None
+) -> str:
+    """Забрать свою машину со стоянки участка."""
+    from bot.car_service import _check_room
+
+    moment = now_ts() if now is None else now
+    if owner.where(moment) != STATION:
+        raise PoliceError("За машиной приходят в участок.")
+    row = await db.car_by_id(car_id)
+    if row is None or str(row["parked"]) != IN_IMPOUND:
+        raise PoliceError("Такой машины в участке нет.")
+    if int(row["user_id"]) != owner.user_id:
+        raise PoliceError("Эта машина не твоя.")
+    from bot.car_service import CarError
+
+    try:
+        await _check_room(db, owner, moment)
+    except CarError as error:
+        raise PoliceError(str(error)) from error
+    await db.unpark_car(owner.user_id, str(row["code"]))
+    logger.info("Боец %s забрал %s из участка", owner.user_id, row["plate"])
+    return f"Машина {row['plate']} снова при тебе."
+
+
+async def impound_rows(
+    db: Database, player: Player, now: int | None = None
+) -> list[dict]:
+    """Что лежит в участке и ждёт хозяина."""
+    from bot.game.cars import get_car
+
+    moment = now_ts() if now is None else now
+    out = []
+    for row in await db.cars_at(STATION, moment):
+        if str(row["parked"]) != IN_IMPOUND:
+            continue
+        car = get_car(str(row["code"]))
+        out.append(
+            {
+                "id": int(row["id"]),
+                "title": car.title if car else str(row["code"]),
+                "plate": str(row["plate"]),
+                "owner": str(row["nickname"]),
+                "mine": int(row["user_id"]) == player.user_id,
+            }
+        )
+    return out
 
 
 async def file_theft(
@@ -238,13 +493,15 @@ async def file_theft(
 ) -> str:
     """Заявить об угоне. С этой минуты машину ищут по номеру."""
     moment = now_ts() if now is None else now
-    if player.where(moment) != "vcpd":
+    if player.where(moment) != STATION:
         raise PoliceError("Заявление об угоне пишут в участке.")
     row = await db.car_by_id(car_id)
     if row is None or int(row["stolen_from"]) != player.user_id:
         raise PoliceError("По этой машине заявление не принять.")
     if not await db.file_stolen(car_id, moment):
         raise PoliceError("Заявление по ней уже написано.")
+    # С заявления дело идёт в суд: до него угон — дело двоих
+    await db.file_theft_case(car_id, player.user_id, moment)
     logger.info(
         "Боец %s заявил об угоне %s (%s)",
         player.user_id, row["code"], row["plate"],
@@ -343,7 +600,7 @@ async def collect(
 ) -> str:
     """Забрать из участка возвращённые деньги. Жертва приходит сама."""
     moment = now_ts() if now is None else now
-    if player.where(moment) != "vcpd":
+    if player.where(moment) != STATION:
         raise PoliceError("За деньгами приходят в участок.")
     rows = [
         one
@@ -457,4 +714,5 @@ __all__ = [
     "serves_in_police",
     "settle_week",
     "term_of",
+    "theft_suspects",
 ]
