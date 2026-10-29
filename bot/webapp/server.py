@@ -1616,11 +1616,7 @@ async def api_police_action(request: web.Request) -> web.Response:
             place = await hire_at_house(db, player, str(data.get("job") or ""))
             said = f"Ты принят: {place.title}. Форму получишь на месте."
         elif action == "bid":
-            seat = await bid_for_post(db, player, str(data.get("job") or ""))
-            said = (
-                f"Заявка подана: {seat.title}. Назначает мэр — "
-                "он и назовёт жалованье."
-            )
+            said = await _bid_said(db, player, str(data.get("job") or ""))
         elif action == "unbid":
             seat = await withdraw_bid(db, player, str(data.get("job") or ""))
             said = f"Заявка отозвана: {seat.title}."
@@ -1635,14 +1631,15 @@ async def api_police_action(request: web.Request) -> web.Response:
         elif action == "file_theft":
             said = await file_theft(db, player, _int_field(data, "car"))
         elif action in ("park", "unpark"):
-            # Стоянка у участка: городская, безопасная и своя у каждого
-            from bot.car_service import CarError, leave, pick_up
-            from bot.game.cars import IN_POLICE
+            # Стоянка у участка: городская, безопасная и платная. Берут
+            # при постановке; забрать своё можно когда угодно и даром
+            from bot.car_service import CarError, pick_up
+            from bot.police_service import park_at_station
 
             code = str(data.get("car") or "")
             try:
                 said = (
-                    await leave(db, player, code, IN_POLICE, 0)
+                    await park_at_station(db, player, code)
                     if action == "park"
                     else await pick_up(db, player, code)
                 )
@@ -1783,11 +1780,7 @@ async def api_work_action(request: web.Request) -> web.Response:
             place = await hire_at_house(db, player, str(data.get("job") or ""))
             said = f"Ты принят: {place.title}."
         elif action == "bid":
-            seat = await bid_for_post(db, player, str(data.get("job") or ""))
-            said = (
-                f"Заявка подана: {seat.title}. Назначает мэр — "
-                "он и назовёт жалованье."
-            )
+            said = await _bid_said(db, player, str(data.get("job") or ""))
         elif action == "unbid":
             seat = await withdraw_bid(db, player, str(data.get("job") or ""))
             said = f"Заявка отозвана: {seat.title}."
@@ -2891,6 +2884,26 @@ async def api_wheel(request: web.Request) -> web.Response:
         "card": build_card(fresh, config.bot_token, fresh.user_id),
         **await _keys(db, fresh),
     })
+
+
+async def _bid_said(db, player, code: str) -> str:
+    """Заявка на кресло — и ответ о том, что из неё вышло.
+
+    Городской мэр решает в тот же миг, а живой — когда захочет. Писать
+    бойцу «назначает мэр» после того, как его уже посадили, значило бы
+    спорить с самим собой.
+    """
+    seat = await bid_for_post(db, player, code)
+    fresh = await db.get_player(player.user_id)
+    if fresh is not None and fresh.job_code == code:
+        return (
+            f"Кресло твоё: {seat.title}, {fresh.job_salary} 💰 в неделю. "
+            "Мэра в городе нет, и назначила тебя управа — по стажу."
+        )
+    return (
+        f"Заявка подана: {seat.title}. Назначает мэр — "
+        "он и назовёт жалованье."
+    )
 
 
 async def api_keys(request: web.Request) -> web.Response:

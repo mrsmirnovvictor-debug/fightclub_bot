@@ -10334,7 +10334,8 @@ function stationParkingBox(data) {
 
   const said = document.createElement("p");
   said.className = "thing-note";
-  said.textContent = "Под фонарём и на виду: отсюда машину не угонят.";
+  said.textContent = "Под фонарём и на виду: отсюда машину не угонят. "
+    + "Место платное, цена своя у каждой машины — забрать её даром.";
   box.appendChild(said);
 
   data.parking.forEach((one) => {
@@ -10342,9 +10343,14 @@ function stationParkingBox(data) {
     row.className = "bracket-side";
     const name = document.createElement("span");
     name.className = "bracket-name";
-    name.textContent = one.title + " · " + one.plate;
+    // Цена стоит на самой строке, а не только на кнопке: по стоянке
+    // смотрят, во что встанет ночь, а не что нажать
+    name.textContent = one.title + " · " + one.plate
+      + (one.here ? "" : " · " + one.fee + " 💰");
     row.appendChild(name);
-    const act = button(one.here ? "Забрать" : "Поставить", {
+    const act = button(one.here ? "Забрать" : "Поставить за " + one.fee, {
+      disabled: Boolean(!one.here && !one.can_park),
+      hint: "Не хватает денег на место. Стоянка берёт полдня аренды.",
       onClick: () => policeAction({
         action: one.here ? "unpark" : "park", car: one.code,
       }),

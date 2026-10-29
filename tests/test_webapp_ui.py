@@ -211,6 +211,10 @@ class EmptyCity:
     async def bids_of(self, user_id: int) -> list:
         return []
 
+    async def mayor(self) -> dict:
+        """Кресло мэра пустое: назначать за город в этих проверках нечего."""
+        return {"user_id": 0, "since": 0, "day": ""}
+
 
 async def work_state(
     job: str = "bartender", shift: bool = False, today: int = 0
@@ -10768,12 +10772,15 @@ async def test_the_administration_takes_a_candidacy(server, db):
         ]
         # Отсчёт до субботы меряется днями, а не минутами
         cycle = await page.locator("#elections-body .shelf").first.inner_text()
-        assert "кресло пустует" in cycle
+        # Кресло не пустует никогда: пока живого мэра нет, город ведёт
+        # управа — она же стоит в бюллетене последней строкой
+        assert "Городская управа" in cycle
         assert ":" not in cycle.split("До конца этапа")[1]
 
         rows = await page.locator("#elections .candidate").all_inner_texts()
-        assert len(rows) == 2
+        assert len(rows) == 3
         assert "Снесу казино." in rows[0] and "Правил не будет." in rows[1]
+        assert "Городская управа" in rows[2]
         # Бланк программы на месте, и в нём есть потолок
         area = page.locator("#election-program")
         assert await area.get_attribute("maxlength") == "400"
@@ -10793,7 +10800,7 @@ async def test_the_ballot_comes_with_the_card_and_takes_one_vote(server, db):
 
         assert await page.locator("#ballot-head").inner_text() == "🗳 Выборы мэра"
         rows = await page.locator("#ballot-list .ballot-row").all_inner_texts()
-        assert rows == ["Марла", "Тайлер Дёрден"]
+        assert rows == ["Марла", "Тайлер Дёрден", "Городская управа"]
 
         # Пока никто не выбран, голосовать не дают
         go = page.locator("#ballot-buttons .btn").first
@@ -14068,6 +14075,56 @@ async def test_the_street_row_shows_the_buttons_of_the_badge_and_the_family(
         assert await page.evaluate("window.sent") == {
             "action": "deliver", "car": int(row["id"]),
         }
+        await browser.close()
+
+
+async def test_the_station_parking_shows_the_price_on_the_button(server, db):
+    """Стоянка у участка платная, и цена стоит и в строке, и на кнопке."""
+    from bot.car_service import buy
+    from bot.webapp.driving import build_police
+    from bot.webapp.police import build_police_board
+    from tests.test_theft import NOW, make_player as a_driver, officer, stand
+
+    owner = await stand(db, a_driver(1, "Хозяин", where="vcpd"))
+    await buy(db, owner, "street_compact", NOW)
+    me = await db.get_player(1)
+    me.credits = 1_000
+    await db.save_player(me)
+
+    body = build_police(me)
+    body.update(await build_police_board(db, me, NOW))
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, police=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector("#police-body .shelf")
+
+        said = await page.locator("#police-body").inner_text()
+        assert "Стоянка у участка" in said and "Место платное" in said
+        park = page.locator("#police-body .btn", has_text="Поставить за 15")
+        assert await park.count() == 1
+        assert await park.is_enabled()
+        await browser.close()
+
+    # Пустой карман — кнопка погасла, и цена всё равно видна
+    broke = await db.get_player(1)
+    broke.credits = 5
+    await db.save_player(broke)
+    body = build_police(broke)
+    body.update(await build_police_board(db, broke, NOW))
+    card = build_card(broke, TOKEN, viewer_id=broke.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, police=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "police")
+        await page.wait_for_selector("#police-body .shelf")
+
+        park = page.locator("#police-body .btn", has_text="Поставить за 15")
+        assert await park.count() == 1
+        assert await park.is_disabled()
         await browser.close()
 
 

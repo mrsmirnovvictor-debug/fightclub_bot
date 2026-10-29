@@ -21,6 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.database import Database
 from bot.election_service import ElectionError, nominate, settle, state, vote
+from bot.game.city import MAYOR_ID as CITY_MAYOR
 from bot.game.clock import MOSCOW
 from bot.game.elections import (
     COUNTING,
@@ -208,14 +209,15 @@ async def test_the_candidate_who_lands_in_jail_is_struck(db):
     await jail(db, tyler.user_id, SATURDAY)
 
     sheet = await state(db, marla, now=SUNDAY)
-    assert [one["user_id"] for one in sheet["candidates"]] == [1]
+    # Последней в бюллетене всегда стоит городская управа
+    assert [one["user_id"] for one in sheet["candidates"]] == [1, CITY_MAYOR]
     # Снятие записано посадкой: вышел из тюрьмы до воскресенья — в
     # бюллетень всё равно не вернулся
     rows = {one["user_id"]: one for one in await db.candidates(day_code(DAY))}
     assert rows[2]["dropped_at"] > 0
     assert (await db.jail_term(tyler.user_id))[0] < SUNDAY, "срок уже вышел"
     sheet = await state(db, marla, now=SUNDAY)
-    assert [one["user_id"] for one in sheet["candidates"]] == [1]
+    assert [one["user_id"] for one in sheet["candidates"]] == [1, CITY_MAYOR]
 
 
 # ---------- голосование ----------
@@ -275,10 +277,10 @@ async def test_the_mayor_takes_the_chair_on_monday(db):
     outsider = await citizen(db, 20, "Чужой", where=BAR)
     await vote(db, outsider, 2, now=SUNDAY)
 
-    # До понедельника кресло не меняется
-    done = await settle(db, term_from(DAY) - 60)
-    assert done["seated"] is False
-    assert (await db.mayor())["user_id"] == 0
+    # До понедельника эти выборы кресла не меняют: в нём сидит тот, кого
+    # посадили прошлые, — а прошлых не было, и кресло держит управа
+    await settle(db, term_from(DAY) - 60)
+    assert (await db.mayor())["user_id"] == CITY_MAYOR
 
     done = await settle(db, MONDAY)
     assert done["seated"] is True and done["winner"] == 1
@@ -339,6 +341,114 @@ async def test_the_mandate_survives_a_later_arrest(db):
     record = await db.election(day_code(DAY))
     assert record["winner_id"] == 2 and record["votes"] == 3
     assert (await db.mayor())["user_id"] == 2
+
+
+# ---------- мэр от города ----------
+
+
+async def test_the_city_stands_in_every_ballot(db):
+    """Городская управа в бюллетене всегда и всегда последней."""
+    from bot.game.city import MAYOR_NAME, MAYOR_PROGRAM
+
+    voter = await citizen(db, 3, "Боец", where=BAR)
+    sheet = await state(db, voter, now=SUNDAY)
+
+    assert [one["user_id"] for one in sheet["candidates"]] == [CITY_MAYOR]
+    assert sheet["candidates"][0]["name"] == MAYOR_NAME
+    assert sheet["candidates"][0]["program"] == MAYOR_PROGRAM
+    # Выдвигать её не надо, и в базе её нет
+    assert await db.candidates(day_code(DAY)) == []
+
+    marla = await citizen(db, 1, "Марла")
+    await nominate(db, marla, "Снесу казино", now=WEDNESDAY)
+    sheet = await state(db, voter, now=SUNDAY)
+    assert [one["user_id"] for one in sheet["candidates"]] == [1, CITY_MAYOR]
+
+
+async def test_the_empty_election_leaves_the_city_in_charge(db):
+    """Не выдвинулся никто, не голосовал никто — город ведёт управа."""
+    done = await settle(db, MONDAY)
+
+    assert done["seated"] is True and done["winner"] == CITY_MAYOR
+    assert (await db.mayor())["user_id"] == CITY_MAYOR
+    record = await db.election(day_code(DAY))
+    assert record["winner_id"] == CITY_MAYOR
+    assert record["turnout"] == 0, "голосов не было вовсе"
+
+    # И экран говорит об этом прямо, а не пустым креслом
+    from bot.game.city import MAYOR_NAME
+    from bot.webapp.elections import build_elections
+
+    voter = await citizen(db, 3, "Боец", where=BAR)
+    sheet = await state(db, voter, now=MONDAY)
+    assert sheet["mayor"]["name"] == MAYOR_NAME
+    screen = build_elections(voter, sheet, MONDAY)
+    assert "по заявкам и стажу" in screen["note"]
+    assert screen["is_mayor"] is False, "управой не станешь"
+
+
+async def test_one_vote_beats_the_city(db):
+    """Один голос за живого — и управа уходит из кресла."""
+    marla = await citizen(db, 1, "Марла")
+    await nominate(db, marla, "", now=WEDNESDAY)
+    voter = await citizen(db, 3, "Боец", where=BAR)
+    await vote(db, voter, 1, now=SUNDAY)
+
+    await settle(db, MONDAY)
+
+    assert (await db.mayor())["user_id"] == 1
+
+
+async def test_a_tie_keeps_the_chair_with_the_city(db):
+    """Ничья — не «никто»: кресло остаётся за управой."""
+    marla = await citizen(db, 1, "Марла")
+    tyler = await citizen(db, 2, "Тайлер")
+    await nominate(db, marla, "", now=WEDNESDAY)
+    await nominate(db, tyler, "", now=WEDNESDAY)
+    for number, whom in enumerate((1, 2)):
+        one = await citizen(db, 10 + number, f"Боец-{number}", where=BAR)
+        await vote(db, one, whom, now=SUNDAY)
+
+    await settle(db, MONDAY)
+
+    assert (await db.mayor())["user_id"] == CITY_MAYOR
+    record = await db.election(day_code(DAY))
+    assert record["winner_id"] == CITY_MAYOR and record["turnout"] == 2
+
+
+async def test_the_city_can_be_voted_for(db):
+    """За управу голосуют как за всякого: она в бюллетене, а не вне его."""
+    marla = await citizen(db, 1, "Марла")
+    await nominate(db, marla, "", now=WEDNESDAY)
+    for number in range(2):
+        one = await citizen(db, 10 + number, f"Боец-{number}", where=BAR)
+        await vote(db, one, CITY_MAYOR, now=SUNDAY)
+    alone = await citizen(db, 20, "Один", where=BAR)
+    await vote(db, alone, 1, now=SUNDAY)
+
+    await settle(db, MONDAY)
+
+    record = await db.election(day_code(DAY))
+    assert record["winner_id"] == CITY_MAYOR and record["votes"] == 2
+    assert (await db.mayor())["user_id"] == CITY_MAYOR
+
+
+async def test_the_city_mayor_fills_the_chairs_as_it_takes_office(db):
+    """Управа заняла кресло — и тут же занимает кресла начальников."""
+    from bot.game.work import MONTH_SECONDS
+
+    one = await citizen(db, 1, "Банкир", where="bank")
+    one.diplomas = ["banking"]
+    one.job_experience = 3 * MONTH_SECONDS
+    await db.save_player(one)
+    await db.place_bid(1, "bank_head", WEDNESDAY)
+
+    await settle(db, MONDAY)
+
+    assert (await db.mayor())["user_id"] == CITY_MAYOR
+    seated = await db.get_player(1)
+    assert seated.job_code == "bank_head"
+    assert seated.job_salary == 1_700, "низ вилки плюс месяц сверх"
 
 
 # ---------- ручки и экран ----------

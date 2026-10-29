@@ -14,6 +14,11 @@
 городское взыскание, и первым делом город идёт в банк; наличные берут у
 того, у кого счёта нет вовсе; а час за триста кредитов — последнее
 средство, когда взять больше нечего.
+
+**Судит и сам город.** Пока мантию никто не надел, дела разбирает
+дежурный судья (`city_judges`) — тем же ленивым сбором и по той же
+лестнице. Сел живой судья — город в его дела не лезет: решать и есть
+единственное, что судье дано.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from __future__ import annotations
 import logging
 
 from bot.database import Database
+from bot.game.city import JUDGE_ID as CITY_JUDGE
 from bot.game.court import extra_hours, sentence_for, sentence_text
 from bot.game.health import now_ts
 from bot.game.police import PRISON
@@ -40,6 +46,54 @@ class CourtError(Exception):
 def judges(player: Player) -> bool:
     """Выносит ли этот боец приговоры."""
     return player.job_code in JUDGES
+
+
+async def robe_in_city(db: Database) -> bool:
+    """Есть ли в городе живой судья. Нет — судит сам город.
+
+    Считаем по рабочим местам, как и значок полиции: кто сидит в
+    кресле, тот и судья, ушёл — и мантии нет. Второй правды о составе
+    суда мы не заводим.
+    """
+    taken = await db.taken_jobs()
+    return any(taken.get(code) for code in JUDGES)
+
+
+async def city_judges(db: Database, now: int | None = None) -> list[str]:
+    """Вынести приговоры по всем делам, пока мантию никто не надел.
+
+    Это ленивый сбор, и зовут его отовсюду, где город кому-то
+    показывается. Смысл простой: **кресло судьи пустым город не
+    держит**. Некому судить — судит он сам, и судит ровно по лестнице,
+    без снисхождения и без лишнего рвения.
+
+    Живой судья городского не ждёт и не отменяет: пока мантия в городе
+    есть, дела лежат и ждут человека. Ушёл последний судья — лежащие
+    дела разбирает город.
+    """
+    moment = now_ts() if now is None else now
+    cases = await db.theft_cases(judged=False)
+    if not cases or await robe_in_city(db):
+        return []
+    said: list[str] = []
+    for case in cases:
+        if not case["filed_at"]:
+            continue
+        times = await db.theft_count(int(case["thief_id"]), moment) + 1
+        fine, hours = sentence_for(times)
+        if not await db.judge_theft(
+            int(case["id"]), CITY_JUDGE, fine, hours, moment
+        ):  # pragma: no cover - приговор успел вынести кто-то ещё
+            continue
+        logger.info(
+            "Город вынес приговор по делу %s: %s и %s ч",
+            case["id"], fine, hours,
+        )
+        said.append(
+            f"{case['plate']}: {sentence_text(fine, hours)} — "
+            f"угон {times}-й по счёту."
+        )
+    return said
 
 
 async def pending_for(db: Database, thief_id: int) -> list[dict]:
@@ -130,6 +184,9 @@ async def apply_pending(
     ждать, пока угонщик сам придёт в суд, город не станет.
     """
     moment = now_ts() if now is None else now
+    # Сперва городской судья: дела, которые некому рассмотреть, он
+    # разбирает в тот же миг, когда кто-нибудь заглянул в город
+    await city_judges(db, moment)
     cases = await pending_for(db, player.user_id)
     if not cases:
         return ""
@@ -205,10 +262,12 @@ __all__ = [
     "CourtError",
     "JUDGES",
     "apply_pending",
+    "city_judges",
     "docket",
     "judges",
     "lock_up",
     "pending_for",
+    "robe_in_city",
     "sentence",
     "take_fine",
 ]

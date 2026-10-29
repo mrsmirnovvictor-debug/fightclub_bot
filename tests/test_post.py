@@ -301,13 +301,21 @@ async def test_the_parcel_on_demand_waits_forever(db):
 
 async def test_the_screen_shows_both_shelves(db):
     """Экран почты: рюкзак на отправку, свои посылки и чужие."""
+    # Час один на отправку и на экран. Иначе срок хранения меряется от
+    # одной секунды до другой, и «5 дней» на границе секунды
+    # превращаются в «4 дня» — проверка ловила бы часы, а не полки
+    moment = now_ts()
     sender = await enlist(db, 42, "Тайлер")
     guest = await enlist(db, 43, "Марла")
-    await send(db, sender, await stock(db, sender), "Марла", 150, "short")
-    await send(db, guest, await stock(db, guest, "pipe"), "Тайлер", 0, "demand")
+    await send(
+        db, sender, await stock(db, sender), "Марла", 150, "short", moment
+    )
+    await send(
+        db, guest, await stock(db, guest, "pipe"), "Тайлер", 0, "demand", moment
+    )
 
     body = build_post(
-        sender, await db.parcels_for(42), await db.parcels_from(42)
+        sender, await db.parcels_for(42), await db.parcels_from(42), moment
     )
     assert body["price"] == SEND_PRICE and body["waiting"] == 1
     assert [one["code"] for one in body["inbox"]] == ["pipe"]

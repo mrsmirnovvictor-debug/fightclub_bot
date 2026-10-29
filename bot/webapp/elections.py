@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from bot.game.city import MAYOR_ID as CITY_MAYOR
+from bot.game.city import MAYOR_NAME
 from bot.game.elections import (
     COUNTING,
     NOMINATION,
@@ -133,16 +135,24 @@ def _note(state: dict[str, Any]) -> str:
     total = len(state["candidates"])
     seat = state["mayor"]["name"]
     chair = f"Мэр города — {seat}." if seat else "Кресло мэра пустует."
+    if state["mayor"]["user_id"] == CITY_MAYOR:
+        chair = (
+            f"Город ведёт {MAYOR_NAME.lower()}: кресла начальников она "
+            "занимает сама, по заявкам и стажу."
+        )
     if phase == QUIET:
         return (
             f"{chair} Выдвижение откроется в среду, в девять утра на "
             "неделе выборов."
         )
     if phase == NOMINATION:
+        # Управа в бюллетене стоит всегда, и считать её выдвинувшейся
+        # нельзя: она не выдвигалась
+        live = max(0, total - 1)
         tail = (
-            f"Уже выдвинулись: {total}."
-            if total
-            else "Пока не выдвинулся никто."
+            f"Уже выдвинулись: {live}."
+            if live
+            else "Пока не выдвинулся никто, и город останется за управой."
         )
         return f"Идёт выдвижение. {tail} Приём до субботы, до восьми вечера."
     if phase == VOTING:

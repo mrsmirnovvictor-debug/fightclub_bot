@@ -141,13 +141,16 @@ async def stolen_rows(db, player: Player, now: int) -> list[dict[str, Any]]:
 
 
 async def parking_rows(db, player: Player, now: int) -> list[dict[str, Any]]:
-    """Стоянка у участка: что поставить и что забрать.
+    """Стоянка у участка: что поставить, почём и что забрать.
 
     Своё и только своё: в отличие от гаража особняка, городская стоянка
-    ничего никому не передаёт — она просто безопасна.
+    ничего никому не передаёт — она просто безопасна. И единственная в
+    городе платная: цена стоит у каждой строки своя, потому что считают
+    её от машины, а не одну на всех.
     """
     from bot.car_service import mine as my_cars
-    from bot.game.cars import IN_POLICE, POLICE_PARKING, get_car
+    from bot.game.cars import IN_POLICE, POLICE_PARKING, get_car, parking_fee
+    from bot.game.locations import Service
 
     rows = await my_cars(db, player, now)
     out = []
@@ -158,6 +161,7 @@ async def parking_rows(db, player: Player, now: int) -> list[dict[str, Any]]:
         parked = str(row.get("parked") or "")
         if parked and parked != IN_POLICE:
             continue
+        fee = player.price_here(parking_fee(car.code), now, Service.POLICE)
         out.append(
             {
                 "code": str(row["code"]),
@@ -165,6 +169,12 @@ async def parking_rows(db, player: Player, now: int) -> list[dict[str, Any]]:
                 "plate": str(row.get("plate") or ""),
                 "here": parked == IN_POLICE,
                 "stolen": bool(row.get("stolen_from")),
+                # Цена места для этой машины. Забрать своё — даром:
+                # выезд оплачен въездом
+                "fee": fee,
+                "can_park": bool(parked != IN_POLICE and player.can_afford(
+                    fee, now, Service.POLICE
+                )),
             }
         )
     return out

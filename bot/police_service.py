@@ -464,6 +464,61 @@ async def claim_car(
     return f"Машина {row['plate']} снова при тебе."
 
 
+# ---------- городская стоянка ----------
+#
+# Двадцать мест под фонарём, открытых всем, и единственное платное
+# место в городе: за асфальт и за патруль, который на него смотрит,
+# берут полдня аренды машины. Платят при постановке и один раз —
+# счётчиков в клубе нет, — а забирают своё даром: выезд оплачен
+# въездом. Деньги идут в копилку участка, как и штрафы: стоянку держит
+# служба, ей и считать.
+
+
+async def park_at_station(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> str:
+    """Поставить свою машину на стоянку у участка. Место платное."""
+    from bot.car_service import CarError, leave
+    from bot.game.cars import IN_POLICE, get_car, parking_fee
+    from bot.game.locations import Service
+
+    moment = now_ts() if now is None else now
+    if player.where(moment) != STATION:
+        raise PoliceError("Машину на эту стоянку приводят, а не присылают.")
+    car = get_car(code)
+    if car is None:
+        raise PoliceError("Такой машины в городе нет.")
+    fee = player.price_here(parking_fee(code), moment, Service.POLICE)
+    if not fee:
+        raise PoliceError("Служебная машина ночует в гараже службы, а не тут.")
+    if not player.can_afford(fee, moment, Service.POLICE):
+        raise PoliceError(
+            f"Место стоит {fee} 💰, а "
+            f"{player.purse_note(moment, Service.POLICE)}."
+        )
+    # Сперва ставим, потом берём деньги: мест может не быть, и платить
+    # за отказ боец не должен
+    try:
+        await leave(db, player, code, IN_POLICE, 0, moment)
+    except CarError as error:
+        raise PoliceError(str(error)) from error
+    # Машину ставят вместе с выходом из неё, и этот выход уже сохранён
+    # в базе: берём бойца свежим, иначе заплатит он, а за рулём
+    # окажется прежний
+    fresh = await db.get_player(player.user_id) or player
+    fresh.pay(fee, moment, Service.POLICE, about=f"Стоянка: {car.title}")
+    await db.save_player(fresh)
+    await db.add_to_service_vault(POLICE, fee)
+    logger.info(
+        "Боец %s поставил %s на стоянку участка за %s",
+        player.user_id, code, fee,
+    )
+    return (
+        f"{car.title} на стоянке у участка. Место обошлось в {fee} 💰 — "
+        "забрать её можно когда угодно и даром."
+    )
+
+
 async def impound_rows(
     db: Database, player: Player, now: int | None = None
 ) -> list[dict]:
@@ -710,6 +765,7 @@ __all__ = [
     "has_warrant",
     "jail",
     "officers",
+    "park_at_station",
     "reward_arrest",
     "serves_in_police",
     "settle_week",

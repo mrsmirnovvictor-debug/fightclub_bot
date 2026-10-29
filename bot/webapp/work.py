@@ -180,7 +180,13 @@ async def build_work(db, player: Player, now: int | None = None) -> dict[str, An
     суд. Прежде такие места экран только перечислял и отсылал в
     агентство, которого они и не показывают.
     """
+    from bot.work_service import city_appoints
+
     moment = now_ts() if now is None else now
+    # Пустые кресла городской мэр занимает сам, и случается это при
+    # каждом взгляде на работу: кнопок у него нет, а очередь по
+    # заявкам могла собраться, пока сюда никто не заходил
+    await city_appoints(db, moment)
     here = get_location(player.where(moment))
     at_work = vacancies_at(player.where(moment))
     job = job_payload(player, moment)

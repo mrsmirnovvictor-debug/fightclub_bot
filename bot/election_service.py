@@ -17,9 +17,15 @@
 в бюллетень не попал. Снятие тоже лениво: его отмечает первый, кто
 заглянул в список кандидатов, и однажды снятый остаётся снятым.
 
-**Сила у мэра пока одна — имя.** Кресло занято, срок идёт, город видит,
-кто его занял. Чего мэр может, здесь не решается: полномочий ему ещё не
-выдали, и выдумывать их в служебном модуле неправильно.
+**Мэр решает одно — кресла начальников.** Пять кресел города не
+занимают, в них назначают, и назначает он (`bot.work_service`). Чего
+мэр может ещё, здесь не решается: права ему выдаёт правило, а не
+служебный модуль.
+
+**Кресло не пустует.** В бюллетене всегда стоит городская управа
+(`bot.game.city`), и всё, что живые не выиграли, достаётся ей: тишина и
+ничья перестали быть исходом выборов. Кнопок у неё нет, поэтому кресла
+начальников она занимает сама — по заявкам и стажу.
 """
 
 from __future__ import annotations
@@ -27,6 +33,8 @@ from __future__ import annotations
 import logging
 
 from bot.database import Database
+from bot.game.city import MAYOR_ID as CITY_MAYOR
+from bot.game.city import MAYOR_PROGRAM, name_of
 from bot.game.elections import (
     COUNTING,
     NOMINATION,
@@ -97,6 +105,22 @@ async def vote(
     return "Голос принят. Спасибо за участие."
 
 
+def _city_row(day: str) -> dict:
+    """Городская управа в бюллетене: кандидат, которого не выдвигали.
+
+    Строки в базе у неё нет и быть не может: управа — не боец, а
+    устройство города. В бюллетень её кладёт сам бюллетень, и лежит
+    она там всегда, в любых выборах.
+    """
+    return {
+        "day": day,
+        "user_id": CITY_MAYOR,
+        "program": MAYOR_PROGRAM,
+        "at": 0,
+        "dropped_at": 0,
+    }
+
+
 async def _ballot_rows(db: Database, day: str, moment: int) -> list[dict]:
     """Кандидаты, которые дошли до бюллетеня.
 
@@ -105,8 +129,13 @@ async def _ballot_rows(db: Database, day: str, moment: int) -> list[dict]:
     она может только пока идёт выдвижение. Сел в понедельник после
     выборов — остаёшься мэром, и это не поблажка: мандат дал город, а
     не участок.
+
+    Последней в списке всегда стоит **городская управа**: город
+    выставляет себя сам и снять себя не может. Стоит она последней
+    нарочно — живой кандидат в бюллетене идёт первым.
     """
-    return [one for one in await db.candidates(day) if not one["dropped_at"]]
+    rows = [one for one in await db.candidates(day) if not one["dropped_at"]]
+    return rows + [_city_row(day)]
 
 
 async def strike_if_running(
@@ -152,6 +181,12 @@ async def settle(db: Database, now: int | None = None) -> dict:
         # Голоса за снятого не считаются: он не в бюллетене
         tally = {one: votes for one, votes in tally.items() if one in live}
         winner, votes = winner_of(tally)
+        if not winner:
+            # Победителя нет: не голосовал никто или вышла ничья. Кресло
+            # пустым город не держит — его занимает управа. Так выборы
+            # всегда чем-то кончаются, а «никто» перестаёт быть исходом
+            winner = CITY_MAYOR
+            votes = tally.get(CITY_MAYOR, 0)
         await db.close_election(
             code, winner, votes, sum(tally.values()), moment
         )
@@ -166,8 +201,22 @@ async def settle(db: Database, now: int | None = None) -> dict:
             int(record["winner_id"]), term_from(done), code
         )
         logger.info("Мэр %s вступил в права", record["winner_id"])
+        await _city_appoints(db, moment)
         return {"day": code, "seated": True, "winner": int(record["winner_id"])}
+    await _city_appoints(db, moment)
     return {"day": code, "seated": False}
+
+
+async def _city_appoints(db: Database, moment: int) -> None:
+    """Дать городскому мэру занять пустые кресла.
+
+    Зовётся из того же ленивого свода, что и смена кресла: мэр у города
+    не нажимает кнопок, и назначать за него должно то, что и так
+    случается при каждом взгляде.
+    """
+    from bot.work_service import city_appoints
+
+    await city_appoints(db, moment)
 
 
 def _previous(day):
@@ -192,12 +241,19 @@ async def state(
     seat = await db.mayor()
     mayor_name = ""
     if seat.get("user_id"):
-        one = await db.get_player(int(seat["user_id"]))
-        mayor_name = one.nickname if one else ""
+        mayor_name = name_of(int(seat["user_id"]))
+        if not mayor_name:
+            one = await db.get_player(int(seat["user_id"]))
+            mayor_name = one.nickname if one else ""
     names = {}
     for one in rows:
-        who = await db.get_player(int(one["user_id"]))
-        names[int(one["user_id"])] = who.nickname if who else "кандидат"
+        who_id = int(one["user_id"])
+        city = name_of(who_id)
+        if city:
+            names[who_id] = city
+            continue
+        who = await db.get_player(who_id)
+        names[who_id] = who.nickname if who else "кандидат"
     return {
         "day": code,
         "phase": now_phase,

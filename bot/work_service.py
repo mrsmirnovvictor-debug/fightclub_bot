@@ -36,6 +36,7 @@ from bot.game.bank import WAGE
 from bot.game.health import now_ts
 from bot.game.locations import get_location
 from bot.game.work import (
+    CITY_PAY_STEPS,
     COOLDOWN_SECONDS,
     DAY_HOURS,
     LICENCE,
@@ -256,6 +257,9 @@ async def bid_for_post(
         raise WorkError(lack)
     await db.place_bid(player.user_id, code, moment)
     logger.info("Боец %s подал заявку на %s", player.user_id, code)
+    # Городскому мэру заявку показывают тут же: кнопок он не нажимает,
+    # и ждать ему нечего. Живой мэр решит сам, когда захочет
+    await city_appoints(db, moment)
     return vacancy
 
 
@@ -340,6 +344,25 @@ async def appoint(
     if lack:
         raise WorkError(f"{chosen.nickname}: {lack}")
 
+    fresh = await _seat_chief(db, vacancy, chosen, salary, moment)
+    logger.info(
+        "Мэр %s назначил бойца %s на %s за %s",
+        mayor.user_id, fresh.user_id, code, salary,
+    )
+    return vacancy.with_pay(salary), fresh
+
+
+async def _seat_chief(
+    db: Database, vacancy: Vacancy, chosen: Player, salary: int, moment: int
+) -> Player:
+    """Посадить бойца в кресло: освободить старое место и занять это.
+
+    Своей частью, потому что сажают двое: мэр кнопкой и город сам
+    собой. Правила посадки у них одни, и держать их в двух местах
+    значило бы однажды их рассинхронить.
+    """
+    code = vacancy.code
+    user_id = chosen.user_id
     # Старое место назначенного освобождается само: работа одна на бойца
     if chosen.works:
         if chosen.job_code == code:
@@ -360,7 +383,7 @@ async def appoint(
             continue
         await _pay(db, before, vacancy.with_pay(before.job_salary), moment, False)
         await db.leave_job(before.user_id, before.experience(moment))
-        logger.info("Мэр снял бойца %s с %s", before.user_id, code)
+        logger.info("Кресло %s освобождено: боец %s снят", code, before.user_id)
 
     if not await db.take_job(
         chosen.user_id, code, moment, week_of(moment), vacancy.cap
@@ -372,11 +395,121 @@ async def appoint(
         await open_account(db, fresh)
     await db.save_player(fresh)
     await db.clear_bids(code)
-    logger.info(
-        "Мэр %s назначил бойца %s на %s за %s",
-        mayor.user_id, fresh.user_id, code, salary,
-    )
-    return vacancy.with_pay(salary), fresh
+    return fresh
+
+
+# ---------- мэр от города: назначение по заявкам и стажу ----------
+#
+# Городская управа кнопок не нажимает, и назначать за неё должно то,
+# что и так случается при каждом взгляде. Правила у неё жёсткие и
+# скучные нарочно:
+#
+# **Только по заявкам.** Не подал — не назначат, даже с дипломом и
+# стажем. Живой мэр вправе посадить любого, у кого есть бумага; город
+# на такое не идёт: у него нет ни знакомых, ни причин.
+#
+# **Первый — по стажу.** Из подавших садится тот, кто дольше работал;
+# при равном стаже — кто выше уровнем, а при равном и уровне — кто
+# подал раньше. Очередь считается, а не держится в базе.
+#
+# **Кресло у города не пожизненное.** Подал заявку человек с бо́льшим
+# стажем, чем у сидящего, — город сменит сидящего на него. Иначе «по
+# стажу» решал бы не стаж, а кто первый нажал: кресло пустует редко, и
+# пришедший позже не виноват, что опоздал на минуту. Сидящего при этом
+# рассчитывают, а не выгоняют: деньги за отработанное он получает, и
+# подать заявку снова ему никто не мешает.
+#
+# **Жалованье по стажу тоже.** За каждый месяц сверх требуемого город
+# добавляет четверть вилки — и не больше её верха. Торговаться с
+# городом не о чем, и это честнее: одно и то же кресло стоит у него
+# одного и того же.
+
+
+def city_pay(vacancy: Vacancy, months: int) -> int:
+    """Жалованье от города: низ вилки плюс четверть за каждый месяц сверх."""
+    if not vacancy.appointed:
+        return vacancy.salary
+    step = max(1, (vacancy.salary_max - vacancy.salary) // CITY_PAY_STEPS)
+    extra = max(0, months - vacancy.months)
+    return min(vacancy.salary_max, vacancy.salary + step * extra)
+
+
+async def city_appoints(
+    db: Database, now: int | None = None
+) -> list[tuple[str, int]]:
+    """Занять пустые кресла за городского мэра. Отдаёт, кого куда посадил.
+
+    Пока в кресле мэра живой человек, город в назначения не лезет
+    вовсе: это его работа, и делать её за него — значит отнимать
+    единственное, что мэру дано.
+    """
+    from bot.game.city import MAYOR_ID as CITY_MAYOR
+
+    moment = now_ts() if now is None else now
+    seat = await db.mayor()
+    if int(seat.get("user_id") or 0) != CITY_MAYOR:
+        return []
+    taken = await db.taken_jobs()
+    done: list[tuple[str, int]] = []
+    for vacancy in VACANCIES:
+        if not vacancy.appointed:
+            continue
+        chosen = await _city_pick(db, vacancy, moment)
+        if chosen is None:
+            continue
+        one, months = chosen
+        sitting = await _sitting_months(db, taken.get(vacancy.code), moment)
+        if sitting is not None:
+            # Кресло занято: сменят сидящего только за больший стаж
+            holder_id, holder_months = sitting
+            if holder_id == one.user_id or months <= holder_months:
+                continue
+        salary = city_pay(vacancy, months)
+        try:
+            await _seat_chief(db, vacancy, one, salary, moment)
+        except WorkError:  # pragma: no cover - кресло заняли в этот же миг
+            continue
+        # Посадка могла снять этого же бойца с другого места: читаем
+        # занятые кресла заново, иначе следующее сравнение пойдёт по
+        # тому, как было до назначения
+        taken = await db.taken_jobs()
+        logger.info(
+            "Город назначил бойца %s на %s за %s (стаж %s мес.)",
+            one.user_id, vacancy.code, salary, months,
+        )
+        done.append((vacancy.code, one.user_id))
+    return done
+
+
+async def _sitting_months(
+    db: Database, holders: list[dict] | None, moment: int
+) -> tuple[int, int] | None:
+    """Кто сидит в кресле и сколько у него стажа. None — кресло пустое."""
+    for holder in holders or []:
+        one = await db.get_player(int(holder["user_id"]))
+        if one is None:  # pragma: no cover - боец удалил персонажа
+            continue
+        return one.user_id, one.experience_months(moment)
+    return None
+
+
+async def _city_pick(
+    db: Database, vacancy: Vacancy, moment: int
+) -> tuple[Player, int] | None:
+    """Кого город посадит в это кресло. None — некого."""
+    best: tuple[Player, int] | None = None
+    order: tuple[int, int, int] = (-1, -1, 0)
+    for place, row in enumerate(await db.bids_for(vacancy.code)):
+        one = await db.get_player(int(row["user_id"]))
+        if one is None:  # pragma: no cover - боец удалил персонажа
+            continue
+        if lacking(one, vacancy, moment):
+            continue
+        months = one.experience_months(moment)
+        mine = (months, one.level, -place)
+        if mine > order:
+            best, order = (one, months), mine
+    return best
 
 
 # ---------- приём на работу ----------
@@ -729,6 +862,8 @@ __all__ = [
     "Payslip",
     "WorkError",
     "apply",
+    "city_appoints",
+    "city_pay",
     "my_vacancy",
     "quit_job",
     "quiz_payload",

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from bot.game.city import JUDGE_NAME
 from bot.game.clock import club_moment
 from bot.game.court import EXTRA_PER, FINES, JAIL_HOURS, sentence_text
 from bot.game.health import now_ts
@@ -43,9 +44,12 @@ async def build_court(
     db, player: Player, now: int | None = None
 ) -> dict[str, Any]:
     """Экран суда: список дел для судьи и свои приговоры для всех."""
-    from bot.court_service import docket, judges
+    from bot.court_service import city_judges, docket, judges, robe_in_city
 
     moment = now_ts() if now is None else now
+    # Пустое кресло судьи город не держит: заглянувший в суд застаёт
+    # дела уже рассмотренными, если рассматривать их некому
+    await city_judges(db, moment)
     place = get_location(player.where(moment))
     robe = judges(player)
     mine = [
@@ -58,6 +62,9 @@ async def build_court(
         "cases": await docket(db, moment) if robe else [],
         "mine": mine,
         "debt": player.account_debt,
+        # Есть ли в городе живая мантия. Нет — всё, что сюда попадёт,
+        # рассмотрит сам город, и знать это полезно обеим сторонам
+        "city_judge": not await robe_in_city(db),
         "ladder": [
             {"times": number + 1, "fine": fine, "jail_hours": hours}
             for number, (fine, hours) in enumerate(zip(FINES, JAIL_HOURS))
@@ -74,6 +81,12 @@ def _note(body: dict[str, Any]) -> str:
         return (
             f"Долг по штрафу — {body['debt']} 💰. Пока он есть, счёт "
             "заблокирован: пополни его, и долг спишется."
+        )
+    if body["city_judge"] and not body["robe"]:
+        return (
+            f"Судья в городе не назначен, и дела ведёт {JUDGE_NAME.lower()}: "
+            "приговор выносится сам, по лестнице и сразу. Сядет живой "
+            "судья — решать станет он."
         )
     if body["robe"]:
         waiting = len(body["cases"])

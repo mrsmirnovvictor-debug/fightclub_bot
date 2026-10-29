@@ -1557,6 +1557,131 @@ async def test_the_mayor_seats_the_chief_and_names_the_pay(db):
     assert my_vacancy(await db.get_player(71)).salary == 2_000
 
 
+# ---------- мэр от города: назначает сам, по заявкам и стажу ----------
+
+
+async def seat_city(db: Database) -> None:
+    """Кресло мэра у города: живого человека в нём нет."""
+    from bot.game.city import MAYOR_ID
+
+    await db.seat_mayor(MAYOR_ID, moment_at(), "2026-10-04")
+
+
+async def test_the_city_seats_the_longest_served_of_those_who_asked(db):
+    """Городской мэр сажает подавшего с самым долгим стажем."""
+    from bot.work_service import bid_for_post, city_appoints
+
+    await seat_city(db)
+    green = await stand(
+        db, with_diploma(80, "Молодой", "banking", experience=2 * MONTH)
+    )
+    old_hand = await stand(
+        db, with_diploma(81, "Старый", "banking", experience=5 * MONTH)
+    )
+    # Первая заявка уже зовёт город: пустое кресло он занимает сразу
+    await bid_for_post(db, green, "bank_head", moment_at())
+    assert (await db.get_player(80)).job_code == "bank_head"
+
+    # А пришедший со бо́льшим стажем сменяет сидящего: решает стаж, а
+    # не то, кто первый нажал
+    await bid_for_post(db, old_hand, "bank_head", moment_at())
+
+    assert (await db.get_player(81)).job_code == "bank_head"
+    assert (await db.get_player(80)).job_code == "", "сидевшего сменили"
+    assert await city_appoints(db, moment_at()) == [], "менять больше некого"
+    assert await db.bids_of(81) == [], "заявки сняты назначением"
+
+
+async def test_the_city_keeps_the_chief_against_a_shorter_record(db):
+    """Сидящего в кресле меньшим стажем не сменить."""
+    from bot.work_service import bid_for_post, city_appoints
+
+    await seat_city(db)
+    chief = await stand(
+        db, with_diploma(87, "Начальник", "banking", experience=6 * MONTH)
+    )
+    await bid_for_post(db, chief, "bank_head", moment_at())
+    assert (await db.get_player(87)).job_code == "bank_head"
+
+    short = await stand(
+        db, with_diploma(88, "Соискатель", "banking", experience=2 * MONTH)
+    )
+    await bid_for_post(db, short, "bank_head", moment_at())
+
+    assert (await db.get_player(87)).job_code == "bank_head"
+    assert (await db.get_player(88)).job_code == ""
+    # Заявка не пропала: сядет он, когда стажа станет больше
+    assert await db.bids_of(88) == ["bank_head"]
+    assert await city_appoints(db, moment_at()) == []
+
+
+async def test_the_city_pays_by_the_years_served(db):
+    """Жалованье от города — по стажу: за месяц сверх четверть вилки."""
+    from bot.work_service import bid_for_post, city_pay
+
+    head = get_vacancy("bank_head")
+    assert city_pay(head, 2) == 1_500, "в самый край вилки"
+    assert city_pay(head, 3) == 1_700
+    assert city_pay(head, 6) == 2_300, "верх вилки, и выше не бывает"
+    assert city_pay(head, 60) == 2_300
+    assert city_pay(get_vacancy("bartender"), 9) == get_vacancy(
+        "bartender"
+    ).salary, "твёрдый оклад стажем не двигают"
+
+    await seat_city(db)
+    one = await stand(
+        db, with_diploma(82, "Банкир", "banking", experience=4 * MONTH)
+    )
+    await bid_for_post(db, one, "bank_head", moment_at())
+
+    assert (await db.get_player(82)).job_salary == 1_900
+
+
+async def test_the_city_takes_only_those_who_asked(db):
+    """Город не призывает: не подал заявку — не назначат, хоть с дипломом."""
+    from bot.work_service import candidates_for, city_appoints
+
+    await seat_city(db)
+    await stand(db, with_diploma(83, "Банкир", "banking"))
+
+    # Живому мэру такого показывают: ему можно сажать любого с бумагой
+    people = await candidates_for(db, "bank_head", moment_at())
+    assert [row["user_id"] for row in people] == [83]
+    assert people[0]["asked"] is False
+
+    assert await city_appoints(db, moment_at()) == []
+    assert (await db.get_player(83)).job_code == "", "кресло пустует"
+
+
+async def test_the_live_mayor_appoints_for_himself(db):
+    """Пока в кресле мэра человек, город в назначения не лезет."""
+    from bot.work_service import bid_for_post, city_appoints
+
+    mayor = await seat_mayor(db, await stand(db, make_player(84, "Мэр")))
+    one = await stand(db, with_diploma(85, "Банкир", "banking"))
+    await bid_for_post(db, one, "bank_head", moment_at())
+
+    assert await city_appoints(db, moment_at()) == []
+    assert (await db.get_player(85)).job_code == ""
+    assert await db.bids_of(85) == ["bank_head"], "заявка ждёт мэра"
+    del mayor
+
+
+async def test_the_city_fills_the_chair_the_work_screen_looks_at(db):
+    """Экран работы — тот же ленивый сбор: взглянул, и кресло занято."""
+    from bot.work_service import city_appoints
+
+    await seat_city(db)
+    one = await stand(db, with_diploma(86, "Банкир", "banking"))
+    await db.place_bid(86, "bank_head", moment_at())
+    assert (await db.get_player(86)).job_code == "", "заявка легла молча"
+
+    await build_work(db, await db.get_player(86), moment_at())
+
+    assert (await db.get_player(86)).job_code == "bank_head"
+    assert await city_appoints(db, moment_at()) == []
+
+
 async def test_the_pay_must_lie_inside_the_fork(db):
     """Ни ниже вилки, ни выше: кресло стоит столько, сколько стоит."""
     from bot.work_service import appoint, bid_for_post
