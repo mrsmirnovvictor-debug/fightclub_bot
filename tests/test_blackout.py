@@ -196,12 +196,36 @@ async def test_the_squad_enters_and_the_clock_starts(db):
     assert run.state["party"] == 4
     assert run.state["ends_at"] == NOW + RUN_LIMIT_MINUTES * 60
     assert all(one["room"] == "O01" for one in run.state["members"].values())
-    # Меньше трёх на станцию не идут
+
+
+async def test_one_fighter_walks_the_station_alone(db):
+    """Одиночка на станцию идёт: масштаб считается от состава.
+
+    Это отступление от сценария — он зовёт отряд от трёх. Город
+    маленький, и ждать троих ради того, чтобы увидеть станцию,
+    некому. Ослаблять станцию руками при этом не пришлось: запас
+    врагов и размер групп и так считаются от числа пришедших.
+    """
     alone = make_player(90, "Одиночка")
     await db.save_player(alone)
     await act(db, alone, "open", {"test": True}, "solo", NOW)
-    with pytest.raises(BlackoutError, match="от 3"):
-        await act(db, alone, "start", {}, "solostart", NOW)
+    said = await act(db, alone, "start", {}, "solostart", NOW)
+
+    assert "станции" in said
+    run = await run_of(db, alone.user_id)
+    assert run is not None and run.phase == "run"
+    assert run.state["party"] == 1
+    assert run.state["hp_scale"] == pytest.approx(0.34)
+    assert run.state["dmg_scale"] == pytest.approx(0.76)
+
+    # И первая комната ему по силам: группа меньше и слабее
+    at = await walk(db, [alone], run, "O02", NOW)
+    fresh = await look(db, run.id, at)
+    foes = fresh.state["fight"]["foes"]
+    assert len(foes) == 2, "втроём на одного не выходят"
+    at = await win_here(db, [alone], run.id, at, limit=60)
+    fresh = await look(db, run.id, at)
+    assert "O02" in fresh.state["cleared"]
 
 
 async def test_a_step_takes_exactly_ten_seconds(db):
