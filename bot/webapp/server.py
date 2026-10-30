@@ -3115,17 +3115,23 @@ async def api_blackout(request: web.Request) -> web.Response:
     проверка «ты у проходной?» там неверна.
     """
     from bot.blackout_service import state_for
+    from bot.game.blackout import MapMissing
 
     db = request.app[DB_KEY]
     player = await _own_player(request)
     if not await db.blackout_of(player.user_id):
         player = await _at(request, Service.BLACKOUT)
-    return web.json_response(await state_for(db, player))
+    try:
+        return web.json_response(await state_for(db, player))
+    except MapMissing as error:
+        logger.error("«Чёрный пуск»: %s", error)
+        return web.json_response({"error": str(error)}, status=503)
 
 
 async def api_blackout_action(request: web.Request) -> web.Response:
     """Ход рейда. Всё считает сервер: страница шлёт только кнопку."""
     from bot.blackout_service import BlackoutError, act, state_for
+    from bot.game.blackout import MapMissing
 
     data = await _payload(request)
     db = request.app[DB_KEY]
@@ -3148,6 +3154,9 @@ async def api_blackout_action(request: web.Request) -> web.Response:
         )
     except BlackoutError as error:
         return web.json_response({"error": str(error)}, status=409)
+    except MapMissing as error:
+        logger.error("«Чёрный пуск»: %s", error)
+        return web.json_response({"error": str(error)}, status=503)
     fresh = await db.get_player(player.user_id) or player
     body = await state_for(db, fresh)
     body["said"] = said

@@ -381,9 +381,22 @@ def station() -> Station:
     return load_station(MANIFEST)
 
 
+class MapMissing(RuntimeError):
+    """Карты миссии нет на диске: без неё станции не существует."""
+
+
 def load_station(path: Path) -> Station:
     """Собрать станцию из файла манифеста."""
-    body = json.loads(Path(path).read_text(encoding="utf-8"))
+    where = Path(path)
+    if not where.is_file():
+        # Это бывает ровно в одном случае: образ собрали без папки
+        # `zombiemission`. Падать безымянной пятисоткой тут нельзя —
+        # человек увидит «что-то пошло не так» и не узнает ничего
+        raise MapMissing(
+            f"Карта станции не найдена: {where}. Папка `zombiemission` "
+            "не доехала до сервера — проверь Dockerfile."
+        )
+    body = json.loads(where.read_text(encoding="utf-8"))
     rooms = {
         str(one["id"]): Room(
             code=str(one["id"]),
@@ -811,6 +824,7 @@ __all__ = [
     "ITEM_TITLES",
     "LAYER_MAPS",
     "LAYER_TITLES",
+    "MapMissing",
     "MAX_PARTY",
     "MIN_PARTY",
     "PRESS_CAP",

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -183,6 +184,40 @@ def test_eighteen_ordinary_encounters_and_three_bosses():
     assert len(squads) == 18
     assert {one.boss for one in bosses} == {"hunter", "brute", "leader"}
     assert set(SQUAD_SIZE) == {one.code for one in squads}
+
+
+def test_the_image_ships_the_map_the_server_reads():
+    """Карта станции обязана доехать до сервера, а не только до репозитория.
+
+    Так и случилось в первый вечер: образ собрался, бот поднялся, и
+    всё упало ровно на кнопке «Объявить рейд» — `Dockerfile` копировал
+    `bot` и `scripts`, а папку с манифестом не копировал. Проверка
+    дешёвая, а ловит целый класс поломок: код читает с диска то, чего
+    в образе нет.
+    """
+    from bot.game.blackout import MANIFEST
+
+    root = Path(__file__).resolve().parent.parent
+    docker = (root / "Dockerfile").read_text(encoding="utf-8")
+    copied = {
+        line.split()[1]
+        for line in docker.splitlines()
+        if line.startswith("COPY ") and len(line.split()) >= 3
+    }
+    # Папка, из которой сервер читает карту, должна быть в образе
+    folder = MANIFEST.parent.relative_to(root).parts[0]
+    assert folder in copied, (
+        f"Dockerfile не копирует {folder}: сервер не найдёт карту станции"
+    )
+    assert MANIFEST.is_file(), "карта миссии пропала из репозитория"
+
+
+def test_a_missing_map_says_so_instead_of_falling(tmp_path):
+    """Нет карты — служба называет это словами, а не пятисоткой."""
+    from bot.game.blackout import MapMissing, load_station
+
+    with pytest.raises(MapMissing, match="zombiemission"):
+        load_station(tmp_path / "ничего.json")
 
 
 # ---------- отряд и шаг ----------
