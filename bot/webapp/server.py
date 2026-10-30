@@ -2923,21 +2923,16 @@ async def _keys(db, player) -> dict:
     """Ключи и потолок: машин у бойца одна, с подпиской три.
 
     Ключи — только то, что при бойце: оставленная на парковке машина в
-    карточке не висит, за ней идут в гараж. Потолок считает их же.
+    карточке не висит, за ней идут в гараж, а брошенная у здания — на
+    карту. Потолок считает их же.
     """
     from bot.car_service import at_hand
     from bot.game.cars import cars_allowed
-
-    from bot.car_service import here_rows
 
     moment = now_ts()
     return {
         "keys": await at_hand(db, player, moment),
         "limit": cars_allowed(player.is_pro(moment)),
-        # Что стоит у этого здания: своё забирают отсюда же, а чужое
-        # видно всем — улица общая
-        "here": await here_rows(db, player, moment),
-        "place": player.where(moment),
     }
 
 

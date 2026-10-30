@@ -12510,7 +12510,6 @@ function garageCar(one, act) {
 // куклой — там же, где машину и видно: поверх образа, снизу.
 
 let keysData = [];
-let keysHere = [];
 
 async function loadKeys() {
   try {
@@ -12519,7 +12518,7 @@ async function loadKeys() {
     });
     if (!response.ok) return;
     const data = await response.json();
-    renderKeys(data.keys || [], data.limit || 0, data.here || []);
+    renderKeys(data.keys || [], data.limit || 0);
   } catch (error) {
     // Молча: ключи — не повод для окна с ошибкой
   }
@@ -12530,7 +12529,7 @@ async function keysAction(payload) {
     const data = await post("api/keys", payload);
     haptic((feedback) => feedback.impactOccurred("medium"));
     if (data.card) render(data.card, true);
-    renderKeys(data.keys || [], data.limit || 0, data.here || []);
+    renderKeys(data.keys || [], data.limit || 0);
     if (data.said) popup("Машина", data.said);
   } catch (error) {
     popup("Машина", error.message);
@@ -12538,13 +12537,15 @@ async function keysAction(payload) {
   }
 }
 
-function renderKeys(keys, limit, here) {
+// В ключах только то, что при бойце. Оставленная у здания машина
+// отсюда уходит целиком: она стоит на улице, а не в кармане, — и
+// видно её на карте, и забирают её оттуда же
+function renderKeys(keys, limit) {
   keysData = keys;
-  keysHere = here || [];
   const box = el("bag-keys");
   const list = el("keys-list");
   if (!box || !list) return;
-  box.classList.toggle("hidden", keys.length === 0 && keysHere.length === 0);
+  box.classList.toggle("hidden", keys.length === 0);
   // Счёт со потолком: по нему видно, что машина у бойца не одна из
   // многих, а одна из отведённых — и сколько их отведено
   el("keys-count").textContent = keys.length
@@ -12552,9 +12553,6 @@ function renderKeys(keys, limit, here) {
     : "";
   list.textContent = "";
   keys.forEach((one) => list.appendChild(keyCard(one)));
-  // Машины у этого здания: своя — с кнопкой «Забрать», чужая просто
-  // видна. Улица общая, и прятать с неё нечего
-  keysHere.forEach((one) => list.appendChild(hereCard(one)));
 }
 
 function keyCard(one) {
@@ -12590,7 +12588,8 @@ function keyCard(one) {
         })
   );
   // Оставить машину можно у любого здания: она останется там и будет
-  // видна каждому, кто туда придёт. Это не парковка — это улица
+  // видна каждому, кто туда придёт. Это не парковка — это улица, и из
+  // ключей машина уходит совсем: забирают её с карты
   buttons.appendChild(
     button("Оставить машину", {
       secondary: true,
@@ -12598,65 +12597,12 @@ function keyCard(one) {
       hint: "Машина стоит на колонке АЗС. Сперва забери её оттуда.",
       onClick: () => askConfirm(
         "🚗 " + one.title,
-        "Оставить её здесь? Увести её сможет кто угодно из мафии.",
+        "Оставить её здесь? Из ключей она уйдёт: искать её на карте, "
+        + "по значку 🚗 у дома. Увести её сможет кто угодно из мафии.",
       ).then((ok) => ok && keysAction({ action: "leave", code: one.code })),
     })
   );
   box.appendChild(buttons);
-  return box;
-}
-
-/** Что стоит у этого здания: своё забирают, чужое просто видно. */
-function hereCard(one) {
-  const box = document.createElement("article");
-  box.className = "thing";
-  const head = document.createElement("h3");
-  head.className = "thing-title";
-  head.textContent = one.title + " · " + one.plate;
-  box.appendChild(head);
-
-  const said = document.createElement("p");
-  said.className = "thing-note";
-  said.textContent = [
-    one.mine ? "твоя" : "хозяин: " + one.owner,
-    one.impound ? "изъята, в участке" : "",
-    one.wanted ? "в розыске" : "",
-  ].filter(Boolean).join(" · ");
-  box.appendChild(said);
-
-  const buttons = document.createElement("div");
-  buttons.className = "thing-buttons";
-  if (one.mine && !one.impound) {
-    buttons.appendChild(
-      button("Забрать", {
-        onClick: () => keysAction({ action: "pick", car: one.id }),
-      })
-    );
-  }
-  // Улица — не стоянка: брошенную уводят отсюда же, и мафии для этого
-  // не нужен ни бой, ни спящий хозяин
-  if (one.can_steal) {
-    buttons.appendChild(
-      button("🔑 Угнать", {
-        onClick: () => keysAction({ action: "steal", car: one.id }),
-      })
-    );
-  }
-  // Патрулю — увезти разыскиваемую в участок: хозяин заберёт её там
-  if (one.can_deliver) {
-    buttons.appendChild(
-      button("🚔 В участок", {
-        onClick: () => keysAction({ action: "deliver", car: one.id }),
-      })
-    );
-  }
-  if (buttons.children.length) box.appendChild(buttons);
-  if (!one.mine && !one.can_steal && one.why) {
-    const why = document.createElement("p");
-    why.className = "thing-note";
-    why.textContent = one.why;
-    box.appendChild(why);
-  }
   return box;
 }
 
@@ -14341,13 +14287,114 @@ function paintCrowdChip() {
 function paintCarsChip() {
   const chip = el("map-cars");
   if (!chip) return;
-  const cars = (mapData && mapData.cars) || [];
+  const cars = carsHere();
   const going = Boolean(mapData && mapData.road && mapData.road.going);
   const shown = Boolean(cars.length) && !going;
   chip.classList.toggle("hidden", !shown);
   if (!shown) return;
   chip.textContent = "🚗 " + cars.length;
   chip.classList.toggle("hot", cars.some((one) => one.wanted));
+}
+
+function carsHere() {
+  return (mapData && mapData.cars) || [];
+}
+
+// ---------- машины у здания: список и кнопки ----------
+//
+// Оставленная машина стоит на улице, и улица — это карта. Поэтому в
+// ключах её нет вовсе: в ключах то, что при бойце. Нажал на значок —
+// открылся список того, что стоит у этого крыльца, и кнопки там же.
+// Своё забирают, чужое уводят, разыскиваемое увозит патруль.
+
+function carsHereSheet() {
+  const cars = carsHere();
+  openSheet(
+    "🚗 У этого здания",
+    cars.length
+      ? "Стоят на улице: видит их каждый, кто сюда пришёл."
+      : "Тут пусто: у этого здания никто машину не оставлял.",
+    true
+  );
+  const list = el("sheet-list");
+  cars.forEach((one) => list.appendChild(hereCard(one)));
+  list.appendChild(
+    button("Закрыть", { secondary: true, onClick: () => closeSheet() })
+  );
+}
+
+// Кнопка в этом списке ходит в ту же ручку ключей, а показывает итог
+// карта: машина стоит на улице, и свежая правда о ней лежит там
+async function hereAction(payload) {
+  try {
+    const data = await post("api/keys", payload);
+    haptic((feedback) => feedback.impactOccurred("medium"));
+    if (data.card) render(data.card, true);
+    renderKeys(data.keys || [], data.limit || 0);
+    await loadMap();
+    if (carsHere().length) carsHereSheet();
+    else closeSheet();
+    if (data.said) popup("Машина", data.said);
+  } catch (error) {
+    popup("Машина", error.message);
+    await loadMap();
+    if (carsHere().length) carsHereSheet();
+    else closeSheet();
+  }
+}
+
+/** Что стоит у этого здания: своё забирают, чужое просто видно. */
+function hereCard(one) {
+  const box = document.createElement("article");
+  box.className = "thing";
+  const head = document.createElement("h3");
+  head.className = "thing-title";
+  head.textContent = one.title + " · " + one.plate;
+  box.appendChild(head);
+
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = [
+    one.mine ? "твоя" : "хозяин: " + one.owner,
+    one.impound ? "изъята, в участке" : "",
+    one.wanted ? "в розыске" : "",
+  ].filter(Boolean).join(" · ");
+  box.appendChild(said);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (one.mine && !one.impound) {
+    buttons.appendChild(
+      button("Забрать", {
+        onClick: () => hereAction({ action: "pick", car: one.id }),
+      })
+    );
+  }
+  // Улица — не стоянка: брошенную уводят отсюда же, и мафии для этого
+  // не нужен ни бой, ни спящий хозяин
+  if (one.can_steal) {
+    buttons.appendChild(
+      button("🔑 Угнать", {
+        onClick: () => hereAction({ action: "steal", car: one.id }),
+      })
+    );
+  }
+  // Патрулю — увезти разыскиваемую в участок: хозяин заберёт её там
+  if (one.can_deliver) {
+    buttons.appendChild(
+      button("🚔 В участок", {
+        onClick: () => hereAction({ action: "deliver", car: one.id }),
+      })
+    );
+  }
+  if (buttons.children.length) box.appendChild(buttons);
+  if (!one.mine && !one.can_steal && one.why) {
+    const why = document.createElement("p");
+    why.className = "thing-note";
+    why.textContent = one.why;
+    box.appendChild(why);
+  }
+  return box;
 }
 
 // ---------- война за территории ----------
@@ -17790,7 +17837,7 @@ el("turf-back").addEventListener("click", () => showTab(turfFrom));
 el("map-crowd").addEventListener("click", () => showTab("crowd"));
 // Значок машин ведёт в ключи: оставленная машина лежит там же, где
 // своя, — под куклой бойца, и там же её забирают
-el("map-cars").addEventListener("click", () => showTab("bag"));
+el("map-cars").addEventListener("click", () => carsHereSheet());
 // Плашка выборов: нажал — бюллетень открылся снова
 el("vote-chip").addEventListener("click", () => openBallot());
 startVoteClock();

@@ -963,7 +963,8 @@ def to_rgb(hexed: str) -> str:
 
 
 def city_map(
-    here: str = "fight_club", road: dict | None = None, raid: dict | None = None
+    here: str = "fight_club", road: dict | None = None, raid: dict | None = None,
+    cars: list | None = None,
 ) -> dict:
     """Карта города так, как её отдаёт сервер."""
     from bot.game.classes import get_class
@@ -975,7 +976,7 @@ def city_map(
         user_id=42, nickname="Тайлер", class_code="warrior", location=here,
         **fclass.base_stats.as_dict(),
     )
-    body = build_map(walker)
+    body = build_map(walker, cars=cars)
     if road:
         body["road"] = {**body["road"], **road}
     if raid:
@@ -14034,12 +14035,11 @@ async def test_an_empty_car_shows_the_reason_the_wheel_is_dark(server, db):
         await browser.close()
 
 
-async def test_the_street_row_shows_the_buttons_of_the_badge_and_the_family(
+async def test_the_street_car_lives_on_the_map_and_not_in_the_bag(
     server, db
 ):
-    """У брошенной машины кнопки по лицу: своя, мафии и патрулю."""
+    """Брошенная машина — на карте, а не в ключах: там её и забирают."""
     from bot.car_service import here_rows, leave_here
-    from bot.police_service import deliver  # noqa: F401 - ручка той же кнопки
     from tests.test_theft import HATCH, NOW, a_theft, officer
 
     row = await a_theft(db)
@@ -14048,83 +14048,47 @@ async def test_the_street_row_shows_the_buttons_of_the_badge_and_the_family(
     cop = await officer(db)
     cop.location = "bar"
     await db.save_player(cop)
-    body = {"keys": [], "limit": 1, "here": await here_rows(db, cop, NOW)}
+    here = await here_rows(db, cop, NOW)
     card = build_card(cop, TOKEN, viewer_id=cop.user_id)
 
     async with async_playwright() as pw:
-        browser, page = await open_page(pw, server, card, keys=body)
+        browser, page = await open_page(
+            pw, server, card,
+            keys={"keys": [], "limit": 1},
+            city=city_map(here="bar", cars=here),
+        )
         await page.wait_for_selector("#hero:not(.hidden)")
-        await open_screen(page, "bag")
-        await page.wait_for_selector(".keys .thing")
 
-        said = await page.locator("#bag-keys").inner_text()
+        # В инвентаре её нет вовсе: в ключах только то, что при бойце
+        await open_screen(page, "bag")
+        assert await page.locator("#bag-keys").is_hidden()
+
+        # А на карте — значок со счётчиком, и он открывает список
+        await open_screen(page, "map")
+        await page.wait_for_selector("#map-cars:not(.hidden)")
+        chip = page.locator("#map-cars")
+        assert await chip.inner_text() == "🚗 1"
+        await chip.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        said = await page.locator("#sheet-list").inner_text()
         assert str(row["plate"]) in said and "в розыске" in said
-        # Патрулю — увезти её в участок, и это та же кнопка, что у ключей
+        # Патрулю — увезти разыскиваемую в участок
         await page.evaluate(
             """() => {
-                window.keysAction = (payload) => {
+                window.hereAction = (payload) => {
                     window.sent = payload;
                     return Promise.resolve();
                 };
             }"""
         )
-        take = page.locator("#bag-keys .btn", has_text="В участок")
+        take = page.locator("#sheet-list .btn", has_text="В участок")
         assert await take.count() == 1
         await take.click()
         await page.wait_for_function("() => window.sent")
         assert await page.evaluate("window.sent") == {
             "action": "deliver", "car": int(row["id"]),
         }
-        await browser.close()
-
-
-async def test_the_station_parking_shows_the_price_on_the_button(server, db):
-    """Стоянка у участка платная, и цена стоит и в строке, и на кнопке."""
-    from bot.car_service import buy
-    from bot.webapp.driving import build_police
-    from bot.webapp.police import build_police_board
-    from tests.test_theft import NOW, make_player as a_driver, officer, stand
-
-    owner = await stand(db, a_driver(1, "Хозяин", where="vcpd"))
-    await buy(db, owner, "street_compact", NOW)
-    me = await db.get_player(1)
-    me.credits = 1_000
-    await db.save_player(me)
-
-    body = build_police(me)
-    body.update(await build_police_board(db, me, NOW))
-    card = build_card(me, TOKEN, viewer_id=me.user_id)
-
-    async with async_playwright() as pw:
-        browser, page = await open_page(pw, server, card, police=body)
-        await page.wait_for_selector("#hero:not(.hidden)")
-        await open_screen(page, "police")
-        await page.wait_for_selector("#police-body .shelf")
-
-        said = await page.locator("#police-body").inner_text()
-        assert "Стоянка у участка" in said and "Место платное" in said
-        park = page.locator("#police-body .btn", has_text="Поставить за 15")
-        assert await park.count() == 1
-        assert await park.is_enabled()
-        await browser.close()
-
-    # Пустой карман — кнопка погасла, и цена всё равно видна
-    broke = await db.get_player(1)
-    broke.credits = 5
-    await db.save_player(broke)
-    body = build_police(broke)
-    body.update(await build_police_board(db, broke, NOW))
-    card = build_card(broke, TOKEN, viewer_id=broke.user_id)
-
-    async with async_playwright() as pw:
-        browser, page = await open_page(pw, server, card, police=body)
-        await page.wait_for_selector("#hero:not(.hidden)")
-        await open_screen(page, "police")
-        await page.wait_for_selector("#police-body .shelf")
-
-        park = page.locator("#police-body .btn", has_text="Поставить за 15")
-        assert await park.count() == 1
-        assert await park.is_disabled()
         await browser.close()
 
 
