@@ -3107,6 +3107,53 @@ async def _court_state(
     return web.json_response(body)
 
 
+async def api_blackout(request: web.Request) -> web.Response:
+    """Электростанция: лобби рейда или снимок идущего «Чёрного пуска».
+
+    Дверь спрашивает место только у того, кто ещё не в рейде: внутри
+    станции боец стоит не в городе, а в её комнатах, и городская
+    проверка «ты у проходной?» там неверна.
+    """
+    from bot.blackout_service import state_for
+
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    if not await db.blackout_of(player.user_id):
+        player = await _at(request, Service.BLACKOUT)
+    return web.json_response(await state_for(db, player))
+
+
+async def api_blackout_action(request: web.Request) -> web.Response:
+    """Ход рейда. Всё считает сервер: страница шлёт только кнопку."""
+    from bot.blackout_service import BlackoutError, act, state_for
+
+    data = await _payload(request)
+    db = request.app[DB_KEY]
+    player = await _own_player(request)
+    if not await db.blackout_of(player.user_id):
+        player = await _at(request, Service.BLACKOUT)
+    # Тестовые команды — инструмент разработки. В городе их нет вовсе:
+    # иначе окно входа обходилось бы одним полем в запросе
+    body = dict(data)
+    if not request.app[CONFIG_KEY].blackout_sandbox:
+        body.pop("test", None)
+        body.pop("bots", None)
+    try:
+        said = await act(
+            db,
+            player,
+            str(data.get("action") or ""),
+            body,
+            str(data.get("command") or ""),
+        )
+    except BlackoutError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    fresh = await db.get_player(player.user_id) or player
+    body = await state_for(db, fresh)
+    body["said"] = said
+    return web.json_response(body)
+
+
 async def api_court(request: web.Request) -> web.Response:
     """Суд: дела об угоне и свои приговоры."""
     player = await _at(request, Service.COURT)
@@ -3781,6 +3828,8 @@ def create_app(
             web.post("/api/charge", api_charge_action),
             web.get("/api/wash", api_wash),
             web.post("/api/wash", api_wash_action),
+            web.get("/api/blackout", api_blackout),
+            web.post("/api/blackout", api_blackout_action),
             web.get("/api/court", api_court),
             web.post("/api/court", api_court_action),
             web.get("/api/cars", api_cars),

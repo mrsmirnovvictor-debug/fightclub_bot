@@ -1003,7 +1003,7 @@ async def open_page(
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
     cars=None, keys=None, dorm=None, charge=None, dojo=None, barber=None,
-    court=None,
+    court=None, blackout=None,
     images=False,
     telegram="",
 ):
@@ -1066,6 +1066,7 @@ async def open_page(
         keys if isinstance(keys, dict) else {"keys": keys or []}
     ))
     await page.route("**/api/court", canned(court or {}))
+    await page.route("**/api/blackout", canned(blackout or {}))
 
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
@@ -14089,6 +14090,116 @@ async def test_the_street_car_lives_on_the_map_and_not_in_the_bag(
         assert await page.evaluate("window.sent") == {
             "action": "deliver", "car": int(row["id"]),
         }
+        await browser.close()
+
+
+# ---------- электростанция: «Чёрный пуск» ----------
+
+
+async def test_the_station_lobby_offers_the_raid(server, db):
+    """Лобби станции: окно входа, чужие отряды и кнопка «объявить»."""
+    from bot.blackout_service import lobby_for
+    from tests.test_blackout import NOW, make_player as a_fighter
+
+    one = a_fighter(1, "Тайлер")
+    one.location = "power_station"
+    await db.save_player(one)
+    body = await lobby_for(db, one, NOW)
+    card = build_card(one, TOKEN, viewer_id=one.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .btn")
+
+        said = await page.locator("#blackout").inner_text()
+        assert "Чёрный пуск" in said
+        assert await page.locator(
+            "#blackout-body .btn", has_text="Объявить рейд"
+        ).count() == 1
+        await browser.close()
+
+
+async def test_the_raid_screen_shows_the_room_the_squad_and_the_doors(
+    server, db
+):
+    """Экран рейда: панорама, модули, отряд, двери и схема этажа."""
+    from bot.blackout_service import act, look, run_of, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 4)
+    at = NOW
+    await act(db, people[0], "lead", {"room": "O02"}, "w1", at)
+    run = await look(db, run.id, at + 10)
+    body = snapshot(run, people[0].user_id, at + 10)
+    body["screen"] = "run"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .shelf")
+
+        said = await page.locator("#blackout").inner_text()
+        # Цель миссии и три индикатора элементов
+        assert "диспетчерской" in said
+        for title in ("Фазовый синхронизатор", "Силовой сердечник",
+                      "Ключ аварийного запуска"):
+            assert title in said, title
+        # Бой начался сам: в проходной зомби
+        assert "Бой · ход" in said
+        assert await page.locator(
+            "#blackout-body .btn", has_text="Бить"
+        ).count() == 1
+        # Схема этажа с туманом
+        assert await page.locator("#blackout-body .blackout-map").count() == 1
+        assert await page.locator(".blackout-node.here").count() == 1
+        await browser.close()
+
+
+async def test_the_raid_screen_fits_a_narrow_phone(server, db):
+    """Узкий телефон: кнопки не налезают друг на друга и не уезжают."""
+    from bot.blackout_service import look, run_of, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 4)
+    run = await look(db, run.id, NOW)
+    body = snapshot(run, people[0].user_id, NOW)
+    body["screen"] = "run"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-proxy-server"]
+        )
+        page = await browser.new_page(viewport={"width": 320, "height": 760})
+        await page.route("**/api/card*", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(card),
+        ))
+        await page.route("**/api/blackout", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(body),
+        ))
+        await page.route(IMAGES, lambda route: route.abort())
+        await page.goto(f"{server.make_url('/')}")
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .shelf")
+
+        width = await page.evaluate(
+            "() => document.documentElement.scrollWidth"
+        )
+        assert width <= 320, f"страница шире экрана: {width}"
+        boxes = await page.locator("#blackout-body .btn").all()
+        for one in boxes:
+            box = await one.bounding_box()
+            if box is None:
+                continue
+            assert box["x"] >= -1, "кнопка уехала за левый край"
+            assert box["x"] + box["width"] <= 321, "кнопка уехала вправо"
         await browser.close()
 
 

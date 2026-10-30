@@ -42,6 +42,10 @@ class Config:
     # ожиданий, а расписание — правило игры, и снимать его заодно с
     # таймерами не стоит.
     raid_any_time: bool = False
+    # Разбор «Чёрного пуска» без окна входа и с серверными союзниками.
+    # В городе это закрыто: тестовые команды — инструмент разработки, а
+    # не способ собрать рейд в понедельник и пройти его вдвоём
+    blackout_sandbox: bool = False
     # Сколько ждём отряд после сбора: три минуты и гонг. Укорачиванию по
     # RAID_NO_WAITS этот срок больше не подчиняется: рейд идёт два раза в
     # сутки, и собрать десятерых за минуту не выйдет даже в тестах
@@ -125,6 +129,7 @@ def load_config() -> Config:
         )
     return Config(
         bot_token=token,
+        blackout_sandbox=_flag("BLACKOUT_SANDBOX"),
         db_path=os.getenv("DB_PATH", "fightclub.db").strip() or "fightclub.db",
         turn_timeout=int(os.getenv("TURN_TIMEOUT", "30")),
         challenge_timeout=int(os.getenv("CHALLENGE_TIMEOUT", "180")),

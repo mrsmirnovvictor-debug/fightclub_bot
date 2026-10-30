@@ -1,0 +1,1491 @@
+{
+  "version": "1.0-design",
+  "title": "VEGAS · Чёрный пуск",
+  "status": "design_not_game_implementation",
+  "timezone": "Europe/Moscow",
+  "cycle": {
+    "days": [
+      "Tuesday",
+      "Friday"
+    ],
+    "time": "19:00",
+    "proposed": true,
+    "entry_window_minutes": 180,
+    "run_hard_limit_minutes": 180,
+    "missed_cycle": "reserve_power_until_next_success"
+  },
+  "party": {
+    "min": 3,
+    "recommended": 4,
+    "max": 5
+  },
+  "movement": {
+    "mode": "walk",
+    "edge_seconds": 10,
+    "vehicles": false,
+    "teleport": false,
+    "hostiles_block_exit": true,
+    "hostile_rule": "On entering an uncleared hostile node, all exits lock until encounter victory.",
+    "coordinates": "SVG layer canvas, not overview pixel hotspots"
+  },
+  "duration_minutes": {
+    "target": 150,
+    "min": 120,
+    "max": 180
+  },
+  "nodes": [
+    {
+      "id": "O01",
+      "name": "Внешний сбор",
+      "layer": "O",
+      "x": 160,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+      "safe": true
+    },
+    {
+      "id": "O02",
+      "name": "Проходная",
+      "layer": "O",
+      "x": 460,
+      "y": 145,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+      "safe": false
+    },
+    {
+      "id": "O03",
+      "name": "Диспетчерская",
+      "layer": "O",
+      "x": 760,
+      "y": 145,
+      "objective": "dispatch_clearance",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/02_dispatch.jpg",
+      "safe": true
+    },
+    {
+      "id": "O04",
+      "name": "Санитарный шлюз",
+      "layer": "O",
+      "x": 1060,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+      "safe": false
+    },
+    {
+      "id": "O05",
+      "name": "Развилка двора",
+      "layer": "O",
+      "x": 1060,
+      "y": 265,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+      "safe": false
+    },
+    {
+      "id": "O06",
+      "name": "Трансформаторы",
+      "layer": "O",
+      "x": 760,
+      "y": 265,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+      "safe": false
+    },
+    {
+      "id": "O07",
+      "name": "Склад снабжения",
+      "layer": "O",
+      "x": 460,
+      "y": 265,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+      "safe": false
+    },
+    {
+      "id": "O08",
+      "name": "Погрузочная зона",
+      "layer": "O",
+      "x": 160,
+      "y": 265,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+      "safe": false
+    },
+    {
+      "id": "O09",
+      "name": "Медпункт",
+      "layer": "O",
+      "x": 160,
+      "y": 385,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+      "safe": true
+    },
+    {
+      "id": "O10",
+      "name": "Вход в главный корпус",
+      "layer": "O",
+      "x": 460,
+      "y": 385,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+      "safe": false
+    },
+    {
+      "id": "F101",
+      "name": "Вестибюль",
+      "layer": "F1",
+      "x": 160,
+      "y": 145,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F102",
+      "name": "Раздевалка",
+      "layer": "F1",
+      "x": 460,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F103",
+      "name": "Цеховой коридор",
+      "layer": "F1",
+      "x": 760,
+      "y": 145,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F104",
+      "name": "Лестница А · на 2 этаж",
+      "layer": "F1",
+      "x": 1060,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F105",
+      "name": "Щитовая ворот",
+      "layer": "F1",
+      "x": 1060,
+      "y": 265,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F106",
+      "name": "Предтурбинный шлюз",
+      "layer": "F1",
+      "x": 760,
+      "y": 265,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F107",
+      "name": "Арена Громилы",
+      "layer": "F1",
+      "x": 460,
+      "y": 265,
+      "objective": "brute_defeated",
+      "encounter": "boss_brute",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F108",
+      "name": "Сердечник · пьедестал",
+      "layer": "F1",
+      "x": 160,
+      "y": 265,
+      "objective": "power_core",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F109",
+      "name": "Мастерская",
+      "layer": "F1",
+      "x": 160,
+      "y": 385,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F110",
+      "name": "Лестница Б · в подвал",
+      "layer": "F1",
+      "x": 460,
+      "y": 385,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+      "safe": false
+    },
+    {
+      "id": "F201",
+      "name": "Лестница А",
+      "layer": "F2",
+      "x": 160,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "F202",
+      "name": "Стеллажный коридор",
+      "layer": "F2",
+      "x": 460,
+      "y": 145,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "F203",
+      "name": "Архив смен",
+      "layer": "F2",
+      "x": 760,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "F204",
+      "name": "Сервисный мост",
+      "layer": "F2",
+      "x": 1060,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "F205",
+      "name": "Склад кабеля",
+      "layer": "F2",
+      "x": 1060,
+      "y": 265,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "F206",
+      "name": "Пульт прожекторов",
+      "layer": "F2",
+      "x": 760,
+      "y": 265,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "F207",
+      "name": "Площадка засады",
+      "layer": "F2",
+      "x": 460,
+      "y": 265,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "F208",
+      "name": "Арена Охотника",
+      "layer": "F2",
+      "x": 160,
+      "y": 265,
+      "objective": "hunter_defeated",
+      "encounter": "boss_hunter",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "F209",
+      "name": "Модуль · тайник",
+      "layer": "F2",
+      "x": 160,
+      "y": 385,
+      "objective": "synchronizer",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "F210",
+      "name": "Лестница В · вниз",
+      "layer": "F2",
+      "x": 460,
+      "y": 385,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+      "safe": false
+    },
+    {
+      "id": "B01",
+      "name": "Лестница Б",
+      "layer": "B",
+      "x": 160,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/05_pump_basement.jpg",
+      "safe": false
+    },
+    {
+      "id": "B02",
+      "name": "Коллектор",
+      "layer": "B",
+      "x": 460,
+      "y": 145,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/05_pump_basement.jpg",
+      "safe": false
+    },
+    {
+      "id": "B03",
+      "name": "Вентиль А",
+      "layer": "B",
+      "x": 760,
+      "y": 145,
+      "objective": "valve_a",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/05_pump_basement.jpg",
+      "safe": false
+    },
+    {
+      "id": "B04",
+      "name": "Насосный пост",
+      "layer": "B",
+      "x": 1060,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/05_pump_basement.jpg",
+      "safe": false
+    },
+    {
+      "id": "B05",
+      "name": "Вентиль Б",
+      "layer": "B",
+      "x": 1060,
+      "y": 265,
+      "objective": "valve_b",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/05_pump_basement.jpg",
+      "safe": false
+    },
+    {
+      "id": "B06",
+      "name": "Дренажный канал",
+      "layer": "B",
+      "x": 760,
+      "y": 265,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/05_pump_basement.jpg",
+      "safe": false
+    },
+    {
+      "id": "B07",
+      "name": "Щит насосов",
+      "layer": "B",
+      "x": 460,
+      "y": 265,
+      "objective": "cooling_ready",
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/05_pump_basement.jpg",
+      "safe": false
+    },
+    {
+      "id": "B08",
+      "name": "Техническая лестница",
+      "layer": "B",
+      "x": 160,
+      "y": 265,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/05_pump_basement.jpg",
+      "safe": false
+    },
+    {
+      "id": "F301",
+      "name": "Лестница Б",
+      "layer": "F3",
+      "x": 160,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/06_leader_reactor.jpg",
+      "safe": false
+    },
+    {
+      "id": "F302",
+      "name": "Кабельная галерея",
+      "layer": "F3",
+      "x": 460,
+      "y": 145,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/06_leader_reactor.jpg",
+      "safe": false
+    },
+    {
+      "id": "F303",
+      "name": "Медицинский пост",
+      "layer": "F3",
+      "x": 760,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/06_leader_reactor.jpg",
+      "safe": true
+    },
+    {
+      "id": "F304",
+      "name": "Релейная комната",
+      "layer": "F3",
+      "x": 1060,
+      "y": 145,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/06_leader_reactor.jpg",
+      "safe": false
+    },
+    {
+      "id": "F305",
+      "name": "Кольцевая площадка",
+      "layer": "F3",
+      "x": 1060,
+      "y": 265,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/06_leader_reactor.jpg",
+      "safe": false
+    },
+    {
+      "id": "F306",
+      "name": "Предбоссовый шлюз",
+      "layer": "F3",
+      "x": 760,
+      "y": 265,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/06_leader_reactor.jpg",
+      "safe": false
+    },
+    {
+      "id": "F307",
+      "name": "Арена Предводителя",
+      "layer": "F3",
+      "x": 460,
+      "y": 265,
+      "objective": "leader_defeated",
+      "encounter": "boss_leader",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/06_leader_reactor.jpg",
+      "safe": false
+    },
+    {
+      "id": "F308",
+      "name": "Ключ · лестница наверх",
+      "layer": "F3",
+      "x": 160,
+      "y": 265,
+      "objective": "restart_key",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/06_leader_reactor.jpg",
+      "safe": false
+    },
+    {
+      "id": "F401",
+      "name": "Верхняя лестница",
+      "layer": "F4",
+      "x": 160,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/07_control_room.jpg",
+      "safe": false
+    },
+    {
+      "id": "F402",
+      "name": "Серверная",
+      "layer": "F4",
+      "x": 460,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/07_control_room.jpg",
+      "safe": false
+    },
+    {
+      "id": "F403",
+      "name": "Архив эвакуации",
+      "layer": "F4",
+      "x": 760,
+      "y": 145,
+      "objective": "evacuation_plan",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/07_control_room.jpg",
+      "safe": false
+    },
+    {
+      "id": "F404",
+      "name": "Шлюз управления",
+      "layer": "F4",
+      "x": 1060,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/07_control_room.jpg",
+      "safe": false
+    },
+    {
+      "id": "F405",
+      "name": "Рубка · три гнезда",
+      "layer": "F4",
+      "x": 1060,
+      "y": 265,
+      "objective": "station_restarted",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/07_control_room.jpg",
+      "safe": false
+    },
+    {
+      "id": "F406",
+      "name": "Аварийная лестница",
+      "layer": "F4",
+      "x": 760,
+      "y": 265,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/07_control_room.jpg",
+      "safe": false
+    },
+    {
+      "id": "E01",
+      "name": "Нижний аварийный шлюз",
+      "layer": "E",
+      "x": 160,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E02",
+      "name": "Развилка труб",
+      "layer": "E",
+      "x": 460,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E03",
+      "name": "Старый склад",
+      "layer": "E",
+      "x": 760,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E04",
+      "name": "Коллектор С",
+      "layer": "E",
+      "x": 1060,
+      "y": 145,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E05",
+      "name": "Пульт дренажа",
+      "layer": "E",
+      "x": 1060,
+      "y": 265,
+      "objective": "drainage_open",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E06",
+      "name": "Перекрёсток",
+      "layer": "E",
+      "x": 760,
+      "y": 265,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E07",
+      "name": "Ложный выход",
+      "layer": "E",
+      "x": 460,
+      "y": 265,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E08",
+      "name": "Шлюз D",
+      "layer": "E",
+      "x": 160,
+      "y": 265,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E09",
+      "name": "Кабельный обход",
+      "layer": "E",
+      "x": 160,
+      "y": 385,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E10",
+      "name": "Внешний тоннель",
+      "layer": "E",
+      "x": 460,
+      "y": 385,
+      "objective": null,
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E11",
+      "name": "Последний заслон",
+      "layer": "E",
+      "x": 760,
+      "y": 385,
+      "objective": null,
+      "encounter": "zombie_squad",
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    },
+    {
+      "id": "E12",
+      "name": "Выход · дезактивация",
+      "layer": "E",
+      "x": 1060,
+      "y": 385,
+      "objective": "extracted",
+      "encounter": null,
+      "panorama": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+      "safe": false
+    }
+  ],
+  "edges": [
+    {
+      "a": "O01",
+      "b": "O02",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "O02",
+      "b": "O03",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "O03",
+      "b": "O04",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "dispatch_clearance"
+      ]
+    },
+    {
+      "a": "O04",
+      "b": "O05",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "O05",
+      "b": "O06",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "O06",
+      "b": "O08",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "O05",
+      "b": "O07",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "O07",
+      "b": "O08",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "O08",
+      "b": "O09",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "O08",
+      "b": "O10",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F101",
+      "b": "F102",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F101",
+      "b": "F103",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F102",
+      "b": "F103",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F103",
+      "b": "F104",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F103",
+      "b": "F105",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F105",
+      "b": "F106",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F106",
+      "b": "F107",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "synchronizer"
+      ]
+    },
+    {
+      "a": "F107",
+      "b": "F108",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F108",
+      "b": "F109",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F109",
+      "b": "F110",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F201",
+      "b": "F202",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F202",
+      "b": "F203",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F202",
+      "b": "F204",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F203",
+      "b": "F204",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F204",
+      "b": "F205",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F205",
+      "b": "F206",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F206",
+      "b": "F207",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F207",
+      "b": "F208",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F208",
+      "b": "F209",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F209",
+      "b": "F210",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "B01",
+      "b": "B02",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "B02",
+      "b": "B03",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "B03",
+      "b": "B04",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "B04",
+      "b": "B05",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "B05",
+      "b": "B06",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "B06",
+      "b": "B07",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "B07",
+      "b": "B08",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "cooling_ready"
+      ]
+    },
+    {
+      "a": "B02",
+      "b": "B06",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F301",
+      "b": "F302",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F302",
+      "b": "F303",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F302",
+      "b": "F304",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F303",
+      "b": "F304",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F304",
+      "b": "F305",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F305",
+      "b": "F306",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F306",
+      "b": "F307",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F307",
+      "b": "F308",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F401",
+      "b": "F402",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F402",
+      "b": "F403",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F403",
+      "b": "F404",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F404",
+      "b": "F405",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F405",
+      "b": "F406",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E01",
+      "b": "E02",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E02",
+      "b": "E03",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E03",
+      "b": "E06",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E02",
+      "b": "E04",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E04",
+      "b": "E05",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E05",
+      "b": "E06",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E06",
+      "b": "E07",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E06",
+      "b": "E08",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E08",
+      "b": "E09",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E09",
+      "b": "E07",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E08",
+      "b": "E10",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "drainage_open"
+      ]
+    },
+    {
+      "a": "E10",
+      "b": "E11",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "E11",
+      "b": "E12",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "O10",
+      "b": "F101",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "dispatch_clearance"
+      ],
+      "disabled_when": [
+        "station_restarted"
+      ]
+    },
+    {
+      "a": "F104",
+      "b": "F201",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": []
+    },
+    {
+      "a": "F210",
+      "b": "F105",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "synchronizer"
+      ]
+    },
+    {
+      "a": "F110",
+      "b": "B01",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "power_core"
+      ]
+    },
+    {
+      "a": "B08",
+      "b": "F110",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "cooling_ready"
+      ]
+    },
+    {
+      "a": "F110",
+      "b": "F210",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "cooling_ready"
+      ]
+    },
+    {
+      "a": "F210",
+      "b": "F301",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "cooling_ready"
+      ]
+    },
+    {
+      "a": "F308",
+      "b": "F401",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "restart_key"
+      ]
+    },
+    {
+      "a": "F406",
+      "b": "F301",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "station_restarted"
+      ]
+    },
+    {
+      "a": "F301",
+      "b": "F201",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "station_restarted"
+      ]
+    },
+    {
+      "a": "F104",
+      "b": "B01",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "station_restarted"
+      ]
+    },
+    {
+      "a": "B01",
+      "b": "E01",
+      "seconds": 10,
+      "mode": "walk",
+      "bidirectional": true,
+      "requires": [
+        "station_restarted"
+      ]
+    }
+  ],
+  "objectives": {
+    "O03": "dispatch_clearance",
+    "F208": "hunter_defeated",
+    "F209": "synchronizer",
+    "F107": "brute_defeated",
+    "F108": "power_core",
+    "B03": "valve_a",
+    "B05": "valve_b",
+    "B07": "cooling_ready",
+    "F307": "leader_defeated",
+    "F308": "restart_key",
+    "F403": "evacuation_plan",
+    "F405": "station_restarted",
+    "E05": "drainage_open",
+    "E12": "extracted"
+  },
+  "quest_items": [
+    {
+      "id": "synchronizer",
+      "boss": "hunter",
+      "pickup_node": "F209",
+      "image": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/items/synchronizer.jpg"
+    },
+    {
+      "id": "power_core",
+      "boss": "brute",
+      "pickup_node": "F108",
+      "image": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/items/power_core.jpg"
+    },
+    {
+      "id": "restart_key",
+      "boss": "leader",
+      "pickup_node": "F308",
+      "image": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/items/restart_key.jpg"
+    }
+  ],
+  "restart_requires": [
+    "synchronizer",
+    "power_core",
+    "restart_key",
+    "cooling_ready"
+  ],
+  "restart_node": "F405",
+  "exit_node": "E12",
+  "event_rules": {
+    "cooling_ready": {
+      "node": "B07",
+      "requires": [
+        "valve_a",
+        "valve_b",
+        "power_core"
+      ],
+      "consume_items": false
+    },
+    "station_restarted": {
+      "node": "F405",
+      "requires": [
+        "synchronizer",
+        "power_core",
+        "restart_key",
+        "cooling_ready"
+      ],
+      "defense_waves": 3,
+      "consume_items": true
+    },
+    "extracted": {
+      "node": "E12",
+      "requires": [
+        "station_restarted",
+        "drainage_open"
+      ]
+    },
+    "synchronizer": {
+      "node": "F209",
+      "requires": [
+        "hunter_defeated"
+      ]
+    },
+    "power_core": {
+      "node": "F108",
+      "requires": [
+        "brute_defeated"
+      ]
+    },
+    "restart_key": {
+      "node": "F308",
+      "requires": [
+        "leader_defeated"
+      ]
+    }
+  },
+  "combat": {
+    "ordinary_encounters": 18,
+    "target_minutes_per_encounter": 3,
+    "boss_target_minutes": {
+      "hunter": 10,
+      "brute": 12,
+      "leader": 15
+    },
+    "restart_defense_minutes": 8
+  },
+  "notes": [
+    "All coordinates refer to per-layer SVG canvas 1280x680, not overview art.",
+    "Artist overview is illustrative; nodes and edges are authoritative.",
+    "No random respawn in cleared mandatory rooms; optional patrols capped."
+  ]
+}

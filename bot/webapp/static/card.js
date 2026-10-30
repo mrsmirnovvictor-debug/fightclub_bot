@@ -1892,7 +1892,7 @@ const SCREENS = [
   "club", "map", "shop", "magic", "workshop", "hospital", "insurance", "gym",
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
   "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
-  "cars", "dorm", "charge", "dojo", "barber", "wash", "court",
+  "cars", "dorm", "charge", "dojo", "barber", "wash", "court", "blackout",
   "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
@@ -1907,7 +1907,7 @@ const OPENED_FROM = {
   tavern: "map", study: "map", turf: "map", crowd: "map",
   elections: "map", house: "map", prison: "map", arena: "map", cars: "map",
   dorm: "map", charge: "map", dojo: "map", barber: "map", wash: "map",
-  court: "map",
+  court: "map", blackout: "map",
 };
 let lastTab = "hero";
 
@@ -1999,6 +1999,9 @@ function showTab(name) {
   if (name === "wash") loadWash();
   // Суд: дела заводит город, и к открытию экрана их могло прибавиться
   if (name === "court") loadCourt();
+  // Станция: рейд идёт на сервере, и за его правдой ходят на каждый
+  // заход — сам по себе экран ничего не считает
+  if (name === "blackout") loadBlackout();
   // Полка образов: кредитов могло стать больше или меньше, а образ —
   // купиться в другом доме того же пола
   if (name === "barber") loadBarber();
@@ -2518,6 +2521,7 @@ const HOUSE_SCREENS = {
   tavern: () => showTab("tavern"),
   study: () => showTab("study"),
   vote: () => showTab("elections"),
+  blackout: () => showTab("blackout"),
   school: () => showTab("school"),
   police: () => showTab("police"),
   mafia: () => showTab("mafia"),
@@ -12606,6 +12610,614 @@ function keyCard(one) {
   return box;
 }
 
+// ---------- электростанция: «Чёрный пуск» ----------
+//
+// Рейд целиком живёт на сервере: страница только показывает снимок и
+// шлёт кнопки. Ни шага, ни урона, ни победы она не считает — после
+// обрыва связи достаточно спросить снимок заново, и человек
+// продолжает с той же секунды.
+
+let blackoutData = null;
+let blackoutTimer = null;
+let blackoutTarget = 0;
+
+async function openBlackout() {
+  showTab("blackout");
+}
+
+async function loadBlackout() {
+  try {
+    const response = await fetch("api/blackout", {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Станция не отвечает.");
+    renderBlackout(await response.json());
+  } catch (error) {
+    el("blackout-note").textContent = error.message;
+  }
+}
+
+async function blackoutAction(payload) {
+  try {
+    const body = { ...payload, command: payload.command || stamp() };
+    const data = await post("api/blackout", body);
+    haptic((feedback) => feedback.impactOccurred("medium"));
+    if (data.said) el("blackout-note").textContent = data.said;
+    renderBlackout(data.state || data);
+  } catch (error) {
+    popup("Станция", error.message);
+    await loadBlackout();
+  }
+}
+
+// Номер команды: по нему сервер узнаёт повтор. Сеть теряет ответы, и
+// человек жмёт ещё раз — второй раз делать ничего не нужно
+function stamp() {
+  return String(Date.now()) + ":" + Math.random().toString(36).slice(2, 8);
+}
+
+function renderBlackout(data) {
+  blackoutData = data;
+  const body = el("blackout-body");
+  body.textContent = "";
+  if (!data || !data.screen) return;
+  if (data.screen === "lobby") return paintBlackoutLobby(data, body);
+  if (data.screen === "squad") return paintBlackoutSquad(data, body);
+  paintBlackoutRun(data, body);
+}
+
+/** Город перед рейдом: окно входа и чужие отряды. */
+function paintBlackoutLobby(data, body) {
+  el("blackout-view").classList.add("hidden");
+  el("blackout-clock").textContent = "";
+  el("blackout-note").textContent = data.window
+    ? "Окно входа открыто. Отряд от " + data.min + " до " + data.max + "."
+    : "Окно закрыто. Следующее — " + clockText(data.opens_at) + ".";
+
+  if (data.overview) {
+    const pic = document.createElement("img");
+    pic.className = "blackout-overview";
+    pic.src = data.overview;
+    pic.alt = "Электростанция «Контур»";
+    pic.loading = "lazy";
+    pic.addEventListener("error", () => pic.remove());
+    body.appendChild(pic);
+  }
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Объявить рейд", {
+      onClick: () => blackoutAction({ action: "open" }),
+    })
+  );
+  body.appendChild(buttons);
+
+  (data.squads || []).forEach((one) => {
+    const row = document.createElement("article");
+    row.className = "case";
+    const head = document.createElement("header");
+    head.className = "case-head";
+    const who = document.createElement("span");
+    who.className = "case-who";
+    who.textContent = "Отряд " + one.leader;
+    const sum = document.createElement("span");
+    sum.className = "case-sum";
+    sum.textContent = one.size + " из " + one.max;
+    head.append(who, sum);
+    row.appendChild(head);
+    const names = document.createElement("p");
+    names.className = "case-note";
+    names.textContent = (one.names || []).join(", ");
+    row.appendChild(names);
+    if (one.can_join) {
+      const act = document.createElement("div");
+      act.className = "thing-buttons";
+      act.appendChild(
+        button("Встать в отряд", {
+          onClick: () => blackoutAction({ action: "join", run: one.run }),
+        })
+      );
+      row.appendChild(act);
+    }
+    body.appendChild(row);
+  });
+
+  if ((data.paid || []).length) {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = "За этот цикл уже получено: "
+      + data.paid.map((one) => one.stage + " · " + one.amount + " 💰").join(", ");
+    body.appendChild(said);
+  }
+}
+
+/** Отряд собран, станция ждёт. */
+function paintBlackoutSquad(data, body) {
+  el("blackout-view").classList.add("hidden");
+  el("blackout-clock").textContent = "";
+  el("blackout-note").textContent =
+    "Отряд: " + data.squad.length + ". Выводит лидер, от " + data.min + ".";
+  body.appendChild(blackoutSquadBox(data.squad));
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  if (data.can_start) {
+    buttons.appendChild(
+      button("На станцию", {
+        onClick: () => blackoutAction({ action: "start" }),
+      })
+    );
+  }
+  buttons.appendChild(
+    button("Выйти из отряда", {
+      secondary: true,
+      onClick: () => blackoutAction({ action: "leave" }),
+    })
+  );
+  body.appendChild(buttons);
+}
+
+function blackoutSquadBox(squad) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "👥 Отряд";
+  box.appendChild(head);
+  (squad || []).forEach((one) => {
+    const row = document.createElement("div");
+    row.className = "bracket-side" + (one.me ? " mine" : "");
+    const name = document.createElement("span");
+    name.className = "bracket-name";
+    name.textContent = (one.leader ? "★ " : "") + one.name
+      + (one.bot ? " · союзник" : "")
+      + (one.max ? " · " + one.hp + "/" + one.max : "");
+    row.appendChild(name);
+    if (one.down) {
+      const tag = document.createElement("span");
+      tag.className = "bracket-score";
+      tag.textContent = "лежит";
+      row.appendChild(tag);
+    }
+    box.appendChild(row);
+  });
+  return box;
+}
+
+/** Рейд идёт: комната, отряд, цель и кнопки. */
+function paintBlackoutRun(data, body) {
+  const view = el("blackout-view");
+  view.classList.toggle("hidden", !data.room.image);
+  if (data.room.image) {
+    const pic = el("blackout-pic");
+    pic.src = data.room.image;
+    pic.alt = data.room.name;
+    el("blackout-where").textContent =
+      data.room.name + " · " + data.room.layer_title;
+  }
+  el("blackout-title").textContent = "⚡ " + (data.room.name || "Станция");
+  el("blackout-note").textContent = data.goal || "";
+  paintBlackoutClock(data);
+
+  body.appendChild(blackoutItemsBox(data));
+  if (data.fight) body.appendChild(blackoutFightBox(data));
+  else body.appendChild(blackoutRoomBox(data));
+  body.appendChild(blackoutSquadBox(data.squad));
+  if (data.map) body.appendChild(blackoutMapBox(data.map));
+  body.appendChild(blackoutLogBox(data.log));
+}
+
+function paintBlackoutClock(data) {
+  const chip = el("blackout-clock");
+  if (blackoutTimer) clearInterval(blackoutTimer);
+  const ends = data.ends_at || 0;
+  const paint = () => {
+    const left = Math.max(0, ends - Math.floor(Date.now() / 1000));
+    chip.textContent = ends ? "⏱ " + clockLeft(left) : "";
+    chip.classList.toggle("hot", left > 0 && left <= 15 * 60);
+  };
+  paint();
+  if (ends) blackoutTimer = setInterval(paint, 1000);
+}
+
+function clockLeft(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+/** Три модуля запуска: форма гнезда, а не только цвет. */
+function blackoutItemsBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🔺 Элементы запуска";
+  box.appendChild(head);
+  const row = document.createElement("div");
+  row.className = "blackout-items";
+  (data.items || []).forEach((one) => {
+    const cell = document.createElement("div");
+    cell.className = "blackout-item" + (one.have ? " have" : "");
+    const mark = document.createElement("span");
+    mark.className = "blackout-shape";
+    mark.textContent = one.shape;
+    const name = document.createElement("span");
+    name.className = "blackout-item-name";
+    name.textContent = one.title;
+    cell.append(mark, name);
+    if (one.installed) {
+      const tag = document.createElement("span");
+      tag.className = "blackout-item-tag";
+      tag.textContent = "в гнезде";
+      cell.appendChild(tag);
+    }
+    row.appendChild(cell);
+  });
+  box.appendChild(row);
+  return box;
+}
+
+/** Комната вне боя: задачи, добыча и двери. */
+function blackoutRoomBox(data) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = data.walking ? "🚶 В пути" : "🚪 Выходы";
+  box.appendChild(head);
+
+  if (data.walking && data.going) {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = "Идёшь в «" + data.going.name + "»: "
+      + data.going.seconds_left + " с.";
+    box.appendChild(said);
+    return box;
+  }
+
+  if (data.locked) {
+    const why = document.createElement("p");
+    why.className = "thing-note";
+    why.textContent = data.locked;
+    box.appendChild(why);
+  }
+
+  if (data.task) box.appendChild(blackoutTaskRow(data.task));
+  if (data.pickup && data.pickup.can_take) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Взять: " + data.pickup.title, {
+        onClick: () => blackoutAction({ action: "take" }),
+      })
+    );
+    box.appendChild(buttons);
+  }
+  if (data.console) box.appendChild(blackoutConsoleRow(data));
+  if (data.can_extract) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button("Эвакуироваться", {
+        onClick: () => blackoutAction({ action: "extract" }),
+      })
+    );
+    box.appendChild(buttons);
+  }
+
+  (data.exits || []).forEach((one) => {
+    const row = document.createElement("div");
+    row.className = "bracket-side";
+    const name = document.createElement("span");
+    name.className = "bracket-name";
+    name.textContent = (one.danger ? "☣️ " : one.cleared ? "✅ " : "")
+      + one.name;
+    row.appendChild(name);
+    const act = button(one.can_go ? "Идти · 10 с" : "Закрыто", {
+      disabled: !one.can_go,
+      hint: one.why,
+      onClick: () => blackoutAction({ action: "lead", room: one.room }),
+    });
+    act.classList.add("btn-small");
+    row.appendChild(act);
+    box.appendChild(row);
+  });
+  return box;
+}
+
+function blackoutTaskRow(task) {
+  const row = document.createElement("article");
+  row.className = "case";
+  const head = document.createElement("header");
+  head.className = "case-head";
+  const who = document.createElement("span");
+  who.className = "case-who";
+  who.textContent = task.title;
+  head.appendChild(who);
+  row.appendChild(head);
+  const hint = document.createElement("p");
+  hint.className = "case-note";
+  hint.textContent = task.done ? "Сделано." : task.why || task.hint;
+  row.appendChild(hint);
+  if (task.can_do) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
+    buttons.appendChild(
+      button(task.title, {
+        onClick: () => blackoutAction({ action: "task" }),
+      })
+    );
+    row.appendChild(buttons);
+  }
+  return row;
+}
+
+/** Рубка: три гнезда, готовность и синхронизация. */
+function blackoutConsoleRow(data) {
+  const box = document.createElement("article");
+  box.className = "case";
+  const head = document.createElement("header");
+  head.className = "case-head";
+  const who = document.createElement("span");
+  who.className = "case-who";
+  who.textContent = "Пульт перезапуска";
+  const sum = document.createElement("span");
+  sum.className = "case-sum";
+  sum.textContent = data.console.restarted
+    ? "станция запущена"
+    : "волна " + data.console.wave + " из " + data.console.waves;
+  head.append(who, sum);
+  box.appendChild(head);
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  (data.console.slots || []).forEach((slot) => {
+    if (slot.filled || !slot.have) return;
+    buttons.appendChild(
+      button(slot.mark + " " + slot.shape, {
+        onClick: () => blackoutAction({ action: "install", item: slot.code }),
+      })
+    );
+  });
+  if (!data.console.restarted) {
+    if (data.console.can_sync) {
+      buttons.appendChild(
+        button("Синхронизировать сеть", {
+          onClick: () => blackoutAction({ action: "sync" }),
+        })
+      );
+    } else if (data.console.wave === 0) {
+      buttons.appendChild(
+        button("Готов к обороне", {
+          onClick: () => blackoutAction({ action: "confirm" }),
+        })
+      );
+    }
+  }
+  if (buttons.children.length) box.appendChild(buttons);
+  return box;
+}
+
+/** Бой: кто против кого, телеграф и выбор хода. */
+function blackoutFightBox(data) {
+  const fight = data.fight;
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = fight.kind === "defense"
+    ? "🛡 Оборона · волна " + fight.wave + " из " + fight.waves
+    : "⚔️ Бой · ход " + fight.turn;
+  box.appendChild(head);
+
+  if (fight.telegraph && fight.telegraph.title) {
+    const warn = document.createElement("p");
+    warn.className = "blackout-telegraph";
+    warn.textContent = "⚠️ " + fight.telegraph.title + ". "
+      + (fight.telegraph.hint || "");
+    box.appendChild(warn);
+  }
+  if (fight.shield) {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = "Щит держит: половина урона уходит впустую.";
+    box.appendChild(said);
+  }
+  if (fight.window) {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = "Окно уязвимости: " + fight.window + " ход(а).";
+    box.appendChild(said);
+  }
+
+  (fight.foes || []).forEach((foe) => {
+    const row = document.createElement("div");
+    row.className = "bracket-side"
+      + (blackoutTarget === foe.id ? " mine" : "");
+    const name = document.createElement("span");
+    name.className = "bracket-name";
+    name.textContent = (foe.boss ? "☠️ " : "") + foe.name
+      + " · " + foe.hp + "/" + foe.max;
+    row.appendChild(name);
+    const act = button("Цель", {
+      secondary: blackoutTarget !== foe.id,
+      onClick: () => {
+        blackoutTarget = foe.id;
+        renderBlackout(blackoutData);
+      },
+    });
+    act.classList.add("btn-small");
+    row.appendChild(act);
+    box.appendChild(row);
+  });
+
+  box.appendChild(blackoutTurnBox(data));
+  if ((fight.waiting || []).length) {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = "Ждём: " + fight.waiting.join(", ");
+    box.appendChild(said);
+  }
+  (fight.log || []).slice(0, 4).forEach((line) => {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = line;
+    box.appendChild(said);
+  });
+  return box;
+}
+
+let blackoutHit = "head";
+let blackoutGuard = "chest";
+
+function blackoutTurnBox(data) {
+  const fight = data.fight;
+  const box = document.createElement("div");
+  box.className = "blackout-turn";
+
+  const zones = [
+    ["head", "Голова"], ["chest", "Корпус"], ["belly", "Живот"],
+    ["belt", "Пояс"], ["legs", "Ноги"],
+  ];
+  box.appendChild(blackoutZoneRow("Бью", zones, blackoutHit, (code) => {
+    blackoutHit = code;
+    renderBlackout(blackoutData);
+  }));
+  box.appendChild(blackoutZoneRow("Закрываю", zones, blackoutGuard, (code) => {
+    blackoutGuard = code;
+    renderBlackout(blackoutData);
+  }));
+
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button(fight.mine ? "Ход принят" : "Бить", {
+      disabled: Boolean(fight.mine),
+      onClick: () => blackoutAction({
+        action: "fight",
+        attacks: [blackoutHit],
+        block: [blackoutGuard],
+        target: blackoutTarget,
+      }),
+    })
+  );
+  if (fight.arena) {
+    buttons.appendChild(
+      button(fight.arena.title, {
+        secondary: true,
+        hint: fight.arena.hint,
+        onClick: () => blackoutAction({
+          action: "fight", arena: fight.arena.code,
+        }),
+      })
+    );
+  }
+  (data.squad || []).forEach((one) => {
+    if (!one.down || !one.here || one.me) return;
+    buttons.appendChild(
+      button("Поднять " + one.name, {
+        secondary: true,
+        onClick: () => blackoutAction({ action: "raise", user: one.id }),
+      })
+    );
+  });
+  box.appendChild(buttons);
+  return box;
+}
+
+function blackoutZoneRow(title, zones, current, onPick) {
+  const row = document.createElement("div");
+  row.className = "blackout-zones";
+  const name = document.createElement("span");
+  name.className = "blackout-zone-title";
+  name.textContent = title;
+  row.appendChild(name);
+  zones.forEach(([code, label]) => {
+    const act = button(label, {
+      secondary: current !== code,
+      onClick: () => onPick(code),
+    });
+    act.classList.add("btn-small");
+    row.appendChild(act);
+  });
+  return row;
+}
+
+/** Схема этажа с туманом: посещённое видно, остальное — нет. */
+function blackoutMapBox(map) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🗺 " + (map.title || "Этаж");
+  box.appendChild(head);
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 " + map.width + " " + map.height);
+  svg.setAttribute("class", "blackout-map");
+  (map.links || []).forEach((link) => {
+    const a = (map.rooms || []).find((one) => one.code === link.a);
+    const b = (map.rooms || []).find((one) => one.code === link.b);
+    if (!a || !b) return;
+    const line = document.createElementNS(
+      "http://www.w3.org/2000/svg", "line"
+    );
+    line.setAttribute("x1", a.x);
+    line.setAttribute("y1", a.y);
+    line.setAttribute("x2", b.x);
+    line.setAttribute("y2", b.y);
+    line.setAttribute("class", "blackout-link");
+    svg.appendChild(line);
+  });
+  (map.rooms || []).forEach((one) => {
+    const dot = document.createElementNS(
+      "http://www.w3.org/2000/svg", "circle"
+    );
+    dot.setAttribute("cx", one.x);
+    dot.setAttribute("cy", one.y);
+    dot.setAttribute("r", one.here ? 26 : 18);
+    dot.setAttribute(
+      "class",
+      "blackout-node"
+      + (one.here ? " here" : "")
+      + (one.danger ? " danger" : "")
+      + (one.goal ? " goal" : "")
+      + (one.visited ? "" : " fog")
+    );
+    svg.appendChild(dot);
+    if (one.visited) {
+      const text = document.createElementNS(
+        "http://www.w3.org/2000/svg", "text"
+      );
+      text.setAttribute("x", one.x);
+      text.setAttribute("y", one.y + 46);
+      text.setAttribute("class", "blackout-label");
+      text.textContent = one.code;
+      svg.appendChild(text);
+    }
+  });
+  box.appendChild(svg);
+  return box;
+}
+
+function blackoutLogBox(log) {
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "📻 Журнал";
+  box.appendChild(head);
+  (log || []).forEach((line) => {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent = line.text || line;
+    box.appendChild(said);
+  });
+  return box;
+}
+
 // ---------- барбершоп и салон красоты: полка образов ----------
 //
 // Экран один, а домов два: в барбершопе мужские лица, в салоне женские.
@@ -17827,7 +18439,7 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
   "crowd", "elections", "shop", "magic", "prison", "arena", "cars", "dorm",
-  "charge", "dojo", "barber", "wash", "court", "workshop", "club",
+  "charge", "dojo", "barber", "wash", "court", "blackout", "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });

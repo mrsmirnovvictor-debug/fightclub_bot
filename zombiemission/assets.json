@@ -1,0 +1,306 @@
+[
+  {
+    "path": "avatars/zombie_fighter.png",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/avatars/zombie_fighter.png",
+    "bytes": 187220,
+    "width": 768,
+    "height": 1152,
+    "md5": "ac0492018a76fbfbd7ec6681162bf9b0"
+  },
+  {
+    "path": "avatars/zombie_leader.png",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/avatars/zombie_leader.png",
+    "bytes": 264457,
+    "width": 768,
+    "height": 1152,
+    "md5": "a9be2a24ac6c10d8fcc84407bee25146"
+  },
+  {
+    "path": "avatars/zombie_hunter.png",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/avatars/zombie_hunter.png",
+    "bytes": 163541,
+    "width": 768,
+    "height": 1152,
+    "md5": "30270bdd395a4b9c19c88196d19e6dd2"
+  },
+  {
+    "path": "avatars/zombie_brute.png",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/avatars/zombie_brute.png",
+    "bytes": 288392,
+    "width": 768,
+    "height": 1152,
+    "md5": "dfa5ea2ece97c0c15b756a55f72fc82e"
+  },
+  {
+    "path": "maps/station_overview.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/maps/station_overview.jpg",
+    "bytes": 347437,
+    "width": 1672,
+    "height": 941,
+    "md5": "7bbd36132eaabb4c5c8671357b5aed5d"
+  },
+  {
+    "path": "items/synchronizer.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/items/synchronizer.jpg",
+    "bytes": 264532,
+    "width": 1024,
+    "height": 1024,
+    "md5": "082677daf365074e0b49f66d1112638c"
+  },
+  {
+    "path": "items/power_core.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/items/power_core.jpg",
+    "bytes": 260234,
+    "width": 1024,
+    "height": 1024,
+    "md5": "271a7c4fb17f5b3ff640a2b511562202"
+  },
+  {
+    "path": "items/restart_key.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/items/restart_key.jpg",
+    "bytes": 195868,
+    "width": 1024,
+    "height": 1024,
+    "md5": "d530e301e3004fe49c8eef0be26ff793"
+  },
+  {
+    "path": "panoramas/01_checkpoint.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/01_checkpoint.jpg",
+    "bytes": 280553,
+    "width": 1672,
+    "height": 941,
+    "md5": "b9f2e527c3e104f75090e6e6fab2c88b"
+  },
+  {
+    "path": "panoramas/02_dispatch.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/02_dispatch.jpg",
+    "bytes": 285794,
+    "width": 1672,
+    "height": 941,
+    "md5": "8b34ad6d12b6b5247fd85c327231b2ae"
+  },
+  {
+    "path": "panoramas/03_hunter_gallery.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/03_hunter_gallery.jpg",
+    "bytes": 309296,
+    "width": 1672,
+    "height": 941,
+    "md5": "ce00254fc6767831dfba7f1f31f8098d"
+  },
+  {
+    "path": "panoramas/04_brute_turbines.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/04_brute_turbines.jpg",
+    "bytes": 305428,
+    "width": 1672,
+    "height": 941,
+    "md5": "fe8f526e86e2e98f0f97421ea780448f"
+  },
+  {
+    "path": "panoramas/05_pump_basement.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/05_pump_basement.jpg",
+    "bytes": 282288,
+    "width": 1672,
+    "height": 941,
+    "md5": "33875f46a719929e1d54e8ca95880fbb"
+  },
+  {
+    "path": "panoramas/06_leader_reactor.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/06_leader_reactor.jpg",
+    "bytes": 330611,
+    "width": 1672,
+    "height": 941,
+    "md5": "7fbd18bf4baf1895288a7ff11432940b"
+  },
+  {
+    "path": "panoramas/07_control_room.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/07_control_room.jpg",
+    "bytes": 269441,
+    "width": 1672,
+    "height": 941,
+    "md5": "c899488b9fa815159f3d5f7ff2b53f97"
+  },
+  {
+    "path": "panoramas/08_escape_maze.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas/08_escape_maze.jpg",
+    "bytes": 326715,
+    "width": 1672,
+    "height": 941,
+    "md5": "45af715c65adef902867d4dc5b7d7c33"
+  },
+  {
+    "path": "equipment/hunter/head.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/head.jpg",
+    "bytes": 270573,
+    "width": 1024,
+    "height": 1024,
+    "md5": "7b9265d43389e2b69d4bb338f65d8847"
+  },
+  {
+    "path": "equipment/hunter/necklace.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/necklace.jpg",
+    "bytes": 62748,
+    "width": 1024,
+    "height": 341,
+    "md5": "d8d793436acd94de3d430b5b89fd6c03"
+  },
+  {
+    "path": "equipment/hunter/weapon.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/weapon.jpg",
+    "bytes": 154552,
+    "width": 1024,
+    "height": 1024,
+    "md5": "930e9681d185ef82222253ba49f1aed1"
+  },
+  {
+    "path": "equipment/hunter/shirt.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/shirt.jpg",
+    "bytes": 247213,
+    "width": 1024,
+    "height": 1024,
+    "md5": "e85d4d11cae08e1594f8c8bcaa728b08"
+  },
+  {
+    "path": "equipment/hunter/armor.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/armor.jpg",
+    "bytes": 256159,
+    "width": 1024,
+    "height": 1024,
+    "md5": "a3a1bcd107a2d52a90dac2f330f721a8"
+  },
+  {
+    "path": "equipment/hunter/belt.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/belt.jpg",
+    "bytes": 219076,
+    "width": 1024,
+    "height": 1024,
+    "md5": "1e7563b63d31980543f0c4a648162d88"
+  },
+  {
+    "path": "equipment/hunter/gloves.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/gloves.jpg",
+    "bytes": 275404,
+    "width": 1024,
+    "height": 1024,
+    "md5": "af1c991f690e316e3724173e87cff72d"
+  },
+  {
+    "path": "equipment/hunter/ring.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/ring.jpg",
+    "bytes": 248877,
+    "width": 1024,
+    "height": 1024,
+    "md5": "7e37aef1c51f259a0373915bd81f3d68"
+  },
+  {
+    "path": "equipment/hunter/shield.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/shield.jpg",
+    "bytes": 265353,
+    "width": 1024,
+    "height": 1024,
+    "md5": "8366c89fe1807ad05c98652535b7d6fe"
+  },
+  {
+    "path": "equipment/hunter/pants.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/pants.jpg",
+    "bytes": 199942,
+    "width": 1024,
+    "height": 1024,
+    "md5": "55f498368f7bd75113534761b49102b6"
+  },
+  {
+    "path": "equipment/hunter/boots.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/hunter/boots.jpg",
+    "bytes": 273901,
+    "width": 1024,
+    "height": 1024,
+    "md5": "e78ea639eb82351840455e77446bdddb"
+  },
+  {
+    "path": "equipment/brute/head.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/head.jpg",
+    "bytes": 242934,
+    "width": 1024,
+    "height": 1024,
+    "md5": "cb24c2d2f8fd0c40663720108e298581"
+  },
+  {
+    "path": "equipment/brute/necklace.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/necklace.jpg",
+    "bytes": 85367,
+    "width": 1024,
+    "height": 341,
+    "md5": "d14473925d0e1cb4643109f330147a77"
+  },
+  {
+    "path": "equipment/brute/weapon.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/weapon.jpg",
+    "bytes": 184447,
+    "width": 1024,
+    "height": 1024,
+    "md5": "b2bd56473011dca8cf786d4669eea510"
+  },
+  {
+    "path": "equipment/brute/shirt.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/shirt.jpg",
+    "bytes": 275757,
+    "width": 1024,
+    "height": 1024,
+    "md5": "42051f40514ee686252a9a0eb4fb7e00"
+  },
+  {
+    "path": "equipment/brute/armor.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/armor.jpg",
+    "bytes": 285263,
+    "width": 1024,
+    "height": 1024,
+    "md5": "8e34f480a5000626ab72634125227fb5"
+  },
+  {
+    "path": "equipment/brute/belt.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/belt.jpg",
+    "bytes": 258509,
+    "width": 1024,
+    "height": 1024,
+    "md5": "9e9979162e8b229b42cdbe787b45c719"
+  },
+  {
+    "path": "equipment/brute/gloves.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/gloves.jpg",
+    "bytes": 259183,
+    "width": 1024,
+    "height": 1024,
+    "md5": "e0d3a443de4410985f272b8dfa93afbc"
+  },
+  {
+    "path": "equipment/brute/ring.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/ring.jpg",
+    "bytes": 272933,
+    "width": 1024,
+    "height": 1024,
+    "md5": "f1a80de4e50408007501ed31f48a3ae1"
+  },
+  {
+    "path": "equipment/brute/shield.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/shield.jpg",
+    "bytes": 283073,
+    "width": 1024,
+    "height": 1024,
+    "md5": "f3dc6b7584ed0a1222d912a30bce9b66"
+  },
+  {
+    "path": "equipment/brute/pants.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/pants.jpg",
+    "bytes": 213845,
+    "width": 1024,
+    "height": 1024,
+    "md5": "aa59048c3c8f5f20012a6cf8e82527cc"
+  },
+  {
+    "path": "equipment/brute/boots.jpg",
+    "url": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/equipment/brute/boots.jpg",
+    "bytes": 249756,
+    "width": 1024,
+    "height": 1024,
+    "md5": "8220f69d40661f3a39e79ac28324b98a"
+  }
+]

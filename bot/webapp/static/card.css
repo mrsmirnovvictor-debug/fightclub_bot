@@ -4320,3 +4320,86 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   color: var(--accent);
 }
 .shift .btn { margin-top: 9px; }
+
+/* ---------- электростанция: «Чёрный пуск» ---------- */
+
+/* Панорама комнаты: она тут не украшение, а единственный способ понять,
+   где стоишь. Подпись ложится поверх снимка снизу — на телефоне место
+   под неё отдельной строкой дороже самой панорамы */
+.blackout-view { position: relative; margin: 0 0 10px; }
+.blackout-pic {
+  width: 100%;
+  border-radius: 12px;
+  display: block;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--panel);
+}
+.blackout-where {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  right: 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+}
+.blackout-overview { width: 100%; border-radius: 12px; display: block; }
+.blackout-clock { font-variant-numeric: tabular-nums; font-size: 14px; }
+.blackout-clock.hot { color: var(--bad); }
+
+/* Три модуля запуска. Форма рядом с именем — не украшение: задача не
+   должна зависеть от того, различает ли человек бирюзовый и зелёный */
+.blackout-items { display: flex; gap: 6px; flex-wrap: wrap; }
+.blackout-item {
+  flex: 1 1 30%;
+  min-width: 92px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: var(--panel);
+  opacity: 0.45;
+}
+.blackout-item.have { opacity: 1; outline: 1px solid var(--good); }
+.blackout-shape { font-size: 18px; display: block; }
+.blackout-item-name { font-size: 12px; line-height: 1.25; display: block; }
+.blackout-item-tag { font-size: 11px; color: var(--muted); }
+
+/* Телеграф: его видно за ход, и прочитать его надо с одного взгляда */
+.blackout-telegraph {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(220, 150, 40, 0.18);
+  font-size: 13px;
+}
+
+.blackout-turn { margin-top: 8px; }
+.blackout-zones {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.blackout-zone-title {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 0 0 72px;
+}
+
+/* Схема этажа: узлы и двери. Туман — не чёрный квадрат, а бледный
+   кружок: «ход есть, а что за ним — неизвестно» */
+.blackout-map { width: 100%; height: auto; display: block; }
+.blackout-link { stroke: var(--muted); stroke-width: 3; opacity: 0.5; }
+.blackout-node { fill: var(--panel); stroke: var(--muted); stroke-width: 3; }
+.blackout-node.fog { opacity: 0.35; stroke-dasharray: 6 6; }
+.blackout-node.danger { stroke: var(--bad); }
+.blackout-node.goal { stroke: var(--good); }
+.blackout-node.here { fill: var(--accent); stroke: #fff; }
+.blackout-label {
+  fill: var(--muted);
+  font-size: 22px;
+  text-anchor: middle;
+}

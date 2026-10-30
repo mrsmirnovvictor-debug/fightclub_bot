@@ -236,6 +236,61 @@ CREATE TABLE IF NOT EXISTS theft_cases (
 CREATE INDEX IF NOT EXISTS theft_thief ON theft_cases(thief_id);
 CREATE INDEX IF NOT EXISTS theft_owner ON theft_cases(owner_id);
 
+-- «Чёрный пуск»: рейд на электростанцию. Весь изменчивый состав
+-- инстанса лежит одним json в `state`, и это не лень, а замок: рейд
+-- читается и пишется целиком под одной транзакцией, поэтому две
+-- команды не могут выдать предмет дважды или открыть два боя. Снаружи
+-- json видят только служба и экран; база хранит рядом то, по чему
+-- ищут и что обязано быть уникальным
+CREATE TABLE IF NOT EXISTS blackout_runs (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle     TEXT    NOT NULL DEFAULT '',
+    phase     TEXT    NOT NULL DEFAULT 'lobby',
+    leader_id INTEGER NOT NULL DEFAULT 0,
+    opened_at INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    closed_at INTEGER NOT NULL DEFAULT 0,
+    version   INTEGER NOT NULL DEFAULT 0,
+    state     TEXT    NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS blackout_phase ON blackout_runs(phase);
+
+-- Кто в каком рейде. Отдельной таблицей, потому что по ней ищут: «мой
+-- рейд» — это запрос по игроку, а не разбор json всех инстансов
+CREATE TABLE IF NOT EXISTS blackout_members (
+    run_id  INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    left_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS blackout_member ON blackout_members(user_id);
+
+-- Выплаты. Уникальность «игрок + цикл + часть награды» держит первичный
+-- ключ, а не проверка в коде: повторный запрос и второй заход в том же
+-- цикле не должны платить дважды
+CREATE TABLE IF NOT EXISTS blackout_rewards (
+    user_id INTEGER NOT NULL,
+    cycle   TEXT    NOT NULL,
+    stage   TEXT    NOT NULL,
+    amount  INTEGER NOT NULL DEFAULT 0,
+    run_id  INTEGER NOT NULL DEFAULT 0,
+    paid_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, cycle, stage)
+);
+
+-- Выполненные команды: по `command_id` повторный запрос отдаёт прежний
+-- ответ, а не делает второй шаг. Это и есть идемпотентность, которой
+-- требует кооператив: сеть теряет ответы, клиент жмёт ещё раз
+CREATE TABLE IF NOT EXISTS blackout_commands (
+    run_id     INTEGER NOT NULL,
+    command_id TEXT    NOT NULL,
+    said       TEXT    NOT NULL DEFAULT '',
+    at         INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, command_id)
+);
+
 CREATE TABLE IF NOT EXISTS job_bids (
     user_id INTEGER NOT NULL,
     code    TEXT    NOT NULL,
@@ -4337,6 +4392,168 @@ class Database:
             (user_id, since, day),
         )
         await self.conn.commit()
+
+    # ---------- «Чёрный пуск»: рейд на электростанцию ----------
+    #
+    # Инстанс читается и пишется целиком: `blackout_read` отдаёт json с
+    # версией, `blackout_write` кладёт его обратно, если версия не
+    # сменилась. Этого хватает за глаза — рейд один на отряд, а SQLite
+    # пишет по одному — и даёт ровно то, чего требует кооператив: две
+    # команды не выдадут предмет дважды.
+
+    async def blackout_open(
+        self, cycle: str, leader_id: int, now: int, state: str
+    ) -> int:
+        """Завести инстанс рейда. Отдаёт его номер."""
+        cursor = await self.conn.execute(
+            "INSERT INTO blackout_runs "
+            "(cycle, phase, leader_id, opened_at, version, state) "
+            "VALUES (?,'lobby',?,?,1,?)",
+            (cycle, leader_id, now, state),
+        )
+        run_id = int(cursor.lastrowid)
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO blackout_members (run_id, user_id) "
+            "VALUES (?,?)",
+            (run_id, leader_id),
+        )
+        await self.conn.commit()
+        return run_id
+
+    async def blackout_read(self, run_id: int) -> dict | None:
+        """Инстанс целиком: строка таблицы вместе с json состояния."""
+        async with self.conn.execute(
+            "SELECT * FROM blackout_runs WHERE id = ?", (run_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def blackout_write(
+        self, run_id: int, version: int, phase: str, state: str, now: int
+    ) -> bool:
+        """Записать состояние, если его не сменили под нами.
+
+        False — версия разошлась: кто-то успел походить первым, и
+        команду надо считать заново на свежем состоянии.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE blackout_runs SET state = ?, phase = ?, version = ?, "
+            "closed_at = CASE WHEN ? = 'over' AND closed_at = 0 THEN ? "
+            "ELSE closed_at END WHERE id = ? AND version = ?",
+            (state, phase, version + 1, phase, now, run_id, version),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def blackout_set_leader(self, run_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            "UPDATE blackout_runs SET leader_id = ? WHERE id = ?",
+            (user_id, run_id),
+        )
+        await self.conn.commit()
+
+    async def blackout_start(self, run_id: int, now: int) -> None:
+        await self.conn.execute(
+            "UPDATE blackout_runs SET started_at = ?, phase = 'run' "
+            "WHERE id = ? AND started_at = 0",
+            (now, run_id),
+        )
+        await self.conn.commit()
+
+    async def blackout_join(self, run_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            "INSERT INTO blackout_members (run_id, user_id, left_at) "
+            "VALUES (?,?,0) ON CONFLICT(run_id, user_id) DO UPDATE SET "
+            "left_at = 0",
+            (run_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def blackout_part(self, run_id: int, user_id: int, now: int) -> None:
+        await self.conn.execute(
+            "UPDATE blackout_members SET left_at = ? "
+            "WHERE run_id = ? AND user_id = ?",
+            (now, run_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def blackout_of(self, user_id: int) -> int:
+        """В каком рейде этот боец. Ноль — ни в каком."""
+        async with self.conn.execute(
+            "SELECT m.run_id FROM blackout_members m "
+            "JOIN blackout_runs r ON r.id = m.run_id "
+            "WHERE m.user_id = ? AND m.left_at = 0 AND r.phase <> 'over' "
+            "ORDER BY m.run_id DESC LIMIT 1",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["run_id"]) if row else 0
+
+    async def blackout_live(self, cycle: str = "") -> list[dict]:
+        """Открытые рейды: по ним собирают отряд."""
+        where = "phase = 'lobby'"
+        args: tuple = ()
+        if cycle:
+            where += " AND cycle = ?"
+            args = (cycle,)
+        async with self.conn.execute(
+            f"SELECT * FROM blackout_runs WHERE {where} ORDER BY id", args
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def blackout_done(
+        self, run_id: int, command_id: str
+    ) -> str | None:
+        """Что ответили на эту команду в прошлый раз. None — впервые."""
+        if not command_id:
+            return None
+        async with self.conn.execute(
+            "SELECT said FROM blackout_commands WHERE run_id = ? "
+            "AND command_id = ?",
+            (run_id, command_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row["said"]) if row else None
+
+    async def blackout_remember(
+        self, run_id: int, command_id: str, said: str, now: int
+    ) -> None:
+        if not command_id:
+            return
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO blackout_commands "
+            "(run_id, command_id, said, at) VALUES (?,?,?,?)",
+            (run_id, command_id, said, now),
+        )
+        await self.conn.commit()
+
+    async def blackout_pay(
+        self, user_id: int, cycle: str, stage: str, amount: int,
+        run_id: int, now: int,
+    ) -> bool:
+        """Отметить выплату. False — за этот цикл её уже платили.
+
+        Уникальность держит первичный ключ: повторный запрос, второй
+        заход в том же цикле и гонка двух команд упираются в базу, а не
+        в проверку питоном.
+        """
+        cursor = await self.conn.execute(
+            "INSERT OR IGNORE INTO blackout_rewards "
+            "(user_id, cycle, stage, amount, run_id, paid_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (user_id, cycle, stage, amount, run_id, now),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def blackout_paid(self, user_id: int, cycle: str) -> list[dict]:
+        """Что этому бойцу уже заплатили за этот цикл."""
+        async with self.conn.execute(
+            "SELECT stage, amount, paid_at FROM blackout_rewards "
+            "WHERE user_id = ? AND cycle = ?",
+            (user_id, cycle),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
 
     # ---------- дежурная часть, ордера и тюрьма ----------
 

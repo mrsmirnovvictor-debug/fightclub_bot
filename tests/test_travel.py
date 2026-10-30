@@ -613,19 +613,20 @@ def test_a_house_without_a_trade_still_says_what_is_coming():
     Дом, который молчит, — недоделка.
 
     С тех пор пятеро из девяти начали нанимать и из списка вышли, АЗС
-    начала заряжать машины, школа боевых искусств — учить приёмам, а
-    суд — судить и нанимать. Остался один, и он по-прежнему обязан
-    сказать, чего ждёт.
+    начала заряжать машины, школа боевых искусств — учить приёмам, суд
+    — судить, а электростанция открыла проходную: за ней идёт «Чёрный
+    пуск». Закрытых домов в городе снова не осталось — и правило от
+    этого не умирает, а ждёт следующей очереди картинок.
     """
     from bot.game.locations import LOCATIONS, get_location
 
     coming = [place for place in LOCATIONS if not place.works]
 
-    # Восточный столбец уже начал обживаться: в пяти домах нанимают, на
-    # АЗС заряжают машины, в школе учат приёмам, в суде судят — и все
-    # они из этого списка вышли. Осталась одна закрытая станция
-    assert {place.code for place in coming} == {"power_station"}
-    for place in coming:
+    # Весь город открыт: последней открылась электростанция
+    assert coming == [], [place.code for place in coming]
+    station = get_location("power_station")
+    assert station.works and station.services, "станция открылась"
+    for place in coming:  # pragma: no cover - закрытых домов больше нет
         assert place.soon, f"{place.code}: не сказано, что здесь будет"
         assert place.services == ()
         # Зайти в такой дом можно: город не должен выглядеть
