@@ -5196,11 +5196,25 @@ class Database:
         await self.conn.commit()
 
     async def theft_cases(
-        self, judged: bool | None = None, thief_id: int = 0
+        self,
+        judged: bool | None = None,
+        thief_id: int = 0,
+        owner_id: int = 0,
+        filed: bool | None = True,
     ) -> list[dict]:
-        """Дела об угоне: все, ждущие приговора или одного угонщика."""
-        where = ["filed_at <> 0"]
+        """Дела об угоне: все, ждущие приговора или одного человека.
+
+        `filed` по умолчанию True: суду и розыску дело видно с
+        заявления, до него угон — дело двоих. `None` показывает и
+        незаявленные — это нужно одному экрану, хозяйскому: он и есть
+        то место, где заявление пишут.
+        """
+        where = []
         args: list = []
+        if filed is True:
+            where.append("filed_at <> 0")
+        elif filed is False:
+            where.append("filed_at = 0")
         if judged is True:
             where.append("judged_at <> 0")
         elif judged is False:
@@ -5208,6 +5222,11 @@ class Database:
         if thief_id:
             where.append("thief_id = ?")
             args.append(thief_id)
+        if owner_id:
+            where.append("owner_id = ?")
+            args.append(owner_id)
+        if not where:
+            where.append("1 = 1")
         async with self.conn.execute(
             "SELECT * FROM theft_cases WHERE " + " AND ".join(where)
             + " ORDER BY stolen_at, id",
@@ -5317,10 +5336,14 @@ class Database:
         await self.conn.commit()
 
     async def file_stolen(self, car_id: int, now: int) -> bool:
-        """Заявить об угоне: с этой минуты машина в розыске."""
+        """Поставить на машину отметку розыска.
+
+        Отметку ставят по делу, а не по флажку на самой машине:
+        перебитый номер флажок стирает, а дело — нет. Кто вправе
+        заявить, решает `file_theft`, и он же сюда и ходит.
+        """
         cursor = await self.conn.execute(
-            "UPDATE cars SET stolen_filed = ? "
-            "WHERE id = ? AND stolen_from <> 0 AND stolen_filed = 0",
+            "UPDATE cars SET stolen_filed = ? WHERE id = ? AND stolen_filed = 0",
             (now, car_id),
         )
         await self.conn.commit()
@@ -5340,50 +5363,6 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
-
-    async def return_car(self, car_id: int, now: int) -> dict | None:
-        """Вернуть угнанную машину хозяину. None — возвращать нечего."""
-        async with self.conn.execute(
-            "SELECT id, user_id, code, plate, stolen_from FROM cars "
-            "WHERE id = ? AND stolen_from <> 0",
-            (car_id,),
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
-            return None
-        owner = int(row["stolen_from"])
-        thief = int(row["user_id"])
-        # У хозяина за время угона могла завестись такая же машина:
-        # тогда возвращать некуда, и машина просто перестаёт быть в
-        # розыске у вора — изъять её всё равно изъяли
-        async with self.conn.execute(
-            "SELECT 1 FROM cars WHERE user_id = ? AND code = ?",
-            (owner, str(row["code"])),
-        ) as cursor:
-            double = await cursor.fetchone() is not None
-        if double:
-            await self.conn.execute("DELETE FROM cars WHERE id = ?", (car_id,))
-        else:
-            await self.conn.execute(
-                "UPDATE cars SET user_id = ?, parked = '', parked_id = 0, "
-                "took_at = ?, stolen_from = 0, stolen_at = 0, stolen_filed = 0 "
-                "WHERE id = ?",
-                (owner, now, car_id),
-            )
-        await self.conn.execute(
-            "UPDATE players SET car = '', car_until = 0 "
-            "WHERE user_id = ? AND car = ?",
-            (thief, str(row["code"])),
-        )
-        await self.conn.commit()
-        return {
-            "id": car_id,
-            "code": str(row["code"]),
-            "plate": str(row["plate"]),
-            "owner": owner,
-            "thief": thief,
-            "kept": not double,
-        }
 
     async def put_car(
         self, user_id: int, code: str, seconds: int, now: int

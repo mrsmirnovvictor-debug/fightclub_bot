@@ -792,6 +792,106 @@ async def test_the_restamped_plate_is_known_to_the_base(db):
     assert line["restamped"] and line["plate_first"] == first
 
 
+async def test_the_restamp_does_not_erase_the_victims_report(db):
+    """Перебитый номер прячет машину от учёта, но не отнимает заявление."""
+    from bot.car_service import restamp
+    from bot.police_service import theft_of
+    from bot.webapp.police import stolen_rows
+
+    owner = await stand(db, make_player(1, "Victor", seen=0))
+    row = await with_car(db, owner)
+    first = str(row["plate"])
+    thief = await mafioso(db, make_player(2, "x Red x"))
+    await steal(db, thief, int(row["id"]), NOW)
+
+    # Угонщик успел на мойку раньше, чем хозяин — в участок
+    washed = await db.get_player(2)
+    washed.clan = thief.clan
+    washed.location = "car_wash"
+    await db.save_player(washed)
+    await restamp(db, washed, HATCH, NOW)
+    assert not (await db.car_by_id(int(row["id"])))["stolen_from"], (
+        "флажок угона с машины снят — на том мойка и стоит"
+    )
+
+    # Хозяин всё равно видит свой угон и всё равно может заявить
+    victim = await db.get_player(1)
+    seen = await stolen_rows(db, victim, NOW)
+    assert [one["plate"] for one in seen] == [first], "номер в деле прежний"
+    assert seen[0]["can_file"] is True and seen[0]["filed"] is False
+
+    victim.location = STATION
+    await db.save_player(victim)
+    said = await file_theft(db, victim, int(row["id"]), NOW)
+
+    assert first in said
+    # И дело пошло: полиция машину видит, хоть знак на ней уже другой
+    case = await theft_of(db, await db.car_by_id(int(row["id"])))
+    assert case is not None and str(case["plate"]) == first
+    assert [one["filed"] for one in await stolen_rows(db, victim, NOW)] == [True]
+
+
+async def test_the_second_restamp_changes_nothing(db):
+    """Второй перебитый номер дела не закрывает: в базе первый знак."""
+    from bot.car_service import restamp
+    from bot.police_service import theft_of
+    from bot.webapp.police import stolen_rows
+
+    row = await a_theft(db)
+    first = str(row["plate"])
+    victim = await db.get_player(1)
+    thief = await mafioso(db, make_player(2, "x Red x"))
+
+    for _ in range(2):
+        washed = await db.get_player(2)
+        washed.clan = thief.clan
+        washed.location = "car_wash"
+        await db.save_player(washed)
+        await restamp(db, washed, HATCH, NOW)
+
+    fresh = await db.car_by_id(int(row["id"]))
+    assert int(fresh["restamped"]) == 2
+    assert str(fresh["plate"]) != first
+    assert str(fresh["plate_first"]) == first, "выданный городом знак в базе"
+
+    # Дело живо, хозяин его видит, полиция машину находит
+    assert [one["plate"] for one in await stolen_rows(db, victim, NOW)] == [first]
+    case = await theft_of(db, fresh)
+    assert case is not None and str(case["plate"]) == first
+
+    cop = await officer(db)
+    assert [one["plate"] for one in await found_cars(db, cop, NOW)] == [first]
+    line = next(
+        one for one in await traffic_sheet(db, cop, NOW)
+        if int(one["id"]) == int(row["id"])
+    )
+    assert line["restamped"] and line["plate_first"] == first
+
+
+async def test_the_report_is_written_once_and_only_by_the_owner(db):
+    """Заявление пишет хозяин и один раз — перебивка этого не меняет."""
+    from bot.car_service import restamp
+
+    row = await a_theft(db)
+    thief = await mafioso(db, make_player(2, "x Red x"))
+    washed = await db.get_player(2)
+    washed.clan = thief.clan
+    washed.location = "car_wash"
+    await db.save_player(washed)
+    await restamp(db, washed, HATCH, NOW)
+
+    victim = await db.get_player(1)
+    with pytest.raises(PoliceError, match="уже написано"):
+        await file_theft(db, victim, int(row["id"]), NOW)
+
+    # Чужому заявление не принять, даже если он на ней ездит
+    rider = await db.get_player(2)
+    rider.location = STATION
+    await db.save_player(rider)
+    with pytest.raises(PoliceError, match="не принять"):
+        await file_theft(db, rider, int(row["id"]), NOW)
+
+
 # ---------- суд ----------
 
 

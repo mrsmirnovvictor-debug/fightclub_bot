@@ -543,26 +543,52 @@ async def impound_rows(
     return out
 
 
+async def my_thefts(db: Database, owner_id: int) -> list[dict]:
+    """Дела об угоне, по которым этот боец — хозяин и ещё ничего не решено.
+
+    Берём их из дел, а не из флажка на машине. Флажок стирает
+    перебитый номер, и хозяин, пришедший в участок после автомойки,
+    оставался бы без заявления — а значит, и без машины. Бумага же не
+    стирается ничем: её завёл сам угон.
+    """
+    return [
+        one
+        for one in await db.theft_cases(owner_id=owner_id, filed=None)
+        if not one["seized_at"]
+    ]
+
+
 async def file_theft(
     db: Database, player: Player, car_id: int, now: int | None = None
 ) -> str:
-    """Заявить об угоне. С этой минуты машину ищут по номеру."""
+    """Заявить об угоне. С этой минуты машину ищут по номеру.
+
+    Право заявить даёт **дело**, а не отметка на машине: номер к этому
+    часу могли перебить уже дважды, и спрашивать с хозяина за чужую
+    поездку на автомойку город не станет. Срока у заявления нет, как и
+    у заявления о нападении.
+    """
     moment = now_ts() if now is None else now
     if player.where(moment) != STATION:
         raise PoliceError("Заявление об угоне пишут в участке.")
-    row = await db.car_by_id(car_id)
-    if row is None or int(row["stolen_from"]) != player.user_id:
+    mine = [
+        one for one in await my_thefts(db, player.user_id)
+        if int(one["car_id"]) == car_id
+    ]
+    if not mine:
         raise PoliceError("По этой машине заявление не принять.")
-    if not await db.file_stolen(car_id, moment):
+    case = mine[0]
+    if case["filed_at"]:
         raise PoliceError("Заявление по ней уже написано.")
+    await db.file_stolen(car_id, moment)
     # С заявления дело идёт в суд: до него угон — дело двоих
     await db.file_theft_case(car_id, player.user_id, moment)
     logger.info(
         "Боец %s заявил об угоне %s (%s)",
-        player.user_id, row["code"], row["plate"],
+        player.user_id, case["code"], case["plate"],
     )
     return (
-        f"Заявление принято: машину {row['plate']} ищут. Найдут у кого "
+        f"Заявление принято: машину {case['plate']} ищут. Найдут у кого "
         "угодно — вернут тебе."
     )
 
@@ -764,6 +790,7 @@ __all__ = [
     "file_report",
     "has_warrant",
     "jail",
+    "my_thefts",
     "officers",
     "park_at_station",
     "reward_arrest",

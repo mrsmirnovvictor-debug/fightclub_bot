@@ -118,23 +118,37 @@ CHIEF_JOB = "police_chief"
 
 
 async def stolen_rows(db, player: Player, now: int) -> list[dict[str, Any]]:
-    """Что у бойца угнали: номер, когда и написано ли заявление."""
+    """Что у бойца угнали: номер, когда и написано ли заявление.
+
+    Список собирается по **делам**, а не по отметке на самой машине.
+    Отметку стирает перебитый номер, и хозяин, заглянувший в участок
+    после автомойки, видел бы пустой экран: ни машины, ни заявления,
+    ни следа угона. Дело же завёл сам угон, и перебить его на мойке
+    нельзя.
+
+    Номер в строке — тот, с которым машину увели: по нему заведено
+    дело, по нему её и ищут. Какой знак на ней сейчас, хозяину знать
+    неоткуда, и это правильно.
+    """
     from bot.game.cars import get_car
+    from bot.police_service import my_thefts
 
     out = []
-    for row in await db.stolen_from(player.user_id, now):
-        car = get_car(str(row["code"]))
+    for case in await my_thefts(db, player.user_id):
+        car = get_car(str(case["code"]))
+        filed = bool(case["filed_at"])
         out.append(
             {
-                "id": int(row["id"]),
-                "code": str(row["code"]),
-                "title": car.title if car else str(row["code"]),
-                "plate": str(row["plate"]),
-                "at": club_moment(int(row["stolen_at"])) if row["stolen_at"] else "",
-                "filed": bool(row["stolen_filed"]),
+                "id": int(case["car_id"]),
+                "code": str(case["code"]),
+                "title": car.title if car else str(case["code"]),
+                "plate": str(case["plate"]),
+                "at": club_moment(int(case["stolen_at"]))
+                if case["stolen_at"] else "",
+                "filed": filed,
                 # Кто на ней ездит, пострадавшему не говорим: это дело
                 # полиции, а не повод идти разбираться самому
-                "can_file": not row["stolen_filed"],
+                "can_file": not filed,
             }
         )
     return out
