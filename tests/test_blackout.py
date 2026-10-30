@@ -741,3 +741,36 @@ async def test_the_raid_survives_a_backend_restart(db, tmp_path):
     assert member(again.state, people[0].user_id)["room"] == "O02"
     assert again.state["ends_at"] == NOW + RUN_LIMIT_MINUTES * 60
     await second.close()
+
+
+async def test_a_one_off_window_opens_outside_the_schedule(db):
+    """Разовое окно пускает в рейд, не трогая расписание города."""
+    import os
+    from datetime import datetime
+
+    from bot.blackout_service import window_open, window_opens_at
+    from bot.game.clock import MOSCOW
+
+    def msk(text: str) -> int:
+        return int(datetime.fromisoformat(text).replace(tzinfo=MOSCOW).timestamp())
+
+    os.environ["BLACKOUT_WINDOWS"] = "2026-10-30T23:30/2026-10-31T00:30"
+    try:
+        # Пятница, половина двенадцатого ночи: по расписанию закрыто
+        assert window_open(msk("2026-10-30T23:00")) is False
+        assert window_open(msk("2026-10-30T23:30")) is True
+        assert window_open(msk("2026-10-31T00:29")) is True
+        assert window_open(msk("2026-10-31T00:30")) is False, "окно кончилось"
+        # Перед ним экран показывает именно его, а не вторник
+        when = window_opens_at(msk("2026-10-30T23:00"))
+        assert when == msk("2026-10-30T23:30")
+
+        # Расписание города при этом на месте
+        assert window_open(msk("2026-11-03T19:30")) is True, "вторник"
+        assert window_open(msk("2026-11-03T23:30")) is False
+
+        # Прочерк убирает разовые окна совсем
+        os.environ["BLACKOUT_WINDOWS"] = "-"
+        assert window_open(msk("2026-10-30T23:30")) is False
+    finally:
+        os.environ.pop("BLACKOUT_WINDOWS", None)

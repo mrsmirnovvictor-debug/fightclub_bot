@@ -80,6 +80,7 @@ from bot.game.blackout import (
     WINDOW_TURNS,
     art_url,
     damage_scale,
+    extra_windows,
     door_open,
     hp_scale,
     reward_for,
@@ -133,7 +134,14 @@ def cycle_code(moment: int) -> str:
 
 
 def window_open(moment: int) -> bool:
-    """Открыто ли окно входа прямо сейчас."""
+    """Открыто ли окно входа прямо сейчас.
+
+    Сперва разовые окна: их открывают под плейтест и показ, и
+    расписание города они не трогают.
+    """
+    for opens, closes in extra_windows():
+        if opens <= moment < closes:
+            return True
     code = cycle_code(moment)
     opens = datetime.fromisoformat(code)
     start = datetime.combine(
@@ -145,7 +153,8 @@ def window_open(moment: int) -> bool:
 
 
 def window_opens_at(moment: int) -> int:
-    """Когда откроется следующее окно входа."""
+    """Когда откроется следующее окно входа — по расписанию или разовое."""
+    soon = [one for one, _ in extra_windows() if one > moment]
     here = datetime.fromtimestamp(moment, MOSCOW)
     for ahead in range(0, 9):
         day = (here + timedelta(days=ahead)).date()
@@ -157,8 +166,8 @@ def window_opens_at(moment: int) -> int:
             MOSCOW,
         ).timestamp()
         if opens > moment:
-            return int(opens)
-    return moment
+            return min([int(opens)] + soon)
+    return min([moment] + soon)
 
 
 # ---------- состояние ----------

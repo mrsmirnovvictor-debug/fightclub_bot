@@ -86,6 +86,59 @@ CYCLE_HOUR = 19
 CYCLE_MINUTE = 0
 ENTRY_WINDOW_MINUTES = 180
 
+# ---------- разовые окна ----------
+#
+# Расписание города — вторник и пятница, но иногда окно нужно открыть
+# разово: показать режим, собрать плейтест, проверить правку на живом
+# сервере. Такие окна лежат отдельным списком и не трогают расписание:
+# кончилось — и город снова живёт по вторникам и пятницам.
+#
+# Пишутся парами «начало/конец» по московским часам, без часового
+# пояса в строке — он тут всегда московский. Список можно задать
+# переменной окружения `BLACKOUT_WINDOWS`, через запятую:
+#
+#     BLACKOUT_WINDOWS=2026-10-30T23:30/2026-10-31T00:30
+#
+# Пустая переменная оставляет то, что записано здесь; строка `-`
+# убирает разовые окна совсем.
+
+EXTRA_WINDOWS: tuple[tuple[str, str], ...] = (
+    # Разовое окно под первый плейтест «Чёрного пуска»
+    ("2026-10-30T23:30", "2026-10-31T00:30"),
+)
+
+
+def extra_windows() -> tuple[tuple[int, int], ...]:
+    """Разовые окна входа парами «начало, конец» в секундах эпохи."""
+    import os
+    from datetime import datetime
+
+    from bot.game.clock import MOSCOW
+
+    written = os.getenv("BLACKOUT_WINDOWS", "").strip()
+    if written == "-":
+        return ()
+    if written:
+        pairs = [
+            tuple(one.split("/", 1))
+            for one in written.split(",")
+            if "/" in one
+        ]
+    else:
+        pairs = list(EXTRA_WINDOWS)
+    out: list[tuple[int, int]] = []
+    for start, end in pairs:
+        try:
+            opens = datetime.fromisoformat(start.strip()).replace(
+                tzinfo=MOSCOW
+            )
+            closes = datetime.fromisoformat(end.strip()).replace(tzinfo=MOSCOW)
+        except ValueError:  # pragma: no cover - кривую строку просто мимо
+            continue
+        if closes > opens:
+            out.append((int(opens.timestamp()), int(closes.timestamp())))
+    return tuple(sorted(out))
+
 # ---------- отряд ----------
 
 MIN_PARTY = 3
@@ -766,6 +819,7 @@ __all__ = [
     "check_map",
     "damage_scale",
     "door_open",
+    "extra_windows",
     "group_size",
     "hp_scale",
     "load_station",
