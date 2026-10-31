@@ -2724,12 +2724,23 @@ async def state_for(
     # должен, да и собираются они из карточки игрока, а не из состояния
     fight = body.get("fight")
     if isinstance(fight, dict) and one is not None:
-        from bot.webapp.fight import abilities_payload
+        from bot.webapp.fight import (
+            ATTACK_BUTTONS,
+            abilities_payload,
+            block_buttons,
+            hands_payload,
+        )
 
         if one["room"] == fight.get("room") and not one["down"]:
-            fight["abilities"] = abilities_payload(
-                _restore_tricks(Fighter.from_player(player), one)
-            )
+            me = _restore_tricks(Fighter.from_player(player), one)
+            fight["abilities"] = abilities_payload(me)
+            # Выбор хода на станции тот же, что везде: столбец ударов на
+            # каждую руку с оружием и столбец блока своей ширины.
+            # Считается он по настоящему бойцу с его вещами, а не по
+            # строке участника: в ней нет ни оружия, ни щита
+            fight["hands"] = hands_payload(me)
+            fight["attacks"] = [dict(row) for row in ATTACK_BUTTONS]
+            fight["blocks"] = block_buttons(me.block_width)
     # Склянки из рюкзака: передышки за комнату нет, и это то, чем боец
     # лечится, если ждать десять минут ему некогда
     body["potions"] = _potions_payload(player, one)

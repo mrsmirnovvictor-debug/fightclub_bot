@@ -15173,7 +15173,7 @@ async def test_the_fight_takes_the_screen_and_hands_it_back(server, db):
         # Обе стороны на доске: отряд и зомби, как в любом другом рейде
         assert await page.locator(".raid-mates .stack-card").count() >= 1
         assert await page.locator(".raid-foes .boss-card").count() == 1
-        assert await page.locator("#blackout-body .btn", has_text="Бить"
+        assert await page.locator("#blackout-body #blackout-go"
                                   ).count() == 1
         # И ничего больше ниже шкалы
         for gone in (".stick-pad", ".minimap", ".blackout-items"):
@@ -15222,4 +15222,52 @@ async def test_the_fight_takes_the_screen_and_hands_it_back(server, db):
         await page.wait_for_selector("#blackout-body .stick-row")
         assert pressed["yes"], "кнопка должна дойти до сервера"
         assert await page.locator(".minimap").count() == 1
+        await browser.close()
+
+
+async def test_the_station_picks_the_turn_the_way_every_fight_does(server, db):
+    """Выбор хода на станции — те же столбцы переключателей, что везде.
+
+    Станция рисовала свой ряд мелких кнопок в строку, и боец, который
+    ходит в рейды, видел здесь другой орган управления. Теперь тут
+    `zoneColumns`: столбец на руку с оружием, столбец блока — и блок
+    сразу своей ширины, как на ринге.
+    """
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 2)
+    await act(db, people[0], "lead", {"room": "O02"}, "w1", NOW)
+    body = await state_for(db, people[0], NOW + 10)
+    fight = body["fight"]
+    assert fight and fight["hands"], "столбцы ударов считает сервер"
+    assert len(fight["attacks"]) == 5, "зон удара пять"
+    wide = fight["blocks"][0]["title"].count("+") + 1
+    assert wide >= 2, "блок шире одной зоны, как и везде"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .zone-columns")
+
+        # Столбцов столько же, сколько рук, плюс блок
+        heads = await page.locator("#blackout-body .zone-head"
+                                   ).all_inner_texts()
+        assert len(heads) == len(fight["hands"]) + 1, heads
+        assert "Блок" in heads[-1]
+        # И это переключатели, а не кнопки
+        dots = page.locator("#blackout-body .zone input[type=radio]")
+        assert await dots.count() == 5 + len(fight["blocks"])
+        # Пока ход не намечен целиком, «Вперёд!» не нажать
+        go = page.locator("#blackout-body #blackout-go")
+        assert await go.is_disabled()
+        await page.locator("#blackout-body .zone", has_text="Корпус"
+                           ).first.click()
+        assert await go.is_disabled(), "удар есть, блока нет"
+        await page.locator(
+            "#blackout-body .zone-list"
+        ).last.locator(".zone").first.click()
+        assert not await go.is_disabled()
         await browser.close()

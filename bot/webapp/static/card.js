@@ -13168,13 +13168,13 @@ function blackoutFightBox(data) {
   }
 
   box.appendChild(blackoutBoard(data));
-  box.appendChild(blackoutTurnBox(data));
-  // Приёмы — та же панель, что на ринге и в рейде: боёвка станции
-  // ничем от них не отличается, и шкала энергии тут своя на бой
+  // Приёмы — та же панель, что на ринге и в рейде, и стоит она там же:
+  // над выбором хода. Шкала энергии тут своя на бой
   const tricks = abilityPanel(fight.abilities, (trick) =>
     blackoutAction({ action: "ability", code: trick.code })
   );
   if (tricks) box.appendChild(tricks);
+  box.appendChild(blackoutTurnBox(data));
   if ((fight.waiting || []).length) {
     const said = document.createElement("p");
     said.className = "thing-note";
@@ -13298,52 +13298,93 @@ function blackoutYouCard(one) {
   return box;
 }
 
-let blackoutHit = "head";
-let blackoutGuard = "chest";
+// Намеченный ход: он живёт на странице до нажатия, и экран, который
+// сам себя перерисовывает каждые две секунды, его не сбивает —
+// переключатели отмечаются по нему заново
+let blackoutDraft = { attacks: {}, block: null };
 
+function blackoutHands(fight) {
+  return (fight && fight.hands) || [
+    { hand: 0, icon: "👊", title: "Кулаки", label: "Удар" },
+  ];
+}
+
+function blackoutReady(hands) {
+  return Boolean(blackoutDraft.block)
+    && hands.every((row) => blackoutDraft.attacks[row.hand]);
+}
+
+function paintBlackoutDraft() {
+  document.querySelectorAll("#blackout-body .zone").forEach((label) => {
+    const dot = label.querySelector("input");
+    label.classList.toggle("on", Boolean(dot && dot.checked));
+  });
+  const go = el("blackout-go");
+  if (go) {
+    const fight = (blackoutData || {}).fight || {};
+    go.disabled = Boolean(fight.acted) || !blackoutReady(blackoutHands(fight));
+  }
+}
+
+/** Выбор хода — тот же, что в клубе, в рейде и на стадионе.
+ *
+ * Станция когда-то рисовала свой ряд мелких кнопок в строку: пять зон
+ * удара, под ними пять зон блока. На телефоне в эту строку они
+ * помещались только мелкими, а главное — боец, который ходит в рейды,
+ * здесь видел другой орган управления и должен был переучиваться.
+ * Теперь тут `zoneColumns`: столбец на каждую руку с оружием и столбец
+ * блока своей ширины.
+ *
+ * Со второй рукой это ещё и честнее: раньше экран слал одну зону на
+ * оба удара, и вторая рука била туда же, куда первая, — выбрать ей
+ * цель было нечем.
+ */
 function blackoutTurnBox(data) {
   const fight = data.fight;
   const box = document.createElement("div");
-  box.className = "blackout-turn";
+  box.className = "turn-form";
+  const hands = blackoutHands(fight);
 
-  const zones = [
-    ["head", "Голова"], ["chest", "Корпус"], ["belly", "Живот"],
-    ["belt", "Пояс"], ["legs", "Ноги"],
-  ];
-  box.appendChild(blackoutZoneRow("Бью", zones, blackoutHit, (code) => {
-    blackoutHit = code;
-    renderBlackout(blackoutData);
-  }));
-  box.appendChild(blackoutZoneRow("Закрываю", zones, blackoutGuard, (code) => {
-    blackoutGuard = code;
-    renderBlackout(blackoutData);
-  }));
+  box.appendChild(zoneColumns(
+    hands, fight.attacks || [], fight.blocks || [],
+    () => blackoutDraft, "blackout", paintBlackoutDraft
+  ));
 
-  const buttons = document.createElement("div");
-  buttons.className = "thing-buttons";
-  buttons.appendChild(
-    button(fight.acted ? "Ждём остальных" : "Бить", {
-      disabled: Boolean(fight.acted),
-      onClick: () => blackoutAction({
-        action: "fight",
-        attacks: [blackoutHit],
-        block: [blackoutGuard],
-        target: blackoutTarget,
-      }),
-    })
-  );
+  const go = document.createElement("button");
+  go.type = "button";
+  go.id = "blackout-go";
+  go.className = "btn wide";
+  go.textContent = fight.acted ? "Ждём остальных" : "Вперёд!";
+  go.disabled = Boolean(fight.acted) || !blackoutReady(hands);
+  go.addEventListener("click", () => {
+    const move = {
+      action: "fight",
+      // Зоны уходят по рукам по порядку: служба раздаёт их ударам, а
+      // блок разводит на свою ширину сама
+      attacks: hands.map((row) => blackoutDraft.attacks[row.hand]),
+      block: [blackoutDraft.block],
+      target: blackoutTarget,
+    };
+    blackoutDraft = { attacks: {}, block: null };
+    blackoutAction(move);
+  });
+  box.appendChild(go);
+
   if (fight.arena) {
+    const buttons = document.createElement("div");
+    buttons.className = "thing-buttons";
     buttons.appendChild(
       button(fight.arena.title, {
         secondary: true,
         hint: fight.arena.hint,
+        disabled: Boolean(fight.acted),
         onClick: () => blackoutAction({
           action: "fight", arena: fight.arena.code,
         }),
       })
     );
+    box.appendChild(buttons);
   }
-  box.appendChild(buttons);
   return box;
 }
 
@@ -13387,24 +13428,6 @@ function blackoutPotionBox(data) {
     : "Пока целы — склянки побереги.";
   box.appendChild(said);
   return box;
-}
-
-function blackoutZoneRow(title, zones, current, onPick) {
-  const row = document.createElement("div");
-  row.className = "blackout-zones";
-  const name = document.createElement("span");
-  name.className = "blackout-zone-title";
-  name.textContent = title;
-  row.appendChild(name);
-  zones.forEach(([code, label]) => {
-    const act = button(label, {
-      secondary: current !== code,
-      onClick: () => onPick(code),
-    });
-    act.classList.add("btn-small");
-    row.appendChild(act);
-  });
-  return row;
 }
 
 // Лидер по умолчанию уводит отряд разом, но может пойти и один:
