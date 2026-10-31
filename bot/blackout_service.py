@@ -36,7 +36,7 @@ from bot.database import Database
 from bot.game.blackout import (
     ARENA_ACTIONS,
     BOSSES,
-    BOSS_HP_SHARE,
+    BOSS_FORCE,
     BOSS_LEVEL,
     BOSS_REINFORCEMENTS,
     CLEARANCE,
@@ -48,7 +48,6 @@ from bot.game.blackout import (
     DEFENSE_WAVES,
     DEFENSE_WAVE_TITLES,
     DRAINAGE,
-    EDGE_SECONDS,
     EVACUATION_PLAN,
     EXTRACTED,
     FLAG_TITLES,
@@ -61,7 +60,6 @@ from bot.game.blackout import (
     MAX_PARTY,
     MIN_PARTY,
     POWER_CORE,
-    PRESS_CAP,
     QUEST_ITEMS,
     RELAY_A,
     RELAY_B,
@@ -78,11 +76,10 @@ from bot.game.blackout import (
     VALVE_A,
     VALVE_B,
     WINDOW_TURNS,
+    boss_hp,
     art_url,
-    damage_scale,
     extra_windows,
     door_open,
-    hp_scale,
     reward_for,
     station,
 )
@@ -91,7 +88,9 @@ from bot.game.blackout import CYCLE_DAYS, CYCLE_HOUR, CYCLE_MINUTE
 from bot.game.blackout import ENTRY_WINDOW_MINUTES
 from bot.game.classes import FIGHTER_CLASSES, Zone, block_combo
 from bot.game.clock import MOSCOW
-from bot.game.combat import Action, Fighter, resolve_round
+from bot.game.abilities import Charge, MAX_ENERGY
+from bot.game.combat import Action, Fighter, group_aftermath, heal_line
+from bot.game.combat import resolve_round, spread_heal
 from bot.game.health import now_ts
 from bot.game.reference import developed_stats
 from bot.models import Player
@@ -179,8 +178,6 @@ def blank_state(cycle: str, leader_id: int, now: int) -> dict[str, Any]:
         "cycle": cycle,
         "leader": leader_id,
         "party": 0,
-        "hp_scale": 1.0,
-        "dmg_scale": 1.0,
         "opened_at": now,
         "started_at": 0,
         "ends_at": 0,
@@ -219,7 +216,51 @@ def member_row(player: Player, now: int, bot: bool = False) -> dict[str, Any]:
         "left": 0,
         "extracted": 0,
         "bot": bot,
+        # Приёмы: шкала и заготовки живут внутри боя, но между
+        # разменами боец собирается заново — значит, их надо помнить
+        # тут, иначе каждое нажатие начиналось бы с нуля
+        "energy": 0,
+        "charges": [],
+        "pressed": 0,
     }
+
+
+def _restore_tricks(fighter: Fighter, row: dict) -> Fighter:
+    """Вернуть бойцу шкалу энергии и нажатые заготовки из состояния.
+
+    В клубе боец живёт в памяти весь бой, и шкала живёт вместе с ним. В
+    подземелье бой идёт часами и через базу: боец собирается на каждый
+    размен заново. Поэтому шкала и заготовки лежат в строке участника и
+    возвращаются сюда — иначе приёмы в рейде на станцию были бы
+    нажимаемы, но бесполезны.
+    """
+    from bot.content.abilities import CATALOGUE
+
+    fighter.energy = max(0, min(MAX_ENERGY, int(row.get("energy") or 0)))
+    fighter.pressed = max(0, int(row.get("pressed") or 0))
+    fighter.charges = [
+        Charge(
+            ability=CATALOGUE[code],
+            tier=fighter.loadout.slots.get(code, CATALOGUE[code].tier),
+        )
+        for code in (row.get("charges") or [])
+        if code in CATALOGUE
+    ]
+    return fighter
+
+
+def _keep_tricks(row: dict, fighter: Fighter) -> None:
+    """Сложить шкалу и заготовки обратно в строку участника."""
+    row["energy"] = int(fighter.energy)
+    row["pressed"] = int(fighter.pressed)
+    row["charges"] = [charge.ability.code for charge in fighter.charges]
+
+
+def _forget_tricks(row: dict) -> None:
+    """Бой кончился — шкала гаснет. Энергию между комнатами не носят."""
+    row["energy"] = 0
+    row["pressed"] = 0
+    row["charges"] = []
 
 
 def _note(state: dict, text: str, now: int) -> None:
@@ -591,8 +632,6 @@ async def start_run(
         )
     party = len(run.state["members"])
     run.state["party"] = party
-    run.state["hp_scale"] = hp_scale(party)
-    run.state["dmg_scale"] = damage_scale(party)
     run.state["started_at"] = moment
     run.state["ends_at"] = moment + RUN_LIMIT_MINUTES * 60
     for one in run.state["members"].values():
@@ -601,8 +640,8 @@ async def start_run(
     _see_here(run.state, moment)
     _note(
         run.state,
-        f"Отряд на проходной. Состав {party}: враги "
-        f"×{run.state['hp_scale']} по здоровью.",
+        f"Отряд на проходной. Состав {party}: группы и запас боссов "
+        f"посчитаны на столько человек.",
         moment,
     )
     if not await db.blackout_write(
@@ -633,8 +672,16 @@ def exits_of(state: dict, room: str) -> list[dict[str, Any]]:
             continue
         why = door_open(door, flags)
         seen = there in (state.get("seen") or {})
+        here = place.room(room)
+        # Куда эта дверь ведёт на схеме. Джойстик толкают в сторону, а
+        # не в список: по этому вектору и выбирается дверь
+        dx = neighbour.x - (here.x if here else neighbour.x)
+        dy = neighbour.y - (here.y if here else neighbour.y)
         out.append({
             "room": there,
+            "dx": dx,
+            "dy": dy,
+            "where": _compass(dx, dy),
             # Непосещённую комнату называем дверью, а не именем: туман
             # показывает, что ход есть, но не что за ним
             "name": neighbour.name if seen else "Неизвестный проход",
@@ -648,6 +695,28 @@ def exits_of(state: dict, room: str) -> list[dict[str, Any]]:
             and there not in (state.get("cleared") or {}),
         })
     return out
+
+
+# Восемь румбов: столько различает палец на джойстике, и столько же
+# дверей бывает у комнаты на схеме
+_ROSE = (
+    (0, "восток"), (45, "юго-восток"), (90, "юг"), (135, "юго-запад"),
+    (180, "запад"), (225, "северо-запад"), (270, "север"),
+    (315, "северо-восток"),
+)
+
+
+def _compass(dx: int, dy: int) -> str:
+    """Куда эта дверь по схеме. Ось Y вниз, как в svg."""
+    import math
+
+    if not dx and not dy:
+        return ""
+    angle = math.degrees(math.atan2(dy, dx)) % 360
+    best = min(_ROSE, key=lambda one: min(
+        abs(angle - one[0]), 360 - abs(angle - one[0])
+    ))
+    return best[1]
 
 
 def _locked_here(state: dict, room: str) -> str:
@@ -773,26 +842,38 @@ def foe_row(
     }
 
 
-def _foe_fighter(row: dict, boss_code: str = "") -> Fighter:
+def _foe_fighter(row: dict) -> Fighter:
     """Собрать противника в бойца: здоровье берётся из состояния.
 
     Запас считается в два захода. Сперва боец без прибавок — столько
     здоровья даёт ему класс и уровень; потом, если в рейде ему
     отмерено больше (отряд велик, босс крепок), недостающее
     дописывается прибавкой. Иначе отмеренное число удваивалось бы.
+
+    Своё оружие — только у босса, и узнаётся оно по самой строке, а не
+    по комнате: помощники, которых он зовёт, пожарного топора не
+    берут.
     """
     from bot.game.equipment import Equipment, OwnedItem, get_item
+    from bot.game.reference import best_kit
 
     cls = FIGHTER_CLASSES[row["class"]]
-    rules = BOSSES.get(boss_code or row.get("boss") or "")
-    equipment = Equipment()
+    rules = BOSSES.get(row.get("boss") or "")
+    level = int(row["level"])
+    # Зомби одет, а не гол. Это не придирка к виду: голый боец
+    # пятнадцатого уровня втрое слабее одетого, и мерить подземелье по
+    # нему — значит мерить пустоту. Рейд клуба одевает боссов так же:
+    # чего нет своего, добирается лучшим с прилавка
+    worn = {
+        slot: OwnedItem(item=item, slot=slot)
+        for slot, item in best_kit(cls, level).items()
+    }
     if rules is not None:
-        worn = {}
         for code in (rules.weapon, rules.offhand):
             item = get_item(code) if code else None
             if item is not None:
                 worn[item.slot] = OwnedItem(item=item, slot=item.slot)
-        equipment = Equipment(items=worn)
+    equipment = Equipment(items=worn)
     stats = developed_stats(
         cls, int(row.get("build") or row["level"])
     ).merge(equipment.bonus)
@@ -812,36 +893,46 @@ def _foe_fighter(row: dict, boss_code: str = "") -> Fighter:
 
 
 def _player_fighter(row: dict, player: Player | None, key: str) -> Fighter:
-    """Боец отряда: вещи и характеристики свои, здоровье — из рейда."""
+    """Боец отряда: вещи, приёмы и характеристики свои, здоровье — из рейда."""
     if player is None or row.get("bot"):
         fighter = _bot_fighter(key, row)
     else:
         fighter = Fighter.from_player(player)
     fighter.hp = max(0, min(int(row["hp"]), fighter.max_hp))
     row["max"] = fighter.max_hp
-    return fighter
+    return _restore_tricks(fighter, row)
 
 
 def squad_for(
-    room: str, scale: float, size: int = 0, party: int = BEST_PARTY
+    room: str, size: int = 0, party: int = BEST_PARTY
 ) -> list[dict]:
-    """Обычная группа этой комнаты под такой отряд."""
+    """Обычная группа этой комнаты под такой отряд.
+
+    Состав растёт числом, а не здоровьем: множителя «крепче за
+    состав» тут нет и не было — иначе отряд считался бы дважды, и
+    пятеро, которым положено на зомби больше, получали бы этого зомби
+    ещё и крепче.
+
+    Размен тут раздельный: отряд разведён по врагам попарно, и каждый
+    отвечает своему. Значит, важно одно — сколько вражеского здоровья
+    приходится на одного пришедшего. Одному против двоих тяжелее
+    вдвое, и это та самая сложность, которой ждут от соло.
+    """
     count = size or group_size(SQUAD_SIZE.get(room, 3), party)
     return [
-        foe_row(index, f"Зомби-боец {index + 1}", FOE_LEVEL, "warrior", scale,
+        foe_row(index, f"Зомби-боец {index + 1}", FOE_LEVEL, "warrior", 1.0,
                 build=FOE_BUILD)
         for index in range(count)
     ]
 
 
-def boss_foes(code: str, party: int, scale: float) -> list[dict]:
-    """Босс арены: один, зато с запасом на весь отряд."""
+def boss_foes(code: str, party: int) -> list[dict]:
+    """Босс арены: один, зато с запасом, посчитанным на отряд."""
     rules = BOSSES[code]
-    share = BOSS_HP_SHARE[code]
     level = BOSS_LEVEL[code]
-    row = foe_row(0, rules.title, level, rules.class_code, scale, boss=code,
+    row = foe_row(0, rules.title, level, rules.class_code, 1.0, boss=code,
                   art=rules.image)
-    row["hp"] = row["max"] = int(row["max"] * (1 + share * max(0, party - 1)))
+    row["hp"] = row["max"] = boss_hp(int(row["max"]), party)
     return [row]
 
 
@@ -855,18 +946,16 @@ def open_fight(state: dict, room: str, now: int) -> dict | None:
         return None
     if state.get("fight"):
         return state["fight"]
-    scale = float(state.get("hp_scale") or 1.0)
     party = int(state.get("party") or 4)
     if here.boss:
         rules = BOSSES[here.boss]
-        foes = boss_foes(here.boss, party, scale)
+        foes = boss_foes(here.boss, party)
         fight = {
             "room": room,
             "kind": "boss",
             "boss": here.boss,
             "turn": 1,
             "foes": foes,
-            "choices": {},
             "telegraph": {},
             "window": 0,
             "immune": 0,
@@ -889,8 +978,7 @@ def open_fight(state: dict, room: str, now: int) -> dict | None:
             "kind": "squad",
             "boss": "",
             "turn": 1,
-            "foes": squad_for(room, scale, party=party),
-            "choices": {},
+            "foes": squad_for(room, party=party),
             "telegraph": {},
             "window": 0,
             "immune": 0,
@@ -915,19 +1003,24 @@ def here_fighters(state: dict, room: str) -> list[str]:
     ]
 
 
-def choose(
+def strike(
     run: Run, user_id: int, attacks: list[str], block: list[str],
     arena: str, now: int, target: int = 0,
 ) -> str:
-    """Записать выбор бойца на ход. Ход считается, когда выбрали все.
+    """Размен этого бойца. Нажал — посчитано сразу, как в рейде.
 
-    Действие на арене занимает обычный ход и доступно любому классу:
-    отряд без конкретной роли обязан остаться проходимым.
+    Ждать остальных нельзя: в подземелье отряд разбредается по
+    комнатам, кто-то отвалился, кто-то думает минуту. Поэтому ход
+    закрывается на том, кто его сделал: удар, ответ противника и
+    развязка считаются тут же.
 
-    `target` — по кому бить. Ноль значит «по главному»: босс, пока он
-    жив, иначе первый живой. Без выбора цели отряд при подкреплениях
-    переставал бы доставать до босса вовсе — каждый дрался бы со
-    своим помощником, а босс стоял бы в стороне.
+    **Волна — это по разу на каждого.** Пока в волне остались не
+    ходившие, бой стоит на том же номере; отстрелялись все — волна
+    закрывается, и босс делает своё: меняет фазу, зовёт помощников и
+    объявляет следующий удар.
+
+    `arena` вместо удара — действие на арене: оно тоже занимает ход и
+    доступно любому классу.
     """
     state = run.state
     fight = state.get("fight")
@@ -939,30 +1032,256 @@ def choose(
     if one["down"]:
         raise BlackoutError("Ты не на ногах.")
     one["seen"] = now
+    key = str(user_id)
+    if key in (fight.get("acted") or []):
+        raise BlackoutError("В этой волне ты уже ходил. Ждём остальных.")
+
+    rules = BOSSES.get(fight.get("boss") or "")
+    lines: list[str] = []
+
     if arena:
         if arena not in ARENA_ACTIONS:
             raise BlackoutError("Такого действия на арене нет.")
-        fight["choices"][str(user_id)] = {
-            "attacks": [], "block": [], "arena": arena,
-        }
+        lines.append(_arena(state, fight, key, arena, now))
     else:
         zones = [z for z in (_zone(one) for one in attacks) if z]
         guard = [z for z in (_zone(one) for one in block) if z]
         if not zones or not guard:
             raise BlackoutError("Выбери и удар, и блок.")
-        fight["choices"][str(user_id)] = {
-            "attacks": [z.value for z in zones],
-            "block": [z.value for z in guard],
-            "arena": "",
-            "target": int(target or 0),
-        }
+        lines += _exchange(run, key, zones, guard, target, now)
+
+    fight.setdefault("acted", []).append(key)
+
+    # Победа и поражение считаются сразу: добитого врага не держат
+    # живым до конца волны, а упавший отряд не ходит дальше
+    if not [one for one in fight["foes"] if one["hp"] > 0]:
+        return " ".join(lines + [_victory(run, now)])
+    if not here_fighters(state, fight["room"]):
+        return " ".join(lines + [_wipe(run, now)])
+
     waiting = [
-        key for key in here_fighters(state, fight["room"])
-        if key not in fight["choices"] and not _answers_itself(state, key, now)
+        name for name in here_fighters(state, fight["room"])
+        if name not in fight["acted"]
     ]
-    if waiting:
-        return f"Ход принят. Ждём: {len(waiting)}."
-    return "Ход принят."
+    if not waiting:
+        lines += _close_wave(run, fight, rules, now)
+    fight["log"] = (fight.get("log") or []) + lines
+    del fight["log"][:-40]
+    return " ".join(lines) or "Ход посчитан."
+
+
+def _exchange(
+    run: Run, key: str, zones: list, guard: list, target: int, now: int
+) -> list[str]:
+    """Один размен: боец и его противник бьют друг друга.
+
+    Считает это тот же движок, что и ринг клуба. Усталость растянута
+    на длину рейда, а не дуэли: подземелье идёт часами, и разгон
+    дуэльной усталости выбивал бы по сотне с пятой волны.
+    """
+    state = run.state
+    fight = state["fight"]
+    rng = random.Random(f"{state.get('seed')}:{fight['room']}:{key}:{fight['turn']}")
+    foes = [one for one in fight["foes"] if one["hp"] > 0]
+    row = state["members"][key]
+    me = _player_fighter(row, _PLAYERS.get(int(key)), key)
+    here = here_fighters(state, fight["room"])
+    place = here.index(key) if key in here else 0
+    foe_row_now = _target_of(foes, target, place)
+    foe = _foe_fighter(foe_row_now)
+
+    # Блок берётся по ширине бойца, а не по числу нажатых кнопок: в
+    # клубе человек выбирает середину блока, а движок разводит её на
+    # две зоны, а со щитом на три. Подземелье когда-то брало ровно
+    # нажатое — и отряд входил на станцию с блоком в одну зону, то
+    # есть втрое тоньше, чем тот же боец на ринге
+    if len(guard) < me.block_width:
+        guard = list(block_combo(guard[0], me.block_width))
+    # Удары — по числу рук. Вторая рука с оружием бьёт туда же, если
+    # экран прислал одну зону: оставлять её без удара нечестно
+    while len(zones) < me.attacks_per_round:
+        zones.append(zones[-1])
+
+    mine = Action(attacks=tuple(zones[: me.attacks_per_round]),
+                  block=tuple(guard))
+    theirs = Action(
+        attacks=tuple(
+            rng.choice(list(Zone)) for _ in range(foe.attacks_per_round)
+        ),
+        block=block_combo(rng.choice(list(Zone)), foe.block_width),
+    )
+    before_foe, before_me = foe.hp, me.hp
+    result = resolve_round(
+        me, mine, foe, theirs, fight["turn"], rng, MAX_FIGHT_TURNS
+    )
+    hit = before_foe - foe.hp
+    took = before_me - me.hp
+
+    # Рука босса тяжелее обычной: он отвечает каждому, кто по нему
+    # ударил, и отвечает всерьёз. У обычного заражённого множителя нет
+    force = BOSS_FORCE.get(foe_row_now.get("boss") or "", 1.0)
+    if took and force != 1.0:
+        extra = int(took * force) - took
+        me.hp = max(0, me.hp - extra)
+        took += extra
+
+    # Окно уязвимости от действия на арене, щит босса и объявленный удар
+    if hit and fight.get("window"):
+        extra = int(hit * 0.4)
+        foe.hp = max(0, foe.hp - extra)
+        hit += extra
+    elif hit and fight.get("shield"):
+        back = int(hit * 0.5)
+        foe.hp = min(foe.max_hp, foe.hp + back)
+        hit -= back
+    mark = (fight.get("telegraph") or {}).get("target", "")
+    lines: list[str] = []
+    if key == mark and not fight.get("window") and took:
+        rules = BOSSES.get(fight.get("boss") or "")
+        extra = int(took * 0.5)
+        me.hp = max(0, me.hp - extra)
+        took += extra
+        lines.append(
+            f"{rules.telegraph_title if rules else 'Удар'} достался "
+            f"{row['name']}."
+        )
+
+    foe_row_now["hp"] = foe.hp
+    row["hp"] = me.hp
+    _keep_tricks(row, me)
+    lines.append(
+        f"{row['name']} → {foe_row_now['name']}: −{hit}, в ответ −{took}."
+    )
+    # Вторая половина приёмов десятой ступени — та, что достаёт не
+    # противника, а комнату: «Массовый удар» бьёт остальных зомби,
+    # «Зов крови» и «Бог трикстера» кладут заготовку всему отряду.
+    # Считает её тот же код, что и в рейде, иначе эти приёмы в
+    # подземелье работали бы наполовину и молча
+    lines += _room_echo(state, fight, me, foe, result)
+    if foe.hp <= 0:
+        lines.append(f"{foe_row_now['name']} повержен.")
+    if me.hp <= 0:
+        row["down"] = True
+        lines.append(f"{row['name']} упал.")
+    return lines
+
+
+# Стороны в комнате: отряд заодно, заражённые против
+SQUAD_SIDE, FOE_SIDE = 0, 1
+
+
+def _room_echo(
+    state: dict, fight: dict, me: Fighter, foe: Fighter, result
+) -> list[str]:
+    """Разнести по комнате то, что приёмы этого размена сделали сверх удара."""
+    from bot.game.narrator import echo_lines
+
+    room = fight["room"]
+    field: dict[int, Fighter] = {me.user_id: me, foe.user_id: foe}
+    sides: dict[int, int] = {me.user_id: SQUAD_SIDE, foe.user_id: FOE_SIDE}
+    mates: list[tuple[dict, Fighter]] = []
+    for key in here_fighters(state, room):
+        if int(key) == me.user_id:
+            continue
+        row = state["members"][key]
+        mate = _player_fighter(row, _PLAYERS.get(int(key)), key)
+        mates.append((row, mate))
+        field[mate.user_id] = mate
+        sides[mate.user_id] = SQUAD_SIDE
+    others: list[tuple[dict, Fighter]] = []
+    for one in fight["foes"]:
+        if one["hp"] <= 0 or int(one["id"]) == foe.user_id:
+            continue
+        other = _foe_fighter(one)
+        others.append((one, other))
+        field[other.user_id] = other
+        sides[other.user_id] = FOE_SIDE
+    echoes = group_aftermath(result.strikes, field, sides)
+    if not echoes:
+        return []
+    for row, mate in mates:
+        row["hp"] = mate.hp
+        _keep_tricks(row, mate)
+    for one, other in others:
+        one["hp"] = other.hp
+    return list(echo_lines(echoes, field))
+
+
+def use_ability(run: Run, user_id: int, code: str, now: int) -> str:
+    """Нажать приём в подземелье. Жмут до удара, ровно как в рейде.
+
+    Боёвка станции — та же, что на ринге и в рейде, и приёмы к ней
+    прилагаются: без них «аналогично рейду» кончалось бы на ударе и
+    блоке. Шкала копится внутри боя, между комнатами гаснет, а
+    лечение расходится по тем, кто стоит в этой же комнате.
+    """
+    state = run.state
+    fight = state.get("fight")
+    if not fight:
+        raise BlackoutError("Приёмы держат на бой.")
+    one = member(state, user_id)
+    if one is None or one["room"] != fight["room"]:
+        raise BlackoutError("Ты не в этой комнате.")
+    if one["down"]:
+        raise BlackoutError("Ты не на ногах.")
+    one["seen"] = now
+    player = _PLAYERS.get(int(user_id))
+    me = _player_fighter(one, player, str(user_id))
+    if code not in me.loadout:
+        raise BlackoutError("Этот приём не выучен.")
+    # Причину отказа называет движок: он один знает, что именно не
+    # сложилось — норма хода, лежащая заготовка или шкала
+    try:
+        charge = me.use(code)
+    except ValueError as error:
+        raise BlackoutError(str(error)) from error
+    ability = charge.ability
+    if not ability.heal:
+        _keep_tricks(one, me)
+        said = f"{ability.icon} {ability.title} наготове."
+    else:
+        gained = me.heal_by(ability.heal)
+        me.charges.pop()
+        mates: list[tuple[dict, Fighter]] = []
+        for key in here_fighters(state, fight["room"]):
+            if int(key) == int(user_id):
+                continue
+            row = state["members"][key]
+            mates.append((row, _player_fighter(row, _PLAYERS.get(int(key)), key)))
+        healed = spread_heal(ability, me, [fighter for _, fighter in mates])
+        for row, fighter in mates:
+            if fighter.user_id in healed:
+                row["hp"] = fighter.hp
+        one["hp"] = me.hp
+        _keep_tricks(one, me)
+        said = heal_line(ability, gained, len(healed))
+    fight["log"] = (fight.get("log") or []) + [said]
+    del fight["log"][:-40]
+    return said
+
+
+def _close_wave(run: Run, fight: dict, rules, now: int) -> list[str]:
+    """Волна закрыта: все отходили. Дальше ход за ареной и боссом."""
+    state = run.state
+    rng = random.Random(f"{state.get('seed')}:{fight['room']}:w{fight['turn']}")
+    lines: list[str] = []
+    if rules is not None:
+        lines += _boss_turn(state, fight, rules, rng, now)
+    if fight.get("window"):
+        fight["window"] -= 1
+    if fight.get("immune"):
+        fight["immune"] -= 1
+    fight["acted"] = []
+    fight["turn"] += 1
+    # Норма приёмов на ход — своя у каждой волны
+    for key in here_fighters(state, fight["room"]):
+        state["members"][key]["pressed"] = 0
+    return lines
+
+
+# Игроки текущей команды: служба подставляет их сюда перед разменом,
+# чтобы боец собирался с его настоящими вещами и характеристиками
+_PLAYERS: dict[int, Player] = {}
 
 
 def _answers_itself(state: dict, key: str, now: int) -> bool:
@@ -971,33 +1290,38 @@ def _answers_itself(state: dict, key: str, now: int) -> bool:
     return bool(one.get("bot")) or now - int(one.get("seen") or 0) > AFK_SECONDS
 
 
-def ready_to_resolve(state: dict, now: int) -> bool:
-    """Все ли отстрелялись: за ботов и молчащих отвечает сервер."""
-    fight = state.get("fight")
-    if not fight:
-        return False
-    here = here_fighters(state, fight["room"])
-    if not here:
-        return False
-    return all(
-        key in fight["choices"] or _answers_itself(state, key, now)
-        for key in here
-    )
+def auto_turns(run: Run, now: int, limit: int = 8) -> list[str]:
+    """Отходить за тех, за кого отвечает сервер: ботов и ушедших.
 
-
-def _auto_action(row: dict, fight: dict, rng: random.Random) -> dict:
-    """Чем ходит тот, за кого отвечает сервер.
-
-    Бот не изображает человека: он прикрывается и бьёт. Если на арене
-    есть нужное действие и его никто не нажал — нажимает он: отряд из
-    одного живого не должен упираться в кнопку.
+    Зовётся после живого хода и при взгляде на бой. Без этого отряд с
+    одним отключившимся вставал бы намертво: волна не закрывается, пока
+    не отходили все.
     """
-    zones = list(Zone)
-    return {
-        "attacks": [rng.choice(zones).value],
-        "block": [one.value for one in block_combo(rng.choice(zones), 2)],
-        "arena": "",
-    }
+    said: list[str] = []
+    for _ in range(limit):
+        state = run.state
+        fight = state.get("fight")
+        if not fight:
+            break
+        here = here_fighters(state, fight["room"])
+        waiting = [
+            key for key in here
+            if key not in (fight.get("acted") or [])
+            and _answers_itself(state, key, now)
+        ]
+        if not waiting:
+            break
+        key = waiting[0]
+        rng = random.Random(f"{state.get('seed')}:{key}:{fight['turn']}")
+        zones = list(Zone)
+        said.append(
+            strike(
+                run, int(key), [rng.choice(zones).value],
+                [rng.choice(zones).value],
+                "", now,
+            )
+        )
+    return said
 
 
 def _target_of(foes: list[dict], want: int, index: int) -> dict:
@@ -1015,143 +1339,6 @@ def _target_of(foes: list[dict], want: int, index: int) -> dict:
 def _telegraph_target(state: dict, fight: dict, rng: random.Random) -> str:
     here = here_fighters(state, fight["room"])
     return rng.choice(here) if here else ""
-
-
-def resolve(run: Run, now: int, rng: random.Random | None = None,
-            players: dict[int, Player] | None = None) -> str:
-    """Посчитать ход боя. Считает сервер: клиент не присылает ни урона,
-    ни победы.
-    """
-    state = run.state
-    fight = state.get("fight")
-    if not fight:
-        raise BlackoutError("Боя сейчас нет.")
-    rng = rng or random.Random(
-        f"{state.get('seed')}:{fight['room']}:{fight['turn']}"
-    )
-    players = players or {}
-    room = fight["room"]
-    here = here_fighters(state, room)
-    if not here:
-        return "В комнате некому драться."
-
-    rules = BOSSES.get(fight.get("boss") or "")
-    lines: list[str] = []
-
-    # 1. Действия на арене: они занимают ход и открывают окно
-    arena_done: set[str] = set()
-    for key in here:
-        pick = fight["choices"].get(key)
-        if pick and pick.get("arena"):
-            said = _arena(state, fight, key, pick["arena"], now)
-            if said:
-                lines.append(said)
-            arena_done.add(key)
-
-    # 2. Размены: каждый боец против своего противника по кругу
-    foes = [one for one in fight["foes"] if one["hp"] > 0]
-    if not foes:
-        return _victory(run, now)
-    squad: dict[str, Fighter] = {}
-    for index, key in enumerate(here):
-        row = state["members"][key]
-        fighter = _player_fighter(row, players.get(int(key)), key)
-        squad[key] = fighter
-    enemies = {one["id"]: _foe_fighter(one, fight.get("boss") or "") for one in foes}
-
-    mark = (fight.get("telegraph") or {}).get("target", "")
-    kind = (fight.get("telegraph") or {}).get("kind", "")
-    soft = float(state.get("dmg_scale") or 1.0)
-    # Давление комнаты: сколько врагов приходится на одного бойца.
-    # Размен в движке попарный, а в комнате драка общая — один босс
-    # не бьёт каждого в полную силу, зато шестеро зомби на троих бьют
-    # вдвое чаще. Без этой доли босс отрабатывал бы свой удар столько
-    # раз, сколько людей пришло, и не падал бы никогда
-    press = min(
-        PRESS_CAP, max(0.0, len(foes)) / max(1, len(here))
-    ) * soft
-
-    for index, key in enumerate(here):
-        if key in arena_done:
-            continue
-        pick = fight["choices"].get(key)
-        if pick is None:
-            pick = _auto_action(state["members"][key], fight, rng)
-        foe_row_now = _target_of(foes, pick.get("target") or 0, index)
-        foe = enemies[foe_row_now["id"]]
-        if foe.hp <= 0:
-            continue
-        mine = Action(
-            attacks=tuple(
-                z for z in (_zone(one) for one in pick["attacks"]) if z
-            ),
-            block=tuple(z for z in (_zone(one) for one in pick["block"]) if z),
-        )
-        theirs = Action(
-            attacks=tuple(
-                rng.choice(list(Zone)) for _ in range(foe.attacks_per_round)
-            ),
-            block=block_combo(rng.choice(list(Zone)), foe.block_width),
-        )
-        before_foe, before_me = foe.hp, squad[key].hp
-        resolve_round(squad[key], mine, foe, theirs, fight["turn"], rng,
-                      MAX_FIGHT_TURNS)
-        hit = before_foe - foe.hp
-        took = before_me - squad[key].hp
-        # Делим пришедшийся урон по давлению комнаты
-        if took:
-            want = int(took * press)
-            squad[key].hp = max(
-                0, min(squad[key].max_hp, before_me - want)
-            )
-            took = before_me - squad[key].hp
-        # Окно уязвимости: свет, снятая броня или снятый щит
-        if hit and fight.get("window"):
-            extra = int(hit * 0.4)
-            foe.hp = max(0, foe.hp - extra)
-            hit += extra
-        elif hit and fight.get("shield"):
-            back = int(hit * 0.5)
-            foe.hp = min(foe.max_hp, foe.hp + back)
-            hit -= back
-        # Телеграф: отмеченный получает больше, если свет не горит
-        if key == mark and kind and not fight.get("window"):
-            extra = int(max(1, took) * 0.5 * soft)
-            squad[key].hp = max(0, squad[key].hp - extra)
-            took += extra
-            lines.append(
-                f"{rules.telegraph_title if rules else 'Удар'}: "
-                f"{state['members'][key]['name']} принял на себя."
-            )
-        foe_row_now["hp"] = foe.hp
-        state["members"][key]["hp"] = squad[key].hp
-        if squad[key].hp <= 0:
-            state["members"][key]["down"] = True
-            lines.append(f"{state['members'][key]['name']} упал.")
-        if foe.hp <= 0:
-            lines.append(f"{foe.name} повержен.")
-
-    # 3. Босс готовит следующий удар и зовёт своих
-    fight["telegraph"] = {}
-    if rules is not None:
-        lines += _boss_turn(state, fight, rules, rng, now)
-    if fight.get("window"):
-        fight["window"] -= 1
-    if fight.get("immune"):
-        fight["immune"] -= 1
-    fight["foes"] = [one for one in fight["foes"] if one["hp"] > 0] + [
-        one for one in fight["foes"] if one["hp"] <= 0 and False
-    ]
-    fight["choices"] = {}
-    fight["turn"] += 1
-    fight["log"] = (fight.get("log") or []) + lines
-    del fight["log"][:-40]
-
-    if not [one for one in fight["foes"] if one["hp"] > 0]:
-        return _victory(run, now)
-    if not here_fighters(state, room):
-        return _wipe(run, now)
-    return " ".join(lines) or "Ход посчитан."
 
 
 def _boss_turn(
@@ -1185,12 +1372,11 @@ def _boss_turn(
     ]
     if phase >= 1 and fight.get("calls", 0) < cap and not standing:
         fight["calls"] = fight.get("calls", 0) + 1
-        scale = float(state.get("hp_scale") or 1.0)
         start = len(fight["foes"])
         for number in range(REINFORCEMENT_SIZE):
             fight["foes"].append(
                 foe_row(start + number, f"Помощник {start + number}",
-                        FOE_LEVEL, "warrior", scale, build=FOE_BUILD)
+                        FOE_LEVEL, "warrior", 1.0, build=FOE_BUILD)
             )
         lines.append(
             f"{rules.title} зовёт помощников: волна "
@@ -1236,7 +1422,17 @@ def _arena(
             return f"{name}: реле уже отключены."
         fight["shield"] = False
         return f"{name} отключил реле — щит Предводителя пропал."
+    # Навсегда выключить босса нельзя: после окна он держится
+    # несколько ходов. Иначе отряд из четверых просто отправлял бы
+    # одного жать кнопку каждую волну — и окно висело бы весь бой
+    if fight.get("immune"):
+        return (
+            f"{name}: {rules.counter_title.lower()} пока не берёт — "
+            f"{rules.title} держится ещё "
+            f"{int(fight['immune'])} ход(а)."
+        )
     fight["window"] = WINDOW_TURNS
+    fight["immune"] = WINDOW_TURNS + CONTROL_IMMUNE_TURNS
     if action == "floodlight":
         return f"{name} навёл прожектор: Охотнику некуда уклоняться."
     return f"{name} открыл клапан: броня Громилы сошла."
@@ -1259,6 +1455,7 @@ def _victory(run: Run, now: int) -> str:
         if one["left"] or one["extracted"]:
             continue
         one["raised"] = False
+        _forget_tricks(one)
         if one["down"]:
             one["down"] = False
             one["hp"] = max(1, int(one["max"] * 0.3))
@@ -1300,6 +1497,7 @@ def _wipe(run: Run, now: int) -> str:
                 continue
             one["down"] = False
             one["raised"] = False
+            _forget_tricks(one)
             one["hp"] = max(1, int(one["max"] * 0.4))
         return defense_failed(run, now)
     state["fight"] = None
@@ -1309,6 +1507,7 @@ def _wipe(run: Run, now: int) -> str:
             continue
         one["down"] = False
         one["raised"] = False
+        _forget_tricks(one)
         # Откат попытки — это потеря времени, а не воронка. Отряд
         # отходит в безопасную комнату, перевязывается и идёт заново:
         # возвращать его на четверти здоровья значило бы запирать рейд
@@ -1601,7 +1800,6 @@ def confirm(run: Run, user_id: int, now: int) -> str:
 
 def _start_wave(state: dict, number: int, now: int) -> None:
     """Выпустить очередную волну обороны рубки."""
-    scale = float(state.get("hp_scale") or 1.0)
     party = int(state.get("party") or BEST_PARTY)
     size = group_size(
         DEFENSE_WAVES[min(number, len(DEFENSE_WAVES)) - 1], party
@@ -1614,10 +1812,9 @@ def _start_wave(state: dict, number: int, now: int) -> None:
         "turn": 1,
         "foes": [
             foe_row(index, f"Зомби · {title} {index + 1}", FOE_LEVEL,
-                    "warrior", scale, build=FOE_BUILD)
+                    "warrior", 1.0, build=FOE_BUILD)
             for index in range(size)
         ],
-        "choices": {},
         "telegraph": {},
         "window": 0,
         "immune": 0,
@@ -1838,7 +2035,23 @@ def snapshot(run: Run, user_id: int, now: int) -> dict[str, Any]:
         "fight": _fight_payload(state, fight, user_id, now) if fight else None,
         "console": _console_payload(state, one["room"]),
         "log": list(reversed((state.get("log") or [])[-12:])),
-        "map": _map_payload(state, one["room"]),
+        "map": _map_payload(state, one["room"], user_id),
+        "elsewhere": [
+            {
+                "name": row["name"],
+                "room": row["to"] if row["arrive"] else row["room"],
+                "layer": (
+                    place.room(row["to"] if row["arrive"] else row["room"])
+                    or room
+                ).layer_title if place.room(
+                    row["to"] if row["arrive"] else row["room"]
+                ) else "",
+            }
+            for key, row in (state.get("members") or {}).items()
+            if int(key) != user_id and not row["left"] and not row["extracted"]
+            and (place.room(row["room"]) or room).layer
+            != (room.layer if room else "")
+        ],
         "can_extract": bool(
             one["room"] == place.exit_room and has(state, RESTARTED)
             and has(state, DRAINAGE) and not one["extracted"]
@@ -1887,7 +2100,6 @@ def _fight_payload(
     state: dict, fight: dict, user_id: int, now: int
 ) -> dict[str, Any]:
     rules = BOSSES.get(fight.get("boss") or "")
-    mine = fight["choices"].get(str(user_id))
     here = here_fighters(state, fight["room"])
     return {
         "room": fight["room"],
@@ -1929,14 +2141,12 @@ def _fight_payload(
                 if fight["kind"] == "defense" else None
             )
         ),
-        "mine": mine,
+        "acted": bool(str(user_id) in (fight.get("acted") or [])),
         "waiting": [
             state["members"][key]["name"] for key in here
-            if key not in fight["choices"] and not _answers_itself(
-                state, key, now
-            )
+            if key not in (fight.get("acted") or [])
+            and not _answers_itself(state, key, now)
         ],
-        "ready": ready_to_resolve(state, now),
         "log": list(reversed((fight.get("log") or [])[-8:])),
     }
 
@@ -1969,7 +2179,7 @@ def _console_payload(state: dict, room: str) -> dict[str, Any] | None:
     }
 
 
-def _map_payload(state: dict, room: str) -> dict[str, Any]:
+def _map_payload(state: dict, room: str, me: int = 0) -> dict[str, Any]:
     """Схема этажа с туманом: видно посещённое и двери из него."""
     place = station()
     here = place.room(room)
@@ -1980,9 +2190,25 @@ def _map_payload(state: dict, room: str) -> dict[str, Any]:
         for door in place.doors_from(code):
             doors.add(door.other(code))
     shown = seen | doors
+    # Кто где стоит: по комнате список бойцов. Отряд на схеме виден
+    # весь — подземелье проходят вместе, и знать, где остальные,
+    # важнее, чем красиво
+    crowd: dict[str, list[dict]] = {}
+    for key, row in (state.get("members") or {}).items():
+        if row["left"] or row["extracted"]:
+            continue
+        where = row["to"] if row["arrive"] else row["room"]
+        crowd.setdefault(where, []).append({
+            "id": int(key),
+            "name": row["name"],
+            "mark": row["name"][:1].upper(),
+            "walking": bool(row["arrive"]),
+            "down": bool(row["down"]),
+            "me": int(key) == me,
+        })
     rows = []
     for one in place.rooms_on(layer):
-        if one.code not in shown:
+        if one.code not in shown and one.code not in crowd:
             continue
         rows.append({
             "code": one.code,
@@ -1995,6 +2221,7 @@ def _map_payload(state: dict, room: str) -> dict[str, Any]:
             "danger": bool(one.encounter)
             and one.code not in (state.get("cleared") or {}),
             "goal": bool(one.objective),
+            "party": crowd.get(one.code, []),
         })
     links = []
     for door in place.doors:
@@ -2040,6 +2267,16 @@ async def state_for(
         return _lobby_payload(run, player, moment)
     body = snapshot(run, player.user_id, moment)
     body["screen"] = "run"
+    # Шкала и приёмы — только свои: чужие заготовки отряд видеть не
+    # должен, да и собираются они из карточки игрока, а не из состояния
+    fight = body.get("fight")
+    if isinstance(fight, dict) and one is not None:
+        from bot.webapp.fight import abilities_payload
+
+        if one["room"] == fight.get("room") and not one["down"]:
+            fight["abilities"] = abilities_payload(
+                _restore_tricks(Fighter.from_player(player), one)
+            )
     return body
 
 
@@ -2160,14 +2397,16 @@ async def act(
             await pay(db, run, int(key), STAGE_RESTART, moment)
         return said
 
-    players: dict[int, Player] = {}
-    if action in ("fight", "resolve"):
+    if action in ("fight", "ability", "look"):
+        # Бойцы собираются с их настоящими вещами: за ними идём в базу
+        # один раз на команду, а не на каждый размен
         run = await read_run(db, run_id)
+        _PLAYERS.clear()
         for key in (run.state.get("members") or {}):
             if int(key) > 0:
                 one = await db.get_player(int(key))
                 if one is not None:
-                    players[int(key)] = one
+                    _PLAYERS[int(key)] = one
 
     def change(run: Run, when: int) -> str:
         if action == "go":
@@ -2190,21 +2429,22 @@ async def act(
             return raise_mate(
                 run, player.user_id, int(data.get("user") or 0), when
             )
+        if action == "ability":
+            return use_ability(
+                run, player.user_id, str(data.get("code") or ""), when
+            )
         if action == "fight":
-            said = choose(
+            said = strike(
                 run, player.user_id,
                 [str(one) for one in (data.get("attacks") or [])],
                 [str(one) for one in (data.get("block") or [])],
                 str(data.get("arena") or ""), when,
                 int(data.get("target") or 0),
             )
-            if ready_to_resolve(run.state, when):
-                return resolve(run, when, players=players)
-            return said
-        if action == "resolve":
-            if not ready_to_resolve(run.state, when):
-                raise BlackoutError("Ещё не все выбрали ход.")
-            return resolve(run, when, players=players)
+            # За ботов и за ушедших отходит сервер: иначе волна не
+            # закроется и бой встанет
+            tail = auto_turns(run, when)
+            return " ".join([said] + tail).strip()
         raise BlackoutError("Непонятное действие.")
 
     return await command(db, run_id, player.user_id, change, command_id, moment)
@@ -2216,7 +2456,7 @@ __all__ = [
     "Run",
     "act",
     "add_bots",
-    "choose",
+    "auto_turns",
     "command",
     "cycle_code",
     "exits_of",
@@ -2229,14 +2469,15 @@ __all__ = [
     "pay",
     "raise_mate",
     "read_run",
-    "resolve",
     "run_of",
     "settle",
     "snapshot",
     "start_run",
+    "strike",
     "state_for",
     "step",
     "take_item",
+    "use_ability",
     "window_open",
     "window_opens_at",
 ]

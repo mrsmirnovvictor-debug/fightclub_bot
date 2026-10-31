@@ -2001,7 +2001,12 @@ function showTab(name) {
   if (name === "court") loadCourt();
   // Станция: рейд идёт на сервере, и за его правдой ходят на каждый
   // заход — сам по себе экран ничего не считает
-  if (name === "blackout") loadBlackout();
+  if (name === "blackout") {
+    loadBlackout();
+    watchStation();
+  } else {
+    stopWatchingStation();
+  }
   // Полка образов: кредитов могло стать больше или меньше, а образ —
   // купиться в другом доме того же пола
   if (name === "barber") loadBarber();
@@ -12619,10 +12624,38 @@ function keyCard(one) {
 
 let blackoutData = null;
 let blackoutTimer = null;
+let blackoutPoll = null;
+let blackoutRate = 0;
 let blackoutTarget = 0;
+
+// Как часто спрашивать станцию. Шаг идёт десять секунд, и человек не
+// должен выходить на карту, чтобы узнать, что он дошёл: пока экран
+// открыт, правда приходит сама. В бою и в пути — чаще, в покое — реже
+const STATION_POLL_LIVE = 2000;
+const STATION_POLL_IDLE = 6000;
 
 async function openBlackout() {
   showTab("blackout");
+}
+
+function watchStation() {
+  if (blackoutPoll) return;
+  armStationPoll(STATION_POLL_LIVE);
+}
+
+function armStationPoll(rate) {
+  if (blackoutPoll && blackoutRate === rate) return;
+  if (blackoutPoll) clearInterval(blackoutPoll);
+  blackoutRate = rate;
+  blackoutPoll = setInterval(loadBlackout, rate);
+}
+
+function stopWatchingStation() {
+  if (blackoutPoll) clearInterval(blackoutPoll);
+  blackoutPoll = null;
+  blackoutRate = 0;
+  if (blackoutTimer) clearInterval(blackoutTimer);
+  blackoutTimer = null;
 }
 
 async function loadBlackout() {
@@ -12661,6 +12694,10 @@ function renderBlackout(data) {
   const body = el("blackout-body");
   body.textContent = "";
   if (!data || !data.screen) return;
+  // Темп опроса по тому, что происходит: в пути и в бою секунды
+  // решают, в лобби и в покое — нет
+  const hot = Boolean(data.walking || data.fight);
+  armStationPoll(hot ? STATION_POLL_LIVE : STATION_POLL_IDLE);
   if (data.screen === "lobby") return paintBlackoutLobby(data, body);
   if (data.screen === "squad") return paintBlackoutSquad(data, body);
   paintBlackoutRun(data, body);
@@ -12801,11 +12838,17 @@ function paintBlackoutRun(data, body) {
   paintBlackoutClock(data);
 
   body.appendChild(blackoutItemsBox(data));
-  if (data.fight) body.appendChild(blackoutFightBox(data));
-  else body.appendChild(blackoutRoomBox(data));
+  if (data.fight) {
+    body.appendChild(blackoutFightBox(data));
+  } else {
+    body.appendChild(blackoutRoomBox(data));
+    // Джойстик только вне боя: из занятой комнаты всё равно не выйти
+    if (!data.walking) body.appendChild(blackoutStickBox(data));
+  }
   body.appendChild(blackoutSquadBox(data.squad));
-  if (data.map) body.appendChild(blackoutMapBox(data.map));
   body.appendChild(blackoutLogBox(data.log));
+  // Миникарта внизу: по ней смотрят, где отряд, а не ходят
+  if (data.map) body.appendChild(blackoutMapBox(data.map));
 }
 
 function paintBlackoutClock(data) {
@@ -12913,12 +12956,12 @@ function blackoutRoomBox(data) {
     const name = document.createElement("span");
     name.className = "bracket-name";
     name.textContent = (one.danger ? "☣️ " : one.cleared ? "✅ " : "")
-      + one.name;
+      + one.name + (one.where ? " · " + one.where : "");
     row.appendChild(name);
     const act = button(one.can_go ? "Идти · 10 с" : "Закрыто", {
       disabled: !one.can_go,
       hint: one.why,
-      onClick: () => blackoutAction({ action: "lead", room: one.room }),
+      onClick: () => blackoutWalk(data, one.room),
     });
     act.classList.add("btn-small");
     row.appendChild(act);
@@ -13054,6 +13097,12 @@ function blackoutFightBox(data) {
   });
 
   box.appendChild(blackoutTurnBox(data));
+  // Приёмы — та же панель, что на ринге и в рейде: боёвка станции
+  // ничем от них не отличается, и шкала энергии тут своя на бой
+  const tricks = abilityPanel(fight.abilities, (trick) =>
+    blackoutAction({ action: "ability", code: trick.code })
+  );
+  if (tricks) box.appendChild(tricks);
   if ((fight.waiting || []).length) {
     const said = document.createElement("p");
     said.className = "thing-note";
@@ -13093,8 +13142,8 @@ function blackoutTurnBox(data) {
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
   buttons.appendChild(
-    button(fight.mine ? "Ход принят" : "Бить", {
-      disabled: Boolean(fight.mine),
+    button(fight.acted ? "Ждём остальных" : "Бить", {
+      disabled: Boolean(fight.acted),
       onClick: () => blackoutAction({
         action: "fight",
         attacks: [blackoutHit],
@@ -13145,60 +13194,285 @@ function blackoutZoneRow(title, zones, current, onPick) {
   return row;
 }
 
-/** Схема этажа с туманом: посещённое видно, остальное — нет. */
+// Лидер по умолчанию уводит отряд разом, но может пойти и один:
+// в подземелье это обычное дело — разойтись по комнатам и собраться
+// у двери. Остальные всегда ходят сами за себя: команда «вести»
+// принадлежит лидеру, и сервер её так и проверяет
+let blackoutAlone = false;
+
+/** Каким ходом двигается этот игрок: своим или за весь отряд. */
+function blackoutMoveKind(data) {
+  const leads = data && data.leader && data.me && data.leader === data.me;
+  return leads && !blackoutAlone ? "lead" : "go";
+}
+
+function blackoutWalk(data, room) {
+  return blackoutAction({ action: blackoutMoveKind(data), room: room });
+}
+
+/** Джойстик: толкнул в сторону — пошёл в ту дверь.
+ *
+ * Подземелье узловое, а палец у человека один. Поэтому вместо списка
+ * дверей — круг: ручка тянется в сторону, и подсвечивается та дверь,
+ * которая в этой стороне лежит на схеме. Отпустил — пошёл.
+ */
+function blackoutStickBox(data) {
+  const box = document.createElement("section");
+  box.className = "stick-box";
+
+  const pad = document.createElement("div");
+  pad.className = "stick-pad";
+  const ring = document.createElement("div");
+  ring.className = "stick-ring";
+  const knob = document.createElement("div");
+  knob.className = "stick-knob";
+  pad.append(ring, knob);
+
+  const doors = (data.exits || []).filter((one) => one.dx || one.dy);
+  doors.forEach((one) => {
+    const mark = document.createElement("span");
+    mark.className = "stick-door"
+      + (one.can_go ? "" : " shut")
+      + (one.danger ? " danger" : "")
+      + (one.cleared ? " done" : "");
+    const angle = Math.atan2(one.dy, one.dx);
+    mark.style.left = (50 + 42 * Math.cos(angle)) + "%";
+    mark.style.top = (50 + 42 * Math.sin(angle)) + "%";
+    mark.textContent = one.danger ? "☣" : one.can_go ? "▸" : "✕";
+    mark.dataset.room = one.room;
+    pad.appendChild(mark);
+  });
+
+  const said = document.createElement("p");
+  said.className = "stick-said";
+  said.textContent = doors.length
+    ? "Толкни в сторону двери"
+    : "Отсюда ходов нет";
+
+  let picked = null;
+  const aim = (dx, dy) => {
+    const far = Math.sqrt(dx * dx + dy * dy);
+    if (far < 0.25) {
+      picked = null;
+      said.textContent = "Толкни в сторону двери";
+      pad.querySelectorAll(".stick-door").forEach((one) => {
+        one.classList.remove("aimed");
+      });
+      return;
+    }
+    // Ближайшая по углу дверь. Через всю схему не перескочишь: дверь
+    // должна лежать примерно там, куда тянут
+    let best = null;
+    let bestGap = Math.PI / 3;
+    const mine = Math.atan2(dy, dx);
+    doors.forEach((one) => {
+      const angle = Math.atan2(one.dy, one.dx);
+      let gap = Math.abs(angle - mine);
+      if (gap > Math.PI) gap = 2 * Math.PI - gap;
+      if (gap < bestGap) {
+        bestGap = gap;
+        best = one;
+      }
+    });
+    picked = best;
+    pad.querySelectorAll(".stick-door").forEach((one) => {
+      one.classList.toggle(
+        "aimed", Boolean(best) && one.dataset.room === best.room
+      );
+    });
+    said.textContent = best
+      ? (best.can_go ? "→ " + best.name : best.why || "Закрыто")
+      : "Туда хода нет";
+  };
+
+  let active = false;
+  const move = (event) => {
+    if (!active) return;
+    const frame = pad.getBoundingClientRect();
+    const dx = (event.clientX - (frame.left + frame.width / 2))
+      / (frame.width / 2);
+    const dy = (event.clientY - (frame.top + frame.height / 2))
+      / (frame.height / 2);
+    const far = Math.min(1, Math.sqrt(dx * dx + dy * dy));
+    const angle = Math.atan2(dy, dx);
+    knob.style.transform = "translate("
+      + (far * 38 * Math.cos(angle)) + "px,"
+      + (far * 38 * Math.sin(angle)) + "px)";
+    aim(dx, dy);
+    event.preventDefault();
+  };
+  const release = () => {
+    if (!active) return;
+    active = false;
+    knob.style.transform = "";
+    pad.classList.remove("held");
+    const go = picked;
+    picked = null;
+    pad.querySelectorAll(".stick-door").forEach((one) => {
+      one.classList.remove("aimed");
+    });
+    if (go && go.can_go) blackoutWalk(data, go.room);
+    else if (go && go.why) popup("Станция", go.why);
+  };
+  const grab = (event) => {
+    if (data.walking || data.locked) return;
+    active = true;
+    pad.classList.add("held");
+    move(event);
+  };
+  pad.addEventListener("pointerdown", grab);
+  pad.addEventListener("pointermove", move);
+  pad.addEventListener("pointerup", release);
+  pad.addEventListener("pointercancel", release);
+  pad.addEventListener("pointerleave", release);
+
+  const foot = document.createElement("div");
+  foot.className = "thing-buttons";
+  if (data.leader && data.me && data.leader === data.me && data.party > 1) {
+    foot.appendChild(
+      button(blackoutAlone ? "Идти одному" : "Вести отряд", {
+        secondary: blackoutAlone,
+        hint: blackoutAlone
+          ? "Отряд остаётся на месте: идёшь сам."
+          : "Кто стоит рядом и может пройти в ту же дверь — идёт следом.",
+        onClick: () => {
+          blackoutAlone = !blackoutAlone;
+          renderBlackout(blackoutData);
+        },
+      })
+    );
+  }
+  box.append(pad, said);
+  if (foot.children.length) box.appendChild(foot);
+  return box;
+}
+
+/** Миникарта этажа: комнаты открываются по мере того, как в них входят.
+ *
+ * Рисуется не точками, а комнатами: скруглённый прямоугольник, коридор
+ * между ними, код комнаты и фишки тех, кто там стоит. Непройденное
+ * видно пунктиром — «ход есть, а что за ним, неизвестно».
+ */
 function blackoutMapBox(map) {
   const box = document.createElement("section");
-  box.className = "shelf";
-  const head = document.createElement("h2");
-  head.className = "shelf-head";
-  head.textContent = "🗺 " + (map.title || "Этаж");
+  box.className = "minimap";
+
+  const head = document.createElement("header");
+  head.className = "minimap-head";
+  head.textContent = map.title || "Этаж";
   box.appendChild(head);
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 " + map.width + " " + map.height);
-  svg.setAttribute("class", "blackout-map");
+  const rooms = map.rooms || [];
+  if (!rooms.length) return box;
+  // Схема рисуется по своим комнатам, а не по всему холсту: иначе
+  // первый этаж тонет в пустоте, где ещё ничего не открыто
+  const pad = 110;
+  const xs = rooms.map((one) => one.x);
+  const ys = rooms.map((one) => one.y);
+  const left = Math.min.apply(null, xs) - pad;
+  const top = Math.min.apply(null, ys) - pad;
+  const wide = Math.max.apply(null, xs) - left + pad;
+  const high = Math.max.apply(null, ys) - top + pad;
+  svg.setAttribute("viewBox", [left, top, wide, high].join(" "));
+  svg.setAttribute("class", "minimap-canvas");
+
   (map.links || []).forEach((link) => {
-    const a = (map.rooms || []).find((one) => one.code === link.a);
-    const b = (map.rooms || []).find((one) => one.code === link.b);
+    const a = rooms.find((one) => one.code === link.a);
+    const b = rooms.find((one) => one.code === link.b);
     if (!a || !b) return;
-    const line = document.createElementNS(
-      "http://www.w3.org/2000/svg", "line"
-    );
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
     line.setAttribute("x1", a.x);
     line.setAttribute("y1", a.y);
     line.setAttribute("x2", b.x);
     line.setAttribute("y2", b.y);
-    line.setAttribute("class", "blackout-link");
+    line.setAttribute(
+      "class", "minimap-hall" + (a.visited && b.visited ? "" : " fog")
+    );
     svg.appendChild(line);
   });
-  (map.rooms || []).forEach((one) => {
-    const dot = document.createElementNS(
-      "http://www.w3.org/2000/svg", "circle"
-    );
-    dot.setAttribute("cx", one.x);
-    dot.setAttribute("cy", one.y);
-    dot.setAttribute("r", one.here ? 26 : 18);
-    dot.setAttribute(
+
+  const W = 86;
+  const H = 56;
+  rooms.forEach((one) => {
+    const cell = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    cell.setAttribute(
       "class",
-      "blackout-node"
+      "minimap-room"
       + (one.here ? " here" : "")
-      + (one.danger ? " danger" : "")
-      + (one.goal ? " goal" : "")
       + (one.visited ? "" : " fog")
+      + (one.danger ? " danger" : "")
+      + (one.cleared ? " done" : "")
+      + (one.goal ? " goal" : "")
     );
-    svg.appendChild(dot);
-    if (one.visited) {
-      const text = document.createElementNS(
+    const plate = document.createElementNS(
+      "http://www.w3.org/2000/svg", "rect"
+    );
+    plate.setAttribute("x", one.x - W / 2);
+    plate.setAttribute("y", one.y - H / 2);
+    plate.setAttribute("width", W);
+    plate.setAttribute("height", H);
+    plate.setAttribute("rx", 12);
+    plate.setAttribute("class", "minimap-plate");
+    cell.appendChild(plate);
+
+    const tag = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    tag.setAttribute("x", one.x);
+    tag.setAttribute("y", one.y + 6);
+    tag.setAttribute("class", "minimap-code");
+    tag.textContent = one.visited ? one.code : "?";
+    cell.appendChild(tag);
+
+    [[one.goal, "★", one.x + W / 2 - 12], [one.danger, "☣", one.x - W / 2 + 12]]
+      .forEach(([show, sign, at]) => {
+        if (!show) return;
+        const mark = document.createElementNS(
+          "http://www.w3.org/2000/svg", "text"
+        );
+        mark.setAttribute("x", at);
+        mark.setAttribute("y", one.y - H / 2 + 18);
+        mark.setAttribute("class", "minimap-mark");
+        mark.textContent = sign;
+        cell.appendChild(mark);
+      });
+
+    // Фишки отряда: кто в этой комнате стоит. Своя — светлая
+    (one.party || []).forEach((who, index) => {
+      const at = one.x - W / 2 + 16 + index * 20;
+      const chip = document.createElementNS(
+        "http://www.w3.org/2000/svg", "circle"
+      );
+      chip.setAttribute("cx", at);
+      chip.setAttribute("cy", one.y + H / 2 - 10);
+      chip.setAttribute("r", 9);
+      chip.setAttribute(
+        "class",
+        "minimap-chip" + (who.me ? " me" : "")
+        + (who.down ? " down" : "") + (who.walking ? " walking" : "")
+      );
+      cell.appendChild(chip);
+      const letter = document.createElementNS(
         "http://www.w3.org/2000/svg", "text"
       );
-      text.setAttribute("x", one.x);
-      text.setAttribute("y", one.y + 46);
-      text.setAttribute("class", "blackout-label");
-      text.textContent = one.code;
-      svg.appendChild(text);
-    }
+      letter.setAttribute("x", at);
+      letter.setAttribute("y", one.y + H / 2 - 6);
+      letter.setAttribute("class", "minimap-letter");
+      letter.textContent = who.mark;
+      cell.appendChild(letter);
+    });
+    svg.appendChild(cell);
   });
   box.appendChild(svg);
+
+  // Кто на других этажах — списком: на этой схеме их не видно
+  const away = (blackoutData && blackoutData.elsewhere) || [];
+  if (away.length) {
+    const said = document.createElement("p");
+    said.className = "minimap-said";
+    said.textContent = "На других этажах: "
+      + away.map((one) => one.name + " · " + one.layer).join(", ");
+    box.appendChild(said);
+  }
   return box;
 }
 

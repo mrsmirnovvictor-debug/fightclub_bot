@@ -14153,9 +14153,158 @@ async def test_the_raid_screen_shows_the_room_the_squad_and_the_doors(
         assert await page.locator(
             "#blackout-body .btn", has_text="Бить"
         ).count() == 1
-        # Схема этажа с туманом
-        assert await page.locator("#blackout-body .blackout-map").count() == 1
-        assert await page.locator(".blackout-node.here").count() == 1
+        # Схема этажа с туманом и джойстик вместо списка дверей
+        assert await page.locator("#blackout-body .minimap").count() == 1
+        assert await page.locator(".minimap-room.here").count() == 1
+        await browser.close()
+
+
+async def test_the_minimap_shows_where_the_partners_stand(server, db):
+    """Это подземелье: на схеме видно и себя, и партнёров по данджу."""
+    from bot.blackout_service import act, look, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 3)
+    # Один уходит сам, двое остаются: подземелье проходят вместе, но
+    # стоять в одной комнате никто не обязан
+    at = NOW
+    await act(db, people[1], "go", {"room": "O02"}, "m1", at)
+    run = await look(db, run.id, at + 10)
+    body = snapshot(run, people[0].user_id, at + 10)
+    body["screen"] = "run"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .minimap")
+
+        # Фишки: по одной на каждого, и ровно одна своя
+        assert await page.locator(".minimap-chip").count() == 3
+        assert await page.locator(".minimap-chip.me").count() == 1
+        # Ушедший стоит в своей комнате, а не рядом со мной
+        mine = await page.locator(".minimap-room.here .minimap-chip").count()
+        assert mine == 2, "партнёр, ушедший в другую комнату, остался на месте"
+        await browser.close()
+
+
+async def test_the_station_screen_refreshes_itself_on_the_move(server, db):
+    """Шаг виден сам: выходить на карту и заходить снова не нужно.
+
+    Этот баг плейтест нашёл первым: боец нажимал дверь, десять секунд
+    шёл — и экран всё это время показывал прежнюю комнату, пока не
+    выйдешь на карту города и не вернёшься. Экран рейда теперь
+    спрашивает снимок сам, пока открыт.
+    """
+    from bot.blackout_service import act, look, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    await act(db, people[0], "go", {"room": "O02"}, "step", NOW)
+    walking = snapshot(await look(db, run.id, NOW + 2), people[0].user_id,
+                       NOW + 2)
+    walking["screen"] = "run"
+    arrived = snapshot(await look(db, run.id, NOW + 10), people[0].user_id,
+                       NOW + 10)
+    arrived["screen"] = "run"
+    assert walking["walking"] and not arrived["walking"]
+    # Дошёл — и сразу бой: в проходной зомби. Это и есть та правда,
+    # которую экран обязан получить сам
+    assert arrived["fight"] and not walking["fight"]
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-proxy-server"]
+        )
+        page = await browser.new_page(viewport={"width": 420, "height": 900})
+        await page.route("**/api/card*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(card),
+        ))
+        asked = {"count": 0}
+
+        async def answer(route):
+            asked["count"] += 1
+            body = walking if asked["count"] < 2 else arrived
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/blackout", answer)
+        await page.route(IMAGES, lambda route: route.abort())
+        await page.goto(f"{server.make_url('/')}")
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .shelf")
+
+        # Первый снимок — в пути
+        assert "В пути" in await page.locator("#blackout").inner_text()
+        # Второго никто не просит: экран спрашивает его сам
+        await page.wait_for_function(
+            "() => document.querySelector('#blackout').innerText"
+            ".includes('Бой · ход')",
+            timeout=9000,
+        )
+        assert asked["count"] >= 2
+        await browser.close()
+
+
+async def test_the_joystick_replaces_the_list_of_doors(server, db):
+    """Ход — джойстиком: двери лежат по кругу, каждая в свою сторону."""
+    from bot.blackout_service import look, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    run = await look(db, run.id, NOW)
+    body = snapshot(run, people[0].user_id, NOW)
+    body["screen"] = "run"
+    assert body["exits"], "из первой комнаты должен быть ход"
+    assert all("where" in one for one in body["exits"])
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stick-pad")
+
+        assert await page.locator(".stick-knob").count() == 1
+        marks = await page.locator(".stick-door").count()
+        assert marks == len(
+            [one for one in body["exits"] if one["dx"] or one["dy"]]
+        )
+        # Метки разведены по кругу, а не слиплись в точку
+        spots = await page.eval_on_selector_all(
+            ".stick-door", "list => list.map((one) => one.style.left)"
+        )
+        assert len(set(spots)) == len(spots) or len(spots) == 1
+        await browser.close()
+
+
+async def test_the_dungeon_fight_offers_the_tricks(server, db):
+    """Боёвка как в рейде: та же панель приёмов и та же шкала энергии."""
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 2)
+    at = NOW
+    await act(db, people[0], "lead", {"room": "O02"}, "w1", at)
+    body = await state_for(db, people[0], at + 10)
+    assert body["fight"]["abilities"]["tricks"]
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .tricks")
+
+        assert await page.locator("#blackout-body .energy").count() == 1
+        assert await page.locator("#blackout-body .trick").count() == len(
+            body["fight"]["abilities"]["tricks"]
+        )
         await browser.close()
 
 

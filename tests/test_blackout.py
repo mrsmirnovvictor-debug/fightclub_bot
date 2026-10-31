@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -28,8 +29,8 @@ from bot.blackout_service import (
     cycle_code,
     look,
     member,
+    open_fight,
     read_run,
-    resolve,
     run_of,
     snapshot,
     state_for,
@@ -38,6 +39,8 @@ from bot.blackout_service import (
 from bot.database import Database
 from bot.game.blackout import (
     BOSSES,
+    BOSS_FORCE,
+    BOSS_LEVEL,
     DEFENSE_WAVES,
     EDGE_SECONDS,
     MIN_PARTY,
@@ -45,11 +48,13 @@ from bot.game.blackout import (
     REQUIRED_ORDER,
     RUN_LIMIT_MINUTES,
     SQUAD_SIZE,
+    boss_hp,
     check_map,
     reward_for,
     station,
     walkthrough,
 )
+from bot.blackout_service import foe_row, squad_for
 from bot.game.blackout import STAGE_EXTRACT, STAGE_RESTART
 from bot.game.classes import FIGHTER_CLASSES, Stats
 from bot.game.reference import developed_stats
@@ -62,15 +67,23 @@ NOW = 1_800_000_000 + 20 * 60
 
 
 def make_player(
-    user_id: int, nickname: str, class_code: str = "warrior", level: int = 10
+    user_id: int, nickname: str, class_code: str = "warrior", level: int = 15
 ) -> Player:
     """Боец, какого город и правда выпускает на станцию.
 
-    Характеристики развитые, по уровню: проверять рейд на «голом»
-    бойце — значит мерить не рейд, а отсутствие прокачки.
+    Пятнадцатый уровень — потолок клуба, и станция рассчитана на него:
+    обычный зомби стоит с бойцом вровень, мини-боссы на двадцатом,
+    хозяин Контура на двадцать пятом. Характеристики развитые, вещи
+    лучшие из доступных — проверять подземелье на «голом» десятом
+    значит мерить не подземелье, а отсутствие прокачки.
     """
-    stats = developed_stats(FIGHTER_CLASSES[class_code], level)
-    return Player(
+    from bot.game.equipment import OwnedItem
+    from bot.game.reference import best_kit
+
+    fclass = FIGHTER_CLASSES[class_code]
+    kit = best_kit(fclass, level)
+    stats = developed_stats(fclass, level)
+    one = Player(
         user_id=user_id,
         nickname=nickname,
         class_code=class_code,
@@ -80,19 +93,70 @@ def make_player(
         seen_at=NOW,
         **stats.as_dict(),
     )
+    # Вещи надеваются так же, как у живого бойца: экипировка считается
+    # из рюкзака, а не присваивается полем
+    one.gear = [
+        OwnedItem(item=item, id=number + 1, slot=slot)
+        for number, (slot, item) in enumerate(kit.items())
+    ]
+    return one
+
+
+async def dress(db: Database, player: Player) -> Player:
+    """Одеть бойца в базе: вещи живут в своей таблице, а не в строке.
+
+    Без этого отряд приходит на станцию голым — и замер мерит не
+    подземелье, а отсутствие экипировки.
+    """
+    await db.save_player(player)
+    for owned in player.equipped:
+        saved = await db.add_gear(player.user_id, owned.item.code)
+        saved.slot = owned.slot
+        await db.save_gear(saved)
+    fresh = await db.get_player(player.user_id)
+    assert fresh is not None
+    return fresh
+
+
+# Приёмы, которые берёт воин к пятнадцатому уровню: классовый первой
+# ступени плюс по одному с третьей, шестой и десятой. Лечение тут одно —
+# «Воля к победе», и именно оно держит отряд в бою на двадцать волн
+WARRIOR_TRICKS = ("power_hit", "will_to_win", "mass_hit")
+HEAL_TRICK = "will_to_win"
+
+
+async def teach(db: Database, player: Player) -> Player:
+    """Выдать бойцу приёмы его ступеней: пятнадцатый уровень знает четыре.
+
+    Без этого замер мерил бы не подземелье, а бойца без приёмов: на
+    станции боёвка рейдовая, и приём в ней — половина хода.
+    """
+    from bot.abilities_service import ensure_starter, learn
+
+    await ensure_starter(db, player)
+    for code in WARRIOR_TRICKS:
+        await learn(db, player, code)
+    fresh = await db.get_player(player.user_id)
+    assert fresh is not None
+    return fresh
 
 
 async def squad(db: Database, size: int = 4) -> list[Player]:
-    """Отряд из живых игроков: все записаны в базу."""
+    """Отряд из живых игроков: все записаны в базу, все с приёмами."""
     out = []
     for number in range(size):
         one = make_player(number + 1, f"Боец-{number + 1}")
-        await db.save_player(one)
-        out.append(one)
+        out.append(await teach(db, await dress(db, one)))
     return out
 
 
-async def enter(db: Database, size: int = 4, now: int = NOW):
+# Зерно рейда. В городе оно случайное — бой не должен быть заучиваемым;
+# в наборе тестов оно фиксировано, иначе «маршрут проходим целиком»
+# то проходит, то нет, и падение ничего не значит
+TEST_SEED = 20_261_031
+
+
+async def enter(db: Database, size: int = 4, now: int = NOW, seed: int = TEST_SEED):
     """Собрать отряд и вывести его на станцию."""
     people = await squad(db, size)
     await act(db, people[0], "open", {"test": True}, "open", now)
@@ -101,6 +165,12 @@ async def enter(db: Database, size: int = 4, now: int = NOW):
     for one in people[1:]:
         await act(db, one, "join", {"run": run.id}, f"join{one.user_id}", now)
     await act(db, people[0], "start", {}, "start", now)
+    run = await run_of(db, people[0].user_id)
+    assert run is not None
+    run.state["seed"] = seed
+    await db.blackout_write(
+        run.id, run.version, run.phase, json.dumps(run.state), now
+    )
     return people, await run_of(db, people[0].user_id)
 
 
@@ -250,17 +320,23 @@ async def test_one_fighter_walks_the_station_alone(db):
     run = await run_of(db, alone.user_id)
     assert run is not None and run.phase == "run"
     assert run.state["party"] == 1
-    assert run.state["hp_scale"] == pytest.approx(0.34)
-    assert run.state["dmg_scale"] == pytest.approx(0.76)
+    # Скидок за одиночество станция не даёт: враг тот же самый
+    assert foe_row(0, "з", 15, "warrior", 1.0, build=15)["max"] == (
+        squad_for("O02", party=4)[0]["max"]
+    )
 
     # И первая комната ему по силам: группа меньше и слабее
     at = await walk(db, [alone], run, "O02", NOW)
     fresh = await look(db, run.id, at)
     foes = fresh.state["fight"]["foes"]
-    assert len(foes) == 2, "втроём на одного не выходят"
-    at = await win_here(db, [alone], run.id, at, limit=60)
-    fresh = await look(db, run.id, at)
-    assert "O02" in fresh.state["cleared"]
+    # Одиночке комната выставляет одного: это дуэль с равным, а не
+    # расстрел. Зомби при этом тот же самый — пятнадцатого уровня,
+    # вровень с потолком города
+    assert len(foes) == 1
+    assert foes[0]["level"] == 15
+    assert foes[0]["max"] == squad_for("O02", party=4)[0]["max"]
+    # А вот пройдёт ли он её — вопрос отдельный: в одиночку тут очень
+    # тяжело, и это проверяет не договор, а плейтест
 
 
 async def test_a_step_takes_exactly_ten_seconds(db):
@@ -373,11 +449,22 @@ async def win_here(db, people, run_id: int, at: int, limit: int = 90) -> int:
             row = member(run.state, one.user_id)
             if row is None or row["down"] or row["room"] != fight["room"]:
                 continue
-            payload = {"attacks": ["head"], "block": ["chest", "belly"]}
+            payload = {"attacks": ["head"], "block": ["chest"]}
             if need_arena and number == 0:
                 payload = {
                     "attacks": [], "block": [], "arena": arena.counter_action,
                 }
+            # Приём жмут до удара: просел — лечатся, цел — бьют тяжелее
+            want = (
+                HEAL_TRICK if row["hp"] < row["max"] * 0.6 else "power_hit"
+            )
+            try:
+                await act(
+                    db, one, "ability", {"code": want},
+                    f"a{one.user_id}:{at}", at,
+                )
+            except BlackoutError:
+                pass
             try:
                 await act(
                     db, one, "fight", payload, f"f{one.user_id}:{at}", at
@@ -512,34 +599,166 @@ async def test_the_whole_raid_is_walkable(db):
 
 
 async def test_the_raid_is_walkable_by_three_and_by_five(db):
-    """Состав 3 и 5: рейд проходится обоими, и масштаб врагов разный."""
+    """Состав 3 и 5: рейд проходится обоими, и состав врагов разный."""
     people, run = await enter(db, 3)
-    assert run.state["hp_scale"] == pytest.approx(0.78)
+    # Втроём врагов меньше, но каждый тот же самый
+    assert len(squad_for("O02", party=3)) < len(squad_for("O02", party=5))
     at = await play(db, people, run, NOW)
     assert (await look(db, run.id, at)).state["flags"]["station_restarted"]
 
 
 async def test_the_five_man_squad_meets_tougher_zombies(db):
-    """Пятеро — враги крепче: масштаб считается от состава при входе."""
-    from bot.blackout_service import squad_for
-
+    """Пятеро — врагов больше: состав считается от отряда при входе."""
     people, run = await enter(db, 5)
     assert run.state["party"] == 5
-    assert run.state["hp_scale"] == pytest.approx(1.22)
-    assert run.state["dmg_scale"] == pytest.approx(1.08)
 
     at = await walk(db, people, run, "O02", NOW)
     fresh = await look(db, run.id, at)
-    big = fresh.state["fight"]["foes"][0]["max"]
-    # Тот же зомби при составе в четверо и в трое — слабее
-    assert big > squad_for("O02", 1.0)[0]["max"]
-    assert squad_for("O02", 1.0)[0]["max"] > squad_for("O02", 0.78)[0]["max"]
+    foes = fresh.state["fight"]["foes"]
+    # Состав растёт числом, а не здоровьем: сам зомби везде один и тот
+    # же, а вот сколько их в комнате — считается от отряда
+    assert len(foes) == len(squad_for("O02", party=5))
+    assert len(foes) > len(squad_for("O02", party=4))
+    assert foes[0]["max"] == squad_for("O02", party=4)[0]["max"]
 
-    # Отключение игрока масштаб не двигает: он зафиксирован входом
+    # Отключение игрока состав не двигает: он зафиксирован входом
+    count = len(foes)
     await act(db, people[4], "leave", {}, "bye", at)
     fresh = await look(db, run.id, at)
     assert fresh.state["party"] == 5
-    assert fresh.state["fight"]["foes"][0]["max"] == big
+    assert len(fresh.state["fight"]["foes"]) == count
+
+
+# ---------- боёвка: как в рейде ----------
+
+
+async def test_the_block_is_as_wide_as_the_fighter(db):
+    """Нажал одну зону — закрылся на всю свою ширину, как на ринге.
+
+    Экран подземелья даёт выбрать середину блока, а не три кнопки, и
+    служба обязана развести её сама. Когда она этого не делала, отряд
+    входил на станцию с блоком в одну зону вместо трёх — то есть втрое
+    тоньше, чем тот же боец в клубе, и боссы выходили непроходимыми.
+
+    Бросок кубика тут один и тот же: он считается от зерна, комнаты,
+    бойца и номера волны, — поэтому два размена из одного и того же
+    состояния сравнимы напрямую.
+    """
+    from bot.game.classes import Zone, block_combo
+
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    saved = json.dumps((await look(db, run.id, at)).state)
+
+    async def take(block: list[str], mark: str) -> int:
+        fresh = await look(db, run.id, at)
+        await db.blackout_write(run.id, fresh.version, "run", saved, at)
+        await act(
+            db, people[0], "fight",
+            {"attacks": ["head"], "block": block}, mark, at,
+        )
+        row = member((await look(db, run.id, at)).state, people[0].user_id)
+        return row["max"] - row["hp"]
+
+    narrow = await take(["chest"], "narrow")
+    wide = await take([one.value for one in block_combo(Zone("chest"), 3)], "wide")
+    assert narrow == wide
+
+
+async def test_the_zombies_are_fifteenth_level_and_the_bosses_above(db):
+    """Обычный заражённый — пятнадцатый, мини-боссы двадцатый, хозяин двадцать пятый."""
+    assert BOSS_LEVEL == {"hunter": 20, "brute": 20, "leader": 25}
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    fresh = await look(db, run.id, at)
+    assert all(one["level"] == 15 for one in fresh.state["fight"]["foes"])
+    # Рука босса тяжелее обычной: иначе Громила в броне бил бы слабее
+    # заражённого рабочего — у танка свой счёт урона
+    assert BOSS_FORCE["hunter"] >= 1.0
+    assert BOSS_FORCE["brute"] > BOSS_FORCE["leader"] > 1.0
+
+
+def test_the_boss_keeps_his_health_for_the_squad_that_came():
+    """Запас босса считается на отряд: одному он не ставит стену впятером."""
+    full = 1_000
+    assert boss_hp(full, 4) == full
+    assert boss_hp(full, 1) < boss_hp(full, 3) < boss_hp(full, 4)
+    assert boss_hp(full, 5) > full
+    # Но и в поблажку это не превращается: больше половины у него есть
+    # всегда, и соло-проход всё равно остаётся очень тяжёлым
+    assert boss_hp(full, 1) > full // 2
+
+
+async def test_a_trick_in_the_dungeon_heals_the_whole_room(db):
+    """Приём в подземелье работает как в рейде, и лечение идёт на отряд."""
+    people, run = await enter(db, 2)
+    at = await walk(db, people, run, "O02", NOW)
+    # Накопить шкалу: приём стоит энергии, а она копится ударами
+    for _ in range(6):
+        for one in people:
+            with contextlib.suppress(BlackoutError):
+                await act(
+                    db, one, "fight",
+                    {"attacks": ["head"], "block": ["chest"]},
+                    f"h{one.user_id}:{at}", at,
+                )
+        at += 5
+    fresh = await look(db, run.id, at)
+    rows = [member(fresh.state, one.user_id) for one in people]
+    assert any(row["energy"] > 0 for row in rows), "шкала не копится"
+
+    # Лечение: берём того, кто просел сильнее, и лечим его же приёмом
+    hurt = min(rows, key=lambda row: row["hp"])
+    who = next(
+        one for one in people if member(fresh.state, one.user_id) is hurt
+    )
+    before = hurt["hp"]
+    fresh.state["members"][str(who.user_id)]["energy"] = 20
+    await db.blackout_write(
+        run.id, fresh.version, fresh.phase, json.dumps(fresh.state), at
+    )
+    said = await act(db, who, "ability", {"code": "will_to_win"}, "tr1", at)
+    assert "❤️" in said
+    after = await look(db, run.id, at)
+    assert member(after.state, who.user_id)["hp"] > before
+
+
+async def test_the_energy_bar_comes_with_the_fight(db):
+    """Экран боя получает свою шкалу и свои приёмы — чужие не показываются."""
+    people, run = await enter(db, 2)
+    at = await walk(db, people, run, "O02", NOW)
+    body = await state_for(db, people[0], at)
+    tricks = body["fight"]["abilities"]
+    assert tricks and tricks["max"] == 20
+    assert {one["code"] for one in tricks["tricks"]} >= set(WARRIOR_TRICKS)
+    # До боя шкалы нет: приёмы держат на бой
+    far = await state_for(db, people[0], at)
+    assert far["fight"]["room"] == "O02"
+
+
+async def test_a_lone_fighter_does_not_fell_the_leader(db):
+    """Предводитель одиночке не по силам: станция — на отряд.
+
+    Это и есть «в соло очень сложно»: обычные комнаты одиночка
+    проходит, Громилу берёт примерно в половине попыток, Охотника
+    реже, а хозяина Контура — почти никогда. Отряд из четырёх кладёт
+    всех трёх уверенно.
+    """
+    people, run = await enter(db, 1)
+    fresh = await look(db, run.id, NOW)
+    for flag in ("relay_a", "relay_b"):
+        fresh.state["flags"][flag] = NOW
+    member(fresh.state, people[0].user_id)["room"] = "F307"
+    open_fight(fresh.state, "F307", NOW)
+    await db.blackout_write(
+        run.id, fresh.version, "run", json.dumps(fresh.state), NOW
+    )
+    at = await win_here(db, people, run.id, NOW, limit=60)
+    after = await look(db, run.id, at)
+    # Бой кончился не победой: комната не зачищена, а одиночку
+    # отбросило в безопасную — цена поражения тут время, а не рейд
+    assert "F307" not in after.state["cleared"]
+    assert member(after.state, people[0].user_id)["room"] != "F307"
 
 
 # ---------- квестовые модули ----------

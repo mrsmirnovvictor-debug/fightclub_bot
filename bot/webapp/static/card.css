@@ -4389,17 +4389,152 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   flex: 0 0 72px;
 }
 
-/* Схема этажа: узлы и двери. Туман — не чёрный квадрат, а бледный
-   кружок: «ход есть, а что за ним — неизвестно» */
-.blackout-map { width: 100%; height: auto; display: block; }
-.blackout-link { stroke: var(--muted); stroke-width: 3; opacity: 0.5; }
-.blackout-node { fill: var(--panel); stroke: var(--muted); stroke-width: 3; }
-.blackout-node.fog { opacity: 0.35; stroke-dasharray: 6 6; }
-.blackout-node.danger { stroke: var(--bad); }
-.blackout-node.goal { stroke: var(--good); }
-.blackout-node.here { fill: var(--accent); stroke: #fff; }
-.blackout-label {
+/* ---------- джойстик ---------- */
+/* Подземелье узловое, а палец один: вместо списка дверей — круг.
+   Ручка тянется в сторону, подсвечивается дверь, которая в этой
+   стороне лежит на схеме, отпустил — пошёл */
+.stick-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+}
+.stick-pad {
+  position: relative;
+  width: 148px;
+  height: 148px;
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 2px var(--line);
+  touch-action: none;
+  user-select: none;
+}
+.stick-pad.held { box-shadow: inset 0 0 0 2px var(--accent); }
+.stick-ring {
+  position: absolute;
+  inset: 26px;
+  border-radius: 50%;
+  border: 1px dashed var(--line);
+}
+.stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transition: transform 0.08s ease-out;
+  pointer-events: none;
+}
+/* Румб вокруг круга: куда отсюда есть ход. Цвет — вторым признаком
+   после значка: ☣ опасно, ✕ закрыто, ▸ свободно */
+.stick-door {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  background: var(--slot);
+  border: 1px solid var(--slot-line);
+  color: var(--muted);
+  pointer-events: none;
+}
+.stick-door.done { color: var(--good); }
+.stick-door.danger { color: var(--bad); }
+.stick-door.shut { opacity: 0.4; }
+.stick-door.aimed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  transform: scale(1.25);
+}
+.stick-said {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  min-height: 18px;
+  text-align: center;
+}
+
+/* ---------- миникарта ---------- */
+/* Комнаты, а не точки: скруглённая плита, коридор между ними, код и
+   фишки тех, кто там стоит. Непройденное — пунктиром */
+.minimap {
+  margin-top: 12px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--panel);
+}
+.minimap-head {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+.minimap-canvas { width: 100%; height: auto; display: block; }
+.minimap-said { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+
+.minimap-hall {
+  stroke: var(--slot-line);
+  stroke-width: 10;
+  stroke-linecap: round;
+}
+.minimap-hall.fog { stroke-dasharray: 14 12; opacity: 0.4; }
+
+.minimap-plate {
+  fill: var(--slot);
+  stroke: var(--slot-line);
+  stroke-width: 2;
+}
+.minimap-room.fog .minimap-plate {
+  fill: transparent;
+  stroke-dasharray: 10 8;
+  opacity: 0.5;
+}
+.minimap-room.done .minimap-plate { fill: rgba(80, 200, 120, 0.12); }
+.minimap-room.danger .minimap-plate {
+  stroke: var(--bad);
+  fill: rgba(220, 70, 70, 0.14);
+}
+.minimap-room.goal .minimap-plate { stroke: var(--good); }
+.minimap-room.here .minimap-plate {
+  fill: var(--accent);
+  stroke: var(--ink);
+  stroke-width: 3;
+}
+.minimap-room.here .minimap-code { fill: var(--bg); }
+.minimap-code {
+  fill: var(--ink);
+  font-size: 20px;
+  font-weight: 600;
+  text-anchor: middle;
+  opacity: 0.85;
+}
+.minimap-room.fog .minimap-code { opacity: 0.4; }
+.minimap-mark { font-size: 16px; text-anchor: middle; fill: var(--muted); }
+.minimap-room.goal .minimap-mark { fill: var(--good); }
+.minimap-room.danger .minimap-mark { fill: var(--bad); }
+
+/* Фишка бойца на схеме: своя светлая, чужая серая, упавший тусклый */
+.minimap-chip {
   fill: var(--muted);
-  font-size: 22px;
+  stroke: var(--bg);
+  stroke-width: 2;
+}
+.minimap-chip.me { fill: var(--accent); stroke: var(--ink); }
+.minimap-chip.down { fill: var(--bad); opacity: 0.7; }
+.minimap-chip.walking { stroke-dasharray: 4 3; }
+.minimap-letter {
+  fill: var(--bg);
+  font-size: 11px;
+  font-weight: 700;
   text-anchor: middle;
 }
