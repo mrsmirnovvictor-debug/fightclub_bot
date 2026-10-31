@@ -15020,3 +15020,50 @@ async def test_the_traffic_sheet_offers_the_fine_and_the_address(server, db):
                 "#police-body .btn", has_text=gone
             ).count() == 0, f"кнопки «{gone}» в участке быть не должно"
         await browser.close()
+
+
+async def test_a_foreign_script_error_is_reported_with_its_real_place(server):
+    """«Script error.» из чужого скрипта не выдаётся за падение карточки.
+
+    Такое приходит из `telegram-web-app.js`: он лежит на telegram.org, и
+    браузер по правилу одного источника отдаёт одно «Script error.» без
+    текста и стека. Раньше обработчик строил `new Error` сам, и стек
+    получался по месту вызова — по самому обработчику. В журнале это
+    выглядело как падение карточки в строке, где она только слушает, и
+    чинить было нечего. Теперь место берётся из события.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    reports: list[dict] = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+
+        async def catch(route):
+            reports.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json", body="{}"
+            )
+
+        await page.route("**/api/oops", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.evaluate(
+            """() => window.dispatchEvent(new ErrorEvent("error", {
+                message: "Script error.",
+                filename: "https://telegram.org/js/telegram-web-app.js",
+                lineno: 112,
+                colno: 7,
+            }))"""
+        )
+        await page.wait_for_function("() => true")
+        for _ in range(50):
+            if reports:
+                break
+            await page.wait_for_timeout(100)
+        await browser.close()
+
+    assert reports, "отчёт о чужой ошибке до сервера не доехал"
+    said = reports[0]
+    assert "telegram-web-app.js:112:7" in said["message"], said["message"]
+    assert "Script error." in said["message"]
+    assert not said["stack"], "подложного стека в отчёте быть не должно"

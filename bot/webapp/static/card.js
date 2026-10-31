@@ -34,8 +34,28 @@ function reportOops(error, screen) {
   }
 }
 
+// Ошибка из чужого скрипта приходит без подробностей. `telegram-web-app.js`
+// лежит на telegram.org, и браузер по правилу одного источника прячет и
+// текст, и стек, оставляя одно «Script error.». Записать такую ошибку как
+// есть нельзя: `new Error` строит стек по месту вызова, то есть по нашему
+// же обработчику, и в журнале выходит, будто карточка падает в строке,
+// где она только слушает. Поэтому место берём из самого события — там
+// адрес, строка и столбец настоящего виновника, — а пустой стек честнее
+// подложного.
+function crashOf(event) {
+  if (event.error) return event.error;
+  const where = event.filename
+    ? event.filename + ":" + event.lineno + ":" + event.colno
+    : "источник скрыт правилом одного источника";
+  const crash = new Error(
+    (event.message || "ошибка без текста") + " — " + where
+  );
+  crash.stack = "";
+  return crash;
+}
+
 window.addEventListener("error", (event) => {
-  reportOops(event.error || new Error(event.message), null);
+  reportOops(crashOf(event), null);
 });
 window.addEventListener("unhandledrejection", (event) => {
   reportOops(event.reason, null);
