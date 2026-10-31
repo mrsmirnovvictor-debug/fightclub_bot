@@ -5742,10 +5742,19 @@ async def test_a_house_that_promises_more_still_opens_its_own_screen(server, db)
 
 
 def hurt_card(player, hours: int = 10, minutes: int = 15):
-    """Карточка бойца с тяжёлой травмой ноги."""
+    """Карточка бойца с тяжёлой травмой ноги.
+
+    Срок берётся с запасом в полминуты, и это не придирка: остаток
+    показывается с округлением вниз, а браузер открывается не в ту же
+    секунду, в какую собрана карточка. Ровные «десять часов пятнадцать
+    минут» превращались в четырнадцать, как только прогон шёл чуть
+    медленнее обычного, — и тест падал через раз на полном наборе.
+    """
     from bot.game.injuries import ActiveInjury
 
-    player.injury = ActiveInjury("broken_leg", now_ts() + hours * 3600 + minutes * 60)
+    player.injury = ActiveInjury(
+        "broken_leg", now_ts() + hours * 3600 + minutes * 60 + 30
+    )
     return build_card(player, TOKEN, viewer_id=player.user_id)
 
 
