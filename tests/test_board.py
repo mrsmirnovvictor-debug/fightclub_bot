@@ -151,6 +151,56 @@ async def test_the_pin_comes_off_when_there_is_nobody_left_to_call(
     assert tail in bot.edits[-1].text
 
 
+async def test_the_club_calls_telegram_by_the_names_it_really_has(bot, db):
+    """Закреп и снятие зовут по именам из настоящей подписи aiogram.
+
+    У двух соседних методов порядок параметров разный:
+
+        pin_chat_message  (chat_id, message_id, business_connection_id=None)
+        unpin_chat_message(chat_id, business_connection_id=None, message_id=None)
+
+    Поэтому `unpin_chat_message(chat_id, message_id)` — тихая ошибка:
+    номер сообщения уезжает в поле бизнес-подключения, сам `message_id`
+    остаётся пустым, Telegram отвечает отказом, и закреп висит дальше.
+    Поймать это двойником нельзя — он принимал что дают, — поэтому
+    проверка смотрит в подпись живого `aiogram.Bot`.
+
+    Так же ломается любой другой вызов по позиции, если Telegram
+    добавит параметр в середину. Отсюда правило: методы бота звать
+    по именам, а проверку держать тут.
+    """
+    import inspect
+
+    from aiogram import Bot
+
+    unpin = inspect.signature(Bot.unpin_chat_message).parameters
+    order = [name for name in unpin if name != "self"]
+    assert order[0] == "chat_id"
+    assert "message_id" in order
+    # Ровно та ловушка, из-за которой нужны имена: на втором месте не
+    # номер сообщения. Если aiogram однажды это починит — проверка
+    # упадёт, и тогда её надо просто снять
+    assert order[1] != "message_id", (
+        "aiogram поменял порядок: ловушки больше нет"
+    )
+
+    # А теперь то же самое, но через настоящий путь кода: снятие
+    # закрепа обязано донести номер сообщения
+    await mark_all(db)
+    duels = duels_of(bot, db)
+    challenger = make_player(1, "Тайлер")
+    rival = make_player(2, "Марла")
+    for one in (challenger, rival):
+        await db.save_player(one)
+
+    challenge = await duels.open_challenge(None, None, challenger)
+    pinned = bot.pinned[0]
+    await duels.accept_challenge(challenge.id, rival)
+    await settle()
+
+    assert bot.unpinned == [pinned], "номер сообщения до Telegram не дошёл"
+
+
 async def test_a_raid_calls_the_club_down_to_the_cellar(bot, db):
     """Сбор отряда — объявлением в ветку рейдов, с закрепом."""
     await mark_all(db)

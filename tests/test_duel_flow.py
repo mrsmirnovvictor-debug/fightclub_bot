@@ -71,7 +71,17 @@ class FakeBot:
     async def pin_chat_message(self, chat_id, message_id, **kwargs):
         self.pinned.append((chat_id, message_id))
 
-    async def unpin_chat_message(self, chat_id, message_id=None, **kwargs):
+    # Подпись повторяет настоящую из aiogram 3, включая порядок: там на
+    # втором месте `business_connection_id`, а не `message_id`. Пока
+    # двойник принимал номер сообщения вторым позиционным, он
+    # подтверждал вызов, который Telegram отвергал
+    async def unpin_chat_message(
+        self, chat_id, business_connection_id=None, message_id=None, **kwargs
+    ):
+        assert business_connection_id is None, (
+            "номер сообщения уехал в business_connection_id: "
+            "снятие закрепа зовут по именам"
+        )
         self.unpinned.append((chat_id, message_id))
 
     async def edit_message_text(self, text, chat_id=None, message_id=None, **kwargs):
