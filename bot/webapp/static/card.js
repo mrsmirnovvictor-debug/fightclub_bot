@@ -12676,6 +12676,11 @@ function stopWatchingStation() {
   blackoutRate = 0;
   if (blackoutTimer) clearInterval(blackoutTimer);
   blackoutTimer = null;
+  // И шкалу перехода тоже: по её нулю экран сам идёт за новой
+  // комнатой, а ушедшему с экрана станции этот запрос не нужен —
+  // он заодно снова завёл бы опрос, который тут только что сняли
+  if (blackoutWalkTimer) clearInterval(blackoutWalkTimer);
+  blackoutWalkTimer = null;
 }
 
 async function loadBlackout() {
