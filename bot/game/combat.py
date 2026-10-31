@@ -40,7 +40,7 @@ from bot.game.abilities import (
     Source,
     energy_gain,
 )
-from bot.game.equipment import BARE_HANDS, BARE_HANDS_ICON, Equipment
+from bot.game.equipment import BARE_HANDS, BARE_HANDS_ICON, Equipment, OwnedItem
 from bot.game.stats import (
     NO_LIMITS,
     BLOCK_BREAK_CHANCE,
@@ -225,6 +225,10 @@ class Fighter:
     charges: list[Charge] = field(default_factory=list)
     # Сколько приёмов пущено в дело в этом ходу: больше трёх не дают
     pressed: int = 0
+    # Патроны в руках: номер руки → сколько осталось в магазине. Пусто —
+    # ещё не стреляли, и магазин полон. Живёт это только внутри боя: в
+    # базу патроны не уходят, как и энергия
+    ammo: dict[int, int] = field(default_factory=dict)
     # Боевые дела: что боец сделал своими руками — для школы боевых
     # искусств. Копятся по ходу боя, а служба боя их отсюда сливает в
     # базу (`dojo_service.count_deeds`) и этим забирает
@@ -378,6 +382,60 @@ class Fighter:
     def out_of_turns(self) -> bool:
         """Норма приёмов на ход выбрана."""
         return self.pressed >= MAX_PER_TURN
+
+    def shots_left(self, hand: int = 0) -> int:
+        """Сколько патронов в этой руке. Ноль — или пусто, или не оружие."""
+        owned = self.equipment.hand(hand)
+        if owned is None or not owned.item.is_firearm:
+            return 0
+        return self.ammo.get(hand, owned.item.shots)
+
+    def firearm(self, hand: int = 0):
+        """Огнестрел в этой руке, пока в нём есть патроны. Иначе None."""
+        owned = self.equipment.hand(hand)
+        if owned is None or not owned.item.is_firearm:
+            return None
+        return owned.item if self.shots_left(hand) > 0 else None
+
+    def spend_shot(self, hand: int = 0) -> str:
+        """Потратить патрон. Вернёт название взятого взамен оружия.
+
+        Патрон уходит на всякую попытку выстрела — и на промах тоже:
+        пуля вылетела. Кончился магазин — боец берёт то, что записано у
+        оружия в `spent_into`, и дальше дерётся им. Возвращается при
+        этом название нового оружия, чтобы судья мог об этом сказать;
+        пустая строка — ничего не изменилось.
+        """
+        gun = self.firearm(hand)
+        if gun is None:
+            return ""
+        left = self.shots_left(hand) - 1
+        self.ammo[hand] = max(0, left)
+        if left > 0:
+            return ""
+        return self._draw_instead(hand, gun)
+
+    def _draw_instead(self, hand: int, gun) -> str:
+        """Переложить в руку то, чем боец дерётся после последнего патрона."""
+        from bot.content.items import CATALOGUE
+
+        owned = self.equipment.hand(hand)
+        drawn = CATALOGUE.get(gun.spent_into) if gun.spent_into else None
+        if owned is None or owned.slot is None or drawn is None:
+            return ""
+        self.equipment.items[owned.slot] = OwnedItem(
+            item=drawn, id=owned.id, slot=owned.slot, wear=owned.wear
+        )
+        # Запас здоровья пересчитывать нельзя: боец не лечится и не
+        # калечится от того, что переложил оружие. Поэтому доли и урон
+        # берутся заново, а здоровье остаётся тем, какое было
+        was = self.hp
+        self.derived = derive(
+            self.fclass, self.stats, self.level,
+            self.equipment.hp_bonus + self.extra_hp,
+        )
+        self.hp = min(was, self.max_hp)
+        return drawn.title
 
     def can_use(self, code: str) -> bool:
         """Хватает ли энергии и выучен ли приём. Мёртвый не может ничего."""
@@ -615,6 +673,34 @@ def strike_of(
     missed_turn: bool = False,
     limit: int = MAX_TURNS,
 ) -> Strike:
+    """Один удар одной рукой — и, если это был выстрел, минус патрон.
+
+    Патрон тратится на любую попытку: дошло, ушло в блок, ушло в уворот —
+    пуля всё равно вылетела. Считается он после удара, а не до: урон
+    выстрела берётся с того же оружия, и, списав патрон раньше, мы
+    стреляли бы уже из пустого.
+    """
+    strike = _resolve_strike(
+        attacker, defender, zone, weapon, hand, defender_action,
+        round_number, rng, missed_turn, limit,
+    )
+    if zone is not None:
+        attacker.spend_shot(hand)
+    return strike
+
+
+def _resolve_strike(
+    attacker: Fighter,
+    defender: Fighter,
+    zone: Zone | None,
+    weapon: str,
+    hand: int,
+    defender_action: Action,
+    round_number: int,
+    rng: random.Random,
+    missed_turn: bool = False,
+    limit: int = MAX_TURNS,
+) -> Strike:
     """Один удар одной рукой."""
     strike = Strike(
         attacker_id=attacker.user_id,
@@ -729,6 +815,16 @@ def strike_of(
     else:
         strike.outcome = Outcome.HIT
 
+    # Пуля в упор: броня и выносливость её не держат. Доля записана на
+    # самом оружии (`crit_pierce`), и работает она только на крите —
+    # обычное попадание защита режет как всегда
+    gun = attacker.firearm(hand)
+    pierce = (
+        gun.crit_pierce
+        if gun is not None and strike.outcome is Outcome.CRIT
+        else 0.0
+    )
+
     # Прибавки складываются: три удара по нарастающей дадут сумму, а не
     # самый крупный из них. Ложатся они до брони и выносливости — как
     # обычный урон, а не поверх защиты: иначе «плюс пятнадцать» доходил бы
@@ -744,7 +840,7 @@ def strike_of(
             bonuses, key=lambda one: one.ability.damage
         ).ability.code
 
-    _land_damage(strike, damage, attacker, defender, zone, rng)
+    _land_damage(strike, damage, attacker, defender, zone, rng, pierce)
     _apply_parry(strike, defender)
     return strike
 
@@ -774,6 +870,7 @@ def _land_damage(
     defender: Fighter,
     zone: Zone,
     rng: random.Random,
+    pierce: float = 0.0,
 ) -> None:
     """Довести удар до тела: выносливость и броня той зоны, куда пришёлся.
 
@@ -781,11 +878,20 @@ def _land_damage(
     доспех на зоне и не выносливость соперника.
     """
     before = damage
+    # Пробитие: доля, которую защита не держит вовсе. У обычного удара
+    # его нет, у выстрела в упор — есть, и на эту долю броня с
+    # выносливостью просто не считаются. Иначе крит из пистолета
+    # доходил бы до тела слабее, чем обещано: потолки защиты (половина
+    # от выносливости и три пятых от остатка — бронёй) срезают любой
+    # урон на четыре пятых, какой бы крупный он ни был
+    share = max(0.0, min(1.0, pierce))
+    through = damage * share
+    damage -= through
     damage *= 1.0 - defender.resist_against(attacker)
     armor = min(defender.equipment.roll_armor(zone, rng), damage * MAX_ARMOR_SHARE)
     strike.armor = int(round(armor))
     damage -= armor
-    strike.damage = max(1, int(round(damage)))
+    strike.damage = max(1, int(round(damage + through)))
     strike.absorbed = max(0, int(round(before)) - strike.damage)
 
 
@@ -802,9 +908,16 @@ def _roll_damage(
     чем танк. Иначе плоский урон оружия стирал бы разницу между классами —
     у того, кто бьёт слабо, прибавка весит вдвое больше.
     """
-    raw = rng.randint(fighter.derived.damage_min, fighter.derived.damage_max)
-    weapon = fighter.equipment.roll_weapon_damage(hand, rng)
-    raw += weapon * fighter.fclass.damage_mult
+    gun = fighter.firearm(hand)
+    if gun is not None:
+        # Выстрел считается сам по себе: силой пулю не разгоняют, и
+        # класс её не «проворачивает» лучше. На оружии написано
+        # 150–200 — столько и прилетает, и ничего сверху
+        raw = float(fighter.equipment.roll_weapon_damage(hand, rng))
+    else:
+        raw = rng.randint(fighter.derived.damage_min, fighter.derived.damage_max)
+        weapon = fighter.equipment.roll_weapon_damage(hand, rng)
+        raw += weapon * fighter.fclass.damage_mult
     return raw * fatigue_multiplier(round_number, limit)
 
 
@@ -818,7 +931,10 @@ def _max_damage(
     рулеткой решало бы, стоило ли оно того.
     """
     weapon = fighter.equipment.weapon_damage_max(hand)
-    raw = fighter.derived.damage_max + weapon * fighter.fclass.damage_mult
+    if fighter.firearm(hand) is not None:
+        raw = float(weapon)
+    else:
+        raw = fighter.derived.damage_max + weapon * fighter.fclass.damage_mult
     return raw * fatigue_multiplier(round_number, limit)
 
 

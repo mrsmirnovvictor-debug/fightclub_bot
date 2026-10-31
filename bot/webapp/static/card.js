@@ -12703,13 +12703,32 @@ function renderBlackout(data) {
   paintBlackoutRun(data, body);
 }
 
+/** «2 дня 7 часов», «3 часа», «18 минут» — сколько ещё держится откат. */
+function leftText(seconds) {
+  const left = Math.max(0, Number(seconds) || 0);
+  const days = Math.floor(left / 86400);
+  const hours = Math.floor((left % 86400) / 3600);
+  const minutes = Math.floor((left % 3600) / 60);
+  const parts = [];
+  if (days) parts.push(days + " " + plural(days, "день", "дня", "дней"));
+  if (hours) parts.push(hours + " " + plural(hours, "час", "часа", "часов"));
+  if (minutes && !days) {
+    parts.push(minutes + " " + plural(minutes, "минуту", "минуты", "минут"));
+  }
+  return parts.join(" ") || "меньше минуты";
+}
+
 /** Город перед рейдом: окно входа и чужие отряды. */
 function paintBlackoutLobby(data, body) {
   el("blackout-view").classList.add("hidden");
   el("blackout-clock").textContent = "";
-  el("blackout-note").textContent = data.window
-    ? "Окно входа открыто. Отряд от " + data.min + " до " + data.max + "."
-    : "Окно закрыто. Следующее — " + clockText(data.opens_at) + ".";
+  // Откат личный и важнее окна: станция открыта каждый вечер, а этому
+  // бойцу — не каждый, и сказать это надо до кнопки, а не после отказа
+  el("blackout-note").textContent = data.locked_until
+    ? data.locked_why + " " + leftText(data.locked_left) + "."
+    : data.window
+      ? "Окно входа открыто. Отряд от " + data.min + " до " + data.max + "."
+      : "Окно закрыто. Следующее — " + clockText(data.opens_at) + ".";
 
   if (data.overview) {
     const pic = document.createElement("img");
@@ -12724,11 +12743,26 @@ function paintBlackoutLobby(data, body) {
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
   buttons.appendChild(
-    button("Объявить рейд", {
-      onClick: () => blackoutAction({ action: "open" }),
-    })
+    button(
+      data.locked_until ? "Станция закрыта" : "Объявить рейд",
+      {
+        disabled: Boolean(data.locked_until),
+        hint: data.locked_until
+          ? data.locked_why + " " + leftText(data.locked_left)
+          : "Награда за рейд — до " + (data.reward || 1000) + " 💰.",
+        onClick: () => blackoutAction({ action: "open" }),
+      }
+    )
   );
   body.appendChild(buttons);
+  if (!data.locked_until) {
+    const said = document.createElement("p");
+    said.className = "thing-note";
+    said.textContent =
+      "Со станции не уходят: вошёл — проходи до конца. Прошёл — "
+      + "следующий заход через трое суток, погиб — через три часа.";
+    body.appendChild(said);
+  }
 
   (data.squads || []).forEach((one) => {
     const row = document.createElement("article");
@@ -12789,6 +12823,7 @@ function paintBlackoutSquad(data, body) {
   buttons.appendChild(
     button("Выйти из отряда", {
       secondary: true,
+      hint: "Пока отряд в городе. Со станции уйти уже нельзя.",
       onClick: () => blackoutAction({ action: "leave" }),
     })
   );
@@ -12845,6 +12880,8 @@ function paintBlackoutRun(data, body) {
     // Джойстик только вне боя: из занятой комнаты всё равно не выйти
     if (!data.walking) body.appendChild(blackoutStickBox(data));
   }
+  const potions = blackoutPotionBox(data);
+  if (potions) body.appendChild(potions);
   body.appendChild(blackoutSquadBox(data.squad));
   body.appendChild(blackoutLogBox(data.log));
   // Миникарта внизу: по ней смотрят, где отряд, а не ходят
@@ -13163,16 +13200,49 @@ function blackoutTurnBox(data) {
       })
     );
   }
-  (data.squad || []).forEach((one) => {
-    if (!one.down || !one.here || one.me) return;
+  box.appendChild(buttons);
+  return box;
+}
+
+/** Склянки из рюкзака: то, чем лечатся, когда ждать десять минут некогда.
+ *
+ * Передышки за зачищенную комнату станция не даёт: из боя боец выходит
+ * с тем, что осталось. Дальше либо стоять и ждать, либо пить.
+ */
+function blackoutPotionBox(data) {
+  const rows = (data.potions || []).filter((one) => one.count > 0);
+  if (!rows.length) return null;
+  const box = document.createElement("section");
+  box.className = "shelf";
+  const head = document.createElement("h2");
+  head.className = "shelf-head";
+  head.textContent = "🧪 Склянки";
+  box.appendChild(head);
+
+  const me = (data.squad || []).find((one) => one.me) || {};
+  const hurt = Number(me.percent || 0) < 100;
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  rows.forEach((one) => {
     buttons.appendChild(
-      button("Поднять " + one.name, {
-        secondary: true,
-        onClick: () => blackoutAction({ action: "raise", user: one.id }),
+      button(one.emoji + " " + one.title + " ×" + one.count, {
+        secondary: !hurt,
+        disabled: !one.can_drink,
+        hint: one.full
+          ? "Доливает до полного."
+          : "Доливает " + one.heal + " ❤️.",
+        onClick: () => blackoutAction({ action: "drink", code: one.code }),
       })
     );
   });
   box.appendChild(buttons);
+
+  const said = document.createElement("p");
+  said.className = "thing-note";
+  said.textContent = hurt
+    ? "Можно и просто постоять: раны затягиваются сами, десять минут до полного."
+    : "Пока целы — склянки побереги.";
+  box.appendChild(said);
   return box;
 }
 

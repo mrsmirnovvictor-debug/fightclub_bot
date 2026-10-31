@@ -40,24 +40,29 @@ from bot.game.blackout import (
     BOSS_LEVEL,
     BOSS_REINFORCEMENTS,
     CLEARANCE,
-    CLEAR_HEAL,
     CONSOLE_HEALTH,
     CONSOLE_HIT,
     COOLING,
     CONTROL_IMMUNE_TURNS,
     DEFENSE_WAVES,
+    DIED_COOLDOWN_HOURS,
     DEFENSE_WAVE_TITLES,
     DRAINAGE,
     EVACUATION_PLAN,
     EXTRACTED,
     FLAG_TITLES,
+    FALLEN_SHARE,
     FLOODLIGHTS,
     FOE_BUILD,
     FOE_LEVEL,
     ITEM_ART,
     ITEM_SHAPES,
     ITEM_TITLES,
+    LOCK_DIED,
+    LOCK_REASONS,
+    LOCK_WON,
     MAX_PARTY,
+    MAX_REWARD,
     MIN_PARTY,
     POWER_CORE,
     QUEST_ITEMS,
@@ -69,6 +74,7 @@ from bot.game.blackout import (
     RUN_LIMIT_MINUTES,
     SPEED_BONUS_MINUTES,
     SQUAD_SIZE,
+    WON_COOLDOWN_DAYS,
     STAGE_EXTRACT,
     STAGE_RESTART,
     STAGE_SPEED,
@@ -91,7 +97,7 @@ from bot.game.clock import MOSCOW
 from bot.game.abilities import Charge, MAX_ENERGY
 from bot.game.combat import Action, Fighter, group_aftermath, heal_line
 from bot.game.combat import resolve_round, spread_heal
-from bot.game.health import now_ts
+from bot.game.health import now_ts, regenerated_hp
 from bot.game.reference import developed_stats
 from bot.models import Player
 
@@ -197,8 +203,15 @@ def blank_state(cycle: str, leader_id: int, now: int) -> dict[str, Any]:
 
 
 def member_row(player: Player, now: int, bot: bool = False) -> dict[str, Any]:
-    """Строка участника: где стоит, сколько здоровья и жив ли."""
+    """Строка участника: где стоит, сколько здоровья и жив ли.
+
+    Здоровье берётся то, с каким боец пришёл: станция не лечит на
+    входе. Рядом лежит метка времени — по ней считается то же
+    восстановление, что и в городе, пока боец стоит на месте
+    (`settle`).
+    """
     fighter = Fighter.from_player(player)
+    fighter.hp = max(1, min(player.current_hp(now), fighter.max_hp))
     return {
         "name": player.nickname,
         "level": player.level,
@@ -210,8 +223,8 @@ def member_row(player: Player, now: int, bot: bool = False) -> dict[str, Any]:
         "arrive": 0,
         "hp": fighter.hp,
         "max": fighter.max_hp,
+        "hp_at": now,
         "down": False,
-        "raised": False,
         "seen": now,
         "left": 0,
         "extracted": 0,
@@ -376,8 +389,54 @@ async def command(
             run.id, run.version, phase, json.dumps(run.state), moment
         ):
             await db.blackout_remember(run_id, command_id, answer, moment)
+            await close_out(db, run, moment)
             return answer
     raise BlackoutError("Рейд сейчас занят другой командой. Повтори.")
+
+
+async def close_out(db: Database, run: Run, now: int) -> None:
+    """Разобрать кончившийся рейд: здоровье в карточку и личные откаты.
+
+    Зовётся после каждой записи — и ничего не делает, пока рейд идёт.
+    Записать это внутрь самих `_victory`/`_wipe` нельзя: они считают
+    состояние и базы не знают, а здоровье с откатом живут в базе.
+
+    Что делается ровно один раз (`closed` в состоянии):
+
+    * **здоровье уходит в карточку.** Со станции боец выходит с тем,
+      что от него осталось: дальше он затягивается по городским
+      правилам, а не возвращается в город целым;
+    * **личный откат.** Прошёл — трое суток, погиб — три часа. Тому,
+      кто и прошёл, и погиб по дороге, ставится более долгий: это
+      решает сама база (`blackout_lock`).
+    """
+    if not run.state.get("outcome"):
+        return
+    # Версию берём свежую, а не ту, что была у звавшего: запись выше
+    # её уже сдвинула, и считать её сдвиг во всех местах вызова
+    # значило бы однажды просчитаться
+    fresh = await read_run(db, run.id)
+    state = fresh.state
+    if not state.get("outcome") or state.get("closed"):
+        return
+    state["closed"] = now
+    won = state.get("outcome") in ("extracted", "restarted")
+    for key, row in (state.get("members") or {}).items():
+        user_id = int(key)
+        if user_id <= 0 or row.get("left"):
+            continue
+        player = await db.get_player(user_id)
+        if player is not None and row.get("max"):
+            player.set_hp(int(row.get("hp") or 0), now)
+            await db.save_player(player)
+        if row.get("down"):
+            await _hold(db, user_id, LOCK_DIED, now)
+        elif won:
+            await _hold(db, user_id, LOCK_WON, now)
+    await db.blackout_write(
+        fresh.id, fresh.version, "over", json.dumps(state), now
+    )
+    run.state = state
 
 
 async def look(db: Database, run_id: int, now: int | None = None) -> Run:
@@ -400,6 +459,7 @@ async def look(db: Database, run_id: int, now: int | None = None) -> Run:
         ):
             run.version += 1
             run.phase = phase
+            await close_out(db, run, moment)
             return run
     return await read_run(db, run_id)
 
@@ -410,13 +470,14 @@ async def look(db: Database, run_id: int, now: int | None = None) -> Run:
 def settle(run: Run, now: int) -> None:
     """Досчитать всё, что должно было случиться само к этому часу.
 
-    Три вещи и ровно в этом порядке: кто дошёл, не вышло ли время и
-    не пора ли предупредить. Порядок важен — дошедший в последнюю
-    секунду всё-таки дошёл.
+    Четыре вещи и ровно в этом порядке: кто затянулся, кто дошёл, не
+    вышло ли время и не пора ли предупредить. Порядок важен — дошедший
+    в последнюю секунду всё-таки дошёл.
     """
     state = run.state
     if state.get("outcome"):
         return
+    _mend(state, now)
     arrived = False
     for one in (state.get("members") or {}).values():
         if one.get("arrive") and one["arrive"] <= now:
@@ -431,6 +492,34 @@ def settle(run: Run, now: int) -> None:
         _see_here(state, now)
         _meet_here(state, now)
     _check_time(run, now)
+
+
+def _mend(state: dict, now: int) -> None:
+    """Затянуть раны тем, кто стоит и ждёт. Правило то же, что в городе.
+
+    Передышки «за зачищенную комнату» на станции нет: из боя боец
+    выходит с тем, что осталось. Зато он может никуда не идти — и
+    здоровье пойдёт обратно само, по той же лестнице, что в городе
+    (`bot.game.health`, с нуля до полного за десять минут).
+
+    В бою не затягивается ничего: иначе достаточно было бы подождать
+    между двумя нажатиями, и бой переставал бы кончаться. Поэтому
+    лечится только тот, у кого в комнате боя нет.
+    """
+    fight = state.get("fight") or {}
+    busy = fight.get("room") or ""
+    for one in (state.get("members") or {}).values():
+        if one["left"] or one["extracted"] or one["down"]:
+            continue
+        if not one["max"]:  # pragma: no cover - бот без собранного бойца
+            continue
+        if busy and one["room"] == busy:
+            one["hp_at"] = now
+            continue
+        was = int(one.get("hp") or 0)
+        since = now - int(one.get("hp_at") or now)
+        one["hp"] = regenerated_hp(was, int(one["max"]), since)
+        one["hp_at"] = now
 
 
 def _meet_here(state: dict, now: int) -> None:
@@ -477,6 +566,47 @@ def _check_time(run: Run, now: int) -> None:
 # ---------- лобби ----------
 
 
+async def _check_lock(db: Database, user_id: int, now: int) -> None:
+    """Не закрыта ли станция этому бойцу. Закрыта — скажем, до какого часа."""
+    row = await db.blackout_locked(user_id)
+    if row is None or int(row["until"]) <= now:
+        return
+    left = int(row["until"]) - now
+    reason = LOCK_REASONS.get(str(row["reason"]), "Станция закрыта: ещё")
+    raise BlackoutError(f"{reason} {_left_text(left)}.")
+
+
+def _left_text(seconds: int) -> str:
+    """«2 дня 7 часов», «3 часа», «18 минут» — сколько ещё ждать."""
+    from bot.game.presence import plural
+
+    days, rest = divmod(max(0, seconds), 86_400)
+    hours, rest = divmod(rest, 3_600)
+    minutes = rest // 60
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days} {plural(days, 'день', 'дня', 'дней')}")
+    if hours:
+        parts.append(f"{hours} {plural(hours, 'час', 'часа', 'часов')}")
+    if minutes and not days:
+        parts.append(
+            f"{minutes} {plural(minutes, 'минуту', 'минуты', 'минут')}"
+        )
+    return " ".join(parts) or "меньше минуты"
+
+
+async def _hold(db: Database, user_id: int, reason: str, now: int) -> None:
+    """Закрыть станцию этому бойцу: трое суток за победу, три часа за смерть."""
+    if user_id <= 0:  # союзники сервера отката не знают
+        return
+    span = (
+        WON_COOLDOWN_DAYS * 86_400
+        if reason == LOCK_WON
+        else DIED_COOLDOWN_HOURS * 3_600
+    )
+    await db.blackout_lock(user_id, now + span, reason, now)
+
+
 async def open_run(
     db: Database, leader: Player, now: int | None = None, test: bool = False
 ) -> Run:
@@ -488,6 +618,8 @@ async def open_run(
     moment = now_ts() if now is None else now
     if await db.blackout_of(leader.user_id):
         raise BlackoutError("Ты уже в рейде. Сперва закончи его.")
+    if not test:
+        await _check_lock(db, leader.user_id, moment)
     if not test and not window_open(moment):
         opens = window_opens_at(moment)
         when = datetime.fromtimestamp(opens, MOSCOW).strftime("%d.%m %H:%M")
@@ -516,6 +648,10 @@ async def join_run(
     run = await read_run(db, run_id)
     if run.phase != "lobby":
         raise BlackoutError("Этот рейд уже ушёл на станцию.")
+    # Откат личный: друзья идут, а тот, кто прошёл станцию три дня
+    # назад или погиб три часа назад, ждёт своей очереди
+    if not run.state.get("test"):
+        await _check_lock(db, player.user_id, moment)
     if len(run.state["members"]) >= MAX_PARTY:
         raise BlackoutError(f"В отряде уже {MAX_PARTY} — больше не берут.")
     run.state["members"][str(player.user_id)] = member_row(player, moment)
@@ -531,20 +667,26 @@ async def join_run(
 async def leave_run(
     db: Database, player: Player, now: int | None = None
 ) -> str:
-    """Выйти из отряда. Из начатого рейда выходят, а инстанс остаётся."""
+    """Выйти из отряда. Со станции — нельзя: только из лобби.
+
+    Это правило режима, а не недоделка. Войти на станцию — значит
+    остаться на ней до конца: до выхода через тоннели, до смерти или
+    до конца отпущенных трёх часов. Иначе рейд превращался бы в
+    кладовую: зашёл, забрал, что лежит близко, вышел на карту.
+    """
     moment = now_ts() if now is None else now
     run = await run_of(db, player.user_id)
     if run is None:
         raise BlackoutError("Ты не в рейде.")
     key = str(player.user_id)
-    if run.phase == "lobby":
-        run.state["members"].pop(key, None)
-        if not run.state["members"]:
-            run.state["outcome"] = "abandoned"
-    else:
-        one = run.state["members"].get(key)
-        if one:
-            one["left"] = moment
+    if run.phase != "lobby":
+        raise BlackoutError(
+            "Со станции не уходят. Выход один — через тоннели: дойти, "
+            "погибнуть или дождаться конца времени."
+        )
+    run.state["members"].pop(key, None)
+    if not run.state["members"]:
+        run.state["outcome"] = "abandoned"
     _note(run.state, f"{player.nickname} вышел из отряда.", moment)
     _pass_leadership(run.state, moment)
     phase = "over" if run.state.get("outcome") else run.phase
@@ -589,7 +731,7 @@ async def add_bots(
             "class": ("tank", "warrior", "assassin", "trickster")[number % 4],
             "room": run.state["safe"],
             "from": "", "to": "", "departed": 0, "arrive": 0,
-            "hp": 0, "max": 0, "down": False, "raised": False,
+            "hp": 0, "max": 0, "hp_at": now, "down": False,
             "seen": now, "left": 0, "extracted": 0, "bot": True,
         }
         one = run.state["members"][key]
@@ -744,7 +886,7 @@ def step(run: Run, user_id: int, there: str, now: int) -> str:
     if one["arrive"]:
         raise BlackoutError("Ты уже в пути. Дойди сперва.")
     if one["down"]:
-        raise BlackoutError("Ты не на ногах. Пусть поднимут.")
+        raise BlackoutError("Ты не на ногах: попытка для тебя кончена.")
     here = one["room"]
     locked = _locked_here(state, here)
     if locked:
@@ -1446,23 +1588,16 @@ def _victory(run: Run, now: int) -> str:
     state["fight"] = None
     if not room:
         return "Бой кончился."
-    # Бой кончился — упавших поднимают свои. Это не поблажка: иначе
-    # отряд после каждой победы стоял бы без половины состава, а
-    # подъём «на бой» в сценарии именно боевой, не вечный. Между
-    # волнами обороны передышка та же: в сценарии она называется
-    # «активировать контур», и без неё три волны подряд не отбить
+    # Победа ничего не лечит и никого не поднимает. Из боя боец выходит
+    # с тем, что от него осталось: дальше он либо идёт как есть, либо
+    # стоит и ждёт (`settle` считает то же восстановление, что в
+    # городе), либо пьёт склянку. А упавший так и лежит до конца
+    # попытки — его смерть окончательна, и это правило станции
     for one in (state.get("members") or {}).values():
         if one["left"] or one["extracted"]:
             continue
-        one["raised"] = False
         _forget_tricks(one)
-        if one["down"]:
-            one["down"] = False
-            one["hp"] = max(1, int(one["max"] * 0.3))
-        else:
-            one["hp"] = min(
-                one["max"], one["hp"] + int(one["max"] * CLEAR_HEAL)
-            )
+        one["hp_at"] = now
     # Оборона рубки — не комната: за волной идёт волна, а не зачистка
     if fight.get("kind") == "defense":
         return wave_done(run, now)
@@ -1485,69 +1620,45 @@ def _victory(run: Run, now: int) -> str:
 
 
 def _wipe(run: Run, now: int) -> str:
-    """Отряд лёг. Попытка откатывается, добытое остаётся."""
+    """Отряд лёг целиком. Попытка кончена — и обратно в неё не зайти.
+
+    Отката в безопасную комнату больше нет, и это правило, а не
+    упрощение: со станции нельзя выйти на карту, значит, выход у неё
+    один — дойти или погибнуть. Отряд, который лёг, погиб; трёхчасовой
+    откат на тех, кто в нём был, ставит `_hold_the_fallen` при записи.
+    """
     state = run.state
     fight = state.get("fight") or {}
-    room = fight.get("room") or ""
-    if fight.get("kind") == "defense":
-        # Пуск сорван, но модули остаются в гнёздах: трёх боссов заново
-        # никто искать не будет
-        for one in (state.get("members") or {}).values():
-            if one["left"] or one["extracted"]:
-                continue
-            one["down"] = False
-            one["raised"] = False
-            _forget_tricks(one)
-            one["hp"] = max(1, int(one["max"] * 0.4))
-        return defense_failed(run, now)
     state["fight"] = None
-    safe = state.get("safe") or station().start
     for one in (state.get("members") or {}).values():
         if one["left"] or one["extracted"]:
             continue
-        one["down"] = False
-        one["raised"] = False
+        one["down"] = True
+        one["hp"] = 0
+        one["hp_at"] = now
         _forget_tricks(one)
-        # Откат попытки — это потеря времени, а не воронка. Отряд
-        # отходит в безопасную комнату, перевязывается и идёт заново:
-        # возвращать его на четверти здоровья значило бы запирать рейд
-        # насмерть — проиграв один раз, он проигрывал бы всегда, а
-        # необратимых тупиков в этом рейде быть не должно. Цена
-        # поражения — дорога обратно и сто восемьдесят минут на часах
-        one["hp"] = one["max"]
-        one["room"] = safe
-        one["from"] = one["to"] = ""
-        one["departed"] = one["arrive"] = 0
-    # Незавершённый босс восстанавливается целиком; добытое не теряется
-    if room:
-        (state.get("cleared") or {}).pop(room, None)
-    where = station().room(safe)
-    _note(state, "Отряд отброшен. Боссы восстановились.", now)
-    return (
-        f"Отряд не выстоял. Все очнулись в «{where.name if where else safe}»."
-    )
+    state["outcome"] = "wiped"
+    state["over_at"] = now
+    if fight.get("kind") == "defense":
+        # Пуск сорван, и чинить его некому: отряд лёг в рубке
+        _note(state, "Отряд лёг в рубке. Пуск сорван.", now)
+        return "Отряд не выстоял. Пуск сорван, станция осталась тёмной."
+    _note(state, "Отряд лёг на станции. Попытка кончена.", now)
+    return "Отряд не выстоял. Станция осталась за заражёнными."
 
 
 def raise_mate(run: Run, user_id: int, whom: int, now: int) -> str:
-    """Поднять упавшего: один подъём на бой каждому."""
-    state = run.state
-    me = member(state, user_id)
-    one = member(state, whom)
-    if me is None or one is None:
-        raise BlackoutError("Этого бойца тут нет.")
-    if me["down"]:
-        raise BlackoutError("Сам не на ногах.")
-    if one["room"] != me["room"]:
-        raise BlackoutError("Он в другой комнате.")
-    if not one["down"]:
-        raise BlackoutError("Он и так стоит.")
-    if one["raised"]:
-        raise BlackoutError("Его уже поднимали в этом бою.")
-    one["down"] = False
-    one["raised"] = True
-    one["hp"] = max(1, int(one["max"] * 0.35))
-    _note(state, f"{me['name']} поднял {one['name']}.", now)
-    return f"{one['name']} снова в строю."
+    """Упавшего на станции не поднимают. Оставлено, чтобы сказать почему.
+
+    Подъём «на бой» тут был и ушёл вместе с откатом попытки: смерть на
+    станции окончательна. Погибший ждёт конца прохождения — победу ему
+    зачтут, если отряд дойдёт, но половинной награды
+    (`FALLEN_SHARE`), — а если лёг весь отряд, попытка кончается.
+    """
+    raise BlackoutError(
+        "На станции упавших не поднимают: он ждёт конца попытки. "
+        "Дойдёте — ему зачтут победу."
+    )
 
 
 # ---------- задачи ----------
@@ -1784,15 +1895,12 @@ def confirm(run: Run, user_id: int, now: int) -> str:
     if body["wave"] == 0:
         body["wave"] = 1
         body["health"] = CONSOLE_HEALTH
-        # Подготовка — это и есть подготовка: отряд перевязывается,
-        # прежде чем открыть двери. Иначе оборона превращалась бы в
-        # продолжение боя с Предводителем, а в сценарии это отдельный
-        # этап со своим бюджетом в восемь минут
-        for row in (state.get("members") or {}).values():
-            if row["left"] or row["extracted"]:
-                continue
-            row["down"] = False
-            row["hp"] = row["max"]
+        # Подготовка — это время, а не кнопка. Раньше готовность
+        # лечила отряд целиком и поднимала упавших; теперь не лечит и
+        # не поднимает: перевязываются до того, как жмут «готов», —
+        # стоя в рубке и ожидая, как везде на станции. Три волны
+        # подряд идут без передышки, и в этом весь этап: держать их
+        # надо на том, с чем пришёл
         _start_wave(state, 1, now)
         return "Отряд готов. Оборона началась: первая волна."
     return "Оборона уже идёт."
@@ -1918,16 +2026,78 @@ async def extract(
     return said + (" Бонус скорости — твой." if fast else "")
 
 
+async def drink(
+    db: Database, player: Player, run: Run, code: str, now: int
+) -> str:
+    """Выпить склянку лечения на станции. Рюкзак тут тот же, что в городе.
+
+    Передышки «за комнату» больше нет, и это её замена: отряд либо
+    стоит и ждёт, либо тратит то, что принёс с собой. Считает склянку
+    общая служба (`potions_service`) — она и списывает её из рюкзака, и
+    двигает здоровье в карточке; сюда возвращается только то, на
+    сколько вылечило, и это число ложится в строку участника.
+
+    Эликсиров-прибавок станция не наливает: они держатся два часа и
+    пережили бы рейд, а баланс считан на бойца без них.
+    """
+    from bot.game.potions import PotionKind, get_potion
+    from bot.potions_service import PotionError, use_potion
+
+    one = member(run.state, player.user_id)
+    if one is None:
+        raise BlackoutError("Ты не в этом рейде.")
+    if one["down"]:
+        raise BlackoutError("Склянка мёртвому не поможет.")
+    potion = get_potion(code)
+    if potion is None or potion.kind is not PotionKind.HEAL:
+        raise BlackoutError("На станции пьют только лечебное.")
+    if one["hp"] >= one["max"]:
+        raise BlackoutError("Ты и так в полном порядке — склянку побереги.")
+
+    # Карточку лечим ровно от того здоровья, какое у бойца на станции:
+    # иначе склянка считалась бы от городского запаса, а он другой
+    player.set_hp(int(one["hp"]), now)
+    try:
+        result = await use_potion(db, player, code, now)
+    except PotionError as error:
+        raise BlackoutError(str(error)) from error
+    one["hp"] = min(int(one["max"]), int(one["hp"]) + int(result.healed))
+    one["hp_at"] = now
+    one["seen"] = now
+    _note(run.state, f"{one['name']} выпил «{potion.title}».", now)
+    return f"{potion.emoji} «{potion.title}»: +{result.healed} ❤️."
+
+
 async def pay(
     db: Database, run: Run, user_id: int, stage: str, now: int
 ) -> int:
-    """Выдать часть награды. Один раз на игрока, цикл и часть."""
+    """Выдать часть награды. Один раз на игрока, цикл и часть.
+
+    Две поправки сверх долей, и обе проверяются тут, а не в арифметике:
+
+    * **потолок.** Тысяча на бойца за рейд, и ни кредитом больше.
+      Доли сходятся в неё ровно, но потолок стоит отдельно: правка
+      долей не должна уметь его пробить;
+    * **половина погибшему.** Цель выполнена отрядом, и победу
+      погибшему зачли — он за неё дрался. Но вынесли его свои, и
+      полную цену за это не платят.
+    """
     if user_id <= 0:  # союзники сервера денег не получают
         return 0
     amount = reward_for(stage)
+    one = member(run.state, user_id) or {}
+    if one.get("down"):
+        amount = int(amount * FALLEN_SHARE)
+    # Сколько этому бойцу уже заплатили за этот цикл: потолок общий
+    paid = sum(int(row["amount"]) for row in await db.blackout_paid(
+        user_id, run.cycle
+    ))
+    amount = max(0, min(amount, MAX_REWARD - paid))
     if not await db.blackout_pay(
         user_id, run.cycle, stage, amount, run.id, now
     ):
+        return 0
+    if not amount:
         return 0
     player = await db.get_player(user_id)
     if player is None:  # pragma: no cover - боец удалил персонажа
@@ -2019,7 +2189,6 @@ def snapshot(run: Run, user_id: int, now: int) -> dict[str, Any]:
                 "max": row["max"],
                 "percent": int(100 * row["hp"] / max(1, row["max"])),
                 "down": bool(row["down"]),
-                "raised": bool(row["raised"]),
                 "left": bool(row["left"]),
                 "extracted": bool(row["extracted"]),
                 "bot": bool(row.get("bot")),
@@ -2277,7 +2446,34 @@ async def state_for(
             fight["abilities"] = abilities_payload(
                 _restore_tricks(Fighter.from_player(player), one)
             )
+    # Склянки из рюкзака: передышки за комнату нет, и это то, чем боец
+    # лечится, если ждать десять минут ему некогда
+    body["potions"] = _potions_payload(player, one)
     return body
+
+
+def _potions_payload(player: Player, one: dict | None) -> list[dict[str, Any]]:
+    """Лечебные склянки в рюкзаке. Прибавки на станции не пьют."""
+    from bot.game.potions import PotionKind, get_potion
+
+    if one is None or one.get("down"):
+        return []
+    rows = []
+    for code, count in (player.potions or {}).items():
+        potion = get_potion(code)
+        if potion is None or potion.kind is not PotionKind.HEAL or count <= 0:
+            continue
+        rows.append({
+            "code": code,
+            "title": potion.title,
+            "emoji": potion.emoji,
+            "image": potion.image or "",
+            "count": int(count),
+            "heal": int(potion.heal),
+            "full": potion.full,
+            "can_drink": int(one.get("hp") or 0) < int(one.get("max") or 0),
+        })
+    return sorted(rows, key=lambda row: (row["full"], row["heal"]))
 
 
 async def lobby_for(
@@ -2301,6 +2497,11 @@ async def lobby_for(
             "names": [one["name"] for one in members.values()],
             "can_join": len(members) < MAX_PARTY,
         })
+    # Личный откат: станция открыта каждый вечер, но этому бойцу —
+    # не каждый. Экран обязан сказать это заранее, а не отказом на
+    # кнопке «объявить рейд»
+    lock = await db.blackout_locked(player.user_id)
+    held = int((lock or {}).get("until") or 0)
     return {
         "screen": "lobby",
         "cycle": cycle,
@@ -2312,6 +2513,13 @@ async def lobby_for(
         "max": MAX_PARTY,
         "paid": paid,
         "limit": RUN_LIMIT_MINUTES,
+        "reward": MAX_REWARD,
+        "locked_until": held if held > now else 0,
+        "locked_why": (
+            LOCK_REASONS.get(str((lock or {}).get("reason") or ""), "")
+            if held > now else ""
+        ),
+        "locked_left": max(0, held - now) if held > now else 0,
         "overview": art_url("maps/station_overview.jpg"),
     }
 
@@ -2382,6 +2590,17 @@ async def act(
             run.id, run.version,
             "over" if run.state.get("outcome") else run.phase,
             json.dumps(run.state), moment,
+        )
+        await close_out(db, run, moment)
+        return said
+    if action == "drink":
+        # Склянка ходит в рюкзак и в карточку, поэтому считается
+        # отдельно от общего замка: списывает её база, и дважды она не
+        # даст
+        run = await look(db, run_id, moment)
+        said = await drink(db, player, run, str(data.get("code") or ""), moment)
+        await db.blackout_write(
+            run.id, run.version, run.phase, json.dumps(run.state), moment
         )
         return said
     if action == "sync":
@@ -2458,7 +2677,9 @@ __all__ = [
     "add_bots",
     "auto_turns",
     "command",
+    "close_out",
     "cycle_code",
+    "drink",
     "exits_of",
     "extract",
     "join_run",

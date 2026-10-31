@@ -25,6 +25,7 @@ import pytest
 from bot.blackout_service import (
     BlackoutError,
     _wipe,
+    close_out,
     act,
     cycle_code,
     look,
@@ -35,10 +36,15 @@ from bot.blackout_service import (
     snapshot,
     state_for,
     window_open,
+    window_opens_at,
 )
 from bot.database import Database
 from bot.game.blackout import (
     BOSSES,
+    DIED_COOLDOWN_HOURS,
+    WON_COOLDOWN_DAYS,
+    LOCK_DIED,
+    LOCK_WON,
     BOSS_FORCE,
     BOSS_LEVEL,
     DEFENSE_WAVES,
@@ -55,7 +61,7 @@ from bot.game.blackout import (
     walkthrough,
 )
 from bot.blackout_service import foe_row, squad_for
-from bot.game.blackout import STAGE_EXTRACT, STAGE_RESTART
+from bot.game.blackout import STAGE_EXTRACT, STAGE_RESTART, STAGE_SPEED
 from bot.game.classes import FIGHTER_CLASSES, Stats
 from bot.game.reference import developed_stats
 from bot.models import Player
@@ -141,12 +147,30 @@ async def teach(db: Database, player: Player) -> Player:
     return fresh
 
 
-async def squad(db: Database, size: int = 4) -> list[Player]:
-    """Отряд из живых игроков: все записаны в базу, все с приёмами."""
+# Склянки, с которыми идут на станцию. Передышки за комнату тут нет, и
+# рюкзак — единственное, чем боец лечится быстрее, чем за десять минут.
+# Четыре больших на троечасовой рейд — не щедрость, а то, что берёт с
+# собой всякий, кто читал правила режима
+PACK = {"heal_big": 4}
+
+
+async def squad(
+    db: Database, size: int = 4, pack: dict[str, int] | None = None
+) -> list[Player]:
+    """Отряд из живых игроков: все в базе, с приёмами и со склянками.
+
+    `pack` — что лежит в рюкзаке. Пустой словарь значит «пришли без
+    склянок»: это тот случай, по которому меряется сама станция, без
+    того, что боец может докупить за кредиты.
+    """
     out = []
     for number in range(size):
         one = make_player(number + 1, f"Боец-{number + 1}")
-        out.append(await teach(db, await dress(db, one)))
+        one = await teach(db, await dress(db, one))
+        for code, count in (PACK if pack is None else pack).items():
+            for _ in range(count):
+                one.potions[code] = await db.add_potion(one.user_id, code)
+        out.append(one)
     return out
 
 
@@ -156,9 +180,15 @@ async def squad(db: Database, size: int = 4) -> list[Player]:
 TEST_SEED = 20_261_031
 
 
-async def enter(db: Database, size: int = 4, now: int = NOW, seed: int = TEST_SEED):
+async def enter(
+    db: Database,
+    size: int = 4,
+    now: int = NOW,
+    seed: int = TEST_SEED,
+    pack: dict[str, int] | None = None,
+):
     """Собрать отряд и вывести его на станцию."""
-    people = await squad(db, size)
+    people = await squad(db, size, pack)
     await act(db, people[0], "open", {"test": True}, "open", now)
     run = await run_of(db, people[0].user_id)
     assert run is not None
@@ -382,9 +412,50 @@ async def test_the_same_command_is_not_done_twice(db):
 
 
 async def walk(db, people, run, room: str, at: int) -> int:
-    """Увести отряд в соседнюю комнату и дождаться прибытия."""
-    await act(db, people[0], "lead", {"room": room}, f"w{room}{at}", at)
+    """Увести отряд в соседнюю комнату и дождаться прибытия.
+
+    Ведёт тот, кто ещё на ногах: упавшего на станции не поднимают, и
+    лидерство уходит живому.
+    """
+    who = people[0]
+    fresh = await look(db, run.id if hasattr(run, "id") else run, at)
+    for one in people:
+        row = member(fresh.state, one.user_id)
+        if row is not None and not row["down"] and not row["left"]:
+            who = one
+            break
+    await act(db, who, "lead", {"room": room}, f"w{room}{at}", at)
     return at + EDGE_SECONDS
+
+
+async def breathe(db, people, run_id: int, at: int, share: float = 0.75) -> int:
+    """Постоять и дать ранам затянуться — так, как это делает человек.
+
+    Передышки «за зачищенную комнату» на станции нет: из боя боец
+    выходит с тем, что осталось, и дальше либо идёт как есть, либо
+    стоит и ждёт. Восстановление городское — с нуля до полного за
+    десять минут, — поэтому ждать приходится минутами, а не часами.
+    """
+    from bot.game.health import seconds_to_reach
+
+    run = await look(db, run_id, at)
+    rows = [
+        row for row in (run.state.get("members") or {}).values()
+        if not row["down"] and not row["left"] and not row["extracted"]
+        and row["max"]
+    ]
+    if not rows:
+        return at
+    # Сколько ждать — считается, а не перебирается по минуте: это та же
+    # арифметика, по которой город говорит «до боя осталось столько-то»
+    wait = max(
+        seconds_to_reach(row["hp"], row["max"], share) for row in rows
+    )
+    if not wait:
+        return at
+    at += wait
+    await look(db, run_id, at)
+    return at
 
 
 def path(state, here: str, there: str) -> list[str]:
@@ -412,14 +483,25 @@ async def goto(db, people, run_id: int, there: str, at: int) -> int:
     """Довести отряд до комнаты, где бы он ни стоял.
 
     Дорога ищется по открытым дверям, занятые комнаты зачищаются по
-    пути. После полного поражения отряд откатывается в безопасную
-    комнату — и просто идёт заново, как и говорит сценарий.
+    пути, а между боями отряд стоит и затягивает раны: передышки за
+    комнату станция больше не даёт.
+
+    Упавший остаётся лежать — его на станции не поднимают, — поэтому
+    дорога считается от того, кто ещё на ногах.
     """
     for _ in range(40):
         run = await look(db, run_id, at)
         at = await win_here(db, people, run_id, at)
+        at = await breathe(db, people, run_id, at, share=0.95)
         run = await look(db, run_id, at)
-        here = member(run.state, people[0].user_id)["room"]
+        if run.state.get("outcome"):
+            raise AssertionError(f"рейд кончился по дороге к {there}")
+        standing = [
+            row for row in (run.state.get("members") or {}).values()
+            if not row["down"] and not row["left"]
+        ]
+        assert standing, f"до {there} дошло некому"
+        here = standing[0]["room"]
         if here == there:
             return at
         road = path(run.state, here, there)
@@ -438,6 +520,8 @@ async def win_here(db, people, run_id: int, at: int, limit: int = 90) -> int:
     """
     for _ in range(limit):
         run = await look(db, run_id, at)
+        if run.state.get("outcome"):
+            return at
         fight = run.state.get("fight")
         if not fight:
             return at
@@ -454,6 +538,16 @@ async def win_here(db, people, run_id: int, at: int, limit: int = 90) -> int:
                 payload = {
                     "attacks": [], "block": [], "arena": arena.counter_action,
                 }
+            # Склянка — раньше приёма: она доливает до полного, и
+            # держать её «на потом» значит не дожить до этого потом
+            if row["hp"] < row["max"] * 0.4:
+                with contextlib.suppress(BlackoutError):
+                    await act(
+                        db, one, "drink", {"code": "heal_big"},
+                        f"p{one.user_id}:{at}", at,
+                    )
+                    run = await look(db, run_id, at)
+                    row = member(run.state, one.user_id) or row
             # Приём жмут до удара: просел — лечатся, цел — бьют тяжелее
             want = (
                 HEAL_TRICK if row["hp"] < row["max"] * 0.6 else "power_hit"
@@ -525,10 +619,22 @@ ROUTE = (
 )
 
 
-async def play(db, people, run, at: int, log: list | None = None) -> int:
-    """Провести отряд по маршруту сценария. Отдаёт час у выхода."""
+async def play(
+    db, people, run, at: int, log: list | None = None, goal_only: bool = False
+) -> int:
+    """Провести отряд по маршруту сценария. Отдаёт час у выхода.
+
+    `goal_only` — остановиться на пуске станции, не идя в тоннели.
+    Цель рейда — пуск, и она считается выполненной, даже если выйти
+    потом удалось не всем: упавших на станции не поднимают, и отряд,
+    потерявший людей, последний заслон лабиринта может не пройти.
+    """
     run_id = run.id
     for mark in ROUTE:
+        if goal_only and (
+            await look(db, run_id, at)
+        ).state["flags"].get("station_restarted"):
+            return at
         if mark == "@radio" or mark == "@task":
             await act(db, people[0], "task", {}, f"t{mark}{at}", at)
         elif mark == "@take":
@@ -557,10 +663,14 @@ async def restart_station(db, people, run_id: int, at: int) -> int:
             return at
         console = run.state.get("console") or {}
         if int(console.get("wave") or 0) == 0:
+            # Перед обороной отряд перевязывается: готовность больше
+            # не лечит, и три волны подряд идут на том, с чем пришёл
+            at = await breathe(db, people, run_id, at, share=0.99)
             for one in people:
-                await act(
-                    db, one, "confirm", {}, f"c{one.user_id}:{attempt}", at
-                )
+                with contextlib.suppress(BlackoutError):
+                    await act(
+                        db, one, "confirm", {}, f"c{one.user_id}:{attempt}", at
+                    )
         for _ in range(len(DEFENSE_WAVES) + 1):
             run = await look(db, run_id, at)
             if not run.state.get("fight"):
@@ -588,7 +698,14 @@ async def test_the_whole_raid_is_walkable(db):
             continue
         assert flag in state["flags"], flag
     assert state["flags"]["station_restarted"], "станция запущена"
-    assert all(member(state, one.user_id)["room"] == "E12" for one in people)
+    # До выхода доходят живые. Упавшего на станции не поднимают: он
+    # ждёт конца попытки там, где лёг, и победу ему всё равно зачтут
+    alive = [
+        one for one in people
+        if not member(state, one.user_id)["down"]
+    ]
+    assert alive, "до выхода дошло некому"
+    assert all(member(state, one.user_id)["room"] == "E12" for one in alive)
 
     # Эвакуация и деньги
     said = await act(db, people[0], "extract", {}, "x1", at)
@@ -599,11 +716,17 @@ async def test_the_whole_raid_is_walkable(db):
 
 
 async def test_the_raid_is_walkable_by_three_and_by_five(db):
-    """Состав 3 и 5: рейд проходится обоими, и состав врагов разный."""
+    """Состав 3 и 5: цель берут оба, и состав врагов у них разный.
+
+    Меряется цель рейда — пуск станции. Дошёл ли потом до тоннелей
+    каждый, зависит от того, кого отряд по дороге потерял: упавших тут
+    не поднимают, а последний заслон лабиринта выставлен на тот состав,
+    с каким в рейд входили.
+    """
     people, run = await enter(db, 3)
     # Втроём врагов меньше, но каждый тот же самый
     assert len(squad_for("O02", party=3)) < len(squad_for("O02", party=5))
-    at = await play(db, people, run, NOW)
+    at = await play(db, people, run, NOW, goal_only=True)
     assert (await look(db, run.id, at)).state["flags"]["station_restarted"]
 
 
@@ -621,12 +744,14 @@ async def test_the_five_man_squad_meets_tougher_zombies(db):
     assert len(foes) > len(squad_for("O02", party=4))
     assert foes[0]["max"] == squad_for("O02", party=4)[0]["max"]
 
-    # Отключение игрока состав не двигает: он зафиксирован входом
+    # А выйти со станции нельзя вовсе: вошёл — проходи до конца
     count = len(foes)
-    await act(db, people[4], "leave", {}, "bye", at)
+    with pytest.raises(BlackoutError, match="не уходят"):
+        await act(db, people[4], "leave", {}, "bye", at)
     fresh = await look(db, run.id, at)
     assert fresh.state["party"] == 5
     assert len(fresh.state["fight"]["foes"]) == count
+    assert not member(fresh.state, people[4].user_id)["left"]
 
 
 # ---------- боёвка: как в рейде ----------
@@ -743,8 +868,14 @@ async def test_a_lone_fighter_does_not_fell_the_leader(db):
     проходит, Громилу берёт примерно в половине попыток, Охотника
     реже, а хозяина Контура — почти никогда. Отряд из четырёх кладёт
     всех трёх уверенно.
+
+    Меряется одиночка с пустым рюкзаком: станция сама по себе. Склянки
+    это меняют — четыре больших эликсира это четыре лишних запаса
+    здоровья, и с ними Предводитель берётся и в соло. Так и задумано:
+    заплатить кредитами за то, чего не берёшь умением, в клубе можно
+    везде, и станция тут не исключение.
     """
-    people, run = await enter(db, 1)
+    people, run = await enter(db, 1, pack={})
     fresh = await look(db, run.id, NOW)
     for flag in ("relay_a", "relay_b"):
         fresh.state["flags"][flag] = NOW
@@ -755,10 +886,249 @@ async def test_a_lone_fighter_does_not_fell_the_leader(db):
     )
     at = await win_here(db, people, run.id, NOW, limit=60)
     after = await look(db, run.id, at)
-    # Бой кончился не победой: комната не зачищена, а одиночку
-    # отбросило в безопасную — цена поражения тут время, а не рейд
+    # Бой кончился не победой: комната не зачищена, а попытка кончена —
+    # одиночка лёг, и назад в этот рейд уже не зайти
     assert "F307" not in after.state["cleared"]
-    assert member(after.state, people[0].user_id)["room"] != "F307"
+    assert after.state["outcome"] == "wiped"
+    assert member(after.state, people[0].user_id)["down"]
+
+
+# ---------- правила режима: откат, награда, здоровье ----------
+
+
+async def test_the_station_opens_every_evening(db):
+    """Окно входа — каждый вечер в семь, а не два дня в неделю.
+
+    Редкость держит теперь не расписание, а личный откат: станция
+    открыта всем, но одному и тому же бойцу — раз в три дня.
+    """
+    from datetime import datetime
+
+    from bot.game.blackout import CYCLE_DAYS, CYCLE_HOUR
+    from bot.game.clock import MOSCOW
+
+    assert sorted(CYCLE_DAYS) == list(range(7))
+    for day in range(2, 9):  # понедельник 2 ноября и дальше всю неделю
+        evening = int(
+            datetime(2026, 11, day, CYCLE_HOUR, 30, tzinfo=MOSCOW).timestamp()
+        )
+        assert window_open(evening), day
+        morning = int(datetime(2026, 11, day, 10, 0, tzinfo=MOSCOW).timestamp())
+        assert not window_open(morning), day
+        # Днём экран показывает сегодняшний вечер, а не послезавтрашний
+        assert window_opens_at(morning) == int(
+            datetime(2026, 11, day, CYCLE_HOUR, 0, tzinfo=MOSCOW).timestamp()
+        )
+
+
+async def test_the_station_closes_for_three_days_after_a_win(db):
+    """Прошёл станцию — следующий заход через трое суток.
+
+    Откат личный: на чужие отряды он не влияет, и друзья идут без него.
+    """
+    people, run = await enter(db)
+    fresh = await look(db, run.id, NOW)
+    for one in fresh.state["members"].values():
+        one["extracted"] = NOW
+    fresh.state["outcome"] = "extracted"
+    await db.blackout_write(
+        run.id, fresh.version, "over", json.dumps(fresh.state), NOW
+    )
+    await close_out(db, fresh, NOW)
+
+    lock = await db.blackout_locked(people[0].user_id)
+    assert lock is not None and lock["reason"] == LOCK_WON
+    assert lock["until"] == NOW + WON_COOLDOWN_DAYS * 86_400
+    with pytest.raises(BlackoutError, match="пройдена"):
+        await act(db, people[0], "open", {}, "again", NOW + 3600)
+    # Через трое суток — пускают
+    later = NOW + WON_COOLDOWN_DAYS * 86_400 + 60
+    run = await run_of(db, people[0].user_id)
+    assert run is None, "кончившийся рейд бойца не держит"
+
+
+async def test_the_three_hour_hold_does_not_shorten_the_three_day_one(db):
+    """Смерть после победы не отменяет трёхсуточного отката."""
+    people, _ = await enter(db)
+    from bot.blackout_service import _hold
+
+    await _hold(db, people[0].user_id, LOCK_WON, NOW)
+    await _hold(db, people[0].user_id, LOCK_DIED, NOW)
+    lock = await db.blackout_locked(people[0].user_id)
+    assert lock["until"] == NOW + WON_COOLDOWN_DAYS * 86_400
+
+
+async def test_nobody_walks_off_the_station(db):
+    """Со станции не уходят: вошёл — проходи до конца."""
+    people, run = await enter(db)
+
+    with pytest.raises(BlackoutError, match="не уходят"):
+        await act(db, people[1], "leave", {}, "bye", NOW)
+    fresh = await look(db, run.id, NOW)
+    assert not member(fresh.state, people[1].user_id)["left"]
+    assert len(fresh.state["members"]) == 4
+
+
+async def test_the_lobby_lets_a_fighter_leave_the_squad(db):
+    """А из лобби — выходят: отряд собирается и разбирается свободно."""
+    people = await squad(db, 2)
+    await act(db, people[0], "open", {"test": True}, "open", NOW)
+    run = await run_of(db, people[0].user_id)
+    await act(db, people[1], "join", {"run": run.id}, "join", NOW)
+
+    assert "вышел" in await act(db, people[1], "leave", {}, "bye", NOW)
+    fresh = await read_run(db, run.id)
+    assert str(people[1].user_id) not in fresh.state["members"]
+
+
+async def test_a_thousand_credits_is_all_the_station_pays(db):
+    """Потолок награды — тысяча на бойца за рейд, и доли сходятся в неё."""
+    from bot.blackout_service import pay
+    from bot.game.blackout import MAX_REWARD
+
+    assert sum(
+        reward_for(stage)
+        for stage in (STAGE_RESTART, STAGE_EXTRACT, STAGE_SPEED)
+    ) == MAX_REWARD == 1_000
+
+    people, run = await enter(db)
+    paid = 0
+    for stage in (STAGE_RESTART, STAGE_EXTRACT, STAGE_SPEED):
+        paid += await pay(db, run, people[0].user_id, stage, NOW)
+    assert paid == MAX_REWARD
+    assert (await db.get_player(people[0].user_id)).credits == 1_000 + paid
+
+
+async def test_the_fallen_gets_the_victory_and_half_the_money(db):
+    """Погибшему победу зачли, но награда ему — половинная."""
+    from bot.blackout_service import pay
+    from bot.game.blackout import FALLEN_SHARE
+
+    people, run = await enter(db)
+    fresh = await look(db, run.id, NOW)
+    member(fresh.state, people[0].user_id)["down"] = True
+    await db.blackout_write(
+        run.id, fresh.version, "run", json.dumps(fresh.state), NOW
+    )
+    run = await read_run(db, run.id)
+
+    fallen = await pay(db, run, people[0].user_id, STAGE_RESTART, NOW)
+    alive = await pay(db, run, people[1].user_id, STAGE_RESTART, NOW)
+    assert alive == reward_for(STAGE_RESTART)
+    assert fallen == int(alive * FALLEN_SHARE) < alive
+    assert fallen > 0, "победа зачтена и ему"
+
+
+async def test_health_stays_as_the_fight_left_it(db):
+    """Комната больше не лечит: из боя выходят с тем, что осталось."""
+    people, run = await enter(db)
+    at = await walk(db, people, run, "O02", NOW)
+    at = await win_here(db, people, run.id, at)
+    fresh = await look(db, run.id, at)
+
+    assert "O02" in fresh.state["cleared"], "комната зачищена"
+    rows = [member(fresh.state, one.user_id) for one in people]
+    assert any(row["hp"] < row["max"] for row in rows), (
+        "после боя кто-то обязан быть побит"
+    )
+    assert all(row["hp_at"] for row in rows), "метка времени стоит у всех"
+
+
+async def test_standing_still_mends_the_wounds(db):
+    """Постоял — затянулось. Правило то же, что в городе: десять минут."""
+    from bot.game.health import FULL_REGEN_SECONDS
+
+    people, run = await enter(db)
+    fresh = await look(db, run.id, NOW)
+    row = member(fresh.state, people[0].user_id)
+    row["hp"] = 1
+    row["hp_at"] = NOW
+    await db.blackout_write(
+        run.id, fresh.version, "run", json.dumps(fresh.state), NOW
+    )
+
+    half = await look(db, run.id, NOW + FULL_REGEN_SECONDS // 2)
+    middle = member(half.state, people[0].user_id)
+    assert middle["max"] * 0.4 < middle["hp"] < middle["max"] * 0.6
+
+    whole = await look(db, run.id, NOW + FULL_REGEN_SECONDS + 60)
+    assert member(whole.state, people[0].user_id)["hp"] == middle["max"]
+
+
+async def test_a_fight_does_not_mend_anybody(db):
+    """В бою не затягивается: иначе бой перестал бы кончаться."""
+    people, run = await enter(db)
+    at = await walk(db, people, run, "O02", NOW)
+    fresh = await look(db, run.id, at)
+    assert fresh.state["fight"], "в проходной бой"
+    row = member(fresh.state, people[0].user_id)
+    row["hp"] = 100
+    row["hp_at"] = at
+    await db.blackout_write(
+        run.id, fresh.version, "run", json.dumps(fresh.state), at
+    )
+
+    later = await look(db, run.id, at + 20 * 60)
+    assert member(later.state, people[0].user_id)["hp"] == 100
+
+
+async def test_a_potion_from_the_backpack_heals_on_the_station(db):
+    """Склянка из рюкзака работает и тут — это замена передышке."""
+    people, run = await enter(db)
+    fresh = await look(db, run.id, NOW)
+    row = member(fresh.state, people[0].user_id)
+    row["hp"] = 100
+    row["hp_at"] = NOW
+    await db.blackout_write(
+        run.id, fresh.version, "run", json.dumps(fresh.state), NOW
+    )
+
+    said = await act(db, people[0], "drink", {"code": "heal_big"}, "p1", NOW)
+    assert "❤️" in said
+    after = await look(db, run.id, NOW)
+    healed = member(after.state, people[0].user_id)
+    assert healed["hp"] == healed["max"]
+    # Склянку списали из рюкзака
+    fresh_player = await db.get_player(people[0].user_id)
+    assert fresh_player.potion_count("heal_big") == PACK["heal_big"] - 1
+    # Полному здоровью склянку не наливают
+    with pytest.raises(BlackoutError, match="порядке"):
+        await act(db, people[0], "drink", {"code": "heal_big"}, "p2", NOW)
+    # И прибавки на станции не пьют
+    with pytest.raises(BlackoutError, match="лечебное"):
+        await act(db, people[0], "drink", {"code": "strength_boost"}, "p3", NOW)
+
+
+async def test_the_station_hands_the_health_back_to_the_city(db):
+    """Со станции боец выходит с тем, что от него осталось."""
+    people, run = await enter(db)
+    fresh = await look(db, run.id, NOW)
+    for one in fresh.state["members"].values():
+        one["hp"] = 77
+        one["extracted"] = NOW
+    fresh.state["outcome"] = "extracted"
+    await db.blackout_write(
+        run.id, fresh.version, "over", json.dumps(fresh.state), NOW
+    )
+    await close_out(db, fresh, NOW)
+
+    saved = await db.get_player(people[0].user_id)
+    assert saved is not None and saved.hp == 77
+
+
+async def test_the_fallen_are_not_raised_any_more(db):
+    """Упавшего не поднимают: он ждёт конца попытки."""
+    people, run = await enter(db)
+    fresh = await look(db, run.id, NOW)
+    member(fresh.state, people[1].user_id)["down"] = True
+    await db.blackout_write(
+        run.id, fresh.version, "run", json.dumps(fresh.state), NOW
+    )
+
+    with pytest.raises(BlackoutError, match="не поднимают"):
+        await act(
+            db, people[0], "raise", {"user": people[1].user_id}, "up", NOW
+        )
 
 
 # ---------- квестовые модули ----------
@@ -792,8 +1162,13 @@ async def test_the_item_is_not_given_before_the_boss(db):
     assert fresh.state["flags"]["synchronizer"]
 
 
-async def test_the_module_survives_a_wipe(db):
-    """Полное поражение откатывает попытку, но не отнимает добытое."""
+async def test_a_wipe_ends_the_run_and_closes_the_station_for_three_hours(db):
+    """Отряд лёг — попытка кончена, и назад в неё не зайти три часа.
+
+    Откат в безопасную комнату ушёл вместе с правом уйти со станции:
+    выход тут один — дойти или погибнуть. Добытое при этом не
+    отнимается: флаги остаются в состоянии кончившегося рейда.
+    """
     people, run = await enter(db)
     fresh = await look(db, run.id, NOW)
     fresh.state["flags"].update({
@@ -816,11 +1191,26 @@ async def test_the_module_survives_a_wipe(db):
 
     assert "не выстоял" in said
     assert run.state["flags"]["synchronizer"], "модуль остался у отряда"
-    # Отряд отброшен в безопасную комнату и цел
+    # Попытка кончена: отряд лежит там, где лёг, и рейд закрыт
+    assert run.state["outcome"] == "wiped"
     for one in run.state["members"].values():
-        assert one["room"] == "O01"
-        assert one["hp"] == one["max"]
-        assert not one["down"]
+        assert one["room"] == "O02"
+        assert one["hp"] == 0 and one["down"]
+
+    # Разбор кончившегося рейда: откат на три часа и здоровье в карточку
+    await db.blackout_write(
+        run.id, run.version, "over", json.dumps(run.state), NOW
+    )
+    await close_out(db, run, NOW)
+    for one in people:
+        lock = await db.blackout_locked(one.user_id)
+        assert lock is not None and lock["reason"] == LOCK_DIED
+        assert lock["until"] == NOW + DIED_COOLDOWN_HOURS * 3600
+        fresh = await db.get_player(one.user_id)
+        assert fresh is not None and fresh.hp == 0
+    # И в новый рейд его не пускают, пока откат держится
+    with pytest.raises(BlackoutError, match="погиб"):
+        await act(db, people[0], "open", {}, "again", NOW + 60)
 
 
 async def test_the_failed_defense_keeps_the_modules(db):

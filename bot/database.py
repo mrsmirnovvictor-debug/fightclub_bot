@@ -280,6 +280,17 @@ CREATE TABLE IF NOT EXISTS blackout_rewards (
     PRIMARY KEY (user_id, cycle, stage)
 );
 
+-- Личный откат по станции: пройденный рейд закрывает её бойцу на три
+-- суток, смерть — на три часа. Строка на бойца: откат всегда один, и
+-- новый её перезаписывает — так трёхчасовой после смерти не отменяет
+-- трёхсуточного после победы, а ложится только если держится дольше
+CREATE TABLE IF NOT EXISTS blackout_locks (
+    user_id INTEGER PRIMARY KEY,
+    until   INTEGER NOT NULL DEFAULT 0,
+    reason  TEXT    NOT NULL DEFAULT '',
+    at      INTEGER NOT NULL DEFAULT 0
+);
+
 -- Выполненные команды: по `command_id` повторный запрос отдаёт прежний
 -- ответ, а не делает второй шаг. Это и есть идемпотентность, которой
 -- требует кооператив: сеть теряет ответы, клиент жмёт ещё раз
@@ -4545,6 +4556,41 @@ class Database:
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    async def blackout_lock(
+        self, user_id: int, until: int, reason: str, now: int
+    ) -> int:
+        """Закрыть бойцу станцию до этого часа. Вернёт, до какого закрыта.
+
+        Откат один на бойца, и короткий не отменяет длинного: если
+        боец уже ждёт трое суток после победы, трёхчасовой после смерти
+        ничего не меняет.
+        """
+        async with self.conn.execute(
+            "SELECT until FROM blackout_locks WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        standing = int(row["until"]) if row else 0
+        if standing >= until:
+            return standing
+        await self.conn.execute(
+            "INSERT INTO blackout_locks (user_id, until, reason, at) "
+            "VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "until = excluded.until, reason = excluded.reason, "
+            "at = excluded.at",
+            (user_id, until, reason, now),
+        )
+        await self.conn.commit()
+        return until
+
+    async def blackout_locked(self, user_id: int) -> dict | None:
+        """Откат этого бойца. None — станция ему открыта."""
+        async with self.conn.execute(
+            "SELECT until, reason, at FROM blackout_locks WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
 
     async def blackout_paid(self, user_id: int, cycle: str) -> list[dict]:
         """Что этому бойцу уже заплатили за этот цикл."""

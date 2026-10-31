@@ -157,6 +157,15 @@ def army_piece(slot: str) -> str:
     return f"{SETS}/military_energy/{slot}.png"
 
 
+def soldier_piece(name: str) -> str:
+    """Вещь солдата охраны: items_new/soldier/pistol.jpg.
+
+    Папка рядом с формой (`army_piece`), но своя и в jpeg: оружие
+    караула рисовали отдельным заходом и отдали в другом формате.
+    """
+    return f"{SETS}/soldier/{name}.jpg"
+
+
 def energy_weapon(code: str) -> str:
     """Кибернетическое оружие: weapons/futuristic/warrior_energy_sword.png.
 

@@ -25,7 +25,8 @@ from datetime import date, datetime
 import pytest
 
 from bot.config import Config
-from bot.game.classes import FIGHTER_CLASSES
+from bot.game.classes import FIGHTER_CLASSES, Zone, block_combo
+from bot.game.combat import Action, Fighter, resolve_round
 from bot.game.economy import MAX_LEVEL
 from bot.game.equipment import (
     CATALOGUE,
@@ -130,17 +131,23 @@ def test_the_base_is_stormed_at_the_training_ground():
     assert place.allows(Service.STUDY), "кадеты ходят сюда же"
 
 
-def test_the_base_opens_on_mondays_from_six_to_midnight():
-    """Раз в неделю, по понедельникам с шести вечера до полуночи."""
+def test_the_base_opens_three_days_a_week_from_six_to_midnight():
+    """Понедельник, четверг и суббота — с шести вечера до полуночи.
+
+    Раз в неделю окно легко проспать целиком, и полигон от этого
+    простаивал. Дни всё равно твёрдые: расписание выучивают наизусть.
+    """
     windows = MILITARY_RAID.schedule.windows_on(MONDAY)
 
     assert len(windows) == 1
     start, end = windows[0].start, windows[0].end
     assert start == moscow(18)
     assert end - start == 6 * 3600
+    # Понедельник, четверг и суббота по питоновскому счёту дней
+    assert MILITARY_RAID.schedule.weekdays == (0, 3, 5)
     assert MILITARY_RAID.schedule.windows_on(TUESDAY) == ()
     assert MILITARY_RAID.schedule_text(moscow(18)) == (
-        "по понедельникам с 18:00 до 00:00 мск"
+        "по понедельникам, четвергам и субботам с 18:00 до 00:00 мск"
     )
     # В окно пускают, в полночь — уже нет
     assert MILITARY_RAID.window_now(moscow(18)) is not None
@@ -201,25 +208,272 @@ def test_the_guard_wears_his_own_uniform_head_to_boots():
     worn = guard.equipment.items
     # Тринадцать клеток: одиннадцать картинок, а колец три
     assert len(worn) == len(ALL_SLOTS) == 13
-    assert all(item.item.code.startswith("military_") for item in worn.values())
+    # Всё своё: форма караула и его табельное оружие, ничего клубного
+    own = {one.code for one in MILITARY_KIT}
+    assert {item.item.code for item in worn.values()} <= own
     club = {item.code for item in SHOWCASE}
     assert not {item.item.code for item in worn.values()} & club
-    assert worn[Slot.WEAPON].item.code == "military_sword"
+    # В руке пистолет, а клинок он возьмёт сам, когда кончатся патроны
+    assert worn[Slot.WEAPON].item.code == "soldier_pistol"
     assert worn[Slot.OFFHAND].item.code == "military_shield"
     assert guard.has_shield, "щит у охраны настоящий: блок на три зоны"
 
 
 def test_the_uniform_is_not_for_sale_anywhere():
     """Форму охраны не купить и не выиграть: она есть только на солдате."""
-    assert len(MILITARY_KIT) == 13
+    # Четырнадцать: тринадцать на солдате плюс клинок, который он
+    # берёт после последнего патрона
+    assert len(MILITARY_KIT) == 14
     for item in MILITARY_KIT:
         assert item.reward, item.code
         assert not item.price and not item.stars, item.code
         assert item.level_required == MILITARY_LEVEL
         assert not item.shelf, f"{item.code}: форма лежит на прилавке"
         assert item.code not in {one.code for one in SHOWCASE}
-        # Картинка — из папки набора, а не из общей оружейной
-        assert "items_new/military_energy/" in item.picture
+        # Картинка — из папки набора, а не из общей оружейной. Табельное
+        # оружие рисовали отдельным заходом, и у него папка своя
+        assert "items_new/military_energy/" in item.picture or (
+            "items_new/soldier/" in item.picture
+        ), item.code
+
+
+# ---------- табельный пистолет ----------
+
+
+def a_guard(level: int = MILITARY_LEVEL):
+    """Один солдат охраны, как его собирает рейд."""
+    return boss_fighter(MILITARY_GUARDS[0], [10], 0.0, level=level)
+
+
+def a_club_fighter(cls: str = "warrior", level: int = 10):
+    """Боец города в лучших вещах своей ступени — тот, кто придёт на базу."""
+    from bot.game.equipment import Equipment, OwnedItem
+    from bot.game.reference import best_kit
+
+    fclass = FIGHTER_CLASSES[cls]
+    worn = {
+        slot: OwnedItem(item=item, slot=slot)
+        for slot, item in best_kit(fclass, level).items()
+    }
+    gear = Equipment(items=worn)
+    stats = developed_stats(fclass, level).merge(gear.bonus)
+    return Fighter(
+        user_id=1, name="Боец", fclass=fclass, stats=stats,
+        level=level, equipment=gear,
+    )
+
+
+def test_the_pistol_is_the_guards_own_and_nowhere_on_sale():
+    """Табельный пистолет есть только у караула, и картинка у него своя."""
+    pistol = CATALOGUE["soldier_pistol"]
+
+    assert pistol.title == "Табельный пистолет"
+    assert pistol.slot is Slot.WEAPON and pistol.is_weapon
+    assert pistol.reward and not pistol.price and not pistol.stars
+    assert pistol.code not in {one.code for one in SHOWCASE}
+    assert pistol.level_required == MILITARY_LEVEL
+    assert pistol.picture == (
+        "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev"
+        "/items_new/soldier/pistol.jpg"
+    )
+    # Точность на потолке своей ступени, и ни пунктом выше
+    assert pistol.accuracy <= weapon_share_cap(MILITARY_LEVEL) + 1e-9
+
+
+def test_the_pistol_holds_eight_shots_and_hits_for_a_hundred_and_fifty():
+    """Восемь патронов, 150–200 за выстрел, дальше — армейский клинок."""
+    pistol = CATALOGUE["soldier_pistol"]
+
+    assert pistol.is_firearm and pistol.shots == 8
+    assert (pistol.damage_min, pistol.damage_max) == (150, 200)
+    assert pistol.spent_into == "military_sword"
+    # Сила та же, что у клинка: запас здоровья солдата не должен
+    # меняться в тот момент, когда он перекладывает оружие
+    assert pistol.strength == CATALOGUE["military_sword"].strength
+
+
+def test_the_shot_is_not_driven_by_strength_or_class():
+    """Выстрел весит столько, сколько написан: ни сила, ни класс его не разгоняют.
+
+    У клинка иначе: его прибавка идёт через множитель класса и
+    складывается с ударом от силы. Поэтому 150–200 у пистолета — это не
+    «оружие на пять ступеней выше», а другая арифметика.
+    """
+    from bot.game.combat import _roll_damage
+
+    guard = a_guard()
+    rng = random.Random(7)
+    shots = [_roll_damage(guard, 1, rng, 0, limit=60) for _ in range(200)]
+    # Первый ход, усталости ещё нет — выстрел приходит как написан
+    assert min(shots) >= 150 and max(shots) <= 200
+
+    blade = a_guard()
+    while blade.firearm() is not None:
+        blade.spend_shot()
+    rng = random.Random(7)
+    hits = [_roll_damage(blade, 1, rng, 0, limit=60) for _ in range(200)]
+    # Клинком он бьёт заметно слабее — и это тело плюс оружие
+    assert max(hits) < min(shots)
+    assert min(hits) >= blade.derived.damage_min
+
+
+def test_every_shot_spends_a_bullet_even_a_missed_one():
+    """Патрон уходит на любую попытку: дошло, ушло в блок, ушло в уворот."""
+    from bot.game.combat import strike_of
+
+    for guard_zone, block in (
+        (Zone.HEAD, (Zone.HEAD,)),      # ушло в блок
+        (Zone.HEAD, (Zone.LEGS,)),      # дошло
+    ):
+        guard = a_guard()
+        target = a_club_fighter()
+        left = guard.shots_left()
+        strike_of(
+            guard, target, guard_zone, guard.weapons[0], 0,
+            Action(attacks=(Zone.CHEST,), block=block), 1,
+            random.Random(3), limit=60,
+        )
+        assert guard.shots_left() == left - 1
+
+    # Промах по увернувшемуся — тоже минус патрон: пуля вылетела
+    guard = a_guard()
+    nimble = a_club_fighter("rogue")
+    spent = 0
+    for turn in range(1, 9):
+        before = guard.shots_left()
+        strike_of(
+            guard, nimble, Zone.HEAD, guard.weapons[0], 0,
+            Action(attacks=(Zone.CHEST,), block=(Zone.CHEST,)), turn,
+            random.Random(turn), limit=60,
+        )
+        spent += before - guard.shots_left()
+    assert spent == 8, "восемь попыток — восемь патронов"
+
+
+def test_the_guard_draws_the_blade_when_the_magazine_is_empty():
+    """Девятый ход он уже с клинком, и запас здоровья от этого не дрогнул."""
+    guard = a_guard()
+    hp_before, max_before = guard.hp, guard.max_hp
+
+    assert guard.weapons == ("табельным пистолетом",)
+    for _ in range(7):
+        assert guard.spend_shot() == ""
+    # Восьмой патрон — последний, и тут он берётся за клинок
+    assert guard.spend_shot() == "Армейский клинок"
+    assert guard.shots_left() == 0 and guard.firearm() is None
+    assert guard.weapons == ("армейским клинком",)
+    assert guard.max_hp == max_before and guard.hp == hp_before
+    # Щит остался в левой руке: блок по-прежнему на три зоны
+    assert guard.has_shield and guard.block_width == 3
+    # И пустой магазин больше ничего не меняет
+    assert guard.spend_shot() == ""
+
+
+def test_the_magazine_costs_a_top_set_fighter_most_of_his_health():
+    """Восемь выстрелов снимают с бойца города большую часть запаса.
+
+    Это и есть смысл правки: прежде рейд проходили в соло без потерь —
+    клинок охраны против вещей десятой ступени почти не доходил до тела.
+    Выстрел доходит: броня режет не больше трёх пятых остатка, а
+    резать ей теперь приходится вдвое больше.
+    """
+    from bot.game.raid import boss_action
+
+    runs, mag = 200, 8
+    losses = []
+    for seed in range(runs):
+        rng = random.Random(1_000 + seed)
+        guard, target = a_guard(), a_club_fighter()
+        lost = 0
+        for turn in range(1, mag + 1):
+            before = target.hp
+            mine = Action(
+                attacks=(Zone.HEAD,),
+                block=block_combo(Zone.CHEST, target.block_width),
+            )
+            resolve_round(
+                target, mine, guard,
+                boss_action(target, rng, MILITARY_GUARDS[0].temper),
+                turn, rng, 60,
+            )
+            lost += before - target.hp
+        losses.append(lost)
+        assert guard.shots_left() == 0, "за восемь ходов магазин пуст"
+    losses.sort()
+    median = losses[runs // 2]
+    full = a_club_fighter().max_hp
+    assert median > full * 0.5, f"магазин снимает только {median} из {full}"
+    # Каждый шестой магазин кладёт бойца насмерть
+    deadly = sum(1 for one in losses if one >= full) / runs
+    assert deadly >= 0.1, f"смертельных магазинов всего {deadly:.0%}"
+
+    # А клинком — ровно вдвое меньше: это и есть разница, из-за которой
+    # рейд проходили в соло без потерь
+    blade = []
+    for seed in range(runs):
+        rng = random.Random(1_000 + seed)
+        guard, target = a_guard(), a_club_fighter()
+        while guard.firearm() is not None:
+            guard.spend_shot()
+        lost = 0
+        for turn in range(1, mag + 1):
+            before = target.hp
+            mine = Action(
+                attacks=(Zone.HEAD,),
+                block=block_combo(Zone.CHEST, target.block_width),
+            )
+            resolve_round(
+                target, mine, guard,
+                boss_action(target, rng, MILITARY_GUARDS[0].temper),
+                turn, rng, 60,
+            )
+            lost += before - target.hp
+        blade.append(lost)
+    blade.sort()
+    assert median > blade[runs // 2] * 1.8, (
+        f"магазин {median}, клинок {blade[runs // 2]} — разница мелкая"
+    )
+
+
+def test_the_blade_is_the_half_of_the_fight_the_balance_is_built_on():
+    """После магазина солдат бьёт как раньше: договор с бандой — об этом.
+
+    Залп короче любого боя рейда: восемь ходов против девяноста. Поэтому
+    ровная мощь караула от пистолета не изменилась ни на пункт — и
+    именно её сравнивает `scripts/foe_power.py`.
+    """
+    from scripts.foe_power import damage_per_turn, spent
+
+    firing = a_guard()
+    assert damage_per_turn(firing) > 150
+    after = spent(a_guard())
+    # Клинком — то же, что и до появления пистолета в руке
+    blade = boss_fighter(MILITARY_GUARDS[0], [10], 0.0, level=MILITARY_LEVEL)
+    while blade.firearm() is not None:
+        blade.spend_shot()
+    assert damage_per_turn(after) == damage_per_turn(blade)
+    assert damage_per_turn(after) < damage_per_turn(firing) / 1.5
+
+
+def test_a_crit_from_the_pistol_goes_through_the_armour():
+    """Крит выстрелом броня не держит — и потому он почти смертелен.
+
+    Обычный удар защита режет на четыре пятых: половину снимает
+    выносливость, три пятых остатка — броня. Пуля в упор этого не знает,
+    и крит доходит до тела целиком.
+    """
+    pistol = CATALOGUE["soldier_pistol"]
+    assert pistol.crit_pierce == 1.0
+    assert CATALOGUE["military_sword"].crit_pierce == 0.0
+
+    guard = a_guard()
+    soft = a_club_fighter("rogue")
+    # Крит у караула 26% — столько показывает и карточка
+    assert round(guard.crit, 2) == 0.26
+    hit = guard.derived.crit_power * 150
+    assert hit > soft.max_hp * 0.5, (
+        f"крит выстрелом — {hit:.0f} при запасе {soft.max_hp}"
+    )
 
 
 # ---------- трофей ----------
@@ -499,7 +753,9 @@ async def test_the_raid_screen_shows_the_base_with_its_pass(db, bot):
     assert gate["pass_title"] == "Пропуск на полигон"
     assert gate["pass_price"] == 100 and gate["passes"] == 1
     assert gate["can_afford"] is True, "пятисот хватает на сотню"
-    assert gate["schedule"] == "по понедельникам с 18:00 до 00:00 мск"
+    assert gate["schedule"] == (
+        "по понедельникам, четвергам и субботам с 18:00 до 00:00 мск"
+    )
     # Плашка на карте есть у каждого рейдового дома, и у базы тоже
     plates = await plates_payload(player, service)
     assert BASE in plates
@@ -516,6 +772,11 @@ def test_the_guard_stands_above_the_gang_leader():
     Полоса узкая нарочно. Шире — и договор перестаёт что-либо держать:
     форму охраны правят числом за раз, и без полосы солдат однажды
     окажется либо слабее гопника, либо крепче босса казино.
+
+    Меряется ровная мощь — та, которой солдат бьёт после последнего
+    патрона. Залп из табельного пистолета в неё не входит нарочно:
+    восемь выстрелов короче любого боя рейда, и считать их ровной
+    мощью значило бы объявить караул втрое сильнее босса казино.
     """
     from scripts.foe_power import power
 
@@ -523,6 +784,11 @@ def test_the_guard_stands_above_the_gang_leader():
     leader = power(GANG_LEADER, GANG_LEVEL)
 
     assert 1.10 <= guard / leader <= 1.15, round(guard / leader, 3)
+    # А залпом — заметно выше, и это и есть опасность первых восьми
+    # ходов. Полоса широкая: число подбиралось не под неё, а под то,
+    # сколько здоровья магазин снимает с бойца (см. тесты пистолета)
+    salvo = power(MILITARY_GUARDS[0], MILITARY_LEVEL, firing=True)
+    assert 1.8 <= salvo / leader <= 3.0, round(salvo / leader, 3)
     # Сильнее он по живучести, а не только по клинку: прежде форма
     # двенадцатой ступени держала хуже фанатской десятой
     one = boss_fighter(MILITARY_GUARDS[0], [10], 0.0, level=MILITARY_LEVEL)

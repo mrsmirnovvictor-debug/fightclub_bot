@@ -308,6 +308,10 @@ class ItemKind(str, Enum):
     GEAR = "gear"  # просто вещь с бонусами
     WEAPON = "weapon"
     SHIELD = "shield"  # держат во второй руке: блок шире и броня на все зоны
+    # Огнестрел. В бою он оружие как всякое другое, но с двумя
+    # отличиями: урон у него свой (сила бойца пулю не разгоняет) и
+    # патроны кончаются — см. `Item.shots` и `Item.spent_into`
+    FIREARM = "firearm"
 
 
 @dataclass(frozen=True)
@@ -345,6 +349,20 @@ class Item:
     crit: float = 0.0  # доля к шансу крита
     anticrit: float = 0.0  # доля к антикриту: сбивает крит соперника
     counter: float = 0.0  # доля к шансу контрудара
+    # ---------- огнестрел ----------
+    #
+    # Патронов в магазине. Больше нуля — вещь стреляет: её урон не
+    # складывается с ударом от силы и не растёт от класса (пулю не
+    # «проворачивают» лучше), а каждая попытка выстрела тратит патрон —
+    # и промах тоже. Кончились — боец берётся за то, что записано в
+    # `spent_into`, и дальше дерётся им
+    shots: int = 0
+    spent_into: str = ""
+    # Какую долю чужого антикрита и чужой защиты пробивает критический
+    # удар этим оружием. Ноль — обычное оружие: крит режется бронёй и
+    # выносливостью, как всякий удар. Единица — выстрел в упор: броня
+    # его не держит, и потому он смертелен
+    crit_pierce: float = 0.0
     level_required: int = 1
     requires: Stats = field(default_factory=Stats)  # характеристики под надевание
     price: int = 0
@@ -396,7 +414,13 @@ class Item:
 
     @property
     def is_weapon(self) -> bool:
-        return self.kind is ItemKind.WEAPON
+        """Этим бьют. Огнестрел — тоже оружие: он занимает ту же руку."""
+        return self.kind in (ItemKind.WEAPON, ItemKind.FIREARM)
+
+    @property
+    def is_firearm(self) -> bool:
+        """Стреляет, и патроны у него кончаются."""
+        return self.kind is ItemKind.FIREARM and self.shots > 0
 
     @property
     def is_shield(self) -> bool:

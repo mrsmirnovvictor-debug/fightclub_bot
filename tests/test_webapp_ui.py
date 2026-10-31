@@ -14308,6 +14308,63 @@ async def test_the_dungeon_fight_offers_the_tricks(server, db):
         await browser.close()
 
 
+async def test_the_lobby_says_when_the_station_opens_for_this_fighter(server, db):
+    """Личный откат виден до кнопки, а не отказом после неё."""
+    from bot.blackout_service import lobby_for
+    from bot.game.blackout import LOCK_WON, WON_COOLDOWN_DAYS
+    from tests.test_blackout import NOW, make_player as a_fighter
+
+    one = a_fighter(1, "Тайлер")
+    one.location = "power_station"
+    await db.save_player(one)
+    await db.blackout_lock(
+        one.user_id, NOW + WON_COOLDOWN_DAYS * 86_400, LOCK_WON, NOW
+    )
+    body = await lobby_for(db, one, NOW)
+    assert body["locked_until"] and "пройдена" in body["locked_why"]
+    card = build_card(one, TOKEN, viewer_id=one.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .btn")
+
+        said = await page.locator("#blackout").inner_text()
+        assert "3 дня" in said, said
+        shut = page.locator("#blackout-body .btn", has_text="Станция закрыта")
+        assert await shut.count() == 1
+        assert await shut.first.is_disabled()
+        await browser.close()
+
+
+async def test_the_station_screen_offers_the_potions(server, db):
+    """Передышки за комнату нет — зато есть склянки и кнопка на них."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter, member, walk
+
+    people, run = await enter(db, 2)
+    at = await walk(db, people, run, "O02", NOW)
+    body = await state_for(db, people[0], at)
+    assert body["potions"], "склянки в рюкзаке должны прийти в снимок"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .shelf")
+
+        said = await page.locator("#blackout").inner_text()
+        assert "Склянки" in said
+        assert "Большой эликсир восстановления" in said
+        # И кнопки «поднять» больше нет: упавших тут не поднимают
+        assert await page.locator(
+            "#blackout-body .btn", has_text="Поднять"
+        ).count() == 0
+        await browser.close()
+
+
 async def test_the_raid_screen_fits_a_narrow_phone(server, db):
     """Узкий телефон: кнопки не налезают друг на друга и не уезжают."""
     from bot.blackout_service import look, run_of, snapshot
