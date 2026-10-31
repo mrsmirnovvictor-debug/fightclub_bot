@@ -12887,27 +12887,72 @@ function paintBlackoutRun(data, body) {
   el("blackout-note").textContent = data.goal || "";
   paintBlackoutClock(data);
 
-  // Порядок как в любом подземелье и как просили: сперва комната, под
-  // ней шкала перехода, под ней то, чем ходишь, и сразу схема этажа.
-  // Это один блок управления, и разрывать его списками незачем —
-  // всё остальное уходит вниз
+  // Сцена и шкала перехода стоят всегда: комнату с её зомби видно и в
+  // бою, а шкала — то место, где вообще что-либо происходит
   if (data.view) body.appendChild(blackoutStageBox(data));
   body.appendChild(blackoutWalkBar(data));
-  // Джойстик стоит всегда, даже в бою: шаги из занятой комнаты
-  // закрыты, а вот повернуться и осмотреться никто не мешает
-  if (!data.walking) body.appendChild(blackoutStickBox(data));
-  if (data.map) body.appendChild(blackoutMapBox(data.map));
 
-  body.appendChild(blackoutItemsBox(data));
+  // Бой забирает экран целиком: ниже шкалы остаётся только он, как в
+  // любом другом рейде. Джойстик, карта и склянки под боем — это
+  // приглашение нажать не то
   if (data.fight) {
     body.appendChild(blackoutFightBox(data));
-  } else {
-    body.appendChild(blackoutRoomBox(data));
+    return;
   }
+  // Бой кончился, но управление ещё не вернулось: сперва итог и
+  // кнопка под ним. Иначе последний размен сметало с экрана прежде,
+  // чем его успевали прочитать
+  if (data.aftermath) {
+    body.appendChild(blackoutFinish(data));
+    return;
+  }
+
+  // Под шкалой — то, что делают руками здесь и сейчас: взять, сдать,
+  // нажать на пульте, эвакуироваться
+  const acts = blackoutActionsBox(data);
+  if (acts) body.appendChild(acts);
+  // Джойстик с гнёздами модулей рядом, под ними схема этажа: один
+  // блок управления, и разрывать его списками незачем
+  body.appendChild(blackoutStickRow(data));
+  if (data.map) body.appendChild(blackoutMapBox(data.map));
   const potions = blackoutPotionBox(data);
   if (potions) body.appendChild(potions);
+  // Отряд в самом низу: по нему сверяются, а не ходят
   body.appendChild(blackoutSquadBox(data.squad));
-  body.appendChild(blackoutLogBox(data.log));
+}
+
+/** Джойстик и гнёзда модулей одной строкой.
+ *
+ * Модули стоят у самого джойстика не для красоты: по ним смотрят
+ * ровно тогда, когда решают, куда идти дальше, — а идут отсюда же.
+ * На узком телефоне строка переносится, и гнёзда уходят под пад.
+ */
+function blackoutStickRow(data) {
+  const row = document.createElement("div");
+  row.className = "stick-row";
+  row.appendChild(blackoutStickBox(data));
+  row.appendChild(blackoutItemsBox(data));
+  return row;
+}
+
+/** Итог боя и кнопка, которой возвращают управление. */
+function blackoutFinish(data) {
+  const box = document.createElement("div");
+  box.className = "fight-finish";
+  (data.aftermath.lines || []).forEach((said) => {
+    if (!said) return;
+    const line = document.createElement("p");
+    line.className = "log-line";
+    line.textContent = said;
+    box.appendChild(line);
+  });
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "btn wide";
+  close.textContent = "Завершить бой";
+  close.addEventListener("click", () => blackoutAction({ action: "done" }));
+  box.appendChild(close);
+  return box;
 }
 
 function paintBlackoutClock(data) {
@@ -12961,23 +13006,23 @@ function blackoutItemsBox(data) {
   return box;
 }
 
-/** Комната вне боя: задачи, добыча и двери. */
-function blackoutRoomBox(data) {
+/** Что делают в этой комнате руками: взять, сдать, нажать, уйти.
+ *
+ * Списка дверей тут больше нет, и это не упрощение: куда можно пойти,
+ * видно на сцене и на схеме этажа, а ходят джойстиком. Строка «на
+ * север — O03» рядом с ними была третьим ответом на тот же вопрос.
+ *
+ * Пусто — значит, в комнате делать нечего, и полку с одним заголовком
+ * не ставим.
+ */
+function blackoutActionsBox(data) {
   const box = document.createElement("section");
   box.className = "shelf";
   const head = document.createElement("h2");
   head.className = "shelf-head";
-  head.textContent = data.walking ? "🚶 В пути" : "🚪 Выходы";
+  head.textContent = "🎯 Здесь";
   box.appendChild(head);
-
-  if (data.walking && data.going) {
-    const said = document.createElement("p");
-    said.className = "thing-note";
-    said.textContent = "Идёшь в «" + data.going.name + "»: "
-      + data.going.seconds_left + " с.";
-    box.appendChild(said);
-    return box;
-  }
+  if (data.walking) return null;
 
   if (data.locked) {
     const why = document.createElement("p");
@@ -13009,24 +13054,7 @@ function blackoutRoomBox(data) {
     box.appendChild(buttons);
   }
 
-  (data.exits || []).forEach((one) => {
-    const row = document.createElement("div");
-    row.className = "bracket-side";
-    const name = document.createElement("span");
-    name.className = "bracket-name";
-    name.textContent = (one.danger ? "☣️ " : one.cleared ? "✅ " : "")
-      + one.name + (one.where ? " · " + one.where : "");
-    row.appendChild(name);
-    const act = button(one.can_go ? "Идти · 10 с" : "Закрыто", {
-      disabled: !one.can_go,
-      hint: one.why,
-      onClick: () => blackoutWalk(data, one.room),
-    });
-    act.classList.add("btn-small");
-    row.appendChild(act);
-    box.appendChild(row);
-  });
-  return box;
+  return box.children.length > 1 ? box : null;
 }
 
 function blackoutTaskRow(task) {
@@ -13134,27 +13162,7 @@ function blackoutFightBox(data) {
     box.appendChild(said);
   }
 
-  (fight.foes || []).forEach((foe) => {
-    const row = document.createElement("div");
-    row.className = "bracket-side"
-      + (blackoutTarget === foe.id ? " mine" : "");
-    const name = document.createElement("span");
-    name.className = "bracket-name";
-    name.textContent = (foe.boss ? "☠️ " : "") + foe.name
-      + " · " + foe.hp + "/" + foe.max;
-    row.appendChild(name);
-    const act = button("Цель", {
-      secondary: blackoutTarget !== foe.id,
-      onClick: () => {
-        blackoutTarget = foe.id;
-        renderBlackout(blackoutData);
-      },
-    });
-    act.classList.add("btn-small");
-    row.appendChild(act);
-    box.appendChild(row);
-  });
-
+  box.appendChild(blackoutBoard(data));
   box.appendChild(blackoutTurnBox(data));
   // Приёмы — та же панель, что на ринге и в рейде: боёвка станции
   // ничем от них не отличается, и шкала энергии тут своя на бой
@@ -13174,6 +13182,114 @@ function blackoutFightBox(data) {
     said.textContent = line;
     box.appendChild(said);
   });
+  return box;
+}
+
+/** Доска станции: отряд против зомби, как в любом другом рейде.
+ *
+ * Частями она собрана теми же, что доска банды и казино: колода
+ * союзников, скрещённые клинки, колода соперников. Разной боёвки в
+ * игре быть не должно — боец, умеющий драться в рейде, умеет драться
+ * и здесь, и переучиваться ему незачем.
+ *
+ * Одно отличие от банды есть, и оно станционное: цель выбирают сами.
+ * Поэтому карта в колоде соперников нажимается — нажал, и зомби
+ * переехал наверх крупной картой.
+ */
+function blackoutBoard(data) {
+  const fight = data.fight;
+  const box = document.createElement("div");
+  box.className = "raid-board";
+
+  const party = (fight.party || []).map(blackoutMateShape);
+  const you = party.find((one) => one.you) || null;
+  const mates = party.filter((one) => !one.you);
+  box.appendChild(
+    deckOf("raid-mates", mateCards(mates), you ? blackoutYouCard(you) : null)
+  );
+
+  const swords = document.createElement("p");
+  swords.className = "versus";
+  swords.textContent = "⚔️";
+  box.appendChild(swords);
+
+  const foes = (fight.foes || []).map(blackoutFoeShape);
+  const target = foes.find((one) => one.id === blackoutTarget) || foes[0]
+    || null;
+  // Колоду сортируем сами, той же сортировкой, и по ней же развешиваем
+  // нажатия: `foeCards` отдаёт карты в порядке, в каком их получил
+  const rest = byTheLiving(
+    foes.filter((one) => !target || one.id !== target.id)
+  );
+  const cards = foeCards(rest);
+  cards.forEach((card, at) => {
+    const foe = rest[at];
+    card.classList.add("stack-pick");
+    card.addEventListener("click", () => {
+      blackoutTarget = foe.id;
+      renderBlackout(blackoutData);
+    });
+  });
+  box.appendChild(
+    deckOf("raid-foes", cards, target ? bossCard(target, true) : null)
+  );
+  return box;
+}
+
+/** Боец станции в том виде, в каком боёвка рисует любого союзника. */
+function blackoutMateShape(one) {
+  return {
+    user_id: one.id,
+    you: Boolean(one.me),
+    alive: Boolean(one.alive),
+    acted: Boolean(one.acted),
+    emoji: one.emoji,
+    name: one.name,
+    level: one.level,
+    hp: one.hp,
+    max_hp: one.max,
+    percent: one.percent,
+  };
+}
+
+/** Зомби в том же виде, в каком боёвка рисует любого соперника.
+ *
+ * Павших сервер в снимок не кладёт вовсе, поэтому `alive` тут всегда
+ * верно: в колоде стоят только те, кто ещё держится.
+ */
+function blackoutFoeShape(foe) {
+  return {
+    id: foe.id,
+    number: foe.id,
+    alive: true,
+    image: foe.art || "",
+    emoji: foe.boss ? "☠️" : "🧟",
+    title: foe.name,
+    level: foe.level || 0,
+    hp: foe.hp,
+    max_hp: foe.max,
+    percent: foe.percent,
+  };
+}
+
+/** Своя карточка: крупная, как у соперника, но без счёта урона.
+ *
+ * В рейде на этой строке стоит «урона N» — по нему делят вещь с
+ * банды. Станция добычу так не делит и урона по бойцам не считает,
+ * поэтому писать «урона 0» было бы неправдой, а не мелочью.
+ */
+function blackoutYouCard(one) {
+  const box = document.createElement("div");
+  box.className = "raid-you" + (one.alive ? "" : " down");
+  const name = document.createElement("p");
+  name.className = "fight-name";
+  name.textContent = mateMark(one) + one.emoji + " " + one.name
+    + " [" + one.level + "] — ты";
+  const hp = document.createElement("p");
+  hp.className = "fight-hp";
+  hp.textContent = one.alive ? one.hp + "/" + one.max_hp : "💀 выбыл";
+  box.append(name, hp);
+  if (one.alive) box.appendChild(fightBar(one));
   return box;
 }
 
@@ -13425,7 +13541,16 @@ function blackoutStageBox(data) {
       body.setAttribute("height", tall);
       body.setAttribute("preserveAspectRatio", "xMidYMax meet");
       body.setAttribute("class", "stage-foe" + (foe.boss ? " boss" : ""));
+      // Картинки может не оказаться. В SVG сорванная ссылка оставляет
+      // значок битого файла — в комнате это выглядит как сломанный
+      // экран, а не как зомби. Рисуем вместо неё фигуру
+      body.addEventListener("error", () => {
+        body.remove();
+        svg.appendChild(stageFigure(at, B, tall, foe));
+      });
       svg.appendChild(body);
+    } else {
+      svg.appendChild(stageFigure(at, B, tall, foe));
     }
     const bar = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     bar.setAttribute("x", at - 26);
@@ -13505,7 +13630,9 @@ function blackoutWalkBar(data) {
 
   const going = data.going;
   if (!going) {
-    said.textContent = "Готов идти";
+    // В бою шкала стоит на месте и зовёт не идти, а драться: выходы из
+    // занятой комнаты всё равно закрыты
+    said.textContent = data.fight ? "Выходы перекрыты" : "Готов идти";
     fill.style.width = "0%";
     return box;
   }
@@ -13521,6 +13648,11 @@ function blackoutWalkBar(data) {
     if (!left && blackoutWalkTimer) {
       clearInterval(blackoutWalkTimer);
       blackoutWalkTimer = null;
+      // Время вышло — спрашиваем новую комнату сейчас, а не на
+      // следующем такте опроса. Иначе шкала уже полная, а взгляд ещё
+      // показывает ту комнату, из которой вышли: экран врёт
+      // секунду-другую ровно в тот миг, когда на него и смотрят
+      loadBlackout();
     }
   };
   if (blackoutWalkTimer) clearInterval(blackoutWalkTimer);
@@ -13530,6 +13662,32 @@ function blackoutWalkBar(data) {
 }
 
 let blackoutWalkTimer = null;
+
+/** Зомби без картинки: голова, корпус и ноги. Силуэт, но свой. */
+function stageFigure(at, bottom, tall, foe) {
+  const box = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  box.setAttribute("class", "stage-foe shape" + (foe.boss ? " boss" : ""));
+  const head = document.createElementNS(
+    "http://www.w3.org/2000/svg", "circle"
+  );
+  head.setAttribute("cx", at);
+  head.setAttribute("cy", bottom - tall + 44);
+  head.setAttribute("r", tall * 0.11);
+  box.appendChild(head);
+  const body = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  body.setAttribute("x", at - tall * 0.16);
+  body.setAttribute("y", bottom - tall + 44 + tall * 0.11);
+  body.setAttribute("width", tall * 0.32);
+  body.setAttribute("height", tall * 0.62);
+  body.setAttribute("rx", tall * 0.1);
+  box.appendChild(body);
+  const title = document.createElementNS(
+    "http://www.w3.org/2000/svg", "title"
+  );
+  title.textContent = foe.name || "Зомби";
+  box.appendChild(title);
+  return box;
+}
 
 /** Джойстик: четыре шага и два поворота.
  *
@@ -13760,22 +13918,6 @@ function blackoutMapBox(map) {
       + away.map((one) => one.name + " · " + one.layer).join(", ");
     box.appendChild(said);
   }
-  return box;
-}
-
-function blackoutLogBox(log) {
-  const box = document.createElement("section");
-  box.className = "shelf";
-  const head = document.createElement("h2");
-  head.className = "shelf-head";
-  head.textContent = "📻 Журнал";
-  box.appendChild(head);
-  (log || []).forEach((line) => {
-    const said = document.createElement("p");
-    said.className = "thing-note";
-    said.textContent = line.text || line;
-    box.appendChild(said);
-  });
   return box;
 }
 

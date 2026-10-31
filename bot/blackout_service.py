@@ -204,6 +204,8 @@ def blank_state(cycle: str, leader_id: int, now: int) -> dict[str, Any]:
         "safe": station().start,
         "members": {},
         "fight": None,
+        # Итог последнего боя: его держат, пока бойцы не закроют
+        "aftermath": None,
         "console": {},
         "log": [],
         "warned": [],
@@ -244,6 +246,8 @@ def member_row(player: Player, now: int, bot: bool = False) -> dict[str, Any]:
         "energy": 0,
         "charges": [],
         "pressed": 0,
+        # Какой итог боя этот боец уже закрыл: метка времени
+        "closed": 0,
     }
 
 
@@ -1181,6 +1185,10 @@ def open_fight(state: dict, room: str, now: int) -> dict | None:
             "log": ["Зомби перекрыли выходы."],
         }
     state["fight"] = fight
+    # Прежний итог больше никому не нужен: началось новое. Так же
+    # закрывается и волна обороны — за ней сразу идёт следующая, и
+    # кнопка «Завершить бой» между ними не встаёт
+    state.pop("aftermath", None)
     _note(state, f"Бой в «{here.name}».", now)
     return fight
 
@@ -1636,6 +1644,7 @@ def _victory(run: Run, now: int) -> str:
     fight = state.get("fight") or {}
     room = fight.get("room") or ""
     state["fight"] = None
+    _settle_up(state, fight, now)
     if not room:
         return "Бой кончился."
     # Победа ничего не лечит и никого не поднимает. Из боя боец выходит
@@ -1662,11 +1671,80 @@ def _victory(run: Run, now: int) -> str:
         said = f"{BOSSES[boss].title} повержен."
     if here is not None and here.safe:
         state["safe"] = room
+    # Итог открывается строкой, ради которой дрались, а под ней идут
+    # последние разменом — чем кончилось и чем приложили
+    after = state.get("aftermath")
+    if after is not None:
+        after["lines"] = [said] + [
+            line for line in after["lines"] if line != said
+        ]
     _note(state, said, now)
     # Безопасной считается последняя зачищенная комната: в неё и
     # откатывается попытка после полного поражения
     state["safe"] = room
     return said
+
+
+def _settle_up(state: dict, fight: dict, now: int) -> None:
+    """Отложить итог боя: экран держит его, пока боец не закроет.
+
+    Без этого бой кончался молча. Последний размен решал всё, `fight`
+    становился пустым — и на том же месте, где только что стояли
+    колоды и кнопка «Бить», сразу оказывались джойстик и карта.
+    Человек не успевал прочитать, чем кончилось, и чем его при этом
+    приложили.
+
+    Поэтому итог лежит отдельно от боя, а не внутри него: `fight`
+    пустой — значит, в комнате больше не дерутся, и это правило
+    держит всё остальное (шаг, лечение, передышку). Итог же только
+    показывают, и закрывает его каждый сам: в отряде один читает
+    быстрее другого, и чужое нажатие не должно убирать экран
+    у соседа.
+    """
+    if not fight:
+        return
+    state["aftermath"] = {
+        "room": fight.get("room") or "",
+        "at": now,
+        "kind": fight.get("kind") or "",
+        "lines": list(reversed((fight.get("log") or [])[-6:])),
+    }
+
+
+def close_fight(run: Run, user_id: int, now: int) -> str:
+    """Закрыть итог боя и вернуть управление."""
+    state = run.state
+    one = member(state, user_id)
+    if one is None:
+        raise BlackoutError("Ты не в этом рейде.")
+    after = state.get("aftermath") or {}
+    if not after:
+        raise BlackoutError("Этот бой уже закрыт.")
+    one["closed"] = int(after.get("at") or 0)
+    # Все, кто мог прочитать, прочитали — итог больше не держим
+    waiting = [
+        row for row in (state.get("members") or {}).values()
+        if row["room"] == after.get("room") and not row["left"]
+        and not row["extracted"] and not row.get("bot")
+        and int(row.get("closed") or 0) != int(after.get("at") or 0)
+    ]
+    if not waiting:
+        state.pop("aftermath", None)
+    return "Бой закончен."
+
+
+def _aftermath_payload(state: dict, one: dict) -> dict[str, Any] | None:
+    """Итог боя для этого бойца: пока не закрыл — висит."""
+    after = state.get("aftermath") or {}
+    if not after or after.get("room") != one["room"]:
+        return None
+    if int(one.get("closed") or 0) == int(after.get("at") or 0):
+        return None
+    return {
+        "at": int(after.get("at") or 0),
+        "kind": after.get("kind") or "",
+        "lines": list(after.get("lines") or []),
+    }
 
 
 def _wipe(run: Run, now: int) -> str:
@@ -1689,6 +1767,7 @@ def _wipe(run: Run, now: int) -> str:
         _forget_tricks(one)
     state["outcome"] = "wiped"
     state["over_at"] = now
+    state.pop("aftermath", None)
     if fight.get("kind") == "defense":
         # Пуск сорван, и чинить его некому: отряд лёг в рубке
         _note(state, "Отряд лёг в рубке. Пуск сорван.", now)
@@ -1982,6 +2061,8 @@ def _start_wave(state: dict, number: int, now: int) -> None:
         "console": state["console"]["health"],
         "log": [f"Волна {number} из {len(DEFENSE_WAVES)}: {title}."],
     }
+    # Волна за волной идёт без пауз: итог прошлой закрывать нечем
+    state.pop("aftermath", None)
     _note(state, f"Оборона рубки: волна {number}.", now)
 
 
@@ -2213,9 +2294,11 @@ def snapshot(run: Run, user_id: int, now: int) -> dict[str, Any]:
             "seconds_left": max(0, int(one["arrive"] or 0) - now),
         } if walking else None,
         "exits": [] if walking else exits_of(state, one["room"]),
-        "view": None if walking else _view_payload(
-            state, one["room"], user_id, now
-        ),
+        # Взгляд отдаётся и в пути. Боец всё это время стоит в той
+        # комнате, из которой вышел, — и смотреть в переходе есть на
+        # что. Пустой экран на десять секунд читался как «сломалось»;
+        # клавиши в пути всё равно не слушаются, их гасит сам экран
+        "view": _view_payload(state, one["room"], user_id, now),
         "locked": _locked_here(state, one["room"]) if not walking else "",
         "task": task_here(state, one["room"]) if not walking else None,
         "pickup": _pickup_payload(state, one["room"]) if not walking else None,
@@ -2255,7 +2338,16 @@ def snapshot(run: Run, user_id: int, now: int) -> dict[str, Any]:
             }
             for key, row in (state.get("members") or {}).items()
         ],
-        "fight": _fight_payload(state, fight, user_id, now) if fight else None,
+        # Бой отдаётся только тем, кто в нём стоит. Он на станции один
+        # на весь отряд, но комнат много: пока двое дерутся в проходной,
+        # третий идёт релейной, и забирать у него управление боем, в
+        # который он не может ударить (`strike` его и не пустит),
+        # значит запереть его на чужом экране
+        "fight": (
+            _fight_payload(state, fight, user_id, now)
+            if fight and fight["room"] == one["room"] else None
+        ),
+        "aftermath": _aftermath_payload(state, one),
         "console": _console_payload(state, one["room"]),
         "log": list(reversed((state.get("log") or [])[-12:])),
         "map": _map_payload(state, one["room"], user_id),
@@ -2454,6 +2546,7 @@ def _fight_payload(
             {
                 "id": one["id"],
                 "name": one["name"],
+                "level": int(one.get("level") or 0),
                 "hp": one["hp"],
                 "max": one["max"],
                 "percent": int(100 * one["hp"] / max(1, one["max"])),
@@ -2461,6 +2554,27 @@ def _fight_payload(
                 "art": one.get("art") or "",
             }
             for one in fight["foes"] if one["hp"] > 0
+        ],
+        # Обе стороны боя одним списком: экран рисует их колодами, как
+        # на ринге и в рейде, и своего бойца в этой колоде видно так же,
+        # как чужого. Павшие тут остаются: в отряде важно, кто уже лёг,
+        # а `here_fighters` их не отдаёт — он собирает тех, кто дерётся
+        "party": [
+            {
+                "id": int(key),
+                "name": row["name"],
+                "level": row["level"],
+                "emoji": FIGHTER_CLASSES[row.get("class") or "warrior"].emoji,
+                "hp": row["hp"],
+                "max": row["max"],
+                "percent": int(100 * row["hp"] / max(1, row["max"])),
+                "alive": not row["down"],
+                "acted": bool(key in (fight.get("acted") or [])),
+                "me": int(key) == user_id,
+            }
+            for key, row in (state.get("members") or {}).items()
+            if row["room"] == fight["room"] and not row["arrive"]
+            and not row["left"] and not row["extracted"]
         ],
         "telegraph": fight.get("telegraph") or {},
         "window": int(fight.get("window") or 0),
@@ -2825,6 +2939,8 @@ async def act(
             if action == "lead_walk":
                 return squad_step(run, player.user_id, there, when)
             return step(run, player.user_id, there, when)
+        if action == "done":
+            return close_fight(run, player.user_id, when)
         if action == "task":
             return do_task(run, player.user_id, when)
         if action == "take":
@@ -2868,6 +2984,7 @@ __all__ = [
     "add_bots",
     "auto_turns",
     "command",
+    "close_fight",
     "close_out",
     "cycle_code",
     "door_toward",

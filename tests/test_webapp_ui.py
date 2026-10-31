@@ -14121,41 +14121,46 @@ async def test_the_station_lobby_offers_the_raid(server, db):
         await browser.close()
 
 
-async def test_the_raid_screen_shows_the_room_the_squad_and_the_doors(
-    server, db
-):
-    """Экран рейда: панорама, модули, отряд, двери и схема этажа."""
-    from bot.blackout_service import act, look, run_of, snapshot
+async def test_the_raid_screen_stands_in_one_order(server, db):
+    """Экран рейда: сцена, шкала, джойстик с гнёздами, схема, отряд.
+
+    Порядок тут не вкусовщина, а просьба с плейтеста: сверху смотрят,
+    ниже ходят, в самом низу сверяются. Списка дверей и журнала на
+    экране нет вовсе — куда идти, видно на сцене и на схеме.
+    """
+    from bot.blackout_service import state_for
     from tests.test_blackout import NOW, enter
 
     people, run = await enter(db, 4)
-    at = NOW
-    await act(db, people[0], "lead", {"room": "O02"}, "w1", at)
-    run = await look(db, run.id, at + 10)
-    body = snapshot(run, people[0].user_id, at + 10)
-    body["screen"] = "run"
+    body = await state_for(db, people[0], NOW)
+    assert not body["fight"], "в стартовой комнате не дерутся"
     card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, blackout=body)
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "blackout")
-        await page.wait_for_selector("#blackout-body .shelf")
+        await page.wait_for_selector("#blackout-body .stick-row")
 
         said = await page.locator("#blackout").inner_text()
-        # Цель миссии и три индикатора элементов
         assert "диспетчерской" in said
+        # Гнёзда модулей стоят рядом с джойстиком, в одной с ним строке
+        row = page.locator("#blackout-body .stick-row")
+        assert await row.locator(".stick-pad").count() == 1
         for title in ("Фазовый синхронизатор", "Силовой сердечник",
                       "Ключ аварийного запуска"):
-            assert title in said, title
-        # Бой начался сам: в проходной зомби
-        assert "Бой · ход" in said
-        assert await page.locator(
-            "#blackout-body .btn", has_text="Бить"
-        ).count() == 1
-        # Схема этажа с туманом и джойстик вместо списка дверей
+            assert title in await row.inner_text(), title
+        # Схема этажа с туманом
         assert await page.locator("#blackout-body .minimap").count() == 1
         assert await page.locator(".minimap-room.here").count() == 1
+        # Ни дверей списком, ни журнала
+        assert "Выходы" not in said and "Журнал" not in said
+        # Отряд — последним блоком экрана
+        last = await page.evaluate(
+            "() => document.querySelector('#blackout-body')"
+            ".lastElementChild.innerText"
+        )
+        assert "Боец-2" in last, last
         await browser.close()
 
 
@@ -14340,8 +14345,8 @@ async def test_the_stage_puts_the_zombies_in_the_room(server, db):
         assert await page.locator(".stage-foe-hp").count() == len(
             body["view"]["foes"]
         )
-        # Повернуться можно и в бою: осмотреться никто не мешает
-        assert not await page.locator(".key-turn").first.is_disabled()
+        # Комнату видно и в бою — а вот управления под шкалой уже нет
+        assert await page.locator(".stick-pad").count() == 0
         await browser.close()
 
 
@@ -14439,13 +14444,21 @@ async def test_the_lobby_says_when_the_station_opens_for_this_fighter(server, db
 
 
 async def test_the_station_screen_offers_the_potions(server, db):
-    """Передышки за комнату нет — зато есть склянки и кнопка на них."""
-    from bot.blackout_service import state_for
-    from tests.test_blackout import NOW, enter, member, walk
+    """Передышки за комнату нет — зато есть склянки и кнопка на них.
+
+    Пить зовут после боя, а не во время: в бою экран занят боем, и
+    склянки под ним не показываются вовсе.
+    """
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter, walk, win_here
 
     people, run = await enter(db, 2)
     at = await walk(db, people, run, "O02", NOW)
+    at = await win_here(db, people, run.id, at)
+    for one in people:
+        await act(db, one, "done", {}, f"d{one.user_id}", at)
     body = await state_for(db, people[0], at)
+    assert not body["fight"] and not body["aftermath"]
     assert body["potions"], "склянки в рюкзаке должны прийти в снимок"
     card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
 
@@ -15067,3 +15080,146 @@ async def test_a_foreign_script_error_is_reported_with_its_real_place(server):
     assert "telegram-web-app.js:112:7" in said["message"], said["message"]
     assert "Script error." in said["message"]
     assert not said["stack"], "подложного стека в отчёте быть не должно"
+
+
+async def test_the_look_stays_while_the_fighter_walks(server, db):
+    """В пути комнату видно и джойстик на месте — просто он не слушается.
+
+    Раньше экран на время перехода убирал управление целиком, и десять
+    секунд человек смотрел на пустое место. Смотреть в пути есть на
+    что: та комната, из которой выходишь, никуда не делась.
+    """
+    from bot.blackout_service import act, look, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    await act(db, people[0], "go", {"room": "O02"}, "step", NOW)
+    body = snapshot(await look(db, run.id, NOW + 2), people[0].user_id, NOW + 2)
+    body["screen"] = "run"
+    assert body["walking"], "боец в пути"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+
+        assert await page.locator(".stick-pad").count() == 1, "джойстик на месте"
+        assert await page.locator(".key-up").first.is_disabled(), (
+            "в пути клавиши не слушаются"
+        )
+        said = await page.locator("#blackout").inner_text()
+        assert "В пути" in said and " с" in said
+        await browser.close()
+
+
+async def test_the_take_button_stands_under_the_walk_bar(server, db):
+    """Кнопка «взять» стоит сразу под шкалой хода, выше джойстика."""
+    from bot.blackout_service import look, member, raise_flag, snapshot
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    run = await look(db, run.id, NOW)
+    one = member(run.state, people[0].user_id)
+    one["room"] = "F209"  # тайник с модулем
+    raise_flag(run.state, "hunter_defeated", NOW)
+    body = snapshot(run, people[0].user_id, NOW)
+    body["screen"] = "run"
+    assert body["pickup"]["can_take"], "модуль лежит и его можно взять"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stick-row")
+
+        take = page.locator("#blackout-body .btn", has_text="Взять")
+        assert await take.count() == 1
+        # Порядок блоков: сцена, шкала, действия, джойстик
+        order = await page.evaluate(
+            "() => [...document.querySelector('#blackout-body').children]"
+            ".map((one) => one.className)"
+        )
+        assert order[0].startswith("stage") and order[1] == "walkbar", order
+        assert order[2] == "shelf" and order[3] == "stick-row", order
+        await browser.close()
+
+
+async def test_the_fight_takes_the_screen_and_hands_it_back(server, db):
+    """Бой занимает экран целиком, а вернуть управление — кнопкой.
+
+    Ниже шкалы хода в бою нет ничего, кроме самого боя: джойстик,
+    схема и склянки под ним — приглашение нажать не то. Кончился бой —
+    на том же месте итог и «Завершить бой», и только после неё экран
+    снова становится ходячим.
+    """
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter, walk, win_here
+
+    people, run = await enter(db, 2)
+    at = await walk(db, people, run, "O02", NOW)
+    fight = await state_for(db, people[0], at)
+    assert fight["fight"], "в проходной дерутся"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=fight)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .raid-board")
+
+        # Обе стороны на доске: отряд и зомби, как в любом другом рейде
+        assert await page.locator(".raid-mates .stack-card").count() >= 1
+        assert await page.locator(".raid-foes .boss-card").count() == 1
+        assert await page.locator("#blackout-body .btn", has_text="Бить"
+                                  ).count() == 1
+        # И ничего больше ниже шкалы
+        for gone in (".stick-pad", ".minimap", ".blackout-items"):
+            assert await page.locator(gone).count() == 0, gone
+        await browser.close()
+
+    at = await win_here(db, people, run.id, at)
+    over = await state_for(db, people[0], at)
+    assert over["aftermath"] and not over["fight"]
+    await act(db, people[0], "done", {}, "d1", at)
+    calm = await state_for(db, people[0], at)
+    assert not calm["aftermath"]
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROMIUM, args=["--no-proxy-server"]
+        )
+        page = await browser.new_page(viewport={"width": 420, "height": 900})
+        await page.route("**/api/card*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(card),
+        ))
+        pressed = {"yes": False}
+
+        async def answer(route):
+            if route.request.method == "POST":
+                pressed["yes"] = True
+            body = calm if pressed["yes"] else over
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/blackout", answer)
+        await page.route(IMAGES, lambda route: route.abort())
+        await page.goto(f"{server.make_url('/')}")
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .fight-finish")
+
+        said = await page.locator(".fight-finish").inner_text()
+        assert "зачищена" in said, said
+        assert await page.locator(".stick-pad").count() == 0
+        await page.locator(
+            "#blackout-body .btn", has_text="Завершить бой"
+        ).click()
+        await page.wait_for_selector("#blackout-body .stick-row")
+        assert pressed["yes"], "кнопка должна дойти до сервера"
+        assert await page.locator(".minimap").count() == 1
+        await browser.close()

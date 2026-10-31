@@ -1580,3 +1580,83 @@ async def test_a_one_off_window_opens_outside_the_schedule(db):
         assert window_open(msk("2026-10-30T23:30")) is False
     finally:
         os.environ.pop("BLACKOUT_WINDOWS", None)
+
+
+# ---------- итог боя ждёт, пока его прочитают ----------
+
+
+async def test_the_fight_ends_with_a_summary_that_waits_to_be_closed(db):
+    """Бой кончился — итог лежит, пока боец не нажмёт «Завершить бой».
+
+    Без этого последний размен сметало с экрана тем же тактом опроса,
+    каким приходила пустая комната: человек не успевал прочитать, чем
+    кончилось и чем его приложили.
+    """
+    people, run = await enter(db, 2)
+    at = await walk(db, people, run, "O02", NOW)
+    at = await win_here(db, people, run.id, at)
+
+    body = await state_for(db, people[0], at)
+    assert body["fight"] is None, "драться больше не с кем"
+    after = body["aftermath"]
+    assert after, "итог боя должен дождаться бойца"
+    assert "зачищена" in after["lines"][0], after["lines"]
+    assert len(after["lines"]) > 1, "под первой строкой — чем кончилось"
+
+    # Закрывает каждый сам: чужое нажатие экран соседу не убирает
+    await act(db, people[0], "done", {}, "d1", at)
+    assert (await state_for(db, people[0], at))["aftermath"] is None
+    assert (await state_for(db, people[1], at))["aftermath"], (
+        "второму итог ещё не показали"
+    )
+    await act(db, people[1], "done", {}, "d2", at)
+    assert (await state_for(db, people[1], at))["aftermath"] is None
+
+    # Прочитали все — итог больше не держим в состоянии рейда
+    fresh = await look(db, run.id, at)
+    assert not fresh.state.get("aftermath")
+    with pytest.raises(BlackoutError, match="закрыт"):
+        await act(db, people[0], "done", {}, "d3", at)
+
+
+async def test_a_fight_in_another_room_does_not_take_over_the_screen(db):
+    """Дерутся в проходной — у того, кто в релейной, своё управление.
+
+    Бой на станции один на весь отряд, но комнат много. Отдать его
+    экран тому, кто в этом бою ударить всё равно не может, значило бы
+    запереть его на чужом бою.
+    """
+    people, run = await enter(db, 2)
+    await act(db, people[1], "go", {"room": "O02"}, "m1", NOW)
+    at = NOW + 10
+
+    partner = await state_for(db, people[1], at)
+    assert partner["fight"], "кто пришёл в проходную, тот и дерётся"
+    mine = await state_for(db, people[0], at)
+    assert mine["fight"] is None, "в стартовой комнате боя нет"
+    assert mine["view"], "взгляд на месте"
+
+
+async def test_the_board_of_the_fight_shows_both_sides(db):
+    """Доска боя: и зомби, и свой отряд — как в любом другом рейде."""
+    people, run = await enter(db, 3)
+    at = await walk(db, people, run, "O02", NOW)
+    fight = (await state_for(db, people[0], at))["fight"]
+    assert fight, "в проходной дерутся"
+
+    assert fight["foes"] and all(one["level"] for one in fight["foes"]), (
+        "уровень соперника экран пишет на карточке"
+    )
+    party = fight["party"]
+    assert len(party) == 3, "в комнате весь отряд"
+    me = [one for one in party if one["me"]]
+    assert len(me) == 1 and me[0]["id"] == people[0].user_id
+    for one in party:
+        assert one["emoji"] and one["max"] and one["alive"]
+        assert one["acted"] is False, "ходов ещё не было"
+
+    await act(db, people[0], "fight",
+              {"attacks": ["head"], "block": ["chest"]}, "h1", at)
+    after = (await state_for(db, people[0], at))["fight"]
+    mine = next(one for one in after["party"] if one["me"])
+    assert mine["acted"], "свой ход на доске видно сразу"

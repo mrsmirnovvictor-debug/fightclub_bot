@@ -4362,6 +4362,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   opacity: 0.45;
 }
 .blackout-item.have { opacity: 1; outline: 1px solid var(--good); }
+/* Карта в колоде соперников нажимается: цель на станции выбирают сами */
+.stack-pick { cursor: pointer; }
 .blackout-shape { font-size: 18px; display: block; }
 .blackout-item-name { font-size: 12px; line-height: 1.25; display: block; }
 .blackout-item-tag { font-size: 11px; color: var(--muted); }
@@ -4428,6 +4430,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .stage-foe { filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.6)); }
 .stage-foe.boss { filter: drop-shadow(0 8px 14px rgba(220, 60, 60, 0.5)); }
 .stage-foe-hp { fill: var(--hp-red); }
+/* Зомби без картинки: силуэт. Не украшение, а замена значку битого
+   файла — сорванная ссылка не должна выглядеть как сломанный экран */
+.stage-foe.shape circle, .stage-foe.shape rect { fill: #2f3a2c; }
+.stage-foe.shape.boss circle, .stage-foe.shape.boss rect { fill: #4a2a2a; }
 
 .stage-loot { cursor: pointer; }
 .stage-loot.shut { cursor: help; opacity: 0.6; }
@@ -4481,6 +4487,23 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   gap: 6px;
   margin: 10px 0;
 }
+/* Джойстик и гнёзда модулей одной строкой: по модулям смотрят ровно
+   тогда, когда решают, куда идти дальше, — а идут отсюда же. Не влезло
+   в ширину — гнёзда переносятся под пад, а не жмут клавиши */
+.stick-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.stick-row .stick-box { flex: 0 0 auto; }
+.stick-row .shelf { flex: 1 1 148px; min-width: 148px; margin: 0; }
+.stick-row .shelf-head { font-size: 13px; margin-bottom: 6px; }
+/* Рядом с падом гнёзда стоят столбиком: три в ряд тут не помещаются,
+   а перенос по одному делал бы строку то в два, то в три этажа */
+.stick-row .blackout-items { flex-direction: column; }
+.stick-row .blackout-item { flex: 0 0 auto; min-width: 0; }
 /* Шесть клавиш крестом: четыре шага и два поворота по бокам. Шаг
    считается от взгляда, поэтому на них стрелки, а не стороны света */
 .stick-pad {
