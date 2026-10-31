@@ -210,6 +210,155 @@ def group_size(base: int, party: int) -> int:
     return max(floor, base + (party - BEST_PARTY))
 
 
+# ---------- куда смотрит боец ----------
+#
+# Подземелье показывается от первого лица, а значит у бойца есть не
+# только комната, но и сторона, в которую он повёрнут. От неё зависит
+# всё, что он видит: что впереди, что по бокам, куда ведёт шаг вперёд.
+#
+# Стороны четыре и считаются по той же оси, что схема этажа: Y растёт
+# вниз, как в svg, поэтому север — это «вверх по карте».
+
+FACINGS = ("north", "east", "south", "west")
+
+FACING_TITLES = {
+    "north": "север",
+    "east": "восток",
+    "south": "юг",
+    "west": "запад",
+}
+
+# Куда смотрит сторона в шагах по карте: (dx, dy)
+FACING_STEP = {
+    "north": (0, -1),
+    "east": (1, 0),
+    "south": (0, 1),
+    "west": (-1, 0),
+}
+
+# Как стороны ложатся на экран, когда боец смотрит в `facing`:
+# «вперёд», «направо», «назад», «налево» — по часовой стрелке
+RELATIVE_TITLES = {
+    "ahead": "впереди",
+    "right": "справа",
+    "behind": "позади",
+    "left": "слева",
+}
+
+
+def turn(facing: str, where: str) -> str:
+    """Повернуться налево или направо. Чужое слово — остаться как был."""
+    if facing not in FACINGS:
+        facing = FACINGS[0]
+    step = {"left": -1, "right": 1, "around": 2}.get(where, 0)
+    return FACINGS[(FACINGS.index(facing) + step) % len(FACINGS)]
+
+
+def heading(dx: int, dy: int) -> str:
+    """Сторона света для этого вектора по карте. Пусто — некуда.
+
+    Ось Y вниз, как в svg: отрицательный `dy` — это север. Косые
+    переходы округляются до ближайшей стороны по большей проекции —
+    четырёх сторон хватает, пятой на экране всё равно нет.
+    """
+    if not dx and not dy:
+        return ""
+    if abs(dx) >= abs(dy):
+        return "east" if dx > 0 else "west"
+    return "south" if dy > 0 else "north"
+
+
+def doorways(room: str) -> dict[str, str]:
+    """Какая дверь на какой стене. Сторона → код комнаты за ней.
+
+    Считается вся комната разом, а не дверь за дверью, и это главное.
+    Если округлять каждый ход по отдельности, два хода, которые по углу
+    просятся в одну стену, лягут друг на друга — и один пропадёт с
+    экрана. Комната с пропавшей дверью это ловушка: на схеме ход есть,
+    а в стене его нет.
+
+    Сторон четыре, дверей в комнате станции не больше четырёх, поэтому
+    место находится всем. Раскладка выбирается та, у которой общий
+    поворот дверей от их настоящего угла наименьший: каждая дверь
+    оказывается на ближайшей свободной стене.
+
+    Лестница между этажами идёт из комнаты в комнату с теми же
+    координатами — у неё направления нет вовсе. Такой ход занимает
+    любую свободную стену: он всё равно ведёт не вбок, а вверх или
+    вниз.
+    """
+    import math
+    from itertools import permutations
+
+    place = station()
+    here = place.room(room)
+    if here is None:
+        return {}
+    doors: list[tuple[str, float | None]] = []
+    for door in place.doors_from(room):
+        there = door.other(room)
+        neighbour = place.room(there)
+        if neighbour is None:  # pragma: no cover - карту проверяет валидатор
+            continue
+        dx, dy = neighbour.x - here.x, neighbour.y - here.y
+        angle = None if not dx and not dy else math.atan2(dy, dx)
+        doors.append((there, angle))
+    if not doors:
+        return {}
+
+    # Угол каждой стороны в той же системе, что и двери: Y вниз
+    corners = {
+        "east": 0.0,
+        "south": math.pi / 2,
+        "west": math.pi,
+        "north": -math.pi / 2,
+    }
+
+    def cost(angle: float | None, side: str) -> float:
+        """Насколько дверь придётся повернуть, чтобы попасть в эту стену."""
+        if angle is None:
+            return 0.0  # лестнице всё равно, в какую стену её поставят
+        gap = abs(angle - corners[side]) % (2 * math.pi)
+        return min(gap, 2 * math.pi - gap)
+
+    sides = tuple(corners)
+    best: tuple[float, dict[str, str]] | None = None
+    for order in permutations(sides, min(len(doors), len(sides))):
+        total = sum(
+            cost(angle, side) for (_, angle), side in zip(doors, order)
+        )
+        if best is None or total < best[0]:
+            best = (
+                total,
+                {
+                    side: there
+                    for (there, _), side in zip(doors, order)
+                },
+            )
+    return best[1] if best else {}
+
+
+def relative(facing: str, side: str) -> str:
+    """Где эта сторона света для того, кто смотрит в `facing`.
+
+    Отдаёт «ahead», «right», «behind» или «left» — то, чем сторона
+    становится на экране. Пустая строка — спросили ни о чём.
+    """
+    if side not in FACINGS or facing not in FACINGS:
+        return ""
+    step = (FACINGS.index(side) - FACINGS.index(facing)) % len(FACINGS)
+    return ("ahead", "right", "behind", "left")[step]
+
+
+def side_of(facing: str, where: str) -> str:
+    """Обратное к `relative`: какая сторона света лежит справа, слева…"""
+    places = ("ahead", "right", "behind", "left")
+    if where not in places or facing not in FACINGS:
+        return ""
+    step = places.index(where)
+    return FACINGS[(FACINGS.index(facing) + step) % len(FACINGS)]
+
+
 # ---------- флаги состояния ----------
 #
 # Всё, что рейд может «иметь»: допуск, вентили, модули, охлаждение,
@@ -912,6 +1061,8 @@ __all__ = [
     "DEFENSE_WAVES",
     "Door",
     "EDGE_SECONDS",
+    "FACINGS",
+    "FACING_TITLES",
     "FLAG_TITLES",
     "FOE_BUILD",
     "FALLEN_SHARE",
@@ -929,6 +1080,7 @@ __all__ = [
     "MAX_REWARD",
     "MIN_PARTY",
     "QUEST_ITEMS",
+    "RELATIVE_TITLES",
     "REQUIRED_ORDER",
     "Room",
     "RUN_LIMIT_MINUTES",
@@ -940,11 +1092,16 @@ __all__ = [
     "art_url",
     "check_map",
     "door_open",
+    "doorways",
     "extra_windows",
     "group_size",
+    "heading",
     "load_station",
     "reachable",
+    "relative",
     "reward_for",
+    "side_of",
     "station",
+    "turn",
     "walkthrough",
 ]

@@ -12859,33 +12859,35 @@ function blackoutSquadBox(squad) {
 
 /** Рейд идёт: комната, отряд, цель и кнопки. */
 function paintBlackoutRun(data, body) {
-  const view = el("blackout-view");
-  view.classList.toggle("hidden", !data.room.image);
-  if (data.room.image) {
-    const pic = el("blackout-pic");
-    pic.src = data.room.image;
-    pic.alt = data.room.name;
-    el("blackout-where").textContent =
-      data.room.name + " · " + data.room.layer_title;
-  }
+  // Панорама ушла в саму сцену: там она фон, по которому нарисованы
+  // стены и проёмы, а отдельной картинкой сверху она только отнимала
+  // высоту у того, ради чего её показывают
+  el("blackout-view").classList.add("hidden");
   el("blackout-title").textContent = "⚡ " + (data.room.name || "Станция");
   el("blackout-note").textContent = data.goal || "";
   paintBlackoutClock(data);
+
+  // Порядок как в любом подземелье и как просили: сперва комната, под
+  // ней шкала перехода, под ней то, чем ходишь, и сразу схема этажа.
+  // Это один блок управления, и разрывать его списками незачем —
+  // всё остальное уходит вниз
+  if (data.view) body.appendChild(blackoutStageBox(data));
+  body.appendChild(blackoutWalkBar(data));
+  // Джойстик стоит всегда, даже в бою: шаги из занятой комнаты
+  // закрыты, а вот повернуться и осмотреться никто не мешает
+  if (!data.walking) body.appendChild(blackoutStickBox(data));
+  if (data.map) body.appendChild(blackoutMapBox(data.map));
 
   body.appendChild(blackoutItemsBox(data));
   if (data.fight) {
     body.appendChild(blackoutFightBox(data));
   } else {
     body.appendChild(blackoutRoomBox(data));
-    // Джойстик только вне боя: из занятой комнаты всё равно не выйти
-    if (!data.walking) body.appendChild(blackoutStickBox(data));
   }
   const potions = blackoutPotionBox(data);
   if (potions) body.appendChild(potions);
   body.appendChild(blackoutSquadBox(data.squad));
   body.appendChild(blackoutLogBox(data.log));
-  // Миникарта внизу: по ней смотрят, где отряд, а не ходят
-  if (data.map) body.appendChild(blackoutMapBox(data.map));
 }
 
 function paintBlackoutClock(data) {
@@ -13280,121 +13282,299 @@ function blackoutWalk(data, room) {
   return blackoutAction({ action: blackoutMoveKind(data), room: room });
 }
 
+/** Вид от первого лица: коридор в перспективе, зомби и то, что лежит.
+ *
+ * Панорам в материалах восемь на шестьдесят четыре комнаты — по одной
+ * на зону, — поэтому фотография тут фон настроения, а не вид
+ * конкретной стены. Сама комната рисуется геометрией: пол, потолок,
+ * три стены и проёмы там, где из неё есть ходы. Куда боец повёрнут,
+ * знает сервер; сюда приходит уже разложенное на «впереди, слева,
+ * справа, позади».
+ *
+ * Одноточечная перспектива: дальняя стена — прямоугольник в середине,
+ * боковые — трапеции от края экрана к его углам. Этого хватает, чтобы
+ * коридор читался коридором, а проём — проёмом.
+ */
+const STAGE_W = 640;
+const STAGE_H = 360;
+// Дальняя стена: прямоугольник в середине кадра. От его края идут
+// трапеции боковых стен, пола и потолка — всё по этим четырём числам
+const FAR = { x: 170, y: 86, w: 300, h: 188 };
+
+function blackoutStageBox(data) {
+  const view = data.view;
+  const box = document.createElement("section");
+  box.className = "stage";
+  if (!view) return box;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 " + STAGE_W + " " + STAGE_H);
+  svg.setAttribute("class", "stage-canvas");
+
+  // Фон зоны: он виден в проёме дальней стены и сквозь полумрак
+  if (view.panorama) {
+    const pic = document.createElementNS("http://www.w3.org/2000/svg", "image");
+    pic.setAttributeNS(
+      "http://www.w3.org/1999/xlink", "href", view.panorama
+    );
+    pic.setAttribute("x", 0);
+    pic.setAttribute("y", 0);
+    pic.setAttribute("width", STAGE_W);
+    pic.setAttribute("height", STAGE_H);
+    pic.setAttribute("preserveAspectRatio", "xMidYMid slice");
+    pic.setAttribute("class", "stage-back");
+    svg.appendChild(pic);
+  }
+
+  const poly = (points, cls) => {
+    const node = document.createElementNS(
+      "http://www.w3.org/2000/svg", "polygon"
+    );
+    node.setAttribute("points", points.map((p) => p.join(",")).join(" "));
+    node.setAttribute("class", cls);
+    return node;
+  };
+  const R = FAR.x + FAR.w;
+  const B = FAR.y + FAR.h;
+  // Пол и потолок — трапеции от края кадра к краю дальней стены
+  svg.appendChild(poly(
+    [[0, STAGE_H], [STAGE_W, STAGE_H], [R, B], [FAR.x, B]], "stage-floor"
+  ));
+  svg.appendChild(poly(
+    [[0, 0], [STAGE_W, 0], [R, FAR.y], [FAR.x, FAR.y]], "stage-ceiling"
+  ));
+
+  // Боковые стены и дальняя: в каждой либо проём, либо кладка
+  const walls = [
+    ["left", [[0, 0], [FAR.x, FAR.y], [FAR.x, B], [0, STAGE_H]],
+      [FAR.x - 64, FAR.y + 22, 58, FAR.h - 44]],
+    ["right", [[STAGE_W, 0], [R, FAR.y], [R, B], [STAGE_W, STAGE_H]],
+      [R + 6, FAR.y + 22, 58, FAR.h - 44]],
+    ["ahead", [[FAR.x, FAR.y], [R, FAR.y], [R, B], [FAR.x, B]],
+      [FAR.x + FAR.w / 2 - 48, FAR.y + 54, 96, FAR.h - 54]],
+  ];
+  walls.forEach(([where, shape, hole]) => {
+    const side = (view.sides || {})[where] || { wall: true };
+    svg.appendChild(poly(shape, "stage-wall stage-wall-" + where));
+    if (side.wall) return;
+    const door = document.createElementNS(
+      "http://www.w3.org/2000/svg", "rect"
+    );
+    door.setAttribute("x", hole[0]);
+    door.setAttribute("y", hole[1]);
+    door.setAttribute("width", hole[2]);
+    door.setAttribute("height", hole[3]);
+    door.setAttribute("rx", 4);
+    door.setAttribute(
+      "class",
+      "stage-door"
+      + (side.can_go ? "" : " shut")
+      + (side.danger ? " danger" : "")
+      + (side.goal ? " goal" : "")
+      + (side.seen ? "" : " fog")
+    );
+    const label = side.name + (side.can_go ? "" : " — " + (side.why || "закрыто"));
+    const hint = document.createElementNS(
+      "http://www.w3.org/2000/svg", "title"
+    );
+    hint.textContent = label;
+    door.appendChild(hint);
+    door.addEventListener("click", () => {
+      if (side.can_go) blackoutWalk(data, side.room);
+      else popup("Станция", label);
+    });
+    svg.appendChild(door);
+  });
+
+  // Зомби: крупно и по центру, босс крупнее прочих
+  const foes = view.foes || [];
+  foes.slice(0, 5).forEach((foe, index) => {
+    const span = STAGE_W / (foes.length + 1);
+    const at = span * (index + 1);
+    const tall = foe.boss ? 210 : 170;
+    if (foe.art) {
+      const body = document.createElementNS(
+        "http://www.w3.org/2000/svg", "image"
+      );
+      body.setAttributeNS(
+        "http://www.w3.org/1999/xlink", "href", foe.art
+      );
+      body.setAttribute("x", at - tall * 0.3);
+      body.setAttribute("y", B - tall + 24);
+      body.setAttribute("width", tall * 0.6);
+      body.setAttribute("height", tall);
+      body.setAttribute("preserveAspectRatio", "xMidYMax meet");
+      body.setAttribute("class", "stage-foe" + (foe.boss ? " boss" : ""));
+      svg.appendChild(body);
+    }
+    const bar = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bar.setAttribute("x", at - 26);
+    bar.setAttribute("y", B - tall + 14);
+    bar.setAttribute("width", 52 * Math.max(0, foe.percent) / 100);
+    bar.setAttribute("height", 5);
+    bar.setAttribute("class", "stage-foe-hp");
+    svg.appendChild(bar);
+  });
+
+  // Что лежит на полу: ящик, который можно забрать
+  const loot = view.pickup;
+  if (loot && !loot.have) {
+    const crate = document.createElementNS(
+      "http://www.w3.org/2000/svg", "g"
+    );
+    crate.setAttribute(
+      "class", "stage-loot" + (loot.can_take ? "" : " shut")
+    );
+    crate.setAttribute(
+      "transform", "translate(" + (STAGE_W - 150) + "," + (STAGE_H - 96) + ")"
+    );
+    const lid = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    lid.setAttribute("width", 62);
+    lid.setAttribute("height", 46);
+    lid.setAttribute("rx", 5);
+    lid.setAttribute("class", "stage-crate");
+    crate.appendChild(lid);
+    const mark = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    mark.setAttribute("x", 31);
+    mark.setAttribute("y", 30);
+    mark.setAttribute("class", "stage-crate-mark");
+    mark.textContent = loot.can_take ? "📦" : "🔒";
+    crate.appendChild(mark);
+    const hint = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    hint.textContent = loot.title + (loot.can_take ? "" : " — " + (loot.why || ""));
+    crate.appendChild(hint);
+    crate.addEventListener("click", () => {
+      if (loot.can_take) blackoutAction({ action: "take" });
+      else popup("Станция", loot.title + ". " + (loot.why || "Пока не взять."));
+    });
+    svg.appendChild(crate);
+  }
+
+  box.appendChild(svg);
+
+  const said = document.createElement("p");
+  said.className = "stage-said";
+  said.textContent = "Смотрим на " + (view.facing_title || "станцию")
+    + (view.locked ? " · " + view.locked : "");
+  box.appendChild(said);
+  return box;
+}
+
 /** Джойстик: толкнул в сторону — пошёл в ту дверь.
  *
  * Подземелье узловое, а палец у человека один. Поэтому вместо списка
  * дверей — круг: ручка тянется в сторону, и подсвечивается та дверь,
  * которая в этой стороне лежит на схеме. Отпустил — пошёл.
  */
+/** Шкала перехода: нажал «вперёд» — идёшь десять секунд.
+ *
+ * Шаг тут не мгновенный, и человек должен это видеть, а не гадать:
+ * полоса наливается от нуля до полного, под ней — сколько осталось.
+ */
+function blackoutWalkBar(data) {
+  const box = document.createElement("div");
+  box.className = "walkbar";
+  const track = document.createElement("div");
+  track.className = "walkbar-track";
+  const fill = document.createElement("div");
+  fill.className = "walkbar-fill";
+  track.appendChild(fill);
+  const said = document.createElement("span");
+  said.className = "walkbar-said";
+  box.append(track, said);
+
+  const going = data.going;
+  if (!going) {
+    said.textContent = "Готов идти";
+    fill.style.width = "0%";
+    return box;
+  }
+  const whole = Math.max(1, (data.room && data.room.seconds) || 10);
+  const paint = () => {
+    const left = Math.max(
+      0, (going.arrive_at || 0) - Math.floor(Date.now() / 1000)
+    );
+    fill.style.width = Math.round(100 * (whole - left) / whole) + "%";
+    said.textContent = left
+      ? "→ " + (going.name || "переход") + " · " + left + " с"
+      : "Пришли";
+    if (!left && blackoutWalkTimer) {
+      clearInterval(blackoutWalkTimer);
+      blackoutWalkTimer = null;
+    }
+  };
+  if (blackoutWalkTimer) clearInterval(blackoutWalkTimer);
+  paint();
+  blackoutWalkTimer = setInterval(paint, 250);
+  return box;
+}
+
+let blackoutWalkTimer = null;
+
+/** Джойстик: четыре шага и два поворота.
+ *
+ * Шаг считается от взгляда, а не от карты: «вперёд» — это туда, куда
+ * боец смотрит. Поэтому на кнопках стороны не света, а свои — вперёд,
+ * назад, влево, вправо, — и два поворота, после которых боец стоит на
+ * месте, но видит другое.
+ */
 function blackoutStickBox(data) {
   const box = document.createElement("section");
   box.className = "stick-box";
+  const view = data.view || {};
+  const sides = view.sides || {};
+  const walking = Boolean(data.walking);
 
   const pad = document.createElement("div");
   pad.className = "stick-pad";
-  const ring = document.createElement("div");
-  ring.className = "stick-ring";
-  const knob = document.createElement("div");
-  knob.className = "stick-knob";
-  pad.append(ring, knob);
 
-  const doors = (data.exits || []).filter((one) => one.dx || one.dy);
-  doors.forEach((one) => {
-    const mark = document.createElement("span");
-    mark.className = "stick-door"
-      + (one.can_go ? "" : " shut")
-      + (one.danger ? " danger" : "")
-      + (one.cleared ? " done" : "");
-    const angle = Math.atan2(one.dy, one.dx);
-    mark.style.left = (50 + 42 * Math.cos(angle)) + "%";
-    mark.style.top = (50 + 42 * Math.sin(angle)) + "%";
-    mark.textContent = one.danger ? "☣" : one.can_go ? "▸" : "✕";
-    mark.dataset.room = one.room;
-    pad.appendChild(mark);
+  const place = (where, sign, title, cls) => {
+    const side = sides[where] || {};
+    const key = document.createElement("button");
+    key.type = "button";
+    key.className = "stick-key " + cls
+      + (side.wall ? " wall" : "")
+      + (side.danger ? " danger" : "")
+      + (!side.wall && !side.can_go ? " shut" : "");
+    key.textContent = sign;
+    key.disabled = walking || Boolean(side.wall);
+    key.title = side.wall
+      ? title + ": стена"
+      : title + ": " + (side.name || "проход")
+        + (side.can_go ? " · " + (side.seconds || 10) + " с" : " — закрыто");
+    key.addEventListener("click", () => {
+      if (side.wall) return;
+      if (!side.can_go) return popup("Станция", key.title);
+      blackoutWalk(data, side.room);
+    });
+    pad.appendChild(key);
+  };
+
+  place("left", "←", "Влево", "key-left");
+  place("ahead", "↑", "Вперёд", "key-up");
+  place("right", "→", "Вправо", "key-right");
+  place("behind", "↓", "Назад", "key-down");
+
+  [["left", "⟲", "Повернуться налево"],
+   ["right", "⟳", "Повернуться направо"]].forEach(([where, sign, title]) => {
+    const key = document.createElement("button");
+    key.type = "button";
+    key.className = "stick-key key-turn key-turn-" + where;
+    key.textContent = sign;
+    key.title = title;
+    key.disabled = walking;
+    key.addEventListener(
+      "click", () => blackoutAction({ action: "turn", where: where })
+    );
+    pad.appendChild(key);
   });
 
   const said = document.createElement("p");
   said.className = "stick-said";
-  said.textContent = doors.length
-    ? "Толкни в сторону двери"
-    : "Отсюда ходов нет";
-
-  let picked = null;
-  const aim = (dx, dy) => {
-    const far = Math.sqrt(dx * dx + dy * dy);
-    if (far < 0.25) {
-      picked = null;
-      said.textContent = "Толкни в сторону двери";
-      pad.querySelectorAll(".stick-door").forEach((one) => {
-        one.classList.remove("aimed");
-      });
-      return;
-    }
-    // Ближайшая по углу дверь. Через всю схему не перескочишь: дверь
-    // должна лежать примерно там, куда тянут
-    let best = null;
-    let bestGap = Math.PI / 3;
-    const mine = Math.atan2(dy, dx);
-    doors.forEach((one) => {
-      const angle = Math.atan2(one.dy, one.dx);
-      let gap = Math.abs(angle - mine);
-      if (gap > Math.PI) gap = 2 * Math.PI - gap;
-      if (gap < bestGap) {
-        bestGap = gap;
-        best = one;
-      }
-    });
-    picked = best;
-    pad.querySelectorAll(".stick-door").forEach((one) => {
-      one.classList.toggle(
-        "aimed", Boolean(best) && one.dataset.room === best.room
-      );
-    });
-    said.textContent = best
-      ? (best.can_go ? "→ " + best.name : best.why || "Закрыто")
-      : "Туда хода нет";
-  };
-
-  let active = false;
-  const move = (event) => {
-    if (!active) return;
-    const frame = pad.getBoundingClientRect();
-    const dx = (event.clientX - (frame.left + frame.width / 2))
-      / (frame.width / 2);
-    const dy = (event.clientY - (frame.top + frame.height / 2))
-      / (frame.height / 2);
-    const far = Math.min(1, Math.sqrt(dx * dx + dy * dy));
-    const angle = Math.atan2(dy, dx);
-    knob.style.transform = "translate("
-      + (far * 38 * Math.cos(angle)) + "px,"
-      + (far * 38 * Math.sin(angle)) + "px)";
-    aim(dx, dy);
-    event.preventDefault();
-  };
-  const release = () => {
-    if (!active) return;
-    active = false;
-    knob.style.transform = "";
-    pad.classList.remove("held");
-    const go = picked;
-    picked = null;
-    pad.querySelectorAll(".stick-door").forEach((one) => {
-      one.classList.remove("aimed");
-    });
-    if (go && go.can_go) blackoutWalk(data, go.room);
-    else if (go && go.why) popup("Станция", go.why);
-  };
-  const grab = (event) => {
-    if (data.walking || data.locked) return;
-    active = true;
-    pad.classList.add("held");
-    move(event);
-  };
-  pad.addEventListener("pointerdown", grab);
-  pad.addEventListener("pointermove", move);
-  pad.addEventListener("pointerup", release);
-  pad.addEventListener("pointercancel", release);
-  pad.addEventListener("pointerleave", release);
+  said.textContent = walking
+    ? "В пути"
+    : "Смотрим на " + (view.facing_title || "станцию");
+  box.append(pad, said);
 
   const foot = document.createElement("div");
   foot.className = "thing-buttons";
@@ -13412,7 +13592,6 @@ function blackoutStickBox(data) {
       })
     );
   }
-  box.append(pad, said);
   if (foot.children.length) box.appendChild(foot);
   return box;
 }
@@ -13505,6 +13684,24 @@ function blackoutMapBox(map) {
         mark.textContent = sign;
         cell.appendChild(mark);
       });
+
+    // Стрелка: где стою я и куда смотрю. Без неё схема говорит, где
+    // отряд, но не говорит, что у бойца перед глазами
+    const me = (one.party || []).find((who) => who.me);
+    if (me && me.facing) {
+      const spin = {north: 0, east: 90, south: 180, west: 270}[me.facing] || 0;
+      const arrow = document.createElementNS(
+        "http://www.w3.org/2000/svg", "path"
+      );
+      arrow.setAttribute("d", "M0,-15 L10,9 L0,3 L-10,9 Z");
+      arrow.setAttribute("class", "minimap-arrow");
+      arrow.setAttribute(
+        "transform",
+        "translate(" + one.x + "," + (one.y - 17) + ") scale(0.75) rotate("
+        + spin + ")"
+      );
+      cell.appendChild(arrow);
+    }
 
     // Фишки отряда: кто в этой комнате стоит. Своя — светлая
     (one.party || []).forEach((who, index) => {

@@ -14251,17 +14251,23 @@ async def test_the_station_screen_refreshes_itself_on_the_move(server, db):
         await browser.close()
 
 
-async def test_the_joystick_replaces_the_list_of_doors(server, db):
-    """Ход — джойстиком: двери лежат по кругу, каждая в свою сторону."""
-    from bot.blackout_service import look, snapshot
+async def test_the_keys_step_from_where_the_fighter_looks(server, db):
+    """Шесть клавиш: четыре шага от взгляда и два поворота.
+
+    Шаг считается не по карте, а от того, куда боец повёрнут: «вперёд»
+    у смотрящего на север и у смотрящего на юг уводит в разные
+    комнаты. Поэтому на клавишах стрелки, а не стороны света.
+    """
+    from bot.blackout_service import state_for
     from tests.test_blackout import NOW, enter
 
     people, run = await enter(db, 1)
-    run = await look(db, run.id, NOW)
-    body = snapshot(run, people[0].user_id, NOW)
-    body["screen"] = "run"
-    assert body["exits"], "из первой комнаты должен быть ход"
-    assert all("where" in one for one in body["exits"])
+    body = await state_for(db, people[0], NOW)
+    view = body["view"]
+    # На входе боец развёрнут к выходу, а не в стену
+    assert view["facing"] == "east"
+    assert view["sides"]["ahead"]["room"] == "O02"
+    assert view["sides"]["left"]["wall"] and view["sides"]["behind"]["wall"]
     card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
 
     async with async_playwright() as pw:
@@ -14270,17 +14276,111 @@ async def test_the_joystick_replaces_the_list_of_doors(server, db):
         await open_screen(page, "blackout")
         await page.wait_for_selector("#blackout-body .stick-pad")
 
-        assert await page.locator(".stick-knob").count() == 1
-        marks = await page.locator(".stick-door").count()
-        assert marks == len(
-            [one for one in body["exits"] if one["dx"] or one["dy"]]
-        )
-        # Метки разведены по кругу, а не слиплись в точку
-        spots = await page.eval_on_selector_all(
-            ".stick-door", "list => list.map((one) => one.style.left)"
-        )
-        assert len(set(spots)) == len(spots) or len(spots) == 1
+        # Четыре шага и два поворота
+        assert await page.locator(".stick-key").count() == 6
+        assert await page.locator(".key-turn").count() == 2
+        # Вперёд — можно, в стену — нет
+        assert not await page.locator(".key-up").first.is_disabled()
+        assert await page.locator(".key-left").first.is_disabled()
+        assert await page.locator(".key-down").first.is_disabled()
+        said = await page.locator("#blackout").inner_text()
+        assert "Смотрим на восток" in said
         await browser.close()
+
+
+async def test_the_stage_draws_the_room_with_its_doorways(server, db):
+    """Сцена: стены, пол, потолок и проём там, где есть ход."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+
+        assert await page.locator(".stage-floor").count() == 1
+        assert await page.locator(".stage-ceiling").count() == 1
+        assert await page.locator(".stage-wall").count() == 3
+        # Ход один — значит и проём один, и он не заперт
+        assert await page.locator(".stage-door").count() == 1
+        assert await page.locator(".stage-door.shut").count() == 0
+        # Фон зоны лежит под стенами
+        assert await page.locator(".stage-back").count() == 1
+        # И шкала перехода на месте, пока никуда не идём
+        assert "Готов идти" in await page.locator("#blackout").inner_text()
+        await browser.close()
+
+
+async def test_the_stage_puts_the_zombies_in_the_room(server, db):
+    """Зомби стоят на сцене, с полоской здоровья, а не только в списке."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter, walk
+
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    body = await state_for(db, people[0], at)
+    assert body["view"]["foes"], "в проходной зомби"
+    assert body["view"]["locked"], "выходы заперты боем"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+
+        assert await page.locator(".stage-foe").count() == len(
+            body["view"]["foes"]
+        )
+        assert await page.locator(".stage-foe-hp").count() == len(
+            body["view"]["foes"]
+        )
+        # Повернуться можно и в бою: осмотреться никто не мешает
+        assert not await page.locator(".key-turn").first.is_disabled()
+        await browser.close()
+
+
+async def test_the_minimap_arrow_shows_which_way_the_fighter_looks(server, db):
+    """На схеме у своего бойца стрелка, и она поворачивается вместе с ним."""
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    mine = [
+        one for room in body["map"]["rooms"] for one in room["party"]
+        if one["me"]
+    ]
+    assert mine and mine[0]["facing"] == "east"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .minimap")
+
+        # Стрелка одна — своя. Чужие взгляды на схеме не рисуются
+        assert await page.locator(".minimap-arrow").count() == 1
+        spin = await page.locator(".minimap-arrow").first.get_attribute(
+            "transform"
+        )
+        assert "rotate(90)" in spin, spin
+        await browser.close()
+
+    # Повернулись — стрелка повернулась
+    await act(db, people[0], "turn", {"where": "right"}, "t1", NOW)
+    after = await state_for(db, people[0], NOW)
+    mine = [
+        one for room in after["map"]["rooms"] for one in room["party"]
+        if one["me"]
+    ]
+    assert mine[0]["facing"] == "south"
 
 
 async def test_the_dungeon_fight_offers_the_tricks(server, db):

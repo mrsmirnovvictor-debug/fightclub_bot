@@ -48,8 +48,11 @@ from bot.game.blackout import (
     DIED_COOLDOWN_HOURS,
     DEFENSE_WAVE_TITLES,
     DRAINAGE,
+    EDGE_SECONDS,
     EVACUATION_PLAN,
     EXTRACTED,
+    FACINGS,
+    FACING_TITLES,
     FLAG_TITLES,
     FALLEN_SHARE,
     FLOODLIGHTS,
@@ -64,6 +67,7 @@ from bot.game.blackout import (
     MAX_PARTY,
     MAX_REWARD,
     MIN_PARTY,
+    RELATIVE_TITLES,
     POWER_CORE,
     QUEST_ITEMS,
     RELAY_A,
@@ -84,10 +88,14 @@ from bot.game.blackout import (
     WINDOW_TURNS,
     boss_hp,
     art_url,
+    doorways,
+    heading,
     extra_windows,
     door_open,
     reward_for,
+    side_of,
     station,
+    turn as turn_to,
 )
 from bot.game.blackout import BEST_PARTY, FIGHTER_ART, group_size
 from bot.game.blackout import CYCLE_DAYS, CYCLE_HOUR, CYCLE_MINUTE
@@ -217,6 +225,7 @@ def member_row(player: Player, now: int, bot: bool = False) -> dict[str, Any]:
         "level": player.level,
         "class": player.class_code,
         "room": station().start,
+        "facing": facing_at(station().start),
         "from": "",
         "to": "",
         "departed": 0,
@@ -730,6 +739,7 @@ async def add_bots(
             "level": FOE_LEVEL,
             "class": ("tank", "warrior", "assassin", "trickster")[number % 4],
             "room": run.state["safe"],
+            "facing": facing_at(run.state["safe"]),
             "from": "", "to": "", "departed": 0, "arrive": 0,
             "hp": 0, "max": 0, "hp_at": now, "down": False,
             "seen": now, "left": 0, "extracted": 0, "bot": True,
@@ -871,6 +881,46 @@ def _locked_here(state: dict, room: str) -> str:
     if here and here.encounter and room not in (state.get("cleared") or {}):
         return "Зомби в комнате: пока они стоят, все выходы закрыты."
     return ""
+
+
+def look_around(run: Run, user_id: int, where: str, now: int) -> str:
+    """Повернуться, не сходя с места. Время на это не тратится.
+
+    Поворот — не шаг: он ничего не открывает и никуда не ведёт, он
+    только меняет то, что боец видит перед собой. Поэтому десяти секунд
+    перехода тут нет, и в бою он тоже разрешён — осмотреться можно
+    всегда.
+    """
+    state = run.state
+    one = member(state, user_id)
+    if one is None:
+        raise BlackoutError("Ты не в этом рейде.")
+    if state.get("outcome"):
+        raise BlackoutError("Рейд закончен.")
+    if one["down"]:
+        raise BlackoutError("Ты не на ногах: попытка для тебя кончена.")
+    if where not in ("left", "right", "around"):
+        raise BlackoutError("Повернуться можно налево, направо или кругом.")
+    one["facing"] = turn_to(one.get("facing") or FACINGS[0], where)
+    one["seen"] = now
+    return f"Смотрим на {FACING_TITLES[one['facing']]}."
+
+
+def door_toward(state: dict, room: str, facing: str, where: str) -> str:
+    """Комната в эту сторону от взгляда. Пусто — там стена.
+
+    `where` — «ahead», «right», «behind» или «left». Сторона света
+    считается от взгляда, а потом ищется дверь, которая в неё ведёт:
+    так шаг вперёд у смотрящего на север и у смотрящего на юг уводит в
+    разные комнаты, как и положено виду от первого лица.
+    """
+    side = side_of(facing, where)
+    if not side:
+        return ""
+    # Раскладка считается на всю комнату разом (`doorways`): иначе две
+    # двери, которые по углу просятся в одну стену, накладывались бы, и
+    # одна пропадала бы с экрана
+    return doorways(room).get(side, "")
 
 
 def step(run: Run, user_id: int, there: str, now: int) -> str:
@@ -2153,6 +2203,7 @@ def snapshot(run: Run, user_id: int, now: int) -> dict[str, Any]:
             "image": room.image if room else "",
             "safe": bool(room and room.safe),
             "cleared": one["room"] in (state.get("cleared") or {}),
+            "seconds": EDGE_SECONDS,
         },
         "walking": walking,
         "going": {
@@ -2162,6 +2213,9 @@ def snapshot(run: Run, user_id: int, now: int) -> dict[str, Any]:
             "seconds_left": max(0, int(one["arrive"] or 0) - now),
         } if walking else None,
         "exits": [] if walking else exits_of(state, one["room"]),
+        "view": None if walking else _view_payload(
+            state, one["room"], user_id, now
+        ),
         "locked": _locked_here(state, one["room"]) if not walking else "",
         "task": task_here(state, one["room"]) if not walking else None,
         "pickup": _pickup_payload(state, one["room"]) if not walking else None,
@@ -2228,6 +2282,119 @@ def snapshot(run: Run, user_id: int, now: int) -> dict[str, Any]:
         "extracted": bool(one["extracted"]),
     }
     return body
+
+
+def facing_at(room: str) -> str:
+    """Куда смотреть, встав в эту комнату: на первый её выход.
+
+    Ставить бойца лицом на север незачем — на входе станции выход
+    один, и он сбоку: человек увидел бы стену и решил, что идти
+    некуда.
+    """
+    place = station()
+    here = place.room(room)
+    if here is None:
+        return FACINGS[0]
+    for door in place.doors_from(here.code):
+        neighbour = place.room(door.other(here.code))
+        if neighbour is None:  # pragma: no cover - карту проверяет валидатор
+            continue
+        side = heading(neighbour.x - here.x, neighbour.y - here.y)
+        if side:
+            return side
+    return FACINGS[0]
+
+
+def facing_of(state: dict, user_id: int) -> str:
+    """Куда смотрит боец. Не записано — лицом к выходу из его комнаты."""
+    one = member(state, user_id) or {}
+    facing = str(one.get("facing") or "")
+    if facing in FACINGS:
+        return facing
+    return facing_at(str(one.get("room") or ""))
+
+
+def _view_payload(
+    state: dict, room: str, user_id: int, now: int
+) -> dict[str, Any]:
+    """Что боец видит перед собой: стены, проёмы, зомби и что лежит.
+
+    Это вид от первого лица, а не список дверей: каждая сторона
+    считается от взгляда, поэтому одна и та же комната выглядит
+    по-разному, если в ней повернуться. Рисует всё это экран —
+    геометрию он берёт отсюда, а фон и фигуры по готовым адресам.
+
+    Панорам в материалах восемь на шестьдесят четыре комнаты — по одной
+    на зону. Поэтому фото тут фон настроения, а не вид конкретной
+    стены: стены, проёмы и то, что в комнате стоит, рисуются по этим
+    данным поверх него.
+    """
+    place = station()
+    here = place.room(room)
+    facing = facing_of(state, user_id)
+    seen = set(state.get("seen") or {})
+    cleared = state.get("cleared") or {}
+    flags = flags_of(state)
+    locked = _locked_here(state, room)
+
+    sides: dict[str, Any] = {}
+    for where in ("ahead", "right", "behind", "left"):
+        there = door_toward(state, room, facing, where)
+        if not there:
+            sides[where] = {"wall": True}
+            continue
+        neighbour = place.room(there)
+        door = place.door_between(room, there)
+        why = door_open(door, flags) if door else "Хода нет."
+        sides[where] = {
+            "wall": False,
+            "room": there,
+            "name": neighbour.name if there in seen else "Неизвестный проход",
+            "seen": there in seen,
+            "cleared": there in cleared,
+            "danger": bool(neighbour.encounter) and there not in cleared,
+            "goal": bool(neighbour.objective),
+            "seconds": door.seconds if door else EDGE_SECONDS,
+            "can_go": not why and not locked,
+            "why": why or locked,
+        }
+
+    # Кто стоит в комнате: зомби из боя — крупно и по центру, свои —
+    # по краям. Бой тут может и не идти: тогда комната пуста
+    fight = state.get("fight") or {}
+    foes = [
+        {
+            "id": one["id"],
+            "name": one["name"],
+            "art": one.get("art") or "",
+            "boss": bool(one.get("boss")),
+            "percent": int(100 * one["hp"] / max(1, one["max"])),
+        }
+        for one in (fight.get("foes") or [])
+        if one["hp"] > 0 and fight.get("room") == room
+    ]
+    mates = [
+        {
+            "id": int(key),
+            "name": row["name"],
+            "down": bool(row["down"]),
+            "me": int(key) == user_id,
+        }
+        for key, row in (state.get("members") or {}).items()
+        if row["room"] == room and not row["arrive"] and not row["left"]
+        and not row["extracted"]
+    ]
+    return {
+        "facing": facing,
+        "facing_title": FACING_TITLES[facing],
+        "panorama": here.image if here else "",
+        "sides": sides,
+        "foes": foes,
+        "squad": mates,
+        "pickup": _pickup_payload(state, room),
+        "task": task_here(state, room),
+        "locked": locked,
+    }
 
 
 def _pickup_payload(state: dict, room: str) -> dict[str, Any] | None:
@@ -2374,6 +2541,9 @@ def _map_payload(state: dict, room: str, me: int = 0) -> dict[str, Any]:
             "walking": bool(row["arrive"]),
             "down": bool(row["down"]),
             "me": int(key) == me,
+            # Стрелка на схеме рисуется только своему бойцу: чужой
+            # взгляд на ней был бы частоколом из стрелок
+            "facing": facing_of(state, int(key)) if int(key) == me else "",
         })
     rows = []
     for one in place.rooms_on(layer):
@@ -2634,6 +2804,27 @@ async def act(
             return squad_step(
                 run, player.user_id, str(data.get("room") or ""), when
             )
+        if action == "turn":
+            return look_around(
+                run, player.user_id, str(data.get("where") or ""), when
+            )
+        if action in ("walk", "lead_walk"):
+            # Шаг от первого лица: экран шлёт «вперёд», а не код
+            # комнаты. Куда это ведёт, знает сервер — он один помнит,
+            # куда боец повёрнут
+            one = member(run.state, player.user_id)
+            facing = facing_of(run.state, player.user_id)
+            where = str(data.get("where") or "ahead")
+            there = door_toward(
+                run.state, (one or {}).get("room") or "", facing, where
+            )
+            if not there:
+                raise BlackoutError(
+                    f"{RELATIVE_TITLES.get(where, 'Там').capitalize()} стена."
+                )
+            if action == "lead_walk":
+                return squad_step(run, player.user_id, there, when)
+            return step(run, player.user_id, there, when)
         if action == "task":
             return do_task(run, player.user_id, when)
         if action == "take":
@@ -2679,12 +2870,16 @@ __all__ = [
     "command",
     "close_out",
     "cycle_code",
+    "door_toward",
     "drink",
+    "facing_at",
+    "facing_of",
     "exits_of",
     "extract",
     "join_run",
     "leave_run",
     "look",
+    "look_around",
     "member",
     "open_run",
     "pay",

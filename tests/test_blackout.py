@@ -945,6 +945,9 @@ async def test_the_station_closes_for_three_days_after_a_win(db):
     later = NOW + WON_COOLDOWN_DAYS * 86_400 + 60
     run = await run_of(db, people[0].user_id)
     assert run is None, "кончившийся рейд бойца не держит"
+    from bot.blackout_service import _check_lock
+
+    await _check_lock(db, people[0].user_id, later)  # откат отпустил
 
 
 async def test_the_three_hour_hold_does_not_shorten_the_three_day_one(db):
@@ -1128,6 +1131,141 @@ async def test_the_fallen_are_not_raised_any_more(db):
     with pytest.raises(BlackoutError, match="не поднимают"):
         await act(
             db, people[0], "raise", {"user": people[1].user_id}, "up", NOW
+        )
+
+
+# ---------- вид от первого лица ----------
+
+
+def test_the_compass_turns_and_tells_what_lies_where():
+    """Повороты по кругу, стороны считаются от взгляда."""
+    from bot.game.blackout import heading, relative, side_of, turn
+
+    assert turn("north", "right") == "east"
+    assert turn("north", "left") == "west"
+    assert turn("west", "right") == "north"
+    assert turn("north", "around") == "south"
+    # Четыре поворота направо возвращают на место
+    facing = "north"
+    for _ in range(4):
+        facing = turn(facing, "right")
+    assert facing == "north"
+
+    # Ось Y вниз, как в svg: вверх по схеме — север
+    assert heading(0, -5) == "north"
+    assert heading(0, 4) == "south"
+    assert heading(3, 1) == "east"
+    assert heading(-2, 0) == "west"
+    assert heading(0, 0) == ""
+
+    # Одна и та же сторона света лежит по-разному у разных взглядов
+    assert relative("north", "north") == "ahead"
+    assert relative("north", "east") == "right"
+    assert relative("north", "west") == "left"
+    assert relative("north", "south") == "behind"
+    assert relative("east", "north") == "left"
+    # И обратно
+    assert side_of("east", "left") == "north"
+    assert side_of("south", "ahead") == "south"
+
+
+async def test_the_fighter_starts_facing_the_way_out(db):
+    """На входе боец развёрнут к выходу, а не в стену."""
+    from bot.blackout_service import facing_at
+
+    people, run = await enter(db, 1)
+    fresh = await look(db, run.id, NOW)
+    one = member(fresh.state, people[0].user_id)
+
+    # Из «Внешнего сбора» ход один, и он на восток
+    assert facing_at("O01") == "east"
+    assert one["facing"] == "east"
+
+
+async def test_turning_costs_no_time_and_changes_what_is_ahead(db):
+    """Поворот — не шаг: десяти секунд он не стоит, но вид меняет."""
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    assert body["view"]["sides"]["ahead"]["room"] == "O02"
+
+    said = await act(db, people[0], "turn", {"where": "right"}, "t1", NOW)
+    assert "юг" in said
+    after = await state_for(db, people[0], NOW)
+    # Повернулись — та же дверь теперь слева, а впереди стена
+    assert after["view"]["facing"] == "south"
+    assert after["view"]["sides"]["left"]["room"] == "O02"
+    assert after["view"]["sides"]["ahead"]["wall"]
+    # Время не ушло: боец никуда не идёт
+    assert not member(
+        (await look(db, run.id, NOW)).state, people[0].user_id
+    )["arrive"]
+
+
+async def test_the_step_goes_by_the_look_not_by_the_map(db):
+    """«Вперёд» — туда, куда смотришь, а не на север схемы."""
+    people, run = await enter(db, 1)
+
+    # Смотрим на юг: впереди стена, шаг отказывает словами
+    await act(db, people[0], "turn", {"where": "right"}, "t1", NOW)
+    with pytest.raises(BlackoutError, match="стена"):
+        await act(db, people[0], "walk", {"where": "ahead"}, "w1", NOW)
+    # Та же дверь слева — туда шаг идёт
+    said = await act(db, people[0], "walk", {"where": "left"}, "w2", NOW)
+    assert "Проходная" in said
+    at = NOW + EDGE_SECONDS
+    body = await state_for(db, people[0], at)
+    assert body["room"]["code"] == "O02"
+
+
+async def test_the_view_shows_the_room_with_its_zombies_and_doorways(db):
+    """В виде лежит всё, из чего рисуется сцена: стены, проёмы, зомби."""
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    view = body["view"]
+
+    assert view["panorama"], "фон зоны"
+    assert set(view["sides"]) == {"ahead", "right", "behind", "left"}
+    ahead = view["sides"]["ahead"]
+    assert ahead["room"] == "O02" and ahead["can_go"]
+    assert ahead["danger"], "в проходной зомби, и это видно заранее"
+    assert ahead["seconds"] == EDGE_SECONDS
+    assert view["sides"]["behind"]["wall"]
+    assert not view["foes"], "в первой комнате пусто"
+    assert [one["me"] for one in view["squad"]] == [True]
+
+    # Пришли в занятую — зомби встали на сцену, выходы заперты
+    at = await walk(db, people, run, "O02", NOW)
+    fight = await state_for(db, people[0], at)
+    view = fight["view"]
+    assert view["foes"] and all(one["art"] for one in view["foes"])
+    assert all(one["percent"] == 100 for one in view["foes"])
+    assert view["locked"]
+    assert not view["sides"]["ahead"]["can_go"], "из боя не выйти"
+
+
+async def test_the_whole_station_can_be_walked_by_the_look(db):
+    """Любую дверь станции видно хотя бы с одной стороны взгляда.
+
+    Иначе комната оказалась бы ловушкой: на схеме ход есть, а на сцене
+    его нет ни впереди, ни сбоку, ни позади — и выйти нечем.
+    """
+    from bot.blackout_service import door_toward
+    from bot.game.blackout import FACINGS
+
+    place = station()
+    for room in place.rooms.values():
+        doors = {door.other(room.code) for door in place.doors_from(room.code)}
+        if not doors:
+            continue
+        reachable = set()
+        for facing in FACINGS:
+            for where in ("ahead", "right", "behind", "left"):
+                there = door_toward({}, room.code, facing, where)
+                if there:
+                    reachable.add(there)
+        assert reachable == doors, (
+            f"{room.code}: с джойстика видно {sorted(reachable)}, "
+            f"а дверей {sorted(doors)}"
         )
 
 

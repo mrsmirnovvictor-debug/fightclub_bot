@@ -4389,6 +4389,87 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   flex: 0 0 72px;
 }
 
+/* ---------- сцена: вид от первого лица ---------- */
+/* Комната рисуется геометрией поверх панорамы зоны: пол, потолок, три
+   стены и проёмы там, где есть ходы. Фотографий на каждую стену в
+   материалах нет — их восемь на всё подземелье */
+.stage {
+  margin: 0 0 8px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0b0d10;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.stage-canvas { width: 100%; height: auto; display: block; }
+/* Фон приглушён: по нему идут стены, и спорить с ними он не должен */
+.stage-back { opacity: 0.5; }
+
+.stage-floor { fill: #2b2721; opacity: 0.92; }
+.stage-ceiling { fill: #14161a; opacity: 0.95; }
+.stage-wall { fill: #3a342c; opacity: 0.9; stroke: #0006; stroke-width: 2; }
+.stage-wall-left { fill: #332e27; }
+.stage-wall-right { fill: #2e2a24; }
+
+/* Проём: тёмный прямоугольник в стене. Через него видно фон зоны,
+   поэтому он почти прозрачный, а не чёрный */
+.stage-door {
+  fill: #05070a;
+  fill-opacity: 0.55;
+  stroke: #e8c04a;
+  stroke-width: 2;
+  cursor: pointer;
+}
+.stage-door:hover { fill-opacity: 0.3; stroke-width: 3; }
+.stage-door.fog { stroke-dasharray: 7 5; }
+.stage-door.danger { stroke: var(--hp-red); }
+.stage-door.goal { stroke: var(--hp-green); }
+.stage-door.shut { stroke: var(--muted); fill-opacity: 0.85; cursor: help; }
+
+.stage-foe { filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.6)); }
+.stage-foe.boss { filter: drop-shadow(0 8px 14px rgba(220, 60, 60, 0.5)); }
+.stage-foe-hp { fill: var(--hp-red); }
+
+.stage-loot { cursor: pointer; }
+.stage-loot.shut { cursor: help; opacity: 0.6; }
+.stage-crate {
+  fill: #6b4f2a;
+  stroke: #e8c04a;
+  stroke-width: 2;
+}
+.stage-loot:hover .stage-crate { fill: #8a6634; }
+.stage-crate-mark { font-size: 24px; text-anchor: middle; }
+
+.stage-said {
+  margin: 0;
+  padding: 4px 8px 6px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---------- шкала перехода ---------- */
+/* Шаг идёт десять секунд, и это должно быть видно, а не угадываться */
+.walkbar { margin: 0 0 8px; }
+.walkbar-track {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--hp-track);
+  overflow: hidden;
+}
+.walkbar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.25s linear;
+}
+.walkbar-said {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
 /* ---------- джойстик ---------- */
 /* Подземелье узловое, а палец один: вместо списка дверей — круг.
    Ручка тянется в сторону, подсвечивается дверь, которая в этой
@@ -4400,61 +4481,46 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   gap: 6px;
   margin: 10px 0;
 }
+/* Шесть клавиш крестом: четыре шага и два поворота по бокам. Шаг
+   считается от взгляда, поэтому на них стрелки, а не стороны света */
 .stick-pad {
-  position: relative;
-  width: 148px;
-  height: 148px;
-  border-radius: 50%;
+  display: grid;
+  grid-template-columns: repeat(4, 46px);
+  grid-template-rows: repeat(2, 46px);
+  gap: 6px;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 12px;
   background: var(--panel);
-  box-shadow: inset 0 0 0 2px var(--line);
-  touch-action: none;
+  box-shadow: inset 0 0 0 1px var(--line);
+  touch-action: manipulation;
   user-select: none;
 }
-.stick-pad.held { box-shadow: inset 0 0 0 2px var(--accent); }
-.stick-ring {
-  position: absolute;
-  inset: 26px;
-  border-radius: 50%;
-  border: 1px dashed var(--line);
+.stick-key {
+  font: inherit;
+  font-size: 19px;
+  line-height: 1;
+  border-radius: 10px;
+  border: 1px solid var(--slot-line);
+  background: var(--slot);
+  color: var(--ink);
+  cursor: pointer;
 }
-.stick-knob {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 56px;
-  height: 56px;
-  margin: -28px 0 0 -28px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  transition: transform 0.08s ease-out;
-  pointer-events: none;
-}
+.stick-key:hover:not(:disabled) { border-color: var(--accent); }
+.stick-key:disabled { opacity: 0.35; cursor: default; }
+.stick-key.wall { opacity: 0.3; }
+.stick-key.shut { border-color: var(--muted); color: var(--muted); }
+.stick-key.danger { border-color: var(--bad); color: var(--bad); }
+.key-turn { font-size: 21px; }
+/* Раскладка креста: повороты по краям, шаги в середине */
+.key-turn-left { grid-area: 1 / 1; }
+.key-up { grid-area: 1 / 2 / 2 / 4; }
+.key-turn-right { grid-area: 1 / 4; }
+.key-left { grid-area: 2 / 1; }
+.key-down { grid-area: 2 / 2 / 3 / 4; }
+.key-right { grid-area: 2 / 4; }
 /* Румб вокруг круга: куда отсюда есть ход. Цвет — вторым признаком
    после значка: ☣ опасно, ✕ закрыто, ▸ свободно */
-.stick-door {
-  position: absolute;
-  width: 22px;
-  height: 22px;
-  margin: -11px 0 0 -11px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  font-size: 12px;
-  background: var(--slot);
-  border: 1px solid var(--slot-line);
-  color: var(--muted);
-  pointer-events: none;
-}
-.stick-door.done { color: var(--good); }
-.stick-door.danger { color: var(--bad); }
-.stick-door.shut { opacity: 0.4; }
-.stick-door.aimed {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--bg);
-  transform: scale(1.25);
-}
 .stick-said {
   margin: 0;
   font-size: 13px;
@@ -4530,6 +4596,13 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   stroke-width: 2;
 }
 .minimap-chip.me { fill: var(--accent); stroke: var(--ink); }
+/* Куда смотрит свой боец: на схеме это единственная стрелка */
+.minimap-arrow {
+  fill: var(--accent);
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
 .minimap-chip.down { fill: var(--bad); opacity: 0.7; }
 .minimap-chip.walking { stroke-dasharray: 4 3; }
 .minimap-letter {
