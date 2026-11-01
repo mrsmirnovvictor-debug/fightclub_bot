@@ -1177,9 +1177,10 @@ async def test_the_fighter_starts_facing_the_way_out(db):
     fresh = await look(db, run.id, NOW)
     one = member(fresh.state, people[0].user_id)
 
-    # Из «Внешнего сбора» ход один, и он на восток
-    assert facing_at("O01") == "east"
-    assert one["facing"] == "east"
+    # Из «Внешнего сбора» ход один, и он на север: главный коридор
+    # станции идёт снизу вверх, и панорамы нарисованы под это
+    assert facing_at("O01") == "north"
+    assert one["facing"] == "north"
 
 
 async def test_turning_costs_no_time_and_changes_what_is_ahead(db):
@@ -1189,10 +1190,10 @@ async def test_turning_costs_no_time_and_changes_what_is_ahead(db):
     assert body["view"]["sides"]["ahead"]["room"] == "O02"
 
     said = await act(db, people[0], "turn", {"where": "right"}, "t1", NOW)
-    assert "юг" in said
+    assert "восток" in said
     after = await state_for(db, people[0], NOW)
     # Повернулись — та же дверь теперь слева, а впереди стена
-    assert after["view"]["facing"] == "south"
+    assert after["view"]["facing"] == "east"
     assert after["view"]["sides"]["left"]["room"] == "O02"
     assert after["view"]["sides"]["ahead"]["wall"]
     # Время не ушло: боец никуда не идёт

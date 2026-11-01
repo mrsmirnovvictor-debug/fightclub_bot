@@ -386,21 +386,36 @@ def doorways(room: str) -> dict[str, str]:
         gap = abs(angle - corners[side]) % (2 * math.pi)
         return min(gap, 2 * math.pi - gap)
 
+    def nearest(angle: float | None) -> str:
+        """Стена, в которую дверь смотрит на самом деле."""
+        return min(corners, key=lambda side: cost(angle, side))
+
+    # Раскладок с одинаковой общей ошибкой бывает несколько: два хода
+    # в одну сторону меняются стенами, и сумма от этого не меняется.
+    # Выбирать из них первую попавшуюся нельзя — тогда поворот карты
+    # на четверть, который геометрию не трогает вовсе, молча менял бы
+    # раскладку. Поэтому при равной ошибке берём ту, где на своей
+    # стене стоит больше дверей: художнику врать приходится реже.
     sides = tuple(corners)
-    best: tuple[float, dict[str, str]] | None = None
+    best: tuple[float, int, dict[str, str]] | None = None
     for order in permutations(sides, min(len(doors), len(sides))):
-        total = sum(
-            cost(angle, side) for (_, angle), side in zip(doors, order)
-        )
-        if best is None or total < best[0]:
+        total = 0.0
+        wrong = 0
+        for (_, angle), side in zip(doors, order):
+            total += cost(angle, side)
+            if angle is not None and nearest(angle) != side:
+                wrong += 1
+        mark = (round(total, 9), wrong)
+        if best is None or mark < best[:2]:
             best = (
-                total,
+                mark[0],
+                mark[1],
                 {
                     side: there
                     for (there, _), side in zip(doors, order)
                 },
             )
-    return best[1] if best else {}
+    return best[2] if best else {}
 
 
 def relative(facing: str, side: str) -> str:

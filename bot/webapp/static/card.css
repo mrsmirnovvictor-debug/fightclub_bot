@@ -4566,7 +4566,16 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   letter-spacing: 0.08em;
   margin-bottom: 4px;
 }
-.minimap-canvas { width: 100%; height: auto; display: block; }
+/* Схема вписывается в свой прямоугольник, а не растёт по форме этажа.
+   Этажи станции бывают и вытянутыми в длину: такой без потолка занял
+   бы пол-экрана, а под ним остались бы отряд и склянки, до которых
+   пришлось бы листать */
+.minimap-canvas {
+  width: 100%;
+  height: auto;
+  max-height: 42vh;
+  display: block;
+}
 .minimap-said { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
 
 .minimap-hall {
