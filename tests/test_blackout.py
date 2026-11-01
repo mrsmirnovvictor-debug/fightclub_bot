@@ -208,11 +208,71 @@ async def enter(
 
 
 def test_the_manifest_is_a_valid_map():
-    """Манифест сходится: 64 комнаты, 76 дверей и ни одной висящей."""
+    """Манифест сходится: 64 комнаты, 73 двери и ни одной висящей."""
     place = station()
     assert len(place.rooms) == 64
-    assert len(place.doors) == 76
+    assert len(place.doors) == 73
     assert check_map() == []
+
+
+def test_no_door_goes_diagonally():
+    """Ход идёт только вверх, вниз или вбок — по осям сетки.
+
+    Игрок ходит джойстиком на четыре стороны, и диагональный ход —
+    это ход, которого он сделать не может: в первом лице такой двери
+    некуда встать, и раскладка всё равно сдвинет её на ближайшую
+    свободную стену, то есть соврёт.
+
+    Раскладку считает `scripts/grid_station.py`. Эта проверка стоит
+    тут, чтобы правка карты не вернула диагональ молча.
+    """
+    place = station()
+    for door in place.doors:
+        a, b = place.room(door.a), place.room(door.b)
+        if a.layer != b.layer:
+            continue  # лестница: у неё направления нет вовсе
+        assert not (a.x != b.x and a.y != b.y), (
+            f"{door.a}↔{door.b} идёт по диагонали"
+        )
+
+
+def test_every_door_stands_on_the_wall_it_leads_through():
+    """Проём стоит на той стене, за которой и правда сосед.
+
+    Из этого растёт весь вид от первого лица: что сказано в таблице
+    `docs/blackout_map.md`, то боец и видит. Сломать это можно двумя
+    ходами в одну сторону из одной комнаты — второй уедет на
+    свободную стену, и кадр, нарисованный глухой стеной, окажется
+    дверью. Так и было до раскладки по сетке: двадцать таких дверей.
+
+    Проверяется именно совпадение со стороной, а не то, что стена
+    нашлась каждому: стена находится всегда, вопрос в том, та ли.
+    """
+    import math
+
+    from bot.game.blackout import doorways
+
+    corners = {
+        "east": 0.0, "south": math.pi / 2,
+        "west": math.pi, "north": -math.pi / 2,
+    }
+    place = station()
+    for code, room in place.rooms.items():
+        for side, there in doorways(code).items():
+            mate = place.room(there)
+            if mate.layer != room.layer:
+                continue  # лестница: у неё направления нет вовсе
+            angle = math.atan2(mate.y - room.y, mate.x - room.x)
+            real = min(
+                corners,
+                key=lambda one: abs(
+                    (angle - corners[one] + math.pi) % (2 * math.pi) - math.pi
+                ),
+            )
+            assert real == side, (
+                f"{code} «{room.name}»: проём в {there} нарисован на стене "
+                f"«{side}», а сосед лежит на «{real}»"
+            )
 
 
 def test_every_edge_is_ten_seconds():
