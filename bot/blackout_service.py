@@ -30,6 +30,7 @@ import logging
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Callable
 
 from bot.database import Database
@@ -89,6 +90,7 @@ from bot.game.blackout import (
     boss_hp,
     art_url,
     doorways,
+    zombie_gear,
     eye_urls,
     heading,
     locks_off,
@@ -103,6 +105,7 @@ from bot.game.blackout import BEST_PARTY, FIGHTER_ART, group_size
 from bot.game.blackout import CYCLE_DAYS, CYCLE_HOUR, CYCLE_MINUTE
 from bot.game.blackout import ENTRY_WINDOW_MINUTES
 from bot.game.classes import FIGHTER_CLASSES, Zone, block_combo
+from bot.game.narrator import plain, strike_lines
 from bot.game.clock import MOSCOW
 from bot.game.abilities import Charge, MAX_ENERGY
 from bot.game.combat import Action, Fighter, group_aftermath, heal_line
@@ -720,20 +723,48 @@ async def leave_run(
 
 
 def _pass_leadership(state: dict, now: int) -> None:
-    """Лидерство уходит активному: две минуты молчания — и оно чужое."""
+    """Лидерство уходит активному: две минуты молчания — и оно чужое.
+
+    **Павший ведёт не дольше, чем стоит на ногах.** Упавший со станции
+    никуда не девается — он лежит до конца попытки, и опрос экрана ему
+    метку времени обновляет исправно. Пока лидерство смотрело только на
+    молчание, такой лидер держал его до конца рейда: вести отряд не мог
+    он сам и не давал никому другому, и кнопка «вести отряд» умирала
+    вместе с ним. Идти по одному отряд при этом мог, поэтому беда и не
+    бросалась в глаза.
+    """
     leader = str(state.get("leader") or 0)
     rows = state.get("members") or {}
     head = rows.get(leader)
-    if head and not head["left"] and now - head["seen"] <= AFK_SECONDS:
+    gone = head is None or head["left"] or head["down"] or head["extracted"]
+    if not gone and now - head["seen"] <= AFK_SECONDS:
         return
-    for key, one in rows.items():
-        if one["left"] or one["extracted"] or one.get("bot"):
-            continue
-        if now - one["seen"] <= AFK_SECONDS:
-            if str(state.get("leader")) != key:
-                state["leader"] = int(key)
-                _note(state, f"{one['name']} ведёт отряд.", now)
-            return
+    standing = [
+        (key, one)
+        for key, one in rows.items()
+        if not one["left"] and not one["extracted"] and not one["down"]
+        and not one.get("bot")
+    ]
+    if not standing:
+        return
+    awake = [
+        (key, one) for key, one in standing
+        if now - one["seen"] <= AFK_SECONDS
+    ]
+    # Молчащего лидера сменяет только тот, кто на связи: отобрать
+    # лидерство у человека, отвернувшегося на минуту, и отдать такому
+    # же молчуну — не починка, а перестановка.
+    #
+    # А вот если лидера больше нет — упал, ушёл, эвакуировался, — отряд
+    # остаётся без ведущего совсем, и тогда лидерство идёт любому, кто
+    # ещё стоит на ногах, даже если все притихли
+    pick = awake[0] if awake else (standing[0] if gone else None)
+    if pick is None:
+        return
+    key, one = pick
+    if str(state.get("leader")) != key:
+        state["leader"] = int(key)
+        _note(state, f"{one['name']} ведёт отряд.", now)
 
 
 async def add_bots(
@@ -975,6 +1006,9 @@ def squad_step(run: Run, user_id: int, there: str, now: int) -> str:
     Из чужого боя человека не тянут: он остаётся, остальные идут.
     """
     state = run.state
+    # Лидер мог упасть минуту назад, и экран об этом ещё не спрашивал:
+    # смотрим, кто ведёт отряд прямо сейчас
+    _pass_leadership(state, now)
     if state.get("leader") != user_id:
         raise BlackoutError("Отряд ведёт лидер.")
     leader = member(state, user_id)
@@ -1131,12 +1165,66 @@ def squad_for(
     ]
 
 
+@lru_cache(maxsize=16)
+def zombie_card(kind: str) -> dict[str, Any]:
+    """Карточка зомби: чем силён, чем бьёт и что на нём надето.
+
+    Считается по тому же бойцу, что и дерётся, — иначе карточка
+    рассказывала бы одно, а бой показывал другое. Запас здоровья тут
+    полный: в бою он считается на отряд, и это число меняется от
+    состава, а карточка описывает самого зомби.
+
+    Держится в памяти: видов четыре, а спрашивают её с каждого экрана.
+    """
+    rules = BOSSES.get(kind)
+    level = BOSS_LEVEL[kind] if rules else FOE_LEVEL
+    if rules is not None:
+        row = foe_row(0, rules.title, level, rules.class_code, 1.0,
+                      boss=kind, art=rules.image, build=rules.build or level)
+    else:
+        row = foe_row(0, "Зомби-боец", level, "warrior", 1.0, build=FOE_BUILD)
+    fighter = _foe_fighter(row)
+    cls = fighter.fclass
+    numbers = fighter.derived
+    share = lambda value: f"{round(value * 100)}%"  # noqa: E731
+    return {
+        "kind": kind,
+        "title": row["name"],
+        "level": level,
+        "image": row["art"],
+        "class_title": cls.title,
+        "about": cls.tagline,
+        "hp": numbers.max_hp,
+        "weapon": fighter.weapon,
+        "weapon_icon": fighter.weapon_icon,
+        "stats": [
+            ["Сила", fighter.stats.strength],
+            ["Ловкость", fighter.stats.agility],
+            ["Интуиция", fighter.stats.intuition],
+            ["Выносливость", fighter.stats.endurance],
+        ],
+        "numbers": [
+            ["Здоровье", str(numbers.max_hp)],
+            ["Урон", f"{numbers.damage_min}–{numbers.damage_max}"],
+            ["Точность", share(numbers.accuracy)],
+            ["Крит", share(numbers.crit_chance)],
+            ["Сила крита", f"×{numbers.crit_power:.2f}"],
+            ["Антикрит", share(numbers.anticrit)],
+            ["Уворот", share(numbers.dodge_chance)],
+            ["Контрудар", share(numbers.counter_chance)],
+            ["Сопротивление", share(numbers.resist)],
+            ["Пробитие", share(numbers.penetration)],
+        ],
+        "gear": zombie_gear(kind),
+    }
+
+
 def boss_foes(code: str, party: int) -> list[dict]:
     """Босс арены: один, зато с запасом, посчитанным на отряд."""
     rules = BOSSES[code]
     level = BOSS_LEVEL[code]
     row = foe_row(0, rules.title, level, rules.class_code, 1.0, boss=code,
-                  art=rules.image)
+                  art=rules.image, build=rules.build or level)
     row["hp"] = row["max"] = boss_hp(int(row["max"]), party)
     return [row]
 
@@ -1329,20 +1417,22 @@ def _exchange(
     # Рука босса тяжелее обычной: он отвечает каждому, кто по нему
     # ударил, и отвечает всерьёз. У обычного заражённого множителя нет
     force = BOSS_FORCE.get(foe_row_now.get("boss") or "", 1.0)
+    heavy = 0
     if took and force != 1.0:
-        extra = int(took * force) - took
-        me.hp = max(0, me.hp - extra)
-        took += extra
+        heavy = int(took * force) - took
+        me.hp = max(0, me.hp - heavy)
+        took += heavy
 
     # Окно уязвимости от действия на арене, щит босса и объявленный удар
+    opened = held = 0
     if hit and fight.get("window"):
-        extra = int(hit * 0.4)
-        foe.hp = max(0, foe.hp - extra)
-        hit += extra
+        opened = int(hit * 0.4)
+        foe.hp = max(0, foe.hp - opened)
+        hit += opened
     elif hit and fight.get("shield"):
-        back = int(hit * 0.5)
-        foe.hp = min(foe.max_hp, foe.hp + back)
-        hit -= back
+        held = int(hit * 0.5)
+        foe.hp = min(foe.max_hp, foe.hp + held)
+        hit -= held
     mark = (fight.get("telegraph") or {}).get("target", "")
     lines: list[str] = []
     if key == mark and not fight.get("window") and took:
@@ -1358,9 +1448,23 @@ def _exchange(
     foe_row_now["hp"] = foe.hp
     row["hp"] = me.hp
     _keep_tricks(row, me)
-    lines.append(
-        f"{row['name']} → {foe_row_now['name']}: −{hit}, в ответ −{took}."
-    )
+    # Слова судьи — те же, что на ринге и в рейде: удар за ударом, с
+    # зоной, оружием и исходом. Станция когда-то писала вместо них свою
+    # строку «такой-то → такому-то: −62, в ответ −0»: по ней не видно
+    # ни куда бил, ни чем кончилось, ни кто кого достал в отряде
+    lines += [
+        plain(one)
+        for one in strike_lines(result, {me.user_id: me, foe.user_id: foe}, rng)
+    ]
+    # Станционные надбавки судье неизвестны: он считает сам размен, а
+    # щит, окно и тяжёлую руку босса накладывает рейд уже поверх. Молчать
+    # о них нельзя — иначе числа в строках не сойдутся с полосками
+    if opened:
+        lines.append(f"🎯 В окно уязвимости: ещё −{opened}.")
+    if held:
+        lines.append(f"🛡 Щит погасил −{held}.")
+    if heavy:
+        lines.append(f"💢 Рука тяжелее обычной: ещё −{heavy}.")
     # Вторая половина приёмов десятой ступени — та, что достаёт не
     # противника, а комнату: «Массовый удар» бьёт остальных зомби,
     # «Зов крови» и «Бог трикстера» кладут заготовку всему отряду.
@@ -2560,6 +2664,8 @@ def _fight_payload(
             {
                 "id": one["id"],
                 "name": one["name"],
+                # Какой это зомби: по виду экран достаёт его карточку
+                "kind": str(one.get("boss") or "fighter"),
                 "level": int(one.get("level") or 0),
                 "hp": one["hp"],
                 "max": one["max"],
@@ -2590,6 +2696,14 @@ def _fight_payload(
             if row["room"] == fight["room"] and not row["arrive"]
             and not row["left"] and not row["extracted"]
         ],
+        # Карточки зомби — по одной на вид, а не на каждого в комнате:
+        # пятеро одинаковых заражённых описываются одной бумагой
+        "cards": {
+            kind: zombie_card(kind)
+            for kind in {
+                str(one.get("boss") or "fighter") for one in fight["foes"]
+            }
+        },
         "telegraph": fight.get("telegraph") or {},
         "window": int(fight.get("window") or 0),
         "shield": bool(fight.get("shield")),

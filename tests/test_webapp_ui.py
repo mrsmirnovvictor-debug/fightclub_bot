@@ -15559,3 +15559,61 @@ async def test_the_administration_counts_the_votes_while_they_are_cast(
         first = await page.locator(".candidate-name").first.inner_text()
         assert "Марла" in first, first
         await browser.close()
+
+
+async def test_the_zombie_opens_his_card_from_the_fight(server, db):
+    """Нажал на зомби — видно, кто он, чем бьёт и что на нём надето."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter, walk
+
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    body = await state_for(db, people[0], at)
+    assert body["fight"]["cards"]["fighter"]["gear"]
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, blackout=body, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .raid-board")
+
+        await page.locator(".raid-foes .boss-card").click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        said = await page.locator("#sheet").inner_text()
+        assert "Зомби-боец" in said and "Воин" in said
+        for row in ("Сила", "Здоровье", "Урон", "Крит"):
+            assert row in said, row
+        # Экипировка — картинками по слотам
+        assert await page.locator("#sheet .foe-slot img").count() == 11
+        assert await page.locator("#sheet .foe-face").count() == 1
+        await browser.close()
+
+
+async def test_the_station_fight_reads_like_every_other_one(server, db):
+    """Ход боя на станции — теми же словами судьи, что на ринге."""
+    from bot.blackout_service import act, state_for
+    from tests.test_blackout import NOW, enter, walk
+
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    await act(db, people[0], "fight",
+              {"attacks": ["head"], "block": ["chest"]}, "h1", at)
+    body = await state_for(db, people[0], at)
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .fight-log")
+
+        said = await page.locator("#blackout-body .fight-log").inner_text()
+        assert "Ход боя" in said
+        assert "→" not in said, "строки «такой-то → такому-то» больше нет"
+        assert await page.locator(
+            "#blackout-body .fight-log .log-line"
+        ).count() >= 2
+        await browser.close()

@@ -13294,12 +13294,20 @@ function blackoutFightBox(data) {
     said.textContent = "Ждём: " + fight.waiting.join(", ");
     box.appendChild(said);
   }
-  (fight.log || []).slice(0, 4).forEach((line) => {
-    const said = document.createElement("p");
-    said.className = "thing-note";
-    said.textContent = line;
-    box.appendChild(said);
-  });
+  // Ход боя — словами судьи и в том же виде, что на ринге и в рейде:
+  // свежее сверху, урон выделен. Сервер уже прислал ленту свежим
+  // вперёд, переворачивать её тут нечего
+  const log = fight.log || [];
+  if (log.length) {
+    const lane = document.createElement("div");
+    lane.className = "fight-log";
+    const head = document.createElement("h2");
+    head.className = "shelf-head";
+    head.textContent = "Ход боя";
+    lane.appendChild(head);
+    log.forEach((line) => lane.appendChild(judgeLine(line)));
+    box.appendChild(lane);
+  }
   return box;
 }
 
@@ -13317,7 +13325,7 @@ function blackoutFightBox(data) {
 function blackoutBoard(data) {
   const fight = data.fight;
   const box = document.createElement("div");
-  box.className = "raid-board";
+  box.className = "raid-board station";
 
   const party = (fight.party || []).map(blackoutMateShape);
   const you = party.find((one) => one.you) || null;
@@ -13348,10 +13356,69 @@ function blackoutBoard(data) {
       renderBlackout(blackoutData, true);
     });
   });
-  box.appendChild(
-    deckOf("raid-foes", cards, target ? bossCard(target, true) : null)
-  );
+  const big = target ? bossCard(target, true) : null;
+  if (big && target) {
+    // Крупная карта — уже цель, второй раз её выбирать незачем. Зато по
+    // ней открывается, с кем боец имеет дело: чем бьёт, что на нём
+    // надето и сколько у него чего
+    big.classList.add("stack-pick");
+    big.addEventListener("click", () => blackoutFoeSheet(target.kind));
+  }
+  box.appendChild(deckOf("raid-foes", cards, big));
   return box;
+}
+
+/** Карточка зомби: кто он, чем силён и что на нём надето. */
+function blackoutFoeSheet(kind) {
+  const cards = ((blackoutData || {}).fight || {}).cards || {};
+  const card = cards[kind];
+  if (!card) return;
+  openSheet(card.title + " [" + card.level + "]", card.about || "");
+  const list = el("sheet-list");
+
+  if (card.image) {
+    const pic = document.createElement("img");
+    pic.className = "foe-face";
+    pic.src = card.image;
+    pic.alt = card.title;
+    pic.addEventListener("error", () => pic.remove());
+    list.appendChild(pic);
+  }
+
+  const head = document.createElement("p");
+  head.className = "thing-note";
+  head.textContent = card.class_title
+    + (card.weapon ? " · бьёт " + card.weapon : "");
+  list.appendChild(head);
+
+  list.appendChild(paperRows(
+    (card.stats || []).map(([title, value]) => [title, String(value)])
+  ));
+  list.appendChild(paperRows(card.numbers || []));
+
+  const gear = (card.gear || []).filter((one) => one.image);
+  if (!gear.length) return;
+  const shelf = document.createElement("h2");
+  shelf.className = "shelf-head";
+  shelf.textContent = "🎒 Экипировка";
+  list.appendChild(shelf);
+  const row = document.createElement("div");
+  row.className = "foe-gear";
+  gear.forEach((one) => {
+    const cell = document.createElement("div");
+    cell.className = "foe-slot";
+    cell.title = one.title;
+    const pic = document.createElement("img");
+    pic.src = one.image;
+    pic.alt = one.title;
+    pic.loading = "lazy";
+    // Слот без картинки не держим пустой рамкой: у зомби её может не
+    // быть вовсе, и пустая клетка читалась бы как «тут ничего нет»
+    pic.addEventListener("error", () => cell.remove());
+    cell.appendChild(pic);
+    row.appendChild(cell);
+  });
+  list.appendChild(row);
 }
 
 /** Боец станции в том виде, в каком боёвка рисует любого союзника. */
@@ -13379,6 +13446,7 @@ function blackoutFoeShape(foe) {
   return {
     id: foe.id,
     number: foe.id,
+    kind: foe.kind || "fighter",
     alive: true,
     image: foe.art || "",
     emoji: foe.boss ? "☠️" : "🧟",

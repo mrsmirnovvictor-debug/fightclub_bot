@@ -3091,7 +3091,13 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   grid-template-columns: 45fr 10fr 45fr;
   align-items: end;
   gap: 0 4px;
+  /* Колоды стоят впритык к тому, что под ними, и нижняя карта наезжала
+     на приёмы. Отступ снизу — чтобы доска кончалась там, где кончается */
+  margin-bottom: 10px;
 }
+/* Станционная доска: зомби нарисованы в полный рост, и середина кадра
+   приходится им на пояс. В карточке соперника нужна голова */
+.raid-board.station .boss-face { object-position: top; }
 .raid-deck { display: grid; min-width: 0; align-self: end; }
 .raid-deck > .raid-you, .raid-deck > .boss-card {
   position: relative;
@@ -4389,8 +4395,36 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .blackout-item.have .blackout-item-pic { filter: none; opacity: 1; }
 .blackout-item.have { outline: 1px solid var(--good); }
-/* Карта в колоде соперников нажимается: цель на станции выбирают сами */
+/* Карта в колоде соперников нажимается: цель на станции выбирают сами,
+   а по крупной карте открывается, с кем боец имеет дело */
 .stack-pick { cursor: pointer; }
+/* Карточка зомби: портрет, числа и экипировка слотами */
+.foe-face {
+  /* Портрет не во всю ширину: под ним ещё числа и одиннадцать слотов,
+     и во весь экран он выталкивал бы их за край */
+  width: 100%;
+  max-width: 168px;
+  aspect-ratio: 1;
+  object-fit: cover;
+  object-position: top;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  margin: 0 auto 8px;
+  display: block;
+}
+.foe-gear {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+.foe-slot {
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--slot);
+  box-shadow: inset 0 0 0 1px var(--slot-line);
+}
+.foe-slot img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
 .blackout-shape { font-size: 18px; display: block; opacity: 0.5; }
 .blackout-item.have .blackout-shape { opacity: 1; }
 .blackout-item-tag { font-size: 11px; color: var(--muted); }

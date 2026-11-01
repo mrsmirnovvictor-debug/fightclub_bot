@@ -82,12 +82,49 @@ def eye_urls(room: str, facing: str) -> tuple[str, ...]:
 
 # ---------- кто такие зомби ----------
 
-FIGHTER_ART = "avatars/zombie_fighter.png"
+FIGHTER_ART = "avatars/zombie_fighter_v2.png"
 BOSS_ART = {
     "hunter": "avatars/zombie_hunter.png",
     "brute": "avatars/zombie_brute.png",
-    "leader": "avatars/zombie_leader.png",
+    "leader": "avatars/zombie_leader_v2.png",
 }
+
+# Во что зомби одет. Картинки лежат по слотам — тем же, что у бойца в
+# городе, — и показываются в его карточке: нажал на противника в бою и
+# видишь, чем он бьёт и что на нём надето.
+#
+# Это не отдельная система вещей: характеристики зомби считаются по
+# классу и уровню, как считались, а снимки — то, как это выглядит.
+# Заводить ему настоящий инвентарь значило бы завести второй склад
+# вещей рядом с городским, ради картинок
+ZOMBIE_KINDS = ("fighter", "hunter", "brute", "leader")
+ZOMBIE_SLOTS = (
+    ("weapon", "Оружие"),
+    ("shield", "Щит"),
+    ("head", "Шлем"),
+    ("armor", "Броня"),
+    ("shirt", "Рубаха"),
+    ("gloves", "Перчатки"),
+    ("belt", "Пояс"),
+    ("pants", "Штаны"),
+    ("boots", "Ботинки"),
+    ("necklace", "Амулет"),
+    ("ring", "Кольцо"),
+)
+
+
+def zombie_gear(kind: str) -> list[dict[str, str]]:
+    """Экипировка зомби этого вида: слот, название и картинка."""
+    if kind not in ZOMBIE_KINDS:
+        return []
+    return [
+        {
+            "slot": slot,
+            "title": title,
+            "image": art_url(f"equipment/{kind}/{slot}.jpg"),
+        }
+        for slot, title in ZOMBIE_SLOTS
+    ]
 
 # Панорама обзора: карта комплекса на экране «схема станции»
 OVERVIEW = "maps/station_overview.jpg"
@@ -815,6 +852,20 @@ class BossRules:
     phases: tuple[float, ...] = ()
     phase_titles: tuple[str, ...] = ()
     minutes: int = 10
+    # По какому уровню розданы характеристики. Ноль — по своему.
+    #
+    # Нужно это ровно одному из троих. Класс убийцы раздаёт очки в
+    # крит и почти ничего не кладёт в выносливость: Охотник
+    # двадцатого уровня выходил с 555 здоровья против 623 у рядового
+    # зомби пятнадцатого — мини-босс слабее мусорного моба. Крит у
+    # него и правда злой, но на станции он дерётся один против
+    # отряда, и пока он копит криты, отряд снимает его за три хода.
+    #
+    # Поэтому очки ему досыпаны. Не «сделать посильнее», а поставить
+    # на ту же ступень, где стоит Громила: оба мини-боссы, оба
+    # двадцатого, и разница между ними должна быть в повадке, а не в
+    # том, что одного можно не заметить
+    build: int = 0
 
     @property
     def image(self) -> str:
@@ -842,6 +893,7 @@ BOSSES: dict[str, BossRules] = {
         phases=(0.6, 0.25),
         phase_titles=("Разведка", "Две волны помощников", "Короткие серии"),
         minutes=10,
+        build=30,
     ),
     "brute": BossRules(
         code="brute",
@@ -1131,6 +1183,9 @@ def check_map(place: Station | None = None) -> list[str]:
 __all__ = [
     "BOSSES",
     "BOSS_FORCE",
+    "ZOMBIE_KINDS",
+    "ZOMBIE_SLOTS",
+    "zombie_gear",
     "BOSS_HP_FLOOR",
     "DIED_COOLDOWN_HOURS",
     "BOSS_LEVEL",

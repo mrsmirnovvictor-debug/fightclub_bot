@@ -679,6 +679,22 @@ ROUTE = (
 )
 
 
+async def on_legs(db, people, run_id: int, at: int):
+    """Первый из отряда, кто ещё стоит на ногах.
+
+    Руками в рейде работает не «нулевой боец», а тот, кто жив: упавший
+    остаётся лежать там, где упал, и ни поднять модуль, ни нажать на
+    пульте он не может. Пока станцию проходили без потерь, разницы не
+    было; с потерями она и вылезла.
+    """
+    fresh = await look(db, run_id, at)
+    for one in people:
+        row = member(fresh.state, one.user_id)
+        if row is not None and not row["down"] and not row["left"]:
+            return one
+    return people[0]
+
+
 async def play(
     db, people, run, at: int, log: list | None = None, goal_only: bool = False
 ) -> int:
@@ -696,9 +712,11 @@ async def play(
         ).state["flags"].get("station_restarted"):
             return at
         if mark == "@radio" or mark == "@task":
-            await act(db, people[0], "task", {}, f"t{mark}{at}", at)
+            who = await on_legs(db, people, run_id, at)
+            await act(db, who, "task", {}, f"t{mark}{at}", at)
         elif mark == "@take":
-            await act(db, people[0], "take", {}, f"p{at}", at)
+            who = await on_legs(db, people, run_id, at)
+            await act(db, who, "take", {}, f"p{at}", at)
         elif mark == "@restart":
             at = await restart_station(db, people, run_id, at)
         else:
@@ -716,7 +734,8 @@ async def restart_station(db, people, run_id: int, at: int) -> int:
     сценарий.
     """
     for item in QUEST_ITEMS:
-        await act(db, people[0], "install", {"item": item}, f"i{item}", at)
+        who = await on_legs(db, people, run_id, at)
+        await act(db, who, "install", {"item": item}, f"i{item}", at)
     for attempt in range(8):
         run = await look(db, run_id, at)
         if run.state["flags"].get("station_restarted"):
@@ -1832,3 +1851,110 @@ def test_the_map_for_the_artist_matches_the_station_itself():
         "карта станции изменилась — пересобери docs/blackout_map.md: "
         "python3 scripts/station_map.py"
     )
+
+
+# ---------- зомби: карточка и ступени силы ----------
+
+
+def test_no_zombie_boss_is_weaker_than_an_ordinary_one():
+    """Мини-босс не может быть слабее рядового зомби.
+
+    Охотник таким и был: класс убийцы раздаёт очки в крит и почти
+    ничего не кладёт в выносливость, и двадцатый уровень выходил с 555
+    здоровья против 623 у рядового пятнадцатого. На экране это читалось
+    как «мусорный моб крепче мини-босса», и так оно и было.
+    """
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    from foe_power import damage_per_turn, toughness  # noqa: E402
+
+    from bot.blackout_service import _foe_fighter, boss_foes, squad_for
+    from bot.game.blackout import BEST_PARTY
+
+    mob = _foe_fighter(squad_for("O02", size=1, party=BEST_PARTY)[0])
+    floor = toughness(mob) * damage_per_turn(mob)
+    for code in ("hunter", "brute", "leader"):
+        boss = _foe_fighter(boss_foes(code, BEST_PARTY)[0])
+        assert boss.max_hp > mob.max_hp, (
+            f"{code}: здоровья {boss.max_hp} против {mob.max_hp} у рядового"
+        )
+        assert toughness(boss) * damage_per_turn(boss) >= floor, (
+            f"{code} слабее рядового зомби"
+        )
+
+
+def test_the_zombie_card_tells_who_he_is_and_what_he_wears():
+    """Карточка зомби: уровень, числа и одиннадцать слотов экипировки."""
+    from bot.blackout_service import zombie_card
+    from bot.game.blackout import ZOMBIE_SLOTS
+
+    from bot.game.blackout import BOSS_LEVEL, FOE_LEVEL
+
+    card = zombie_card("fighter")
+    assert card["level"] == FOE_LEVEL and card["title"] == "Зомби-боец"
+    assert card["image"].endswith("zombie_fighter_v2.png")
+    assert len(card["gear"]) == len(ZOMBIE_SLOTS)
+    assert card["gear"][0]["image"].endswith("equipment/fighter/weapon.jpg")
+    # Числа — те же, с какими он дерётся, а не придуманные к карточке
+    numbers = dict(card["numbers"])
+    assert numbers["Здоровье"] == str(card["hp"])
+
+    for code in ("hunter", "brute", "leader"):
+        one = zombie_card(code)
+        assert one["level"] == BOSS_LEVEL[code]
+        assert one["gear"][0]["image"].endswith(f"equipment/{code}/weapon.jpg")
+    assert zombie_card("leader")["image"].endswith("zombie_leader_v2.png")
+
+
+async def test_the_fight_hands_the_screen_the_zombie_cards(db):
+    """Карточка едет в снимок по виду зомби, а не по каждому в комнате."""
+    people, run = await enter(db, 2)
+    at = await walk(db, people, run, "O02", NOW)
+    fight = (await state_for(db, people[0], at))["fight"]
+
+    assert {one["kind"] for one in fight["foes"]} == {"fighter"}
+    assert set(fight["cards"]) == {"fighter"}, "одна бумага на всех одинаковых"
+    assert fight["cards"]["fighter"]["gear"]
+
+
+async def test_the_fight_log_speaks_like_the_judge(db):
+    """Ход боя — словами судьи, а не строкой «такой-то: −62»."""
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    await act(db, people[0], "fight",
+              {"attacks": ["head"], "block": ["chest"]}, "h1", at)
+    log = (await state_for(db, people[0], at))["fight"]["log"]
+
+    assert log, "журнал боя пуст"
+    blow = [one for one in log if "Зомби" in one and "→" not in one]
+    assert blow, log
+    assert any(
+        word in " ".join(log)
+        for word in ("метит", "бьёт", "отбивает", "уходит", "крит")
+    ), log
+
+
+async def test_leadership_leaves_the_fallen(db):
+    """Лидер упал — отряд ведёт тот, кто на ногах.
+
+    Упавший со станции никуда не девается, и его метка времени
+    обновляется опросом экрана исправно. Пока лидерство смотрело только
+    на молчание, такой лидер держал его до конца рейда — и кнопка
+    «вести отряд» умирала вместе с ним.
+    """
+    from bot.blackout_service import _pass_leadership
+
+    people, run = await enter(db, 3)
+    fresh = await look(db, run.id, NOW)
+    assert fresh.state["leader"] == people[0].user_id
+    member(fresh.state, people[0].user_id)["down"] = True
+
+    _pass_leadership(fresh.state, NOW)
+    assert fresh.state["leader"] == people[1].user_id, "ведёт живой"
+
+    # И павший лидер больше не мешает уводить отряд
+    member(fresh.state, people[1].user_id)["down"] = True
+    _pass_leadership(fresh.state, NOW)
+    assert fresh.state["leader"] == people[2].user_id
