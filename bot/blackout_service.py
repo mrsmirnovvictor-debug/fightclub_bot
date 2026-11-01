@@ -62,6 +62,8 @@ from bot.game.blackout import (
     ITEM_ART,
     ITEM_SHAPES,
     ITEM_TITLES,
+    LAYER_DEPTH,
+    LAYER_SHORT,
     LOCK_DIED,
     LOCK_REASONS,
     LOCK_WON,
@@ -2874,6 +2876,10 @@ def _map_payload(state: dict, room: str, me: int = 0) -> dict[str, Any]:
             and one.code not in (state.get("cleared") or {}),
             "goal": bool(one.objective),
             "party": crowd.get(one.code, []),
+            # Лестницы этой комнаты: куда и на какой этаж. Без подписи
+            # схема молчит о главном — этажей семь, и лестница на ней
+            # выглядит комнатой без выхода
+            "stairs": _stairs_of(place, one, layer) if one.code in seen else [],
         })
     links = []
     for door in place.doors:
@@ -2889,6 +2895,31 @@ def _map_payload(state: dict, room: str, me: int = 0) -> dict[str, Any]:
         "width": 1280,
         "height": 680,
     }
+
+
+def _stairs_of(place: Any, room: Any, layer: str) -> list[dict[str, Any]]:
+    """Куда ведут лестницы этой комнаты: вверх или вниз и на какой этаж.
+
+    Ходы на один и тот же этаж сводятся в одну подпись: из «Лестницы
+    Б» вниз ведут сразу две двери, в B01 и в B08, и писать «Подвал»
+    дважды незачем — для человека это один и тот же ход вниз.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for door in place.doors_from(room.code):
+        there = place.room(door.other(room.code))
+        if there is None or there.layer == layer:
+            continue
+        step = found.setdefault(there.layer, {
+            "layer": there.layer,
+            "title": LAYER_SHORT.get(there.layer, there.layer),
+            "up": LAYER_DEPTH.get(there.layer, 0) > LAYER_DEPTH.get(layer, 0),
+            "rooms": [],
+        })
+        step["rooms"].append(there.code)
+    # Сперва то, что выше: этажи читают сверху вниз
+    return sorted(
+        found.values(), key=lambda one: -LAYER_DEPTH.get(one["layer"], 0)
+    )
 
 
 # ---------- одна дверь для всех команд ----------

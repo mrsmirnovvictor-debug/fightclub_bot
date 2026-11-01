@@ -14138,6 +14138,35 @@ function blackoutMapBox(map) {
         cell.appendChild(mark);
       });
 
+    // Лестницы: куда ведёт ход на другой этаж. Соседний этаж на этой
+    // схеме не нарисовать, поэтому его называют словами: «вверх или
+    // вниз и на какой» — иначе по станции не сориентироваться.
+    // Плашка под подписью кроет коридор, чтобы линия не перечёркивала
+    // буквы
+    (one.stairs || []).forEach((step, index) => {
+      const said = (step.up ? "↑ " : "↓ ") + step.title;
+      const at = one.y + H / 2 + 6 + index * 17;
+      const wide = said.length * 7.4 + 10;
+      const back = document.createElementNS(
+        "http://www.w3.org/2000/svg", "rect"
+      );
+      back.setAttribute("x", one.x - wide / 2);
+      back.setAttribute("y", at);
+      back.setAttribute("width", wide);
+      back.setAttribute("height", 16);
+      back.setAttribute("rx", 5);
+      back.setAttribute("class", "minimap-stairs-plate");
+      cell.appendChild(back);
+      const note = document.createElementNS(
+        "http://www.w3.org/2000/svg", "text"
+      );
+      note.setAttribute("x", one.x);
+      note.setAttribute("y", at + 12);
+      note.setAttribute("class", "minimap-stairs");
+      note.textContent = said;
+      cell.appendChild(note);
+    });
+
     // Стрелка: где стою я и куда смотрю. Без неё схема говорит, где
     // отряд, но не говорит, что у бойца перед глазами
     const me = (one.party || []).find((who) => who.me);

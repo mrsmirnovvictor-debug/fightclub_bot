@@ -4677,6 +4677,15 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   opacity: 0.85;
 }
 .minimap-room.fog .minimap-code { opacity: 0.4; }
+/* Подпись лестницы: вверх или вниз и на какой этаж. Плашка цвета
+   панели кроет коридор, чтобы его линия не шла сквозь буквы */
+.minimap-stairs-plate { fill: var(--panel); }
+.minimap-stairs {
+  fill: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-anchor: middle;
+}
 .minimap-mark { font-size: 16px; text-anchor: middle; fill: var(--muted); }
 .minimap-room.goal .minimap-mark { fill: var(--good); }
 .minimap-room.danger .minimap-mark { fill: var(--bad); }

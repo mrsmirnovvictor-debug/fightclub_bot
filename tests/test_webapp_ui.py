@@ -14415,6 +14415,53 @@ async def test_the_minimap_arrow_shows_which_way_the_fighter_looks(server, db):
     assert mine[0]["facing"] == "south"
 
 
+async def test_the_minimap_signs_where_each_stair_leads(server, db):
+    """Лестница на схеме подписана: вверх или вниз и на какой этаж."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    # Отряд входит на территорию, а лестница тут одна — на другом её
+    # конце. Доходить до неё боем ради подписи незачем: что и куда
+    # ведёт, считает сервер, и это проверено отдельно
+    # (`test_every_stair_on_the_minimap_says_where_it_leads`). Здесь
+    # спрашивается только одно — попадает ли подпись на схему
+    here = next(one for one in body["map"]["rooms"] if one["here"])
+    here["stairs"] = [
+        {"layer": "F1", "title": "1 этаж", "up": True, "rooms": ["F101"]},
+        {"layer": "B", "title": "Подвал", "up": False, "rooms": ["B01"]},
+    ]
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .minimap")
+
+        said = page.locator(".minimap-room.here .minimap-stairs")
+        assert await said.all_text_contents() == ["↑ 1 этаж", "↓ Подвал"]
+        # Под каждой подписью плашка: без неё линия коридора шла бы
+        # сквозь буквы
+        assert await page.locator(
+            ".minimap-room.here .minimap-stairs-plate"
+        ).count() == 2
+        # Подписи лежат под плитой комнаты и не наезжают друг на друга
+        tops = [
+            float(await page.locator(
+                ".minimap-room.here .minimap-stairs-plate"
+            ).nth(step).get_attribute("y"))
+            for step in (0, 1)
+        ]
+        assert tops[1] - tops[0] >= 16, tops
+        # Комнате без лестницы подписывать нечего
+        assert await page.locator(
+            ".minimap-room:not(.here) .minimap-stairs"
+        ).count() == 0
+        await browser.close()
+
+
 async def test_the_dungeon_fight_offers_the_tricks(server, db):
     """Боёвка как в рейде: та же панель приёмов и та же шкала энергии."""
     from bot.blackout_service import act, state_for

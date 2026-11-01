@@ -275,6 +275,51 @@ def test_every_door_stands_on_the_wall_it_leads_through():
             )
 
 
+def test_every_stair_on_the_minimap_says_where_it_leads():
+    """У каждой лестницы подпись: вверх или вниз и на какой этаж.
+
+    Без неё схема этажа врёт умолчанием: соседнего этажа на ней нет,
+    и комната с одной лестницей выглядит тупиком. Этажей на станции
+    семь, и код комнаты за лестницей человеку не говорит ничего.
+
+    Проверяется не одна подпись, а то, что подписаны все ходы на
+    другой этаж и ни один не выдуман. Две двери в один и тот же этаж
+    («Лестница Б» в подвале) сводятся в одну подпись: для человека
+    это один и тот же ход наверх.
+    """
+    from bot.blackout_service import _stairs_of
+    from bot.game.blackout import LAYER_DEPTH, LAYER_SHORT
+
+    place = station()
+    signed = 0
+    for room in place.rooms.values():
+        steps = _stairs_of(place, room, room.layer)
+        want = {
+            place.room(door.other(room.code)).layer
+            for door in place.doors_from(room.code)
+            if place.room(door.other(room.code)).layer != room.layer
+        }
+        assert {one["layer"] for one in steps} == want, room.code
+        # Подписей не больше двух: они рисуются под плитой комнаты, и
+        # третья строка полезла бы на коридор
+        assert len(steps) <= 2, room.code
+        for one in steps:
+            assert one["title"] == LAYER_SHORT[one["layer"]], one
+            assert one["up"] == (
+                LAYER_DEPTH[one["layer"]] > LAYER_DEPTH[room.layer]
+            ), (room.code, one)
+            assert one["rooms"], (room.code, one)
+        signed += len(steps)
+    assert signed >= 10, f"лестниц на станции больше: {signed}"
+
+    # Станция не башня: из подвала наверх ведёт первый этаж, а вниз —
+    # эвакуационные тоннели. Порядок подписей сверху вниз
+    assert [
+        (one["title"], one["up"])
+        for one in _stairs_of(place, place.room("B01"), "B")
+    ] == [("1 этаж", True), ("Тоннели", False)]
+
+
 def test_every_edge_is_ten_seconds():
     """Любое ребро — ровно десять секунд, включая лестницы между этажами."""
     for door in station().doors:

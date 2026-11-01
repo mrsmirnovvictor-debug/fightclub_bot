@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bot.game.blackout import (  # noqa: E402
     FACINGS,
     FACING_TITLES,
+    LAYER_DEPTH,
+    LAYER_SHORT,
     LAYER_TITLES,
     doorways,
     station,
@@ -188,10 +190,22 @@ def plan(layer: str) -> str:
                 f'y2="{neighbour.y}" class="hall"/>'
             )
     for room in rooms:
+        # Лестницу подписываем так же, как на миникарте у игрока:
+        # вверх или вниз и на какой этаж. Код комнаты за ней человеку
+        # ничего не говорит — этажей семь
+        steps: dict[str, int] = {}
+        for door in place.doors_from(room.code):
+            there = place.room(door.other(room.code))
+            if there is None or there.layer == layer:
+                continue
+            steps[LAYER_SHORT.get(there.layer, there.layer)] = (
+                LAYER_DEPTH.get(there.layer, 0)
+            )
+        here = LAYER_DEPTH.get(layer, 0)
         stairs = [
-            door.other(room.code)
-            for door in place.doors_from(room.code)
-            if (place.room(door.other(room.code)) or room).layer != layer
+            ("↑ " if deep > here else "↓ ") + title
+            # Сперва то, что выше: этажи читают сверху вниз
+            for title, deep in sorted(steps.items(), key=lambda one: -one[1])
         ]
         parts.append(
             f'<rect x="{room.x - 60}" y="{room.y - 34}" width="120" '
@@ -200,10 +214,16 @@ def plan(layer: str) -> str:
             f'<text x="{room.x}" y="{room.y + 12}" class="name">'
             f'{room.name[:17]}</text>'
         )
-        if stairs:
+        # Подпись лежит под комнатой, на плашке цвета фона: иначе её
+        # перечеркнул бы коридор, идущий между центрами комнат
+        for step, say in enumerate(stairs):
+            top = room.y + 42 + step * 22
+            wide = len(say) * 8 + 12
             parts.append(
-                f'<text x="{room.x}" y="{room.y + 28}" class="stairs">'
-                f'↕ {", ".join(stairs)}</text>'
+                f'<rect x="{room.x - wide / 2}" y="{top}" width="{wide}" '
+                f'height="20" rx="6" class="back"/>'
+                f'<text x="{room.x}" y="{top + 15}" class="stairs">'
+                f'{say}</text>'
             )
     parts.append("</svg>")
     return "".join(parts)
@@ -233,9 +253,10 @@ def html() -> str:
         ".code{fill:#e8c04a;font:700 20px sans-serif;text-anchor:middle}"
         ".name{fill:#aeb6c0;font:15px sans-serif;text-anchor:middle}"
         ".stairs{fill:#6fa8dc;font:13px sans-serif;text-anchor:middle}"
+        ".back{fill:#171c22}"
         "</style></head><body><h1>Станция «Контур»: этажи и переходы</h1>"
-        "<p>Прямоугольник — комната, линия — дверь, ↕ — лестница на "
-        "другой этаж. Что видно с каждой стороны, сказано в "
+        "<p>Прямоугольник — комната, линия — дверь, «↑ 2 этаж» — "
+        "лестница и куда она ведёт. Что видно с каждой стороны, сказано в "
         "<code>docs/blackout_map.md</code>.</p>"
         + "".join(body)
         + "</body></html>"
