@@ -15343,7 +15343,7 @@ async def test_a_drawn_room_steps_aside_for_its_own_panorama(server, db):
 
     people, run = await enter(db, 1)
     body = await state_for(db, people[0], NOW)
-    assert body["view"]["eye"], "адрес своей панорамы собирает сервер"
+    assert body["view"]["eyes"], "адреса своих кадров собирает сервер"
     card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
 
     # Панорамы ещё нет: картинка не доходит, комната рисуется
@@ -15369,4 +15369,40 @@ async def test_a_drawn_room_steps_aside_for_its_own_panorama(server, db):
         assert await page.locator(".stage-wall").count() == 0
         # Зомби и ящик при этом остаются: они на фотографии и рисуются
         assert await page.locator(".stage-eye").count() == 1
+        await browser.close()
+
+
+async def test_the_room_takes_the_png_when_there_is_no_jpg(server, db):
+    """Кадры сохраняют то `.jpg`, то `.png` — годится любой.
+
+    Отрисовка идёт пачками, и в одной папке лежит одно, в соседней
+    другое. Экран пробует по очереди: не нашёлся первый — берётся за
+    следующий, и только когда кончились все, рисует комнату сам.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    kinds = [one.rsplit(".", 1)[1] for one in body["view"]["eyes"]]
+    assert kinds == ["jpg", "png"], kinds
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, blackout=body, images=True
+        )
+        # Правила ставятся после общего: в Playwright выигрывает позднее
+        await page.route("**/*.jpg", lambda route: route.fulfill(status=404))
+        await page.route("**/*.png", lambda route: route.fulfill(
+            status=200, content_type="image/png", body=PIXEL
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage.photo")
+
+        # Нарисованная комната ушла, а на сцене висит именно `.png`
+        assert await page.locator(".stage-shell").count() == 0
+        href = await page.locator(".stage-eye").first.get_attribute("href")
+        assert href.endswith(".png"), href
         await browser.close()

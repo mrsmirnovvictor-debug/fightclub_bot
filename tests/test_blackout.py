@@ -1674,25 +1674,33 @@ async def test_the_room_asks_for_its_own_panorama_in_the_way_it_looks(db):
     view = body["view"]
     room = body["room"]["code"]
 
-    assert view["eye"].endswith(f"panoramas_fp/{room}/{view['facing']}.jpg")
+    # Кадр может быть и `.jpg`, и `.png`: отрисовка идёт пачками, и
+    # сохраняют их по-разному. Экран пробует по очереди
+    assert [one.rsplit(".", 1)[1] for one in view["eyes"]] == ["jpg", "png"]
+    for one in view["eyes"]:
+        assert f"panoramas_fp/{room}/{view['facing']}." in one, one
     assert view["panorama"], "общий вид зоны остаётся запасным"
 
     # Повернулись — просим другую сторону той же комнаты
     await act(db, people[0], "turn", {"where": "right"}, "t1", NOW)
     after = (await state_for(db, people[0], NOW))["view"]
     assert after["facing"] != view["facing"]
-    assert after["eye"].endswith(f"panoramas_fp/{room}/{after['facing']}.jpg")
-    assert after["eye"] != view["eye"]
+    for one in after["eyes"]:
+        assert f"panoramas_fp/{room}/{after['facing']}." in one, one
+    assert after["eyes"] != view["eyes"]
 
 
 def test_a_panorama_is_asked_for_only_in_the_four_ways_there_are():
-    """Сторона не из четырёх — не адрес, а пустая строка."""
-    from bot.game.blackout import FACINGS, eye_url
+    """Сторона не из четырёх — не адрес, а пусто."""
+    from bot.game.blackout import EYE_FORMATS, FACINGS, eye_urls
 
     for facing in FACINGS:
-        assert eye_url("O02", facing).endswith(f"/O02/{facing}.jpg")
-    assert eye_url("O02", "вверх") == ""
-    assert eye_url("", "north") == ""
+        asked = eye_urls("O02", facing)
+        assert len(asked) == len(EYE_FORMATS)
+        for one, kind in zip(asked, EYE_FORMATS):
+            assert one.endswith(f"/O02/{facing}.{kind}")
+    assert eye_urls("O02", "вверх") == ()
+    assert eye_urls("", "north") == ()
 
 
 async def test_a_free_day_neither_holds_the_lock_nor_writes_it(db):

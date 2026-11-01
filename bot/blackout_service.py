@@ -89,7 +89,7 @@ from bot.game.blackout import (
     boss_hp,
     art_url,
     doorways,
-    eye_url,
+    eye_urls,
     heading,
     locks_off,
     extra_windows,
@@ -2488,10 +2488,11 @@ def _view_payload(
     return {
         "facing": facing,
         "facing_title": FACING_TITLES[facing],
-        # Своя панорама комнаты в эту сторону — если она уже нарисована.
-        # Чего нет, то экран не получит и нарисует комнату сам, поэтому
-        # ниже лежит и общий фон зоны: он есть у всех комнат
-        "eye": eye_url(room, facing),
+        # Свои кадры комнаты в эту сторону — если они уже нарисованы.
+        # Их несколько: сохраняют то `.jpg`, то `.png`, и экран пробует
+        # по порядку. Не нашлось ни одного — нарисует комнату сам,
+        # поэтому ниже лежит и общий фон зоны: он есть у всех комнат
+        "eyes": list(eye_urls(room, facing)),
         "panorama": here.image if here else "",
         "sides": sides,
         "foes": foes,

@@ -13580,19 +13580,29 @@ function blackoutStageBox(data) {
     shell.appendChild(door);
   });
 
-  // А если у комнаты есть своя панорама в эту сторону — она ложится
-  // поверх нарисованной и снимает её совсем. Нет такой панорамы (а их
-  // пока нарисовали не всем) — картинка не загрузится, и комната
-  // останется нарисованной: отдельного списка готовых комнат никто не
-  // ведёт, его заменяет сам бакет
-  if (view.eye) {
-    const eye = back(view.eye, "stage-eye");
-    eye.addEventListener("load", () => {
-      shell.remove();
-      box.classList.add("photo");
-    });
-    eye.addEventListener("error", () => eye.remove());
-    svg.appendChild(eye);
+  // А если у комнаты есть свои кадры в эту сторону — они ложатся
+  // поверх нарисованной и снимают её совсем. Кадров несколько, и это
+  // не запас прочности: отрисовка идёт пачками, и сохраняют их то
+  // `.jpg`, то `.png`. Пробуем по очереди; не нашлось ни одного (а
+  // нарисовали пока не всем комнатам) — комната останется
+  // нарисованной. Отдельного списка готовых комнат никто не ведёт,
+  // его заменяет сам бакет
+  const eyes = (view.eyes || []).filter(Boolean);
+  if (eyes.length) {
+    const tryOne = (at) => {
+      if (at >= eyes.length) return;
+      const eye = back(eyes[at], "stage-eye");
+      eye.addEventListener("load", () => {
+        shell.remove();
+        box.classList.add("photo");
+      });
+      eye.addEventListener("error", () => {
+        eye.remove();
+        tryOne(at + 1);
+      });
+      svg.appendChild(eye);
+    };
+    tryOne(0);
   }
 
   // Зомби: крупно и по центру, босс крупнее прочих
