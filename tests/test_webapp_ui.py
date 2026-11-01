@@ -14291,9 +14291,8 @@ async def test_the_keys_step_from_where_the_fighter_looks(server, db):
     people, run = await enter(db, 1)
     body = await state_for(db, people[0], NOW)
     view = body["view"]
-    # На входе боец развёрнут к выходу, а не в стену. Выход один, и
-    # главный коридор станции идёт на север
-    assert view["facing"] == "north"
+    # На входе боец развёрнут к выходу, а не в стену
+    assert view["facing"] == "east"
     assert view["sides"]["ahead"]["room"] == "O02"
     assert view["sides"]["left"]["wall"] and view["sides"]["behind"]["wall"]
     card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
@@ -14312,7 +14311,7 @@ async def test_the_keys_step_from_where_the_fighter_looks(server, db):
         assert await page.locator(".key-left").first.is_disabled()
         assert await page.locator(".key-down").first.is_disabled()
         said = await page.locator("#blackout").inner_text()
-        assert "Смотрим на север" in said
+        assert "Смотрим на восток" in said
         await browser.close()
 
 
@@ -14388,7 +14387,7 @@ async def test_the_minimap_arrow_shows_which_way_the_fighter_looks(server, db):
         one for room in body["map"]["rooms"] for one in room["party"]
         if one["me"]
     ]
-    assert mine and mine[0]["facing"] == "north"
+    assert mine and mine[0]["facing"] == "east"
     card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
 
     async with async_playwright() as pw:
@@ -14402,8 +14401,8 @@ async def test_the_minimap_arrow_shows_which_way_the_fighter_looks(server, db):
         spin = await page.locator(".minimap-arrow").first.get_attribute(
             "transform"
         )
-        # Стрелка нарисована остриём вверх, и на север её не крутят
-        assert "rotate(0)" in spin, spin
+        # Стрелка нарисована остриём вверх: на восток её кладут набок
+        assert "rotate(90)" in spin, spin
         await browser.close()
 
     # Повернулись — стрелка повернулась
@@ -14413,7 +14412,7 @@ async def test_the_minimap_arrow_shows_which_way_the_fighter_looks(server, db):
         one for room in after["map"]["rooms"] for one in room["party"]
         if one["me"]
     ]
-    assert mine[0]["facing"] == "east"
+    assert mine[0]["facing"] == "south"
 
 
 async def test_the_dungeon_fight_offers_the_tricks(server, db):

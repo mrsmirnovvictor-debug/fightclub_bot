@@ -402,6 +402,19 @@ def doorways(room: str) -> dict[str, str]:
         neighbour = place.room(there)
         if neighbour is None:  # pragma: no cover - карту проверяет валидатор
             continue
+        # Ход на другой этаж направления не имеет вовсе, и координаты
+        # соседнего этажа тут ни при чём: этажи раскладываются по сетке
+        # независимо, у каждого своя система. Сравнивать их — всё равно
+        # что мерить расстояние от дома до дома по номерам квартир.
+        #
+        # Беда от этого была не теоретическая: F104 лежит ровно над
+        # F103, а лестница с него ведёт в F201, у которого по случайности
+        # те же координаты на своём этаже. Лестница просилась на ту же
+        # южную стену, что и настоящая дверь, и одна из них уезжала на
+        # чужую стену
+        if neighbour.layer != here.layer:
+            doors.append((there, None))
+            continue
         dx, dy = neighbour.x - here.x, neighbour.y - here.y
         angle = None if not dx and not dy else math.atan2(dy, dx)
         doors.append((there, angle))
