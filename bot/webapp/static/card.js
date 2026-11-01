@@ -11270,6 +11270,12 @@ let ballotState = null;
 let ballotPick = 0;
 let ballotClosed = false;
 let voteTimer = null;
+// Плашка сперва показывается целиком, а через пять секунд сворачивается
+// в кружок. Голосование не ждёт, пока на него посмотрят, — но и держать
+// подпись поверх экрана всё время незачем
+let voteSmall = false;
+let voteShrink = null;
+const VOTE_OPEN_SECONDS = 5;
 
 async function loadElections() {
   try {
@@ -11472,7 +11478,21 @@ function candidatesBox(data) {
     box.appendChild(said);
     return box;
   }
-  data.candidates.forEach((one) => {
+  // Пока голосуют, голоса рядом с именами — это расклад, а не итог, и
+  // называть его итогом нельзя: до конца голосования он ещё поменяется
+  if (data.tally_shown && !data.counting) {
+    const said = document.createElement("p");
+    said.className = "screen-note";
+    said.textContent = "Голосование идёт, счёт меняется. "
+      + "До конца " + longClock(data.seconds_left) + ".";
+    box.appendChild(said);
+  }
+  // Первым идёт тот, за кого отдали больше: по списку читают расклад,
+  // а не алфавит
+  const rows = data.tally_shown
+    ? data.candidates.slice().sort((a, b) => b.votes - a.votes)
+    : data.candidates;
+  rows.forEach((one) => {
     const row = document.createElement("article");
     row.className = "candidate"
       + (one.user_id === data.mine ? " picked" : "")
@@ -11483,7 +11503,7 @@ function candidatesBox(data) {
     name.className = "candidate-name";
     name.textContent = (one.user_id === data.mine ? "✅ " : "") + one.name;
     line.appendChild(name);
-    if (data.counting) {
+    if (data.tally_shown) {
       const votes = document.createElement("span");
       votes.className = "candidate-votes";
       votes.textContent = one.votes + " " + plural(
@@ -11515,6 +11535,12 @@ function setBallot(ballot) {
     ballotClosed = false;
     ballotPick = 0;
   }
+  // Плашку разворачиваем, когда есть что сказать нового: началось
+  // голосование или голос только что отдан. Дальше она свернётся сама
+  const news = !was || was.day !== ballot.day
+    || Boolean(was.mine) !== Boolean(ballot.mine)
+    || Boolean(was.shown) !== Boolean(ballot.shown);
+  if (news && ballot.shown) openVoteChip();
   paintVoteChip();
   if (ballot.shown && !ballotClosed) openBallot();
   else el("ballot-veil").classList.add("hidden");
@@ -11581,16 +11607,40 @@ function closeBallot() {
   paintVoteChip();
 }
 
-// Плашка в правом нижнем углу: идут выборы и сколько ещё идти. Висит
-// поверх любого экрана — голосование не ждёт, пока на него посмотрят
+/** Развернуть плашку и завести отсчёт до кружка. */
+function openVoteChip() {
+  voteSmall = false;
+  if (voteShrink) clearTimeout(voteShrink);
+  voteShrink = setTimeout(() => {
+    voteShrink = null;
+    voteSmall = true;
+    paintVoteChip();
+  }, VOTE_OPEN_SECONDS * 1000);
+}
+
+// Плашка в левом нижнем углу: идут выборы и сколько ещё идти. Висит
+// поверх любого экрана — голосование не ждёт, пока на него посмотрят, —
+// но через пять секунд сворачивается в кружок, чтобы не закрывать
+// собой то, на что человек смотрит. Зелёный — голос отдан, серый — нет
 function paintVoteChip() {
   const chip = el("vote-chip");
   const ballot = ballotState;
   const shown = Boolean(ballot && ballot.shown);
   chip.classList.toggle("hidden", !shown);
-  if (!shown) return;
-  chip.classList.toggle("done", Boolean(ballot.mine));
-  chip.textContent = (ballot.mine ? "🗳 Голос отдан · " : "🗳 Идут выборы · ")
+  if (!shown) {
+    if (voteShrink) clearTimeout(voteShrink);
+    voteShrink = null;
+    return;
+  }
+  const voted = Boolean(ballot.mine);
+  chip.classList.toggle("done", voted);
+  chip.classList.toggle("mini", voteSmall);
+  chip.title = voted ? "Голос отдан" : "Идут выборы мэра";
+  if (voteSmall) {
+    chip.textContent = "🗳";
+    return;
+  }
+  chip.textContent = (voted ? "🗳 Голос отдан · " : "🗳 Идут выборы · ")
     + longClock(ballot.seconds_left);
 }
 

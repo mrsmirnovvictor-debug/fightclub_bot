@@ -455,15 +455,24 @@ async def test_the_city_mayor_fills_the_chairs_as_it_takes_office(db):
 
 
 async def test_the_ballot_rides_along_with_the_card(db, client):
-    """Бюллетень приезжает с карточкой: за ним никуда не ходят."""
+    """Бюллетень приезжает с карточкой: за ним никуда не ходят.
+
+    Час тут настоящий, и фаза выборов зависит от дня недели. Раньше
+    проверка требовала, чтобы листа не было вовсе, — и падала по
+    воскресеньям, когда город и правда голосует. Проверяем не «листа
+    нет», а правило: лист показывают тогда и только тогда, когда идёт
+    голосование и есть за кого голосовать.
+    """
     one = await citizen(db, 1, "Марла", where=BAR)
     body = await (await client.get(
         "/api/card", headers=headers(one.user_id)
     )).json()
     assert "ballot" in body
-    # Вне голосования листа нет вовсе
-    assert body["ballot"]["shown"] is False
-    assert body["ballot"]["phase"] in {QUIET, NOMINATION, EVE, VOTING, COUNTING}
+    sheet = body["ballot"]
+    assert sheet["phase"] in {QUIET, NOMINATION, EVE, VOTING, COUNTING}
+    assert sheet["shown"] == bool(
+        sheet["phase"] == VOTING and sheet["candidates"]
+    )
 
 
 async def test_the_handler_nominates_and_votes(db, client):

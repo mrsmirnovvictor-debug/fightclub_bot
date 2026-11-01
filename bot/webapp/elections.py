@@ -122,6 +122,10 @@ def build_elections(
         "can_nominate": bool(phase == NOMINATION and not state["standing"]),
         "can_vote": bool(phase == VOTING and not state["mine"]),
         "counting": phase == COUNTING,
+        # Текущий расклад голосов: видно и пока голосуют, а не только
+        # когда считают. До конца голосования это именно расклад, а не
+        # итог, и экран так его и подписывает
+        "tally_shown": phase in (VOTING, COUNTING),
         "said": said,
         "note": _note(state),
         # Кресла начальников: кладёт их сюда сервер, и только мэру

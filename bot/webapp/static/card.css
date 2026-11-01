@@ -1670,21 +1670,35 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* Плашка в правом нижнем углу: идут выборы и сколько ещё идти. Висит
    поверх любого экрана — голосование не ждёт, пока на него посмотрят.
    Отдавшему голос она зелёная: ему торопиться уже некуда */
+/* Плашка выборов: левый нижний угол, поверх любого экрана. Пять секунд
+   видна целиком, дальше сворачивается в кружок — голосование не ждёт,
+   пока на него посмотрят, но и закрывать собой экран ему незачем */
 .vote-chip {
   position: fixed;
-  right: 12px;
+  left: 12px;
   bottom: calc(84px + env(safe-area-inset-bottom));
   z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 8px 12px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.2);
-  background: #6f42c1;
+  /* Серый — не голосовал, зелёный — голос отдан */
+  background: #5b636d;
   color: #fff;
   font-size: 13px;
   font-weight: 700;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  transition: width 0.18s ease, padding 0.18s ease;
 }
 .vote-chip.done { background: #2ea043; }
+.vote-chip.mini {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  font-size: 20px;
+}
 
 /* Бюллетень: строки с кружками, выбранная подсвечена */
 .ballot-list { display: grid; gap: 6px; margin: 10px 0; }

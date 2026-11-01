@@ -237,7 +237,12 @@ async def state(
     code = day_code(day)
     now_phase = phase(moment)
     rows = await _ballot_rows(db, code, moment)
-    counted = await db.tally(code) if now_phase == COUNTING else {}
+    # Счёт идёт и пока голосуют: администрация показывает текущий
+    # расклад, а не только итог. Это выбор в пользу открытых выборов —
+    # город маленький, и кто сколько набрал, в нём всё равно знают
+    counted = (
+        await db.tally(code) if now_phase in (VOTING, COUNTING) else {}
+    )
     seat = await db.mayor()
     mayor_name = ""
     if seat.get("user_id"):

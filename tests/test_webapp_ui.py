@@ -15461,3 +15461,101 @@ async def test_the_screen_does_not_redraw_itself_when_nothing_changed(
         )
         assert await page.locator(".stage[data-mark=one]").count() == 0
         await browser.close()
+
+
+async def test_the_vote_chip_folds_into_a_circle_and_still_opens(server, db):
+    """Плашка выборов: пять секунд целиком, дальше кружок — и он работает.
+
+    Голосование не ждёт, пока на него посмотрят, поэтому плашка висит
+    поверх любого экрана. Но держать подпись с отсчётом поверх игры всё
+    время незачем: сказала своё — свернулась в угол кружком.
+    """
+    voter, _, ballot, _ = await election_states(db)
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = ballot
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#ballot-veil:not(.hidden)")
+        await page.locator("#ballot-buttons .btn").last.click()
+
+        chip = page.locator("#vote-chip")
+        assert "Идут выборы" in await chip.inner_text()
+        # Угол именно левый нижний
+        box = await chip.bounding_box()
+        wide = await page.evaluate("() => window.innerWidth")
+        assert box["x"] < wide / 2, box
+        # Не голосовал — серая
+        shade = await chip.evaluate(
+            "(one) => getComputedStyle(one).backgroundColor"
+        )
+        assert shade == "rgb(91, 99, 109)", shade
+
+        # Через пять секунд — кружок с одним значком
+        await page.wait_for_selector("#vote-chip.mini", timeout=9000)
+        assert (await chip.inner_text()).strip() == "🗳"
+        round_box = await chip.bounding_box()
+        assert abs(round_box["width"] - round_box["height"]) < 2, round_box
+
+        # И кружок открывает лист обратно
+        await chip.click()
+        assert await page.locator("#ballot-veil").is_visible()
+        await browser.close()
+
+
+async def test_the_chip_turns_green_once_the_vote_is_cast(server, db):
+    """Проголосовал — плашка зелёная, и в ней отметка, а не отсчёт."""
+    voter, _, _, done = await election_states(db)
+    card = build_card(voter, TOKEN, viewer_id=voter.user_id)
+    card["ballot"] = done
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#ballot-veil:not(.hidden)")
+        await page.locator("#ballot-buttons .btn").click()
+
+        chip = page.locator("#vote-chip")
+        assert "Голос отдан" in await chip.inner_text()
+        shade = await chip.evaluate(
+            "(one) => getComputedStyle(one).backgroundColor"
+        )
+        assert shade == "rgb(46, 160, 67)", shade
+        # Нажатие на неё говорит, что голос уже отдан, а не даёт второй бланк
+        await chip.click()
+        assert "Твой голос отдан" in await page.locator(
+            "#ballot-note"
+        ).inner_text()
+        assert await page.locator("#ballot-list .ballot-row").count() == 1
+        await browser.close()
+
+
+async def test_the_administration_counts_the_votes_while_they_are_cast(
+    server, db
+):
+    """Текущий расклад виден в администрации, пока голосование идёт."""
+    from bot.election_service import state, vote
+    from bot.webapp.elections import build_elections
+    from tests.test_elections import SUNDAY, citizen
+
+    voter, _, _, _ = await election_states(db)
+    # Ещё два голоса за Марлу: расклад должен это показать
+    for number in (4, 5):
+        one = await citizen(db, number, f"Житель-{number}", where="bar")
+        await vote(db, one, 1, now=SUNDAY)
+    body = build_elections(voter, await state(db, voter, SUNDAY), SUNDAY)
+    assert body["tally_shown"] and not body["counting"]
+    assert [one["votes"] for one in body["candidates"] if one["user_id"] == 1]
+
+    async with async_playwright() as pw:
+        browser, page = await open_admin(pw, server, voter, body)
+
+        said = await page.locator("#elections-body").inner_text()
+        assert "Голосование идёт, счёт меняется" in said
+        votes = await page.locator(".candidate-votes").all_inner_texts()
+        assert votes == ["3 голоса", "0 голосов", "0 голосов"], votes
+        # Первым стоит тот, за кого отдали больше
+        first = await page.locator(".candidate-name").first.inner_text()
+        assert "Марла" in first, first
+        await browser.close()
