@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Callable
@@ -88,9 +88,10 @@ from bot.game.blackout import (
     VALVE_B,
     WINDOW_TURNS,
     boss_hp,
+    ZOMBIE_GEAR_NAMES,
     art_url,
     doorways,
-    zombie_gear,
+    zombie_slot_art,
     eye_urls,
     heading,
     locks_off,
@@ -1059,26 +1060,58 @@ def foe_row(
     `build` — по какому уровню ему розданы характеристики. У обычного
     зомби он ниже своего: заражённый рабочий силён заразой, а не залом.
     """
-    cls = FIGHTER_CLASSES[fclass]
-    plain = Fighter(
-        user_id=FOE_BASE - index,
-        name=name,
-        fclass=cls,
-        stats=developed_stats(cls, build or level),
-        level=level,
-    )
-    full = max(1, int(plain.max_hp * scale))
-    return {
+    row = {
         "id": FOE_BASE - index,
         "name": name,
         "class": fclass,
         "level": level,
         "build": build or level,
-        "hp": full,
-        "max": full,
+        # Запас дописывается ниже: его считает одетый боец, а не голый
+        "hp": 0,
+        "max": 0,
         "boss": boss,
         "art": art or art_url(FIGHTER_ART),
     }
+    # Запас зомби — по классу и уровню, без прибавки от вещей, и
+    # менять это число нельзя: на нём посчитано всё подземелье.
+    #
+    # Врала не она, а движок. Строка говорила 353, а `_foe_fighter`
+    # собирал одетого бойца на 623 и меньшее число просто отбрасывал:
+    # зомби выходил в бой с 353 из 623, то есть на 57% здоровья, а
+    # карточка показывала полную полоску. После первого удара на −62
+    # экран писал 561 из 353, а судья — 229 из 623. Теперь движок
+    # слушается строки, и все трое говорят одно и то же
+    plain = Fighter(
+        user_id=FOE_BASE - index,
+        name=name,
+        fclass=FIGHTER_CLASSES[fclass],
+        stats=developed_stats(FIGHTER_CLASSES[fclass], build or level),
+        level=level,
+    )
+    full = max(1, int(plain.max_hp * scale))
+    row["hp"] = row["max"] = full
+    return row
+
+
+def _zombie_item(kind: str, slot: Any, item: Any) -> Any:
+    """Переодеть городскую вещь в зомбячью: имя, снимок и как её зовут.
+
+    Числа остаются городскими до единицы — на них посчитано всё
+    подземелье. Меняется то, что видно и слышно: на картинке у
+    заражённого рабочего разводной ключ, и в журнале боя он должен
+    бить разводным ключом, а не «длинным мечом героя».
+    """
+    names = ZOMBIE_GEAR_NAMES.get(kind) or {}
+    title, instrumental = names.get(slot.value, ("", ""))
+    picture = zombie_slot_art(kind, slot.value)
+    if not title and not picture:
+        return item
+    return replace(
+        item,
+        title=title or item.title,
+        image=picture or item.image,
+        instrumental=instrumental or item.instrumental,
+    )
 
 
 def _foe_fighter(row: dict) -> Fighter:
@@ -1103,15 +1136,23 @@ def _foe_fighter(row: dict) -> Fighter:
     # пятнадцатого уровня втрое слабее одетого, и мерить подземелье по
     # нему — значит мерить пустоту. Рейд клуба одевает боссов так же:
     # чего нет своего, добирается лучшим с прилавка
+    kind = row.get("boss") or "fighter"
     worn = {
-        slot: OwnedItem(item=item, slot=slot)
+        slot: OwnedItem(item=_zombie_item(kind, slot, item), slot=slot)
         for slot, item in best_kit(cls, level).items()
     }
     if rules is not None:
+        # Своё оружие босса не переименовывается: кувалда, стилет и
+        # пожарный топор у него и так свои, с именем и повадкой
         for code in (rules.weapon, rules.offhand):
             item = get_item(code) if code else None
             if item is not None:
-                worn[item.slot] = OwnedItem(item=item, slot=item.slot)
+                worn[item.slot] = OwnedItem(
+                    item=replace(item, image=zombie_slot_art(
+                        kind, item.slot.value
+                    ) or item.image),
+                    slot=item.slot,
+                )
     equipment = Equipment(items=worn)
     stats = developed_stats(
         cls, int(row.get("build") or row["level"])
@@ -1120,8 +1161,8 @@ def _foe_fighter(row: dict) -> Fighter:
         user_id=int(row["id"]), name=row["name"], fclass=cls, stats=stats,
         level=int(row["level"]), equipment=equipment,
     )
-    want = int(row["max"])
-    if want > plain.max_hp:
+    want = int(row.get("max") or 0)
+    if want and want != plain.max_hp:
         plain = Fighter(
             user_id=int(row["id"]), name=row["name"], fclass=cls, stats=stats,
             level=int(row["level"]), equipment=equipment,
@@ -1183,6 +1224,8 @@ def zombie_card(kind: str) -> dict[str, Any]:
                       boss=kind, art=rules.image, build=rules.build or level)
     else:
         row = foe_row(0, "Зомби-боец", level, "warrior", 1.0, build=FOE_BUILD)
+    from bot.webapp.card import bonuses_payload
+
     fighter = _foe_fighter(row)
     cls = fighter.fclass
     numbers = fighter.derived
@@ -1215,7 +1258,20 @@ def zombie_card(kind: str) -> dict[str, Any]:
             ["Сопротивление", share(numbers.resist)],
             ["Пробитие", share(numbers.penetration)],
         ],
-        "gear": zombie_gear(kind),
+        # Экипировка — та самая, в которой он дерётся: имя, снимок и
+        # что вещь даёт. Числа городские, и это видно: по ним и
+        # посчитан бой
+        "gear": [
+            {
+                "slot": slot.value,
+                "slot_title": slot.title.capitalize(),
+                "title": own.item.title,
+                "image": own.item.image,
+                "bonus": own.item.describe_bonus(),
+                "bonuses": bonuses_payload(own.item, cls, own),
+            }
+            for slot, own in fighter.equipment.items.items()
+        ],
     }
 
 
@@ -1348,6 +1404,13 @@ def strike(
         lines += _exchange(run, key, zones, guard, target, now)
 
     fight.setdefault("acted", []).append(key)
+    # Размен ложится в журнал сразу, до проверки победы. Раньше журнал
+    # дописывался в самом конце — и решающий удар в него не попадал
+    # вовсе: ход возвращался раньше. На экране это выглядело так, будто
+    # зомби умер сам: «Комната зачищена», а удара, которым его добили,
+    # в ленте нет. Итог боя читает тот же журнал, и ему доставалась та
+    # же дыра
+    _remember(fight, lines)
 
     # Победа и поражение считаются сразу: добитого врага не держат
     # живым до конца волны, а упавший отряд не ходит дальше
@@ -1361,10 +1424,18 @@ def strike(
         if name not in fight["acted"]
     ]
     if not waiting:
-        lines += _close_wave(run, fight, rules, now)
+        tail = _close_wave(run, fight, rules, now)
+        lines += tail
+        _remember(fight, tail)
+    return " ".join(lines) or "Ход посчитан."
+
+
+def _remember(fight: dict, lines: list[str]) -> None:
+    """Дописать строки в журнал боя. Сорок последних — и ни одной больше."""
+    if not lines:
+        return
     fight["log"] = (fight.get("log") or []) + lines
     del fight["log"][:-40]
-    return " ".join(lines) or "Ход посчитан."
 
 
 def _exchange(

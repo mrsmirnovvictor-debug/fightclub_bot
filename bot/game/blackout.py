@@ -98,34 +98,83 @@ BOSS_ART = {
 # Заводить ему настоящий инвентарь значило бы завести второй склад
 # вещей рядом с городским, ради картинок
 ZOMBIE_KINDS = ("fighter", "hunter", "brute", "leader")
-ZOMBIE_SLOTS = (
-    ("weapon", "Оружие"),
-    ("shield", "Щит"),
-    ("head", "Шлем"),
-    ("armor", "Броня"),
-    ("shirt", "Рубаха"),
-    ("gloves", "Перчатки"),
-    ("belt", "Пояс"),
-    ("pants", "Штаны"),
-    ("boots", "Ботинки"),
-    ("necklace", "Амулет"),
-    ("ring", "Кольцо"),
-)
+
+# Как называется то, что на нём надето. Числа у этих вещей — городские:
+# зомби одет лучшим с прилавка, и на этом посчитано всё подземелье.
+# Меняются только имя, картинка и то, как судья зовёт оружие, — иначе
+# в журнале боя заражённый рабочий бьёт «длинным мечом героя», а на
+# картинке у него разводной ключ.
+#
+# Своё оружие босса не переименовывается: кувалда, стилет и пожарный
+# топор у них и так свои, с именем и повадкой.
+ZOMBIE_GEAR_NAMES: dict[str, dict[str, tuple[str, str]]] = {
+    "fighter": {
+        "weapon": ("Разводной ключ", "разводным ключом"),
+        "offhand": ("Крышка люка", ""),
+        "head": ("Каска обходчика", ""),
+        "jacket": ("Брезентовая роба", ""),
+        "shirt": ("Прожжённая футболка", ""),
+        "gloves": ("Рабочие перчатки", ""),
+        "belt": ("Монтажный пояс", ""),
+        "pants": ("Штаны обходчика", ""),
+        "boots": ("Кирзовые сапоги", ""),
+    },
+    "hunter": {
+        "offhand": ("Щиток Охотника", ""),
+        "head": ("Капюшон Охотника", ""),
+        "jacket": ("Драная куртка", ""),
+        "shirt": ("Пропитанная майка", ""),
+        "gloves": ("Когти Охотника", ""),
+        "belt": ("Подсумок Охотника", ""),
+        "pants": ("Штаны ловчего", ""),
+        "boots": ("Мягкие ботинки", ""),
+    },
+    "brute": {
+        "head": ("Сварочная маска", ""),
+        "jacket": ("Латаный доспех", ""),
+        "shirt": ("Рваная роба", ""),
+        "gloves": ("Клёпаные рукавицы", ""),
+        "belt": ("Цепной пояс", ""),
+        "pants": ("Ватные штаны", ""),
+        "boots": ("Литые ботинки", ""),
+    },
+    "leader": {
+        "offhand": ("Щит Предводителя", ""),
+        "head": ("Шлем Предводителя", ""),
+        "jacket": ("Бронежилет Предводителя", ""),
+        "shirt": ("Форменная рубаха", ""),
+        "gloves": ("Командирские перчатки", ""),
+        "belt": ("Ремень Предводителя", ""),
+        "pants": ("Штаны Предводителя", ""),
+        "boots": ("Высокие ботинки", ""),
+    },
+}
+
+# Какая картинка какому слоту. Снимки нарисованы по своим именам:
+# броня — это куртка, щит — вторая рука
+ZOMBIE_GEAR_ART = {
+    "weapon": "weapon",
+    "offhand": "shield",
+    "head": "head",
+    "jacket": "armor",
+    "shirt": "shirt",
+    "gloves": "gloves",
+    "belt": "belt",
+    "pants": "pants",
+    "boots": "boots",
+    "necklace": "necklace",
+    "ring_right": "ring",
+    "ring_middle": "ring",
+    "ring_left": "ring",
+}
 
 
-def zombie_gear(kind: str) -> list[dict[str, str]]:
-    """Экипировка зомби этого вида: слот, название и картинка."""
-    if kind not in ZOMBIE_KINDS:
-        return []
-    return [
-        {
-            "slot": slot,
-            "title": title,
-            "image": art_url(f"equipment/{kind}/{slot}.jpg"),
-        }
-        for slot, title in ZOMBIE_SLOTS
-    ]
-
+def zombie_slot_art(kind: str, slot: str) -> str:
+    """Снимок этого слота у этого зомби. Пусто — рисовать нечего."""
+    name = ZOMBIE_GEAR_ART.get(slot)
+    if not name or kind not in ZOMBIE_KINDS:
+        return ""
+    return art_url(f"equipment/{kind}/{name}.jpg")
 # Панорама обзора: карта комплекса на экране «схема станции»
 OVERVIEW = "maps/station_overview.jpg"
 
@@ -1196,9 +1245,9 @@ def check_map(place: Station | None = None) -> list[str]:
 __all__ = [
     "BOSSES",
     "BOSS_FORCE",
+    "ZOMBIE_GEAR_NAMES",
     "ZOMBIE_KINDS",
-    "ZOMBIE_SLOTS",
-    "zombie_gear",
+    "zombie_slot_art",
     "BOSS_HP_FLOOR",
     "DIED_COOLDOWN_HOURS",
     "BOSS_LEVEL",

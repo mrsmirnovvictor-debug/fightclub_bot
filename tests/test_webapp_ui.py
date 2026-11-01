@@ -15585,9 +15585,20 @@ async def test_the_zombie_opens_his_card_from_the_fight(server, db):
         assert "Зомби-боец" in said and "Воин" in said
         for row in ("Сила", "Здоровье", "Урон", "Крит"):
             assert row in said, row
-        # Экипировка — картинками по слотам
-        assert await page.locator("#sheet .foe-slot img").count() == 11
+        # Экипировка — та, в которой он дерётся: девять занятых слотов
+        assert await page.locator("#sheet .foe-slot").count() == 9
         assert await page.locator("#sheet .foe-face").count() == 1
+        assert "Разводной ключ" in said, said
+
+        # Нажал на вещь — видно, что она даёт
+        await page.locator("#sheet .foe-slot", has_text="Разводной ключ"
+                           ).click()
+        await page.wait_for_selector("#sheet-title")
+        gear = await page.locator("#sheet").inner_text()
+        assert "Разводной ключ" in gear and "Урон" in gear
+        # И обратно к бойцу
+        await page.locator("#sheet .btn", has_text="К бойцу").click()
+        assert "Зомби-боец" in await page.locator("#sheet-title").inner_text()
         await browser.close()
 
 

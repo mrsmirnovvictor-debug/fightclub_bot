@@ -13396,7 +13396,7 @@ function blackoutFoeSheet(kind) {
   ));
   list.appendChild(paperRows(card.numbers || []));
 
-  const gear = (card.gear || []).filter((one) => one.image);
+  const gear = card.gear || [];
   if (!gear.length) return;
   const shelf = document.createElement("h2");
   shelf.className = "shelf-head";
@@ -13405,20 +13405,54 @@ function blackoutFoeSheet(kind) {
   const row = document.createElement("div");
   row.className = "foe-gear";
   gear.forEach((one) => {
-    const cell = document.createElement("div");
+    const cell = document.createElement("button");
+    cell.type = "button";
     cell.className = "foe-slot";
     cell.title = one.title;
-    const pic = document.createElement("img");
-    pic.src = one.image;
-    pic.alt = one.title;
-    pic.loading = "lazy";
-    // Слот без картинки не держим пустой рамкой: у зомби её может не
-    // быть вовсе, и пустая клетка читалась бы как «тут ничего нет»
-    pic.addEventListener("error", () => cell.remove());
-    cell.appendChild(pic);
+    if (one.image) {
+      const pic = document.createElement("img");
+      pic.src = one.image;
+      pic.alt = one.title;
+      pic.loading = "lazy";
+      // Снимка может не быть — тогда остаётся подпись: пустая рамка
+      // читалась бы как «слот пустой», а он занят
+      pic.addEventListener("error", () => pic.remove());
+      cell.appendChild(pic);
+    }
+    const name = document.createElement("span");
+    name.className = "foe-slot-name";
+    name.textContent = one.title;
+    cell.appendChild(name);
+    // Нажал на вещь — развернулось, что она даёт. Так же, как в
+    // инвентаре бойца: числа лежат под вещью, а не рядом с ней
+    cell.addEventListener("click", () => blackoutGearSheet(card, one));
     row.appendChild(cell);
   });
   list.appendChild(row);
+}
+
+/** Что даёт вещь зомби. Открывается поверх его карточки. */
+function blackoutGearSheet(card, gear) {
+  openSheet(gear.title, gear.slot_title + " · " + card.title);
+  const list = el("sheet-list");
+  if (gear.image) {
+    const pic = document.createElement("img");
+    pic.className = "foe-face";
+    pic.src = gear.image;
+    pic.alt = gear.title;
+    pic.addEventListener("error", () => pic.remove());
+    list.appendChild(pic);
+  }
+  const rows = (gear.bonuses || []).map((one) => [
+    one.title, one.text || String(one.value ?? ""),
+  ]);
+  if (rows.length) list.appendChild(paperRows(rows));
+  const back = document.createElement("div");
+  back.className = "thing-buttons";
+  back.appendChild(
+    button("К бойцу", { onClick: () => blackoutFoeSheet(card.kind) })
+  );
+  list.appendChild(back);
 }
 
 /** Боец станции в том виде, в каком боёвка рисует любого союзника. */

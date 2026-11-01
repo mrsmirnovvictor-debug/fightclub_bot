@@ -1885,17 +1885,22 @@ def test_no_zombie_boss_is_weaker_than_an_ordinary_one():
 
 
 def test_the_zombie_card_tells_who_he_is_and_what_he_wears():
-    """Карточка зомби: уровень, числа и одиннадцать слотов экипировки."""
+    """Карточка зомби: уровень, числа и вещи, в которых он дерётся."""
     from bot.blackout_service import zombie_card
-    from bot.game.blackout import ZOMBIE_SLOTS
-
     from bot.game.blackout import BOSS_LEVEL, FOE_LEVEL
 
     card = zombie_card("fighter")
     assert card["level"] == FOE_LEVEL and card["title"] == "Зомби-боец"
     assert card["image"].endswith("zombie_fighter_v2.png")
-    assert len(card["gear"]) == len(ZOMBIE_SLOTS)
-    assert card["gear"][0]["image"].endswith("equipment/fighter/weapon.jpg")
+    # Слоты — те, что на нём и правда надеты, а не весь список
+    worn = {one["slot"] for one in card["gear"]}
+    assert worn == {
+        "head", "weapon", "offhand", "shirt", "belt", "gloves", "jacket",
+        "pants", "boots",
+    }
+    picture = {one["slot"]: one["image"] for one in card["gear"]}
+    assert picture["weapon"].endswith("equipment/fighter/weapon.jpg")
+    assert picture["offhand"].endswith("equipment/fighter/shield.jpg")
     # Числа — те же, с какими он дерётся, а не придуманные к карточке
     numbers = dict(card["numbers"])
     assert numbers["Здоровье"] == str(card["hp"])
@@ -1903,7 +1908,8 @@ def test_the_zombie_card_tells_who_he_is_and_what_he_wears():
     for code in ("hunter", "brute", "leader"):
         one = zombie_card(code)
         assert one["level"] == BOSS_LEVEL[code]
-        assert one["gear"][0]["image"].endswith(f"equipment/{code}/weapon.jpg")
+        shots = {two["slot"]: two["image"] for two in one["gear"]}
+        assert shots["head"].endswith(f"equipment/{code}/head.jpg")
     assert zombie_card("leader")["image"].endswith("zombie_leader_v2.png")
 
 
@@ -1957,3 +1963,81 @@ async def test_leadership_leaves_the_fallen(db):
     member(fresh.state, people[1].user_id)["down"] = True
     _pass_leadership(fresh.state, NOW)
     assert fresh.state["leader"] == people[2].user_id
+
+
+async def test_the_card_the_bar_and_the_judge_say_the_same_health(db):
+    """Карточка, полоска и судья говорят об одном запасе.
+
+    Строка противника писала голое число, а `_foe_fighter` собирал
+    одетого бойца и меньшее число отбрасывал: зомби выходил в бой с
+    353 из 623, экран показывал полную полоску 353/353, а после удара
+    на −62 писал 561 из 353, пока судья говорил 229 из 623.
+    """
+    from bot.blackout_service import _foe_fighter, boss_foes, squad_for
+    from bot.game.blackout import BEST_PARTY
+
+    row = squad_for("O02", size=1, party=BEST_PARTY)[0]
+    foe = _foe_fighter(row)
+    assert foe.max_hp == row["max"] == row["hp"] == foe.hp
+
+    # И запас босса по составу теперь и правда считается: против
+    # одиночки хозяин этажа стоит не полным
+    for code in ("hunter", "brute", "leader"):
+        alone = _foe_fighter(boss_foes(code, 1)[0])
+        four = _foe_fighter(boss_foes(code, BEST_PARTY)[0])
+        assert alone.max_hp < four.max_hp, code
+        assert alone.max_hp == alone.hp and four.max_hp == four.hp
+
+
+async def test_the_finishing_blow_stays_in_the_log(db):
+    """Добивающий удар остаётся в журнале и в итоге боя.
+
+    Журнал дописывался после проверки победы — и решающий размен в
+    него не попадал вовсе: ход возвращался раньше. На экране зомби
+    умирал сам собой.
+    """
+    people, run = await enter(db, 1)
+    at = await walk(db, people, run, "O02", NOW)
+    for number in range(40):
+        body = await state_for(db, people[0], at)
+        if not body["fight"]:
+            break
+        await act(db, people[0], "fight",
+                  {"attacks": ["head"], "block": ["chest"]}, f"h{number}", at)
+    after = await state_for(db, people[0], at)
+    lines = (after.get("aftermath") or {}).get("lines") or []
+
+    assert lines and "зачищена" in lines[0]
+    assert any("повержен" in one for one in lines), lines
+    # Удар, которым добили, стоит в ленте: по нему видно, чем кончилось
+    assert any("[0/" in one for one in lines), lines
+
+
+def test_the_zombie_wears_his_own_things_not_the_city_ones():
+    """Зомби одет в своё: и на картинке, и в журнале боя.
+
+    Числа у вещей городские — на них посчитано подземелье, — а имя,
+    снимок и то, как судья зовёт оружие, свои. Иначе заражённый
+    рабочий бьёт «длинным мечом героя», а на картинке у него
+    разводной ключ.
+    """
+    from bot.blackout_service import _foe_fighter, squad_for, zombie_card
+    from bot.game.blackout import BEST_PARTY
+
+    foe = _foe_fighter(squad_for("O02", size=1, party=BEST_PARTY)[0])
+    assert foe.weapon == "разводным ключом", foe.weapon
+    worn = {slot.value: own.item for slot, own in foe.equipment.items.items()}
+    assert worn["weapon"].title == "Разводной ключ"
+    assert worn["jacket"].image.endswith("equipment/fighter/armor.jpg")
+
+    card = zombie_card("fighter")
+    names = {one["slot"]: one["title"] for one in card["gear"]}
+    assert names["weapon"] == "Разводной ключ"
+    # И видно, что вещь даёт: по этим строкам её и открывают
+    weapon = next(one for one in card["gear"] if one["slot"] == "weapon")
+    assert any(row["title"] == "Урон" for row in weapon["bonuses"])
+
+    # Своё оружие босса не переименовывается: оно и так своё
+    from bot.blackout_service import boss_foes
+    brute = _foe_fighter(boss_foes("brute", BEST_PARTY)[0])
+    assert "кувалд" in brute.weapon, brute.weapon
