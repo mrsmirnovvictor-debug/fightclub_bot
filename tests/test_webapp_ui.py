@@ -13366,8 +13366,14 @@ async def test_the_finished_quest_is_handed_over_at_the_counter(server):
         ).inner_text()
 
         # «Отойти» сворачивает разговор и держит свёрнутым: бармен с делом
-        # на руках не заговаривает заново на той же перерисовке
+        # на руках не заговаривает заново на той же перерисовке.
+        #
+        # Ждём именно исчезновения разговора, а не полки: полка на
+        # экране уже есть, и ожидание возвращалось тем же кадром, до
+        # перерисовки. Тест от этого падал через раз на полном наборе,
+        # причём на невиновном месте — в самой таверне всё верно
         await page.locator(".talk-replies .btn", has_text="Отойти").click()
+        await page.wait_for_selector("#tavern-body .talk", state="detached")
         await page.wait_for_selector("#tavern-body .shelf")
         assert await page.locator("#tavern-body .talk").count() == 0
         # А позовёт обратно сам бармен: картинка — она же кнопка
@@ -14285,8 +14291,9 @@ async def test_the_keys_step_from_where_the_fighter_looks(server, db):
     people, run = await enter(db, 1)
     body = await state_for(db, people[0], NOW)
     view = body["view"]
-    # На входе боец развёрнут к выходу, а не в стену
-    assert view["facing"] == "east"
+    # На входе боец развёрнут к выходу, а не в стену. Выход один, и
+    # главный коридор станции идёт на север
+    assert view["facing"] == "north"
     assert view["sides"]["ahead"]["room"] == "O02"
     assert view["sides"]["left"]["wall"] and view["sides"]["behind"]["wall"]
     card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
@@ -14305,7 +14312,7 @@ async def test_the_keys_step_from_where_the_fighter_looks(server, db):
         assert await page.locator(".key-left").first.is_disabled()
         assert await page.locator(".key-down").first.is_disabled()
         said = await page.locator("#blackout").inner_text()
-        assert "Смотрим на восток" in said
+        assert "Смотрим на север" in said
         await browser.close()
 
 
@@ -14381,7 +14388,7 @@ async def test_the_minimap_arrow_shows_which_way_the_fighter_looks(server, db):
         one for room in body["map"]["rooms"] for one in room["party"]
         if one["me"]
     ]
-    assert mine and mine[0]["facing"] == "east"
+    assert mine and mine[0]["facing"] == "north"
     card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
 
     async with async_playwright() as pw:
@@ -14395,7 +14402,8 @@ async def test_the_minimap_arrow_shows_which_way_the_fighter_looks(server, db):
         spin = await page.locator(".minimap-arrow").first.get_attribute(
             "transform"
         )
-        assert "rotate(90)" in spin, spin
+        # Стрелка нарисована остриём вверх, и на север её не крутят
+        assert "rotate(0)" in spin, spin
         await browser.close()
 
     # Повернулись — стрелка повернулась
@@ -14405,7 +14413,7 @@ async def test_the_minimap_arrow_shows_which_way_the_fighter_looks(server, db):
         one for room in after["map"]["rooms"] for one in room["party"]
         if one["me"]
     ]
-    assert mine[0]["facing"] == "south"
+    assert mine[0]["facing"] == "east"
 
 
 async def test_the_dungeon_fight_offers_the_tricks(server, db):
