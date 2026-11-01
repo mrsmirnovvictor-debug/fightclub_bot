@@ -1745,3 +1745,29 @@ async def test_a_free_day_neither_holds_the_lock_nor_writes_it(db):
             await _check_lock(db, one.user_id, free)
     finally:
         os.environ.pop("BLACKOUT_NO_LOCK", None)
+
+
+def test_the_map_for_the_artist_matches_the_station_itself():
+    """`docs/blackout_map.md` не отстаёт от карты.
+
+    По этому файлу рисуют панорамы: в нём сказано, на какой стене
+    комнаты проём, а где глухая стена. Стоит кому-то подвинуть комнату
+    или добавить дверь — и файл начнёт врать, а врать он будет
+    художнику, который по нему уже рисует. Поэтому он не пишется
+    руками: `scripts/station_map.py` собирает его из самой карты, а
+    эта проверка следит, чтобы собранное и записанное совпадали.
+
+        python3 scripts/station_map.py
+    """
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "scripts"))
+    from station_map import tables  # noqa: E402
+
+    written = (root / "docs" / "blackout_map.md").read_text(encoding="utf-8")
+    assert written == tables(), (
+        "карта станции изменилась — пересобери docs/blackout_map.md: "
+        "python3 scripts/station_map.py"
+    )
