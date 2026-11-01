@@ -14153,12 +14153,19 @@ async def test_the_raid_screen_stands_in_one_order(server, db):
 
         said = await page.locator("#blackout").inner_text()
         assert "диспетчерской" in said
-        # Гнёзда модулей стоят рядом с джойстиком, в одной с ним строке
+        # Гнёзда модулей стоят рядом с джойстиком, в одной с ним строке,
+        # и это картинки: названия ушли в подсказку
         row = page.locator("#blackout-body .stick-row")
         assert await row.locator(".stick-pad").count() == 1
+        hints = await row.locator(".blackout-item").evaluate_all(
+            "(cells) => cells.map((one) => one.title)"
+        )
+        assert len(hints) == 3, hints
         for title in ("Фазовый синхронизатор", "Силовой сердечник",
                       "Ключ аварийного запуска"):
-            assert title in await row.inner_text(), title
+            assert any(title in hint for hint in hints), hints
+        # Ничего ещё не найдено — все три серые
+        assert await row.locator(".blackout-item.have").count() == 0
         # Схема этажа с туманом
         assert await page.locator("#blackout-body .minimap").count() == 1
         assert await page.locator(".minimap-room.here").count() == 1
@@ -14323,6 +14330,10 @@ async def test_the_stage_draws_the_room_with_its_doorways(server, db):
         # Ход один — значит и проём один, и он не заперт
         assert await page.locator(".stage-door").count() == 1
         assert await page.locator(".stage-door.shut").count() == 0
+        # Проём показывает, где выход, но не уводит: ходят джойстиком
+        assert await page.locator(".stage-door").first.evaluate(
+            "(one) => getComputedStyle(one).pointerEvents"
+        ) == "none"
         # Фон зоны лежит под стенами
         assert await page.locator(".stage-back").count() == 1
         # И шкала перехода на месте, пока никуда не идём
@@ -15279,4 +15290,83 @@ async def test_the_station_picks_the_turn_the_way_every_fight_does(server, db):
             "#blackout-body .zone-list"
         ).last.locator(".zone").first.click()
         assert not await go.is_disabled()
+        await browser.close()
+
+
+async def test_the_launch_parts_are_pictures_grey_until_found(server, db):
+    """Элементы запуска — картинки: серая не найдена, цветная найдена."""
+    from bot.blackout_service import look, raise_flag, snapshot
+    from bot.game.blackout import SYNCHRONIZER
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    run = await look(db, run.id, NOW)
+    raise_flag(run.state, SYNCHRONIZER, NOW)  # один модуль уже у отряда
+    body = snapshot(run, people[0].user_id, NOW)
+    body["screen"] = "run"
+    found = [one for one in body["items"] if one["have"]]
+    assert len(found) == 1 and found[0]["image"], "картинка модуля в снимке"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, blackout=body, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .blackout-item-pic")
+
+        assert await page.locator(".blackout-item-pic").count() == 3
+        # Найденный — в цвете, остальные обесцвечены
+        shades = await page.locator(".blackout-item-pic").evaluate_all(
+            "(pics) => pics.map((one) => getComputedStyle(one).filter)"
+        )
+        colour = [one for one in shades if one in ("none", "")]
+        assert len(colour) == 1, shades
+        assert all("grayscale" in one for one in shades if one not in colour)
+        # Подпись названия ушла в подсказку, а не в строку под картинкой
+        said = await page.locator("#blackout-body .stick-row").inner_text()
+        assert "Фазовый синхронизатор" not in said
+        await browser.close()
+
+
+async def test_a_drawn_room_steps_aside_for_its_own_panorama(server, db):
+    """Есть своя панорама — нарисованная комната уходит целиком.
+
+    Фотография на каждую сторону стоит больше любой геометрии: поверх
+    неё рисовать нечего, кроме зомби и ящика. А нет панорамы — комната
+    остаётся нарисованной, и отдельного списка готовых комнат для
+    этого никто не ведёт: картинка просто не загрузится.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    assert body["view"]["eye"], "адрес своей панорамы собирает сервер"
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    # Панорамы ещё нет: картинка не доходит, комната рисуется
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+        await page.wait_for_selector("#blackout-body .stage-wall")
+        assert await page.locator(".stage-shell").count() == 1
+        await browser.close()
+
+    # Панорама есть — стен не остаётся
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, blackout=body, images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+        await page.wait_for_selector("#blackout-body .stage.photo")
+        assert await page.locator(".stage-shell").count() == 0
+        assert await page.locator(".stage-wall").count() == 0
+        # Зомби и ящик при этом остаются: они на фотографии и рисуются
+        assert await page.locator(".stage-eye").count() == 1
         await browser.close()

@@ -1660,3 +1660,36 @@ async def test_the_board_of_the_fight_shows_both_sides(db):
     after = (await state_for(db, people[0], at))["fight"]
     mine = next(one for one in after["party"] if one["me"])
     assert mine["acted"], "свой ход на доске видно сразу"
+
+
+async def test_the_room_asks_for_its_own_panorama_in_the_way_it_looks(db):
+    """Своя панорама комнаты на каждую сторону: `F101/north.jpg`.
+
+    Списка готовых комнат в коде нет намеренно: папки докладываются в
+    бакет по мере отрисовки, и адрес строится всегда. Чего ещё нет —
+    того экран не получит и нарисует комнату сам.
+    """
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    view = body["view"]
+    room = body["room"]["code"]
+
+    assert view["eye"].endswith(f"panoramas_fp/{room}/{view['facing']}.jpg")
+    assert view["panorama"], "общий вид зоны остаётся запасным"
+
+    # Повернулись — просим другую сторону той же комнаты
+    await act(db, people[0], "turn", {"where": "right"}, "t1", NOW)
+    after = (await state_for(db, people[0], NOW))["view"]
+    assert after["facing"] != view["facing"]
+    assert after["eye"].endswith(f"panoramas_fp/{room}/{after['facing']}.jpg")
+    assert after["eye"] != view["eye"]
+
+
+def test_a_panorama_is_asked_for_only_in_the_four_ways_there_are():
+    """Сторона не из четырёх — не адрес, а пустая строка."""
+    from bot.game.blackout import FACINGS, eye_url
+
+    for facing in FACINGS:
+        assert eye_url("O02", facing).endswith(f"/O02/{facing}.jpg")
+    assert eye_url("O02", "вверх") == ""
+    assert eye_url("", "north") == ""

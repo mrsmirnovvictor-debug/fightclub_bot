@@ -4355,17 +4355,30 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .blackout-items { display: flex; gap: 6px; flex-wrap: wrap; }
 .blackout-item {
   flex: 1 1 30%;
-  min-width: 92px;
-  padding: 6px 8px;
+  min-width: 64px;
+  padding: 4px;
   border-radius: 10px;
   background: var(--panel);
-  opacity: 0.45;
+  text-align: center;
 }
-.blackout-item.have { opacity: 1; outline: 1px solid var(--good); }
+/* Ненайденное — серым, найденное — в цвете. Это и есть вся подпись:
+   названия ушли в подсказку, а цвет читается боковым зрением */
+.blackout-item-pic {
+  width: 100%;
+  max-width: 76px;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
+  filter: grayscale(1) brightness(0.7);
+  opacity: 0.55;
+}
+.blackout-item.have .blackout-item-pic { filter: none; opacity: 1; }
+.blackout-item.have { outline: 1px solid var(--good); }
 /* Карта в колоде соперников нажимается: цель на станции выбирают сами */
 .stack-pick { cursor: pointer; }
-.blackout-shape { font-size: 18px; display: block; }
-.blackout-item-name { font-size: 12px; line-height: 1.25; display: block; }
+.blackout-shape { font-size: 18px; display: block; opacity: 0.5; }
+.blackout-item.have .blackout-shape { opacity: 1; }
 .blackout-item-tag { font-size: 11px; color: var(--muted); }
 
 /* Телеграф: его видно за ход, и прочитать его надо с одного взгляда */
@@ -4391,6 +4404,9 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .stage-canvas { width: 100%; height: auto; display: block; }
 /* Фон приглушён: по нему идут стены, и спорить с ними он не должен */
 .stage-back { opacity: 0.5; }
+/* Своя панорама комнаты — в полную силу: по ней уже ничего не идёт,
+   кроме зомби и ящика, а приглушать фотографию незачем */
+.stage-eye { opacity: 1; }
 
 .stage-floor { fill: #2b2721; opacity: 0.92; }
 .stage-ceiling { fill: #14161a; opacity: 0.95; }
@@ -4405,13 +4421,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   fill-opacity: 0.55;
   stroke: #e8c04a;
   stroke-width: 2;
-  cursor: pointer;
+  /* Не нажимается: ходят джойстиком. Проём тут показывает, где выход,
+     и только — поэтому и указателя под него нет */
+  pointer-events: none;
 }
-.stage-door:hover { fill-opacity: 0.3; stroke-width: 3; }
 .stage-door.fog { stroke-dasharray: 7 5; }
 .stage-door.danger { stroke: var(--hp-red); }
 .stage-door.goal { stroke: var(--hp-green); }
-.stage-door.shut { stroke: var(--muted); fill-opacity: 0.85; cursor: help; }
+.stage-door.shut { stroke: var(--muted); fill-opacity: 0.85; }
 
 .stage-foe { filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.6)); }
 .stage-foe.boss { filter: drop-shadow(0 8px 14px rgba(220, 60, 60, 0.5)); }

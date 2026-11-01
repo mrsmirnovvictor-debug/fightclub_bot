@@ -12979,7 +12979,13 @@ function clockLeft(seconds) {
   return m + ":" + String(s).padStart(2, "0");
 }
 
-/** Три модуля запуска: форма гнезда, а не только цвет. */
+/** Три модуля запуска — картинками: серая не найдена, цветная найдена.
+ *
+ * Названия с формой гнезда тут стояли, пока картинок не было. Теперь
+ * есть, и цвет говорит то же самое быстрее любой подписи: названия
+ * ушли в подсказку, а рядом с джойстиком встало то, что видно боковым
+ * зрением. Картинки нет — остаётся форма гнезда, как раньше.
+ */
 function blackoutItemsBox(data) {
   const box = document.createElement("section");
   box.className = "shelf";
@@ -12992,13 +12998,22 @@ function blackoutItemsBox(data) {
   (data.items || []).forEach((one) => {
     const cell = document.createElement("div");
     cell.className = "blackout-item" + (one.have ? " have" : "");
-    const mark = document.createElement("span");
-    mark.className = "blackout-shape";
-    mark.textContent = one.shape;
-    const name = document.createElement("span");
-    name.className = "blackout-item-name";
-    name.textContent = one.title;
-    cell.append(mark, name);
+    cell.title = one.title
+      + (one.installed ? " — в гнезде" : one.have ? " — у отряда" : " — не найден");
+    if (one.image) {
+      const pic = document.createElement("img");
+      pic.className = "blackout-item-pic";
+      pic.src = one.image;
+      pic.alt = one.title;
+      pic.loading = "lazy";
+      pic.addEventListener("error", () => {
+        pic.remove();
+        cell.appendChild(blackoutItemShape(one));
+      });
+      cell.appendChild(pic);
+    } else {
+      cell.appendChild(blackoutItemShape(one));
+    }
     if (one.installed) {
       const tag = document.createElement("span");
       tag.className = "blackout-item-tag";
@@ -13009,6 +13024,14 @@ function blackoutItemsBox(data) {
   });
   box.appendChild(row);
   return box;
+}
+
+/** Форма гнезда вместо картинки: когда картинки нет или она не дошла. */
+function blackoutItemShape(one) {
+  const mark = document.createElement("span");
+  mark.className = "blackout-shape";
+  mark.textContent = one.shape;
+  return mark;
 }
 
 /** Что делают в этой комнате руками: взять, сдать, нажать, уйти.
@@ -13475,20 +13498,28 @@ function blackoutStageBox(data) {
   svg.setAttribute("viewBox", "0 0 " + STAGE_W + " " + STAGE_H);
   svg.setAttribute("class", "stage-canvas");
 
-  // Фон зоны: он виден в проёме дальней стены и сквозь полумрак
-  if (view.panorama) {
+  // Фон: сперва общий вид зоны — он есть у каждой комнаты и виден в
+  // проёме дальней стены и сквозь полумрак
+  const back = (href, cls) => {
     const pic = document.createElementNS("http://www.w3.org/2000/svg", "image");
-    pic.setAttributeNS(
-      "http://www.w3.org/1999/xlink", "href", view.panorama
-    );
+    pic.setAttributeNS("http://www.w3.org/1999/xlink", "href", href);
     pic.setAttribute("x", 0);
     pic.setAttribute("y", 0);
     pic.setAttribute("width", STAGE_W);
     pic.setAttribute("height", STAGE_H);
     pic.setAttribute("preserveAspectRatio", "xMidYMid slice");
-    pic.setAttribute("class", "stage-back");
-    svg.appendChild(pic);
-  }
+    pic.setAttribute("class", cls);
+    return pic;
+  };
+  if (view.panorama) svg.appendChild(back(view.panorama, "stage-back"));
+
+  // Нарисованная комната лежит отдельной группой: у комнаты, которой
+  // панораму уже отрисовали, она уходит целиком. Своей фотографии на
+  // каждую сторону стоит больше любой геометрии, и поверх неё рисовать
+  // нечего — зомби и ящик встанут на саму фотографию
+  const shell = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  shell.setAttribute("class", "stage-shell");
+  svg.appendChild(shell);
 
   const poly = (points, cls) => {
     const node = document.createElementNS(
@@ -13501,10 +13532,10 @@ function blackoutStageBox(data) {
   const R = FAR.x + FAR.w;
   const B = FAR.y + FAR.h;
   // Пол и потолок — трапеции от края кадра к краю дальней стены
-  svg.appendChild(poly(
+  shell.appendChild(poly(
     [[0, STAGE_H], [STAGE_W, STAGE_H], [R, B], [FAR.x, B]], "stage-floor"
   ));
-  svg.appendChild(poly(
+  shell.appendChild(poly(
     [[0, 0], [STAGE_W, 0], [R, FAR.y], [FAR.x, FAR.y]], "stage-ceiling"
   ));
 
@@ -13519,8 +13550,11 @@ function blackoutStageBox(data) {
   ];
   walls.forEach(([where, shape, hole]) => {
     const side = (view.sides || {})[where] || { wall: true };
-    svg.appendChild(poly(shape, "stage-wall stage-wall-" + where));
+    shell.appendChild(poly(shape, "stage-wall stage-wall-" + where));
     if (side.wall) return;
+    // Проём рисуется, но не нажимается. Ходят джойстиком, и двух
+    // способов сделать шаг на экране быть не должно: нажатая стена
+    // уводила отряд не туда, куда боец собирался, чаще, чем помогала
     const door = document.createElementNS(
       "http://www.w3.org/2000/svg", "rect"
     );
@@ -13537,18 +13571,29 @@ function blackoutStageBox(data) {
       + (side.goal ? " goal" : "")
       + (side.seen ? "" : " fog")
     );
-    const label = side.name + (side.can_go ? "" : " — " + (side.why || "закрыто"));
     const hint = document.createElementNS(
       "http://www.w3.org/2000/svg", "title"
     );
-    hint.textContent = label;
+    hint.textContent = side.name
+      + (side.can_go ? "" : " — " + (side.why || "закрыто"));
     door.appendChild(hint);
-    door.addEventListener("click", () => {
-      if (side.can_go) blackoutWalk(data, side.room);
-      else popup("Станция", label);
-    });
-    svg.appendChild(door);
+    shell.appendChild(door);
   });
+
+  // А если у комнаты есть своя панорама в эту сторону — она ложится
+  // поверх нарисованной и снимает её совсем. Нет такой панорамы (а их
+  // пока нарисовали не всем) — картинка не загрузится, и комната
+  // останется нарисованной: отдельного списка готовых комнат никто не
+  // ведёт, его заменяет сам бакет
+  if (view.eye) {
+    const eye = back(view.eye, "stage-eye");
+    eye.addEventListener("load", () => {
+      shell.remove();
+      box.classList.add("photo");
+    });
+    eye.addEventListener("error", () => eye.remove());
+    svg.appendChild(eye);
+  }
 
   // Зомби: крупно и по центру, босс крупнее прочих
   const foes = view.foes || [];
