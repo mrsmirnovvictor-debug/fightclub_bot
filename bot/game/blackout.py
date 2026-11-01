@@ -156,14 +156,31 @@ EXTRA_WINDOWS: tuple[tuple[str, str], ...] = (
 )
 
 
-def extra_windows() -> tuple[tuple[int, int], ...]:
-    """Разовые окна входа парами «начало, конец» в секундах эпохи."""
-    import os
+# Дни, когда личный откат не держит. Нужны они там же, где и разовые
+# окна, — под плейтест: смотреть станцию весь день, заходя в неё
+# столько раз, сколько понадобится, с откатом в трое суток нельзя.
+#
+# Откат при этом не отменяется, а именно не работает в эти часы: за
+# такой день его и не ставят. Кончился день — правило вернулось само,
+# и чинить после него нечего.
+#
+# Пишутся так же, парами по московским часам; переменная окружения —
+# `BLACKOUT_NO_LOCK`, прочерк убирает их совсем.
+
+FREE_DAYS: tuple[tuple[str, str], ...] = (
+    # Первое ноября: день проверки нового экрана станции
+    ("2026-11-01T00:00", "2026-11-02T00:00"),
+)
+
+
+def _periods(
+    written: str, fallback: tuple[tuple[str, str], ...]
+) -> tuple[tuple[int, int], ...]:
+    """Разобрать пары «начало/конец» по московским часам в секунды эпохи."""
     from datetime import datetime
 
     from bot.game.clock import MOSCOW
 
-    written = os.getenv("BLACKOUT_WINDOWS", "").strip()
     if written == "-":
         return ()
     if written:
@@ -173,7 +190,7 @@ def extra_windows() -> tuple[tuple[int, int], ...]:
             if "/" in one
         ]
     else:
-        pairs = list(EXTRA_WINDOWS)
+        pairs = list(fallback)
     out: list[tuple[int, int]] = []
     for start, end in pairs:
         try:
@@ -186,6 +203,25 @@ def extra_windows() -> tuple[tuple[int, int], ...]:
         if closes > opens:
             out.append((int(opens.timestamp()), int(closes.timestamp())))
     return tuple(sorted(out))
+
+
+def extra_windows() -> tuple[tuple[int, int], ...]:
+    """Разовые окна входа парами «начало, конец» в секундах эпохи."""
+    import os
+
+    return _periods(os.getenv("BLACKOUT_WINDOWS", "").strip(), EXTRA_WINDOWS)
+
+
+def locks_off(moment: int) -> bool:
+    """Держит ли сейчас личный откат. День проверки — не держит."""
+    import os
+
+    return any(
+        opens <= moment < closes
+        for opens, closes in _periods(
+            os.getenv("BLACKOUT_NO_LOCK", "").strip(), FREE_DAYS
+        )
+    )
 
 
 # ---------- отряд ----------

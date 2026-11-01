@@ -1693,3 +1693,47 @@ def test_a_panorama_is_asked_for_only_in_the_four_ways_there_are():
         assert eye_url("O02", facing).endswith(f"/O02/{facing}.jpg")
     assert eye_url("O02", "вверх") == ""
     assert eye_url("", "north") == ""
+
+
+async def test_a_free_day_neither_holds_the_lock_nor_writes_it(db):
+    """День проверки: откат не держит — и не ставится.
+
+    Не ставится это важнее, чем не держит. Иначе последний заход
+    такого дня запирал бы станцию на трое суток уже после полуночи —
+    за день, в который правило не работало.
+    """
+    import os
+    from datetime import datetime
+
+    from bot.blackout_service import _check_lock, _hold
+    from bot.game.clock import MOSCOW
+
+    def msk(text: str) -> int:
+        return int(
+            datetime.fromisoformat(text).replace(tzinfo=MOSCOW).timestamp()
+        )
+
+    one = make_player(1, "Тайлер")
+    await db.save_player(one)
+    os.environ["BLACKOUT_NO_LOCK"] = "2026-11-01T00:00/2026-11-02T00:00"
+    try:
+        free = msk("2026-11-01T12:00")
+        await _hold(db, one.user_id, LOCK_WON, free)
+        assert await db.blackout_locked(one.user_id) is None, (
+            "в день проверки откат не ставят"
+        )
+        await _check_lock(db, one.user_id, free)  # и не держат
+
+        # Назавтра правило вернулось само
+        after = msk("2026-11-02T12:00")
+        await _hold(db, one.user_id, LOCK_WON, after)
+        assert await db.blackout_locked(one.user_id) is not None
+        with pytest.raises(BlackoutError, match="пройдена"):
+            await _check_lock(db, one.user_id, after)
+
+        # Прочерк убирает дни проверки совсем
+        os.environ["BLACKOUT_NO_LOCK"] = "-"
+        with pytest.raises(BlackoutError):
+            await _check_lock(db, one.user_id, free)
+    finally:
+        os.environ.pop("BLACKOUT_NO_LOCK", None)

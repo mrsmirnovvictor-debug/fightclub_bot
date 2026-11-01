@@ -91,6 +91,7 @@ from bot.game.blackout import (
     doorways,
     eye_url,
     heading,
+    locks_off,
     extra_windows,
     door_open,
     reward_for,
@@ -582,6 +583,8 @@ def _check_time(run: Run, now: int) -> None:
 
 async def _check_lock(db: Database, user_id: int, now: int) -> None:
     """Не закрыта ли станция этому бойцу. Закрыта — скажем, до какого часа."""
+    if locks_off(now):  # день проверки: откат не держит
+        return
     row = await db.blackout_locked(user_id)
     if row is None or int(row["until"]) <= now:
         return
@@ -612,6 +615,11 @@ def _left_text(seconds: int) -> str:
 async def _hold(db: Database, user_id: int, reason: str, now: int) -> None:
     """Закрыть станцию этому бойцу: трое суток за победу, три часа за смерть."""
     if user_id <= 0:  # союзники сервера отката не знают
+        return
+    # В день проверки откат не ставят вовсе, а не просто не смотрят:
+    # иначе последний заход этого дня запирал бы станцию на трое суток
+    # уже после полуночи — за день, в который правило не работало
+    if locks_off(now):
         return
     span = (
         WON_COOLDOWN_DAYS * 86_400
