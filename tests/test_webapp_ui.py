@@ -15406,3 +15406,50 @@ async def test_the_room_takes_the_png_when_there_is_no_jpg(server, db):
         href = await page.locator(".stage-eye").first.get_attribute("href")
         assert href.endswith(".png"), href
         await browser.close()
+
+
+async def test_the_screen_does_not_redraw_itself_when_nothing_changed(
+    server, db
+):
+    """Тот же снимок — тот же экран, без моргания раз в пять секунд.
+
+    Снимок приходит каждые две-шесть секунд, и почти всегда он тот же:
+    отряд стоит, никто не ходит. Перерисовка по нему создавала заново
+    и картинки, а трёхмегабайтная панорама на это отвечает морганием.
+    Проверяем по самому узлу сцены: пережил опрос — значит картинку
+    никто не выбрасывал.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .stage-canvas")
+
+        # Метим узел сцены и просим перерисовать тем же снимком
+        await page.evaluate(
+            "() => { document.querySelector('.stage').dataset.mark = 'one'; }"
+        )
+        await page.evaluate("() => renderBlackout(blackoutData)")
+        assert await page.locator(".stage[data-mark=one]").count() == 1, (
+            "сцену пересобрали на том же снимке"
+        )
+
+        # А когда боец повернулся — сцена новая, иначе он смотрел бы
+        # в старую стену
+        await page.evaluate(
+            """() => {
+                const next = JSON.parse(JSON.stringify(blackoutData));
+                next.view.facing = "south";
+                next.view.facing_title = "юг";
+                renderBlackout(next);
+            }"""
+        )
+        assert await page.locator(".stage[data-mark=one]").count() == 0
+        await browser.close()

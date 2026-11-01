@@ -12681,6 +12681,11 @@ function stopWatchingStation() {
   // он заодно снова завёл бы опрос, который тут только что сняли
   if (blackoutWalkTimer) clearInterval(blackoutWalkTimer);
   blackoutWalkTimer = null;
+  // Снимок, по которому нарисован экран, забываем: вернувшись, его
+  // рисуют заново, а не достают из прошлого захода
+  blackoutShot = "";
+  blackoutViewShot = "";
+  blackoutStage = null;
 }
 
 async function loadBlackout() {
@@ -12714,9 +12719,28 @@ function stamp() {
   return String(Date.now()) + ":" + Math.random().toString(36).slice(2, 8);
 }
 
-function renderBlackout(data) {
-  blackoutData = data;
+// Чем экран нарисован сейчас. Снимок приходит каждые две-шесть
+// секунд, и почти всегда он тот же самый: отряд стоит, никто не
+// ходит. Перерисовывать по нему экран заново — значит каждые пять
+// секунд создавать заново и картинки, а трёхмегабайтная панорама на
+// это отвечает морганием.
+let blackoutShot = "";
+let blackoutViewShot = "";
+let blackoutStage = null;
+
+function renderBlackout(data, force) {
   const body = el("blackout-body");
+  const shot = JSON.stringify(data);
+  if (!force && shot === blackoutShot && body.childElementCount) {
+    blackoutData = data;
+    armStationPoll(
+      data && (data.walking || data.fight)
+        ? STATION_POLL_LIVE : STATION_POLL_IDLE
+    );
+    return;
+  }
+  blackoutShot = shot;
+  blackoutData = data;
   body.textContent = "";
   if (!data || !data.screen) return;
   // Темп опроса по тому, что происходит: в пути и в бою секунды
@@ -12894,7 +12918,7 @@ function paintBlackoutRun(data, body) {
 
   // Сцена и шкала перехода стоят всегда: комнату с её зомби видно и в
   // бою, а шкала — то место, где вообще что-либо происходит
-  if (data.view) body.appendChild(blackoutStageBox(data));
+  if (data.view) body.appendChild(blackoutStageKeep(data));
   body.appendChild(blackoutWalkBar(data));
 
   // Бой забирает экран целиком: ниже шкалы остаётся только он, как в
@@ -12926,11 +12950,28 @@ function paintBlackoutRun(data, body) {
   body.appendChild(blackoutSquadBox(data.squad));
 }
 
-/** Джойстик и гнёзда модулей одной строкой.
+/** Сцена, но та же самая, пока вид не изменился.
+ *
+ * Снимок приходит чаще, чем меняется комната, и на каждый из них
+ * строить сцену заново незачем: браузер выбрасывает загруженную
+ * картинку вместе со старым узлом и берётся за неё опять — отсюда и
+ * моргание раз в несколько секунд. Узел переживает перерисовку: пока
+ * боец стоит и смотрит в ту же сторону, на экран возвращается он же.
+ */
+function blackoutStageKeep(data) {
+  const shot = JSON.stringify(data.view);
+  if (shot === blackoutViewShot && blackoutStage) return blackoutStage;
+  blackoutViewShot = shot;
+  blackoutStage = blackoutStageBox(data);
+  return blackoutStage;
+}
+
+/** Джойстик, под ним — модули в ряд.
  *
  * Модули стоят у самого джойстика не для красоты: по ним смотрят
  * ровно тогда, когда решают, куда идти дальше, — а идут отсюда же.
- * На узком телефоне строка переносится, и гнёзда уходят под пад.
+ * Рядом, сбоку, они отнимали у пада ширину, и на узком телефоне
+ * клавиши жались; под ним — своя строка во всю ширину.
  */
 function blackoutStickRow(data) {
   const row = document.createElement("div");
@@ -13005,7 +13046,6 @@ function blackoutItemsBox(data) {
       pic.className = "blackout-item-pic";
       pic.src = one.image;
       pic.alt = one.title;
-      pic.loading = "lazy";
       pic.addEventListener("error", () => {
         pic.remove();
         cell.appendChild(blackoutItemShape(one));
@@ -13255,7 +13295,7 @@ function blackoutBoard(data) {
     card.classList.add("stack-pick");
     card.addEventListener("click", () => {
       blackoutTarget = foe.id;
-      renderBlackout(blackoutData);
+      renderBlackout(blackoutData, true);
     });
   });
   box.appendChild(
@@ -13848,7 +13888,7 @@ function blackoutStickBox(data) {
           : "Кто стоит рядом и может пройти в ту же дверь — идёт следом.",
         onClick: () => {
           blackoutAlone = !blackoutAlone;
-          renderBlackout(blackoutData);
+          renderBlackout(blackoutData, true);
         },
       })
     );

@@ -4490,23 +4490,18 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   gap: 6px;
   margin: 10px 0;
 }
-/* Джойстик и гнёзда модулей одной строкой: по модулям смотрят ровно
-   тогда, когда решают, куда идти дальше, — а идут отсюда же. Не влезло
-   в ширину — гнёзда переносятся под пад, а не жмут клавиши */
+/* Джойстик, под ним — гнёзда модулей в ряд. Сбоку они отнимали у пада
+   ширину, и на узком телефоне клавиши жались друг к другу */
 .stick-row {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
 }
-.stick-row .stick-box { flex: 0 0 auto; }
-.stick-row .shelf { flex: 1 1 148px; min-width: 148px; margin: 0; }
+.stick-row .stick-box { align-self: center; }
+.stick-row .shelf { margin: 0 0 8px; }
 .stick-row .shelf-head { font-size: 13px; margin-bottom: 6px; }
-/* Рядом с падом гнёзда стоят столбиком: три в ряд тут не помещаются,
-   а перенос по одному делал бы строку то в два, то в три этажа */
-.stick-row .blackout-items { flex-direction: column; }
-.stick-row .blackout-item { flex: 0 0 auto; min-width: 0; }
+.stick-row .blackout-item { flex: 1 1 0; }
 /* Шесть клавиш крестом: четыре шага и два поворота по бокам. Шаг
    считается от взгляда, поэтому на них стрелки, а не стороны света */
 .stick-pad {
