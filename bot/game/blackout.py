@@ -60,8 +60,44 @@ def art_url(path: str) -> str:
 # этим незачем — экран пробует по очереди, пока не найдёт.
 EYE_FORMATS = ("jpg", "png")
 
+# Комнаты, у которых вид в одну сторону меняется по ходу рейда. Пока
+# флага нет, берётся кадр из подпапки; поднялся — обычный.
+#
+# Пока таких мест одно: западная стена E08 до откачки — запертый
+# затопленный шлюз, после неё — открытый проход в E10. Рисунок проёма
+# хода не разрешает и сам по себе ничего не меняет: ход открывает
+# флаг, кадр лишь показывает, что видно
+EYE_STAGES = {
+    ("E08", "west"): ("flooded", "drainage_open"),
+}
 
-def eye_urls(room: str, facing: str) -> tuple[str, ...]:
+# Кадры, направление которых подтверждено по самому рисунку. Таблица
+# ведётся руками и пополняется по мере отрисовки: это знание о
+# картинках, а не о карте, вывести его из манифеста неоткуда. Пустая
+# строка — вид без хода: с южной стены F304 видна галерея, а пройти
+# туда нельзя.
+#
+# Лестницу такой кадр решает: у хода на другой этаж своего направления
+# нет, стену он занимает свободную, и если художник уже нарисовал её
+# северной — пусть северная и будет. На ходы внутри этажа кадр не
+# влияет: там сторону задают координаты, и спор между кадром и планом
+# решает человек. `scripts/station_map.py` такие споры перечисляет.
+DRAWN_EYES = {
+    "F303": {"north": "F304", "west": "F302"},
+    "F304": {"north": "F305", "south": "", "west": "F303"},
+    "F305": {"north": "F306", "south": "F304"},
+    "F306": {"north": "F307", "south": "F305"},
+    "F307": {"north": "F308", "south": "F306"},
+    "F308": {"north": "F401", "south": "F307"},
+    "F401": {"east": "F402", "south": "F308"},
+    "F406": {"east": "F405", "south": "F301"},
+    "E01": {"east": "E02", "west": "B01"},
+}
+
+
+def eye_urls(
+    room: str, facing: str, flags: Iterable[str] = ()
+) -> tuple[str, ...]:
     """Чем может быть панорама этой комнаты в эту сторону, по порядку.
 
     Списка комнат, которым панорамы уже нарисованы, тут нет намеренно.
@@ -74,8 +110,13 @@ def eye_urls(room: str, facing: str) -> tuple[str, ...]:
     """
     if not room or facing not in FACINGS:
         return ()
+    stage = EYE_STAGES.get((room, facing))
+    folders = [""]
+    if stage is not None and stage[1] not in (flags or ()):
+        folders.insert(0, stage[0] + "/")
     return tuple(
-        art_url(f"panoramas_fp/{room}/{facing}.{kind}")
+        art_url(f"panoramas_fp/{room}/{where}{facing}.{kind}")
+        for where in folders
         for kind in EYE_FORMATS
     )
 
@@ -419,6 +460,14 @@ def heading(dx: int, dy: int) -> str:
     return "south" if dy > 0 else "north"
 
 
+def _drawn_side(room: str, there: str) -> str:
+    """На какой стене художник нарисовал этот ход, если нарисовал."""
+    for side, code in (DRAWN_EYES.get(room) or {}).items():
+        if code == there:
+            return side
+    return ""
+
+
 def doorways(room: str) -> dict[str, str]:
     """Какая дверь на какой стене. Сторона → код комнаты за ней.
 
@@ -462,11 +511,11 @@ def doorways(room: str) -> dict[str, str]:
         # южную стену, что и настоящая дверь, и одна из них уезжала на
         # чужую стену
         if neighbour.layer != here.layer:
-            doors.append((there, None))
+            doors.append((there, None, _drawn_side(room, there)))
             continue
         dx, dy = neighbour.x - here.x, neighbour.y - here.y
         angle = None if not dx and not dy else math.atan2(dy, dx)
-        doors.append((there, angle))
+        doors.append((there, angle, ""))
     if not doors:
         return {}
 
@@ -478,8 +527,11 @@ def doorways(room: str) -> dict[str, str]:
         "north": -math.pi / 2,
     }
 
-    def cost(angle: float | None, side: str) -> float:
+    def cost(angle: float | None, side: str, pin: str = "") -> float:
         """Насколько дверь придётся повернуть, чтобы попасть в эту стену."""
+        if pin:
+            # Лестница, которую художник уже нарисовал: стена назначена
+            return 0.0 if side == pin else 10.0
         if angle is None:
             return 0.0  # лестнице всё равно, в какую стену её поставят
         gap = abs(angle - corners[side]) % (2 * math.pi)
@@ -500,9 +552,11 @@ def doorways(room: str) -> dict[str, str]:
     for order in permutations(sides, min(len(doors), len(sides))):
         total = 0.0
         wrong = 0
-        for (_, angle), side in zip(doors, order):
-            total += cost(angle, side)
-            if angle is not None and nearest(angle) != side:
+        for (_, angle, pin), side in zip(doors, order):
+            total += cost(angle, side, pin)
+            if pin and side != pin:
+                wrong += 1
+            elif not pin and angle is not None and nearest(angle) != side:
                 wrong += 1
         mark = (round(total, 9), wrong)
         if best is None or mark < best[:2]:
@@ -511,7 +565,7 @@ def doorways(room: str) -> dict[str, str]:
                 mark[1],
                 {
                     side: there
-                    for (there, _), side in zip(doors, order)
+                    for (there, _, _), side in zip(doors, order)
                 },
             )
     return best[2] if best else {}
@@ -647,14 +701,18 @@ LAYER_DEPTH = {
     "F4": 4,
 }
 
+# Рисованный план этажа — тот, по которому отрисованы кадры от первого
+# лица. Ортогональные планы пришли на смену прежним `route_*.svg`:
+# комнаты на них стоят по клеткам, и координаты в манифесте разложены
+# по ним же, иначе компас игрока спорил бы с рисунком
 LAYER_MAPS = {
-    "O": "maps/route_O.svg",
-    "F1": "maps/route_F1.svg",
-    "F2": "maps/route_F2.svg",
-    "B": "maps/route_B.svg",
-    "F3": "maps/route_F3.svg",
-    "F4": "maps/route_F4.svg",
-    "E": "maps/route_E.svg",
+    "O": "maps/orthogonal/O.png",
+    "F1": "maps/orthogonal/F1.png",
+    "F2": "maps/orthogonal/F2.png",
+    "B": "maps/orthogonal/B.png",
+    "F3": "maps/orthogonal/F3.png",
+    "F4": "maps/orthogonal/F4.png",
+    "E": "maps/orthogonal/E.png",
 }
 
 
@@ -1294,6 +1352,8 @@ __all__ = [
     "ITEM_ART",
     "ITEM_SHAPES",
     "ITEM_TITLES",
+    "DRAWN_EYES",
+    "EYE_STAGES",
     "LAYER_DEPTH",
     "LAYER_MAPS",
     "LAYER_SHORT",

@@ -208,11 +208,63 @@ async def enter(
 
 
 def test_the_manifest_is_a_valid_map():
-    """Манифест сходится: 64 комнаты, 73 двери и ни одной висящей."""
+    """Манифест сходится: 64 комнаты, 70 дверей и ни одной висящей.
+
+    Дверей стало 70 после ревью карты: трёх ходов — F103–F105,
+    B02–B06 и E02–E04 — на рисованных планах нет, и в игре их тоже
+    быть не должно. Связность от этого не пострадала: каждая из
+    комнат осталась на своём пути, исчезли только обходные дорожки.
+    """
     place = station()
     assert len(place.rooms) == 64
-    assert len(place.doors) == 73
+    assert len(place.doors) == 70
+    for gone in (("F103", "F105"), ("B02", "B06"), ("E02", "E04")):
+        assert not [
+            door for door in place.doors
+            if tuple(sorted((door.a, door.b))) == gone
+        ], gone
     assert check_map() == []
+
+
+def test_the_rooms_stand_on_the_cells_of_the_drawn_plans():
+    """Комнаты стоят по клеткам, и шаг у сетки один на всю станцию.
+
+    По этим координатам считается, на какой стене проём, поэтому
+    съехавшая на полклетки комната — это не кривая миникарта, а
+    кадр, нарисованный глухой стеной там, где дверь.
+    """
+    place = station()
+    step = 300
+    for layer in place.layers():
+        rooms = place.rooms_on(layer)
+        left = min(one.x for one in rooms)
+        top = min(one.y for one in rooms)
+        for one in rooms:
+            assert not (one.x - left) % step, one.code
+            assert not (one.y - top) % step, one.code
+
+
+def test_the_stair_stands_where_the_artist_drew_it():
+    """Лестница занимает ту стену, на которой её уже нарисовали.
+
+    Своего направления у хода на другой этаж нет: координаты
+    соседнего плана лежат в своей системе, и стену он занимает
+    свободную. Значит, спорить с кадром ему нечем — где художник
+    нарисовал проём, там ему и быть.
+    """
+    from bot.game.blackout import DRAWN_EYES, doorways
+
+    place = station()
+    checked = 0
+    for code, sides in DRAWN_EYES.items():
+        here = place.room(code)
+        for side, there in sides.items():
+            mate = place.room(there) if there else None
+            if mate is None or mate.layer == here.layer:
+                continue
+            assert doorways(code).get(side) == there, (code, side)
+            checked += 1
+    assert checked >= 4, "лестниц на подтверждённых кадрах больше"
 
 
 def test_no_door_goes_diagonally():
@@ -1825,6 +1877,27 @@ def test_a_panorama_is_asked_for_only_in_the_four_ways_there_are():
             assert one.endswith(f"/O02/{facing}.{kind}")
     assert eye_urls("O02", "вверх") == ()
     assert eye_urls("", "north") == ()
+
+
+def test_the_flooded_gate_is_shown_until_the_water_is_pumped_out():
+    """Западная стена E08 до откачки — запертый затопленный шлюз.
+
+    Это единственное место, где вид комнаты меняется по ходу рейда,
+    и меняется он по флагу, а не по тому, что нарисовано: кадр
+    открытого прохода хода не открывает, его открывает `drainage_open`.
+    """
+    from bot.game.blackout import eye_urls
+
+    before = eye_urls("E08", "west")
+    after = eye_urls("E08", "west", {"drainage_open": 1})
+    assert before[0].endswith("/E08/flooded/west.jpg")
+    assert after[0].endswith("/E08/west.jpg")
+    # Кадр после откачки остаётся запасным и до неё: если затопленного
+    # ещё не нарисовали, экран возьмёт обычный, а не нарисует комнату сам
+    assert before[-len(after):] == after
+    # Соседних стен и соседних комнат это не касается
+    assert eye_urls("E08", "north") == eye_urls("E08", "north", {"any": 1})
+    assert eye_urls("E07", "west")[0].endswith("/E07/west.jpg")
 
 
 async def test_a_free_day_neither_holds_the_lock_nor_writes_it(db):
