@@ -6853,17 +6853,24 @@ async def test_the_casino_opens_only_by_its_own_door(server):
         await page.wait_for_selector("#casino:not(.hidden)")
         assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
 
-        # Рейд остаётся кнопкой в шапке — тем же приёмом, которым в
-        # доме открывают работу
+        # Рейд живёт за кнопкой в шапке — тем же приёмом, которым в
+        # доме открывают работу. Нажата — рейд
         await page.locator(".raid-entry").click()
         await page.wait_for_selector("#club-raid:not(.hidden)")
         assert await page.locator("#club-title").inner_text() == "🎲 Казино"
-        chips = await page.locator("#club-sections .chip").all_inner_texts()
-        assert chips == ["Рейд", "🎰 Зал"]
+        assert "on" in (
+            await page.locator(".raid-entry").get_attribute("class")
+        )
+        # Вкладок «Рейд / Зал» рядом с ней нет: два способа сделать одно
+        # и то же человек читает как два разных дела
+        assert await page.locator("#club-sections .chip").count() == 0
 
-        # И обратно в зал — такой же фишкой
-        await page.locator("#club-sections .chip").last.click()
+        # Отжата — зал. Кнопка одна, и она же переключатель
+        await page.locator(".raid-entry").click()
         await page.wait_for_selector("#casino:not(.hidden)")
+        assert "on" not in (
+            await page.locator("#casino .raid-entry").get_attribute("class")
+        )
         await browser.close()
 
 
@@ -15030,7 +15037,14 @@ async def test_the_raid_house_keeps_the_raid_button_in_the_header(server):
         assert "on" in (
             await page.locator(".raid-entry").get_attribute("class")
         )
+
+        # В казино она ещё и переключатель: нажата — рейд, отжата — зал
         await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#casino:not(.hidden)")
+        assert "on" not in (
+            await page.locator("#casino .raid-entry").get_attribute("class")
+        )
+        await page.locator("#casino .raid-entry").click()
         await page.wait_for_selector("#club-raid:not(.hidden)")
         await browser.close()
 
