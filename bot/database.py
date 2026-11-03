@@ -302,6 +302,74 @@ CREATE TABLE IF NOT EXISTS blackout_commands (
     PRIMARY KEY (run_id, command_id)
 );
 
+-- ---------- казино ----------
+--
+-- Кошелёк казино. Фишки держим отдельно от кредитов, и не ради
+-- красоты: ставка уходит в резерв, а резерв — это деньги, которые уже
+-- не твои и ещё не казино. Лежи они колонкой у бойца, всякое
+-- `save_player` с устаревшим объектом затирало бы выигрыш, пришедший
+-- секундой раньше.
+CREATE TABLE IF NOT EXISTS casino_wallets (
+    user_id  INTEGER PRIMARY KEY,
+    chips    INTEGER NOT NULL DEFAULT 0,
+    reserved INTEGER NOT NULL DEFAULT 0,
+    at       INTEGER NOT NULL DEFAULT 0
+);
+
+-- Стол. Как и рейд, он читается и пишется целиком под проверкой
+-- версии: партия — это одно состояние, и две команды не должны
+-- раздать карту дважды
+CREATE TABLE IF NOT EXISTS casino_tables (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    game       TEXT    NOT NULL DEFAULT '',
+    phase      TEXT    NOT NULL DEFAULT 'wait',
+    round      INTEGER NOT NULL DEFAULT 0,
+    version    INTEGER NOT NULL DEFAULT 0,
+    opened_at  INTEGER NOT NULL DEFAULT 0,
+    touched_at INTEGER NOT NULL DEFAULT 0,
+    closed_at  INTEGER NOT NULL DEFAULT 0,
+    state      TEXT    NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS casino_table_game
+    ON casino_tables(game, closed_at);
+
+-- Кто где сидит. Два ключа, и оба — правила, а не ускорение: первичный
+-- не даёт двоим занять одно место при одновременной посадке, а
+-- уникальный по игроку — одному человеку сесть на два места сразу
+CREATE TABLE IF NOT EXISTS casino_seats (
+    table_id INTEGER NOT NULL,
+    seat     INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    sat_at   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (table_id, seat)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS casino_seat_player
+    ON casino_seats(user_id);
+
+-- Движения денег по партии. Первичный ключ держит то, чего нельзя
+-- повторять: одна ставка, одна выплата и один возврат на игрока за
+-- партию. Повтор сетевого запроса упрётся в ключ, а не в проверку
+CREATE TABLE IF NOT EXISTS casino_moves (
+    table_id INTEGER NOT NULL,
+    round    INTEGER NOT NULL,
+    user_id  INTEGER NOT NULL,
+    kind     TEXT    NOT NULL,
+    amount   INTEGER NOT NULL DEFAULT 0,
+    at       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (table_id, round, user_id, kind)
+);
+
+-- Выполненные команды стола: повторный запрос отдаёт прежний ответ
+CREATE TABLE IF NOT EXISTS casino_commands (
+    table_id   INTEGER NOT NULL,
+    command_id TEXT    NOT NULL,
+    said       TEXT    NOT NULL DEFAULT '',
+    at         INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (table_id, command_id)
+);
+
 CREATE TABLE IF NOT EXISTS job_bids (
     user_id INTEGER NOT NULL,
     code    TEXT    NOT NULL,
@@ -4600,6 +4668,279 @@ class Database:
             (user_id, cycle),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
+
+    # ---------- казино ----------
+    #
+    # Деньги казино живут отдельно от городских, и каждое их движение
+    # проходит через эти методы. Правило одно: ни одной проверки «в
+    # коде перед записью» — всё, чего нельзя сделать дважды, держит
+    # условие в самом запросе или первичный ключ.
+
+    async def casino_wallet(self, user_id: int) -> dict:
+        """Кошелёк казино: фишки на руках и то, что уже поставлено."""
+        async with self.conn.execute(
+            "SELECT chips, reserved FROM casino_wallets WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return {"chips": 0, "reserved": 0}
+        return {"chips": int(row["chips"]), "reserved": int(row["reserved"])}
+
+    async def casino_exchange(
+        self, user_id: int, chips: int, credits: int, now: int
+    ) -> bool:
+        """Обмен в обе стороны одной сделкой. False — не хватило.
+
+        `chips` и `credits` со знаком и противоположны: +100 фишек это
+        −100 кредитов. Обе стороны меняются под условием «не уйти в
+        минус», и если вторая не прошла, первая откатывается — иначе
+        фишки появлялись бы из воздуха на обрыве связи.
+        """
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO casino_wallets (user_id, at) VALUES (?,?)",
+            (user_id, now),
+        )
+        took = await self.conn.execute(
+            "UPDATE casino_wallets SET chips = chips + ?, at = ? "
+            "WHERE user_id = ? AND chips + ? >= 0",
+            (chips, now, user_id, chips),
+        )
+        if took.rowcount <= 0:
+            await self.conn.rollback()
+            return False
+        gave = await self.conn.execute(
+            "UPDATE players SET credits = credits + ? "
+            "WHERE user_id = ? AND credits + ? >= 0",
+            (credits, user_id, credits),
+        )
+        if gave.rowcount <= 0:
+            await self.conn.rollback()
+            return False
+        await self.conn.commit()
+        return True
+
+    async def casino_stake(
+        self, table_id: int, round_no: int, user_id: int,
+        delta: int, now: int,
+    ) -> bool:
+        """Передвинуть ставку между руками и резервом. False — нечем.
+
+        Резерв это деньги, которые уже не у игрока и ещё не у казино:
+        на балансе их не видно, вернуть их может только расчёт партии
+        или отмена. `delta` со знаком, потому что до закрытия приёма
+        ставку можно и поднять, и снять: в рулетке фишки кладут по
+        одной и последнюю разрешено забрать.
+
+        Строка журнала на партию одна и всегда равна тому, что сейчас
+        в резерве у этого места: тогда расчёт сверяется с журналом, а
+        не с памятью о том, сколько раз нажимали.
+        """
+        if not delta:
+            return False
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO casino_wallets (user_id, at) VALUES (?,?)",
+            (user_id, now),
+        )
+        if delta > 0:
+            moved = await self.conn.execute(
+                "UPDATE casino_wallets SET chips = chips - ?, "
+                "reserved = reserved + ?, at = ? "
+                "WHERE user_id = ? AND chips >= ?",
+                (delta, delta, now, user_id, delta),
+            )
+        else:
+            back = -delta
+            moved = await self.conn.execute(
+                "UPDATE casino_wallets SET chips = chips + ?, "
+                "reserved = reserved - ?, at = ? "
+                "WHERE user_id = ? AND reserved >= ?",
+                (back, back, now, user_id, back),
+            )
+        if moved.rowcount <= 0:
+            await self.conn.rollback()
+            return False
+        await self.conn.execute(
+            "INSERT INTO casino_moves (table_id, round, user_id, kind, "
+            "amount, at) VALUES (?,?,?,'bet',?,?) "
+            "ON CONFLICT(table_id, round, user_id, kind) DO UPDATE SET "
+            "amount = amount + excluded.amount, at = excluded.at",
+            (table_id, round_no, user_id, delta, now),
+        )
+        await self.conn.commit()
+        return True
+
+    async def casino_settle(
+        self, table_id: int, round_no: int, user_id: int,
+        staked: int, paid: int, kind: str, now: int,
+    ) -> bool:
+        """Закрыть партию для одного места: снять резерв и начислить.
+
+        False — для этого места и этой партии расчёт уже проводили.
+        Держит это первичный ключ журнала, а не проверка в коде:
+        повторный расчёт после перезапуска сервера обязан быть
+        безопасным, и безопасен он потому, что вторая строка просто не
+        встанет.
+
+        `kind` — `payout` или `refund`. Возврат и выплата
+        взаимоисключающие: у партии один исход.
+        """
+        written = await self.conn.execute(
+            "INSERT OR IGNORE INTO casino_moves "
+            "(table_id, round, user_id, kind, amount, at) VALUES (?,?,?,?,?,?)",
+            (table_id, round_no, user_id, kind, paid, now),
+        )
+        if written.rowcount <= 0:
+            await self.conn.rollback()
+            return False
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO casino_wallets (user_id, at) VALUES (?,?)",
+            (user_id, now),
+        )
+        await self.conn.execute(
+            "UPDATE casino_wallets SET chips = chips + ?, "
+            "reserved = MAX(0, reserved - ?), at = ? WHERE user_id = ?",
+            (paid, staked, now, user_id),
+        )
+        await self.conn.commit()
+        return True
+
+    async def casino_moves(
+        self, table_id: int, round_no: int, user_id: int = 0
+    ) -> list[dict]:
+        """Журнал партии: по чему сверяют расчёт."""
+        where = "table_id = ? AND round = ?"
+        args: list[int] = [table_id, round_no]
+        if user_id:
+            where += " AND user_id = ?"
+            args.append(user_id)
+        async with self.conn.execute(
+            f"SELECT * FROM casino_moves WHERE {where} ORDER BY kind", args
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def casino_open(self, game: str, now: int) -> int:
+        """Открыть стол. Возвращает его номер."""
+        cursor = await self.conn.execute(
+            "INSERT INTO casino_tables (game, phase, opened_at, touched_at) "
+            "VALUES (?,'wait',?,?)",
+            (game, now, now),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def casino_read(self, table_id: int) -> dict | None:
+        async with self.conn.execute(
+            "SELECT * FROM casino_tables WHERE id = ?", (table_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def casino_write(
+        self, table_id: int, version: int, phase: str, round_no: int,
+        state: str, now: int,
+    ) -> bool:
+        """Записать стол, если его никто не трогал. False — разошлась версия."""
+        cursor = await self.conn.execute(
+            "UPDATE casino_tables SET state = ?, phase = ?, round = ?, "
+            "version = ?, touched_at = ? WHERE id = ? AND version = ?",
+            (state, phase, round_no, version + 1, now, table_id, version),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def casino_close(self, table_id: int, now: int) -> None:
+        """Закрыть пустой стол и снять с него места."""
+        await self.conn.execute(
+            "UPDATE casino_tables SET closed_at = ? WHERE id = ?",
+            (now, table_id),
+        )
+        await self.conn.execute(
+            "DELETE FROM casino_seats WHERE table_id = ?", (table_id,)
+        )
+        await self.conn.commit()
+
+    async def casino_tables(self, game: str = "") -> list[dict]:
+        """Открытые столы — все или одной игры."""
+        where = "closed_at = 0"
+        args: list[str] = []
+        if game:
+            where += " AND game = ?"
+            args.append(game)
+        async with self.conn.execute(
+            f"SELECT * FROM casino_tables WHERE {where} ORDER BY id", args
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def casino_sit(
+        self, table_id: int, seat: int, user_id: int, now: int
+    ) -> bool:
+        """Занять место. False — место занято или боец уже сидит.
+
+        Обе беды ловит база: первичный ключ по месту и уникальный по
+        игроку. Гонка за последним местом решается тем же ключом —
+        второй запрос просто не проходит.
+        """
+        try:
+            await self.conn.execute(
+                "INSERT INTO casino_seats (table_id, seat, user_id, sat_at) "
+                "VALUES (?,?,?,?)",
+                (table_id, seat, user_id, now),
+            )
+        except sqlite3.IntegrityError:
+            await self.conn.rollback()
+            return False
+        await self.conn.commit()
+        return True
+
+    async def casino_stand(self, user_id: int) -> None:
+        """Встать из-за стола."""
+        await self.conn.execute(
+            "DELETE FROM casino_seats WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
+
+    async def casino_seats(self, table_id: int) -> list[dict]:
+        async with self.conn.execute(
+            "SELECT seat, user_id, sat_at FROM casino_seats "
+            "WHERE table_id = ? ORDER BY seat",
+            (table_id,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def casino_seat_of(self, user_id: int) -> dict | None:
+        """За каким столом и на каком месте сидит боец."""
+        async with self.conn.execute(
+            "SELECT s.table_id, s.seat, t.game FROM casino_seats s "
+            "JOIN casino_tables t ON t.id = s.table_id "
+            "WHERE s.user_id = ? AND t.closed_at = 0",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def casino_done(self, table_id: int, command_id: str) -> str | None:
+        if not command_id:
+            return None
+        async with self.conn.execute(
+            "SELECT said FROM casino_commands WHERE table_id = ? "
+            "AND command_id = ?",
+            (table_id, command_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row["said"]) if row else None
+
+    async def casino_remember(
+        self, table_id: int, command_id: str, said: str, now: int
+    ) -> None:
+        if not command_id:
+            return
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO casino_commands "
+            "(table_id, command_id, said, at) VALUES (?,?,?,?)",
+            (table_id, command_id, said, now),
+        )
+        await self.conn.commit()
 
     # ---------- дежурная часть, ордера и тюрьма ----------
 
