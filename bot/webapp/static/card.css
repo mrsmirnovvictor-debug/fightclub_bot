@@ -5045,3 +5045,20 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   width: 100%;
 }
 .casino-bar span { transition: width 0.25s linear; }
+
+/* Подпись над рядом кнопок: ряд из цифр сам по себе не говорит, что
+   это — номинал фишки, номер места или сумма в кармане */
+.casino-hint {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+/* Что уйдёт по нажатию: сумма и поле словами, над самими кнопками */
+.casino-chosen {
+  margin: 10px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}

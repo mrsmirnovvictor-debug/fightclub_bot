@@ -16184,3 +16184,176 @@ async def test_the_settled_hand_explains_who_won_and_why(server, db):
         why = await page.locator(".casino-why").inner_text()
         assert "у крупье" in why and "ближе к 21" in why
         await browser.close()
+
+
+async def test_the_table_asks_before_it_takes_the_bet(server, db):
+    """Касание поля выбирает его, а ставит — «Сделать ставку».
+
+    Деньги не должны уходить от касания стола: выбрал — увидел, что
+    выбрал и на сколько, и только потом поставил.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    asked = []
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+
+        async def catch(route):
+            if route.request.method == "POST":
+                asked.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(casino_table("roulette")),
+            )
+
+        await page.route("**/api/casino*", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-field")
+
+        # Подписи над рядами говорят, что выбирают. Читаем текст, а не
+        # то, что нарисовано: прописные тут от стиля, а не от слов
+        hints = await page.locator(".casino-hint").all_text_contents()
+        assert hints[0] == "Выбирай размер ставки"
+        assert hints[1] == "Выбирай, на что ставишь"
+
+        # Выбрали номинал и поле — на сервер ничего не ушло
+        await page.get_by_text("25", exact=True).click()
+        await page.get_by_text("Красное", exact=True).click()
+        assert asked == [], asked
+        place = page.locator(".casino-actions .btn").first
+        assert await place.inner_text() == "Сделать ставку"
+        # А что именно уйдёт — сказано строкой над кнопками
+        chosen = await page.locator(".casino-chosen").inner_text()
+        assert "25" in chosen and "Красное" in chosen, chosen
+
+        # И только нажатие на неё ставит
+        await place.click()
+        await page.wait_for_function("() => true")
+        assert len(asked) == 1, asked
+        assert asked[0]["action"] == "bet"
+        assert asked[0]["spot"] == "color" and asked[0]["pick"] == "red"
+        assert asked[0]["amount"] == 25
+        await browser.close()
+
+
+async def test_the_number_is_chosen_but_not_yet_bet(server, db):
+    """«На число» открывает сетку; выбранное число ждёт подтверждения."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    asked = []
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+
+        async def catch(route):
+            if route.request.method == "POST":
+                asked.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(casino_table("roulette")),
+            )
+
+        await page.route("**/api/casino*", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-field")
+
+        await page.get_by_text("На число", exact=True).click()
+        await page.wait_for_selector(".casino-numbers")
+        await page.locator(".casino-numbers button").nth(7).click()
+        # Сетка закрылась, ставка не ушла, а кнопка называет число
+        assert await page.locator(".casino-numbers").count() == 0
+        assert asked == [], asked
+        chosen = await page.locator(".casino-chosen").inner_text()
+        assert "Число 7" in chosen, chosen
+        place = page.locator(".casino-actions .btn").first
+
+        await place.click()
+        await page.wait_for_function("() => true")
+        assert asked and asked[0]["spot"] == "number"
+        assert asked[0]["pick"] == "7"
+        await browser.close()
+
+
+async def test_the_table_has_only_the_four_buttons(server, db):
+    """За столом рулетки четыре кнопки, и «Уйти» — одна из них."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-actions")
+
+        said = await page.locator(".casino-actions .btn").all_inner_texts()
+        assert len(said) == 4, said
+        assert "Сделать ставку" in said[0]
+        assert said[1] == "Отменить ставку"
+        assert said[2] == "На число"
+        assert said[3] == "Уйти"
+        await browser.close()
+
+
+async def test_the_mark_stands_above_the_numbers(server, db):
+    """Метка стоит над ободом, а не поверх цифры.
+
+    Она закрывала как раз то число, ради которого на неё и смотрят.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("roulette", phase="accept")
+    body["table"]["last"] = {
+        "round": 1,
+        "result": {"number": 35, "colour": "black", "title": "35 · чёрное"},
+        "seats": {},
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-disc")
+        await page.wait_for_timeout(300)
+
+        # Обод начинается ниже метки: верхние 34 точки диска пусты
+        clean = await page.evaluate(
+            """() => {
+              const disc = document.getElementById('casino-disc');
+              const dots = disc.getContext('2d')
+                .getImageData(0, 0, disc.width, 32).data;
+              for (let at = 3; at < dots.length; at += 4) {
+                if (dots[at] > 10) return false;
+              }
+              return true;
+            }"""
+        )
+        assert clean, "колесо залезло под метку"
+        await browser.close()
+
+
+async def test_the_wheel_runs_fast_then_slows_to_a_stop(server, db):
+    """Две секунды ровного вращения, три — торможение до остановки."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-disc")
+
+        left = await page.evaluate(
+            "() => [0, 500, 1000, 2000, 3500, 5000, 6000]"
+            ".map((age) => casinoLeft(age))"
+        )
+        # Разгон ровный: за полсекунды столько же, сколько за следующие
+        assert round(left[0] - left[1]) == round(left[1] - left[2]) == 540
+        # К концу разгона остаётся один оборот с небольшим
+        assert round(left[3]) == 1080
+        # Дальше кубическое торможение: на середине пути остаётся
+        # ровно восьмая часть оборота — это и есть «замедляется»
+        assert round(left[4]) == round(left[3] / 8)
+        # И полная остановка ровно на пяти секундах
+        assert left[5] == 0 and left[6] == 0
+        await browser.close()
