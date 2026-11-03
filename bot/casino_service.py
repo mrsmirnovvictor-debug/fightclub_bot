@@ -1541,15 +1541,16 @@ async def carousel_view(
         "cover": art.CASINO_COVERS + "/super-draw.webp",
         "price": carousel.ROLL_PRICE,
         "spin": carousel.SPIN_SECONDS,
-        "shelf": [
+        # Лента постоянная: она не зависит ни от времени, ни от игрока.
+        # Меняться ей незачем — она едет
+        "belt": [
             {
                 "kind": one.kind, "code": one.code, "title": one.title,
                 "price": one.price, "image": one.image,
                 "chance": round(carousel.chance(one) * 100, 3),
             }
-            for one in carousel.shelf(moment)
+            for one in carousel.belt()
         ],
-        "until": carousel.shelf_until(moment),
         "now": moment,
         "open": open_now(moment),
         "shut": "" if open_now(moment) else shut_words(moment),

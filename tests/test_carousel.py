@@ -102,20 +102,25 @@ def test_the_cashier_takes_the_prize_back_for_half():
             assert prize.sells_for == prize.price // 2
 
 
-def test_the_belt_is_the_same_for_everyone_and_turns_every_five_seconds():
-    """Лента общая и меняется раз в пять секунд."""
-    first = carousel.shelf(NOW)
-    assert len(first) == carousel.SHELF_SIZE
-    assert [one.code for one in carousel.shelf(NOW)] == [
-        one.code for one in first
-    ], "у двоих в один миг лента одна"
-    assert [one.code for one in carousel.shelf(NOW + 4)] == [
-        one.code for one in first
-    ], "четыре секунды лента та же"
-    assert [one.code for one in carousel.shelf(NOW + 5)] != [
-        one.code for one in first
-    ], "а на пятой меняется"
-    assert carousel.shelf_until(NOW) == NOW + 5
+def test_the_belt_holds_the_whole_drum_and_never_changes():
+    """Лента постоянная: весь барабан разом и в одном порядке.
+
+    Карусель едет — этого ей и довольно. Прежде лента пересчитывалась
+    раз в пять секунд, и товар на ходу подменялся: со стороны это
+    выглядело не каруселью, а прыжком каждые пять секунд.
+    """
+    first = carousel.belt()
+    assert [one.code for one in first] == [
+        one.code for one in carousel.belt()
+    ], "лента одна и та же, сколько её ни спрашивай"
+    assert {one.code for one in first} == {
+        one.code for one in carousel.prizes()
+    }, "на ленте весь барабан: по ней и видно, что может выпасть"
+    assert len(first) == len(carousel.prizes())
+
+    # Порядок перемешан: иначе дорогое стояло бы кучей в конце
+    prices = [one.price for one in first]
+    assert prices != sorted(prices) and prices != sorted(prices, reverse=True)
 
 
 def test_the_house_keeps_its_share():

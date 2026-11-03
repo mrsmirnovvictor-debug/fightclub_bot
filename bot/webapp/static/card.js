@@ -19636,14 +19636,20 @@ function casinoShot(data) {
     const draw = data.draw || {};
     const mine = draw.prize
       ? draw.prize.code + ":" + draw.prize.ready : "нет";
-    const belt = (draw.shelf || []).map((one) => one.code).join(",");
     if (casinoDrawOpen) {
-      return "draw:" + purse + ":" + mine + ":" + belt + ":" + draw.open;
+      // Лента в подпись не входит: она постоянная. А вот «крутится ли
+      // барабан» входит — иначе остановку было бы нечем показать:
+      // время вышло, а в ответе сервера от этого не меняется ничего
+      return "draw:" + purse + ":" + mine
+        + ":" + casinoDrawSpinning(draw) + ":" + draw.open;
     }
     const shut = data.lobby ? String(data.lobby.open) : "";
+    // Фазы столов тут нет умышленно. Лобби её и не показывает —
+    // только занятость и кнопку, — а меняется она у четырёх игр
+    // каждые полминуты, и экран перерисовывался почти постоянно
     const lobby = shut + (data.lobby && data.lobby.games ? data.lobby.games : [])
       .map((one) => one.code + one.tables.map(
-        (row) => row.id + ":" + row.taken + ":" + row.phase + ":" + row.mine
+        (row) => row.id + ":" + row.taken + ":" + row.mine
       ).join(","))
       .join("|");
     return "lobby:" + purse + ":" + lobby;
@@ -19654,6 +19660,47 @@ function casinoShot(data) {
     JSON.stringify(table.seats), JSON.stringify(table.result),
     JSON.stringify(table.last),
   ].join(":");
+}
+
+// Картинки казино: один и тот же `<img>` на один и тот же адрес.
+//
+// Перерисовка создавала обложки заново, и браузер начинал каждую с
+// пустого места — картинки моргали, как будто экран обновился. Адрес
+// при этом не менялся ни разу. Тут они и живут: узел переставляется в
+// новое дерево уже загруженным и рисуется сразу.
+//
+// Один адрес может стоять на экране дважды — лента кладёт товар по
+// кругу, — поэтому на адрес держится не узел, а стопка узлов, и
+// каждая перерисовка начинает разбирать её с начала.
+const casinoPics = new Map(); // адрес → уже созданные узлы
+let casinoPicTaken = new Map(); // адрес → сколько отдано в этот раз
+
+function casinoPicReset() {
+  casinoPicTaken = new Map();
+}
+
+function casinoPic(src, cls) {
+  const taken = casinoPicTaken.get(src) || 0;
+  casinoPicTaken.set(src, taken + 1);
+  let stack = casinoPics.get(src);
+  if (!stack) {
+    stack = [];
+    casinoPics.set(src, stack);
+  }
+  let pic = stack[taken];
+  if (!pic) {
+    pic = document.createElement("img");
+    pic.loading = "lazy";
+    pic.alt = "";
+    // Не загрузилась — помечаем узел, а не выбрасываем: выброшенный
+    // создался бы заново на следующей перерисовке, и так по кругу
+    pic.onerror = () => { pic.dataset.gone = "1"; };
+    pic.src = src;
+    stack[taken] = pic;
+  }
+  if (pic.dataset.gone) return null;
+  pic.className = cls || "";
+  return pic;
 }
 
 function renderCasino(data, force) {
@@ -19680,6 +19727,7 @@ function renderCasino(data, force) {
 
   const body = el("casino-body");
   body.textContent = "";
+  casinoPicReset();
   if (data.table) {
     el("casino-title").textContent =
       data.table.emoji + " " + data.table.title;
@@ -19792,13 +19840,8 @@ function casinoGameBox(one) {
   const top = document.createElement("div");
   top.className = "casino-game-head";
   if (one.cover) {
-    const pic = document.createElement("img");
-    pic.className = "casino-cover";
-    pic.loading = "lazy";
-    pic.alt = "";
-    pic.src = one.cover;
-    pic.onerror = () => pic.remove();
-    top.appendChild(pic);
+    const pic = casinoPic(one.cover, "casino-cover");
+    if (pic) top.appendChild(pic);
   }
   const words = document.createElement("div");
   const head = document.createElement("h3");
@@ -20763,13 +20806,8 @@ function casinoDrawCard(draw) {
   box.className = "casino-draw-card";
 
   if (draw.cover) {
-    const pic = document.createElement("img");
-    pic.className = "casino-cover";
-    pic.loading = "lazy";
-    pic.alt = "";
-    pic.src = draw.cover;
-    pic.onerror = () => pic.remove();
-    box.appendChild(pic);
+    const pic = casinoPic(draw.cover, "casino-cover");
+    if (pic) box.appendChild(pic);
   }
   const words = document.createElement("div");
   words.className = "casino-draw-words";
@@ -20791,11 +20829,16 @@ function casinoDrawBox(data) {
   const box = document.createElement("section");
   box.className = "casino carousel";
 
+  // В рамке только лента, и рамка по ней и скроена. Прежде под лентой
+  // стояла подпись про цену ролла — цена названа на кнопке, и дважды
+  // её говорить незачем, — а под подписью пустовала половина экрана
   const felt = document.createElement("div");
   felt.className = "casino-felt";
   felt.appendChild(casinoBeltBox(draw));
-  felt.appendChild(casinoPrizeBox(draw));
   box.appendChild(felt);
+
+  const said = casinoPrizeBox(draw);
+  if (said) box.appendChild(said);
 
   if (draw.open === false) {
     const shut = document.createElement("p");
@@ -20807,18 +20850,30 @@ function casinoDrawBox(data) {
   return box;
 }
 
-// Лента едет справа налево и меняет товар каждые пять секунд. Бежит
-// она разметкой, а не кадрами: на телефоне это дешевле, и при
-// сниженном движении её можно просто остановить
+// Сколько секунд круга приходится на один товар и во сколько раз
+// быстрее идёт лента на вращении
+const CASINO_BELT_STEP = 1.5;
+const CASINO_BELT_RUSH = 15;
+
+// Лента едет справа налево и товар на ней не меняется: она и так
+// едет. Бежит она разметкой, а не кадрами: на телефоне это дешевле, и
+// при сниженном движении её можно просто остановить
 function casinoBeltBox(draw) {
   const road = document.createElement("div");
   road.className = "casino-belt";
   const spinning = casinoDrawSpinning(draw);
+  const goods = draw.belt || [];
   const belt = document.createElement("div");
   belt.className = "casino-belt-run" + (spinning ? " fast" : "");
   // Лента едет по кругу: товар кладём дважды, и шов не виден
-  const twice = (draw.shelf || []).concat(draw.shelf || []);
-  twice.forEach((one) => belt.appendChild(casinoPrizeCard(one)));
+  goods.concat(goods).forEach(
+    (one) => belt.appendChild(casinoPrizeCard(one))
+  );
+  // Круг тем дольше, чем длиннее лента: так лента идёт с одной и той
+  // же скоростью, сколько бы товара ни лежало в барабане
+  const round = Math.max(6, goods.length * CASINO_BELT_STEP);
+  belt.style.animationDuration =
+    (spinning ? round / CASINO_BELT_RUSH : round) + "s";
   road.appendChild(belt);
 
   const mark = document.createElement("div");
@@ -20831,12 +20886,8 @@ function casinoPrizeCard(one) {
   const card = document.createElement("div");
   card.className = "casino-prize kind-" + one.kind;
   if (one.image) {
-    const pic = document.createElement("img");
-    pic.loading = "lazy";
-    pic.alt = "";
-    pic.src = one.image;
-    pic.onerror = () => pic.remove();
-    card.appendChild(pic);
+    const pic = casinoPic(one.image, "");
+    if (pic) card.appendChild(pic);
   }
   const name = document.createElement("div");
   name.className = "casino-prize-name";
@@ -20859,18 +20910,13 @@ function casinoDrawSpinning(draw) {
   return now < prize.ready;
 }
 
+// Что сказать про приз. Сказать нечего — и места под это не занимаем:
+// пока барабан не крутили, под лентой нет ничего
 function casinoPrizeBox(draw) {
+  const prize = draw.prize;
+  if (!prize) return null;
   const box = document.createElement("div");
   box.className = "casino-middle";
-  const prize = draw.prize;
-  if (!prize) {
-    const said = document.createElement("div");
-    said.className = "casino-mine";
-    said.textContent = "Ролл стоит " + draw.price
-      + " жетонов. Чем дороже приз, тем реже он выпадает.";
-    box.appendChild(said);
-    return box;
-  }
   if (casinoDrawSpinning(draw)) {
     const said = document.createElement("div");
     said.className = "casino-shout";

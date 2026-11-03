@@ -15713,7 +15713,7 @@ async def test_the_station_fight_reads_like_every_other_one(server, db):
 def casino_draw(prize: dict | None = None, open_now: bool = True) -> dict:
     """Барабан «Карусели удачи», как его отдаёт сервер."""
     from bot.game.art import CASINO_COVERS
-    from bot.game.carousel import ROLL_PRICE, SPIN_SECONDS, shelf
+    from bot.game.carousel import ROLL_PRICE, SPIN_SECONDS, belt
 
     return {
         "title": "Карусель удачи",
@@ -15721,14 +15721,13 @@ def casino_draw(prize: dict | None = None, open_now: bool = True) -> dict:
         "cover": CASINO_COVERS + "/super-draw.webp",
         "price": ROLL_PRICE,
         "spin": SPIN_SECONDS,
-        "shelf": [
+        "belt": [
             {
                 "kind": one.kind, "code": one.code, "title": one.title,
                 "price": one.price, "image": one.image, "chance": 1.0,
             }
-            for one in shelf(now_ts())
+            for one in belt()
         ],
-        "until": now_ts() + 5,
         "now": now_ts(),
         "open": open_now,
         "shut": "" if open_now else "Казино закрыто. Откроется в 08:00.",
@@ -16016,10 +16015,16 @@ async def test_the_lobby_shows_a_cover_for_every_table(server, db):
         await page.wait_for_selector("#hero:not(.hidden)")
         await open_screen(page, "casino")
         await page.wait_for_selector(".casino-game")
-        covers = page.locator(".casino-cover")
+        # У каждого из четырёх столов своя, и пятая — у карусели: она
+        # стоит отдельной плашкой выше столов
+        covers = page.locator(".casino-game .casino-cover")
         assert await covers.count() == 4
         where = await covers.first.get_attribute("src")
         assert where.endswith("/casino/covers/seven.webp"), where
+        draw = await page.locator(
+            ".casino-draw-card .casino-cover"
+        ).get_attribute("src")
+        assert draw.endswith("/casino/covers/super-draw.webp"), draw
         await browser.close()
 
 
@@ -16519,7 +16524,9 @@ async def test_the_carousel_stands_above_the_tables(server, db):
 
 
 async def test_the_belt_runs_and_the_roll_costs_two_fifty(server, db):
-    """Лента едет, под меткой встаёт приз, ролл стоит 250."""
+    """Лента едет, в рамке только она, ролл стоит 250."""
+    from bot.game.carousel import prizes
+
     card = build_card(make_player("casino"), TOKEN, viewer_id=42)
     async with async_playwright() as pw:
         browser, page = await open_page(
@@ -16531,9 +16538,9 @@ async def test_the_belt_runs_and_the_roll_costs_two_fifty(server, db):
         await page.get_by_text("Играть", exact=True).click()
         await page.wait_for_selector(".casino-belt")
 
-        # Товар на ленте положен дважды: по кругу и без шва
+        # Весь барабан на ленте, и положен он дважды: по кругу и без шва
         cards = await page.locator(".casino-prize").count()
-        assert cards == 24, cards
+        assert cards == 2 * len(prizes()), cards
         assert await page.locator(".casino-belt-mark").count() == 1
         # Лента и правда едет
         moving = await page.evaluate(
@@ -16542,8 +16549,98 @@ async def test_the_belt_runs_and_the_roll_costs_two_fifty(server, db):
         )
         assert moving == "casino-belt", moving
 
+        # В рамке только лента: подписи про цену ролла под ней нет, и
+        # пустого поля под подписью тоже
+        felt = await page.locator(".casino-felt").inner_text()
+        assert "Ролл стоит" not in felt and "реже" not in felt, felt
+        assert await page.locator(".casino-middle").count() == 0
+        tall = await page.evaluate(
+            "() => document.querySelector('.casino-felt').offsetHeight"
+            " - document.querySelector('.casino-belt').offsetHeight"
+        )
+        assert tall <= 24, f"рамка выше ленты на {tall} точек"
+
         said = await page.locator(".casino-actions").inner_text()
         assert "Ролл за 250" in said
+        await browser.close()
+
+
+async def test_the_belt_does_not_jump_every_five_seconds(server, db):
+    """Лента не подменяет товар и не начинает круг заново.
+
+    Опрос идёт раз в секунду, и в ответе каждый раз новое время. Стоит
+    экрану считать его переменой — и лента перерисовывается каждую
+    секунду: круг начинается заново, товар дёргается на месте. Так и
+    было, только дёргалось раз в пять секунд: лента тогда ещё и
+    пересчитывалась на сервере.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby()
+        )
+        # Время в ответе живое, как у настоящего сервера
+        async def fresh(route):
+            body = casino_lobby()
+            body["now"] = body["draw"]["now"] = now_ts()
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/casino*", fresh)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        was = await page.locator(".casino-belt-run").inner_text()
+        start = await page.evaluate(
+            "() => document.querySelector('.casino-belt-run')"
+            ".getAnimations()[0].startTime"
+        )
+        # Больше пяти секунд: прежде ровно на этом месте лента и прыгала
+        await page.wait_for_timeout(6_000)
+
+        assert await page.locator(".casino-belt-run").inner_text() == was
+        again = await page.evaluate(
+            "() => document.querySelector('.casino-belt-run')"
+            ".getAnimations()[0].startTime"
+        )
+        assert again == start, "и круг не начинался заново"
+        await browser.close()
+
+
+async def test_the_casino_covers_are_never_built_twice(server, db):
+    """Обложки не создаются заново — потому и не моргают.
+
+    Перерисовка лобби случается всякий раз, как кто-то сел за стол, и
+    прежде она создавала новые `<img>`: браузер начинал каждую с
+    пустого места, и картинки мигали, будто экран обновился.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-cover")
+        covers = await page.locator(".casino-cover").count()
+        assert covers >= 5, covers
+
+        await page.evaluate(
+            "() => document.querySelectorAll('.casino-cover').forEach("
+            "(one, i) => { one.dataset.mark = 'сторож' + i; })"
+        )
+        await page.evaluate("() => renderCasino(casinoData, true)")
+
+        marks = await page.evaluate(
+            "() => [...document.querySelectorAll('.casino-cover')]"
+            ".map((one) => one.dataset.mark || 'новая')"
+        )
+        assert marks == ["сторож" + str(one) for one in range(covers)], marks
         await browser.close()
 
 
@@ -16591,12 +16688,17 @@ async def test_the_spinning_drum_hides_the_prize(server, db):
         await page.wait_for_selector(".casino-belt")
 
         assert await page.locator(".casino-shout").inner_text() == "…"
-        assert "маслкар" not in await page.locator(".casino-felt").inner_text()
-        # Лента на вращении идёт быстрее
+        # Приза не видно: на ленте маслкар, конечно, стоит — там стоит
+        # весь барабан, — а вот в итоге под лентой его нет
+        said = await page.locator(".casino-middle").inner_text()
+        assert "маслкар" not in said and "10000" not in said, said
+        # Лента на вращении идёт в пятнадцать раз быстрее
         fast = await page.evaluate(
-            "() => getComputedStyle("
-            "document.querySelector('.casino-belt-run')).animationDuration"
+            "() => parseFloat(getComputedStyle("
+            "document.querySelector('.casino-belt-run')).animationDuration)"
         )
-        assert fast == "1.2s", fast
+        from bot.game.carousel import prizes
+
+        assert abs(fast - len(prizes()) * 1.5 / 15) < 0.01, fast
         assert not await page.get_by_text("Ролл за 250").is_enabled()
         await browser.close()

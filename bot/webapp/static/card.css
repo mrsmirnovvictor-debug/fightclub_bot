@@ -5093,6 +5093,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .casino-draw-card .btn { margin-top: 6px; }
 
 .casino.carousel { --felt: #2b1b49; --brass: #d6b2ff; }
+/* В рамке карусели только лента, и рамка скроена по ней: ни подписи,
+   ни пустого поля под ней больше нет */
+.casino.carousel .casino-felt { padding: 8px; }
+.casino.carousel .casino-middle { min-height: 0; padding-top: 10px; }
 
 /* Лента: едет справа налево, под меткой останавливается приз */
 .casino-belt {
@@ -5110,7 +5114,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   width: max-content;
   animation: casino-belt 18s linear infinite;
 }
-.casino-belt-run.fast { animation-duration: 1.2s; }
+/* Длительность круга ставит разметка: она зависит от того, сколько
+   товара в барабане, и на вращении делится на пятнадцать */
 @keyframes casino-belt {
   from { transform: translateX(0); }
   to { transform: translateX(-50%); }

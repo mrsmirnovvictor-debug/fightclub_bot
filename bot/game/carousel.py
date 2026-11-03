@@ -41,12 +41,12 @@ CAR_PRIZES = ("city_sedan", "shadow_sport", "iron_muscle")
 # Сколько стоит крутнуть
 ROLL_PRICE = 250
 
-# Барабан меняет товар каждые пять секунд, и столько же идёт вращение
-SHELF_SECONDS = 5
+# Сколько длится вращение
 SPIN_SECONDS = 5
 
-# Сколько призов видно на ленте разом
-SHELF_SIZE = 12
+# Зерно, которым перемешана лента. Порядок постоянный: лента и так
+# едет, а подмена товара на ходу выглядела бы прыжком
+BELT_SEED = "карусель"
 
 # Почём казино принимает выигрыш обратно. Половина — потому что в
 # городе вещи назад не принимают вовсе, и цену сдачи пришлось
@@ -170,42 +170,45 @@ def average_sale() -> float:
     return sum(one.weight * one.sells_for for one in pool) / total
 
 
-def shelf(moment: int, seed: str = "") -> list[Prize]:
-    """Что сейчас едет по ленте. Меняется каждые пять секунд.
+def belt() -> tuple[Prize, ...]:
+    """Лента барабана: весь барабан разом и в одном и том же порядке.
 
-    Лента общая для всех: она считается от времени, а не от игрока, и
-    двое, стоящие у барабана, видят одно и то же. Это не украшение —
-    играют в карусель сколько угодно человек разом, и «моя лента»
-    выглядела бы как «у соседа другой барабан».
+    Лента не меняется и от времени не зависит. Прежде она пересчиты­
+    валась каждые пять секунд, и товар на ходу подменялся — со стороны
+    это выглядело не каруселью, а прыжком через каждые пять секунд.
+    Карусель и так едет; ей довольно того, что она едет.
+
+    Порядок перемешан раз и навсегда, постоянным зерном: иначе дорогое
+    стояло бы в барабане кучей, и половина ленты была бы машинами. А
+    так по ней видно всё, что может выпасть, — лента для этого и нужна.
     """
-    pool = list(prizes())
-    rng = random.Random(f"{seed}:{moment // SHELF_SECONDS}")
-    return rng.sample(pool, min(SHELF_SIZE, len(pool)))
+    global _BELT
+    if _BELT is None:
+        pool = list(prizes())
+        random.Random(BELT_SEED).shuffle(pool)
+        _BELT = tuple(pool)
+    return _BELT
 
 
-def shelf_until(moment: int) -> int:
-    """Когда лента сменится."""
-    return (moment // SHELF_SECONDS + 1) * SHELF_SECONDS
+_BELT: tuple[Prize, ...] | None = None
 
 
 __all__ = [
+    "BELT_SEED",
     "CAR_PRIZES",
     "CHIP_PRIZES",
     "PRIZE_LEVELS",
     "Prize",
     "ROLL_PRICE",
     "SELL_SHARE",
-    "SHELF_SECONDS",
-    "SHELF_SIZE",
     "SPIN_SECONDS",
     "TOP_PRICE",
     "WEIGHT_SCALE",
     "average_sale",
     "average_win",
+    "belt",
     "by_code",
     "chance",
     "draw",
     "prizes",
-    "shelf",
-    "shelf_until",
 ]
