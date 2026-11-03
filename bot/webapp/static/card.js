@@ -19548,6 +19548,8 @@ let casinoGrid = false; // открыта ли сетка чисел рулет�
 let casinoShown = ""; // что уже нарисовано: партия и фаза
 let casinoSpun = 0; // для какой партии крутили колесо
 let casinoRolled = 0; // для какой партии бросали кости
+let casinoSum = ""; // что набрано в кассе
+let casinoDrift = 0; // на сколько часы телефона отстают от серверных
 
 // Пока идёт партия, спрашиваем часто: секунды тут видны. В ожидании
 // реже — стол, за которым никого, никуда не спешит
@@ -19604,22 +19606,32 @@ async function casinoAct(payload) {
 
 function renderCasino(data) {
   casinoData = data;
+  // Пока человек набирает сумму, экран не трогаем. Опрос идёт раз в
+  // секунду, и каждая перерисовка выбрасывала бы поле из-под пальца
+  // вместе с клавиатурой — набрать сумму было нельзя вовсе
+  if (casinoTyping()) {
+    paintCasinoPurse(data);
+    return;
+  }
   if (data.card) render(data.card, true);
   el("casino-note").textContent = data.said || "";
-  const purse = (data.wallet && data.wallet.chips) || 0;
-  const held = (data.wallet && data.wallet.reserved) || 0;
-  el("casino-purse").textContent =
-    "🎟 " + purse + (held ? " (+" + held + " в игре)" : "");
+  paintCasinoPurse(data);
 
   const body = el("casino-body");
   body.textContent = "";
   if (data.table) {
     el("casino-title").textContent =
       data.table.emoji + " " + data.table.title;
+    casinoShowCover(data.table.cover);
     body.appendChild(casinoTableBox(data, data.table));
+    // Полосу закрашиваем сразу, а не через четверть секунды: до
+    // первого тика она была бы пустой, и круг выглядел бы только что
+    // начавшимся
+    paintCasinoClock();
     return;
   }
   el("casino-title").textContent = "🎰 Казино";
+  casinoShowCover("");
   body.appendChild(casinoCashierBox(data));
   (data.lobby && data.lobby.games ? data.lobby.games : []).forEach((one) => {
     body.appendChild(casinoGameBox(one));
@@ -19627,6 +19639,34 @@ function renderCasino(data) {
 }
 
 // ---------- касса ----------
+
+// Обложка стола сверху — та же картинка, что на карточке в лобби.
+// Нет её в бакете (или ещё не нарисовали) — экран обходится без неё:
+// `onerror` прячет фигуру целиком, а не оставляет битый значок
+function casinoShowCover(url) {
+  const box = el("casino-interior");
+  const pic = el("casino-pic");
+  if (!url) {
+    box.classList.add("hidden");
+    return;
+  }
+  if (pic.getAttribute("src") !== url) pic.setAttribute("src", url);
+  pic.onerror = () => box.classList.add("hidden");
+  pic.onload = () => box.classList.remove("hidden");
+}
+
+// В поле кассы сейчас пишут? Тогда перерисовка подождёт
+function casinoTyping() {
+  const live = document.activeElement;
+  return !!live && live.id === "casino-sum";
+}
+
+function paintCasinoPurse(data) {
+  const purse = (data.wallet && data.wallet.chips) || 0;
+  const held = (data.wallet && data.wallet.reserved) || 0;
+  el("casino-purse").textContent =
+    "🎟 " + purse + (held ? " (+" + held + " в игре)" : "");
+}
 
 function casinoCashierBox(data) {
   const box = document.createElement("section");
@@ -19639,14 +19679,21 @@ function casinoCashierBox(data) {
   box.appendChild(said);
 
   const sum = document.createElement("input");
+  sum.id = "casino-sum";
   sum.type = "number";
   sum.min = "1";
   sum.inputMode = "numeric";
   sum.placeholder = "сколько";
+  sum.value = casinoSum;
+  // Набранное помним сами: перерисовка переживает уход с экрана, а
+  // набранное число — нет, и вводить его пришлось бы заново
+  sum.addEventListener("input", () => {
+    casinoSum = sum.value;
+  });
   box.appendChild(sum);
 
   const take = (kind) => {
-    const amount = parseInt(sum.value, 10);
+    const amount = parseInt(casinoSum || sum.value, 10);
     if (!amount || amount <= 0) {
       el("casino-note").textContent = "Сколько менять?";
       return;
@@ -19674,16 +19721,28 @@ function casinoGameBox(one) {
   const box = document.createElement("section");
   box.className = "casino-game";
 
+  const top = document.createElement("div");
+  top.className = "casino-game-head";
+  if (one.cover) {
+    const pic = document.createElement("img");
+    pic.className = "casino-cover";
+    pic.loading = "lazy";
+    pic.alt = "";
+    pic.src = one.cover;
+    pic.onerror = () => pic.remove();
+    top.appendChild(pic);
+  }
+  const words = document.createElement("div");
   const head = document.createElement("h3");
   head.textContent = one.emoji + " " + one.title;
-  box.appendChild(head);
-
   const about = document.createElement("p");
   about.className = "casino-about";
   about.textContent =
     one.about + " Ставка " + one.least + "–" + one.most
     + (one.step > 1 ? ", кратно " + one.step : "") + ".";
-  box.appendChild(about);
+  words.append(head, about);
+  top.appendChild(words);
+  box.appendChild(top);
 
   const tables = document.createElement("div");
   tables.className = "casino-tables";
@@ -19879,29 +19938,47 @@ function casinoMiddleBox(data, table) {
   return box;
 }
 
+// Ожидание показывается полосой, а не секундами. Цифра требует
+// доверия к часам, а часы телефона и сервера расходятся — от этого
+// она и дёргалась. Полоса говорит то же самое и не спорит с
+// арифметикой: видно, сколько осталось, и не видно, на сколько
+// разошлись часы
 function casinoClockBox(table) {
   const box = document.createElement("div");
-  box.className = "casino-clock";
-  box.id = "casino-clock";
-  box.dataset.until = table.until || 0;
-  box.dataset.phase = table.phase;
-  box.textContent = table.phase_title;
+  box.className = "casino-wait";
+
+  const said = document.createElement("div");
+  said.className = "casino-clock";
+  said.id = "casino-clock";
+  said.textContent = table.phase_title;
+  box.appendChild(said);
+
+  const bar = document.createElement("div");
+  bar.className = "casino-bar";
+  bar.id = "casino-bar";
+  bar.dataset.since = table.since || 0;
+  bar.dataset.until = table.until || 0;
+  // Сдвиг часов считаем один раз на снимок: сервер прислал своё
+  // «сейчас», и дальше отсчёт идёт от него, а не от часов телефона
+  casinoDrift = (table.now || 0) * 1000 - Date.now();
+  bar.appendChild(document.createElement("span"));
+  box.appendChild(bar);
   return box;
 }
 
-// Часы перерисовываются сами, без запроса к серверу: срок известен,
-// и секунды между опросами можно считать на месте
 function paintCasinoClock() {
-  const box = el("casino-clock");
-  if (!box || !casinoData || !casinoData.table) return;
-  const until = Number(box.dataset.until || 0);
-  const table = casinoData.table;
-  if (!until) {
-    box.textContent = table.phase_title;
+  const bar = el("casino-bar");
+  if (!bar) return;
+  const since = Number(bar.dataset.since || 0);
+  const until = Number(bar.dataset.until || 0);
+  const fill = bar.firstChild;
+  if (!until || until <= since) {
+    fill.style.width = "0%";
     return;
   }
-  const left = Math.max(0, until - Math.floor(Date.now() / 1000));
-  box.textContent = table.phase_title + " · " + left + " с";
+  const now = (Date.now() + casinoDrift) / 1000;
+  const part = Math.min(1, Math.max(0, (now - since) / (until - since)));
+  fill.style.width = (part * 100).toFixed(1) + "%";
 }
 
 // ---------- кости ----------
@@ -20032,6 +20109,21 @@ function casinoDrawWheel(canvas, order, reds) {
   paint.stroke();
 }
 
+// Метка сверху: под ней и останавливается выпавший карман. Без неё
+// непонятно, какое из 37 чисел выпало, — а вся игра про это число
+function casinoDrawMark(canvas) {
+  const paint = canvas.getContext && canvas.getContext("2d");
+  if (!paint) return;
+  const middle = canvas.width / 2;
+  paint.beginPath();
+  paint.moveTo(middle, 6);
+  paint.lineTo(middle - 14, 32);
+  paint.lineTo(middle + 14, 32);
+  paint.closePath();
+  paint.fillStyle = "#ffe9a8";
+  paint.fill();
+}
+
 // Диск и шарик — два слоя: диск поворачивается к карману, шарик идёт
 // навстречу и садится в него. Время берётся серверное, поэтому
 // опоздавший видит не начало, а ту же секунду, что и все
@@ -20052,6 +20144,7 @@ function casinoRunWheel(disc, ball, order, number, table, spinning) {
     const ease = 1 - Math.pow(1 - part, 3);
     disc.style.transform = "rotate(" + (stop - 360 * 3 * (1 - ease)) + "deg)";
     casinoDrawBall(ball, part, spot, order.length || 37);
+    casinoDrawMark(ball);
     if (age < run) requestAnimationFrame(frame);
   }
   frame();
@@ -20068,7 +20161,11 @@ function casinoDrawBall(canvas, part, spot, total) {
   const outer = middle - 24;
   const inner = middle * 0.62;
   const radius = part < 0.6 ? outer : outer + (inner - outer) * ((part - 0.6) / 0.4);
-  const seat = -Math.PI / 2 + (spot * Math.PI * 2) / total;
+  // Карман приезжает наверх сам: диск повёрнут так, что выпавшее
+  // число оказывается под меткой. Значит, и шарик садится наверх, а
+  // не туда, где это число лежало на неподвижном колесе, — иначе он
+  // показывает одно, а подпись говорит другое
+  const seat = -Math.PI / 2;
   const angle = part < 1
     ? seat + Math.PI * 2 * 5 * (1 - part)
     : seat;

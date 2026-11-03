@@ -52,8 +52,10 @@ def find_chromium() -> str | None:
 
 
 CHROMIUM = find_chromium()
-# Всё, что рисуется картинкой: у лавки клуба jpeg, у мага png
-IMAGES = "**/*.{jpeg,jpg,png}"
+# Всё, что рисуется картинкой: у лавки клуба jpeg, у мага png, у
+# столов казино webp. Пропустить расширение нельзя: пропущенное идёт в
+# настоящую сеть, не доходит и выглядит как «картинки нет»
+IMAGES = "**/*.{jpeg,jpg,png,webp}"
 
 # Однопиксельный png для тех тестов, где картинка должна загрузиться. По
 # умолчанию страница картинок не грузит вовсе — до бакета из тестов не
@@ -6842,18 +6844,21 @@ async def test_the_casino_opens_only_by_its_own_door(server):
         assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
         assert await page.locator("#club-raid").is_hidden(), "подвал открылся сам"
 
-        # а дверь казино — открывает, и дел в нём два: рейд и игорный зал
+        # а дверь казино открывает игорный зал: в казино идут играть
         await page.locator("#tab-map").click()
         await page.locator(".zone-house").filter(has_text="Казино").click()
-        await page.wait_for_selector("#club-raid:not(.hidden)")
+        await page.wait_for_selector("#casino:not(.hidden)")
+        assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
 
+        # Рейд остаётся кнопкой в шапке — тем же приёмом, которым в
+        # доме открывают работу
+        await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
         assert await page.locator("#club-title").inner_text() == "🎲 Казино"
         chips = await page.locator("#club-sections .chip").all_inner_texts()
         assert chips == ["Рейд", "🎰 Зал"]
-        assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
-        assert await page.locator("#club-fights").is_hidden()
 
-        # Зал — отдельный экран: у него свои часы и свой опрос
+        # И обратно в зал — такой же фишкой
         await page.locator("#club-sections .chip").last.click()
         await page.wait_for_selector("#casino:not(.hidden)")
         await browser.close()
@@ -6900,6 +6905,9 @@ async def test_leaving_the_casino_leaves_the_raid_behind(server):
                                        card=build_card(make_player("casino"),
                                                        TOKEN, viewer_id=42))
         await page.locator(".zone-house").filter(has_text="Казино").click()
+        # Дверь казино ведёт в игорный зал, а рейд — кнопка в его шапке
+        await page.wait_for_selector("#casino:not(.hidden)")
+        await page.locator(".raid-entry").click()
         await page.wait_for_selector("#club-raid:not(.hidden)")
 
         # боец дошёл до клуба — карточка перерисовалась
@@ -15688,7 +15696,7 @@ async def test_the_station_fight_reads_like_every_other_one(server, db):
 def casino_lobby(chips: int = 300, credits: int = 500) -> dict:
     """Лобби казино, как его отдаёт сервер."""
     from bot.webapp.casino import ROULETTE_FIELDS
-    from bot.game.casino import GAME_LIST, REDS, WHEEL
+    from bot.game.casino import GAME_LIST, REDS, WHEEL, cover_url
 
     return {
         "credits": credits,
@@ -15704,7 +15712,7 @@ def casino_lobby(chips: int = 300, credits: int = 500) -> dict:
                 {
                     "code": one.code, "title": one.title, "about": one.about,
                     "emoji": one.emoji, "least": one.least, "most": one.most,
-                    "step": one.step,
+                    "step": one.step, "cover": cover_url(one.code),
                     "tables": [{
                         "id": number + 1, "taken": 0, "seats": one.seats,
                         "phase": "wait", "phase_title": "Ждём игроков",
@@ -15720,7 +15728,7 @@ def casino_lobby(chips: int = 300, credits: int = 500) -> dict:
 def casino_table(game: str = "dice", phase: str = "accept", **extra) -> dict:
     """Снимок стола, как его отдаёт сервер."""
     from bot.webapp.casino import ROULETTE_FIELDS
-    from bot.game.casino import REDS, WHEEL, game as rules_of
+    from bot.game.casino import REDS, WHEEL, cover_url, game as rules_of
 
     rules = rules_of(game)
     seats = [{
@@ -15735,9 +15743,9 @@ def casino_table(game: str = "dice", phase: str = "accept", **extra) -> dict:
     ]
     table = {
         "id": 1, "game": game, "title": rules.title, "about": rules.about,
-        "emoji": rules.emoji, "seats": seats, "phase": phase,
-        "phase_title": "Приём ставок", "round": 1,
-        "until": now_ts() + 10, "since": now_ts(), "now": now_ts(),
+        "emoji": rules.emoji, "cover": cover_url(game), "seats": seats,
+        "phase": phase, "phase_title": "Приём ставок", "round": 1,
+        "until": now_ts() + 90, "since": now_ts() - 30, "now": now_ts(),
         "turn": "", "result": None, "last": None, "events": [],
         "least": rules.least, "most": rules.most, "step": rules.step,
         "accept": rules.accept, "wallet": {"chips": 300, "reserved": 0},
@@ -15937,4 +15945,131 @@ async def test_the_casino_fits_a_narrow_phone(server, db):
             " - document.documentElement.clientWidth"
         )
         assert wide <= 1, f"горизонтальная прокрутка: {wide}"
+        await browser.close()
+
+
+async def test_the_lobby_shows_a_cover_for_every_table(server, db):
+    """У каждого стола своя обложка, и адрес её приходит с сервера."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-game")
+        covers = page.locator(".casino-cover")
+        assert await covers.count() == 4
+        where = await covers.first.get_attribute("src")
+        assert where.endswith("/casino/covers/seven.webp"), where
+        await browser.close()
+
+
+async def test_the_keyboard_survives_the_polling(server, db):
+    """Пока набирают сумму, экран не перерисовывается.
+
+    Опрос идёт раз в секунду, и каждая перерисовка выбрасывала поле
+    из-под пальца вместе с клавиатурой: набрать сумму было нельзя.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-sum")
+
+        await page.locator("#casino-sum").click()
+        await page.keyboard.type("150")
+        # Пришёл очередной снимок — поле и набранное остались на месте
+        await page.evaluate(
+            "(data) => renderCasino(data)", casino_lobby(chips=301)
+        )
+        assert await page.evaluate(
+            "() => document.activeElement && document.activeElement.id"
+        ) == "casino-sum"
+        assert await page.locator("#casino-sum").input_value() == "150"
+        # А кошелёк в шапке всё-таки обновился
+        assert "301" in await page.locator("#casino-purse").inner_text()
+        await browser.close()
+
+
+async def test_the_waiting_is_a_bar_and_not_a_jumping_number(server, db):
+    """Ожидание круга — полоса, а не секунды."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("dice")
+    table = body["table"]
+    table["since"] = table["now"] - 30
+    table["until"] = table["now"] + 90
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-bar")
+        await page.wait_for_timeout(400)
+
+        said = await page.locator("#casino-clock").inner_text()
+        assert "с" not in said.replace("Приём ставок", ""), said
+        # Четверть круга прошла — полоса на четверть
+        part = await page.evaluate(
+            "() => parseFloat(document.querySelector('#casino-bar span')"
+            ".style.width)"
+        )
+        assert 20 <= part <= 30, part
+        await browser.close()
+
+
+async def test_the_ball_sits_in_the_pocket_that_won(server, db):
+    """Шарик останавливается под меткой — там, где выпавшее число.
+
+    Он считался по месту числа на неподвижном колесе, а колесо к тому
+    времени уже повернулось: подпись говорила «35», шарик стоял у
+    семёрки.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("roulette", phase="accept")
+    body["table"]["last"] = {
+        "round": 1,
+        "result": {"number": 35, "colour": "black", "title": "35 · чёрное"},
+        "seats": {},
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-ball")
+        await page.wait_for_timeout(300)
+
+        # Ищем сам шарик: метку сверху отсекаем по высоте
+        spot = await page.evaluate(
+            """() => {
+              const ball = document.getElementById('casino-ball');
+              const paint = ball.getContext('2d');
+              const dots = paint.getImageData(0, 0, ball.width, ball.height).data;
+              let sumX = 0, sumY = 0, seen = 0;
+              for (let y = 50; y < ball.height; y += 1) {
+                for (let x = 0; x < ball.width; x += 1) {
+                  const at = (y * ball.width + x) * 4;
+                  if (dots[at + 3] > 200 && dots[at] > 220
+                      && dots[at + 1] > 220 && dots[at + 2] > 200) {
+                    sumX += x; sumY += y; seen += 1;
+                  }
+                }
+              }
+              return seen ? {x: sumX / seen, y: sumY / seen, seen} : null;
+            }"""
+        )
+        assert spot and spot["seen"] > 20, spot
+        middle = 232
+        assert abs(spot["x"] - middle) < 20, spot
+        # Верхняя треть колеса: карман стоит под меткой
+        assert spot["y"] < middle * 0.6, spot
+        # А диск повёрнут так, что под меткой оказалось именно 35
+        turned = await page.evaluate(
+            "() => document.getElementById('casino-disc').style.transform"
+        )
+        from bot.game.casino import WHEEL
+
+        want = -(WHEEL.index(35) * 360 / 37)
+        spun = float(re.search(r"-?\d+(\.\d+)?", turned).group(0))
+        assert abs(spun - want) < 1, (turned, want)
         await browser.close()

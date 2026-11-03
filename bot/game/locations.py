@@ -684,7 +684,10 @@ LOCATIONS: tuple[Location, ...] = (
             (0.467588, 0.264354), (0.603613, 0.273923),
             (0.597237, 0.329545), (0.467588, 0.324163),
         ),
-        services=(Service.RAID, Service.WORK, Service.CASINO),
+        # Игорный зал первым: дверь открывает первую услугу дома, а в
+        # казино человек идёт играть. Рейд остаётся кнопкой в шапке —
+        # тем же приёмом, которым в доме открывают работу
+        services=(Service.CASINO, Service.RAID, Service.WORK),
         genitive="казино",
         interior="underground_casino_interior",
     ),

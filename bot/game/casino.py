@@ -33,6 +33,14 @@ CHIP_PER_CREDIT = 1
 GAMES: tuple[str, ...] = ("dice", "roulette", "highcard", "blackjack")
 
 
+# Сколько идёт круг. Одно число на все столы, и это решение, а не
+# лень: у игрока за всеми четырьмя столами одни часы, и шкала ожидания
+# всюду одинаковой длины. Разные окна — 12 секунд у костей, 8 у карт —
+# читались на экране как сбоящий таймер, потому что у ленивого стола
+# срок считается от первого взгляда, а не от общих часов.
+ROUND_SECONDS = 120
+
+
 @dataclass(frozen=True)
 class Game:
     """Стол: как называется, сколько мест и чем на нём платят."""
@@ -45,7 +53,8 @@ class Game:
     least: int  # наименьшая ставка
     most: int  # наибольшая ставка
     step: int  # кратность ставки
-    accept: int  # сколько секунд принимают ставки
+    cover: str  # обложка стола в бакете
+    accept: int = ROUND_SECONDS  # сколько секунд принимают ставки
 
 
 GAME_LIST: tuple[Game, ...] = (
@@ -58,7 +67,7 @@ GAME_LIST: tuple[Game, ...] = (
         least=20,
         most=2000,
         step=20,
-        accept=12,
+        cover="seven.webp",
     ),
     Game(
         "roulette",
@@ -69,7 +78,7 @@ GAME_LIST: tuple[Game, ...] = (
         least=5,
         most=1000,
         step=5,
-        accept=120,
+        cover="roulette.webp",
     ),
     Game(
         "highcard",
@@ -80,7 +89,7 @@ GAME_LIST: tuple[Game, ...] = (
         least=50,
         most=50,
         step=50,
-        accept=8,
+        cover="high-card.webp",
     ),
     Game(
         "blackjack",
@@ -91,11 +100,19 @@ GAME_LIST: tuple[Game, ...] = (
         least=20,
         most=1000,
         step=2,
-        accept=12,
+        cover="blackjack.webp",
     ),
 )
 
 GAME_BY_CODE = {one.code: one for one in GAME_LIST}
+
+
+def cover_url(code: str) -> str:
+    """Адрес обложки стола."""
+    from bot.game import art
+
+    found = GAME_BY_CODE.get(code)
+    return f"{art.CASINO_COVERS}/{found.cover}" if found else ""
 
 
 def game(code: str) -> Game:

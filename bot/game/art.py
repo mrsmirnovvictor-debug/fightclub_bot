@@ -58,6 +58,8 @@ FUTURISTIC = f"{WEAPONS}/futuristic"
 CHARGERS = f"{LOCATIONS}/charging_stations"
 # Знаки кланов: по картинке на знак, и знак один на клан
 CLANS = f"{BUCKET}/clans"
+# Обложки столов казино: по картинке на игру, WebP 768 на 768
+CASINO_COVERS = f"{BUCKET}/casino/covers"
 # Значки городских служб: полиция, ФБР, армия, медицина, администрация и
 # мэр. Рисуют их с прозрачным фоном — значок встаёт у ника рядом со
 # знаком клана, и носить их разом нельзя: служба и семья несовместимы
@@ -261,6 +263,7 @@ __all__ = [
     "AVATARS",
     "BOSSES",
     "BUCKET",
+    "CASINO_COVERS",
     "INTERIORS",
     "ITEMS",
     "LOCATIONS",

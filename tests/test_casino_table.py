@@ -32,10 +32,13 @@ from bot.casino_service import (
 from bot.database import Database
 from bot.models import Player
 
-NOW = 1_800_000_000  # «сейчас» всех тестов: ровная граница вращения
+# «Сейчас» всех тестов — ровная граница круга: все столы живут по
+# общим часам, и следующая фиксация у них через две минуты
+NOW = 1_800_000_000
+ROUND = 120
 
 
-async def tick(db: Database, table_id: int, since: int, until: int, step: int = 1):
+async def tick(db: Database, table_id: int, since: int, until: int, step: int = 5):
     """Прожить столом от и до, заглядывая каждую секунду.
 
     Стол догоняет время при взгляде, а не по будильнику: это общий
@@ -241,7 +244,8 @@ async def test_the_dice_round_runs_itself_and_pays(db):
     fresh = await look(db, table.id, NOW)
     assert fresh.phase == "accept"
     closes = int(fresh.state["until"])
-    assert closes == NOW + 12, "на выбор двенадцать секунд"
+    assert closes == NOW + ROUND, "круг у всех столов общий"
+    assert closes % ROUND == 0, "и считается он по общим часам"
 
     await bet(db, one, table.id, 100, pick="seven", now=NOW)
     rolled = await look(db, table.id, closes)
@@ -368,8 +372,8 @@ async def test_the_wheel_knows_no_such_field(db):
 # ---------- старшая карта ----------
 
 
-async def test_the_pot_starts_when_two_have_confirmed(db):
-    """Подтвердили двое — пошёл отсчёт на восемь секунд."""
+async def test_the_pot_gathers_until_the_common_deadline(db):
+    """Взносы собираются до общей границы круга, как и ставки везде."""
     table = await open_table(db, "highcard", NOW, seed="карта")
     for number in (1, 2, 3):
         one = await gambler(db, number, chips=200)
@@ -377,17 +381,15 @@ async def test_the_pot_starts_when_two_have_confirmed(db):
     first = await db.get_player(1)
     await join_pot(db, first, table.id, command_id="j1", now=NOW)
     waiting = await look(db, table.id, NOW)
-    assert not int(waiting.state["until"]), "один — ещё не партия"
+    assert int(waiting.state["until"]) == NOW + ROUND
 
     second = await db.get_player(2)
-    await join_pot(db, second, table.id, command_id="j2", now=NOW)
-    counting = await look(db, table.id, NOW)
-    assert int(counting.state["until"]) == NOW + 8
-
-    # Третий успевает вступить, пока идёт отсчёт
+    await join_pot(db, second, table.id, command_id="j2", now=NOW + 10)
+    # Третий успевает вступить, пока идёт сбор
     third = await db.get_player(3)
-    await join_pot(db, third, table.id, command_id="j3", now=NOW + 5)
-    dealt = await look(db, table.id, NOW + 8)
+    await join_pot(db, third, table.id, command_id="j3", now=NOW + 100)
+
+    dealt = await look(db, table.id, NOW + ROUND)
     assert dealt.phase == "play"
     assert dealt.state["result"]["pot"] == 150
     assert dealt.state["result"]["rake"] == 7
@@ -395,14 +397,15 @@ async def test_the_pot_starts_when_two_have_confirmed(db):
 
 
 async def test_the_pot_comes_back_when_the_table_falls_apart(db):
-    """Меньше двух к фиксации — отсчёт отменяется, взносы возвращаются."""
+    """Меньше двух к фиксации — партия не собралась, взносы назад."""
     table = await open_table(db, "highcard", NOW, seed="карта")
     one = await gambler(db, 1, chips=200)
     await sit(db, one, table.id, 1, NOW)
     await join_pot(db, one, table.id, command_id="j1", now=NOW)
-    # Отсчёта нет вовсе: он начинается со второго
-    assert not int((await look(db, table.id, NOW + 30)).state["until"])
-    assert (await db.casino_wallet(1))["reserved"] == 200 - 150
+    assert (await db.casino_wallet(1))["reserved"] == 50
+
+    await tick(db, table.id, NOW, NOW + ROUND + 4)
+    assert await db.casino_wallet(1) == {"chips": 200, "reserved": 0}
 
 
 async def test_the_highest_card_takes_the_pot_less_the_rake(db):
@@ -412,7 +415,7 @@ async def test_the_highest_card_takes_the_pot_less_the_rake(db):
         one = await gambler(db, number, chips=200)
         await sit(db, one, table.id, number, NOW)
         await join_pot(db, one, table.id, command_id=f"j{number}", now=NOW)
-    played = await tick(db, table.id, NOW, NOW + 8 + 6 + 1)
+    played = await tick(db, table.id, NOW, NOW + ROUND + 14)
     result = played.state["result"]
     assert result["pot"] == 100 and result["prize"] == 95
     assert len(result["winners"]) >= 1
@@ -429,10 +432,10 @@ async def test_the_card_opens_by_hand_or_by_itself(db):
         one = await gambler(db, number, chips=200)
         await sit(db, one, table.id, number, NOW)
         await join_pot(db, one, table.id, command_id=f"j{number}", now=NOW)
-    await tick(db, table.id, NOW, NOW + 9)
+    await tick(db, table.id, NOW, NOW + ROUND + 1)
     first = await db.get_player(1)
-    await open_card(db, first, table.id, command_id="o1", now=NOW + 9)
-    view = await table_view(db, table.id, 1, NOW + 9)
+    await open_card(db, first, table.id, command_id="o1", now=NOW + ROUND + 2)
+    view = await table_view(db, table.id, 1, NOW + ROUND + 2)
     mine = next(one for one in view["seats"] if one.get("me"))
     other = next(
         one for one in view["seats"]
@@ -453,7 +456,7 @@ async def test_the_blackjack_round_deals_and_plays_itself(db):
     await sit(db, one, table.id, 1, NOW)
     await bet(db, one, table.id, 20, now=NOW)
     closes = int((await look(db, table.id, NOW)).state["until"])
-    assert closes == NOW + 12
+    assert closes == NOW + ROUND
 
     dealt = await look(db, table.id, closes)
     assert dealt.phase == "play"
@@ -477,8 +480,8 @@ async def test_the_player_hits_and_stands(db):
     table = await open_table(db, "blackjack", NOW, seed="ход")
     await sit(db, one, table.id, 1, NOW)
     await bet(db, one, table.id, 20, now=NOW)
-    closes = NOW + 12
-    turns = await tick(db, table.id, NOW, closes + 4)
+    closes = NOW + ROUND
+    turns = await tick(db, table.id, NOW, closes + 4, step=1)
     # Зерно подобрано: на руке 15, и без решения партию не доиграть
     assert turns.phase == "turns", turns.phase
     assert turns.state["turn"] == "1"
@@ -500,12 +503,14 @@ async def test_nobody_moves_out_of_turn(db):
         one = await gambler(db, number, chips=200)
         await sit(db, one, table.id, number, NOW)
         await bet(db, one, table.id, 20, command_id=f"b{number}", now=NOW)
-    turns = await tick(db, table.id, NOW, NOW + 12 + 4)
+    turns = await tick(db, table.id, NOW, NOW + ROUND + 4, step=1)
     assert turns.phase == "turns", turns.phase
     waiting = "2" if turns.state["turn"] == "1" else "1"
     other = await db.get_player(int(waiting))
     with pytest.raises(CasinoError):
-        await hand_move(db, other, table.id, "hit", command_id="z", now=NOW + 16)
+        await hand_move(
+            db, other, table.id, "hit", command_id="z", now=NOW + ROUND + 5
+        )
 
 
 # ---------- отключение ----------
@@ -518,9 +523,9 @@ async def test_the_one_who_left_after_betting_still_gets_paid(db):
         one = await gambler(db, number, chips=200)
         await sit(db, one, table.id, number, NOW)
         await join_pot(db, one, table.id, command_id=f"j{number}", now=NOW)
-    await tick(db, table.id, NOW, NOW + 9)  # карты сданы
-    await stand(db, 1, NOW + 9)
-    await tick(db, table.id, NOW + 9, NOW + 8 + 6 + 2)
+    await tick(db, table.id, NOW, NOW + ROUND + 1)  # карты сданы
+    await stand(db, 1, NOW + ROUND + 2)
+    await tick(db, table.id, NOW + ROUND + 2, NOW + ROUND + 10)
     purses = [(await db.casino_wallet(one))["chips"] for one in (1, 2)]
     assert sum(purses) == 150 + 150 + 95
     for user_id in (1, 2):
@@ -538,7 +543,7 @@ async def test_the_bet_repeats_only_by_an_explicit_tap(db):
     await bet(db, one, table.id, 40, pick="seven", command_id="b1", now=NOW)
     closes = int((await look(db, table.id, NOW)).state["until"])
     # Партия отыграна, пошла следующая — ставки на ней нет
-    after = await tick(db, table.id, closes, closes + 8)
+    after = await tick(db, table.id, closes, closes + 10)
     assert after.phase == "accept"
     view = await table_view(db, table.id, 1, closes + 8)
     mine = next(row for row in view["seats"] if row.get("me"))
@@ -604,12 +609,12 @@ async def test_the_tie_deals_again_only_to_the_leaders(db):
         one = await gambler(db, number, chips=200)
         await sit(db, one, table.id, number, NOW)
         await join_pot(db, one, table.id, command_id=f"j{number}", now=NOW)
-    dealt = await tick(db, table.id, NOW, NOW + 9)
+    dealt = await tick(db, table.id, NOW, NOW + ROUND + 1)
     assert dealt.phase == "play"
     pot = dealt.state["result"]["pot"]
     assert pot == 150
 
-    tied = await tick(db, table.id, NOW + 9, NOW + 16)
+    tied = await tick(db, table.id, NOW + ROUND + 1, NOW + ROUND + 8)
     result = tied.state["result"]
     assert result["deal"] == 2, "пересдача пошла вторым кругом"
     # Взносы не выросли: пересдача бесплатная
@@ -618,7 +623,7 @@ async def test_the_tie_deals_again_only_to_the_leaders(db):
         bets = [row for row in journal if row["kind"] == "bet"]
         assert bets and bets[0]["amount"] == 50
 
-    done = await tick(db, table.id, NOW + 16, NOW + 30)
+    done = await tick(db, table.id, NOW + ROUND + 8, NOW + ROUND + 24)
     assert done.state["result"]["winners"], "кто-то забрал банк"
     purses = [(await db.casino_wallet(one))["chips"] for one in (1, 2, 3)]
     assert sum(purses) == 150 * 3 + (pot - pot * 5 // 100)
@@ -709,7 +714,7 @@ async def test_leaving_before_the_door_closes_gives_the_bet_back(db):
     assert await db.casino_wallet(1) == {"chips": 200, "reserved": 0}
 
     # Стол пуст и новых партий не начинает
-    after = await tick(db, table.id, NOW + 2, NOW + 40)
+    after = await tick(db, table.id, NOW + 2, NOW + ROUND + 20)
     assert after.phase == "wait", after.phase
     view = await table_view(db, table.id, 1, NOW + 40)
     assert all(seat.get("empty") for seat in view["seats"])
@@ -721,20 +726,22 @@ async def test_the_table_does_not_play_with_a_ghost(db):
     table = await open_table(db, "dice", NOW, seed="призрак")
     await sit(db, one, table.id, 1, NOW)
     await bet(db, one, table.id, 20, pick="seven", command_id="b", now=NOW)
-    closes = NOW + 12
+    closes = NOW + ROUND
     rolled = await tick(db, table.id, NOW, closes)
     assert rolled.phase == "play", "приём закрыт, ставка в игре"
 
     said = await stand(db, 1, closes + 1)
     assert "возвращена" not in said, "из начатой партии не выходят"
-    played = await tick(db, table.id, closes + 1, closes + 8)
-    assert played.state["last"]["result"], "партия доиграна"
+    played = await tick(db, table.id, closes + 1, closes + 10)
+    # Стол опустел и следующую партию не начинает, поэтому итог этой
+    # так и лежит в `result`, не переехав в `last`
+    assert played.state["result"], "партия доиграна"
     assert (await db.casino_wallet(1))["reserved"] == 0
 
     # А дальше стол пуст и новых партий не начинает
-    after = await tick(db, table.id, closes + 8, closes + 40)
+    after = await tick(db, table.id, closes + 10, closes + ROUND + 20)
     assert after.phase == "wait", after.phase
-    view = await table_view(db, table.id, 1, closes + 40)
+    view = await table_view(db, table.id, 1, closes + ROUND + 20)
     assert all(seat.get("empty") for seat in view["seats"])
 
 

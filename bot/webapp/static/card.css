@@ -5003,3 +5003,25 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   .casino-die.rolling { animation: none; }
   .casino-card { transition: none; }
 }
+
+/* Обложка стола: в лобби маленькой, над столом — во всю ширину */
+.casino-game-head { display: flex; gap: 10px; align-items: flex-start; }
+.casino-game-head > div { flex: 1; min-width: 0; }
+.casino-cover {
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex: none;
+}
+
+/* Ожидание круга: подпись и полоса. Секунд тут нет намеренно —
+   часы телефона и сервера расходятся, и цифра от этого дёргалась */
+.casino-wait {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.casino-bar span { transition: width 0.25s linear; }

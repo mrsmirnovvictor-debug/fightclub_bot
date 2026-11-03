@@ -37,6 +37,8 @@ from typing import Any, Callable
 from bot.database import Database
 from bot.game.casino import (
     CHIP_PER_CREDIT,
+    ROUND_SECONDS,
+    cover_url,
     DICE_PAY,
     DICE_TITLES,
     GAME_LIST,
@@ -83,11 +85,16 @@ DONE_SECONDS = {
     "blackjack": 6,
 }
 
-# Рулетка крутится по общим часам, а не по своим: вращение начинается
-# каждые 120 секунд серверного времени, и у всех столов разом. Так
-# обратный отсчёт одинаков на любом экране, в том числе у того, кто
-# только что сел
-SPIN_EVERY = 120
+# Все столы живут по общим часам: круг начинается каждые 120 секунд
+# серверного времени, и у всех столов разом. Так ожидание одинаково на
+# любом экране — в том числе у того, кто только что сел, — и шкала
+# ожидания всюду одной длины.
+#
+# Считать срок от первого взгляда, как считалось раньше, нельзя: стол
+# догоняет время лениво, и у двух игроков, заглянувших с разницей в
+# секунду, выходили разные сроки. На экране это читалось как скачущий
+# таймер, и не зря: он и правда скакал.
+SPIN_EVERY = ROUND_SECONDS
 
 # Ход в блэкджеке: десять секунд на решение, дальше «хватит»
 TURN_SECONDS = 10
@@ -364,12 +371,12 @@ def _dice_step(table: Table, now: int) -> bool:
             return False
         _new_round(table, now)
         table.phase = "accept"
-        state["until"] = now + table.rules.accept
+        state["until"] = _next_slot(now)
         return True
     if table.phase == "accept" and now >= int(state["until"]):
         # Фиксация: сервер закрывает приём по своему времени, и исход
         # решается здесь же — до всякой анимации
-        rng = _rng_of(state, table.round)
+        rng = _rng_of(state, int(state["until"]))
         first, second = rng.randint(1, 6), rng.randint(1, 6)
         outcome = dice_outcome(first, second)
         state["result"] = {
@@ -393,6 +400,7 @@ def _dice_step(table: Table, now: int) -> bool:
         return True
     if table.phase == "play" and now >= int(state["until"]):
         table.phase = "done"
+        state["since"] = now
         state["until"] = now + DONE_SECONDS["dice"]
         return True
     if table.phase == "done" and now >= int(state["until"]):
@@ -404,9 +412,9 @@ def _dice_step(table: Table, now: int) -> bool:
 # ---------- рулетка ----------
 
 
-def _next_spin(now: int) -> int:
-    """Когда колесо тронется в следующий раз."""
-    return (now // SPIN_EVERY + 1) * SPIN_EVERY
+def _next_slot(now: int) -> int:
+    """Когда начнётся следующий круг. Общий для всех столов города."""
+    return (now // ROUND_SECONDS + 1) * ROUND_SECONDS
 
 
 def _roulette_step(table: Table, now: int) -> bool:
@@ -418,11 +426,11 @@ def _roulette_step(table: Table, now: int) -> bool:
         # никого: колесо крутится само, кнопки запуска нет
         _new_round(table, now)
         table.phase = "accept"
-        state["until"] = _next_spin(now)
+        state["until"] = _next_slot(now)
         return True
     if table.phase == "accept" and now >= int(state["until"]):
         spin = int(state["until"])
-        rng = _rng_of(state, spin)  # партия привязана ко времени вращения
+        rng = _rng_of(state, spin)  # партия привязана ко времени круга
         number = rng.choice(range(37))
         state["result"] = {
             "number": number,
@@ -459,26 +467,21 @@ def _highcard_step(table: Table, now: int) -> bool:
             return False
         _new_round(table, now)
         table.phase = "accept"
-        state["until"] = 0  # отсчёт начнётся со второго подтвердившего
+        state["until"] = _next_slot(now)
         return True
-    if table.phase == "accept":
-        if len(ready) >= 2 and not int(state.get("until") or 0):
-            # Двое подтвердили — пошёл отсчёт, за который успеют ещё двое
-            state["until"] = now + table.rules.accept
-            _event(state, "countdown", now, until=state["until"])
+    if table.phase == "accept" and now >= int(state["until"]):
+        if len(ready) < 2:
+            # Партия не собралась: вдвоём и дешевле, и честнее, чем
+            # одному против пустого стола. Взносы возвращаются
+            for seat in ready:
+                _owe(state, seat, int(seat["bet"]), int(seat["bet"]),
+                     "refund", "Партия не собралась — взнос возвращён")
+            table.phase = "done"
+            state["since"] = now
+            state["until"] = now + 2
             return True
-        if int(state.get("until") or 0) and now >= int(state["until"]):
-            if len(ready) < 2:
-                # Передумали до фиксации — возвращаем взносы и ждём снова
-                for seat in ready:
-                    _owe(state, seat, int(seat["bet"]), int(seat["bet"]),
-                         "refund", "Партия не собралась — взнос возвращён")
-                table.phase = "done"
-                state["until"] = now + 2
-                return True
-            _highcard_deal(table, now, ready)
-            return True
-        return False
+        _highcard_deal(table, now, ready)
+        return True
     if table.phase == "play" and now >= int(state["until"]):
         return _highcard_show(table, now)
     if table.phase == "done" and now >= int(state["until"]):
@@ -538,6 +541,7 @@ def _highcard_show(table: Table, now: int) -> bool:
             )
         result["winners"] = [winner["seat"]]
         table.phase = "done"
+        state["since"] = now
         state["until"] = now + DONE_SECONDS["highcard"]
         _event(state, "win", now, seat=winner["seat"], prize=result["prize"])
         return True
@@ -554,6 +558,7 @@ def _highcard_show(table: Table, now: int) -> bool:
                 # Остальные наблюдают: их карта остаётся на столе
                 result["hands"][seat["seat"]] = seat["cards"][-1]
         state["deck"] = deck
+        state["since"] = now
         state["until"] = now + PLAY_SECONDS["highcard"]
         _event(state, "redeal", now, seats=top)
         return True
@@ -569,6 +574,7 @@ def _highcard_show(table: Table, now: int) -> bool:
     result["winners"] = top
     result["split"] = share
     table.phase = "done"
+    state["since"] = now
     state["until"] = now + DONE_SECONDS["highcard"]
     _event(state, "split", now, seats=top)
     return True
@@ -584,7 +590,7 @@ def _blackjack_step(table: Table, now: int) -> bool:
             return False
         _new_round(table, now)
         table.phase = "accept"
-        state["until"] = now + table.rules.accept
+        state["until"] = _next_slot(now)
         return True
     if table.phase == "accept" and now >= int(state["until"]):
         betting = _betting(state)
@@ -652,10 +658,12 @@ def _blackjack_next_turn(table: Table, now: int) -> bool:
             continue
         state["turn"] = seat["seat"]
         table.phase = "turns"
+        state["since"] = now
         state["until"] = now + TURN_SECONDS
         return True
     state["turn"] = ""
     table.phase = "dealer"
+    state["since"] = now
     state["until"] = now
     return True
 
@@ -1221,6 +1229,7 @@ async def lobby(
             "title": rules.title,
             "about": rules.about,
             "emoji": rules.emoji,
+            "cover": cover_url(rules.code),
             "least": rules.least,
             "most": rules.most,
             "step": rules.step,
@@ -1315,6 +1324,7 @@ async def table_view(
         "title": rules.title,
         "about": rules.about,
         "emoji": rules.emoji,
+        "cover": cover_url(table.game),
         "seats": seats,
         "phase": table.phase,
         "phase_title": PHASE_TITLES.get(table.phase, table.phase),
