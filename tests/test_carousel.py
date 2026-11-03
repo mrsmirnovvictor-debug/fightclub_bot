@@ -158,6 +158,26 @@ def test_the_house_keeps_its_share():
 # ---------- вращение ----------
 
 
+async def roll_until(db: Database, one: Player, kind: str) -> dict:
+    """Крутить, пока не выпадет нужное, разбирая лишнее по дороге.
+
+    Разбирать обязательно: пока прошлый выигрыш лежит в строке, второй
+    ролл сервер не пустит. Жетоны тут такие же, как всё остальное, —
+    они тоже занимают строку и тоже ждут остановки барабана.
+    """
+    for _ in range(200):  # барабан честный, но не бесконечно терпеливый
+        await carousel_roll(db, one, NOW)
+        prize = (await carousel_view(db, one, NOW))["prize"]
+        if prize["kind"] == kind:
+            return prize
+        # Машину забирать некуда — гараж тесный; сдаём
+        await (carousel_take if prize["kind"] == "chips" else carousel_sell)(
+            db, one, NOW + carousel.SPIN_SECONDS
+        )
+        await db.casino_give(one.user_id, carousel.ROLL_PRICE, NOW)
+    raise AssertionError(f"за двести вращений не выпало ни одного «{kind}»")
+
+
 async def test_a_roll_costs_two_hundred_fifty_and_decides_at_once(db):
     """Жетоны снимаются сразу, приз решается до первого кадра."""
     one = await gambler(db, 1, chips=1_000, credits=9_000)
@@ -197,15 +217,19 @@ async def test_the_roll_says_nothing_about_the_prize(db):
 async def test_the_drum_waits_until_it_stops(db):
     """Пока барабан крутится, приз не забрать и не сдать."""
     one = await gambler(db, 1, chips=1_000, credits=9_000)
-    while (await carousel_view(db, one, NOW))["prize"] is None:
-        await carousel_roll(db, one, NOW)
+    await carousel_roll(db, one, NOW)
+    prize = (await carousel_view(db, one, NOW))["prize"]
 
     for take in (carousel_take, carousel_sell):
         with pytest.raises(CasinoError) as early:
             await take(db, one, NOW + 2)
+        # «Крутится» отвечают обе двери, и отвечают до всего прочего:
+        # жетоны не сдают, но и об этом говорить рано
         assert "крутится" in str(early.value)
-    # А как барабан встанет — пожалуйста
-    await carousel_sell(db, one, NOW + carousel.SPIN_SECONDS)
+    # А как барабан встанет — пожалуйста. Жетоны забирают, прочее сдают
+    await (carousel_take if prize["kind"] == "chips" else carousel_sell)(
+        db, one, NOW + carousel.SPIN_SECONDS
+    )
 
 
 async def test_one_prize_at_a_time(db):
@@ -230,12 +254,7 @@ async def test_the_chips_are_taken_and_never_sold(db):
     или сдать» у них нет: сдавать жетоны не во что.
     """
     one = await gambler(db, 1, chips=5_000, credits=9_000)
-    while True:
-        await carousel_roll(db, one, NOW)
-        prize = (await carousel_view(db, one, NOW))["prize"]
-        if prize["kind"] == "chips":
-            break
-        await carousel_sell(db, one, NOW + carousel.SPIN_SECONDS)
+    prize = await roll_until(db, one, "chips")
     had = (await db.casino_wallet(1))["chips"]
 
     with pytest.raises(CasinoError) as sale:
@@ -253,11 +272,7 @@ async def test_the_chips_are_taken_and_never_sold(db):
 async def test_the_prize_is_given_once_and_not_twice(db):
     """Забрать и сдать один и тот же выигрыш нельзя."""
     one = await gambler(db, 1, chips=2_000, credits=9_000)
-    while True:
-        await carousel_roll(db, one, NOW)
-        prize = (await carousel_view(db, one, NOW))["prize"]
-        if prize and prize["kind"] == "item":
-            break
+    prize = await roll_until(db, one, "item")
     await carousel_take(db, one, NOW + carousel.SPIN_SECONDS)
 
     gear = await db.list_gear(1)
@@ -272,11 +287,7 @@ async def test_the_prize_is_given_once_and_not_twice(db):
 async def test_the_prize_can_be_sold_for_chips_on_the_spot(db):
     """Сдал — жетоны на счёт, и вещь в рюкзак не попала."""
     one = await gambler(db, 1, chips=2_000, credits=9_000)
-    while True:
-        await carousel_roll(db, one, NOW)
-        prize = (await carousel_view(db, one, NOW))["prize"]
-        if prize and prize["kind"] == "item":
-            break
+    prize = await roll_until(db, one, "item")
     had = (await db.casino_wallet(1))["chips"]
 
     said = await carousel_sell(db, one, NOW + carousel.SPIN_SECONDS)
