@@ -65,6 +65,7 @@ from bot.game.raid import (
     FATIGUE_WAVES,
     Boss,
     CELLAR_RAID,
+    MILITARY_RAID,
     RAID_KINDS,
     RaidKind,
     RaidOutcome,
@@ -465,9 +466,16 @@ class RaidService:
                 hp_share=self.config.raid_boss_hp_share,
                 turn_seconds=self.config.raid_turn_timeout,
             )
+        # У каждого рейда свой кошель, и у базы он свой: прежде она
+        # платила фанатским, потому что настройка была одна на всех
+        # «не-казино», — и тысяча двести из правил не доходила до игрока
+        purse = (
+            self.config.raid_base_purse if kind.code == MILITARY_RAID.code
+            else self.config.raid_gang_purse
+        )
         return replace(
             kind,
-            purse=self.config.raid_gang_purse,
+            purse=purse,
             turn_seconds=self.config.raid_gang_turn_timeout,
         )
 

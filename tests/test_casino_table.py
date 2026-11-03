@@ -35,7 +35,7 @@ from bot.models import Player
 # «Сейчас» всех тестов — ровная граница круга: все столы живут по
 # общим часам, и следующая фиксация у них через две минуты
 NOW = 1_800_000_000
-ROUND = 120
+ROUND = 30
 
 
 async def tick(db: Database, table_id: int, since: int, until: int, step: int = 5):
@@ -384,10 +384,10 @@ async def test_the_pot_gathers_until_the_common_deadline(db):
     assert int(waiting.state["until"]) == NOW + ROUND
 
     second = await db.get_player(2)
-    await join_pot(db, second, table.id, command_id="j2", now=NOW + 10)
+    await join_pot(db, second, table.id, command_id="j2", now=NOW + 5)
     # Третий успевает вступить, пока идёт сбор
     third = await db.get_player(3)
-    await join_pot(db, third, table.id, command_id="j3", now=NOW + 100)
+    await join_pot(db, third, table.id, command_id="j3", now=NOW + ROUND - 5)
 
     dealt = await look(db, table.id, NOW + ROUND)
     assert dealt.phase == "play"
@@ -847,3 +847,84 @@ async def test_the_high_card_says_whose_card_was_higher(db):
             assert "минус комиссия" in said, said
         else:
             assert "старше" in said, said
+
+
+# ---------- часы дома ----------
+
+
+def night(hour: int = 4) -> int:
+    """Ближайший такой час по Москве — всегда после `NOW`.
+
+    Назад во времени смотреть нельзя: стол догоняет время вперёд, и
+    взгляд во вчера он просто не заметит.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    msk = timezone(timedelta(hours=3))
+    at = datetime.fromtimestamp(NOW, msk).replace(
+        hour=hour, minute=0, second=0, microsecond=0
+    )
+    if at.timestamp() <= NOW:
+        at += timedelta(days=1)
+    return int(at.timestamp())
+
+
+async def test_the_casino_sleeps_at_night(db):
+    """С двух ночи до восьми утра за стол не садятся."""
+    from bot.game.casino import open_now
+
+    assert open_now(NOW), "в одиннадцать утра казино открыто"
+    assert not open_now(night(2)), "в два ночи — закрыто"
+    assert not open_now(night(7)), "и в семь утра ещё"
+    assert open_now(night(8)), "а в восемь открывается"
+    assert open_now(night(1)), "и до двух ночи работает"
+
+    one = await gambler(db, 1, chips=200)
+    table = await open_table(db, "dice", night(4))
+    with pytest.raises(CasinoError) as shut:
+        await sit(db, one, table.id, 1, night(4))
+    assert "08:00" in str(shut.value), str(shut.value)
+
+
+async def test_the_night_table_starts_no_new_round(db):
+    """Ночью стол стоит: новая партия не начинается, колесо не крутится."""
+    one = await gambler(db, 1, chips=200)
+    table = await open_table(db, "dice", NOW)
+    await sit(db, one, table.id, 1, NOW)
+
+    # Начатую партию стол доигрывает — а новую ночью не начинает
+    asleep = await tick(db, table.id, night(4), night(4) + 30, step=5)
+    assert asleep.phase == "wait", asleep.phase
+    was = asleep.round
+    asleep = await tick(db, table.id, night(4) + 30, night(4) + 600, step=60)
+    assert asleep.phase == "wait" and asleep.round == was
+
+    wheel = await open_table(db, "roulette", NOW)
+    assert (await look(db, wheel.id, night(4))).phase == "wait"
+
+    # Открылось — и столы пошли сами
+    awake = await look(db, table.id, night(9))
+    assert awake.phase == "accept"
+    assert (await look(db, wheel.id, night(9))).phase == "accept"
+
+
+async def test_the_round_is_half_a_minute_and_never_a_blink(db):
+    """Круг — полминуты, и приёму всегда остаётся хотя бы десять секунд."""
+    from bot.casino_service import LEAST_ACCEPT, _next_slot
+
+    assert ROUND == 30
+    for second in range(0, 60):
+        at = NOW + second
+        slot = _next_slot(at)
+        assert slot % ROUND == 0, slot
+        # Меньше десяти секунд приёма не бывает: такой круг пропускают
+        # и ждут следующего
+        assert LEAST_ACCEPT <= slot - at <= ROUND + LEAST_ACCEPT, (
+            second, slot - at
+        )
+
+    one = await gambler(db, 1, chips=200)
+    table = await open_table(db, "dice", NOW)
+    await sit(db, one, table.id, 1, NOW)
+    fresh = await look(db, table.id, NOW)
+    assert int(fresh.state["until"]) == NOW + ROUND

@@ -60,6 +60,9 @@ CHARGERS = f"{LOCATIONS}/charging_stations"
 CLANS = f"{BUCKET}/clans"
 # Обложки столов казино: по картинке на игру, WebP 768 на 768
 CASINO_COVERS = f"{BUCKET}/casino/covers"
+# Рейд-пассы: по картинке на рейд, WebP. Лежат своей папкой, а не в
+# `raid2_items`: пропуска перерисовали все разом и выгрузили вместе
+RAID_TICKETS = f"{BUCKET}/raids/tickets"
 # Значки городских служб: полиция, ФБР, армия, медицина, администрация и
 # мэр. Рисуют их с прозрачным фоном — значок встаёт у ника рядом со
 # знаком клана, и носить их разом нельзя: служба и семья несовместимы
@@ -244,6 +247,15 @@ def raid_gear(line: str, code: str) -> str:
     return f"{RAID_ITEMS}/{line}/items/{code}.png"
 
 
+def raid_ticket(name: str) -> str:
+    """Пропуск рейда: raids/tickets/casino-boss.webp.
+
+    Имя файла приходит словом: в бакете пропуска названы по рейду
+    (`casino-boss`), а в игре — по коду вещи (`raid_pass`).
+    """
+    return f"{RAID_TICKETS}/{name}.webp"
+
+
 def raid_item(name: str) -> str:
     """Вещь рейда: bosses/raid2_items/match_ticket.png.
 
@@ -264,6 +276,7 @@ __all__ = [
     "BOSSES",
     "BUCKET",
     "CASINO_COVERS",
+    "RAID_TICKETS",
     "INTERIORS",
     "ITEMS",
     "LOCATIONS",
@@ -289,6 +302,7 @@ __all__ = [
     "potion",
     "raid_gear",
     "raid_item",
+    "raid_ticket",
     "set_piece",
     "shirt",
     "slot",

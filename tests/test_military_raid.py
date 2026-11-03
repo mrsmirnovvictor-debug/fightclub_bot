@@ -61,7 +61,9 @@ from scripts.foe_power import armor_mean
 from tests.test_battle_flow import make_player
 from tests.test_duel_flow import FakeBot
 
-BASE = "indoor_training_ground"
+# Склад секретного оружия у армейской части, её и берут штурмом. На
+# полигоне рейда больше нет: туда ходят кадеты на занятия
+BASE = "military_base"
 CHAT_ID = -100500
 THREAD_ID = 7
 
@@ -119,16 +121,26 @@ async def soldier_hunters(
 # ---------- дом и расписание ----------
 
 
-def test_the_base_is_stormed_at_the_training_ground():
-    """Рейд собирают на полигоне, и дверь его туда ведёт."""
+def test_the_base_is_stormed_at_the_army_part():
+    """Рейд собирают в армейской части, и дверь его туда ведёт.
+
+    Прежде штурмовали полигон, но склад с оружием у части — её и
+    берут. На полигоне остались кадеты с занятиями.
+    """
+    from bot.game.locations import Service as Where
+
     place = get_location(BASE)
 
     assert kind_at(BASE) is MILITARY_RAID
     assert MILITARY_RAID.house == BASE
     assert place.allows(Service.RAID)
-    # Учёба стоит первой: занятия идут каждый день, рейд — раз в неделю
-    assert place.services[0] is Service.STUDY
-    assert place.allows(Service.STUDY), "кадеты ходят сюда же"
+    # Работа стоит первой: она тут каждый день, рейд — раз в неделю.
+    # Дверь открывает то, что бывает чаще, а рейд — кнопкой в шапке
+    assert place.services[0] is Where.WORK
+
+    polygon = get_location("indoor_training_ground")
+    assert not polygon.allows(Service.RAID), "на полигоне рейда больше нет"
+    assert polygon.allows(Where.STUDY), "кадеты ходят туда же"
 
 
 def test_the_base_opens_three_days_a_week_from_six_to_midnight():
@@ -645,8 +657,8 @@ async def test_the_screen_of_the_base_carries_one_soldier(db, bot):
 # ---------- вход ----------
 
 
-def test_the_pass_to_the_base_costs_fifty_more_than_the_stadium():
-    """Пропуск на полигон дороже билета на матч ровно на полсотни.
+def test_the_pass_to_the_base_is_the_dearest_in_town():
+    """Пропуск на базу дороже прочих, и стоит он десятую часть выигрыша.
 
     Разница не из воздуха: за базой стоит кибероружие, которого нет ни в
     одной лавке, и вход на неё обязан стоить дороже стадиона, откуда
@@ -656,7 +668,8 @@ def test_the_pass_to_the_base_costs_fifty_more_than_the_stadium():
     stadium = get_potion(STADIUM_PASS)
 
     assert MILITARY_RAID.pass_code == BASE_PASS
-    assert ticket.price == stadium.price + 50 == 100
+    assert ticket.price == 40 > stadium.price == 30
+    assert ticket.price * 10 == MILITARY_RAID.purse
     assert ticket.is_pass is True  # его не пьют, его предъявляют
 
 
@@ -720,17 +733,18 @@ async def test_the_pass_is_taken_once_per_window(db, bot):
     assert fresh.potion_count(BASE_PASS) == 0, "и не брали из рюкзака дважды"
 
 
-async def test_the_purse_is_split_between_the_squad(db, bot):
-    """Кошель делится: большой отряд бой облегчает, а не утяжеляет."""
-    assert MILITARY_RAID.split is True
-    assert MILITARY_RAID.purse == MILITARY_PURSE == 1_200
+async def test_the_purse_goes_to_every_man_in_full(db, bot):
+    """Кошель не делится: каждому четыре сотни, сколько бы ни пришло.
 
-    alone = MILITARY_RAID.shares(1)
+    Делить его значило бы наказывать за то, что пришли вдесятером, — а
+    вдесятером базу и берут. Пропуск каждый покупает свой.
+    """
+    assert MILITARY_RAID.split is False
+    assert MILITARY_RAID.purse == MILITARY_PURSE == 400
+
+    assert MILITARY_RAID.shares(1) == [MILITARY_PURSE]
     crowd = MILITARY_RAID.shares(10)
-
-    assert alone == [MILITARY_PURSE]
-    assert sum(crowd) == MILITARY_PURSE and len(crowd) == 10
-    assert max(crowd) <= MILITARY_PURSE // 10 + 1
+    assert crowd == [MILITARY_PURSE] * 10
 
 
 # ---------- экран ----------
@@ -751,8 +765,8 @@ async def test_the_raid_screen_shows_the_base_with_its_pass(db, bot):
     assert row["purse"] == MILITARY_PURSE
     assert gate["pass_code"] == BASE_PASS
     assert gate["pass_title"] == "Пропуск на полигон"
-    assert gate["pass_price"] == 100 and gate["passes"] == 1
-    assert gate["can_afford"] is True, "пятисот хватает на сотню"
+    assert gate["pass_price"] == 40 and gate["passes"] == 1
+    assert gate["can_afford"] is True, "пятисот хватает на сорок"
     assert gate["schedule"] == (
         "по понедельникам, четвергам и субботам с 18:00 до 00:00 мск"
     )

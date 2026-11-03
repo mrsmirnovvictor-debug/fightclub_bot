@@ -685,8 +685,13 @@ async def test_nobody_swings_twice_in_one_wave(bot, db):
 # ---------- итог и награда ----------
 
 
-async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
-    """Кошель делится поровну, вещей за рейд не дают вовсе."""
+async def test_a_dead_boss_pays_every_man_in_full(bot, db):
+    """Кошель достаётся каждому целиком, вещей за рейд не дают вовсе.
+
+    Делили его прежде на отряд, и выходило наказание за то, что пришли
+    вчетвером: пропуск каждый покупает свой, и доля за победу тоже
+    своя. Так теперь во всех трёх рейдах города.
+    """
     service = make_service(bot, db, raid_purse=100)
     players, session = await gather(service, db, 4, size=4)
     toughen(session)  # кошель делят живые, а живучесть тут не проверяется
@@ -701,8 +706,7 @@ async def test_a_dead_boss_splits_the_purse_between_everyone(bot, db):
         (await db.get_player(p.user_id)).credits - was
         for p, was in zip(players, purse)
     ]
-    assert sum(paid) == 100  # весь кошель дошёл до отряда
-    assert max(paid) - min(paid) <= 1  # и разошёлся поровну
+    assert paid == [100, 100, 100, 100], "каждому по сто, а не сто на всех"
     for player in players:
         fresh = await db.get_player(player.user_id)
         # Победа над боссом идёт в счёт рейдов, а не в личные победы

@@ -3127,7 +3127,7 @@ const CLUB_HOUSES = {
   // Третий. На полигоне дверь ведёт на занятия — рейд в нём раз в
   // неделю, а кадеты ходят каждый день, — и попадают сюда кнопкой
   // «Рейд» в шапке открытого дома
-  indoor_training_ground: { title: "🎖 Крытый полигон", start: "raid" },
+  military_base: { title: "🎖 Армейская часть", start: "raid" },
 };
 
 let clubHouse = "club";
@@ -3166,7 +3166,7 @@ function openClub() {
 
 // Дома, в которых идут рейды. Экран у них общий, различается только
 // вывеска: что именно за рейд, решает сервер по месту бойца
-const RAID_HOUSES = ["casino", "stadium", "indoor_training_ground"];
+const RAID_HOUSES = ["casino", "stadium", "military_base"];
 
 function openRaidHouse(code) {
   clubHouse = RAID_HOUSES.includes(code) ? code : "casino";
@@ -8761,8 +8761,13 @@ function paintRaidEntry(screen) {
   btn.className = "work-entry raid-entry" + (here ? " on" : "");
   btn.textContent = "🎖 Рейд";
   btn.addEventListener("click", () => {
-    if (here && (myPlace && myPlace.code) === "casino") {
-      openCasino();
+    // Нажата — возвращаемся к главному делу дома: в казино это зал, в
+    // части работа. Дом, в котором кроме рейда ничего нет, остаётся
+    // на рейде: возвращаться там некуда
+    const first = ((myPlace && myPlace.services) || [])[0];
+    const back = here && first !== "raid" ? HOUSE_SCREENS[first] : null;
+    if (back) {
+      back(myPlace);
       return;
     }
     openRaidHouse(myPlace && myPlace.code);
@@ -19315,6 +19320,10 @@ const INTERIOR_SCREENS = [
   "hr", "work", "school", "police", "mafia", "flats", "post", "tavern", "study",
   "trade", "house", "prison", "arena", "cars", "dorm", "charge",
   "dojo", "barber", "wash", "court",
+  // Казино — один дом на два экрана: игорный зал и рейд. Вид изнутри
+  // у него один и тот же, и висеть он должен на обоих: иначе, перейдя
+  // кнопкой из зала в рейд, боец выходит будто из другого здания
+  "casino",
 ];
 
 // Виды, которые не доехали. Помнить их приходится: карточка
@@ -19620,7 +19629,8 @@ function casinoShot(data) {
   const table = data.table;
   const purse = JSON.stringify(data.wallet || {}) + ":" + (data.credits || 0);
   if (!table) {
-    const lobby = (data.lobby && data.lobby.games ? data.lobby.games : [])
+    const shut = data.lobby ? String(data.lobby.open) : "";
+    const lobby = shut + (data.lobby && data.lobby.games ? data.lobby.games : [])
       .map((one) => one.code + one.tables.map(
         (row) => row.id + ":" + row.taken + ":" + row.phase + ":" + row.mine
       ).join(","))
@@ -19637,6 +19647,9 @@ function casinoShot(data) {
 
 function renderCasino(data, force) {
   casinoData = data;
+  // Ответ догнал нас уже на другом экране — рисовать нечего. Иначе он
+  // снимал кнопку «Рейд» с чужой шапки, и вернуться в зал было нечем
+  if (el("casino").classList.contains("hidden")) return;
   // Пока человек набирает сумму, экран не трогаем. Опрос идёт раз в
   // секунду, и каждая перерисовка выбрасывала бы поле из-под пальца
   // вместе с клавиатурой — набрать сумму было нельзя вовсе
@@ -19659,10 +19672,11 @@ function renderCasino(data, force) {
   if (data.table) {
     el("casino-title").textContent =
       data.table.emoji + " " + data.table.title;
-    casinoShowCover(data.table.cover);
     // За столом рейду не место: идёт партия, и кнопка «в подвал» рядом
-    // со ставкой — это приглашение уйти посреди неё
-    document.querySelectorAll(".raid-entry").forEach((one) => one.remove());
+    // со ставкой — это приглашение уйти посреди неё. Убираем её только
+    // со своего экрана: чужие шапки этот ответ не касаются, а ответ
+    // запросто приходит уже после ухода с экрана
+    el("casino").querySelectorAll(".raid-entry").forEach((one) => one.remove());
     body.appendChild(casinoTableBox(data, data.table));
     // Полосу закрашиваем сразу, а не через четверть секунды: до
     // первого тика она была бы пустой, и круг выглядел бы только что
@@ -19671,31 +19685,24 @@ function renderCasino(data, force) {
     return;
   }
   el("casino-title").textContent = "🎰 Казино";
-  casinoShowCover("");
   // А в лобби — место: казино и рейд живут в одном доме
   paintRaidEntry("casino");
   body.appendChild(casinoCashierBox(data));
+  // Ночью залы закрыты. Кассу при этом не запираем: фишки — деньги
+  // игрока, и сдать их он вправе в любой час
+  if (data.lobby && data.lobby.open === false) {
+    const shut = document.createElement("p");
+    shut.className = "casino-shut";
+    shut.textContent = data.lobby.shut || "Казино закрыто.";
+    body.appendChild(shut);
+    return;
+  }
   (data.lobby && data.lobby.games ? data.lobby.games : []).forEach((one) => {
     body.appendChild(casinoGameBox(one));
   });
 }
 
 // ---------- касса ----------
-
-// Обложка стола сверху — та же картинка, что на карточке в лобби.
-// Нет её в бакете (или ещё не нарисовали) — экран обходится без неё:
-// `onerror` прячет фигуру целиком, а не оставляет битый значок
-function casinoShowCover(url) {
-  const box = el("casino-interior");
-  const pic = el("casino-pic");
-  if (!url) {
-    box.classList.add("hidden");
-    return;
-  }
-  if (pic.getAttribute("src") !== url) pic.setAttribute("src", url);
-  pic.onerror = () => box.classList.add("hidden");
-  pic.onload = () => box.classList.remove("hidden");
-}
 
 // В поле кассы сейчас пишут? Тогда перерисовка подождёт
 function casinoTyping() {

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from bot.game.art import potion as potion_art
-from bot.game.art import raid_item
+from bot.game.art import raid_ticket
 from bot.game.classes import ALL_STATS, Stats
 from bot.game.health import now_ts
 from bot.game.hospital import FULL_PRICE, PATCH_HEAL, PATCH_PRICE
@@ -237,6 +237,7 @@ POTIONS: tuple[Potion, ...] = (
             "Мятый талон с печатью казино Vegas City. Необходим для запуска "
             "и участия в рейде «Ограбление Босса Казино»."
         ),
+        image=raid_ticket("casino-boss"),
         price=10,
         max_wear=1,
     ),
@@ -249,10 +250,10 @@ POTIONS: tuple[Potion, ...] = (
             "Корешок билета на трибуну стадиона Vegas City. Необходим для "
             "запуска и участия в рейде «Стычка с футбольными фанатами»."
         ),
-        # Билет рисовали вместе со стычкой, и лежит он в папке рейда, а не
-        # в аптечной: имя файла своё, под код вещи его никто не переименует
-        image=raid_item("match_ticket"),
-        price=50,
+        # Пропуска перерисовали все разом и выгрузили своей папкой:
+        # имя файла там по рейду, а не по коду вещи
+        image=raid_ticket("football-fans"),
+        price=30,
         max_wear=1,
     ),
     Potion(
@@ -264,7 +265,8 @@ POTIONS: tuple[Potion, ...] = (
             "Карточка с магнитной полосой и штампом части. Необходима для "
             "запуска и участия в рейде «Захват военной базы»."
         ),
-        price=100,
+        image=raid_ticket("military-base"),
+        price=40,
         max_wear=1,
     ),
 )

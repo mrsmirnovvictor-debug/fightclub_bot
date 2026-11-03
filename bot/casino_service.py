@@ -55,6 +55,8 @@ from bot.game.casino import (
     high_rank,
     is_blackjack,
     leaders,
+    open_now,
+    opens_at,
     peeks,
     prize_of,
     rake_of,
@@ -103,6 +105,16 @@ TURN_SECONDS = 10
 # Сколько событий анимации стол помнит. Больше не нужно: опоздавший
 # клиент не доигрывает пропущенное, а переходит к текущей фазе
 EVENTS_KEPT = 24
+
+
+def shut_words(moment: int) -> str:
+    """Чем казино отвечает ночью."""
+    from datetime import datetime
+
+    from bot.game.clock import MOSCOW
+
+    when = datetime.fromtimestamp(opens_at(moment), MOSCOW)
+    return f"Казино закрыто. Откроется в {when.strftime('%H:%M')} по Москве."
 
 
 # ---------- кошелёк и обмен ----------
@@ -376,7 +388,7 @@ def _new_round(table: Table, now: int) -> None:
 def _dice_step(table: Table, now: int) -> bool:
     state = table.state
     if table.phase == "wait":
-        if not _sitting(state):
+        if not _sitting(state) or not open_now(now):
             return False
         _new_round(table, now)
         table.phase = "accept"
@@ -431,9 +443,19 @@ def _dice_step(table: Table, now: int) -> bool:
 # ---------- рулетка ----------
 
 
+# Сколько секунд приёма гарантировано. Партия иногда перехлёстывает
+# границу круга — четыре руки блэкджека с ходами по десять секунд идут
+# дольше полминуты, — и без этого следующему приёму доставалась бы
+# секунда до границы. Окно от десяти секунд до полного круга
+LEAST_ACCEPT = 10
+
+
 def _next_slot(now: int) -> int:
     """Когда начнётся следующий круг. Общий для всех столов города."""
-    return (now // ROUND_SECONDS + 1) * ROUND_SECONDS
+    slot = (now // ROUND_SECONDS + 1) * ROUND_SECONDS
+    while slot - now < LEAST_ACCEPT:
+        slot += ROUND_SECONDS
+    return slot
 
 
 def _roulette_step(table: Table, now: int) -> bool:
@@ -441,6 +463,10 @@ def _roulette_step(table: Table, now: int) -> bool:
     if table.phase in ("wait", "done", "play") and now >= int(
         state.get("until") or 0
     ):
+        # Ночью колесо стоит: казино закрыто, и крутить его некому
+        if not open_now(now):
+            table.phase = "wait"
+            return False
         # Между вращениями приём открыт всегда, даже если за столом
         # никого: колесо крутится само, кнопки запуска нет
         _new_round(table, now)
@@ -484,7 +510,7 @@ def _highcard_step(table: Table, now: int) -> bool:
     state = table.state
     ready = [one for one in _sitting(state) if one.get("ready")]
     if table.phase == "wait":
-        if not _sitting(state):
+        if not _sitting(state) or not open_now(now):
             return False
         _new_round(table, now)
         table.phase = "accept"
@@ -628,7 +654,7 @@ def _highcard_show(table: Table, now: int) -> bool:
 def _blackjack_step(table: Table, now: int) -> bool:
     state = table.state
     if table.phase == "wait":
-        if not _sitting(state):
+        if not _sitting(state) or not open_now(now):
             return False
         _new_round(table, now)
         table.phase = "accept"
@@ -900,6 +926,8 @@ async def sit(
     остаётся другой стол.
     """
     moment = now_ts() if now is None else now
+    if not open_now(moment):
+        raise CasinoError(shut_words(moment))
     table = await read_table(db, table_id)
     if not 1 <= seat <= table.rules.seats:
         raise CasinoError("Такого места за столом нет.")
@@ -1331,6 +1359,10 @@ async def lobby(
         "games": rows,
         "wallet": await db.casino_wallet(user_id),
         "seat": dict(where) if where else None,
+        # Часы дома: ночью залы закрыты, и экран говорит об этом сам,
+        # а не отказом на нажатие
+        "open": open_now(moment),
+        "edge": opens_at(moment),
     }
 
 
@@ -1436,6 +1468,9 @@ async def table_view(
         "most": rules.most,
         "step": rules.step,
         "accept": rules.accept,
+        "open": open_now(moment),
+        "edge": opens_at(moment),
+        "shut": "" if open_now(moment) else shut_words(moment),
         # Что повторять: сумма прошлой ставки этого игрока. Ноль —
         # кнопки «Повторить» на экране нет вовсе
         "again": _again_for(table, user_id),

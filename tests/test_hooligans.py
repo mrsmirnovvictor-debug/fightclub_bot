@@ -675,14 +675,30 @@ def test_the_history_knows_which_raid_a_hooligan_belongs_to():
     assert kind_of_boss("cellar_boss") is CELLAR_RAID
 
 
-def test_the_ticket_is_its_own_pass_and_costs_fifty():
-    """Талон казино на стадионе не спрашивают, и наоборот."""
+def test_every_raid_has_its_own_pass_and_its_own_price():
+    """Талон казино на стадионе не спрашивают, и наоборот.
+
+    Цена у пропуска десятая часть выигрыша: десять за сотню в казино,
+    тридцать за три сотни на стадионе, сорок за четыре на базе. Это
+    договор с дизайном, а не случайные числа.
+    """
+    from bot.game.potions import BASE_PASS
+    from bot.game.raid import MILITARY_RAID
+
     ticket = get_potion(STADIUM_PASS)
 
     assert HOOLIGAN_RAID.pass_code == STADIUM_PASS
     assert CELLAR_RAID.pass_code == RAID_PASS
-    assert ticket.price == 50
+    assert ticket.price == 30
     assert ticket.is_pass is True  # его не пьют, его предъявляют
+
+    assert get_potion(RAID_PASS).price == 10
+    assert get_potion(BASE_PASS).price == 40
+    for kind, pass_code in (
+        (CELLAR_RAID, RAID_PASS), (HOOLIGAN_RAID, STADIUM_PASS),
+        (MILITARY_RAID, BASE_PASS),
+    ):
+        assert get_potion(pass_code).price * 10 == kind.purse, kind.code
 
 
 def test_every_raid_tells_what_it_is_about():
@@ -996,21 +1012,30 @@ async def test_a_beaten_gang_pays_everyone_in_full(bot, db):
         assert fresh.credits == 500 + GANG_PURSE
 
 
-async def test_the_cellar_still_splits_its_purse(bot, db):
-    """Правило кошелька своё у каждого рейда, и подвал не задело."""
-    assert CELLAR_RAID.split is True
-    assert HOOLIGAN_RAID.split is False
-    assert CELLAR_RAID.shares(3) == [34, 33, 33]
-    assert HOOLIGAN_RAID.shares(3) == [GANG_PURSE] * 3
-    assert GANG_PURSE == 250
+async def test_every_raid_pays_each_man_in_full(bot, db):
+    """Кошель не делится ни в одном рейде: каждому своё.
+
+    Делить его значило бы наказывать за то, что пришли вдесятером, — а
+    вдесятером этих боссов и берут. Пропуск каждый покупает свой, и
+    доля за победу тоже своя.
+    """
+    from bot.game.raid import MILITARY_RAID
+
+    for kind in (CELLAR_RAID, HOOLIGAN_RAID, MILITARY_RAID):
+        assert kind.split is False, kind.code
+        assert kind.shares(3) == [kind.purse] * 3, kind.code
+    assert CELLAR_RAID.purse == 100
+    assert GANG_PURSE == 300
+    assert MILITARY_RAID.purse == 400
 
 
 def test_the_config_default_matches_the_rules():
     """Настройка и правило называют одно число, а не два разных."""
-    from bot.game.raid import RAID_PURSE
+    from bot.game.raid import MILITARY_PURSE, RAID_PURSE
 
     assert Config(bot_token="x").raid_gang_purse == GANG_PURSE
     assert Config(bot_token="x").raid_purse == RAID_PURSE
+    assert Config(bot_token="x").raid_base_purse == MILITARY_PURSE
 
 
 async def test_the_record_remembers_the_gang_by_its_leader(bot, db):
@@ -1105,7 +1130,7 @@ async def test_the_stadium_screen_is_about_the_gang(stadium):
     assert body["where"] == "Стадион" and body["here"] is True
     # и пропуск спрашивают здешний, а не талон казино
     assert body["gate"]["pass_code"] == STADIUM_PASS
-    assert body["gate"]["pass_price"] == 50
+    assert body["gate"]["pass_price"] == 30
 
 
 async def test_the_screen_shows_the_whole_gang_before_the_fight(stadium):
@@ -1238,7 +1263,9 @@ async def test_the_map_counts_every_raid_separately(stadium):
     # расписание в этих тестах снято, значит открыты все
     assert body["raids"]["stadium"]["state"] == "open"
     assert body["raids"]["casino"]["state"] == "open"
-    assert body["raids"]["indoor_training_ground"]["state"] == "open"
+    # Военный рейд переехал с полигона в армейскую часть: склад
+    # секретного оружия у части, её и берут штурмом
+    assert body["raids"]["military_base"]["state"] == "open"
 
 
 # ---------- добыча ----------

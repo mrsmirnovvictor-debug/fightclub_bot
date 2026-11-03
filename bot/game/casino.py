@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Iterable
+
+from bot.game.clock import MOSCOW
 
 # ---------- общий курс ----------
 #
@@ -38,7 +41,18 @@ GAMES: tuple[str, ...] = ("dice", "roulette", "highcard", "blackjack")
 # всюду одинаковой длины. Разные окна — 12 секунд у костей, 8 у карт —
 # читались на экране как сбоящий таймер, потому что у ленивого стола
 # срок считается от первого взгляда, а не от общих часов.
-ROUND_SECONDS = 120
+#
+# Полминуты — по плейтесту. Две минуты между партиями казино не
+# оживляют, а растягивают: за столом сидят ради следующего броска, а
+# не ради ожидания.
+ROUND_SECONDS = 30
+
+# Часы казино по Москве: открывается в восемь утра, закрывается в два
+# ночи. Шесть часов под замком — не придирка к игроку, а то, что
+# отличает заведение от автомата: у дома есть свои часы, и ночью он
+# пустеет, как всякий зал в городе.
+OPEN_HOUR = 8
+SHUT_HOUR = 2
 
 
 @dataclass(frozen=True)
@@ -105,6 +119,27 @@ GAME_LIST: tuple[Game, ...] = (
 )
 
 GAME_BY_CODE = {one.code: one for one in GAME_LIST}
+
+
+def open_now(moment: float) -> bool:
+    """Открыто ли казино в этот час."""
+    hour = datetime.fromtimestamp(moment, MOSCOW).hour
+    return hour >= OPEN_HOUR or hour < SHUT_HOUR
+
+
+def opens_at(moment: float) -> int:
+    """Когда откроется. Если открыто — когда закроется.
+
+    Одно число на оба случая: экрану нужно сказать либо «откроется в
+    08:00», либо «работаем до 02:00», и считается это одинаково — по
+    ближайшей границе московских суток.
+    """
+    here = datetime.fromtimestamp(moment, MOSCOW)
+    hour = OPEN_HOUR if not open_now(moment) else SHUT_HOUR
+    edge = here.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if edge <= here:
+        edge += timedelta(days=1)
+    return int(edge.timestamp())
 
 
 def cover_url(code: str) -> str:

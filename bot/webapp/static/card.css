@@ -5062,3 +5062,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-weight: 600;
   color: var(--ink);
 }
+
+/* Ночью залы закрыты: записка вместо столов. Касса при этом работает —
+   фишки деньги игрока, и сдать их он вправе в любой час */
+.casino-shut {
+  margin: 16px 0;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--panel);
+  text-align: center;
+  color: var(--muted);
+}
