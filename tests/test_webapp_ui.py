@@ -15710,7 +15710,9 @@ async def test_the_station_fight_reads_like_every_other_one(server, db):
 # ---------- казино ----------
 
 
-def casino_lobby(chips: int = 300, credits: int = 500) -> dict:
+def casino_lobby(
+    chips: int = 300, credits: int = 500, open_now: bool = True
+) -> dict:
     """Лобби казино, как его отдаёт сервер."""
     from bot.webapp.casino import ROULETTE_FIELDS
     from bot.game.casino import GAME_LIST, REDS, WHEEL, cover_url
@@ -15725,6 +15727,10 @@ def casino_lobby(chips: int = 300, credits: int = 500) -> dict:
         "lobby": {
             "wallet": {"chips": chips, "reserved": 0},
             "seat": None,
+            "open": open_now,
+            "edge": now_ts() + 3600,
+            "shut": "" if open_now else
+                    "Казино закрыто. Откроется в 08:00 по Москве.",
             "games": [
                 {
                     "code": one.code, "title": one.title, "about": one.about,
@@ -15766,6 +15772,7 @@ def casino_table(game: str = "dice", phase: str = "accept", **extra) -> dict:
         "turn": "", "result": None, "last": None, "events": [],
         "least": rules.least, "most": rules.most, "step": rules.step,
         "accept": rules.accept, "wallet": {"chips": 300, "reserved": 0},
+        "open": True, "edge": now_ts() + 3600, "shut": "",
         "mine": True,
     }
     table.update(extra)
@@ -16370,4 +16377,76 @@ async def test_the_wheel_runs_fast_then_slows_to_a_stop(server, db):
         assert round(left[4]) == round(left[3] / 8)
         # И полная остановка ровно на пяти секундах
         assert left[5] == 0 and left[6] == 0
+        await browser.close()
+
+
+async def test_the_casino_keeps_its_view_on_both_screens(server, db):
+    """Вид изнутри висит и в зале, и в рейде: дом-то один.
+
+    Прежде на экране казино стояла обложка стола, и, перейдя кнопкой
+    из зала в рейд, боец выходил будто из другого здания.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("casino"),
+            card=build_card(make_player("casino"), TOKEN, viewer_id=42),
+            images=True,
+        )
+        await page.locator(".zone-house").filter(has_text="Казино").click()
+        await page.wait_for_selector("#casino:not(.hidden)")
+        await page.wait_for_selector("#casino-interior:not(.hidden)")
+        hall = await page.locator("#casino-pic").get_attribute("src")
+        assert hall, "вид изнутри не доехал"
+
+        await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+        await page.wait_for_selector("#club-interior:not(.hidden)")
+        assert await page.locator("#club-pic").get_attribute("src") == hall
+        await browser.close()
+
+
+async def test_a_late_answer_does_not_steal_the_raid_button(server, db):
+    """Ответ казино, долетевший после ухода, чужую шапку не трогает.
+
+    Он снимал кнопку «Рейд» отовсюду разом, и вернуться в зал было
+    нечем — после нескольких переключений кнопка просто исчезала.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_map(
+            pw, server, city_map("casino"),
+            card=build_card(make_player("casino"), TOKEN, viewer_id=42),
+        )
+        await page.locator(".zone-house").filter(has_text="Казино").click()
+        await page.wait_for_selector("#casino:not(.hidden)")
+        await page.locator(".raid-entry").click()
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+
+        # Снимок стола приходит, когда экран казино уже закрыт
+        await page.evaluate(
+            "(data) => renderCasino(data)", casino_table("dice")
+        )
+        assert await page.locator("#club .raid-entry").count() == 1
+
+        # И кнопка по-прежнему возвращает в зал
+        await page.locator("#club .raid-entry").click()
+        await page.wait_for_selector("#casino:not(.hidden)")
+        await browser.close()
+
+
+async def test_the_night_casino_says_when_it_opens(server, db):
+    """Ночью вместо столов записка, а касса на месте."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(open_now=False)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-shut")
+
+        said = await page.locator(".casino-shut").inner_text()
+        assert "08:00" in said, said
+        assert await page.locator(".casino-game").count() == 0, "столы закрыты"
+        # Фишки — деньги игрока: сдать их он вправе в любой час
+        assert await page.locator(".casino-cashier").count() == 1
         await browser.close()
