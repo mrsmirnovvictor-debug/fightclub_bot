@@ -772,3 +772,78 @@ async def test_a_refused_bet_gives_the_chips_back(db):
     finally:
         service.command = was
     assert await db.casino_wallet(1) == {"chips": 200, "reserved": 0}
+
+
+# ---------- разбор партии ----------
+
+
+async def test_the_dice_explain_the_roll_in_words(db):
+    """После броска видно, что выпало, что было выбрано и почему так."""
+    one = await gambler(db, 1, chips=200)
+    table = await open_table(db, "dice", NOW, seed="разбор")
+    await sit(db, one, table.id, 1, NOW)
+    await bet(db, one, table.id, 20, pick="seven", command_id="b", now=NOW)
+    done = await tick(db, table.id, NOW, NOW + ROUND + 6)
+    view = await table_view(db, table.id, 1, NOW + ROUND + 6)
+    mine = next(row for row in view["seats"] if row.get("me"))
+    said = mine["why"] or (view["last"]["seats"]["1"]["why"])
+    dice = (done.state.get("result") or done.state["last"]["result"])["dice"]
+    assert f"{dice[0]} + {dice[1]} = {dice[0] + dice[1]}" in said, said
+    assert "Ровно 7" in said, said
+    assert ("не угадали" not in said) == (dice[0] + dice[1] == 7), said
+
+
+async def test_the_blackjack_says_who_was_closer_to_21(db):
+    """Разбор руки: сколько у игрока, сколько у крупье и почему так."""
+    one = await gambler(db, 1, chips=200)
+    table = await open_table(db, "blackjack", NOW, seed="ход")
+    await sit(db, one, table.id, 1, NOW)
+    await bet(db, one, table.id, 20, command_id="b", now=NOW)
+    await tick(db, table.id, NOW, NOW + ROUND + 4, step=1)
+    done = await tick(db, table.id, NOW + ROUND + 4, NOW + ROUND + 40, step=2)
+    assert done.phase in ("done", "wait", "accept")
+    seat = done.state["seats"].get("1") or {}
+    said = seat.get("why") or done.state["last"]["seats"]["1"]["why"]
+    assert "У вас" in said and "у крупье" in said, said
+    # И причина названа словами, а не одним числом
+    assert any(
+        word in said for word in
+        ("ближе к 21", "Перебор", "перебрал", "блэкджек", "Поровну")
+    ), said
+
+
+async def test_the_roulette_lists_every_field_of_mine(db):
+    """Разбор рулетки: по каждому полю — сыграло оно или нет."""
+    one = await gambler(db, 1, chips=500)
+    table = await open_table(db, "roulette", NOW, seed="колесо")
+    await sit(db, one, table.id, 1, NOW)
+    spin = int((await look(db, table.id, NOW)).state["until"])
+    await bet(db, one, table.id, 10, spot="color", pick="red",
+              command_id="r1", now=NOW)
+    await bet(db, one, table.id, 5, spot="number", pick="7",
+              command_id="r2", now=NOW)
+    await tick(db, table.id, spin, spin + 8, step=2)
+    view = await table_view(db, table.id, 1, spin + 8)
+    said = view["last"]["seats"]["1"]["why"]
+    assert "Красное 10" in said and "Число 7 5" in said, said
+    number = view["last"]["result"]["number"]
+    assert f"Выпало {number}" in said, said
+
+
+async def test_the_high_card_says_whose_card_was_higher(db):
+    """Разбор банка: чья карта старше и сколько ушло дому."""
+    table = await open_table(db, "highcard", NOW, seed="карта")
+    for number in (1, 2):
+        one = await gambler(db, number, chips=200)
+        await sit(db, one, table.id, number, NOW)
+        await join_pot(db, one, table.id, command_id=f"j{number}", now=NOW)
+    done = await tick(db, table.id, NOW, NOW + ROUND + 14)
+    winners = done.state["result"]["winners"]
+    assert winners
+    for seat in ("1", "2"):
+        said = done.state["seats"][seat]["why"]
+        if seat in winners:
+            assert "старшая за столом" in said, said
+            assert "минус комиссия" in said, said
+        else:
+            assert "старше" in said, said

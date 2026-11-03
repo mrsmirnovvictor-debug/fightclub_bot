@@ -4750,24 +4750,28 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   color: var(--brass, #c6a469);
 }
 
+/* Стол в лобби: обложка, название и одна строка — занятость и
+   кнопка. Серой плиты под ним нет: четыре серых прямоугольника на
+   экране читаются как четыре формы, а не как четыре стола */
 .casino-game {
-  padding: 12px;
-  border-radius: 14px;
-  background: var(--panel);
-  margin-bottom: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--slot-line);
 }
+.casino-game:last-child { border-bottom: none; }
 .casino-game h3 { margin: 0 0 2px; font-size: 16px; }
-.casino-about { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+.casino-about { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
 .casino-tables { display: flex; flex-direction: column; gap: 6px; }
 .casino-table-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-radius: 10px;
-  background: var(--slot);
+  gap: 10px;
 }
-.casino-table-row .grow { flex: 1; }
+.casino-table-row .btn { flex: 0 0 auto; min-width: 120px; }
+.casino-taken {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
 .casino-phase { font-size: 12px; color: var(--muted); }
 
 /* Стол: сукно, над ним тёплый свет, игровой объект в середине */
@@ -4851,6 +4855,22 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-size: 13px;
   text-align: center;
   color: #e8dfcc;
+}
+/* Разбор партии: итог, числа и объяснение словами */
+.casino-outcome { font-size: 17px; font-weight: 700; }
+.casino-outcome.won { color: #8ee6a8; }
+.casino-outcome.lost { color: #ff9b9b; }
+.casino-outcome.even { color: #ffe9a8; }
+.casino-sums { font-size: 12px; color: #d8ccb0; }
+.casino-why {
+  margin: 6px auto 0;
+  max-width: 340px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #f1ead9;
+  background: rgba(0, 0, 0, 0.26);
+  border-radius: 10px;
+  padding: 8px 10px;
 }
 
 /* Кости: лоток с бортиком и две кости по половинам */
@@ -5008,8 +5028,8 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .casino-game-head { display: flex; gap: 10px; align-items: flex-start; }
 .casino-game-head > div { flex: 1; min-width: 0; }
 .casino-cover {
-  width: 72px;
-  height: 72px;
+  width: 84px;
+  height: 84px;
   border-radius: 12px;
   object-fit: cover;
   flex: none;

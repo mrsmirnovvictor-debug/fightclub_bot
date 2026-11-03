@@ -37,15 +37,15 @@ from typing import Any, Callable
 from bot.database import Database
 from bot.game.casino import (
     CHIP_PER_CREDIT,
-    ROUND_SECONDS,
-    cover_url,
     DICE_PAY,
     DICE_TITLES,
     GAME_LIST,
     ROULETTE_ODDS,
     ROULETTE_SPOTS,
+    ROUND_SECONDS,
     blackjack_pay,
     colour_of,
+    cover_url,
     dealer_draws,
     dice_outcome,
     dice_pay,
@@ -59,6 +59,7 @@ from bot.game.casino import (
     prize_of,
     rake_of,
     roulette_pay,
+    roulette_wins,
     split_pot,
     spot_title,
 )
@@ -290,16 +291,23 @@ def _betting(state: dict) -> list[dict]:
 
 
 def _owe(
-    state: dict, seat: dict, staked: int, paid: int, kind: str, said: str
+    state: dict, seat: dict, staked: int, paid: int, kind: str, said: str,
+    why: str = "",
 ) -> None:
     """Записать расчёт места: что снять с резерва и что начислить.
 
     Деньги тут не двигаются — двигает их `_settle_up`, и двигает через
     базу. Состояние только помнит, кому сколько причитается, чтобы
     расчёт пережил и обрыв, и повторное чтение.
+
+    `said` — короткий итог для фишки места, `why` — разбор словами:
+    что выпало, что было у игрока и почему вышло так. Короткого мало:
+    «−20» не объясняет проигрыша, а объяснение — единственное, что
+    отличает игру от отъёма денег.
     """
     seat["paid"] = paid
     seat["said"] = said
+    seat["why"] = why
     state.setdefault("owed", []).append({
         "seat": seat["seat"],
         "user": seat["user"],
@@ -329,6 +337,7 @@ def _new_round(table: Table, now: int) -> None:
                     "bet": int(seat.get("bet") or 0),
                     "paid": int(seat.get("paid") or 0),
                     "said": seat.get("said") or "",
+                    "why": seat.get("why") or "",
                     # Чем именно ставили — для «Повторить ставку».
                     # Кнопка обязана показывать сумму, а сумма берётся
                     # отсюда, а не из памяти экрана
@@ -356,7 +365,7 @@ def _new_round(table: Table, now: int) -> None:
     for seat in (state.get("seats") or {}).values():
         seat.update(
             bet=0, pick="", bets=[], ready=False, cards=[], stood=False,
-            said="", paid=0, open=False,
+            said="", why="", paid=0, open=False,
         )
     state["since"] = now
 
@@ -387,11 +396,21 @@ def _dice_step(table: Table, now: int) -> bool:
         }
         for seat in _betting(state):
             stake = int(seat["bet"])
-            paid = dice_pay(str(seat.get("pick") or ""), stake, first, second)
+            pick = str(seat.get("pick") or "")
+            paid = dice_pay(pick, stake, first, second)
+            mine = DICE_TITLES.get(pick, "—")
             _owe(
                 state, seat, stake, paid, "payout",
                 f"{DICE_TITLES[outcome]} · "
                 + (f"+{paid - stake}" if paid else f"−{stake}"),
+                why=(
+                    f"{first} + {second} = {first + second}, это "
+                    f"«{DICE_TITLES[outcome]}». Ваш выбор — «{mine}»: "
+                    + (
+                        f"угадали, {stake} даёт {paid}."
+                        if paid else "не угадали, ставка сгорела."
+                    )
+                ),
             )
         table.phase = "play"
         state["since"] = now
@@ -443,10 +462,12 @@ def _roulette_step(table: Table, now: int) -> bool:
             stake = int(seat.get("bet") or 0)
             if stake <= 0:
                 continue
-            paid = roulette_pay(seat.get("bets") or [], number)
+            bets = seat.get("bets") or []
+            paid = roulette_pay(bets, number)
             _owe(
                 state, seat, stake, paid, "payout",
                 f"+{paid - stake}" if paid else f"−{stake}",
+                why=_roulette_why(bets, number, paid),
             )
         table.phase = "play"
         state["since"] = spin
@@ -474,8 +495,13 @@ def _highcard_step(table: Table, now: int) -> bool:
             # Партия не собралась: вдвоём и дешевле, и честнее, чем
             # одному против пустого стола. Взносы возвращаются
             for seat in ready:
-                _owe(state, seat, int(seat["bet"]), int(seat["bet"]),
-                     "refund", "Партия не собралась — взнос возвращён")
+                _owe(
+                    state, seat, int(seat["bet"]), int(seat["bet"]),
+                    "refund", "Партия не собралась — взнос возвращён",
+                    why="Играть в «Старшую карту» вдвоём и больше; "
+                        "к закрытию приёма желающих не набралось, "
+                        "и взнос вернулся целиком.",
+                )
             table.phase = "done"
             state["since"] = now
             state["until"] = now + 2
@@ -531,13 +557,22 @@ def _highcard_show(table: Table, now: int) -> bool:
     top = leaders({one["seat"]: one["cards"][-1] for one in playing})
     if len(top) == 1:
         winner = next(one for one in playing if one["seat"] == top[0])
+        best = winner["cards"][-1]
         for seat in playing:
             stake = int(seat["bet"])
             paid = result["prize"] if seat is winner else 0
+            mine = seat["cards"][-1]
             _owe(
                 state, seat, stake, paid, "payout",
                 f"Банк {result['prize']} — ваш" if paid
                 else f"Банк получил {winner['name']}",
+                why=(
+                    f"Ваша {mine} — старшая за столом. Банк {result['pot']} "
+                    f"минус комиссия {result['rake']}: {result['prize']}."
+                    if paid else
+                    f"Ваша {mine} против {best} у {winner['name']} — "
+                    f"его карта старше, банк ушёл ему."
+                ),
             )
         result["winners"] = [winner["seat"]]
         table.phase = "done"
@@ -570,6 +605,13 @@ def _highcard_show(table: Table, now: int) -> bool:
         _owe(
             state, seat, stake, paid, "payout",
             f"Ничья — {paid} из банка" if paid else "Банк разделили старшие",
+            why=(
+                f"Старшие равны, а колоды на пересдачу не хватило: банк "
+                f"{result['prize']} разделили поровну, вам {paid}."
+                if paid else
+                f"Ваша {seat['cards'][-1]} младше: банк разделили те, "
+                f"у кого карты равны и старше."
+            ),
         )
     result["winners"] = top
     result["split"] = share
@@ -698,12 +740,61 @@ def _blackjack_dealer(table: Table, now: int) -> bool:
             said = "Возврат"
         else:
             said = "Проигрыш"
-        _owe(state, seat, stake, paid, "payout", said)
+        _owe(
+            state, seat, stake, paid, "payout", said,
+            why=_blackjack_why(seat, dealer, stake, paid),
+        )
     table.phase = "done"
     state["since"] = now
     state["until"] = now + DONE_SECONDS["blackjack"]
     _event(state, "dealer", now, cards=dealer)
     return True
+
+
+def _roulette_why(bets: list[dict], number: int, paid: int) -> str:
+    """Разбор ставок рулетки: какие поля сыграли, а какие нет."""
+    if not bets:
+        return ""
+    said = []
+    for bet in bets:
+        spot, pick = str(bet.get("spot")), str(bet.get("pick"))
+        stake = int(bet.get("amount") or 0)
+        won = roulette_wins(spot, pick, number)
+        said.append(
+            f"{spot_title(spot, pick)} {stake} — "
+            + (f"+{stake * ROULETTE_ODDS[spot]}" if won else "мимо")
+        )
+    where = {"red": "красное", "black": "чёрное", "zero": "зеро"}
+    head = f"Выпало {number} · {where[colour_of(number)]}. "
+    if number == 0 and paid == 0:
+        head += "При зеро играет только ставка на ноль. "
+    return head + "; ".join(said) + "."
+
+
+def _blackjack_why(
+    seat: dict, dealer: list[str], stake: int, paid: int
+) -> str:
+    """Разбор руки: сколько у кого и почему вышло так."""
+    mine, _ = hand_total(seat.get("cards") or [])
+    his, _ = hand_total(dealer)
+    cards = " ".join(seat.get("cards") or [])
+    his_cards = " ".join(dealer)
+    head = f"У вас {cards} — {mine}; у крупье {his_cards} — {his}. "
+    if is_blackjack(dealer) and is_blackjack(seat.get("cards") or []):
+        return head + f"Блэкджек на блэкджек — ставка {stake} возвращена."
+    if is_blackjack(dealer):
+        return head + "У крупье блэкджек, и он бьёт всё, кроме блэкджека."
+    if is_blackjack(seat.get("cards") or []):
+        return head + f"Блэкджек с двух карт платит ×2,5: {paid}."
+    if mine > 21:
+        return head + "Перебор: рука больше 21 проигрывает сразу."
+    if his > 21:
+        return head + f"Крупье перебрал — победа, начислено {paid}."
+    if mine > his:
+        return head + f"Ваша рука ближе к 21 — начислено {paid}."
+    if mine == his:
+        return head + f"Поровну — ставка {stake} возвращена."
+    return head + "Рука крупье ближе к 21."
 
 
 # ---------- запись и расчёт ----------
@@ -1289,6 +1380,9 @@ def _seat_view(
         "soft": soft if (mine or shown) else False,
         "stood": bool(seat.get("stood")),
         "said": seat.get("said") or "",
+        # Разбор словами показывают только своему месту: чужой расчёт
+        # на экране — это чужие деньги, и место ему не здесь
+        "why": (seat.get("why") or "") if mine else "",
         "paid": int(seat.get("paid") or 0),
         "turn": str(table.state.get("turn") or "") == seat["seat"],
     }

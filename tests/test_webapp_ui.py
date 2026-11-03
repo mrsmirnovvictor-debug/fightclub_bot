@@ -3766,8 +3766,9 @@ async def open_raid(pw, server, raid=None, telegram="", images=False):
     казино на карте. Сам раздел жив, и тесты рейда — про него, а не про
     дорогу до казино; её проверяет test_locations_app.
     """
-    # Подвал открывает дверь казино, и только она: кнопка внизу — клуб,
-    # где бы боец ни стоял. Потому и идём сюда через карту
+    # Дорога та же, что у человека: карта, дверь казино, кнопка «Рейд» в
+    # шапке зала. Дверь открывает игорный зал — в казино приходят
+    # играть, — а рейд живёт за той же кнопкой, что и работа
     browser, page = await open_page(
         pw, server, build_card(make_player("casino"), TOKEN, viewer_id=42),
         raid=raid, city=city_map("casino"), telegram=telegram, images=images,
@@ -3776,6 +3777,8 @@ async def open_raid(pw, server, raid=None, telegram="", images=False):
     await page.locator("#tab-map").click()
     await page.wait_for_selector(".zone-house")
     await page.locator(".zone-house").filter(has_text="Казино").click()
+    await page.wait_for_selector("#casino:not(.hidden)")
+    await page.locator(".raid-entry").click()
     await page.wait_for_selector("#club-raid:not(.hidden)")
     return browser, page
 
@@ -16072,4 +16075,112 @@ async def test_the_ball_sits_in_the_pocket_that_won(server, db):
         want = -(WHEEL.index(35) * 360 / 37)
         spun = float(re.search(r"-?\d+(\.\d+)?", turned).group(0))
         assert abs(spun - want) < 1, (turned, want)
+        await browser.close()
+
+
+async def test_the_covers_do_not_blink_on_every_poll(server, db):
+    """Опрос раз в секунду не должен пересоздавать картинки.
+
+    Перерисовка делала новые `<img>`, и каждая секунда начиналась с
+    пустого места: обложки моргали.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-cover")
+
+        # Метим картинку и шлём тот же снимок ещё раз
+        await page.evaluate(
+            "() => { document.querySelector('.casino-cover').dataset.mark = 'я'; }"
+        )
+        await page.evaluate("(data) => renderCasino(data)", casino_lobby())
+        await page.evaluate("(data) => renderCasino(data)", casino_lobby())
+        mark = await page.evaluate(
+            "() => document.querySelector('.casino-cover').dataset.mark || ''"
+        )
+        assert mark == "я", "картинку пересоздали — она мигнёт"
+
+        # А изменившийся снимок экран всё-таки перерисовывает
+        await page.evaluate(
+            "(data) => renderCasino(data)", casino_lobby(chips=7)
+        )
+        assert "7" in await page.locator("#casino-purse").inner_text()
+        await browser.close()
+
+
+async def test_the_lobby_row_is_seats_and_a_button(server, db):
+    """В строке стола только занятость и кнопка: номер столу ни к чему."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-table-row")
+
+        said = await page.locator(".casino-table-row").first.inner_text()
+        assert "0/4" in said
+        assert "Сесть" in said
+        assert "Стол" not in said and "№" not in said, said
+        # И серой плиты под столом нет
+        paint = await page.evaluate(
+            "() => getComputedStyle(document.querySelector('.casino-table-row'))"
+            ".backgroundColor"
+        )
+        assert paint in ("rgba(0, 0, 0, 0)", "transparent"), paint
+        await browser.close()
+
+
+async def test_the_raid_button_stays_out_of_the_game(server, db):
+    """В лобби кнопка рейда есть, за столом — нет."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-game")
+        assert await page.locator("#casino .raid-entry").count() == 1
+
+        await page.evaluate(
+            "(data) => renderCasino(data)", casino_table("dice")
+        )
+        await page.wait_for_selector(".casino-felt")
+        assert await page.locator(".raid-entry").count() == 0
+        await browser.close()
+
+
+async def test_the_settled_hand_explains_who_won_and_why(server, db):
+    """После розыгрыша видно обе руки и сказано, почему вышло так."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("blackjack", phase="done")
+    mine = body["table"]["seats"][0]
+    mine.update(
+        cards=["9♥", "7♦", "4♣"], count=3, total=20, bet=20, paid=40,
+        said="Победа",
+        why="У вас 9♥ 7♦ 4♣ — 20; у крупье K♠ 8♦ — 18. "
+            "Ваша рука ближе к 21 — начислено 40.",
+    )
+    body["table"]["result"] = {
+        "dealer": ["K♠", "8♦"], "total": 18, "blackjack": False,
+        "bust": False, "upcard": "K♠",
+    }
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-why")
+
+        # Рука крупье открыта целиком, и сумма названа
+        dealer = await page.locator(".casino-hand").first.inner_text()
+        assert "Крупье · 18" in dealer and "K♠" in dealer and "8♦" in dealer
+        # Итог: короткий, числами и словами
+        assert "Победа" in await page.locator(".casino-outcome").inner_text()
+        assert "+20" in await page.locator(".casino-outcome").inner_text()
+        sums = await page.locator(".casino-sums").inner_text()
+        assert "Ставка 20" in sums and "начислено 40" in sums
+        why = await page.locator(".casino-why").inner_text()
+        assert "у крупье" in why and "ближе к 21" in why
         await browser.close()
