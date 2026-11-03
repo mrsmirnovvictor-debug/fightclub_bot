@@ -16912,12 +16912,14 @@ async def test_the_won_prize_waits_for_take_or_sell(server, db):
 
 async def test_the_spinning_drum_hides_the_prize(server, db):
     """Пока барабан крутится, приза не видно и кнопки погашены."""
+    from bot.game.carousel import SPIN_SECONDS
+
     card = build_card(make_player("casino"), TOKEN, viewer_id=42)
     body = casino_lobby()
     body["draw"] = casino_draw(prize={
         "kind": "car", "code": "iron_muscle", "title": "Тяжёлый маслкар",
         "price": 20000, "image": "", "sells_for": 10000,
-        "at": now_ts(), "ready": now_ts() + 5,
+        "at": now_ts(), "ready": now_ts() + SPIN_SECONDS,
     })
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, casino=body)
@@ -16932,11 +16934,12 @@ async def test_the_spinning_drum_hides_the_prize(server, db):
         # весь барабан, — а вот в итоге под лентой его нет
         said = await page.locator(".casino-middle").inner_text()
         assert "маслкар" not in said and "10000" not in said, said
-        # Лента на вращении идёт много быстрее холостого хода: за
-        # четверть секунды она проходит больше, чем вхолостую за три
-        was = await belt_at(page)
-        await page.wait_for_timeout(250)
-        gone = was - await belt_at(page)
-        assert gone > 225, f"за четверть секунды лента прошла {gone}"
+        # И лента именно крутится, а не ползёт вхолостую. Спрашиваем
+        # прямо, а не меряем пройденное: на рывке лента успевает
+        # завернуться несколько раз за четверть секунды, и расстояние
+        # по двум отсчётам положения не восстановить — выходил то плюс,
+        # то минус. Сколько она проходит под конец, считает
+        # `test_the_drum_crawls_past_half_a_dozen_prizes_at_the_end`
+        assert await page.evaluate("() => !!casinoBeltSpin"), "барабан стоит"
         assert not await page.get_by_text("Ролл за 250").is_enabled()
         await browser.close()
