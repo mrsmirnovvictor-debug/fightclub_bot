@@ -685,3 +685,101 @@ async def test_the_card_carries_the_set_line_everywhere_the_thing_is_shown():
     assert goods["set_army_weapon"]["kit"]["worn"] == 0
     assert goods["set_army_weapon"]["kit"]["power"] == 100
     assert goods["viking_axe"]["kit"] == {}
+
+
+# ---------- казино ----------
+
+
+async def test_the_casino_door_asks_where_you_stand(client, db):
+    """Играть можно в казино, а не из любого места города.
+
+    Проверяем на сервере, а не прятанием кнопки: спрятанная обходится
+    запросом мимо интерфейса.
+    """
+    player = make_player(location="fight_club")
+    await db.save_player(player)
+    headers = {"X-Telegram-Init-Data": make_init_data()}
+    response = await client.get("/api/casino", headers=headers)
+    assert response.status == 409, await response.text()
+
+    player.location = "casino"
+    await db.save_player(player)
+    response = await client.get("/api/casino", headers=headers)
+    assert response.status == 200
+    body = await response.json()
+    assert len(body["lobby"]["games"]) == 4
+    assert body["wallet"] == {"chips": 0, "reserved": 0}
+    # Порядок карманов приходит с сервера: клиент его не выдумывает
+    assert len(body["wheel"]) == 37 and body["wheel"][0] == 0
+
+
+async def test_the_casino_changes_money_over_http(client, db):
+    """Касса меняет кредиты на фишки и обратно одной ручкой."""
+    player = make_player(location="casino", credits=300)
+    await db.save_player(player)
+    headers = {"X-Telegram-Init-Data": make_init_data()}
+
+    response = await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "exchange", "kind": "buy", "amount": 200},
+    )
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body["wallet"]["chips"] == 200
+    assert (await db.get_player(42)).credits == 100
+
+    response = await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "exchange", "kind": "sell", "amount": 500},
+    )
+    assert response.status == 409, "больше, чем есть, не сдать"
+    assert (await db.get_player(42)).credits == 100
+
+
+async def test_the_casino_seats_and_bets_over_http(client, db):
+    """Сесть, поставить и встать — всё теми же двумя ручками."""
+    player = make_player(location="casino", credits=300)
+    await db.save_player(player)
+    headers = {"X-Telegram-Init-Data": make_init_data()}
+    await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "exchange", "kind": "buy", "amount": 300},
+    )
+    lobby = await (await client.get("/api/casino", headers=headers)).json()
+    dice = next(
+        one for one in lobby["lobby"]["games"] if one["code"] == "dice"
+    )
+    table_id = dice["tables"][0]["id"]
+
+    response = await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "sit", "table": table_id, "seat": 1},
+    )
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body["table"]["id"] == table_id
+    assert body["table"]["mine"]
+
+    response = await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "bet", "table": table_id, "amount": 40,
+              "pick": "seven", "command": "once"},
+    )
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body["wallet"] == {"chips": 260, "reserved": 40}
+
+    # Тот же ключ команды — та же ставка, а не вторая
+    await client.post(
+        "/api/casino", headers=headers,
+        json={"action": "bet", "table": table_id, "amount": 40,
+              "pick": "seven", "command": "once"},
+    )
+    assert (await db.casino_wallet(42)) == {"chips": 260, "reserved": 40}
+
+    # Встали до закрытия — ставка вернулась
+    response = await client.post(
+        "/api/casino", headers=headers, json={"action": "leave"},
+    )
+    assert response.status == 200
+    assert (await db.casino_wallet(42)) == {"chips": 300, "reserved": 0}

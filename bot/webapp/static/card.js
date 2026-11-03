@@ -1913,7 +1913,7 @@ const SCREENS = [
   "bank", "hr", "work", "school", "police", "mafia", "flats", "post", "tavern",
   "study", "turf", "crowd", "elections", "trade", "house", "prison", "arena",
   "cars", "dorm", "charge", "dojo", "barber", "wash", "court", "blackout",
-  "bag", "hero",
+  "casino", "bag", "hero",
 ];
 // Вкладок меньше, чем экранов: лавки открываются с карты, а не с панели.
 // Пока в них стоишь, горит «Карта» — оттуда в них и пришли.
@@ -1927,7 +1927,7 @@ const OPENED_FROM = {
   tavern: "map", study: "map", turf: "map", crowd: "map",
   elections: "map", house: "map", prison: "map", arena: "map", cars: "map",
   dorm: "map", charge: "map", dojo: "map", barber: "map", wash: "map",
-  court: "map", blackout: "map",
+  court: "map", blackout: "map", casino: "map",
 };
 let lastTab = "hero";
 
@@ -2026,6 +2026,15 @@ function showTab(name) {
     watchStation();
   } else {
     stopWatchingStation();
+  }
+  // Казино: партия идёт по серверным часам и без нас. Пока экран
+  // открыт, снимок спрашивается сам; ушли — опрос снимаем, иначе он
+  // продолжал бы будить сервер из чужого дома
+  if (name === "casino") {
+    loadCasino();
+    watchCasino();
+  } else {
+    stopWatchingCasino();
   }
   // Полка образов: кредитов могло стать больше или меньше, а образ —
   // купиться в другом доме того же пола
@@ -2547,6 +2556,7 @@ const HOUSE_SCREENS = {
   study: () => showTab("study"),
   vote: () => showTab("elections"),
   blackout: () => showTab("blackout"),
+  casino: () => openCasino(),
   school: () => showTab("school"),
   police: () => showTab("police"),
   mafia: () => showTab("mafia"),
@@ -3067,6 +3077,13 @@ function stopWatchingFights() {
 
 function pickClubSection(name) {
   const house = CLUB_HOUSES[clubHouse];
+  // Игорный зал — не раздел дома, а свой экран: в нём свои часы и свой
+  // опрос, и держать его вкладкой внутри клуба значило бы будить
+  // сервер казино из каждого дома, где эта вкладка открыта
+  if (name === "hall") {
+    openCasino();
+    return;
+  }
   const allowed = clubSections().map(([code]) => code);
   // Рейд открывается только в рейдовом доме, бои — только в клубе.
   // Пришли не с тем разделом (например, вернулись из казино) —
@@ -3136,7 +3153,10 @@ function canFightHere() {
 const NO_FIGHTS_HERE = "Бои между игроками недоступны в данной локации.";
 
 function clubSections() {
-  // В рейдовом доме разделов нет вовсе: там одно дело — рейд
+  // В казино дел два: рейд на босса и игорный зал. Зал — отдельный
+  // экран, и ведёт в него такая же фишка, как в прочие разделы дома
+  if (clubHouse === "casino") return [["raid", "Рейд"], ["hall", "🎰 Зал"]];
+  // В остальных рейдовых домах разделов нет вовсе: там одно дело — рейд
   if (RAID_HOUSES.includes(clubHouse)) return [];
   return [
     ["fights", "Бои"],
@@ -19446,7 +19466,8 @@ el("hero-clan-line").addEventListener("click", openClanSheet);
   "house", "hospital", "trade", "insurance", "gym", "bank", "hr", "work",
   "school", "police", "mafia", "flats", "post", "tavern", "study",
   "crowd", "elections", "shop", "magic", "prison", "arena", "cars", "dorm",
-  "charge", "dojo", "barber", "wash", "court", "blackout", "workshop", "club",
+  "charge", "dojo", "barber", "wash", "court", "blackout", "casino",
+  "workshop", "club",
 ].forEach((screen) => {
   el(screen + "-back").addEventListener("click", () => showTab("map"));
 });
@@ -19504,3 +19525,930 @@ window.addEventListener("focus", catchUp);
 setInterval(catchUp, CARD_HEARTBEAT);
 
 load();
+
+// ---------- казино ----------
+//
+// Четыре стола на четыре места. Как и рейд, казино целиком живёт на
+// сервере: время, деньги, колода и исходы — его. Экран показывает
+// снимок и шлёт кнопки; он не закрывает приём, не решает, чей ход, и
+// не знает, что выпало, пока ему не скажут.
+//
+// Анимация ничего не меняет. Карман рулетки и грани костей известны до
+// первого кадра — кадры только показывают уже решённое. Поэтому
+// вернувшийся из фона не доигрывает пропущенное: он спрашивает снимок
+// и видит текущую фазу, а при готовом расчёте — сразу конечный кадр.
+
+let casinoData = null;
+let casinoPoll = null;
+let casinoTicker = null;
+let casinoAt = 0; // стол, который смотрим; 0 — лобби
+let casinoStake = 0; // выбранный номинал фишки
+let casinoPick = ""; // выбранный исход в костях
+let casinoGrid = false; // открыта ли сетка чисел рулетки
+let casinoShown = ""; // что уже нарисовано: партия и фаза
+let casinoSpun = 0; // для какой партии крутили колесо
+let casinoRolled = 0; // для какой партии бросали кости
+
+// Пока идёт партия, спрашиваем часто: секунды тут видны. В ожидании
+// реже — стол, за которым никого, никуда не спешит
+const CASINO_POLL_LIVE = 1000;
+const CASINO_POLL_IDLE = 4000;
+const CASINO_LIVE = ["accept", "play", "turns", "dealer", "done"];
+
+function openCasino() {
+  casinoAt = 0;
+  showTab("casino");
+}
+
+function watchCasino() {
+  if (!casinoPoll) casinoPoll = setInterval(loadCasino, CASINO_POLL_LIVE);
+  if (!casinoTicker) casinoTicker = setInterval(paintCasinoClock, 250);
+}
+
+function stopWatchingCasino() {
+  if (casinoPoll) clearInterval(casinoPoll);
+  if (casinoTicker) clearInterval(casinoTicker);
+  casinoPoll = null;
+  casinoTicker = null;
+  casinoShown = "";
+}
+
+async function loadCasino() {
+  try {
+    const where = casinoAt ? "?table=" + casinoAt : "";
+    const response = await fetch("api/casino" + where, {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Казино не отвечает.");
+    renderCasino(await response.json());
+  } catch (error) {
+    el("casino-note").textContent = error.message;
+  }
+}
+
+async function casinoAct(payload) {
+  try {
+    // Ключ команды у каждого нажатия свой: повторный запрос с тем же
+    // ключом сервер посчитает тем же нажатием, а не второй ставкой
+    const body = { ...payload, command: payload.command || stamp() };
+    const data = await post("api/casino", body);
+    haptic((feedback) => feedback.impactOccurred("light"));
+    if (data.table) casinoAt = data.table.id;
+    if (payload.action === "leave") casinoAt = 0;
+    renderCasino(data);
+  } catch (error) {
+    el("casino-note").textContent = error.message;
+    haptic((feedback) => feedback.notificationOccurred("error"));
+  }
+}
+
+function renderCasino(data) {
+  casinoData = data;
+  if (data.card) render(data.card, true);
+  el("casino-note").textContent = data.said || "";
+  const purse = (data.wallet && data.wallet.chips) || 0;
+  const held = (data.wallet && data.wallet.reserved) || 0;
+  el("casino-purse").textContent =
+    "🎟 " + purse + (held ? " (+" + held + " в игре)" : "");
+
+  const body = el("casino-body");
+  body.textContent = "";
+  if (data.table) {
+    el("casino-title").textContent =
+      data.table.emoji + " " + data.table.title;
+    body.appendChild(casinoTableBox(data, data.table));
+    return;
+  }
+  el("casino-title").textContent = "🎰 Казино";
+  body.appendChild(casinoCashierBox(data));
+  (data.lobby && data.lobby.games ? data.lobby.games : []).forEach((one) => {
+    body.appendChild(casinoGameBox(one));
+  });
+}
+
+// ---------- касса ----------
+
+function casinoCashierBox(data) {
+  const box = document.createElement("section");
+  box.className = "casino-cashier";
+
+  const said = document.createElement("div");
+  said.style.flex = "1 1 100%";
+  said.innerHTML =
+    "Фишка и кредит равны: меняем один к одному в обе стороны, без комиссии.";
+  box.appendChild(said);
+
+  const sum = document.createElement("input");
+  sum.type = "number";
+  sum.min = "1";
+  sum.inputMode = "numeric";
+  sum.placeholder = "сколько";
+  box.appendChild(sum);
+
+  const take = (kind) => {
+    const amount = parseInt(sum.value, 10);
+    if (!amount || amount <= 0) {
+      el("casino-note").textContent = "Сколько менять?";
+      return;
+    }
+    casinoAct({ action: "exchange", kind, amount });
+  };
+  box.appendChild(button("Купить фишки", { onClick: () => take("buy") }));
+  box.appendChild(
+    button("Сдать фишки", { secondary: true, onClick: () => take("sell") })
+  );
+
+  const note = document.createElement("div");
+  note.style.flex = "1 1 100%";
+  note.className = "casino-phase";
+  note.textContent =
+    "На руках " + (data.credits || 0) + " 💰 и "
+    + ((data.wallet && data.wallet.chips) || 0) + " фишек.";
+  box.appendChild(note);
+  return box;
+}
+
+// ---------- лобби ----------
+
+function casinoGameBox(one) {
+  const box = document.createElement("section");
+  box.className = "casino-game";
+
+  const head = document.createElement("h3");
+  head.textContent = one.emoji + " " + one.title;
+  box.appendChild(head);
+
+  const about = document.createElement("p");
+  about.className = "casino-about";
+  about.textContent =
+    one.about + " Ставка " + one.least + "–" + one.most
+    + (one.step > 1 ? ", кратно " + one.step : "") + ".";
+  box.appendChild(about);
+
+  const tables = document.createElement("div");
+  tables.className = "casino-tables";
+  (one.tables || []).forEach((table) => {
+    tables.appendChild(casinoTableRow(one, table));
+  });
+  box.appendChild(tables);
+  return box;
+}
+
+function casinoTableRow(game, table) {
+  const row = document.createElement("div");
+  row.className = "casino-table-row";
+
+  const left = document.createElement("div");
+  left.className = "grow";
+  const name = document.createElement("div");
+  name.textContent = "Стол №" + table.id + " · " + table.taken + "/"
+    + table.seats;
+  const phase = document.createElement("div");
+  phase.className = "casino-phase";
+  phase.textContent = table.phase_title;
+  left.append(name, phase);
+  row.appendChild(left);
+
+  if (table.mine) {
+    row.appendChild(button("Вернуться", {
+      onClick: () => {
+        casinoAt = table.id;
+        loadCasino();
+      },
+    }));
+    return row;
+  }
+  const free = table.taken < table.seats;
+  row.appendChild(button(free ? "Сесть" : "Занято", {
+    disabled: !free,
+    hint: "За столом четыре места, и все заняты. Рядом есть другой стол.",
+    onClick: () => casinoAct({
+      action: "sit", table: table.id, seat: casinoFreeSeat(table),
+    }),
+  }));
+  return row;
+}
+
+// Какое место предложить: первое свободное. Если его займут раньше,
+// сервер откажет — и это правильный ответ, а не ошибка экрана
+function casinoFreeSeat(table) {
+  return (table.free && table.free[0]) || table.taken + 1;
+}
+
+// ---------- стол ----------
+
+function casinoTableBox(data, table) {
+  const box = document.createElement("section");
+  box.className = "casino " + table.game;
+
+  const felt = document.createElement("div");
+  felt.className = "casino-felt";
+  felt.appendChild(casinoSeatsRow(table));
+  felt.appendChild(casinoMiddleBox(data, table));
+  felt.appendChild(casinoMineLine(table));
+  box.appendChild(felt);
+
+  box.appendChild(casinoControlsBox(data, table));
+
+  const back = document.createElement("div");
+  back.className = "casino-actions";
+  back.appendChild(button("Встать из-за стола", {
+    secondary: true,
+    onClick: () => casinoAct({ action: "leave" }),
+  }));
+  back.appendChild(button("К столам", {
+    secondary: true,
+    onClick: () => {
+      casinoAt = 0;
+      loadCasino();
+    },
+  }));
+  box.appendChild(back);
+  return box;
+}
+
+function casinoSeatsRow(table) {
+  const row = document.createElement("div");
+  row.className = "casino-seats";
+  (table.seats || []).forEach((seat) => {
+    row.appendChild(casinoSeatCard(table, seat));
+  });
+  return row;
+}
+
+function casinoSeatCard(table, seat) {
+  const card = document.createElement("div");
+  card.className = "casino-seat"
+    + (seat.empty ? " empty" : "")
+    + (seat.me ? " me" : "")
+    + (seat.turn ? " turn" : "");
+  if (seat.empty) {
+    const face = document.createElement("div");
+    face.className = "casino-seat-face";
+    face.textContent = "➕";
+    const name = document.createElement("div");
+    name.className = "casino-seat-name";
+    name.textContent = "Место " + seat.seat;
+    card.append(face, name);
+    card.addEventListener("click", () => {
+      if (!table.mine) {
+        casinoAct({ action: "sit", table: table.id, seat: Number(seat.seat) });
+      }
+    });
+    return card;
+  }
+  const face = document.createElement("div");
+  face.className = "casino-seat-face";
+  face.textContent = seat.avatar || "🥊";
+  const name = document.createElement("div");
+  name.className = "casino-seat-name";
+  name.textContent = seat.me ? "Вы" : seat.name;
+  card.append(face, name);
+
+  // У соседей видно статус и число карт; свои карты — целиком
+  if (table.game === "blackjack" || table.game === "highcard") {
+    const cards = document.createElement("div");
+    cards.className = "casino-cards";
+    if (seat.cards && seat.cards.length) {
+      seat.cards.forEach((one) => cards.appendChild(casinoCardFace(one, true)));
+    } else {
+      for (let i = 0; i < (seat.count || 0); i += 1) {
+        cards.appendChild(casinoCardBack(true));
+      }
+    }
+    card.appendChild(cards);
+    if (seat.total) {
+      const sum = document.createElement("div");
+      sum.className = "casino-seat-sum";
+      sum.textContent = seat.total + (seat.soft ? " мягк." : "");
+      card.appendChild(sum);
+    }
+  }
+  const says = casinoSeatStatus(table, seat);
+  if (says) {
+    const line = document.createElement("div");
+    line.className = "casino-seat-bet";
+    line.textContent = says;
+    card.appendChild(line);
+  }
+  if (seat.said) {
+    const said = document.createElement("div");
+    said.className = "casino-seat-said";
+    said.textContent = seat.said;
+    card.appendChild(said);
+  }
+  return card;
+}
+
+// Статус дублируется текстом, а не только рамкой: цветная рамка на
+// солнце не читается, да и значок без подписи каждый понимает по-своему
+function casinoSeatStatus(table, seat) {
+  if (seat.turn) return "Ходит";
+  if (seat.gone) return "Ушёл";
+  if (table.game === "highcard") {
+    return seat.ready ? "В игре · " + seat.bet : "Ожидает";
+  }
+  if (seat.bet) {
+    return (seat.pick ? casinoPickTitle(seat.pick) + " · " : "") + seat.bet;
+  }
+  if (table.phase === "accept") return "Выбирает";
+  return seat.stood ? "Пас" : "Ожидает";
+}
+
+const CASINO_PICKS = {
+  under: "Меньше 7",
+  seven: "Ровно 7",
+  over: "Больше 7",
+};
+
+function casinoPickTitle(code) {
+  return CASINO_PICKS[code] || code;
+}
+
+// ---------- середина стола ----------
+
+function casinoMiddleBox(data, table) {
+  const box = document.createElement("div");
+  box.className = "casino-middle";
+  if (table.game === "dice") casinoDiceStage(box, table);
+  else if (table.game === "roulette") casinoWheelStage(box, data, table);
+  else if (table.game === "highcard") casinoPotStage(box, table);
+  else casinoDealerStage(box, table);
+
+  box.appendChild(casinoClockBox(table));
+  return box;
+}
+
+function casinoClockBox(table) {
+  const box = document.createElement("div");
+  box.className = "casino-clock";
+  box.id = "casino-clock";
+  box.dataset.until = table.until || 0;
+  box.dataset.phase = table.phase;
+  box.textContent = table.phase_title;
+  return box;
+}
+
+// Часы перерисовываются сами, без запроса к серверу: срок известен,
+// и секунды между опросами можно считать на месте
+function paintCasinoClock() {
+  const box = el("casino-clock");
+  if (!box || !casinoData || !casinoData.table) return;
+  const until = Number(box.dataset.until || 0);
+  const table = casinoData.table;
+  if (!until) {
+    box.textContent = table.phase_title;
+    return;
+  }
+  const left = Math.max(0, until - Math.floor(Date.now() / 1000));
+  box.textContent = table.phase_title + " · " + left + " с";
+}
+
+// ---------- кости ----------
+
+function casinoDiceStage(box, table) {
+  const tray = document.createElement("div");
+  tray.className = "casino-tray";
+  // Пока партия идёт — её кости, в приёме — кости прошлой партии:
+  // стол не должен стоять пустым, пока собираются следующие ставки
+  const showing = table.result || (table.last && table.last.result) || null;
+  const dice = (showing && showing.dice) || [0, 0];
+  const rolling = table.phase === "play" && casinoRolled !== table.round;
+  if (rolling) casinoRolled = table.round;
+  tray.appendChild(casinoDieBox(dice[0], "first", rolling));
+  tray.appendChild(casinoDieBox(dice[1], "second", rolling));
+  box.appendChild(tray);
+
+  if (showing && showing.dice) {
+    const shout = document.createElement("div");
+    shout.className = "casino-shout";
+    // Сумма называется только после остановки костей: иначе исход
+    // виден раньше, чем он «выпал», и бросок перестаёт быть броском
+    shout.textContent = table.phase === "play"
+      ? "…"
+      : dice[0] + " + " + dice[1] + " = " + showing.sum + " · " + showing.title;
+    box.appendChild(shout);
+  }
+}
+
+// Точки грани строятся из одного кружка по шаблону — так же, как
+// просит ведомость медиа: один элемент, шесть раскладок
+const CASINO_PIPS = {
+  1: [4],
+  2: [0, 8],
+  3: [0, 4, 8],
+  4: [0, 2, 6, 8],
+  5: [0, 2, 4, 6, 8],
+  6: [0, 2, 3, 5, 6, 8],
+};
+
+function casinoDieBox(value, side, rolling) {
+  const die = document.createElement("div");
+  die.className = "casino-die " + side + (rolling ? " rolling" : "");
+  die.style.setProperty("--from", side === "first" ? "-140px" : "140px");
+  const spots = CASINO_PIPS[value] || [];
+  for (let cell = 0; cell < 9; cell += 1) {
+    const dot = document.createElement("i");
+    if (spots.indexOf(cell) < 0) dot.style.visibility = "hidden";
+    die.appendChild(dot);
+  }
+  return die;
+}
+
+// ---------- рулетка ----------
+
+function casinoWheelStage(box, data, table) {
+  const wheel = document.createElement("div");
+  wheel.className = "casino-wheel";
+  const disc = document.createElement("canvas");
+  disc.width = 464;
+  disc.height = 464;
+  disc.id = "casino-disc";
+  const ball = document.createElement("canvas");
+  ball.width = 464;
+  ball.height = 464;
+  ball.id = "casino-ball";
+  wheel.append(disc, ball);
+  box.appendChild(wheel);
+
+  const result = table.result || (table.last && table.last.result);
+  const shout = document.createElement("div");
+  shout.className = "casino-shout";
+  shout.textContent = result && table.phase !== "accept"
+    ? result.title
+    : (result ? "Было: " + result.title : "Ставки, господа");
+  box.appendChild(shout);
+
+  const order = data.wheel || [];
+  const reds = data.reds || [];
+  setTimeout(() => {
+    casinoDrawWheel(disc, order, reds);
+    const number = result ? result.number : -1;
+    const spinning = table.phase === "play" && casinoSpun !== table.round;
+    if (spinning) casinoSpun = table.round;
+    casinoRunWheel(disc, ball, order, number, table, spinning);
+  }, 0);
+}
+
+// Диск рисуется по кольцу с сервера, а не «число × шаг»: карманы на
+// европейском колесе идут не по порядку, и шаг посадил бы шарик не
+// туда, куда показывает подсветка
+function casinoDrawWheel(canvas, order, reds) {
+  const paint = canvas.getContext && canvas.getContext("2d");
+  if (!paint || !order.length) return;
+  const middle = canvas.width / 2;
+  const step = (Math.PI * 2) / order.length;
+  paint.clearRect(0, 0, canvas.width, canvas.height);
+  order.forEach((number, index) => {
+    const from = index * step - Math.PI / 2 - step / 2;
+    paint.beginPath();
+    paint.moveTo(middle, middle);
+    paint.arc(middle, middle, middle - 10, from, from + step);
+    paint.closePath();
+    paint.fillStyle = number === 0
+      ? "#176b3a"
+      : (reds.indexOf(number) >= 0 ? "#8d2230" : "#1b1f22");
+    paint.fill();
+    paint.strokeStyle = "rgba(198,164,105,0.5)";
+    paint.lineWidth = 1;
+    paint.stroke();
+
+    paint.save();
+    paint.translate(middle, middle);
+    paint.rotate(from + step / 2);
+    paint.fillStyle = "#f3efe6";
+    paint.font = "bold 22px system-ui, sans-serif";
+    paint.textAlign = "right";
+    paint.textBaseline = "middle";
+    paint.fillText(String(number), middle - 22, 0);
+    paint.restore();
+  });
+  paint.beginPath();
+  paint.arc(middle, middle, middle * 0.42, 0, Math.PI * 2);
+  paint.fillStyle = "#2a2118";
+  paint.fill();
+  paint.strokeStyle = "#c6a469";
+  paint.lineWidth = 4;
+  paint.stroke();
+}
+
+// Диск и шарик — два слоя: диск поворачивается к карману, шарик идёт
+// навстречу и садится в него. Время берётся серверное, поэтому
+// опоздавший видит не начало, а ту же секунду, что и все
+function casinoRunWheel(disc, ball, order, number, table, spinning) {
+  const spot = order.indexOf(number);
+  const step = 360 / (order.length || 37);
+  const stop = spot >= 0 ? -spot * step : 0;
+  const slow = window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const started = (table.since || 0) * 1000;
+  const run = 4200;
+
+  function frame() {
+    const age = spinning && !slow
+      ? Math.min(run, Date.now() - started)
+      : run;
+    const part = age / run;
+    const ease = 1 - Math.pow(1 - part, 3);
+    disc.style.transform = "rotate(" + (stop - 360 * 3 * (1 - ease)) + "deg)";
+    casinoDrawBall(ball, part, spot, order.length || 37);
+    if (age < run) requestAnimationFrame(frame);
+  }
+  frame();
+}
+
+function casinoDrawBall(canvas, part, spot, total) {
+  const paint = canvas.getContext && canvas.getContext("2d");
+  if (!paint) return;
+  const middle = canvas.width / 2;
+  paint.clearRect(0, 0, canvas.width, canvas.height);
+  if (spot < 0) return;
+  // До 60% времени шарик идёт по внешней дорожке навстречу диску,
+  // дальше переходит на внутренний радиус и садится в карман
+  const outer = middle - 24;
+  const inner = middle * 0.62;
+  const radius = part < 0.6 ? outer : outer + (inner - outer) * ((part - 0.6) / 0.4);
+  const seat = -Math.PI / 2 + (spot * Math.PI * 2) / total;
+  const angle = part < 1
+    ? seat + Math.PI * 2 * 5 * (1 - part)
+    : seat;
+  paint.beginPath();
+  paint.arc(
+    middle + Math.cos(angle) * radius,
+    middle + Math.sin(angle) * radius,
+    10, 0, Math.PI * 2
+  );
+  paint.fillStyle = "#f6f1e4";
+  paint.fill();
+  paint.strokeStyle = "rgba(0,0,0,0.35)";
+  paint.stroke();
+}
+
+// ---------- старшая карта ----------
+
+function casinoPotStage(box, table) {
+  const result = table.result || {};
+  const pot = document.createElement("div");
+  pot.className = "casino-shout";
+  pot.textContent = result.pot
+    ? "Банк " + result.pot + " · победителю " + result.prize
+    : "Банк собирается";
+  box.appendChild(pot);
+
+  if (result.rake) {
+    const rake = document.createElement("div");
+    rake.className = "casino-phase";
+    rake.textContent = "Комиссия дома 5% — " + result.rake;
+    box.appendChild(rake);
+  }
+  const mine = (table.seats || []).find((one) => one.me);
+  if (mine && mine.cards && mine.cards.length) {
+    const hand = document.createElement("div");
+    hand.className = "casino-cards";
+    hand.appendChild(casinoCardFace(mine.cards[mine.cards.length - 1], false));
+    box.appendChild(hand);
+  }
+}
+
+// ---------- блэкджек ----------
+
+function casinoDealerStage(box, table) {
+  const result = table.result || {};
+  const hand = document.createElement("div");
+  hand.className = "casino-hand";
+  const title = document.createElement("div");
+  title.className = "casino-hand-title";
+  title.textContent = "Крупье"
+    + (result.total ? " · " + result.total : "")
+    + (result.bust ? " · перебор" : "")
+    + (result.blackjack ? " · блэкджек" : "");
+  hand.appendChild(title);
+
+  const cards = document.createElement("div");
+  cards.className = "casino-cards";
+  if (result.dealer && result.dealer.length) {
+    result.dealer.forEach((one) => cards.appendChild(casinoCardFace(one, false)));
+  } else if (result.upcard) {
+    cards.appendChild(casinoCardFace(result.upcard, false));
+    cards.appendChild(casinoCardBack(false));
+  }
+  hand.appendChild(cards);
+  box.appendChild(hand);
+
+  const mine = (table.seats || []).find((one) => one.me);
+  if (mine && mine.cards && mine.cards.length) {
+    const my = document.createElement("div");
+    my.className = "casino-hand";
+    const mark = document.createElement("div");
+    mark.className = "casino-hand-title";
+    mark.textContent = "Ваша рука · " + mine.total + (mine.soft ? " мягк." : "");
+    my.appendChild(mark);
+    const row = document.createElement("div");
+    row.className = "casino-cards";
+    mine.cards.forEach((one) => row.appendChild(casinoCardFace(one, false)));
+    my.appendChild(row);
+    box.appendChild(my);
+  }
+}
+
+// ---------- карты ----------
+
+function casinoCardFace(card, small) {
+  const box = document.createElement("div");
+  const red = card.indexOf("♥") >= 0 || card.indexOf("♦") >= 0;
+  box.className = "casino-card" + (small ? " small" : "") + (red ? " red" : "");
+  box.textContent = card;
+  return box;
+}
+
+function casinoCardBack(small) {
+  const box = document.createElement("div");
+  box.className = "casino-card back" + (small ? " small" : "");
+  box.textContent = "•";
+  return box;
+}
+
+// ---------- свой расчёт ----------
+
+function casinoMineLine(table) {
+  const line = document.createElement("div");
+  line.className = "casino-mine";
+  const mine = (table.seats || []).find((one) => one.me);
+  const last = table.last && table.last.seats
+    ? Object.keys(table.last.seats)
+        .map((key) => table.last.seats[key])
+        .find((one) => mine && one.user === mine.user)
+    : null;
+  if (mine && mine.said) {
+    // Итог: ставка, начисление с возвратом ставки и чистое изменение
+    line.textContent = mine.said + " · ставка " + mine.bet
+      + ", начислено " + mine.paid
+      + " (" + (mine.paid - mine.bet >= 0 ? "+" : "")
+      + (mine.paid - mine.bet) + ")";
+    return line;
+  }
+  if (last) {
+    line.textContent = "Прошлая партия: " + last.said + " · ставка "
+      + last.bet + ", начислено " + last.paid;
+    return line;
+  }
+  line.textContent = mine && mine.bet
+    ? "Ваша ставка " + mine.bet
+    : "Ставка не сделана";
+  return line;
+}
+
+// ---------- кнопки ----------
+
+function casinoControlsBox(data, table) {
+  const box = document.createElement("div");
+  if (!table.mine) {
+    const note = document.createElement("p");
+    note.className = "casino-phase";
+    note.textContent = "Вы смотрите со стороны. Садитесь за свободное место.";
+    box.appendChild(note);
+    return box;
+  }
+  if (table.game === "dice") casinoDiceControls(box, table);
+  else if (table.game === "roulette") casinoWheelControls(box, data, table);
+  else if (table.game === "highcard") casinoPotControls(box, table);
+  else casinoHandControls(box, table);
+  return box;
+}
+
+function casinoStakeRow(table, onPick) {
+  const row = document.createElement("div");
+  row.className = "casino-stakes";
+  const steps = [table.least, table.least * 2, table.least * 5,
+                 table.least * 10];
+  if (!casinoStake || casinoStake < table.least) casinoStake = table.least;
+  steps.filter((one) => one <= table.most).forEach((one) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = casinoStake === one ? "on" : "";
+    btn.textContent = String(one);
+    btn.addEventListener("click", () => {
+      casinoStake = one;
+      if (onPick) onPick(one);
+      renderCasino(casinoData);
+    });
+    row.appendChild(btn);
+  });
+  return row;
+}
+
+function casinoDiceControls(box, table) {
+  const open = table.phase === "accept";
+  const picks = document.createElement("div");
+  picks.className = "casino-picks";
+  [["under", "Меньше 7", "×2,3"], ["seven", "Ровно 7", "×5,75"],
+   ["over", "Больше 7", "×2,3"]].forEach(([code, title, odds]) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "casino-pick" + (casinoPick === code ? " on" : "");
+    btn.disabled = !open;
+    const name = document.createElement("span");
+    name.textContent = title;
+    const pays = document.createElement("span");
+    pays.className = "odds";
+    pays.textContent = odds;
+    btn.append(name, pays);
+    btn.addEventListener("click", () => {
+      casinoPick = code;
+      casinoAct({
+        action: "bet", table: table.id, amount: casinoStake, pick: code,
+      });
+    });
+    picks.appendChild(btn);
+  });
+  box.appendChild(casinoStakeRow(table));
+  box.appendChild(picks);
+
+  const actions = document.createElement("div");
+  actions.className = "casino-actions";
+  actions.appendChild(casinoAgainButton(table));
+  actions.appendChild(button("Снять ставку", {
+    secondary: true,
+    disabled: !open,
+    onClick: () => casinoAct({ action: "clear", table: table.id }),
+  }));
+  box.appendChild(actions);
+}
+
+// «Повторить ставку» — отдельное явное нажатие с видимой суммой.
+// Молча повторять ставку казино не должно: это деньги, и нажатие на
+// них обязано быть таким же, как на любую другую ставку
+function casinoAgainButton(table) {
+  const mine = (table.seats || []).find((one) => one.me) || {};
+  const again = table.again || 0;
+  return button("Повторить " + (again || ""), {
+    secondary: true,
+    disabled: !again || table.phase !== "accept" || !!mine.bet,
+    hint: again
+      ? "Ставка уже сделана."
+      : "Повторять нечего: прошлой ставки не было.",
+    onClick: () => casinoAct({ action: "repeat", table: table.id }),
+  });
+}
+
+function casinoWheelControls(box, data, table) {
+  const open = table.phase === "accept";
+  box.appendChild(casinoStakeRow(table));
+
+  const fields = document.createElement("div");
+  fields.className = "casino-fields";
+  (data.fields || []).forEach((one) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "casino-field"
+      + (one.pick === "red" ? " red" : "")
+      + (one.pick === "black" ? " black" : "");
+    btn.disabled = !open;
+    btn.textContent = casinoFieldTitle(one);
+    const put = casinoOnSpot(table, one.spot, one.pick);
+    if (put) {
+      const mark = document.createElement("span");
+      mark.className = "chip-count";
+      mark.textContent = put + " ×" + one.odds;
+      btn.appendChild(mark);
+    }
+    btn.addEventListener("click", () => casinoAct({
+      action: "bet", table: table.id, amount: casinoStake,
+      spot: one.spot, pick: one.pick,
+    }));
+    fields.appendChild(btn);
+  });
+  box.appendChild(fields);
+
+  const actions = document.createElement("div");
+  actions.className = "casino-actions";
+  actions.appendChild(casinoAgainButton(table));
+  actions.appendChild(button(casinoGrid ? "Скрыть числа" : "На число", {
+    secondary: true,
+    onClick: () => {
+      casinoGrid = !casinoGrid;
+      renderCasino(casinoData);
+    },
+  }));
+  actions.appendChild(button("Отменить фишку", {
+    secondary: true,
+    disabled: !open,
+    onClick: () => casinoAct({ action: "undo", table: table.id }),
+  }));
+  actions.appendChild(button("Очистить", {
+    secondary: true,
+    disabled: !open,
+    onClick: () => casinoAct({ action: "clear", table: table.id }),
+  }));
+  box.appendChild(actions);
+
+  if (casinoGrid) {
+    const grid = document.createElement("div");
+    grid.className = "casino-numbers";
+    const zero = document.createElement("button");
+    zero.type = "button";
+    zero.className = "zero";
+    zero.textContent = "0";
+    zero.disabled = !open;
+    zero.addEventListener("click", () => casinoAct({
+      action: "bet", table: table.id, amount: casinoStake,
+      spot: "number", pick: "0",
+    }));
+    grid.appendChild(zero);
+    for (let number = 1; number <= 36; number += 1) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = (data.reds || []).indexOf(number) >= 0 ? "red" : "";
+      btn.textContent = String(number);
+      btn.disabled = !open;
+      const put = casinoOnSpot(table, "number", String(number));
+      if (put) btn.textContent = number + " · " + put;
+      btn.addEventListener("click", () => casinoAct({
+        action: "bet", table: table.id, amount: casinoStake,
+        spot: "number", pick: String(number),
+      }));
+      grid.appendChild(btn);
+    }
+    box.appendChild(grid);
+  }
+}
+
+function casinoFieldTitle(one) {
+  const titles = {
+    red: "Красное", black: "Чёрное", even: "Чёт", odd: "Нечет",
+    low: "1–18", high: "19–36", 1: "1–12", 2: "13–24", 3: "25–36",
+  };
+  return titles[one.pick] || one.pick;
+}
+
+function casinoOnSpot(table, spot, pick) {
+  const mine = (table.seats || []).find((one) => one.me);
+  if (!mine || !mine.bets) return 0;
+  return mine.bets
+    .filter((one) => one.spot === spot && String(one.pick) === String(pick))
+    .reduce((sum, one) => sum + one.amount, 0);
+}
+
+function casinoPotControls(box, table) {
+  const mine = (table.seats || []).find((one) => one.me) || {};
+  const actions = document.createElement("div");
+  actions.className = "casino-actions";
+  if (table.phase === "accept") {
+    actions.appendChild(button(
+      mine.ready ? "Взнос принят" : "Участвовать за " + table.least,
+      {
+        disabled: !!mine.ready,
+        onClick: () => casinoAct({ action: "join", table: table.id }),
+      }
+    ));
+  } else if (table.phase === "play") {
+    actions.appendChild(button("Открыть карту", {
+      disabled: !!mine.open || !(mine.cards && mine.cards.length),
+      onClick: () => casinoAct({ action: "open", table: table.id }),
+    }));
+  } else {
+    const note = document.createElement("p");
+    note.className = "casino-phase";
+    note.textContent = "Партия идёт. Следующая начнётся сама.";
+    box.appendChild(note);
+  }
+  box.appendChild(actions);
+}
+
+function casinoHandControls(box, table) {
+  const mine = (table.seats || []).find((one) => one.me) || {};
+  if (table.phase === "accept") {
+    box.appendChild(casinoStakeRow(table));
+    const actions = document.createElement("div");
+    actions.className = "casino-actions";
+    actions.appendChild(button("Поставить " + (casinoStake || table.least), {
+      onClick: () => casinoAct({
+        action: "bet", table: table.id, amount: casinoStake || table.least,
+      }),
+    }));
+    actions.appendChild(casinoAgainButton(table));
+    if (mine.bet) {
+      actions.appendChild(button("Снять ставку", {
+        secondary: true,
+        onClick: () => casinoAct({ action: "clear", table: table.id }),
+      }));
+    }
+    box.appendChild(actions);
+    return;
+  }
+  const actions = document.createElement("div");
+  actions.className = "casino-actions";
+  const myTurn = table.phase === "turns" && mine.turn;
+  actions.appendChild(button("Ещё карту", {
+    disabled: !myTurn,
+    onClick: () => casinoAct({ action: "move", move: "hit", table: table.id }),
+  }));
+  actions.appendChild(button("Хватит", {
+    secondary: true,
+    disabled: !myTurn,
+    onClick: () => casinoAct({
+      action: "move", move: "stand", table: table.id,
+    }),
+  }));
+  box.appendChild(actions);
+}

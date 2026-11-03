@@ -1003,7 +1003,7 @@ async def open_page(
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
     cars=None, keys=None, dorm=None, charge=None, dojo=None, barber=None,
-    court=None, blackout=None,
+    court=None, blackout=None, casino=None,
     images=False,
     telegram="",
 ):
@@ -1067,6 +1067,7 @@ async def open_page(
     ))
     await page.route("**/api/court", canned(court or {}))
     await page.route("**/api/blackout", canned(blackout or {}))
+    await page.route("**/api/casino*", canned(casino or {}))
 
     if fight_log is not None:
         await page.route("**/api/fight/*", canned(fight_log))
@@ -6841,15 +6842,20 @@ async def test_the_casino_opens_only_by_its_own_door(server):
         assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
         assert await page.locator("#club-raid").is_hidden(), "подвал открылся сам"
 
-        # а дверь казино — открывает, и в нём одно дело: рейд
+        # а дверь казино — открывает, и дел в нём два: рейд и игорный зал
         await page.locator("#tab-map").click()
         await page.locator(".zone-house").filter(has_text="Казино").click()
         await page.wait_for_selector("#club-raid:not(.hidden)")
 
         assert await page.locator("#club-title").inner_text() == "🎲 Казино"
-        assert await page.locator("#club-sections .chip").count() == 0
+        chips = await page.locator("#club-sections .chip").all_inner_texts()
+        assert chips == ["Рейд", "🎰 Зал"]
         assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
         assert await page.locator("#club-fights").is_hidden()
+
+        # Зал — отдельный экран: у него свои часы и свой опрос
+        await page.locator("#club-sections .chip").last.click()
+        await page.wait_for_selector("#casino:not(.hidden)")
         await browser.close()
 
 
@@ -15673,4 +15679,259 @@ async def test_the_station_fight_reads_like_every_other_one(server, db):
         assert await page.locator(
             "#blackout-body .fight-log .log-line"
         ).count() >= 2
+        await browser.close()
+
+
+# ---------- казино ----------
+
+
+def casino_lobby(chips: int = 300, credits: int = 500) -> dict:
+    """Лобби казино, как его отдаёт сервер."""
+    from bot.webapp.casino import ROULETTE_FIELDS
+    from bot.game.casino import GAME_LIST, REDS, WHEEL
+
+    return {
+        "credits": credits,
+        "wallet": {"chips": chips, "reserved": 0},
+        "fields": ROULETTE_FIELDS,
+        "wheel": list(WHEEL),
+        "reds": sorted(REDS),
+        "now": now_ts(),
+        "lobby": {
+            "wallet": {"chips": chips, "reserved": 0},
+            "seat": None,
+            "games": [
+                {
+                    "code": one.code, "title": one.title, "about": one.about,
+                    "emoji": one.emoji, "least": one.least, "most": one.most,
+                    "step": one.step,
+                    "tables": [{
+                        "id": number + 1, "taken": 0, "seats": one.seats,
+                        "phase": "wait", "phase_title": "Ждём игроков",
+                        "until": 0, "round": 0, "mine": False,
+                    }],
+                }
+                for number, one in enumerate(GAME_LIST)
+            ],
+        },
+    }
+
+
+def casino_table(game: str = "dice", phase: str = "accept", **extra) -> dict:
+    """Снимок стола, как его отдаёт сервер."""
+    from bot.webapp.casino import ROULETTE_FIELDS
+    from bot.game.casino import REDS, WHEEL, game as rules_of
+
+    rules = rules_of(game)
+    seats = [{
+        "seat": "1", "user": 42, "name": "Растафарайчик", "avatar": "🥊",
+        "me": True, "bet": 0, "pick": "", "bets": [], "ready": False,
+        "gone": False, "cards": [], "count": 0, "open": False, "total": 0,
+        "soft": False, "stood": False, "said": "", "paid": 0, "turn": False,
+    }]
+    seats += [
+        {"seat": str(number), "user": 0, "empty": True}
+        for number in range(2, rules.seats + 1)
+    ]
+    table = {
+        "id": 1, "game": game, "title": rules.title, "about": rules.about,
+        "emoji": rules.emoji, "seats": seats, "phase": phase,
+        "phase_title": "Приём ставок", "round": 1,
+        "until": now_ts() + 10, "since": now_ts(), "now": now_ts(),
+        "turn": "", "result": None, "last": None, "events": [],
+        "least": rules.least, "most": rules.most, "step": rules.step,
+        "accept": rules.accept, "wallet": {"chips": 300, "reserved": 0},
+        "mine": True,
+    }
+    table.update(extra)
+    return {
+        "credits": 500,
+        "wallet": {"chips": 300, "reserved": 0},
+        "fields": ROULETTE_FIELDS,
+        "wheel": list(WHEEL),
+        "reds": sorted(REDS),
+        "now": now_ts(),
+        "table": table,
+        "seated": True,
+    }
+
+
+async def test_the_casino_lobby_shows_four_tables_and_the_cashier(server, db):
+    """На входе видно кассу и четыре стола с лимитами."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector("#casino-body .casino-game")
+
+        names = await page.locator(".casino-game h3").all_inner_texts()
+        assert len(names) == 4
+        assert any("рулетка" in one for one in names)
+        assert any("Кости" in one for one in names)
+        # Касса на месте, и курс назван словами
+        assert await page.locator(".casino-cashier").count() == 1
+        said = await page.locator(".casino-cashier").inner_text()
+        assert "один к одному" in said
+        # Фишки видно в шапке
+        assert "300" in await page.locator("#casino-purse").inner_text()
+        await browser.close()
+
+
+async def test_the_cashier_asks_the_server_to_change_money(server, db):
+    """Кнопка кассы шлёт обмен, а не меняет деньги на экране."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    asked = []
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=casino_lobby())
+
+        async def catch(route):
+            if route.request.method == "POST":
+                asked.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(casino_lobby(chips=400, credits=400)),
+            )
+
+        await page.route("**/api/casino*", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-cashier")
+        await page.locator(".casino-cashier input").fill("100")
+        await page.get_by_text("Купить фишки").click()
+        await page.wait_for_function("() => window.casinoData.credits === 400")
+        assert asked and asked[0]["action"] == "exchange"
+        assert asked[0]["kind"] == "buy" and asked[0]["amount"] == 100
+        # Ключ команды идёт с каждым нажатием: повтор не станет вторым обменом
+        assert asked[0]["command"]
+        await browser.close()
+
+
+async def test_the_table_keeps_four_seats_and_the_empty_one(server, db):
+    """Четыре места, и пустое сохраняет размер."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("dice")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-felt")
+
+        assert await page.locator(".casino-seat").count() == 4
+        assert await page.locator(".casino-seat.empty").count() == 3
+        assert await page.locator(".casino-seat.me").count() == 1
+        # Своё место подписано «Вы», а не ником
+        assert "Вы" in await page.locator(".casino-seat.me").inner_text()
+        # Пустое место не схлопывается
+        empty = await page.locator(".casino-seat.empty").first.bounding_box()
+        mine = await page.locator(".casino-seat.me").bounding_box()
+        assert empty["height"] >= mine["height"] * 0.7
+        await browser.close()
+
+
+async def test_the_dice_table_offers_three_outcomes(server, db):
+    """Три большие кнопки под лотком, и выплаты на них подписаны."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("dice")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-tray")
+
+        picks = page.locator(".casino-pick")
+        assert await picks.count() == 3
+        said = await picks.all_inner_texts()
+        assert any("Меньше 7" in one and "×2,3" in one for one in said)
+        assert any("Ровно 7" in one and "×5,75" in one for one in said)
+        # Кнопка не меньше 44 точек: по ней жмут большим пальцем
+        box = await picks.first.bounding_box()
+        assert box["height"] >= 44
+        await browser.close()
+
+
+async def test_the_dice_show_their_faces_only_after_they_stop(server, db):
+    """Сумму называют после остановки костей, а не до."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    rolling = casino_table("dice", phase="play", result={
+        "dice": [3, 4], "sum": 7, "outcome": "seven", "title": "Ровно 7",
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=rolling)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-tray")
+        assert await page.locator(".casino-shout").inner_text() == "…"
+
+        settled = casino_table("dice", phase="done", result=rolling["table"]["result"])
+        await page.evaluate("(data) => renderCasino(data)", settled)
+        shout = await page.locator(".casino-shout").inner_text()
+        assert "3 + 4 = 7" in shout and "Ровно 7" in shout
+        await browser.close()
+
+
+async def test_the_wheel_is_drawn_by_the_order_the_server_sent(server, db):
+    """Колесо рисуется по кольцу с сервера, а не «число × шаг»."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-wheel")
+
+        # Два слоя: диск и шарик
+        assert await page.locator(".casino-wheel canvas").count() == 2
+        # Поля стола — с сервера, вместе с выплатами
+        fields = await page.locator(".casino-field").all_inner_texts()
+        assert any("Красное" in one for one in fields)
+        assert any("13–24" in one for one in fields)
+        # Сетка чисел прячется за кнопкой: на телефоне 37 клеток не нужны
+        assert await page.locator(".casino-numbers").count() == 0
+        await page.get_by_text("На число").click()
+        await page.wait_for_selector(".casino-numbers")
+        assert await page.locator(".casino-numbers button").count() == 37
+        await browser.close()
+
+
+async def test_the_blackjack_hides_the_hole_card(server, db):
+    """Вторая карта крупье не видна, пока партия не посчитана."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_table("blackjack", phase="turns", result={"upcard": "K♠"})
+    mine = body["table"]["seats"][0]
+    mine.update(cards=["9♥", "7♦"], count=2, total=16, turn=True, bet=20)
+    body["table"]["turn"] = "1"
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-hand")
+
+        faces = await page.locator(".casino-card:not(.back)").all_inner_texts()
+        assert "K♠" in faces and "9♥" in faces
+        assert await page.locator(".casino-card.back").count() == 1
+        # Ход за мной — кнопки живые
+        assert await page.get_by_text("Ещё карту").is_enabled()
+        await browser.close()
+
+
+async def test_the_casino_fits_a_narrow_phone(server, db):
+    """На 360 точках стол не уезжает вбок."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("roulette")
+        )
+        await page.set_viewport_size({"width": 360, "height": 780})
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-felt")
+        wide = await page.evaluate(
+            "() => document.documentElement.scrollWidth"
+            " - document.documentElement.clientWidth"
+        )
+        assert wide <= 1, f"горизонтальная прокрутка: {wide}"
         await browser.close()

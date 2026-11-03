@@ -92,9 +92,6 @@ SPIN_EVERY = 120
 # Ход в блэкджеке: десять секунд на решение, дальше «хватит»
 TURN_SECONDS = 10
 
-# Сколько ждёт пустой стол, прежде чем его закроют
-EMPTY_SECONDS = 600
-
 # Сколько событий анимации стол помнит. Больше не нужно: опоздавший
 # клиент не доигрывает пропущенное, а переходит к текущей фазе
 EVENTS_KEPT = 24
@@ -325,6 +322,11 @@ def _new_round(table: Table, now: int) -> None:
                     "bet": int(seat.get("bet") or 0),
                     "paid": int(seat.get("paid") or 0),
                     "said": seat.get("said") or "",
+                    # Чем именно ставили — для «Повторить ставку».
+                    # Кнопка обязана показывать сумму, а сумма берётся
+                    # отсюда, а не из памяти экрана
+                    "pick": seat.get("pick") or "",
+                    "bets": list(seat.get("bets") or []),
                 }
                 for seat in (state.get("seats") or {}).values()
                 if seat.get("said") or int(seat.get("bet") or 0)
@@ -337,6 +339,13 @@ def _new_round(table: Table, now: int) -> None:
     state["turn"] = ""
     state["dealer"] = []
     state["deck"] = []
+    # Ушедшего из-за стола убираем только здесь: пока партия не
+    # кончилась, он в ней остаётся — ставка сделана, и банк ему
+    # причитается, где бы он ни был. А вот в следующую его место
+    # должно быть пустым, иначе стол будет вечно играть с призраком
+    for number, seat in list((state.get("seats") or {}).items()):
+        if seat.get("gone"):
+            state["seats"].pop(number, None)
     for seat in (state.get("seats") or {}).values():
         seat.update(
             bet=0, pick="", bets=[], ready=False, cards=[], stood=False,
@@ -818,10 +827,11 @@ async def sit(
 
 
 async def stand(db: Database, user_id: int, now: int | None = None) -> str:
-    """Встать из-за стола. Ставка текущей партии остаётся в игре.
+    """Встать из-за стола. Что станет со ставкой — зависит от фазы.
 
-    Уйти из партии, за которую уже заплачено, нельзя — и не нужно:
-    после раздачи отключившийся сохраняет право на банк, расчёт
+    До фиксации ставка возвращается: партия ещё не началась, и держать
+    деньги за ушедшего не за что. После фиксации уйти из партии уже
+    нельзя — и не нужно: отключившийся сохраняет право на банк, расчёт
     пройдёт по номеру игрока, где бы он ни был.
     """
     moment = now_ts() if now is None else now
@@ -829,16 +839,28 @@ async def stand(db: Database, user_id: int, now: int | None = None) -> str:
     if where is None:
         return "Ты и так не за столом."
     table_id = int(where["table_id"])
+    table = await look(db, table_id, moment)
+    seat = (table.state.get("seats") or {}).get(str(where["seat"])) or {}
+    back = int(seat.get("bet") or 0) if table.phase == "accept" else 0
     await db.casino_stand(user_id)
+    if back:
+        await db.casino_stake(table_id, table.round, user_id, -back, moment)
 
     def change(one: Table, when: int) -> str:
-        seat = (one.state.get("seats") or {}).get(str(where["seat"]))
-        if seat is not None and int(seat.get("user") or 0) == user_id:
-            if one.phase in ("wait", "accept") or not int(seat.get("bet") or 0):
-                one.state["seats"].pop(str(where["seat"]), None)
-            else:
-                seat["gone"] = True
-        return "Ты встал из-за стола."
+        mine = (one.state.get("seats") or {}).get(str(where["seat"]))
+        if mine is None or int(mine.get("user") or 0) != user_id:
+            return "Ты встал из-за стола."
+        if one.phase in ("wait", "accept"):
+            one.state["seats"].pop(str(where["seat"]), None)
+        elif int(mine.get("bet") or 0):
+            # В партии он остаётся до расчёта: ставка уже в игре
+            mine["gone"] = True
+        else:
+            one.state["seats"].pop(str(where["seat"]), None)
+        return (
+            f"Ты встал из-за стола. Ставка {back} возвращена." if back
+            else "Ты встал из-за стола."
+        )
 
     return await command(db, table_id, user_id, change, "", moment)
 
@@ -851,6 +873,26 @@ def _my_seat(table: Table, user_id: int) -> dict[str, Any]:
         if int(seat.get("user") or 0) == user_id:
             return seat
     raise CasinoError("Ты не за этим столом.")
+
+
+async def _staked(
+    db: Database, table_id: int, round_no: int, user_id: int,
+    delta: int, now: int, run: Any,
+) -> str:
+    """Выполнить команду, за которую уже списаны фишки.
+
+    Фишки уходят в резерв до записи состояния — иначе ставка попадала
+    бы в партию раньше, чем выяснится, что их не хватило. Значит, у
+    отказа есть цена: если запись не прошла, деньги надо вернуть
+    ровно в ту партию, из которой их взяли, и сделать это обязан тот
+    же вызов, а не следующий расчёт.
+    """
+    try:
+        return await run
+    except Exception:
+        if delta:
+            await db.casino_stake(table_id, round_no, user_id, -delta, now)
+        raise
 
 
 def _check_stake(table: Table, amount: int) -> int:
@@ -902,7 +944,7 @@ async def bet(
     ):
         raise CasinoError("Не хватает фишек.")
 
-    def change(one: Table, when: int) -> str:
+    def change(one: Table, when: int) -> str:  # noqa: D401
         mine = _my_seat(one, player.user_id)
         if one.phase != "accept":
             raise CasinoError("Приём ставок закрыт.")
@@ -918,7 +960,10 @@ async def bet(
             return f"{DICE_TITLES[pick]} — {amount}."
         return f"Ставка {amount}."
 
-    return await command(db, table_id, player.user_id, change, command_id, moment)
+    return await _staked(
+        db, table_id, table.round, player.user_id, delta, moment,
+        command(db, table_id, player.user_id, change, command_id, moment),
+    )
 
 
 def _check_spot(spot: str, pick: str) -> None:
@@ -969,6 +1014,51 @@ async def take_back(
     return await command(db, table_id, player.user_id, change, command_id, moment)
 
 
+async def repeat_bet(
+    db: Database, player: Player, table_id: int,
+    command_id: str = "", now: int | None = None,
+) -> str:
+    """Повторить ставку прошлой партии — отдельным явным нажатием.
+
+    Не «ставить как в прошлый раз автоматически»: сумма видна на
+    кнопке, и нажатие на неё — такая же ставка, как любая другая. Само
+    собой в казино не ставится ничего.
+    """
+    moment = now_ts() if now is None else now
+    table = await look(db, table_id, moment)
+    if table.phase != "accept":
+        raise CasinoError("Приём ставок закрыт.")
+    seat = _my_seat(table, player.user_id)
+    was = None
+    for row in ((table.state.get("last") or {}).get("seats") or {}).values():
+        if int(row.get("user") or 0) == player.user_id:
+            was = row
+            break
+    if was is None or not int(was.get("bet") or 0):
+        raise CasinoError("Повторять нечего: прошлой ставки не было.")
+    if int(seat.get("bet") or 0):
+        raise CasinoError("Ставка уже сделана.")
+    total = int(was["bet"])
+    if not await db.casino_stake(
+        table_id, table.round, player.user_id, total, moment
+    ):
+        raise CasinoError("Не хватает фишек.")
+
+    def change(one: Table, when: int) -> str:
+        mine = _my_seat(one, player.user_id)
+        if one.phase != "accept":
+            raise CasinoError("Приём ставок закрыт.")
+        mine["bet"] = total
+        mine["pick"] = was.get("pick") or ""
+        mine["bets"] = list(was.get("bets") or [])
+        return f"Ставка повторена: {total}."
+
+    return await _staked(
+        db, table_id, table.round, player.user_id, total, moment,
+        command(db, table_id, player.user_id, change, command_id, moment),
+    )
+
+
 async def join_pot(
     db: Database, player: Player, table_id: int,
     command_id: str = "", now: int | None = None,
@@ -997,7 +1087,10 @@ async def join_pot(
         mine["bet"] = ante
         return f"Взнос {ante} принят."
 
-    return await command(db, table_id, player.user_id, change, command_id, moment)
+    return await _staked(
+        db, table_id, table.round, player.user_id, ante, moment,
+        command(db, table_id, player.user_id, change, command_id, moment),
+    )
 
 
 async def hand_move(
@@ -1062,6 +1155,28 @@ async def open_card(
 # ---------- лобби и снимок стола ----------
 
 
+async def _tidy_tables(db: Database, code: str, now: int) -> list[dict]:
+    """Столы этой игры: лишние пустые закрываются, один остаётся всегда.
+
+    Столы открываются по мере надобности — за каждым четыре места, и
+    пятому нужен следующий. Если их не прибирать, к утру в лобби будет
+    полсотни пустых, и каждый взгляд на лобби будет их досчитывать.
+
+    Правило простое: самый первый стол игры живёт всегда, остальные
+    пустые закрываются. Так их ровно столько, сколько нужно сидящим,
+    плюс один про запас.
+    """
+    rows = await db.casino_tables(code)
+    kept = []
+    for number, row in enumerate(rows):
+        seats = await db.casino_seats(int(row["id"]))
+        if seats or number == 0:
+            kept.append(row)
+            continue
+        await db.casino_close(int(row["id"]), now)
+    return kept
+
+
 async def _free_table(db: Database, code: str, now: int) -> int:
     """Стол этой игры со свободным местом. Нет такого — открыть новый."""
     rules = game(code)
@@ -1085,6 +1200,7 @@ async def lobby(
     moment = now_ts() if now is None else now
     rows = []
     for rules in GAME_LIST:
+        await _tidy_tables(db, rules.code, moment)
         await _free_table(db, rules.code, moment)
         tables = []
         for row in await db.casino_tables(rules.code):
@@ -1216,9 +1332,20 @@ async def table_view(
         "most": rules.most,
         "step": rules.step,
         "accept": rules.accept,
+        # Что повторять: сумма прошлой ставки этого игрока. Ноль —
+        # кнопки «Повторить» на экране нет вовсе
+        "again": _again_for(table, user_id),
         "wallet": await db.casino_wallet(user_id),
         "mine": any(one.get("me") for one in seats),
     }
+
+
+def _again_for(table: Table, user_id: int) -> int:
+    """Сколько было поставлено в прошлой партии этим игроком."""
+    for row in ((table.state.get("last") or {}).get("seats") or {}).values():
+        if int(row.get("user") or 0) == user_id:
+            return int(row.get("bet") or 0)
+    return 0
 
 
 async def my_table(db: Database, user_id: int) -> int:

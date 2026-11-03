@@ -3163,6 +3163,53 @@ async def api_blackout_action(request: web.Request) -> web.Response:
     return web.json_response(body)
 
 
+async def _casino_state(
+    request: web.Request, player, table_id: int = 0, said: str = ""
+) -> web.Response:
+    from bot.webapp.casino import build_casino
+
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    body = await build_casino(db, player, table_id=table_id)
+    if said:
+        body["said"] = said
+    body["card"] = build_card(player, config.bot_token, player.user_id)
+    return web.json_response(body)
+
+
+async def api_casino(request: web.Request) -> web.Response:
+    """Казино: лобби со столами или снимок своего стола.
+
+    Место спрашиваем у всех: за столом сидят ногами, и фишки меняют
+    там же. Игра из города, в котором боец не стоит, — это не игра, а
+    запрос мимо интерфейса.
+    """
+    player = await _at(request, Service.CASINO)
+    try:
+        table_id = int(request.query.get("table") or 0)
+    except (TypeError, ValueError):
+        table_id = 0
+    return await _casino_state(request, player, table_id)
+
+
+async def api_casino_action(request: web.Request) -> web.Response:
+    """Касса, посадка, ставка и ход. Всё решает сервер."""
+    from bot.casino_service import CasinoError
+    from bot.webapp.casino import casino_action
+
+    data = await _payload(request)
+    db = request.app[DB_KEY]
+    player = await _at(request, Service.CASINO)
+    try:
+        said, table_id = await casino_action(db, player, data)
+    except CasinoError as error:
+        return web.json_response({"error": str(error)}, status=409)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Непонятный ответ."}, status=400)
+    fresh = await db.get_player(player.user_id) or player
+    return await _casino_state(request, fresh, table_id, said)
+
+
 async def api_court(request: web.Request) -> web.Response:
     """Суд: дела об угоне и свои приговоры."""
     player = await _at(request, Service.COURT)
@@ -3831,6 +3878,8 @@ def create_app(
             web.get("/api/prison", api_prison),
             web.get("/api/dorm", api_dorm),
             web.post("/api/dorm", api_dorm_action),
+            web.get("/api/casino", api_casino),
+            web.post("/api/casino", api_casino_action),
             web.get("/api/dojo", api_dojo),
             web.post("/api/dojo", api_dojo_action),
             web.get("/api/charge", api_charge),
