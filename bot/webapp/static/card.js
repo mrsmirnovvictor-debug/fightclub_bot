@@ -479,9 +479,13 @@ function undressButtons(takeOff) {
 // срезает цепь с боков, и на прилавке не разглядеть, что покупаешь.
 // Кольцо остаётся квадратным: в кукле оно у́же, но в списке товара
 // колечко размером с ноготь не разглядел бы никто
+// Клетка под картинку товара. Форму называет сервер: квадрат, полоса
+// ожерелья или билет пропуска — там же, где лежит и сама картинка
+const THING_SHAPES = { wide: " wide", ticket: " ticket" };
+
 function thingPic(item) {
   const pic = document.createElement("div");
-  pic.className = "thing-pic" + (item.shape === "wide" ? " wide" : "");
+  pic.className = "thing-pic" + (THING_SHAPES[item.shape] || "");
   return pic;
 }
 

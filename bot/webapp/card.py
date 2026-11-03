@@ -558,6 +558,8 @@ def potion_payload(
         "icon": potion.emoji,
         "image": potion.picture,
         "kind": potion.kind.value,
+        # Пропуск рисуется билетом, а не квадратом: см. `Potion.shape`
+        "shape": potion.shape,
         # Пропуск лежит в той же стопке, но его не пьют: кнопки «Использовать»
         # у него нет — его тратит подвал на входе
         "consumable": not potion.is_pass,

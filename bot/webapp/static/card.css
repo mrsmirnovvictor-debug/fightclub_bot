@@ -1046,6 +1046,19 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   align-self: center;
   font-size: 22px;
 }
+/* Пропуск — билет: 1200 на 600, прозрачный фон, название рейда и
+   отрывная часть. Клетка вдвое шире своей высоты, картинка влезает
+   целиком, а рамки и заливки у неё нет: за прозрачным фоном билета
+   виднелась бы серая плитка, и корешок переставал быть корешком */
+.thing-pic.ticket {
+  width: 150px;
+  height: auto;
+  aspect-ratio: 2 / 1;
+  align-self: center;
+  border-color: transparent;
+  background: transparent;
+}
+.thing-pic.ticket img { object-fit: contain; }
 .thing-body { min-width: 0; }
 .thing-title { font-weight: 700; }
 .thing-kind { color: var(--muted); font-size: 12.5px; margin-top: 1px; }

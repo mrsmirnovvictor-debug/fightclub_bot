@@ -7513,6 +7513,49 @@ async def test_the_bag_shows_the_pass_wear_and_not_undefined(server):
         await browser.close()
 
 
+async def test_the_pass_lies_in_the_bag_as_a_ticket(server):
+    """Пропуск рисуется билетом, а не квадратом.
+
+    Пропуска перерисовали билетами 1200 на 600: название рейда и
+    отрывная часть, прозрачный фон. В квадратной клетке от такого
+    билета оставалась бы вырезанная середина — ни названия, ни
+    корешка, — и три пропуска выглядели бы одинаковой мутью.
+    """
+    from bot.game.potions import RAID_PASS
+
+    player = make_player()
+    player.potions = {RAID_PASS: 1, "heal_small": 1}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+        await page.wait_for_selector("#potion-list .thing-pic.ticket")
+
+        box = page.locator("#potion-list .thing").first
+        assert "Рейд-пасс" in await box.inner_text()
+        shape = await box.locator(".thing-pic").evaluate(
+            "(one) => { const css = getComputedStyle(one); return {"
+            " ratio: one.offsetWidth / one.offsetHeight,"
+            " fit: getComputedStyle(one.querySelector('img')).objectFit,"
+            " paint: css.backgroundColor }; }"
+        )
+        assert abs(shape["ratio"] - 2) < 0.05, shape
+        # Целиком, а не вырезанной серединой
+        assert shape["fit"] == "contain", shape
+        # И без плитки под прозрачным фоном билета
+        assert shape["paint"] in ("rgba(0, 0, 0, 0)", "transparent"), shape
+
+        # А склянка как лежала квадратом, так и лежит
+        jar = page.locator("#potion-list .thing").nth(1).locator(".thing-pic")
+        assert await jar.evaluate("(one) => one.offsetWidth / one.offsetHeight") == 1
+        await browser.close()
+
+
 async def test_a_gift_cell_shows_the_thing_itself(server):
     """Где лежит вещь — там её картинка, а где кредиты — значок.
 
