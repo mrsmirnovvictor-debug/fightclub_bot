@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from bot.database import Database
+from bot.game import art, carousel
 from bot.game.casino import (
     CHIP_PER_CREDIT,
     DICE_PAY,
@@ -1356,6 +1357,15 @@ async def lobby(
         })
     where = await db.casino_seat_of(user_id)
     return {
+        # Карусель стоит поверх столов и своим блоком: игра не
+        # столовая, мест у неё нет и садиться за неё не надо
+        "draw": {
+            "code": "carousel",
+            "title": CAROUSEL_TITLE,
+            "about": "Оружие, щиты, жетоны и машины. Чем дороже, тем реже.",
+            "cover": art.CASINO_COVERS + "/super-draw.webp",
+            "price": carousel.ROLL_PRICE,
+        },
         "games": rows,
         "wallet": await db.casino_wallet(user_id),
         "seat": dict(where) if where else None,
@@ -1491,3 +1501,145 @@ async def my_table(db: Database, user_id: int) -> int:
     """За каким столом сидит боец. Ноль — ни за каким."""
     where = await db.casino_seat_of(user_id)
     return int(where["table_id"]) if where else 0
+
+
+# ---------- «Карусель удачи» ----------
+#
+# Игра без стола: мест у неё нет, и крутить барабан могут сколько
+# угодно человек разом. Лента при этом общая — она считается от
+# времени, а не от игрока, и двое у барабана видят одно и то же.
+#
+# Приз решается в момент нажатия, до всякого вращения: пять секунд
+# барабана только показывают уже решённое. Дальше приз лежит в базе и
+# ждёт, пока игрок заберёт его в рюкзак или сдаст за жетоны — крутить
+# заново, не разобравшись с прошлым, нельзя.
+
+
+async def carousel_view(
+    db: Database, player: Player, now: int | None = None
+) -> dict[str, Any]:
+    """Снимок барабана: лента, цена вращения и свой невыданный приз."""
+    moment = now_ts() if now is None else now
+    prize = await db.casino_prize(player.user_id)
+    said = None
+    if prize is not None:
+        found = carousel.by_code(str(prize["code"]))
+        said = {
+            "kind": prize["kind"],
+            "code": prize["code"],
+            "title": found.title if found else prize["code"],
+            "price": int(prize["price"]),
+            "image": found.image if found else "",
+            "sells_for": found.sells_for if found else 0,
+            "at": int(prize["at"]),
+            # Когда барабан встанет: до этого мига приз не показывают
+            "ready": int(prize["at"]) + carousel.SPIN_SECONDS,
+        }
+    return {
+        "title": CAROUSEL_TITLE,
+        "about": "Оружие, щиты, жетоны и машины. Чем дороже приз, тем реже.",
+        "cover": art.CASINO_COVERS + "/super-draw.webp",
+        "price": carousel.ROLL_PRICE,
+        "spin": carousel.SPIN_SECONDS,
+        "shelf": [
+            {
+                "kind": one.kind, "code": one.code, "title": one.title,
+                "price": one.price, "image": one.image,
+                "chance": round(carousel.chance(one) * 100, 3),
+            }
+            for one in carousel.shelf(moment)
+        ],
+        "until": carousel.shelf_until(moment),
+        "now": moment,
+        "open": open_now(moment),
+        "shut": "" if open_now(moment) else shut_words(moment),
+        "wallet": await db.casino_wallet(player.user_id),
+        "prize": said,
+    }
+
+
+CAROUSEL_TITLE = "Карусель удачи"
+
+
+async def carousel_roll(
+    db: Database, player: Player, now: int | None = None
+) -> str:
+    """Крутнуть барабан. Приз решается здесь, до первого кадра."""
+    moment = now_ts() if now is None else now
+    if not open_now(moment):
+        raise CasinoError(shut_words(moment))
+    if await db.casino_prize(player.user_id) is not None:
+        raise CasinoError("Сначала забери или сдай прошлый выигрыш.")
+    if not await db.casino_spend(
+        player.user_id, carousel.ROLL_PRICE, moment
+    ):
+        purse = await db.casino_wallet(player.user_id)
+        raise CasinoError(
+            f"Ролл стоит {carousel.ROLL_PRICE} жетонов, "
+            f"а на руках {purse['chips']}."
+        )
+    prize = carousel.draw(random.Random())
+    if prize.kind == "chips":
+        # Жетоны не забирают и не сдают: они и так жетоны
+        await db.casino_give(player.user_id, prize.price, moment)
+        return f"{prize.title} — начислено."
+    if not await db.casino_keep_prize(
+        player.user_id, prize.kind, prize.code, prize.price, moment
+    ):  # pragma: no cover - два вращения разом
+        await db.casino_give(player.user_id, carousel.ROLL_PRICE, moment)
+        raise CasinoError("Сначала забери или сдай прошлый выигрыш.")
+    return f"Выпало: {prize.title}."
+
+
+async def carousel_take(
+    db: Database, player: Player, now: int | None = None
+) -> str:
+    """Забрать выигрыш себе: вещь в рюкзак, машину в гараж."""
+    moment = now_ts() if now is None else now
+    prize = await _ready_prize(db, player, moment)
+    found = carousel.by_code(str(prize["code"]))
+    if found is None:  # pragma: no cover - приз исчез из каталога
+        raise CasinoError("Такого приза больше нет. Сдай его в кассу.")
+    if found.kind == "car":
+        from bot.car_service import CarError, win_car
+
+        try:
+            said = await win_car(db, player, found.code, moment)
+        except CarError as error:
+            raise CasinoError(str(error)) from error
+    else:
+        owned = await db.add_gear(player.user_id, found.code)
+        player.gear.append(owned)
+        said = f"«{found.title}» в рюкзаке."
+    if not await db.casino_drop_prize(player.user_id):
+        # Приз разобрали между проверкой и выдачей — вернуть его
+        # нельзя, но и выдать второй раз не дадим
+        raise CasinoError("Этот выигрыш уже разобран.")
+    return said
+
+
+async def carousel_sell(
+    db: Database, player: Player, now: int | None = None
+) -> str:
+    """Сдать выигрыш в кассу: жетоны начисляются сразу."""
+    moment = now_ts() if now is None else now
+    prize = await _ready_prize(db, player, moment)
+    found = carousel.by_code(str(prize["code"]))
+    paid = found.sells_for if found else int(prize["price"]) // 2
+    if not await db.casino_drop_prize(player.user_id):
+        raise CasinoError("Этот выигрыш уже разобран.")
+    await db.casino_give(player.user_id, paid, moment)
+    title = found.title if found else prize["code"]
+    return f"«{title}» сдан за {paid} жетонов."
+
+
+async def _ready_prize(
+    db: Database, player: Player, now: int
+) -> dict[str, Any]:
+    """Выигрыш, который уже можно забрать. Барабан ещё крутится — рано."""
+    prize = await db.casino_prize(player.user_id)
+    if prize is None:
+        raise CasinoError("Выигрыша нет: крутни барабан.")
+    if now < int(prize["at"]) + carousel.SPIN_SECONDS:
+        raise CasinoError("Барабан ещё крутится.")
+    return prize

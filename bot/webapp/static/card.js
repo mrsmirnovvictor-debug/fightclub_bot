@@ -19611,6 +19611,10 @@ async function casinoAct(payload) {
     haptic((feedback) => feedback.impactOccurred("light"));
     if (data.table) casinoAt = data.table.id;
     if (payload.action === "leave") casinoAt = 0;
+    // Ролл, выдача и сдача — дела карусели: с неё и не уходим
+    if (["roll", "take", "sell"].indexOf(payload.action) >= 0) {
+      casinoDrawOpen = true;
+    }
     renderCasino(data);
   } catch (error) {
     el("casino-note").textContent = error.message;
@@ -19629,6 +19633,13 @@ function casinoShot(data) {
   const table = data.table;
   const purse = JSON.stringify(data.wallet || {}) + ":" + (data.credits || 0);
   if (!table) {
+    const draw = data.draw || {};
+    const mine = draw.prize
+      ? draw.prize.code + ":" + draw.prize.ready : "нет";
+    const belt = (draw.shelf || []).map((one) => one.code).join(",");
+    if (casinoDrawOpen) {
+      return "draw:" + purse + ":" + mine + ":" + belt + ":" + draw.open;
+    }
     const shut = data.lobby ? String(data.lobby.open) : "";
     const lobby = shut + (data.lobby && data.lobby.games ? data.lobby.games : [])
       .map((one) => one.code + one.tables.map(
@@ -19684,9 +19695,14 @@ function renderCasino(data, force) {
     paintCasinoClock();
     return;
   }
-  el("casino-title").textContent = "🎰 Казино";
   // А в лобби — место: казино и рейд живут в одном доме
   paintRaidEntry("casino");
+  if (casinoDrawOpen && data.draw) {
+    el("casino-title").textContent = "🎡 " + data.draw.title;
+    body.appendChild(casinoDrawBox(data));
+    return;
+  }
+  el("casino-title").textContent = "🎰 Казино";
   body.appendChild(casinoCashierBox(data));
   // Ночью залы закрыты. Кассу при этом не запираем: фишки — деньги
   // игрока, и сдать их он вправе в любой час
@@ -19696,6 +19712,9 @@ function renderCasino(data, force) {
     shut.textContent = data.lobby.shut || "Казино закрыто.";
     body.appendChild(shut);
     return;
+  }
+  if (data.lobby && data.lobby.draw) {
+    body.appendChild(casinoDrawCard(data.lobby.draw));
   }
   (data.lobby && data.lobby.games ? data.lobby.games : []).forEach((one) => {
     body.appendChild(casinoGameBox(one));
@@ -20717,4 +20736,188 @@ function casinoHandControls(box, table) {
   }));
   actions.appendChild(casinoLeaveButton());
   box.appendChild(actions);
+}
+
+// ---------- «Карусель удачи» ----------
+//
+// Игра без стола: мест нет, крутить её могут сколько угодно человек
+// разом. Лента при этом общая — её считает сервер от времени, и двое
+// у барабана видят одно и то же.
+//
+// Как и за столами, экран ничего не решает: приз выбран в момент
+// нажатия, до первого кадра. Пять секунд вращения только показывают
+// уже решённое, и вернувшийся из фона видит не начало, а итог.
+
+let casinoDrawOpen = false; // открыта ли карусель
+let casinoSpunAt = 0; // какое вращение уже отыграно
+
+function openCasinoDraw() {
+  casinoDrawOpen = true;
+  casinoAt = 0;
+  renderCasino(casinoData, true);
+}
+
+// Плашка карусели в лобби: своим цветом и поверх столов
+function casinoDrawCard(draw) {
+  const box = document.createElement("section");
+  box.className = "casino-draw-card";
+
+  if (draw.cover) {
+    const pic = document.createElement("img");
+    pic.className = "casino-cover";
+    pic.loading = "lazy";
+    pic.alt = "";
+    pic.src = draw.cover;
+    pic.onerror = () => pic.remove();
+    box.appendChild(pic);
+  }
+  const words = document.createElement("div");
+  words.className = "casino-draw-words";
+  const head = document.createElement("h3");
+  head.textContent = "🎡 " + draw.title;
+  const about = document.createElement("p");
+  about.className = "casino-about";
+  about.textContent = draw.about + " Ролл — " + draw.price + " жетонов.";
+  words.append(head, about);
+  words.appendChild(button("Играть", { onClick: openCasinoDraw }));
+  box.appendChild(words);
+  return box;
+}
+
+// ---------- сам барабан ----------
+
+function casinoDrawBox(data) {
+  const draw = data.draw || {};
+  const box = document.createElement("section");
+  box.className = "casino carousel";
+
+  const felt = document.createElement("div");
+  felt.className = "casino-felt";
+  felt.appendChild(casinoBeltBox(draw));
+  felt.appendChild(casinoPrizeBox(draw));
+  box.appendChild(felt);
+
+  if (draw.open === false) {
+    const shut = document.createElement("p");
+    shut.className = "casino-shut";
+    shut.textContent = draw.shut || "Казино закрыто.";
+    box.appendChild(shut);
+  }
+  box.appendChild(casinoDrawActions(draw));
+  return box;
+}
+
+// Лента едет справа налево и меняет товар каждые пять секунд. Бежит
+// она разметкой, а не кадрами: на телефоне это дешевле, и при
+// сниженном движении её можно просто остановить
+function casinoBeltBox(draw) {
+  const road = document.createElement("div");
+  road.className = "casino-belt";
+  const spinning = casinoDrawSpinning(draw);
+  const belt = document.createElement("div");
+  belt.className = "casino-belt-run" + (spinning ? " fast" : "");
+  // Лента едет по кругу: товар кладём дважды, и шов не виден
+  const twice = (draw.shelf || []).concat(draw.shelf || []);
+  twice.forEach((one) => belt.appendChild(casinoPrizeCard(one)));
+  road.appendChild(belt);
+
+  const mark = document.createElement("div");
+  mark.className = "casino-belt-mark";
+  road.appendChild(mark);
+  return road;
+}
+
+function casinoPrizeCard(one) {
+  const card = document.createElement("div");
+  card.className = "casino-prize kind-" + one.kind;
+  if (one.image) {
+    const pic = document.createElement("img");
+    pic.loading = "lazy";
+    pic.alt = "";
+    pic.src = one.image;
+    pic.onerror = () => pic.remove();
+    card.appendChild(pic);
+  }
+  const name = document.createElement("div");
+  name.className = "casino-prize-name";
+  name.textContent = one.title;
+  const price = document.createElement("div");
+  price.className = "casino-prize-price";
+  price.textContent = one.kind === "chips"
+    ? "🎟 " + one.price
+    : one.price + " 💰";
+  card.append(name, price);
+  return card;
+}
+
+// Крутится ли барабан прямо сейчас: приз уже выбран, но пять секунд
+// ещё не вышли
+function casinoDrawSpinning(draw) {
+  const prize = draw.prize;
+  if (!prize) return false;
+  const now = (Date.now() + casinoDrift) / 1000;
+  return now < prize.ready;
+}
+
+function casinoPrizeBox(draw) {
+  const box = document.createElement("div");
+  box.className = "casino-middle";
+  const prize = draw.prize;
+  if (!prize) {
+    const said = document.createElement("div");
+    said.className = "casino-mine";
+    said.textContent = "Ролл стоит " + draw.price
+      + " жетонов. Чем дороже приз, тем реже он выпадает.";
+    box.appendChild(said);
+    return box;
+  }
+  if (casinoDrawSpinning(draw)) {
+    const said = document.createElement("div");
+    said.className = "casino-shout";
+    said.textContent = "…";
+    box.appendChild(said);
+    return box;
+  }
+  const shout = document.createElement("div");
+  shout.className = "casino-shout";
+  shout.textContent = prize.title;
+  box.appendChild(shout);
+
+  const sums = document.createElement("div");
+  sums.className = "casino-sums";
+  sums.textContent = "Цена в лавке " + prize.price
+    + " 💰 · сдача " + prize.sells_for + " жетонов";
+  box.appendChild(sums);
+  return box;
+}
+
+function casinoDrawActions(draw) {
+  const row = document.createElement("div");
+  row.className = "casino-actions";
+  const prize = draw.prize;
+  const spinning = casinoDrawSpinning(draw);
+
+  if (prize && !spinning) {
+    row.appendChild(button("Забрать себе", {
+      onClick: () => casinoAct({ action: "take" }),
+    }));
+    row.appendChild(button("Сдать за " + prize.sells_for, {
+      secondary: true,
+      onClick: () => casinoAct({ action: "sell" }),
+    }));
+  } else {
+    row.appendChild(button("Ролл за " + (draw.price || 250), {
+      disabled: spinning || draw.open === false,
+      hint: spinning ? "Барабан ещё крутится." : (draw.shut || "Закрыто."),
+      onClick: () => casinoAct({ action: "roll" }),
+    }));
+  }
+  row.appendChild(button("К столам", {
+    secondary: true,
+    onClick: () => {
+      casinoDrawOpen = false;
+      renderCasino(casinoData, true);
+    },
+  }));
+  return row;
 }

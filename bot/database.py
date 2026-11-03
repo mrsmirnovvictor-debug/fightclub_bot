@@ -361,6 +361,18 @@ CREATE TABLE IF NOT EXISTS casino_moves (
     PRIMARY KEY (table_id, round, user_id, kind)
 );
 
+-- Невыданный выигрыш «Карусели удачи»: приз лежит тут, пока игрок не
+-- заберёт его в рюкзак или не сдаст за жетоны. Первичный ключ по
+-- игроку — это правило, а не ускорение: приз один, и крутить барабан
+-- заново, не разобравшись с прошлым, нельзя
+CREATE TABLE IF NOT EXISTS casino_prizes (
+    user_id INTEGER PRIMARY KEY,
+    kind    TEXT    NOT NULL DEFAULT '',
+    code    TEXT    NOT NULL DEFAULT '',
+    price   INTEGER NOT NULL DEFAULT 0,
+    at      INTEGER NOT NULL DEFAULT 0
+);
+
 -- Выполненные команды стола: повторный запрос отдаёт прежний ответ
 CREATE TABLE IF NOT EXISTS casino_commands (
     table_id   INTEGER NOT NULL,
@@ -4918,6 +4930,75 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
         return dict(row) if row else None
+
+    async def casino_spend(self, user_id: int, amount: int, now: int) -> bool:
+        """Снять жетоны с рук. False — не хватило.
+
+        Это не ставка: за барабан платят сразу и насовсем, резерва у
+        него нет. Поэтому и движение одно, а не два.
+        """
+        if amount <= 0:
+            return False
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO casino_wallets (user_id, at) VALUES (?,?)",
+            (user_id, now),
+        )
+        taken = await self.conn.execute(
+            "UPDATE casino_wallets SET chips = chips - ?, at = ? "
+            "WHERE user_id = ? AND chips >= ?",
+            (amount, now, user_id, amount),
+        )
+        await self.conn.commit()
+        return taken.rowcount > 0
+
+    async def casino_give(self, user_id: int, amount: int, now: int) -> None:
+        """Начислить жетоны: выигрыш барабана или сдача приза."""
+        if amount <= 0:
+            return
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO casino_wallets (user_id, at) VALUES (?,?)",
+            (user_id, now),
+        )
+        await self.conn.execute(
+            "UPDATE casino_wallets SET chips = chips + ?, at = ? "
+            "WHERE user_id = ?",
+            (amount, now, user_id),
+        )
+        await self.conn.commit()
+
+    async def casino_prize(self, user_id: int) -> dict | None:
+        """Невыданный выигрыш барабана. None — его нет."""
+        async with self.conn.execute(
+            "SELECT kind, code, price, at FROM casino_prizes WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def casino_keep_prize(
+        self, user_id: int, kind: str, code: str, price: int, now: int
+    ) -> bool:
+        """Отложить выигрыш до решения игрока. False — прошлый не разобран."""
+        written = await self.conn.execute(
+            "INSERT OR IGNORE INTO casino_prizes "
+            "(user_id, kind, code, price, at) VALUES (?,?,?,?,?)",
+            (user_id, kind, code, price, now),
+        )
+        await self.conn.commit()
+        return written.rowcount > 0
+
+    async def casino_drop_prize(self, user_id: int) -> bool:
+        """Убрать разобранный выигрыш. False — его уже убрали.
+
+        По этому ответу и решается, выдавать ли приз: забрать и сдать
+        один и тот же выигрыш нельзя, и держит это строка в базе, а не
+        проверка в коде.
+        """
+        gone = await self.conn.execute(
+            "DELETE FROM casino_prizes WHERE user_id = ?", (user_id,)
+        )
+        await self.conn.commit()
+        return gone.rowcount > 0
 
     async def casino_done(self, table_id: int, command_id: str) -> str | None:
         if not command_id:

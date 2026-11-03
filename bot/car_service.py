@@ -247,6 +247,29 @@ async def buy(
     return f"{car.title} теперь твоя. Ключи в гараже, за руль — в карточке."
 
 
+async def win_car(
+    db: Database, player: Player, code: str, now: int | None = None
+) -> str:
+    """Отдать бойцу выигранную машину. Своя — насовсем, срока нет.
+
+    От покупки отличается одним: за неё уже заплачено, и платить
+    второй раз незачем. Всё остальное то же — и счёт машин на руках
+    тоже: выигрыш не отменяет правила, что держат одну, а с подпиской
+    три. Места нет — машину не отдадут, и это честнее, чем молча
+    растворить приз.
+    """
+    moment = now_ts() if now is None else now
+    car = _salon_car(code)
+    row = await db.car_row(player.user_id, car.code)
+    if row is not None and not row["until"]:
+        raise CarError("Такая у тебя уже есть.")
+    if row is None:
+        await _check_room(db, player, moment)
+    await db.put_car(player.user_id, car.code, 0, moment)
+    logger.info("Боец %s выиграл машину %s", player.user_id, car.code)
+    return f"{car.title} теперь твоя. Ключи в гараже, за руль — в карточке."
+
+
 async def rent(
     db: Database, player: Player, code: str, span: str,
     now: int | None = None,

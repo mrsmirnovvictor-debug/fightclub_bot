@@ -16,6 +16,10 @@ from typing import Any
 from bot.casino_service import (
     CasinoError,
     bet,
+    carousel_roll,
+    carousel_sell,
+    carousel_take,
+    carousel_view,
     exchange,
     hand_move,
     join_pot,
@@ -58,6 +62,9 @@ async def build_casino(
     body: dict[str, Any] = {
         "credits": player.credits,
         "wallet": await db.casino_wallet(player.user_id),
+        # Карусель всегда под рукой: за неё не садятся, в неё играют
+        # сколько угодно человек разом
+        "draw": await carousel_view(db, player, moment),
         "fields": ROULETTE_FIELDS,
         # Порядок карманов уходит на клиент, а не живёт в нём: колесо
         # рисуется по тому же кольцу, по которому считается угол
@@ -115,6 +122,12 @@ async def casino_action(
             command_id=command_id, now=moment,
         )
         return said, table_id
+    if action == "roll":
+        return await carousel_roll(db, player, moment), 0
+    if action == "take":
+        return await carousel_take(db, player, moment), 0
+    if action == "sell":
+        return await carousel_sell(db, player, moment), 0
     if action == "repeat":
         said = await repeat_bet(
             db, player, table_id, command_id=command_id, now=moment

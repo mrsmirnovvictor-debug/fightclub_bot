@@ -5073,3 +5073,84 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   text-align: center;
   color: var(--muted);
 }
+
+/* «Карусель удачи»: своя игра и свой цвет. Стоит поверх столов — это
+   не стол, мест у неё нет и садиться за неё не надо */
+.casino-draw-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  margin-bottom: 14px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #5b2a86, #2b1b49 70%);
+  color: #f6efff;
+  box-shadow: inset 0 0 0 2px rgba(214, 178, 255, 0.5);
+}
+.casino-draw-words { flex: 1; min-width: 0; }
+.casino-draw-card h3 { margin: 0 0 2px; font-size: 17px; }
+.casino-draw-card .casino-about { color: #d9c9f2; }
+.casino-draw-card .btn { margin-top: 6px; }
+
+.casino.carousel { --felt: #2b1b49; --brass: #d6b2ff; }
+
+/* Лента: едет справа налево, под меткой останавливается приз */
+.casino-belt {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 0 0 2px rgba(214, 178, 255, 0.45);
+  padding: 10px 0;
+}
+.casino-belt-run {
+  display: flex;
+  gap: 8px;
+  width: max-content;
+  animation: casino-belt 18s linear infinite;
+}
+.casino-belt-run.fast { animation-duration: 1.2s; }
+@keyframes casino-belt {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.casino-belt-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  margin-left: -1px;
+  background: #ffe9a8;
+  box-shadow: 0 0 10px #ffe9a8;
+}
+.casino-prize {
+  width: 104px;
+  flex: none;
+  padding: 8px 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  text-align: center;
+  font-size: 11px;
+}
+.casino-prize img {
+  width: 100%;
+  height: 54px;
+  object-fit: contain;
+  display: block;
+  margin-bottom: 4px;
+}
+.casino-prize-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.casino-prize-price { color: #ffe9a8; }
+.casino-prize.kind-car { background: rgba(255, 233, 168, 0.18); }
+.casino-prize.kind-chips { background: rgba(142, 230, 168, 0.16); }
+
+@media (prefers-reduced-motion: reduce) {
+  .casino-belt-run { animation: none; }
+}

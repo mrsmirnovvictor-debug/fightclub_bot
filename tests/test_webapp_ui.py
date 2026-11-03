@@ -15710,11 +15710,39 @@ async def test_the_station_fight_reads_like_every_other_one(server, db):
 # ---------- казино ----------
 
 
+def casino_draw(prize: dict | None = None, open_now: bool = True) -> dict:
+    """Барабан «Карусели удачи», как его отдаёт сервер."""
+    from bot.game.art import CASINO_COVERS
+    from bot.game.carousel import ROLL_PRICE, SPIN_SECONDS, shelf
+
+    return {
+        "title": "Карусель удачи",
+        "about": "Оружие, щиты, жетоны и машины.",
+        "cover": CASINO_COVERS + "/super-draw.webp",
+        "price": ROLL_PRICE,
+        "spin": SPIN_SECONDS,
+        "shelf": [
+            {
+                "kind": one.kind, "code": one.code, "title": one.title,
+                "price": one.price, "image": one.image, "chance": 1.0,
+            }
+            for one in shelf(now_ts())
+        ],
+        "until": now_ts() + 5,
+        "now": now_ts(),
+        "open": open_now,
+        "shut": "" if open_now else "Казино закрыто. Откроется в 08:00.",
+        "wallet": {"chips": 300, "reserved": 0},
+        "prize": prize,
+    }
+
+
 def casino_lobby(
     chips: int = 300, credits: int = 500, open_now: bool = True
 ) -> dict:
     """Лобби казино, как его отдаёт сервер."""
     from bot.webapp.casino import ROULETTE_FIELDS
+    from bot.game.art import CASINO_COVERS
     from bot.game.casino import GAME_LIST, REDS, WHEEL, cover_url
 
     return {
@@ -15724,6 +15752,7 @@ def casino_lobby(
         "wheel": list(WHEEL),
         "reds": sorted(REDS),
         "now": now_ts(),
+        "draw": casino_draw(),
         "lobby": {
             "wallet": {"chips": chips, "reserved": 0},
             "seat": None,
@@ -15731,6 +15760,11 @@ def casino_lobby(
             "edge": now_ts() + 3600,
             "shut": "" if open_now else
                     "Казино закрыто. Откроется в 08:00 по Москве.",
+            "draw": {
+                "code": "carousel", "title": "Карусель удачи",
+                "about": "Оружие, щиты, жетоны и машины.",
+                "cover": casino_draw()["cover"], "price": 250,
+            },
             "games": [
                 {
                     "code": one.code, "title": one.title, "about": one.about,
@@ -16449,4 +16483,120 @@ async def test_the_night_casino_says_when_it_opens(server, db):
         assert await page.locator(".casino-game").count() == 0, "столы закрыты"
         # Фишки — деньги игрока: сдать их он вправе в любой час
         assert await page.locator(".casino-cashier").count() == 1
+        await browser.close()
+
+
+# ---------- «Карусель удачи» ----------
+
+
+async def test_the_carousel_stands_above_the_tables(server, db):
+    """Карусель сверху, своим цветом и с кнопкой «Играть»."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby(), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+
+        # Она стоит выше первого стола
+        order = await page.evaluate(
+            "() => [...document.querySelectorAll("
+            "'.casino-draw-card, .casino-game')].map((one) => one.className)"
+        )
+        assert order[0].startswith("casino-draw-card"), order
+        said = await page.locator(".casino-draw-card").inner_text()
+        assert "Карусель удачи" in said and "250" in said
+        assert "Играть" in said
+        # И цвет у неё свой, не как у столов
+        paint = await page.evaluate(
+            "() => getComputedStyle("
+            "document.querySelector('.casino-draw-card')).backgroundImage"
+        )
+        assert "gradient" in paint, paint
+        await browser.close()
+
+
+async def test_the_belt_runs_and_the_roll_costs_two_fifty(server, db):
+    """Лента едет, под меткой встаёт приз, ролл стоит 250."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby()
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        # Товар на ленте положен дважды: по кругу и без шва
+        cards = await page.locator(".casino-prize").count()
+        assert cards == 24, cards
+        assert await page.locator(".casino-belt-mark").count() == 1
+        # Лента и правда едет
+        moving = await page.evaluate(
+            "() => getComputedStyle("
+            "document.querySelector('.casino-belt-run')).animationName"
+        )
+        assert moving == "casino-belt", moving
+
+        said = await page.locator(".casino-actions").inner_text()
+        assert "Ролл за 250" in said
+        await browser.close()
+
+
+async def test_the_won_prize_waits_for_take_or_sell(server, db):
+    """Выпавший приз ждёт решения: забрать или сдать за жетоны."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_lobby()
+    body["draw"] = casino_draw(prize={
+        "kind": "item", "code": "katana", "title": "Катана", "price": 260,
+        "image": "", "sells_for": 130, "at": now_ts() - 9,
+        "ready": now_ts() - 4,
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-shout")
+
+        assert await page.locator(".casino-shout").inner_text() == "Катана"
+        sums = await page.locator(".casino-sums").inner_text()
+        assert "260" in sums and "130" in sums
+        said = await page.locator(".casino-actions").inner_text()
+        assert "Забрать себе" in said and "Сдать за 130" in said
+        assert "Ролл за" not in said, "крутить, не разобравшись, нельзя"
+        await browser.close()
+
+
+async def test_the_spinning_drum_hides_the_prize(server, db):
+    """Пока барабан крутится, приза не видно и кнопки погашены."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_lobby()
+    body["draw"] = casino_draw(prize={
+        "kind": "car", "code": "iron_muscle", "title": "Тяжёлый маслкар",
+        "price": 20000, "image": "", "sells_for": 10000,
+        "at": now_ts(), "ready": now_ts() + 5,
+    })
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        assert await page.locator(".casino-shout").inner_text() == "…"
+        assert "маслкар" not in await page.locator(".casino-felt").inner_text()
+        # Лента на вращении идёт быстрее
+        fast = await page.evaluate(
+            "() => getComputedStyle("
+            "document.querySelector('.casino-belt-run')).animationDuration"
+        )
+        assert fast == "1.2s", fast
+        assert not await page.get_by_text("Ролл за 250").is_enabled()
         await browser.close()
