@@ -5096,7 +5096,16 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* В рамке карусели только лента, и рамка скроена по ней: ни подписи,
    ни пустого поля под ней больше нет */
 .casino.carousel .casino-felt { padding: 8px; }
-.casino.carousel .casino-middle { min-height: 0; padding-top: 10px; }
+/* Итог вращения стоит под рамкой, а не в ней, — и несёт сукно с
+   собой: его цвета рассчитаны на тёмное поле, а под рамкой светло */
+.casino.carousel .casino-middle {
+  min-height: 0;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--felt);
+  box-shadow: inset 0 0 0 2px rgba(214, 178, 255, 0.45);
+}
 
 /* Лента: едет справа налево, под меткой останавливается приз */
 .casino-belt {

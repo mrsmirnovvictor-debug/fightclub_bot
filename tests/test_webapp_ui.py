@@ -16664,6 +16664,14 @@ async def test_the_won_prize_waits_for_take_or_sell(server, db):
         assert await page.locator(".casino-shout").inner_text() == "Катана"
         sums = await page.locator(".casino-sums").inner_text()
         assert "260" in sums and "130" in sums
+        # Итог лежит под рамкой, и сукно несёт с собой: его цвета
+        # рассчитаны на тёмное поле, а под рамкой светло — без этого
+        # название приза было почти не видно
+        paint = await page.evaluate(
+            "() => getComputedStyle("
+            "document.querySelector('.casino-middle')).backgroundColor"
+        )
+        assert paint == "rgb(43, 27, 73)", paint
         said = await page.locator(".casino-actions").inner_text()
         assert "Забрать себе" in said and "Сдать за 130" in said
         assert "Ролл за" not in said, "крутить, не разобравшись, нельзя"
