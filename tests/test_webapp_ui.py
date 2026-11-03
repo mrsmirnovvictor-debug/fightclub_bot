@@ -15799,7 +15799,10 @@ async def test_the_cashier_asks_the_server_to_change_money(server, db):
         await page.wait_for_selector(".casino-cashier")
         await page.locator(".casino-cashier input").fill("100")
         await page.get_by_text("Купить фишки").click()
-        await page.wait_for_function("() => window.casinoData.credits === 400")
+        # Ждём не переменную страницы, а то, что видит человек: ответ
+        # сервера перерисовал кассу
+        await page.wait_for_selector(".casino-cashier >> text=На руках 400")
+        assert "400" in await page.locator("#casino-purse").inner_text()
         assert asked and asked[0]["action"] == "exchange"
         assert asked[0]["kind"] == "buy" and asked[0]["amount"] == 100
         # Ключ команды идёт с каждым нажатием: повтор не станет вторым обменом
