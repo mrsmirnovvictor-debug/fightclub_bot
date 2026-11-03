@@ -22,6 +22,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
+from bot.game import art
 from bot.game.cars import get_car
 from bot.game.equipment import ItemKind
 from bot.content.items import shelf_of
@@ -117,7 +118,8 @@ def _car_prizes() -> list[Prize]:
 
 def _chip_prizes() -> list[Prize]:
     return [
-        Prize("chips", f"chips{one}", f"{one} жетонов", one)
+        Prize("chips", f"chips{one}", f"{one} жетонов", one,
+              art.chip_pack(one))
         for one in CHIP_PRIZES
     ]
 

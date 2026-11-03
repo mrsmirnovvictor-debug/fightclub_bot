@@ -60,6 +60,8 @@ CHARGERS = f"{LOCATIONS}/charging_stations"
 CLANS = f"{BUCKET}/clans"
 # Обложки столов казино: по картинке на игру, WebP 768 на 768
 CASINO_COVERS = f"{BUCKET}/casino/covers"
+# Жетоны казино: значок валюты и паки для карусели, WebP
+CASINO_CHIPS = f"{BUCKET}/casino/chips"
 # Рейд-пассы: по картинке на рейд, WebP. Лежат своей папкой, а не в
 # `raid2_items`: пропуска перерисовали все разом и выгрузили вместе
 RAID_TICKETS = f"{BUCKET}/raids/tickets"
@@ -247,6 +249,15 @@ def raid_gear(line: str, code: str) -> str:
     return f"{RAID_ITEMS}/{line}/items/{code}.png"
 
 
+# Значок жетона: им подписан кошелёк казино вместо прежнего 🎟
+CHIP_ICON = f"{CASINO_CHIPS}/currency.webp"
+
+
+def chip_pack(size: int) -> str:
+    """Пак жетонов для карусели: casino/chips/pack-250.webp."""
+    return f"{CASINO_CHIPS}/pack-{size}.webp"
+
+
 def raid_ticket(name: str) -> str:
     """Пропуск рейда: raids/tickets/casino-boss.webp.
 
@@ -275,8 +286,11 @@ __all__ = [
     "AVATARS",
     "BOSSES",
     "BUCKET",
+    "CASINO_CHIPS",
     "CASINO_COVERS",
+    "CHIP_ICON",
     "RAID_TICKETS",
+    "chip_pack",
     "INTERIORS",
     "ITEMS",
     "LOCATIONS",

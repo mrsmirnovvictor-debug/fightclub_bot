@@ -928,3 +928,43 @@ async def test_the_round_is_half_a_minute_and_never_a_blink(db):
     await sit(db, one, table.id, 1, NOW)
     fresh = await look(db, table.id, NOW)
     assert int(fresh.state["until"]) == NOW + ROUND
+
+
+# ---------- место за столом не держат за ушедшим ----------
+
+
+async def test_leaving_the_house_frees_the_seat(db):
+    """Уехал из казино — встал из-за стола, и ставка вернулась.
+
+    Дверь из дома одна — служба дороги, — и встать из-за стола
+    положено именно тут: кнопкой на экране, кнопкой «Рейд», уходом в
+    другой дом или закрытым приложением. Экран о своём уходе скажет
+    сам, а вот за дорогой следит сервер: из армейской части за столом
+    в казино не сидят.
+    """
+    from bot.travel_service import Travel
+
+    one = await gambler(db, 1, chips=200)
+    table_id = (await open_table(db, "dice", NOW)).id
+    await sit(db, one, table_id, 1, NOW)
+    await bet(db, one, table_id, 40, pick="over", now=NOW)
+    assert (await db.casino_wallet(1))["reserved"] == 40
+
+    fresh = await db.get_player(1)
+    await Travel(db).go(fresh, "weapon_shop", now=NOW + 1)
+
+    assert await db.casino_seat_of(1) is None, "место за уехавшим не держат"
+    purse = await db.casino_wallet(1)
+    assert purse == {"chips": 200, "reserved": 0}, "ставка вернулась целиком"
+
+
+async def test_leaving_the_house_without_a_seat_costs_nothing(db):
+    """Не сидел — и уход ничего не делает: ни ошибки, ни записи."""
+    from bot.travel_service import Travel
+
+    one = await gambler(db, 1, chips=100)
+
+    await Travel(db).go(one, "weapon_shop", now=NOW + 1)
+
+    assert await db.casino_seat_of(1) is None
+    assert (await db.casino_wallet(1))["chips"] == 100

@@ -16543,11 +16543,9 @@ async def test_the_belt_runs_and_the_roll_costs_two_fifty(server, db):
         assert cards == 2 * len(prizes()), cards
         assert await page.locator(".casino-belt-mark").count() == 1
         # Лента и правда едет
-        moving = await page.evaluate(
-            "() => getComputedStyle("
-            "document.querySelector('.casino-belt-run')).animationName"
-        )
-        assert moving == "casino-belt", moving
+        was = await belt_at(page)
+        await page.wait_for_timeout(400)
+        assert await belt_at(page) < was, "лента стоит на месте"
 
         # В рамке только лента: подписи про цену ролла под ней нет, и
         # пустого поля под подписью тоже
@@ -16562,6 +16560,128 @@ async def test_the_belt_runs_and_the_roll_costs_two_fifty(server, db):
 
         said = await page.locator(".casino-actions").inner_text()
         assert "Ролл за 250" in said
+        await browser.close()
+
+
+async def belt_at(page) -> float:
+    """Где сейчас лента: смещение в точках, вперёд — в минус."""
+    return await page.evaluate(
+        "() => parseFloat(document.querySelector('.casino-belt-run')"
+        ".style.transform.replace(/[^0-9.-]/g, '')) || 0"
+    )
+
+
+async def test_leaving_the_casino_screen_stands_up_from_the_table(server, db):
+    """Ушёл с экрана — экран сам встал из-за стола.
+
+    Хоть на карту, хоть в рейд, хоть в соседний дом: место за четырьмя
+    стульями не держат за тем, кто на него не смотрит. Сервер за этим
+    следит на своей стороне — там дверь одна, служба дороги, — но из
+    казино в рейд ходят, никуда не уезжая, и сказать об этом некому,
+    кроме экрана.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    body = casino_lobby()
+    body["table"] = casino_table("dice", "accept")
+    body["seated"] = True
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, casino=body)
+        said: list[dict] = []
+
+        async def watch(route):
+            if route.request.method == "POST":
+                said.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/casino*", watch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-felt")
+
+        await open_screen(page, "map")
+        await page.wait_for_timeout(300)
+
+        assert [one["action"] for one in said] == ["leave"], said
+        # И второй раз не спрашиваем: вставать уже неоткуда
+        await open_screen(page, "bag")
+        await page.wait_for_timeout(200)
+        assert len(said) == 1, said
+        await browser.close()
+
+
+async def test_the_drum_stops_on_the_prize_and_stays_there(server, db):
+    """Барабан встаёт на выпавшем предмете и дальше не крутится.
+
+    Это главное свойство карусели: приз назван сервером до первого
+    кадра, и лента не выбирает — она доезжает до названного и встаёт
+    под меткой. Не обязательно серединой: встать можно и краешком,
+    лишь бы метка попала в карточку.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby()
+        )
+
+        # Время живое, а вращение одно: в базе `at` стоит на месте, и
+        # подменять его на каждый запрос значило бы крутить барабан
+        # заново каждую секунду
+        spun: dict[str, int] = {}
+
+        async def spinning(route):
+            body = casino_lobby()
+            now = now_ts()
+            spun.setdefault("at", now)
+            body["now"] = body["draw"]["now"] = now
+            body["draw"]["prize"] = {
+                "kind": "car", "code": "iron_muscle",
+                "title": "Тяжёлый маслкар", "price": 20000, "image": "",
+                "sells_for": 10000, "at": spun["at"],
+                "ready": spun["at"] + 5,
+            }
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/casino*", spinning)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        # Ждём остановки. Пока барабан крутится, на месте приза стоит
+        # многоточие — ждать надо названия, а не непустой строки
+        await page.wait_for_function(
+            "() => { const one = document.querySelector('.casino-shout');"
+            " return one && one.textContent === 'Тяжёлый маслкар'; }",
+            timeout=20_000,
+        )
+        await page.wait_for_timeout(300)
+
+        under = await page.evaluate("""() => {
+          const mark =
+            document.querySelector('.casino-belt-mark').getBoundingClientRect();
+          const at = (mark.left + mark.right) / 2;
+          return [...document.querySelectorAll('.casino-prize')]
+            .filter((one) => {
+              const box = one.getBoundingClientRect();
+              return box.left <= at && at <= box.right;
+            })
+            .map((one) => one.dataset.code);
+        }""")
+        assert under == ["iron_muscle"], under
+
+        # И стоит: барабан не поехал дальше сам по себе
+        stood = await belt_at(page)
+        await page.wait_for_timeout(700)
+        assert await belt_at(page) == stood, "лента поехала после остановки"
+        assert await page.locator(".casino-shout").inner_text() \
+            == "Тяжёлый маслкар"
         await browser.close()
 
 
@@ -16596,19 +16716,36 @@ async def test_the_belt_does_not_jump_every_five_seconds(server, db):
         await page.wait_for_selector(".casino-belt")
 
         was = await page.locator(".casino-belt-run").inner_text()
-        start = await page.evaluate(
-            "() => document.querySelector('.casino-belt-run')"
-            ".getAnimations()[0].startTime"
-        )
-        # Больше пяти секунд: прежде ровно на этом месте лента и прыгала
-        await page.wait_for_timeout(6_000)
+        # Шесть секунд подряд с замером каждые сто миллисекунд: прежде
+        # ровно на пятой лента и прыгала
+        steps = await page.evaluate("""async () => {
+          const belt = document.querySelector('.casino-belt-run');
+          const half = belt.children.length / 2;
+          const wide =
+            belt.children[half].offsetLeft - belt.children[0].offsetLeft;
+          const at = () => parseFloat(
+            belt.style.transform.replace(/[^0-9.-]/g, "")
+          ) || 0;
+          const out = [];
+          let was = at();
+          for (let i = 0; i < 60; i++) {
+            await new Promise((ok) => setTimeout(ok, 100));
+            const now = at();
+            let step = now - was;
+            if (step > 0) step -= wide; // заворот ленты — не прыжок
+            out.push(step);
+            was = now;
+          }
+          return out;
+        }""")
 
-        assert await page.locator(".casino-belt-run").inner_text() == was
-        again = await page.evaluate(
-            "() => document.querySelector('.casino-belt-run')"
-            ".getAnimations()[0].startTime"
+        assert await page.locator(".casino-belt-run").inner_text() == was, (
+            "товар на ленте подменился"
         )
-        assert again == start, "и круг не начинался заново"
+        assert len(steps) == 60
+        assert all(one <= 0 for one in steps), "лента поехала назад"
+        assert min(steps) > -40, f"лента дёрнулась на {min(steps)} точек"
+        assert -800 < sum(steps) < -150, f"прошла {sum(steps)} точек"
         await browser.close()
 
 
@@ -16700,13 +16837,11 @@ async def test_the_spinning_drum_hides_the_prize(server, db):
         # весь барабан, — а вот в итоге под лентой его нет
         said = await page.locator(".casino-middle").inner_text()
         assert "маслкар" not in said and "10000" not in said, said
-        # Лента на вращении идёт в пятнадцать раз быстрее
-        fast = await page.evaluate(
-            "() => parseFloat(getComputedStyle("
-            "document.querySelector('.casino-belt-run')).animationDuration)"
-        )
-        from bot.game.carousel import prizes
-
-        assert abs(fast - len(prizes()) * 1.5 / 15) < 0.01, fast
+        # Лента на вращении идёт много быстрее холостого хода: за
+        # четверть секунды она проходит больше, чем вхолостую за три
+        was = await belt_at(page)
+        await page.wait_for_timeout(250)
+        gone = was - await belt_at(page)
+        assert gone > 225, f"за четверть секунды лента прошла {gone}"
         assert not await page.get_by_text("Ролл за 250").is_enabled()
         await browser.close()

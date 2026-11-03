@@ -32,6 +32,7 @@ from bot.casino_service import (
     take_back,
 )
 from bot.database import Database
+from bot.game import art
 from bot.game.casino import (
     GAME_LIST,
     REDS,
@@ -62,6 +63,8 @@ async def build_casino(
     body: dict[str, Any] = {
         "credits": player.credits,
         "wallet": await db.casino_wallet(player.user_id),
+        # Значок жетона: экран подписывает им кошелёк и стопки на ленте
+        "chip": art.CHIP_ICON,
         # Карусель всегда под рукой: за неё не садятся, в неё играют
         # сколько угодно человек разом
         "draw": await carousel_view(db, player, moment),

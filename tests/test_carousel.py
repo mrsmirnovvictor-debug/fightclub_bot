@@ -54,6 +54,23 @@ def test_the_drum_holds_what_the_shops_sell():
     ) == [5_000, 16_000, 20_000]
 
 
+def test_every_prize_has_a_picture():
+    """Картинка есть у всего, что едет по ленте, — жетоны не исключение.
+
+    Стопки жетонов рисовали отдельно: без них на ленте стояли три
+    пустых места, а с ними видно, что в барабане не только железо.
+    """
+    for prize in carousel.prizes():
+        assert prize.image, prize.title
+    packs = sorted(
+        one.image for one in carousel.prizes() if one.kind == "chips"
+    )
+    assert [one.rsplit("/", 1)[-1] for one in packs] == [
+        "pack-250.webp", "pack-500.webp", "pack-750.webp"
+    ]
+    assert all("casino/chips/" in one for one in packs)
+
+
 def test_the_dearer_the_prize_the_rarer_it_falls():
     """Шанс обратен цене, и это проверяется по всему барабану."""
     pool = sorted(carousel.prizes(), key=lambda one: one.price)

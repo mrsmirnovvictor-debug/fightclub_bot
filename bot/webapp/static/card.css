@@ -5117,17 +5117,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   box-shadow: inset 0 0 0 2px rgba(214, 178, 255, 0.45);
   padding: 10px 0;
 }
+/* Лента едет кадрами, а не разметкой: CSS-анимацию нельзя остановить
+   на нужном предмете, а в карусели вся соль в остановке. Смещение
+   ставит `card.js`, тут — только раскладка */
 .casino-belt-run {
   display: flex;
   gap: 8px;
   width: max-content;
-  animation: casino-belt 18s linear infinite;
-}
-/* Длительность круга ставит разметка: она зависит от того, сколько
-   товара в барабане, и на вращении делится на пятнадцать */
-@keyframes casino-belt {
-  from { transform: translateX(0); }
-  to { transform: translateX(-50%); }
+  will-change: transform;
 }
 .casino-belt-mark {
   position: absolute;
@@ -5162,9 +5159,14 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   white-space: nowrap;
 }
 .casino-prize-price { color: #ffe9a8; }
+/* Значок жетона: он стоит в строке рядом с числом, а не отдельной
+   картинкой, — размер берём по строке, чтобы не прыгала высота */
+.chip-coin {
+  height: 1.05em;
+  width: auto;
+  vertical-align: -0.15em;
+}
+.casino-prize-price .chip-coin { height: 1em; }
 .casino-prize.kind-car { background: rgba(255, 233, 168, 0.18); }
 .casino-prize.kind-chips { background: rgba(142, 230, 168, 0.16); }
 
-@media (prefers-reduced-motion: reduce) {
-  .casino-belt-run { animation: none; }
-}

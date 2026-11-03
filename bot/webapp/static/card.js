@@ -2035,6 +2035,10 @@ function showTab(name) {
     watchCasino();
   } else {
     stopWatchingCasino();
+    // Ушёл с экрана — встал из-за стола. Хоть в рейд, хоть на карту,
+    // хоть в соседний дом: место за четырьмя стульями держать за тем,
+    // кто на него не смотрит, значит занимать его зря
+    leaveCasinoTable();
   }
   // Полка образов: кредитов могло стать больше или меньше, а образ —
   // купиться в другом доме того же пола
@@ -19533,7 +19537,13 @@ if (tg) {
 // боец мог подраться и взять уровень
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) catchUp();
+  // А уходя — встаём из-за стола: закрытое приложение за столом не
+  // сидит. `pagehide` на телефоне приходит не всегда, `visibilitychange`
+  // приходит всегда; обе двери ведут в одно место, и повторный уход
+  // сервер отличает по тому, что вставать уже неоткуда
+  else leaveCasinoTable();
 });
+window.addEventListener("pagehide", leaveCasinoTable);
 window.addEventListener("focus", catchUp);
 setInterval(catchUp, CARD_HEARTBEAT);
 
@@ -19579,6 +19589,27 @@ function openCasino() {
 function watchCasino() {
   if (!casinoPoll) casinoPoll = setInterval(loadCasino, CASINO_POLL_LIVE);
   if (!casinoTicker) casinoTicker = setInterval(paintCasinoClock, 250);
+}
+
+// Встать из-за стола, уходя. Спрашиваем только когда и правда сидели:
+// иначе каждая смена вкладки будила бы сервер впустую
+let casinoSeated = false;
+
+function leaveCasinoTable() {
+  if (!casinoSeated) return;
+  casinoSeated = false;
+  casinoAt = 0;
+  // Ответ нам уже не нужен: экран другой. А вот `keepalive` нужен —
+  // без него закрытие мини-аппа обрывает запрос на полпути
+  fetch("api/casino", {
+    method: "POST",
+    keepalive: true,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Telegram-Init-Data": (tg && tg.initData) || "",
+    },
+    body: JSON.stringify({ action: "leave", command: stamp() }),
+  }).catch(() => {});
 }
 
 function stopWatchingCasino() {
@@ -19705,6 +19736,12 @@ function casinoPic(src, cls) {
 
 function renderCasino(data, force) {
   casinoData = data;
+  if (data.chip) casinoChip = data.chip;
+  // Сдвиг часов — на каждом снимке: карусель встаёт по серверному
+  // времени, а у стола его считали только при сборке часов, и на
+  // экране барабана он оставался от прошлого стола или нулём
+  if (data.now) casinoDrift = data.now * 1000 - Date.now();
+  casinoSeated = !!data.seated;
   // Ответ догнал нас уже на другом экране — рисовать нечего. Иначе он
   // снимал кнопку «Рейд» с чужой шапки, и вернуться в зал было нечем
   if (el("casino").classList.contains("hidden")) return;
@@ -19777,11 +19814,43 @@ function casinoTyping() {
   return !!live && live.id === "casino-sum";
 }
 
+// Кошелёк красится на каждый опрос, а не на перерисовку: он рядом с
+// часами и меняется чаще экрана. Поэтому и строка, и значок тут свои —
+// в стопку перерисовки они не идут, иначе та росла бы каждую секунду
+let casinoPurseSaid = "";
+let casinoPurseCoin = null;
+
 function paintCasinoPurse(data) {
   const purse = (data.wallet && data.wallet.chips) || 0;
   const held = (data.wallet && data.wallet.reserved) || 0;
-  el("casino-purse").textContent =
-    "🎟 " + purse + (held ? " (+" + held + " в игре)" : "");
+  const said = purse + (held ? " (+" + held + " в игре)" : "");
+  if (said === casinoPurseSaid) return;
+  casinoPurseSaid = said;
+
+  const box = el("casino-purse");
+  box.textContent = "";
+  if (casinoChip) {
+    if (!casinoPurseCoin || casinoPurseCoin.dataset.src !== casinoChip) {
+      casinoPurseCoin = document.createElement("img");
+      casinoPurseCoin.className = "chip-coin";
+      casinoPurseCoin.alt = "";
+      casinoPurseCoin.dataset.src = casinoChip;
+      casinoPurseCoin.src = casinoChip;
+    }
+    box.appendChild(casinoPurseCoin);
+  }
+  box.appendChild(document.createTextNode(
+    (casinoChip ? " " : "🎟 ") + said
+  ));
+}
+
+// Значок жетона. Адрес приходит с сервера: картинки живут в бакете, и
+// знать про него экрану незачем
+let casinoChip = "";
+
+function casinoChipIcon() {
+  if (!casinoChip) return null;
+  return casinoPic(casinoChip, "chip-coin");
 }
 
 function casinoCashierBox(data) {
@@ -20850,41 +20919,184 @@ function casinoDrawBox(data) {
   return box;
 }
 
-// Сколько секунд круга приходится на один товар и во сколько раз
-// быстрее идёт лента на вращении
-const CASINO_BELT_STEP = 1.5;
-const CASINO_BELT_RUSH = 15;
+// ---------- ход ленты ----------
+//
+// Лента едет кадрами, а не разметкой. Разметкой — это CSS-анимация по
+// кругу: ровно, дёшево и само собой. Но остановить её на нужном
+// предмете нельзя, а в карусели вся соль в остановке.
+//
+// Поэтому смещение считается тут. Вхолостую лента ползёт с постоянной
+// скоростью и заворачивается ровно на длину одной копии товара: за
+// краем лежит то же самое, шва не видно и прыжка нет. Бесконечная она
+// по этой причине, а не потому, что товара много.
+//
+// На ролле лента уходит с места рывком и тормозит до полной остановки
+// под меткой — и дальше стоит, пока приз не разберут. Приз назван
+// сервером ещё до первого кадра, и всё вращение считается от него
+// назад: где встать, сколько проехать и за сколько.
 
-// Лента едет справа налево и товар на ней не меняется: она и так
-// едет. Бежит она разметкой, а не кадрами: на телефоне это дешевле, и
-// при сниженном движении её можно просто остановить
+const CASINO_BELT_SPEED = 75;   // точек в секунду вхолостую
+const CASINO_BELT_ROUNDS = 5;   // сколько копий ленты проматывает рывок
+const CASINO_BELT_EDGE = 12;    // ближе этого к краю карточки не встаём
+
+let casinoBeltRun = null;   // узел ленты
+let casinoBeltCodes = [];   // что на ней лежит, по порядку
+let casinoBeltX = 0;        // смещение, точек (вперёд по ленте — минус)
+let casinoBeltWide = 0;     // длина одной копии товара
+let casinoBeltSpin = null;  // {from, to, start, ms} — пока крутится
+let casinoBeltHold = false; // стоит на призе и больше не едет
+let casinoBeltWas = 0;      // время прошлого кадра
+let casinoBeltSpun = "";    // какое вращение уже посчитано
+let casinoBeltAsk = 0;      // заказанный кадр, 0 — ни одного
+let casinoBeltShow = false; // показать приз, как только лента встанет
+
 function casinoBeltBox(draw) {
   const road = document.createElement("div");
   road.className = "casino-belt";
-  const spinning = casinoDrawSpinning(draw);
   const goods = draw.belt || [];
   const belt = document.createElement("div");
-  belt.className = "casino-belt-run" + (spinning ? " fast" : "");
+  belt.className = "casino-belt-run";
   // Лента едет по кругу: товар кладём дважды, и шов не виден
   goods.concat(goods).forEach(
     (one) => belt.appendChild(casinoPrizeCard(one))
   );
-  // Круг тем дольше, чем длиннее лента: так лента идёт с одной и той
-  // же скоростью, сколько бы товара ни лежало в барабане
-  const round = Math.max(6, goods.length * CASINO_BELT_STEP);
-  belt.style.animationDuration =
-    (spinning ? round / CASINO_BELT_RUSH : round) + "s";
+  // Смещение переживает перерисовку: узел новый, а лента та же, и
+  // начинать её с нуля значило бы дёрнуть на ровном месте
+  belt.style.transform = "translateX(" + casinoBeltX + "px)";
   road.appendChild(belt);
 
   const mark = document.createElement("div");
   mark.className = "casino-belt-mark";
   road.appendChild(mark);
+
+  casinoBeltRun = belt;
+  casinoBeltCodes = goods.map((one) => one.code);
+  casinoBeltWide = 0; // померяем, когда лента ляжет
+  casinoBeltRide(draw);
   return road;
+}
+
+// Что лента делает дальше: едет вхолостую, крутится или стоит на призе
+function casinoBeltRide(draw) {
+  const prize = draw.prize;
+  if (!prize) {
+    casinoBeltSpin = null;
+    casinoBeltHold = false;
+    casinoBeltSpun = "";
+  }
+  casinoBeltAwait();
+}
+
+function casinoBeltAwait() {
+  if (!casinoBeltAsk) {
+    casinoBeltAsk = requestAnimationFrame(casinoBeltStep);
+  }
+}
+
+// Длина одной копии товара — по тому, на сколько вторая копия
+// отстоит от первой. Мерить можно только лёгшую ленту, поэтому мерим
+// в первом же кадре, а не при сборке
+function casinoBeltMeasure(belt) {
+  if (casinoBeltWide) return;
+  const half = belt.children.length / 2;
+  if (!half) return;
+  casinoBeltWide =
+    belt.children[half].offsetLeft - belt.children[0].offsetLeft;
+}
+
+function casinoBeltStep(ts) {
+  casinoBeltAsk = 0;
+  const belt = casinoBeltRun;
+  if (!belt || !belt.isConnected) {
+    casinoBeltWas = 0;
+    return;
+  }
+  // Первый кадр и возвращение из фона: шага не было, и ленту за это
+  // время никуда не двигаем — иначе она прыгнула бы на всю отлучку
+  const span = casinoBeltWas ? Math.min(100, ts - casinoBeltWas) : 0;
+  casinoBeltWas = ts;
+  casinoBeltMeasure(belt);
+
+  const prize = casinoData && casinoData.draw && casinoData.draw.prize;
+  const mine = prize ? prize.code + ":" + prize.at : "";
+  if (prize && mine !== casinoBeltSpun && casinoBeltWide) {
+    casinoBeltSpun = mine;
+    casinoBeltAim(prize, ts);
+  }
+
+  let landed = false;
+  if (casinoBeltSpin) {
+    const run = casinoBeltSpin;
+    const part = run.ms > 0 ? Math.min(1, (ts - run.start) / run.ms) : 1;
+    // Торможение кубическое: рывок с места, долгий выкат и ползком
+    // последние полсекунды — за них и видно, что лежало рядом
+    casinoBeltX = run.from
+      + (run.to - run.from) * (1 - Math.pow(1 - part, 3));
+    if (part >= 1) {
+      casinoBeltX = run.to;
+      casinoBeltSpin = null;
+      casinoBeltHold = true;
+      landed = true;
+    }
+  } else if (!casinoBeltHold) {
+    casinoBeltX -= CASINO_BELT_SPEED * span / 1000;
+  }
+  if (casinoBeltWide) {
+    while (casinoBeltX <= -casinoBeltWide) casinoBeltX += casinoBeltWide;
+    while (casinoBeltX > 0) casinoBeltX -= casinoBeltWide;
+  }
+  belt.style.transform = "translateX(" + casinoBeltX + "px)";
+  casinoBeltAwait();
+
+  // Лента встала — приз показываем сразу, а не на следующем опросе:
+  // ждать секунду с остановившимся барабаном некуда
+  if (landed && casinoBeltShow && casinoData) {
+    casinoBeltShow = false;
+    renderCasino(casinoData, true);
+  }
+}
+
+// Куда и как долго ехать. Считается от приза: он известен до первого
+// кадра, и лента не выбирает — она доезжает до названного
+function casinoBeltAim(prize, ts) {
+  const belt = casinoBeltRun;
+  const seat = casinoBeltCodes.indexOf(prize.code);
+  const card = seat >= 0 ? belt.children[seat] : null;
+  if (!card) { // приза нет на ленте — вставать некуда
+    casinoBeltHold = true;
+    return;
+  }
+  const mark = belt.parentElement.clientWidth / 2;
+  // Встать можно и краешком под метку, а не серединой: так остаётся
+  // интрига до последнего, и видно, что лежало рядом
+  const slip = (Math.random() - 0.5)
+    * Math.max(0, card.offsetWidth - CASINO_BELT_EDGE * 2);
+  const want = mark - (card.offsetLeft + card.offsetWidth / 2) + slip;
+
+  const now = (Date.now() + casinoDrift) / 1000;
+  const left = Math.max(0, prize.ready - now);
+  const slow = window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (left < 0.4 || slow) {
+    // Вращение уже кончилось — или человек просил поменьше движения
+    casinoBeltX = want;
+    casinoBeltSpin = null;
+    casinoBeltHold = true;
+    return;
+  }
+  const ms = left * 1000;
+  const far = casinoBeltWide * CASINO_BELT_ROUNDS * Math.min(1, ms / 5000);
+  const from = casinoBeltX;
+  const rounds = Math.ceil((want - from + far) / casinoBeltWide);
+  casinoBeltSpin = { from, to: want - rounds * casinoBeltWide, start: ts, ms };
+  casinoBeltHold = false;
+  casinoBeltShow = true;
 }
 
 function casinoPrizeCard(one) {
   const card = document.createElement("div");
   card.className = "casino-prize kind-" + one.kind;
+  card.dataset.code = one.code;
   if (one.image) {
     const pic = casinoPic(one.image, "");
     if (pic) card.appendChild(pic);
@@ -20894,9 +21106,15 @@ function casinoPrizeCard(one) {
   name.textContent = one.title;
   const price = document.createElement("div");
   price.className = "casino-prize-price";
-  price.textContent = one.kind === "chips"
-    ? "🎟 " + one.price
-    : one.price + " 💰";
+  if (one.kind === "chips") {
+    const coin = casinoChipIcon();
+    if (coin) price.appendChild(coin);
+    price.appendChild(document.createTextNode(
+      (coin ? " " : "🎟 ") + one.price
+    ));
+  } else {
+    price.textContent = one.price + " 💰";
+  }
   card.append(name, price);
   return card;
 }

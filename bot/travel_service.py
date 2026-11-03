@@ -129,6 +129,13 @@ class Travel:
             moment,
         )
         await self.db.save_player(player)
+        # Из-за стола встаём молча. Стол стоит в казино, а боец уже на
+        # дороге: место за ним не держат, а ставка, если круг ещё не
+        # закрыт, возвращается. Сюда это и положено — через эту дверь
+        # уходят из дома, какой бы кнопкой её ни открыли
+        from bot.casino_service import stand
+
+        await stand(self.db, player.user_id, moment)
         # Доехать боец доедет — он выезжал заряженным, — а на том конце
         # выйдет, если бак опустел по дороге
         await spend_charge(self.db, player, km_for(on_foot), moment)
