@@ -161,18 +161,37 @@ def test_the_house_keeps_its_share():
 async def test_a_roll_costs_two_hundred_fifty_and_decides_at_once(db):
     """Жетоны снимаются сразу, приз решается до первого кадра."""
     one = await gambler(db, 1, chips=1_000, credits=9_000)
-    said = await carousel_roll(db, one, NOW)
+    await carousel_roll(db, one, NOW)
 
-    assert (await db.casino_wallet(1))["chips"] <= 750
+    assert (await db.casino_wallet(1))["chips"] == 750
     view = await carousel_view(db, one, NOW)
     assert view["price"] == 250
-    if "начислено" in said:
-        # Жетоны не откладывают: они и так жетоны
-        assert view["prize"] is None
-        assert (await db.casino_wallet(1))["chips"] > 750 - 250
-        return
-    assert view["prize"]["title"] in said
-    assert view["prize"]["ready"] == NOW + 5, "барабан крутится пять секунд"
+    assert view["prize"], "приз решён сразу, до первого кадра"
+    assert view["prize"]["ready"] == NOW + carousel.SPIN_SECONDS
+    assert carousel.SPIN_SECONDS == 7, "семь секунд: пять рывка и выкат"
+
+
+async def test_the_roll_says_nothing_about_the_prize(db):
+    """Ответ на ролл молчит о призе: вся игра в эти семь секунд.
+
+    Приз решён и уже лежит в строке — экран ведёт к нему ленту. Но
+    напечатать его над крутящимся барабаном значит напечатать ответ:
+    интриги не остаётся вовсе, и лента крутится зря.
+    """
+    one = await gambler(db, 1, chips=1_000, credits=9_000)
+
+    for _ in range(25):
+        said = await carousel_roll(db, one, NOW)
+        prize = (await carousel_view(db, one, NOW))["prize"]
+        assert prize, "приз решён, просто не назван"
+        assert prize["title"].lower() not in said.lower(), said
+        assert str(prize["price"]) not in said, said
+        # Разбираем и крутим снова: за двадцать пять раз попадутся и
+        # жетоны, и вещи, и ответ должен молчать про всё
+        await (
+            carousel_take if prize["kind"] != "car" else carousel_sell
+        )(db, one, NOW + carousel.SPIN_SECONDS)
+        await db.casino_give(1, 250, NOW)
 
 
 async def test_the_drum_waits_until_it_stops(db):
@@ -185,8 +204,8 @@ async def test_the_drum_waits_until_it_stops(db):
         with pytest.raises(CasinoError) as early:
             await take(db, one, NOW + 2)
         assert "крутится" in str(early.value)
-    # А через пять секунд — пожалуйста
-    await carousel_sell(db, one, NOW + 5)
+    # А как барабан встанет — пожалуйста
+    await carousel_sell(db, one, NOW + carousel.SPIN_SECONDS)
 
 
 async def test_one_prize_at_a_time(db):
@@ -202,6 +221,35 @@ async def test_one_prize_at_a_time(db):
     assert (await db.casino_wallet(1))["chips"] == had, "отказ не берёт денег"
 
 
+async def test_the_chips_are_taken_and_never_sold(db):
+    """Жетоны проходят тот же барабан, но их забирают, а не сдают.
+
+    Прежде жетоны начислялись прямо в ответе на ролл: лента для них не
+    крутилась вовсе, и на каждом девятом ролле барабан стоял. Теперь
+    они ждут остановки, как и всё остальное, — а вот выбора «забрать
+    или сдать» у них нет: сдавать жетоны не во что.
+    """
+    one = await gambler(db, 1, chips=5_000, credits=9_000)
+    while True:
+        await carousel_roll(db, one, NOW)
+        prize = (await carousel_view(db, one, NOW))["prize"]
+        if prize["kind"] == "chips":
+            break
+        await carousel_sell(db, one, NOW + carousel.SPIN_SECONDS)
+    had = (await db.casino_wallet(1))["chips"]
+
+    with pytest.raises(CasinoError) as sale:
+        await carousel_sell(db, one, NOW + carousel.SPIN_SECONDS)
+    assert "не сдают" in str(sale.value)
+
+    said = await carousel_take(db, one, NOW + carousel.SPIN_SECONDS)
+
+    assert str(prize["price"]) in said
+    assert (await db.casino_wallet(1))["chips"] == had + prize["price"]
+    assert await db.casino_prize(1) is None
+    assert await db.list_gear(1) == [], "жетоны в рюкзак не кладут"
+
+
 async def test_the_prize_is_given_once_and_not_twice(db):
     """Забрать и сдать один и тот же выигрыш нельзя."""
     one = await gambler(db, 1, chips=2_000, credits=9_000)
@@ -210,14 +258,14 @@ async def test_the_prize_is_given_once_and_not_twice(db):
         prize = (await carousel_view(db, one, NOW))["prize"]
         if prize and prize["kind"] == "item":
             break
-    await carousel_take(db, one, NOW + 5)
+    await carousel_take(db, one, NOW + carousel.SPIN_SECONDS)
 
     gear = await db.list_gear(1)
     assert [row.code for row in gear] == [prize["code"]]
     with pytest.raises(CasinoError):
-        await carousel_take(db, one, NOW + 5)
+        await carousel_take(db, one, NOW + carousel.SPIN_SECONDS)
     with pytest.raises(CasinoError):
-        await carousel_sell(db, one, NOW + 5)
+        await carousel_sell(db, one, NOW + carousel.SPIN_SECONDS)
     assert len(await db.list_gear(1)) == 1
 
 
@@ -231,7 +279,7 @@ async def test_the_prize_can_be_sold_for_chips_on_the_spot(db):
             break
     had = (await db.casino_wallet(1))["chips"]
 
-    said = await carousel_sell(db, one, NOW + 5)
+    said = await carousel_sell(db, one, NOW + carousel.SPIN_SECONDS)
 
     assert str(prize["sells_for"]) in said
     assert (await db.casino_wallet(1))["chips"] == had + prize["sells_for"]
@@ -247,7 +295,7 @@ async def test_the_car_goes_to_the_garage(db):
     # выдача от того, как приз попал в строку, не зависит
     await db.casino_keep_prize(1, "car", "city_sedan", 5_000, NOW)
 
-    said = await carousel_take(db, one, NOW + 5)
+    said = await carousel_take(db, one, NOW + carousel.SPIN_SECONDS)
 
     assert "Кибер" in said
     rows = await db.cars_of(1)
@@ -257,7 +305,7 @@ async def test_the_car_goes_to_the_garage(db):
     # Вторая машина в руки не влезет, и приз об этом говорит прямо
     await db.casino_keep_prize(1, "car", "iron_muscle", 20_000, NOW)
     with pytest.raises(CasinoError) as full:
-        await carousel_take(db, one, NOW + 5)
+        await carousel_take(db, one, NOW + carousel.SPIN_SECONDS)
     assert "парковку" in str(full.value)
     # И приз при этом не пропал: он всё ещё ждёт решения
     assert (await db.casino_prize(1)) is not None

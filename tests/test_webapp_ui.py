@@ -16663,6 +16663,8 @@ async def test_the_drum_stops_on_the_prize_and_stays_there(server, db):
     под меткой. Не обязательно серединой: встать можно и краешком,
     лишь бы метка попала в карточку.
     """
+    from bot.game.carousel import SPIN_SECONDS
+
     card = build_card(make_player("casino"), TOKEN, viewer_id=42)
     async with async_playwright() as pw:
         browser, page = await open_page(
@@ -16683,7 +16685,7 @@ async def test_the_drum_stops_on_the_prize_and_stays_there(server, db):
                 "kind": "car", "code": "iron_muscle",
                 "title": "Тяжёлый маслкар", "price": 20000, "image": "",
                 "sells_for": 10000, "at": spun["at"],
-                "ready": spun["at"] + 5,
+                "ready": spun["at"] + SPIN_SECONDS,
             }
             await route.fulfill(
                 status=200, content_type="application/json",
@@ -16725,6 +16727,56 @@ async def test_the_drum_stops_on_the_prize_and_stays_there(server, db):
         assert await belt_at(page) == stood, "лента поехала после остановки"
         assert await page.locator(".casino-shout").inner_text() \
             == "Тяжёлый маслкар"
+        await browser.close()
+
+
+async def test_the_drum_crawls_past_half_a_dozen_prizes_at_the_end(server, db):
+    """Хвост вращения длинный: мимо метки шагом идёт полдюжины призов.
+
+    Короткое торможение мешает игре: лента гасит скорость за полсекунды
+    и встаёт, и выигрыш появляется ниоткуда. Тут проверяется не
+    картинка, а числа торможения — сколько предметов проходит мимо
+    метки за последние секунды и сколько их остаётся под конец.
+    """
+    from bot.game.carousel import SPIN_SECONDS
+
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_lobby()
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-draw-card")
+        await page.get_by_text("Играть", exact=True).click()
+        await page.wait_for_selector(".casino-belt")
+
+        drum = await page.evaluate("""(spin) => {
+          const belt = document.querySelector('.casino-belt-run');
+          const half = belt.children.length / 2;
+          const wide =
+            belt.children[half].offsetLeft - belt.children[0].offsetLeft;
+          const step =
+            belt.children[1].offsetLeft - belt.children[0].offsetLeft;
+          const far = wide * CASINO_BELT_ROUNDS;
+          // Сколько предметов осталось пройти, когда до остановки
+          // остаётся столько-то секунд
+          const left = (tail) =>
+            far * (1 - casinoBeltEase(1 - tail / spin)) / step;
+          return {
+            rush: far * casinoBeltEase(1 / spin) / wide,
+            tail25: left(2.5), tail15: left(1.5), tail1: left(1),
+          };
+        }""", SPIN_SECONDS)
+
+        # За последние две с половиной секунды — пять-семь предметов
+        assert 5 <= drum["tail25"] <= 7, drum
+        # И к концу всё медленнее: последняя секунда — пара предметов
+        assert drum["tail15"] < drum["tail25"], drum
+        assert drum["tail1"] <= 2, drum
+        # А начинается всё рывком: за первую секунду лента сматывает
+        # больше двух полных копий товара — в полосу
+        assert drum["rush"] > 2, drum
         await browser.close()
 
 

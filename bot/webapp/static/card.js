@@ -21032,10 +21032,7 @@ function casinoBeltStep(ts) {
   if (casinoBeltSpin) {
     const run = casinoBeltSpin;
     const part = run.ms > 0 ? Math.min(1, (ts - run.start) / run.ms) : 1;
-    // Торможение кубическое: рывок с места, долгий выкат и ползком
-    // последние полсекунды — за них и видно, что лежало рядом
-    casinoBeltX = run.from
-      + (run.to - run.from) * (1 - Math.pow(1 - part, 3));
+    casinoBeltX = run.from + (run.to - run.from) * casinoBeltEase(part);
     if (part >= 1) {
       casinoBeltX = run.to;
       casinoBeltSpin = null;
@@ -21058,6 +21055,27 @@ function casinoBeltStep(ts) {
     casinoBeltShow = false;
     renderCasino(casinoData, true);
   }
+}
+
+// Как лента тормозит. Одной степенью такого не выразить: нужен и
+// рывок, в который лента сливается в полосу, и долгий выкат шагом.
+//
+// Поэтому степеней две. Пятая даёт рывок: она тает почти сразу, и за
+// первую секунду лента успевает смотать две с половиной копии товара.
+// Полуторная тает медленно и держит хвост: последние две с половиной
+// секунды мимо метки идёт полдюжины предметов, и их успеваешь
+// прочитать — ради этого всё и затевалось. Доля между ними подобрана
+// по числу предметов в хвосте, а не на глаз.
+const CASINO_EASE_RUSH = 0.85; // доля рывка
+const CASINO_EASE_HARD = 5;    // степень рывка
+const CASINO_EASE_SOFT = 1.7;  // степень выката
+
+function casinoBeltEase(part) {
+  const left = 1 - part;
+  return 1 - (
+    CASINO_EASE_RUSH * Math.pow(left, CASINO_EASE_HARD)
+    + (1 - CASINO_EASE_RUSH) * Math.pow(left, CASINO_EASE_SOFT)
+  );
 }
 
 // Куда и как долго ехать. Считается от приза: он известен до первого
@@ -21153,8 +21171,10 @@ function casinoPrizeBox(draw) {
 
   const sums = document.createElement("div");
   sums.className = "casino-sums";
-  sums.textContent = "Цена в лавке " + prize.price
-    + " 💰 · сдача " + prize.sells_for + " жетонов";
+  sums.textContent = prize.kind === "chips"
+    ? "Прямо на счёт, сдавать нечего"
+    : "Цена в лавке " + prize.price
+      + " 💰 · сдача " + prize.sells_for + " жетонов";
   box.appendChild(sums);
   return box;
 }
@@ -21166,13 +21186,17 @@ function casinoDrawActions(draw) {
   const spinning = casinoDrawSpinning(draw);
 
   if (prize && !spinning) {
-    row.appendChild(button("Забрать себе", {
+    const chips = prize.kind === "chips";
+    row.appendChild(button(chips ? "Забрать жетоны" : "Забрать себе", {
       onClick: () => casinoAct({ action: "take" }),
     }));
-    row.appendChild(button("Сдать за " + prize.sells_for, {
-      secondary: true,
-      onClick: () => casinoAct({ action: "sell" }),
-    }));
+    // Жетоны не сдают: они и так жетоны
+    if (!chips) {
+      row.appendChild(button("Сдать за " + prize.sells_for, {
+        secondary: true,
+        onClick: () => casinoAct({ action: "sell" }),
+      }));
+    }
   } else {
     row.appendChild(button("Ролл за " + (draw.price || 250), {
       disabled: spinning || draw.open === false,

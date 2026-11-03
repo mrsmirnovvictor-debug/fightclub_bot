@@ -1580,16 +1580,15 @@ async def carousel_roll(
             f"а на руках {purse['chips']}."
         )
     prize = carousel.draw(random.Random())
-    if prize.kind == "chips":
-        # Жетоны не забирают и не сдают: они и так жетоны
-        await db.casino_give(player.user_id, prize.price, moment)
-        return f"{prize.title} — начислено."
     if not await db.casino_keep_prize(
         player.user_id, prize.kind, prize.code, prize.price, moment
     ):  # pragma: no cover - два вращения разом
         await db.casino_give(player.user_id, carousel.ROLL_PRICE, moment)
         raise CasinoError("Сначала забери или сдай прошлый выигрыш.")
-    return f"Выпало: {prize.title}."
+    # Что выпало — ни слова. Приз решён, он уже в строке, и экран ведёт
+    # к нему ленту, но назвать его тут значило бы напечатать ответ над
+    # крутящимся барабаном. Вся игра в эти семь секунд
+    return "Барабан пошёл."
 
 
 async def carousel_take(
@@ -1601,6 +1600,15 @@ async def carousel_take(
     found = carousel.by_code(str(prize["code"]))
     if found is None:  # pragma: no cover - приз исчез из каталога
         raise CasinoError("Такого приза больше нет. Сдай его в кассу.")
+    if found.kind == "chips":
+        # Жетоны не кладут в рюкзак: их начисляют. Барабан при этом
+        # крутится и за них — иначе на каждом девятом ролле лента
+        # стояла бы, а жетоны падали на счёт сами собой
+        said = f"{found.price} жетонов — на счету."
+        if not await db.casino_drop_prize(player.user_id):
+            raise CasinoError("Этот выигрыш уже разобран.")
+        await db.casino_give(player.user_id, found.price, moment)
+        return said
     if found.kind == "car":
         from bot.car_service import CarError, win_car
 
@@ -1626,6 +1634,8 @@ async def carousel_sell(
     moment = now_ts() if now is None else now
     prize = await _ready_prize(db, player, moment)
     found = carousel.by_code(str(prize["code"]))
+    if found is not None and found.kind == "chips":
+        raise CasinoError("Жетоны не сдают — их забирают.")
     paid = found.sells_for if found else int(prize["price"]) // 2
     if not await db.casino_drop_prize(player.user_id):
         raise CasinoError("Этот выигрыш уже разобран.")
