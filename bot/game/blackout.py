@@ -204,6 +204,24 @@ def eye_flipped(room: str) -> bool:
     return room in EYE_FLIP
 
 
+# На какой стене стоит ход, если стену решили глазами, а не углом.
+#
+# Нужна эта таблица двум случаям. Ход на другой этаж направления не
+# имеет вовсе — координаты соседнего плана лежат в своей системе, — и
+# стену ему назначают по кадру. А на своём этаже бывает ничья: две
+# двери просятся на одну стену с одинаковым поворотом, и раскладку
+# выбирает уже не угол, а то, что нарисовано.
+#
+# Ключ — откуда и куда, сторона — по плану той комнаты, из которой
+# смотрят. Обратный ход пишется отдельной строкой: он своя дверь и
+# стена у него своя.
+DOOR_SIDES: dict[tuple[str, str], str] = {
+    # Вход в главный корпус: с площадки он южный, из вестибюля западный
+    ("O10", "F101"): "south",
+    ("F101", "O10"): "west",
+}
+
+
 def eye_urls(
     room: str, facing: str, flags: Iterable[str] = ()
 ) -> tuple[str, ...]:
@@ -631,12 +649,13 @@ def doorways(room: str) -> dict[str, str]:
         # те же координаты на своём этаже. Лестница просилась на ту же
         # южную стену, что и настоящая дверь, и одна из них уезжала на
         # чужую стену
+        pin = DOOR_SIDES.get((room, there))
         if neighbour.layer != here.layer:
-            doors.append((there, None, _drawn_side(room, there)))
+            doors.append((there, None, pin or _drawn_side(room, there)))
             continue
         dx, dy = neighbour.x - here.x, neighbour.y - here.y
         angle = None if not dx and not dy else math.atan2(dy, dx)
-        doors.append((there, angle, ""))
+        doors.append((there, angle, pin or ""))
     if not doors:
         return {}
 
@@ -1473,6 +1492,7 @@ __all__ = [
     "ITEM_ART",
     "ITEM_SHAPES",
     "ITEM_TITLES",
+    "DOOR_SIDES",
     "DRAWN_EYES",
     "EYE_FLIP",
     "EYE_SIDES_SHORT",

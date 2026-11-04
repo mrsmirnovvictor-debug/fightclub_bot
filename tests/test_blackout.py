@@ -2290,6 +2290,49 @@ def test_the_arrangements_settle_the_quarrel_with_the_plan():
     assert crowded() == [], "дверь встала не на свою стену"
 
 
+def test_the_doors_told_by_eye_stand_where_they_were_told():
+    """Стены, решённые глазами, стоят там, где решили.
+
+    Ход на другой этаж направления не имеет вовсе, а на своём этаже
+    бывает ничья: две двери просятся на одну стену с одинаковым
+    поворотом. И то и другое решает `DOOR_SIDES` — по кадру, а не по
+    углу.
+    """
+    from bot.game.blackout import DOOR_SIDES, doorways
+
+    for (room, there), side in DOOR_SIDES.items():
+        assert doorways(room).get(side) == there, (room, there, side)
+
+    # Вход в главный корпус: с площадки южный, из вестибюля западный
+    assert doorways("O10")["south"] == "F101"
+    assert doorways("F101")["west"] == "O10"
+    # А дверь в F205 осталась на западной стене моста, хотя новый ход
+    # в F202 просился туда же
+    assert doorways("F204")["west"] == "F205"
+
+
+def test_the_second_floor_is_a_grid_and_the_bridge_lies_diagonally():
+    """Сервисный мост лежит наискось от стеллажного коридора.
+
+    Записано потому, что обход попросил ход «с F202 на юг в F204», а
+    прямо на юг от F202 лежит F205. Ход в F204 был бы диагональным, а
+    диагоналей на станции нет намеренно: игрок ходит джойстиком на
+    четыре стороны, и такой двери в первом лице некуда встать
+    (`test_no_door_goes_diagonally`).
+    """
+    from bot.game.blackout import station
+
+    place = station()
+    here = place.room("F202")
+    south = place.room("F205")
+    bridge = place.room("F204")
+    assert (south.x, south.y) == (here.x, here.y + 300), "F205 прямо на юге"
+    assert bridge.x != here.x and bridge.y != here.y, "F204 наискось"
+    assert place.door_between("F202", "F204") is None, (
+        "диагональный ход так и не заведён — ждёт решения"
+    )
+
+
 def test_the_mirrored_rooms_are_named_and_only_they():
     """Зеркальные комнаты названы поимённо, прочие не отражаются."""
     from bot.game.blackout import EYE_FLIP, EYE_SIDES_SHORT, eye_flipped, station

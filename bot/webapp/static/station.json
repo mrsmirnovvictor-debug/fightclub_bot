@@ -376,7 +376,7 @@
           "name": "Погрузочная зона",
           "stair": false
         },
-        "east": {
+        "south": {
           "to": "F101",
           "name": "Вестибюль",
           "stair": true
@@ -395,7 +395,7 @@
           "name": "Раздевалка",
           "stair": false
         },
-        "south": {
+        "west": {
           "to": "O10",
           "name": "Вход в главный корпус",
           "stair": true
