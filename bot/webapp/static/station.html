@@ -14,10 +14,16 @@
   спорить не с чем: надо запомнить, на сколько четвертей кадры этой
   комнаты повёрнуты относительно плана. Это число и собирается тут.
 
-  Поворот k — «кадры комнаты повёрнуты на k четвертей по часовой
-  стрелке относительно плана». Кадр, показывающий сторону D, назван
-  FACINGS[(idx(D) - k) % 4]. Пример: по плану из F303 ход в F304 южный,
-  а художник нарисовал F304 на северном кадре — значит у F303 k = 2.
+  Разметка комнаты — это расстановка: какой файл показывать за каждой
+  стороной света. `sides.north = "west"` читается «за северной стеной
+  показывать файл west». Пример: по плану из F303 ход в F304 южный, а
+  художник нарисовал F304 на северном кадре — значит за южной стеной
+  F303 надо показывать файл north.
+
+  Расстановка свободная, не только поворот. Поворот — её частный
+  случай, когда все четыре съехали на одно и то же число четвертей, и
+  для него есть кнопки; но художник мог и просто перепутать два имени
+  местами, а это поворотом не чинится.
 
   Карта берётся из station.json, который собран из той же функции
   doorways, по которой ходит игра (scripts/station_walk.py). Зомби,
@@ -68,6 +74,11 @@
   .four .eye { aspect-ratio: 1 / 1; cursor: pointer; }
   .four .eye.now { outline: 2px solid var(--mark); }
   .four .cap { font-size: 12px; color: var(--dim); margin-top: 4px; min-height: 32px; }
+  .four .pick {
+    font: 12px inherit; width: 100%; margin-top: 4px; color: var(--ink);
+    background: #0f1320; border: 1px solid var(--line); border-radius: 6px;
+    padding: 4px 6px;
+  }
   .four .cap b { color: var(--ink); }
   @media (max-width: 560px) { .four { grid-template-columns: repeat(2, 1fr); } }
 
@@ -85,7 +96,10 @@
   button:hover { background: #313c58; }
   button.on { background: var(--mark); color: #1b1200; border-color: var(--mark); }
   button:disabled { opacity: 0.4; cursor: default; }
-  .turn-now { font-size: 22px; font-weight: 700; color: var(--mark); min-width: 2.2em; text-align: center; }
+  .turn-now {
+    font-size: 14px; font-weight: 700; color: var(--mark);
+    margin: 8px 0 0; text-align: center;
+  }
   input[type=text] {
     font: inherit; width: 100%; color: var(--ink); background: #0f1320;
     border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px;
@@ -128,18 +142,27 @@
 
   <aside>
     <div class="panel">
-      <h2>Поворот кадров этой комнаты</h2>
+      <h2>Стороны этой комнаты</h2>
       <div class="row">
-        <button id="turn-left">⟲ влево</button>
-        <span class="turn-now" id="turn-now">0</span>
-        <button id="turn-right">вправо ⟳</button>
+        <button id="turn-left" title="все четыре против часовой">⟲ против</button>
+        <button id="turn-right" title="все четыре по часовой">по часовой ⟳</button>
+      </div>
+      <div class="turn-now" id="turn-now">—</div>
+      <div class="row" style="margin-top:8px">
+        <button id="swap-ns">север ↔ юг</button>
+        <button id="swap-ew">восток ↔ запад</button>
       </div>
       <div class="row" style="margin-top:8px">
         <button id="flip">зеркало</button>
         <button id="reset">сбросить</button>
+        <button id="all" title="та же расстановка всем комнатам станции">
+          всем комнатам
+        </button>
       </div>
       <div class="keys" style="margin-top:8px">
-        Крути, пока подпись под каждым кадром не совпадёт с тем, что на нём видно.
+        Крути или меняй местами, пока подпись под каждым кадром не совпадёт
+        с тем, что на нём видно. Любые две стороны меняются выбором под
+        кадром.
       </div>
     </div>
 
@@ -189,7 +212,7 @@ const KEY = "station-turns";
 let carte = null;       // station.json
 let at = "";            // где стоим
 let look = 0;           // куда смотрим: индекс в SIDES
-let marks = {};         // {комната: {turn, flip, note}}
+let marks = {};         // {комната: {sides, flip, note}}
 let floor = "";         // какой этаж показан на карте
 
 // ---------- память ----------
@@ -200,16 +223,41 @@ function load() {
   } catch (error) {
     marks = {};
   }
+  // Первая разметка писала одно число — поворот. Расстановка его
+  // вмещает, и терять чужую работу из-за смены записи незачем
+  Object.entries(marks).forEach(([room, row]) => {
+    if (row && !row.sides && typeof row.turn === "number") {
+      row.sides = spun(plainSides(), row.turn);
+      delete row.turn;
+    }
+  });
+}
+
+// Расстановка по умолчанию: каждая сторона показывает одноимённый файл
+function plainSides() {
+  const out = {};
+  SIDES.forEach((one) => { out[one] = one; });
+  return out;
+}
+
+function samePlain(sides) {
+  return SIDES.every((one) => sides[one] === one);
 }
 
 function mark(room) {
-  return marks[room] || { turn: 0, flip: false, note: "" };
+  const row = marks[room];
+  if (!row) return { sides: plainSides(), flip: false, note: "" };
+  return {
+    sides: Object.assign(plainSides(), row.sides),
+    flip: !!row.flip,
+    note: row.note || "",
+  };
 }
 
 function keep(room, change) {
   const was = mark(room);
   const now = Object.assign({}, was, change);
-  if (!now.turn && !now.flip && !now.note) delete marks[room];
+  if (samePlain(now.sides) && !now.flip && !now.note) delete marks[room];
   else marks[room] = now;
   try {
     localStorage.setItem(KEY, JSON.stringify(marks));
@@ -230,11 +278,56 @@ function say(words) {
 
 // ---------- кадры ----------
 
-// Какой файл показывает эту сторону света. Поворот k значит, что кадры
-// комнаты повёрнуты на k четвертей по часовой стрелке относительно
-// плана, поэтому имя файла отстаёт от стороны ровно на k
-function fileFor(side, turn) {
-  return SIDES[(SIDES.indexOf(side) - turn + 8) % 4];
+// Какой файл показывать за этой стеной. Прямо из расстановки: она и
+// есть ответ, а поворот — лишь удобный способ её задать
+function fileFor(side, sides) {
+  return sides[side] || side;
+}
+
+// ---------- как расстановку менять ----------
+
+// Повернуть все четыре разом. По часовой — каждый кадр переезжает на
+// следующую стену по часовой стрелке, значит стена берёт кадр у
+// предыдущей
+function spun(sides, step) {
+  const out = {};
+  SIDES.forEach((one, index) => {
+    out[one] = sides[SIDES[(index - step + 8) % 4]];
+  });
+  return out;
+}
+
+// Поменять два кадра местами. Расстановка остаётся расстановкой:
+// кадр у каждой стены ровно один
+function swapped(sides, here, there) {
+  const out = Object.assign({}, sides);
+  out[here] = sides[there];
+  out[there] = sides[here];
+  return out;
+}
+
+// На сколько четвертей это повёрнуто, если это вообще поворот
+function turnOf(sides) {
+  for (let step = 0; step < 4; step += 1) {
+    if (SIDES.every((one, index) =>
+      sides[one] === SIDES[(index - step + 8) % 4]
+    )) return step;
+  }
+  return null;
+}
+
+// Словами: «⟳ 1 четверть» или «север ↔ юг», или просто расстановка
+function sidesWords(sides) {
+  const step = turnOf(sides);
+  if (step === 0) return "как нарисовано";
+  if (step !== null) return "⟳ " + step + " из 4";
+  const moved = SIDES.filter((one) => sides[one] !== one);
+  if (moved.length === 2) {
+    return SIDE_RU[moved[0]] + " ↔ " + SIDE_RU[moved[1]];
+  }
+  return SIDES.map((one) =>
+    SIDE_RU[one][0].toUpperCase() + "←" + SIDE_RU[sides[one]][0]
+  ).join(" ");
 }
 
 // Адреса, которые стоит попробовать: сперва нужная ступень, потом
@@ -242,7 +335,7 @@ function fileFor(side, turn) {
 function urlsFor(room, side) {
   const row = carte.rooms[room];
   if (!row) return [];
-  const name = fileFor(side, mark(room).turn);
+  const name = fileFor(side, mark(room).sides);
   const stage = (row.stages || {})[name];
   const folders = stage ? [stage + "/", ""] : [""];
   const out = [];
@@ -268,7 +361,7 @@ function eyeBox(box, room, side) {
     box.textContent = "";
     const none = document.createElement("div");
     none.className = "none";
-    none.textContent = "кадра нет · " + fileFor(side, mark(room).turn);
+    none.textContent = "кадра нет · " + fileFor(side, mark(room).sides);
     box.appendChild(none);
   };
   pic.src = tries[0];
@@ -322,7 +415,25 @@ function paint() {
     cap.className = "cap";
     cap.innerHTML = "<b>" + SIDE_RU[one] + "</b> ("
       + AHEAD[(index - look + 8) % 4] + ")<br>" + wallWords(at, one);
-    cell.append(box, cap);
+
+    // Чем закрыта эта стена. Выбрал чужой кадр — они поменялись
+    // местами: расстановка остаётся расстановкой
+    const pick = document.createElement("select");
+    pick.className = "pick";
+    SIDES.forEach((name) => {
+      const choice = document.createElement("option");
+      choice.value = name;
+      choice.textContent = "кадр " + name;
+      pick.appendChild(choice);
+    });
+    pick.value = mark(at).sides[one];
+    pick.onchange = (event) => {
+      const want = event.target.value;
+      const sides = mark(at).sides;
+      const holder = SIDES.find((side) => sides[side] === want);
+      keep(at, { sides: swapped(sides, one, holder) });
+    };
+    cell.append(box, cap, pick);
     four.appendChild(cell);
   });
 
@@ -338,7 +449,7 @@ function paint() {
   });
 
   const mine = mark(at);
-  document.getElementById("turn-now").textContent = mine.turn;
+  document.getElementById("turn-now").textContent = sidesWords(mine.sides);
   document.getElementById("flip").classList.toggle("on", !!mine.flip);
   const note = document.getElementById("note");
   if (note !== document.activeElement) note.value = mine.note || "";
@@ -456,8 +567,8 @@ document.addEventListener("keydown", (event) => {
     arrowdown: () => step(true), s: () => step(true), "ы": () => step(true),
     arrowleft: () => spin(-1), a: () => spin(-1), "ф": () => spin(-1),
     arrowright: () => spin(1), d: () => spin(1), "в": () => spin(1),
-    "[": () => keep(at, { turn: (mark(at).turn + 3) % 4 }),
-    "]": () => keep(at, { turn: (mark(at).turn + 1) % 4 }),
+    "[": () => keep(at, { sides: spun(mark(at).sides, -1) }),
+    "]": () => keep(at, { sides: spun(mark(at).sides, 1) }),
     m: () => keep(at, { flip: !mark(at).flip }),
     "ь": () => keep(at, { flip: !mark(at).flip }),
   }[code];
@@ -470,13 +581,29 @@ document.addEventListener("keydown", (event) => {
 
 function wire() {
   document.getElementById("turn-left").onclick =
-    () => keep(at, { turn: (mark(at).turn + 3) % 4 });
+    () => keep(at, { sides: spun(mark(at).sides, -1) });
   document.getElementById("turn-right").onclick =
-    () => keep(at, { turn: (mark(at).turn + 1) % 4 });
+    () => keep(at, { sides: spun(mark(at).sides, 1) });
+  document.getElementById("swap-ns").onclick =
+    () => keep(at, { sides: swapped(mark(at).sides, "north", "south") });
+  document.getElementById("swap-ew").onclick =
+    () => keep(at, { sides: swapped(mark(at).sides, "east", "west") });
   document.getElementById("flip").onclick =
     () => keep(at, { flip: !mark(at).flip });
   document.getElementById("reset").onclick =
-    () => keep(at, { turn: 0, flip: false, note: "" });
+    () => keep(at, { sides: plainSides(), flip: false, note: "" });
+  document.getElementById("all").onclick = () => {
+    const mine = mark(at);
+    const words = sidesWords(mine.sides);
+    if (!confirm(
+      "Поставить «" + words + "» всем комнатам станции? "
+      + "Заметки останутся, расстановка у всех станет этой."
+    )) return;
+    carte.order.forEach((code) => {
+      keep(code, { sides: Object.assign({}, mine.sides) });
+    });
+    say("расставлено всем");
+  };
   document.getElementById("note").oninput = (event) => {
     keep(at, { note: event.target.value.trim() });
   };

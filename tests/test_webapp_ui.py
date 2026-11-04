@@ -17001,13 +17001,12 @@ async def test_the_walker_opens_the_station_and_walks_it(server):
 
 
 async def test_the_walker_turns_the_frames_and_remembers_it(server):
-    """Поворот меняет, какой файл показан за эту сторону, и переживает
-    перезагрузку.
+    """Поворот всех четырёх разом и память о нём.
 
-    Поворот k значит «кадры комнаты повёрнуты на k четвертей по часовой
-    стрелке относительно плана»: кадр стороны D лежит в файле на k
-    имён назад. Проверяется именно это соответствие — на нём держится
-    весь смысл обхода.
+    Расстановка `sides[D] = f` читается «за стеной D показывать файл
+    f». Поворот по часовой переносит каждый кадр на следующую стену по
+    часовой стрелке — значит стена берёт кадр у предыдущей. На этом
+    соответствии держится весь смысл обхода, его и проверяем.
     """
     async with async_playwright() as pw:
         browser, page = await open_walker(pw, server)
@@ -17016,9 +17015,10 @@ async def test_the_walker_turns_the_frames_and_remembers_it(server):
         # Кадров в тесте нет, и страница пишет имя файла, которого ждёт
         said = await page.locator("#eye-big .none").inner_text()
         assert said.endswith("north"), said
+        assert await page.locator("#turn-now").inner_text() == "как нарисовано"
 
         await page.locator("#turn-right").click()
-        assert await page.locator("#turn-now").inner_text() == "1"
+        assert await page.locator("#turn-now").inner_text() == "⟳ 1 из 4"
         said = await page.locator("#eye-big .none").inner_text()
         assert said.endswith("west"), "смотрим на север, а кадр взят западный"
 
@@ -17026,14 +17026,90 @@ async def test_the_walker_turns_the_frames_and_remembers_it(server):
         assert "on" in (await page.locator("#flip").get_attribute("class"))
         assert "flip" in (await page.locator("#eye-big").get_attribute("class"))
 
-        # Перезагрузка: повороты лежат в памяти браузера
+        # Перезагрузка: расстановка лежит в памяти браузера
         await page.reload()
         await page.wait_for_selector(".four .eye")
-        assert await page.locator("#turn-now").inner_text() == "1"
+        assert await page.locator("#turn-now").inner_text() == "⟳ 1 из 4"
         kept = json.loads(await page.locator("#out").input_value())
-        assert kept[here] == {"turn": 1, "flip": True, "note": ""}
+        assert kept[here] == {
+            "sides": {
+                "north": "west", "east": "north",
+                "south": "east", "west": "south",
+            },
+            "flip": True,
+            "note": "",
+        }
 
-        # Сброс убирает комнату из итога целиком: ноль — это не разметка
-        await page.locator("#reset").click()
+        # Против часовой возвращает как было, и комната уходит из итога
+        await page.locator("#turn-left").click()
+        await page.locator("#flip").click()
         assert json.loads(await page.locator("#out").input_value()) == {}
+        await browser.close()
+
+
+async def test_the_walker_swaps_any_two_sides(server):
+    """Любые две стороны меняются местами, и это не поворот.
+
+    Поворотом чинится только ровный съезд всех четырёх. Художник мог
+    просто перепутать два имени — север с югом, — и такую комнату
+    никаким поворотом не выправить: из четырёх сторон совпали бы две.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+        here = (await page.locator("#where").inner_text()).split(" ")[0]
+
+        await page.locator("#swap-ns").click()
+
+        assert await page.locator("#turn-now").inner_text() == "север ↔ юг"
+        said = await page.locator("#eye-big .none").inner_text()
+        assert said.endswith("south"), "за северной стеной теперь южный кадр"
+        kept = json.loads(await page.locator("#out").input_value())
+        assert kept[here]["sides"] == {
+            "north": "south", "east": "east",
+            "south": "north", "west": "west",
+        }
+
+        # И выбором под кадром — любые две, не только пара напротив
+        await page.locator("#reset").click()
+        await page.locator(".four .pick").first.select_option("east")
+        kept = json.loads(await page.locator("#out").input_value())
+        assert kept[here]["sides"] == {
+            "north": "east", "east": "north",
+            "south": "south", "west": "west",
+        }, "кадры поменялись местами, а не затёрли друг друга"
+        await browser.close()
+
+
+async def test_the_walker_can_set_one_arrangement_for_the_whole_station(
+    server,
+):
+    """Расстановку можно разом поставить всем комнатам станции.
+
+    Если художник вёл всю станцию в своей системе координат, крутить
+    шестьдесят четыре комнаты по одной незачем: ставится всем, а
+    несогласные правятся руками.
+    """
+    import json as js
+    from pathlib import Path
+
+    carte = js.loads(
+        (Path(__file__).resolve().parent.parent / "bot" / "webapp"
+         / "static" / "station.json").read_text(encoding="utf-8")
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+        page.on("dialog", lambda one: asyncio.ensure_future(one.accept()))
+
+        await page.locator("#turn-right").click()
+        await page.locator("#all").click()
+        await page.wait_for_function(
+            "() => Object.keys(JSON.parse("
+            "document.getElementById('out').value)).length > 1"
+        )
+
+        kept = json.loads(await page.locator("#out").input_value())
+        assert len(kept) == len(carte["rooms"])
+        assert all(
+            one["sides"]["north"] == "west" for one in kept.values()
+        ), "не всем досталась одна расстановка"
         await browser.close()
