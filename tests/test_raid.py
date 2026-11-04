@@ -461,7 +461,7 @@ async def test_without_a_pass_the_cellar_does_not_open(bot, db):
     service = make_service(bot, db)
     player = (await fill(db, 1, passes=0))[0]
 
-    with pytest.raises(RaidError, match="Рейд-пасс"):
+    with pytest.raises(RaidError, match="Билет в казино"):
         await service.open_raid(CHAT_ID, THREAD_ID, player)
     assert service.lobby_of_user(player.user_id) is None
 

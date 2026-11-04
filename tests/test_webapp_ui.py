@@ -922,7 +922,8 @@ EMPTY_RAID = {
     "raid": None, "lobby": None, "lobbies": [], "boss": BOSS_CARD,
     "roster": [BOSS_CARD],
     "gate": {
-        "pass_code": "raid_pass", "pass_title": "Рейд-пасс", "pass_price": 10,
+        "pass_code": "raid_pass", "pass_title": "Билет в казино",
+        "pass_price": 10,
         "pass_emoji": "🎟", "passes": 2, "schedule": "0–2, 8–10, 12–14, 16–18, 20–22 мск",
         "open": True, "window": "с 20:00 до 22:00 мск",
         "next_window": "с 00:00 до 02:00 мск", "won": False, "spent": False,
@@ -1204,13 +1205,20 @@ async def test_the_clothes_shop_holds_everything_but_weapons(shop_page):
 
 
 async def test_the_weapon_shop_holds_only_what_you_hold(weapon_page):
-    """У оружейника две полки: оружие и щиты."""
+    """У оружейника три полки: оружие, щиты и билеты на рейды.
+
+    Билеты не пьют, их предъявляют на входе — и стоят они тут, а не в
+    аптеке, куда попали когда-то за компанию со склянками.
+    """
     heads = await shelves(weapon_page)
-    assert [head.split("\n")[0] for head in heads] == ["Оружие", "Щиты"]
+    assert [head.split("\n")[0] for head in heads] == [
+        "Оружие", "Щиты", "Билеты"
+    ]
 
     titles = await visible_titles(weapon_page)
     assert "Кастет" in titles  # открыто по уровню
     assert "Бита" not in titles  # закрыто, лежит под кнопкой
+    assert "Билет в казино" in titles
 
 
 async def test_the_fan_shop_shows_its_own_line(fan_page):
@@ -4041,7 +4049,7 @@ async def test_an_empty_cellar_asks_for_a_pass(server):
 
         body = await page.locator("#raid-body").inner_text()
         assert "Открыто с 20:00 до 22:00 мск" in body
-        assert "Рейд-пасс, в инвентаре: 2 шт." in body
+        assert "Билет в казино, в инвентаре: 2 шт." in body
         assert await page.locator("#raid-size").count() == 0
 
         async def catch(route):
@@ -4062,7 +4070,7 @@ async def test_an_empty_cellar_asks_for_a_pass(server):
         await page.locator("#raid-open").click()
         await page.wait_for_timeout(200)
         assert sent == []
-        assert "Вы используете Рейд-пасс из инвентаря" in asked[0]
+        assert "Вы используете Билет в казино из инвентаря" in asked[0]
         assert "Останется: 1" in asked[0]
 
         page.remove_listener("dialog", on_dialog)
@@ -4096,7 +4104,7 @@ async def test_an_empty_pocket_offers_to_buy_a_pass(server):
         await page.locator("#raid-open").click()
         await page.wait_for_selector("#raid-go")
 
-        assert "Купить Рейд-пасс за 10 кредитов и войти?" in asked[0]
+        assert "Купить Билет в казино за 10 кредитов и войти?" in asked[0]
         assert sent == [{"action": "open", "buy": True}]
         await browser.close()
 
@@ -7470,7 +7478,7 @@ async def test_a_cell_tells_what_lies_in_it(server):
         # второй день — будни: там лежит рейд-пасс
         await page.locator("#daily-ladder .gift").nth(1).click()
         said = await page.locator("#daily-pick").inner_text()
-        assert "2-й день" in said and "Рейд-пасс" in said
+        assert "2-й день" in said and "Билет в казино" in said
 
         # последний день месяца — заточка
         await page.locator("#daily-ladder .gift").nth(29).click()
@@ -7537,7 +7545,7 @@ async def test_the_pass_lies_in_the_bag_as_a_ticket(server):
         await page.wait_for_selector("#potion-list .thing-pic.ticket")
 
         box = page.locator("#potion-list .thing").first
-        assert "Рейд-пасс" in await box.inner_text()
+        assert "Билет в казино" in await box.inner_text()
         shape = await box.locator(".thing-pic").evaluate(
             "(one) => { const css = getComputedStyle(one); return {"
             " ratio: one.offsetWidth / one.offsetHeight,"
@@ -7553,6 +7561,73 @@ async def test_the_pass_lies_in_the_bag_as_a_ticket(server):
         # А склянка как лежала квадратом, так и лежит
         jar = page.locator("#potion-list .thing").nth(1).locator(".thing-pic")
         assert await jar.evaluate("(one) => one.offsetWidth / one.offsetHeight") == 1
+        await browser.close()
+
+
+async def test_the_ticket_card_does_not_lie_on_its_own_text(server):
+    """Билет не наползает на описание: у него своя раскладка карточки.
+
+    Клетка под картинку — 104 точки и жёсткая. Билет вдвое шире своей
+    высоты, и, растянутый до своей ширины, он залезал во вторую
+    колонку прямо поверх слов. Поэтому у билета картинка сверху во всю
+    ширину, а текст под ней.
+    """
+    from bot.game.potions import RAID_PASS
+
+    player = make_player()
+    player.potions = {RAID_PASS: 1, "heal_small": 1}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-bag").click()
+        await page.wait_for_selector("#bag:not(.hidden)")
+        await page.wait_for_selector("#potion-list .thing.ticket")
+
+        over = await page.evaluate("""() => {
+          const card = document.querySelector('#potion-list .thing.ticket');
+          const pic = card.querySelector('.thing-pic').getBoundingClientRect();
+          const body = card.querySelector('.thing-body').getBoundingClientRect();
+          return { gap: body.top - pic.bottom, wide: pic.width > 200 };
+        }""")
+        assert over["gap"] >= 0, "картинка лежит на тексте"
+        assert over["wide"], "билет показан во всю ширину карточки"
+
+        # И описание короткое: про рейд, и больше ничего
+        said = await page.locator("#potion-list .thing.ticket").first.inner_text()
+        assert "Билет позволит вам участвовать в рейде" in said
+        assert "печатью" not in said and "талон" not in said
+        await browser.close()
+
+
+async def test_the_daily_grid_shows_the_whole_ticket(server):
+    """В календаре билет виден целиком, а не вырезанной серединой."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), images=True
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        await page.wait_for_selector(".gift-pic")
+
+        fits = await page.evaluate(
+            "() => [...document.querySelectorAll('.gift-pic.wide')]"
+            ".map((one) => getComputedStyle(one).objectFit)"
+        )
+        assert fits, "ни одного билета в календаре"
+        assert set(fits) == {"contain"}, fits
+        # А у обычных подарков клетка по-прежнему закрыта картинкой
+        rest = await page.evaluate(
+            "() => [...document.querySelectorAll('.gift-pic:not(.wide)')]"
+            ".map((one) => getComputedStyle(one).objectFit)"
+        )
+        assert set(rest) <= {"cover"}, rest
         await browser.close()
 
 

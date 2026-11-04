@@ -512,8 +512,8 @@ class RaidService:
         ticket = get_potion(kind.pass_code)
         if player.potion_count(kind.pass_code) <= 0 and not buy:
             raise RaidError(
-                f"Нужен {ticket.title}: он лежит в лавке клуба, "
-                f"раздел «Прочее», за {ticket.price} 💰."
+                f"Нужен {ticket.title}: он лежит у оружейника, "
+                f"раздел «Билеты», за {ticket.price} 💰."
             )
         # Окно занимаем до оплаты и атомарно: два нажатия подряд не спишут
         # два пропуска, а не срослось — отпустим обратно

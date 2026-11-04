@@ -693,7 +693,7 @@ async def test_without_a_pass_the_base_sends_you_to_the_shop(db, bot):
     service = make_service(db, bot)
     player = (await soldier_hunters(db, 1, passes=False))[0]
 
-    with pytest.raises(RaidError, match="Пропуск на полигон"):
+    with pytest.raises(RaidError, match="Билет в военную часть"):
         await service.open_raid(
             CHAT_ID, THREAD_ID, player, MILITARY_RAID, chat_title="Клуб"
         )
@@ -764,7 +764,7 @@ async def test_the_raid_screen_shows_the_base_with_its_pass(db, bot):
     assert row["foes"] == 10 and row["min_party"] == 1
     assert row["purse"] == MILITARY_PURSE
     assert gate["pass_code"] == BASE_PASS
-    assert gate["pass_title"] == "Пропуск на полигон"
+    assert gate["pass_title"] == "Билет в военную часть"
     assert gate["pass_price"] == 40 and gate["passes"] == 1
     assert gate["can_afford"] is True, "пятисот хватает на сорок"
     assert gate["schedule"] == (

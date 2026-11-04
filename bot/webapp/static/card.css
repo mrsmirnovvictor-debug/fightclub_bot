@@ -1047,18 +1047,24 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-size: 22px;
 }
 /* Пропуск — билет: 1200 на 600, прозрачный фон, название рейда и
-   отрывная часть. Клетка вдвое шире своей высоты, картинка влезает
-   целиком, а рамки и заливки у неё нет: за прозрачным фоном билета
-   виднелась бы серая плитка, и корешок переставал быть корешком */
-.thing-pic.ticket {
-  width: 150px;
+   отрывная часть. В колонку под картинку он не влезает — она 104
+   точки и жёсткая, — и, растянутый до своей ширины, наползал на
+   текст. Поэтому у билета своя раскладка: картинка сверху во всю
+   ширину карточки, текст под ней.
+
+   Рамки и заливки у клетки нет: за прозрачным фоном билета виднелась
+   бы серая плитка, и корешок переставал быть корешком */
+.thing.ticket { grid-template-columns: minmax(0, 1fr); }
+.thing.ticket .thing-pic {
+  width: 100%;
+  max-width: 340px;
   height: auto;
   aspect-ratio: 2 / 1;
-  align-self: center;
+  margin: 0 auto;
   border-color: transparent;
   background: transparent;
 }
-.thing-pic.ticket img { object-fit: contain; }
+.thing.ticket .thing-pic img { object-fit: contain; }
 .thing-body { min-width: 0; }
 .thing-title { font-weight: 700; }
 .thing-kind { color: var(--muted); font-size: 12.5px; margin-top: 1px; }
@@ -3590,6 +3596,10 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   object-fit: cover;
   border-radius: inherit;
 }
+/* Билет вдвое шире своей высоты: кроя им квадратную клетку, мы срезали
+   и название рейда, и отрывную часть — три билета делались неразличимы.
+   Такую картинку вписываем целиком, с полями сверху и снизу */
+.gift-pic.wide { object-fit: contain; padding: 2px; }
 .gift.has-pic .gift-icon { display: none; }
 
 /* Зелёная галочка в углу — по ней видно, что за день уже забрано */

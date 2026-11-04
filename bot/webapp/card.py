@@ -58,6 +58,9 @@ from bot.game.pro import PRO_BADGE, current_offer
 from bot.game.potions import (
     POTIONS,
     effects_bonus,
+    PASS_CODE,
+    PASS_EMOJI,
+    PASS_TITLE,
     SECTION_CODE,
     SECTION_EMOJI,
     SECTION_TITLE,
@@ -597,15 +600,38 @@ def potion_payload(
 
 
 def potions_section(player: Player, service: Service | None = None) -> dict:
-    """Раздел «Прочее»: то, что пьют, а не надевают."""
+    """Раздел «Прочее»: то, что пьют, а не надевают.
+
+    Пропуска сюда не идут: их не пьют, а предъявляют на входе в рейд,
+    и стоят они своей полкой у оружейника. В рюкзаке, где раздел один
+    на всё непривычное, они по-прежнему рядом со склянками — там
+    делить нечего.
+    """
     rows = [
         potion_payload(player, potion, player.potion_count(potion.code), service)
         for potion in POTIONS
+        if not potion.is_pass or service is None
     ]
     return {
         "slot": SECTION_CODE,
         "title": SECTION_TITLE,
         "emoji": SECTION_EMOJI,
+        "open": sum(1 for row in rows if row["unlocked"]),
+        "items": rows,
+    }
+
+
+def passes_section(player: Player, service: Service | None = None) -> dict:
+    """Полка пропусков у оружейника: три билета на три рейда."""
+    rows = [
+        potion_payload(player, potion, player.potion_count(potion.code), service)
+        for potion in POTIONS
+        if potion.is_pass
+    ]
+    return {
+        "slot": PASS_CODE,
+        "title": PASS_TITLE,
+        "emoji": PASS_EMOJI,
         "open": sum(1 for row in rows if row["unlocked"]),
         "items": rows,
     }
@@ -761,6 +787,9 @@ def build_shop(
     # Склянки не надевают, слота у них нет — и стоят они в аптеке
     if service is Service.POTIONS:
         sections.append(potions_section(player, service))
+    # А пропуска — у оружейника: их не пьют, их предъявляют на входе
+    if service is Service.WEAPONS:
+        sections.append(passes_section(player, service))
     return {
         "credits": player.credits,
         "level": player.level,

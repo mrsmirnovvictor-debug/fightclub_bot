@@ -615,7 +615,12 @@ function button(text, options) {
 // одно, и это одно приписывает сама вкладка
 function thingCard(item, credits, shop, bare) {
   const box = document.createElement("div");
-  box.className = "thing" + (shop && !item.unlocked ? " locked" : "");
+  // Билет не влезает в клетку товара: он вдвое шире своей высоты, а
+  // колонка под картинку узкая и жёсткая. Поэтому у билета своя
+  // раскладка — картинка сверху во всю ширину, текст под ней
+  box.className = "thing"
+    + (item.shape === "ticket" ? " ticket" : "")
+    + (shop && !item.unlocked ? " locked" : "");
 
   const pic = thingPic(item);
   // Модифицированную вещь обводим цветом ступени — так же, как в кукле
@@ -962,7 +967,9 @@ function giftCell(step, state) {
   if (step.image) {
     cell.classList.add("has-pic");
     const pic = document.createElement("img");
-    pic.className = "gift-pic";
+    // Билет вписываем целиком: он вдвое шире своей высоты, и обрезка
+    // по краям съедала у него и название рейда, и отрывную часть
+    pic.className = "gift-pic" + (step.wide ? " wide" : "");
     pic.src = step.image;
     pic.alt = step.title;
     // Не доехал файл — убираем картинку, и клетка возвращается к значку:

@@ -1364,8 +1364,11 @@ def service_for(code: str) -> Service:
     from bot.game.equipment import FAN_SHELF, JEWEL_SHELF, Slot, get_item
     from bot.game.potions import get_potion
 
-    if get_potion(code) is not None:
-        return Service.POTIONS
+    found = get_potion(code)
+    if found is not None:
+        # Пропуска не пьют, а предъявляют на входе в рейд: их место у
+        # оружейника, рядом со снаряжением, а не на аптечной полке
+        return Service.WEAPONS if found.is_pass else Service.POTIONS
     item = get_item(code)
     if item is None:
         return Service.CLOTHES  # чего нет в каталоге, то не купят нигде

@@ -125,7 +125,7 @@ async def test_the_gate_tells_what_it_will_cost(cellar):
     # без пропуска и без согласия на покупку внутрь не пускают
     await db.take_potion(42, RAID_PASS)
     status, error = await act(client, 42, action="open")
-    assert status == 409 and "Рейд-пасс" in error["error"]
+    assert status == 409 and "Билет в казино" in error["error"]
 
     status, body = await act(client, 42, action="open", buy=True)
     assert status == 200 and body["lobby"] is not None

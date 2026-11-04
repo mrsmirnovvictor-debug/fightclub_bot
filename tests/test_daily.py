@@ -85,14 +85,49 @@ def test_the_ladder_is_the_one_that_was_ordered():
     assert all(reward_for(day, "2026-09").big for day in MILESTONES)
 
 
-def test_every_other_day_holds_a_raid_pass():
-    """Пустых клеток в календаре нет: не веха — значит пропуск в подвал."""
+def test_every_other_day_holds_a_ticket():
+    """Пустых клеток нет: не веха — значит билет на какой-нибудь рейд."""
+    from bot.game.potions import BASE_PASS, STADIUM_PASS
+
     plain = [day for day in range(1, 30) if day not in MILESTONES]
 
     assert plain, "между вехами есть будни"
     for day in plain:
         reward = reward_for(day, "2026-09")
-        assert reward.potion == RAID_PASS and not reward.big
+        assert reward.potion in (RAID_PASS, STADIUM_PASS, BASE_PASS)
+        assert not reward.big
+
+
+def test_the_other_two_raids_are_paid_for_once_a_week():
+    """Билет на матч и в часть кладут раз в неделю, а не каждый день.
+
+    Казино открывается розыгрышем само, и билет в него лежит в будни;
+    а матч и часть ходят по расписанию, и без билета туда не попасть
+    вовсе — потому клуб и платит за них, но по одному в неделю.
+
+    Неделя тут — неделя лестницы, а не календаря: день в ней не число
+    месяца, а какой по счёту раз боец заглянул в клуб.
+    """
+    from bot.game.potions import BASE_PASS, STADIUM_PASS
+
+    month = "2026-09"  # тридцать дней
+    days = {
+        code: [
+            day for day in range(1, 31)
+            if reward_for(day, month).potion == code
+        ]
+        for code in (STADIUM_PASS, BASE_PASS)
+    }
+
+    assert days[STADIUM_PASS] == [5, 12, 19, 26]
+    assert days[BASE_PASS] == [6, 13, 20, 27]
+    # Ровно по одному на каждые семь входов, и вехи не задеты
+    for code, found in days.items():
+        assert len(found) == 4, code
+        assert not set(found) & set(MILESTONES), code
+        assert all(
+            second - first == 7 for first, second in zip(found, found[1:])
+        ), code
 
 
 def test_the_last_day_of_the_month_holds_a_whetstone():
@@ -253,10 +288,16 @@ async def test_the_whole_month_pays_what_it_promised(db, fighter):
 
     assert taken.credits == 25 + 50 + 100 + 200
     assert taken.mods == [LAST_DAY_MOD]
-    # склянки вех — и пропуск за каждый из оставшихся дней
+    # склянки вех — и билет за каждый из оставшихся дней: в казино по
+    # будням, на матч и в часть по одному в неделю
+    from bot.game.potions import BASE_PASS, STADIUM_PASS
+
+    plain = 30 - len(MILESTONES)
     assert sorted(taken.potions) == sorted(
         ["heal_small", monthly_potion("2026-09")[0]]
-        + [RAID_PASS] * (30 - len(MILESTONES))
+        + [RAID_PASS] * (plain - 8)
+        + [STADIUM_PASS] * 4
+        + [BASE_PASS] * 4
     )
     assert [one.day for one in taken.rewards] == list(range(1, 31))
 

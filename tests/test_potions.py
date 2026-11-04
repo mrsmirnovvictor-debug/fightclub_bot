@@ -302,18 +302,44 @@ def test_a_drunk_elixir_goes_into_the_fist_fight_too():
 
 
 def test_the_counter_has_a_shelf_for_everything_you_drink():
+    """В аптеке — то, что пьют. Билеты стоят у оружейника."""
     player = make_player()
     shop = build_shop(player, Service.POTIONS)
     misc = shop["sections"][-1]
 
     assert misc["slot"] == "misc"
     assert misc["title"] == "Прочее"
-    assert [row["code"] for row in misc["items"]] == [p.code for p in POTIONS]
+    drinkable = [one.code for one in POTIONS if not one.is_pass]
+    assert [row["code"] for row in misc["items"]] == drinkable
     assert all(row["suits"] == [] for row in misc["items"])
-    # пьётся всё, кроме пропуска: его тратит подвал, а не игрок
-    rows = {row["code"]: row for row in misc["items"]}
-    assert all(rows[p.code]["consumable"] is not p.is_pass for p in POTIONS)
-    assert rows[RAID_PASS]["consumable"] is False
+    assert all(row["consumable"] for row in misc["items"])
+
+
+def test_the_tickets_moved_to_the_armourer():
+    """Билеты не пьют, их предъявляют на входе — и лежат они у оружейника.
+
+    В аптеке они были по недоразумению: пропуск копится в той же
+    стопке, что склянки, вот и попал на тот же прилавок.
+    """
+    from bot.game.locations import service_for
+
+    player = make_player()
+    shelves = build_shop(player, Service.WEAPONS)["sections"]
+    tickets = shelves[-1]
+
+    assert tickets["slot"] == "tickets" and tickets["title"] == "Билеты"
+    assert [row["code"] for row in tickets["items"]] == [
+        one.code for one in POTIONS if one.is_pass
+    ]
+    assert all(row["consumable"] is False for row in tickets["items"])
+    # И покупка идёт туда же, куда показывает прилавок
+    assert all(
+        service_for(one.code) is Service.WEAPONS
+        for one in POTIONS if one.is_pass
+    )
+    # А в аптеке их больше нет
+    misc = build_shop(player, Service.POTIONS)["sections"][-1]
+    assert not [row for row in misc["items"] if row["code"] == RAID_PASS]
 
 
 def test_a_locked_potion_is_shown_but_marked():
@@ -323,8 +349,12 @@ def test_a_locked_potion_is_shown_but_marked():
 
     assert rows["heal_small"]["unlocked"]
     assert not rows["boost_strength"]["unlocked"]
-    # с первого уровня открыты обе лечебные склянки и все три пропуска
-    assert misc["open"] == 5
+    # с первого уровня открыты обе лечебные склянки, и только они:
+    # билеты переехали к оружейнику и тут больше не стоят
+    assert misc["open"] == 2
+    # А на той полке с первого уровня открыты все три билета
+    tickets = build_shop(rookie, Service.WEAPONS)["sections"][-1]
+    assert tickets["open"] == 3
 
 
 def test_the_card_carries_the_bag_of_bottles_and_what_is_running():
@@ -656,8 +686,23 @@ def test_the_bag_shows_the_pass_with_its_wear():
 
 
 def test_the_pass_says_what_it_is_for():
-    """Описание называет вещь своими словами: чья печать и на что талон."""
+    """Описание называет рейд, и больше ничего.
+
+    Длинное описание на карточке не помещалось: билет вдвое шире своей
+    высоты и занимает всю ширину, а под ним оставалось четыре строки
+    про печати и корешки. Рейд — единственное, что про билет надо
+    знать.
+    """
     note = get_potion(RAID_PASS).note
 
-    assert "казино Vegas City" in note
-    assert CELLAR_BOSS.raid_title in note, "названия рейда и талона разошлись"
+    assert note == (
+        "Билет позволит вам участвовать в рейде «Ограбление Босса Казино»."
+    )
+    assert CELLAR_BOSS.raid_title in note, "названия рейда и билета разошлись"
+    # И так у всех трёх: сперва «Билет позволит», потом название рейда
+    for one in POTIONS:
+        if not one.is_pass:
+            continue
+        assert one.note.startswith("Билет позволит вам участвовать в рейде «")
+        assert one.note.endswith("».")
+        assert len(one.note) < 90, (one.code, len(one.note))
