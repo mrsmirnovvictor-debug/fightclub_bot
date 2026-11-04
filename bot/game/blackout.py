@@ -95,6 +95,115 @@ DRAWN_EYES = {
 }
 
 
+# ---------- как кадры комнаты легли относительно плана ----------
+#
+# Панорамы станции — не сфера, а четыре отдельных кадра на комнату, и
+# сторона света зашита в имя файла: `panoramas_fp/F303/north.jpg`. План
+# же считает стороны по координатам комнат (`doorways`). Художник рисовал
+# свою станцию в своей системе, и совпасть эти две системы не обязаны.
+#
+# Расстановка говорит, **какой файл показывать за какой стеной**. Четыре
+# буквы — это стены в порядке `FACINGS` (север, восток, юг, запад), а
+# сама буква называет файл: `n e s w`. «snew» у F303 читается так: за
+# северной стеной показывать файл `south`, за восточной — `east`, за
+# южной — `north`, за западной — `west`.
+#
+# Поворот — частный случай расстановки, когда все четыре съехали на одно
+# и то же число четвертей. Обойтись одним поворотом нельзя: в иных
+# комнатах художник просто поменял два имени местами, и такую комнату
+# никаким поворотом не выправить — из четырёх сторон совпали бы две.
+#
+# Собрано глазами: обходчиком `/static/station.html` прошли станцию
+# комната за комнатой и в каждой доворачивали кадры, пока подпись под
+# ними не сходилась с планом. Десять споров нарисованного кадра с
+# планом, которые перечислял `scripts/station_map.py`, после этого
+# обнулились — проверка на это есть.
+#
+# Чего тут нет, то нарисовано как есть: O09, F109, F110, весь четвёртый
+# этаж и весь эвакуационный лабиринт ещё не обошли.
+EYE_SIDES_SHORT: dict[str, str] = {
+    # O · Территория
+    "O01": "snew",
+    "O02": "wnes",
+    "O03": "swne",
+    "O04": "swne",
+    "O05": "snew",
+    "O06": "nwes",
+    "O07": "wsen",  # зеркало
+    "O08": "esnw",
+    "O10": "senw",
+    # F1 · Первый этаж · турбины
+    "F101": "wnes",
+    "F102": "wnes",
+    "F103": "wens",
+    "F104": "swne",
+    "F105": "swne",
+    "F106": "swne",
+    "F107": "nwes",
+    "F108": "wesn",
+    # F2 · Второй этаж · галереи
+    "F201": "ensw",
+    "F202": "wens",
+    "F203": "senw",
+    "F204": "swen",  # зеркало
+    "F205": "ewsn",
+    "F206": "esnw",  # зеркало
+    "F207": "nsew",
+    "F208": "wnes",
+    "F209": "nsew",
+    "F210": "wsen",
+    # B · Подвал охлаждения
+    "B01": "wnes",
+    "B02": "wnes",
+    "B03": "ewns",
+    "B04": "nwes",
+    "B05": "wsen",
+    "B06": "nwse",
+    "B07": "snew",
+    "B08": "wnes",
+    # F3 · Третий этаж · энергоблок
+    "F301": "snew",
+    "F302": "wens",
+    "F303": "senw",
+    "F304": "wsen",
+    "F305": "eswn",
+    "F306": "wsne",
+    "F307": "snew",
+    "F308": "news",
+}
+
+# Комнаты, кадры которых нарисованы зеркально: лево с правом поменяны
+# местами. Перестановкой стен это не чинится — чинится отражением самой
+# картинки, и отражает её экран
+EYE_FLIP = frozenset({"O07", "F204", "F206"})
+
+# Буква в расстановке — первая буква имени файла. Выписана руками, а
+# не выведена из `FACINGS`: стороны объявлены ниже по файлу, а таблица
+# нужна тут, рядом с кадрами
+_LETTERS = {"n": "north", "e": "east", "s": "south", "w": "west"}
+
+
+@lru_cache(maxsize=None)
+def eye_sides(room: str) -> dict[str, str]:
+    """Какой файл показывать за какой стеной. Нет записи — одноимённый."""
+    word = EYE_SIDES_SHORT.get(room)
+    if not word:
+        return {one: one for one in FACINGS}
+    return {
+        side: _LETTERS[letter] for side, letter in zip(FACINGS, word)
+    }
+
+
+def eye_file(room: str, facing: str) -> str:
+    """Имя файла кадра, который смотрит в эту сторону."""
+    return eye_sides(room).get(facing, facing)
+
+
+def eye_flipped(room: str) -> bool:
+    """Отражать ли кадры этой комнаты по горизонтали."""
+    return room in EYE_FLIP
+
+
 def eye_urls(
     room: str, facing: str, flags: Iterable[str] = ()
 ) -> tuple[str, ...]:
@@ -114,8 +223,11 @@ def eye_urls(
     folders = [""]
     if stage is not None and stage[1] not in (flags or ()):
         folders.insert(0, stage[0] + "/")
+    # Имя файла — не сторона света, а то, как эту стену назвал
+    # художник: за северной стеной может лежать файл `south`
+    name = eye_file(room, facing)
     return tuple(
-        art_url(f"panoramas_fp/{room}/{where}{facing}.{kind}")
+        art_url(f"panoramas_fp/{room}/{where}{name}.{kind}")
         for where in folders
         for kind in EYE_FORMATS
     )
@@ -461,10 +573,19 @@ def heading(dx: int, dy: int) -> str:
 
 
 def _drawn_side(room: str, there: str) -> str:
-    """На какой стене художник нарисовал этот ход, если нарисовал."""
-    for side, code in (DRAWN_EYES.get(room) or {}).items():
-        if code == there:
-            return side
+    """На какой стене художник нарисовал этот ход, если нарисовал.
+
+    Стена нужна по плану, а назвал её художник по-своему: переводим
+    через расстановку комнаты. У комнаты без расстановки перевод
+    тождественный, и ответ тот же, что был.
+    """
+    for drawn, code in (DRAWN_EYES.get(room) or {}).items():
+        if code != there:
+            continue
+        for side, name in eye_sides(room).items():
+            if name == drawn:
+                return side
+        return drawn  # pragma: no cover - расстановка всегда полная
     return ""
 
 
@@ -1353,7 +1474,12 @@ __all__ = [
     "ITEM_SHAPES",
     "ITEM_TITLES",
     "DRAWN_EYES",
+    "EYE_FLIP",
+    "EYE_SIDES_SHORT",
     "EYE_STAGES",
+    "eye_file",
+    "eye_flipped",
+    "eye_sides",
     "LAYER_DEPTH",
     "LAYER_MAPS",
     "LAYER_SHORT",

@@ -94,6 +94,7 @@ from bot.game.blackout import (
     art_url,
     doorways,
     zombie_slot_art,
+    eye_flipped,
     eye_urls,
     heading,
     locks_off,
@@ -2673,6 +2674,10 @@ def _view_payload(
         # рейда: запертый затопленный шлюз E08 до откачки и открытый
         # проход после неё
         "eyes": list(eye_urls(room, facing, state.get("flags") or ())),
+        # Кадры иных комнат нарисованы зеркально — лево с правом
+        # поменяны местами. Перестановкой стен это не чинится: экран
+        # отражает саму картинку
+        "eyes_flip": eye_flipped(room),
         "panorama": here.image if here else "",
         "sides": sides,
         "foes": foes,

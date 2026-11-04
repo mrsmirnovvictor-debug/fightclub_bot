@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bot.game.blackout import (  # noqa: E402
     DRAWN_EYES,
     EYE_STAGES,
+    eye_sides,
     FACINGS,
     FACING_TITLES,
     LAYER_DEPTH,
@@ -92,6 +93,19 @@ def crowded() -> list[tuple[str, str, str, str, str]]:
     return out
 
 
+def plan_side(room: str, drawn: str) -> str:
+    """Какой стене по плану отвечает кадр, названный художником так.
+
+    Художник рисовал свою станцию в своей системе координат, и
+    расстановка комнаты переводит одно в другое: `eye_sides` говорит,
+    какой файл лежит за какой стеной, а тут нужен обратный ход.
+    """
+    for side, name in eye_sides(room).items():
+        if name == drawn:
+            return side
+    return drawn  # pragma: no cover - расстановка всегда полная
+
+
 def quarrel() -> list[tuple[str, str, str, str]]:
     """Кадры, спорящие не с планом, а друг с другом.
 
@@ -103,11 +117,15 @@ def quarrel() -> list[tuple[str, str, str, str]]:
     back = {"north": "south", "south": "north", "east": "west", "west": "east"}
     out = []
     for code, sides in DRAWN_EYES.items():
-        for side, there in sides.items():
+        for drawn, there in sides.items():
             mate = DRAWN_EYES.get(there)
             if not there or mate is None:
                 continue
-            was = [one for one, who in mate.items() if who == code]
+            side = plan_side(code, drawn)
+            was = [
+                plan_side(there, one) for one, who in mate.items()
+                if who == code
+            ]
             if was and back[side] not in was:
                 out.append((code, side, there, was[0]))
     return out
@@ -128,7 +146,8 @@ def clashes() -> list[tuple[str, str, str, str]]:
     out = []
     for code, sides in DRAWN_EYES.items():
         plan_sides = doorways(code)
-        for side, there in sides.items():
+        for drawn, there in sides.items():
+            side = plan_side(code, drawn)
             mine = plan_sides.get(side, "")
             if mine != there:
                 out.append((code, side, there or "хода нет", mine or "хода нет"))

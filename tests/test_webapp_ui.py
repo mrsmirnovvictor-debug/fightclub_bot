@@ -15536,6 +15536,39 @@ async def test_the_room_takes_the_png_when_there_is_no_jpg(server, db):
         await browser.close()
 
 
+async def test_a_mirrored_room_hangs_its_frame_the_other_way_round(server, db):
+    """Кадры зеркальных комнат экран отражает, а прочих — нет.
+
+    У трёх комнат станции лево с правом нарисованы наоборот.
+    Перестановкой стен это не чинится — стены-то на своих местах, — и
+    чинит это сам экран, отражая картинку по горизонтали.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async def shown(flip: bool) -> str | None:
+        body["view"]["eyes_flip"] = flip
+        async with async_playwright() as pw:
+            browser, page = await open_page(
+                pw, server, card, blackout=body, images=True
+            )
+            await page.wait_for_selector("#hero:not(.hidden)")
+            await open_screen(page, "blackout")
+            await page.wait_for_selector("#blackout-body .stage.photo")
+            said = await page.locator(".stage-eye").first.get_attribute(
+                "transform"
+            )
+            await browser.close()
+            return said
+
+    assert await shown(False) is None, "обычную комнату не отражают"
+    assert await shown(True) == "translate(640,0) scale(-1,1)"
+
+
 async def test_the_screen_does_not_redraw_itself_when_nothing_changed(
     server, db
 ):

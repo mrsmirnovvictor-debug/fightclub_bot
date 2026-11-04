@@ -13821,6 +13821,12 @@ function blackoutStageBox(data) {
     const tryOne = (at) => {
       if (at >= eyes.length) return;
       const eye = back(eyes[at], "stage-eye");
+      // Кадры иных комнат нарисованы зеркально: лево с правом
+      // поменяны местами. Отражаем саму картинку — переставить стены
+      // тут нечем, зеркало не поворот
+      if (view.eyes_flip) {
+        eye.setAttribute("transform", "translate(" + STAGE_W + ",0) scale(-1,1)");
+      }
       eye.addEventListener("load", () => {
         shell.remove();
         box.classList.add("photo");

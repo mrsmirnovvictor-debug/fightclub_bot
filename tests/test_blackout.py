@@ -1852,9 +1852,13 @@ async def test_the_room_asks_for_its_own_panorama_in_the_way_it_looks(db):
 
     # Кадр может быть и `.jpg`, и `.png`: отрисовка идёт пачками, и
     # сохраняют их по-разному. Экран пробует по очереди
+    from bot.game.blackout import eye_file
+
     assert [one.rsplit(".", 1)[1] for one in view["eyes"]] == ["jpg", "png"]
+    # Имя файла — не сторона света: художник называл стены по-своему,
+    # и расстановка комнаты переводит одно в другое
     for one in view["eyes"]:
-        assert f"panoramas_fp/{room}/{view['facing']}." in one, one
+        assert f"panoramas_fp/{room}/{eye_file(room, view['facing'])}." in one
     assert view["panorama"], "общий вид зоны остаётся запасным"
 
     # Повернулись — просим другую сторону той же комнаты
@@ -1862,19 +1866,19 @@ async def test_the_room_asks_for_its_own_panorama_in_the_way_it_looks(db):
     after = (await state_for(db, people[0], NOW))["view"]
     assert after["facing"] != view["facing"]
     for one in after["eyes"]:
-        assert f"panoramas_fp/{room}/{after['facing']}." in one, one
+        assert f"panoramas_fp/{room}/{eye_file(room, after['facing'])}." in one
     assert after["eyes"] != view["eyes"]
 
 
 def test_a_panorama_is_asked_for_only_in_the_four_ways_there_are():
     """Сторона не из четырёх — не адрес, а пусто."""
-    from bot.game.blackout import EYE_FORMATS, FACINGS, eye_urls
+    from bot.game.blackout import EYE_FORMATS, FACINGS, eye_file, eye_urls
 
     for facing in FACINGS:
         asked = eye_urls("O02", facing)
         assert len(asked) == len(EYE_FORMATS)
         for one, kind in zip(asked, EYE_FORMATS):
-            assert one.endswith(f"/O02/{facing}.{kind}")
+            assert one.endswith(f"/O02/{eye_file('O02', facing)}.{kind}")
     assert eye_urls("O02", "вверх") == ()
     assert eye_urls("", "north") == ()
 
@@ -2223,3 +2227,77 @@ def test_the_walker_map_speaks_of_doors_the_game_itself_draws():
     for code, side in stairs:
         there = carte["rooms"][carte["rooms"][code]["walls"][side]["to"]]
         assert there["layer"] != carte["rooms"][code]["layer"], (code, side)
+
+
+# ---------- расстановка кадров ----------
+
+
+def test_every_arrangement_is_an_honest_permutation():
+    """В расстановке каждая стена закрыта ровно одним кадром.
+
+    Четыре буквы на комнату, и все четыре разные: иначе один кадр
+    висел бы на двух стенах, а другой не висел бы нигде.
+    """
+    from bot.game.blackout import EYE_SIDES_SHORT, FACINGS, eye_sides, station
+
+    place = station()
+    assert EYE_SIDES_SHORT, "таблица пустая"
+    for code, word in EYE_SIDES_SHORT.items():
+        assert code in place.rooms, f"{code}: такой комнаты на станции нет"
+        assert len(word) == 4, (code, word)
+        assert set(word) == {"n", "e", "s", "w"}, (code, word)
+        assert sorted(eye_sides(code).values()) == sorted(FACINGS), code
+    # Слово читается в порядке сторон, и порядок этот не случайный
+    assert FACINGS == ("north", "east", "south", "west")
+
+
+def test_the_frame_shown_is_the_one_the_arrangement_names():
+    """За стеной показывается тот файл, который назвала расстановка."""
+    from bot.game.blackout import eye_file, eye_urls
+
+    # F303 перевёрнут: север с югом поменяны местами
+    assert eye_file("F303", "north") == "south"
+    assert eye_file("F303", "south") == "north"
+    assert eye_file("F303", "east") == "east"
+    assert all(
+        one.endswith(("F303/north.jpg", "F303/north.png"))
+        for one in eye_urls("F303", "south")
+    ), eye_urls("F303", "south")
+
+    # Комната, которую ещё не обошли, остаётся как нарисована
+    assert eye_file("E12", "north") == "north"
+    assert eye_urls("E12", "north")[0].endswith("E12/north.jpg")
+
+
+def test_the_arrangements_settle_the_quarrel_with_the_plan():
+    """Споров нарисованного кадра с планом не осталось ни одного.
+
+    Это и есть приёмка обхода. До него `scripts/station_map.py`
+    перечислял десять комнат, где подтверждённый кадр показывал проём
+    не на той стене, что план, и две пары кадров, противоречащих друг
+    другу. Расстановки, собранные обходчиком, сняли и то и другое:
+    план не двигали, двигали только имена кадров.
+    """
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "scripts"))
+    from station_map import clashes, crowded, quarrel  # noqa: E402
+
+    assert clashes() == [], "кадр всё ещё спорит с планом"
+    assert quarrel() == [], "кадры спорят между собой"
+    assert crowded() == [], "дверь встала не на свою стену"
+
+
+def test_the_mirrored_rooms_are_named_and_only_they():
+    """Зеркальные комнаты названы поимённо, прочие не отражаются."""
+    from bot.game.blackout import EYE_FLIP, EYE_SIDES_SHORT, eye_flipped, station
+
+    place = station()
+    assert EYE_FLIP == {"O07", "F204", "F206"}
+    assert all(one in place.rooms for one in EYE_FLIP)
+    assert all(eye_flipped(one) for one in EYE_FLIP)
+    assert not eye_flipped("F303")
+    # Зеркало — не поворот: у этих комнат и расстановка своя
+    assert all(one in EYE_SIDES_SHORT for one in EYE_FLIP)
