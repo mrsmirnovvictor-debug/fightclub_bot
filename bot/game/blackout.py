@@ -371,7 +371,9 @@ SPEED_BONUS_MINUTES = 15
 CYCLE_DAYS = tuple(range(7))  # понедельник 0 — как в `date.weekday()`
 CYCLE_HOUR = 19
 CYCLE_MINUTE = 0
-ENTRY_WINDOW_MINUTES = 180
+# Четыре часа: с 19:00 до 23:00 по Москве. Было три, и окно закрывалось
+# в десять вечера — ровно тогда, когда отряд собирался
+ENTRY_WINDOW_MINUTES = 240
 
 # ---------- личный откат ----------
 #

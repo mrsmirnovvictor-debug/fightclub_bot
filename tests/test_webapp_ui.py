@@ -14253,8 +14253,12 @@ async def test_the_street_car_lives_on_the_map_and_not_in_the_bag(
 # ---------- электростанция: «Чёрный пуск» ----------
 
 
-async def test_the_station_lobby_offers_the_raid(server, db):
-    """Лобби станции: окно входа, чужие отряды и кнопка «объявить»."""
+async def test_the_station_lobby_offers_the_mission(server, db):
+    """Лобби станции: окно, правила списком и кнопка «Начать миссию».
+
+    Кнопка горит только в окно входа: вне его сервер всё равно
+    откажет, и живая кнопка звала бы на отказ.
+    """
     from bot.blackout_service import lobby_for
     from tests.test_blackout import NOW, make_player as a_fighter
 
@@ -14271,10 +14275,55 @@ async def test_the_station_lobby_offers_the_raid(server, db):
         await page.wait_for_selector("#blackout-body .btn")
 
         said = await page.locator("#blackout").inner_text()
-        assert "Чёрный пуск" in said
-        assert await page.locator(
-            "#blackout-body .btn", has_text="Объявить рейд"
-        ).count() == 1
+        assert "Миссия «Чёрный пуск»" in said
+        start = page.locator("#blackout-body .btn", has_text="Начать миссию")
+        assert await start.count() == 1
+        assert await start.is_enabled() is bool(body["window"])
+
+        # Правила — четырьмя строками под кнопкой
+        rules = await page.locator("#blackout-body .thing-note").inner_text()
+        assert "каждый день с 19:00 до 23:00" in rules
+        assert "На прохождение даётся 3 часа" in rules
+        assert "Отряд до 5 человек" in rules
+        assert "при гибели" in rules.lower() and "через 3 часа" in rules
+        assert "через 3 суток" in rules
+        await browser.close()
+
+
+async def test_the_closed_window_says_when_it_opens(server, db):
+    """Закрытое окно называет день и час, а не «через столько-то».
+
+    Экран писал «Следующее — 29898240:00»: часам выдачи подсовывали
+    метку времени вместо длительности. До следующего вечера бывает
+    двадцать с лишним часов, и обратный отсчёт в такой срок читается
+    хуже даты.
+    """
+    from bot.blackout_service import lobby_for
+    from tests.test_blackout import make_player as a_fighter
+    from bot.game.clock import MOSCOW
+    from datetime import datetime
+
+    shut = int(datetime(2026, 11, 4, 23, 30, tzinfo=MOSCOW).timestamp())
+    one = a_fighter(1, "Тайлер")
+    one.location = "power_station"
+    await db.save_player(one)
+    body = await lobby_for(db, one, shut)
+    assert body["window"] is False
+    assert body["opens_text"] == "завтра в 19:00", body["opens_text"]
+    card = build_card(one, TOKEN, viewer_id=one.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#blackout-body .btn")
+
+        note = await page.locator("#blackout-note").inner_text()
+        assert note == "Окно закрыто. Следующее откроется — завтра в 19:00."
+        assert ":00." not in note.replace("19:00.", ""), note
+        # И кнопка серая: входить некуда
+        start = page.locator("#blackout-body .btn", has_text="Начать миссию")
+        assert await start.is_enabled() is False
         await browser.close()
 
 

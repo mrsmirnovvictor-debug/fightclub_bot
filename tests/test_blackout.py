@@ -2455,3 +2455,86 @@ async def test_the_station_holds_the_fighter_until_he_presses_the_button(db):
     assert after["screen"] == "lobby"
     # Второй раз окно не встаёт
     assert (await state_for(db, people[0], NOW))["screen"] == "lobby"
+
+
+# ---------- окно входа и его слова ----------
+
+
+def test_the_window_runs_from_seven_to_eleven():
+    """Окно открыто с 19:00 до 23:00 по Москве, каждый день.
+
+    Было три часа, и окно закрывалось в десять — ровно тогда, когда
+    отряд дособирался. Числа названы тут, а не в тексте на экране:
+    экран берёт их отсюда же.
+    """
+    from datetime import datetime
+
+    from bot.blackout_service import window_open
+    from bot.game.blackout import (
+        CYCLE_DAYS,
+        CYCLE_HOUR,
+        ENTRY_WINDOW_MINUTES,
+    )
+    from bot.game.clock import MOSCOW
+
+    assert CYCLE_HOUR == 19
+    assert ENTRY_WINDOW_MINUTES == 240
+    assert set(CYCLE_DAYS) == set(range(7)), "станция открыта каждый день"
+
+    def at(hour: int, minute: int = 0) -> int:
+        return int(
+            datetime(2026, 11, 4, hour, minute, tzinfo=MOSCOW).timestamp()
+        )
+
+    assert not window_open(at(18, 59))
+    assert window_open(at(19, 0))
+    assert window_open(at(22, 59))
+    assert not window_open(at(23, 0))
+
+
+def test_the_closed_window_names_the_day_and_the_hour():
+    """«Завтра в 19:00», а не «через 20 часов» и не метка времени.
+
+    Экран писал «Следующее — 29898240:00»: часам выдачи подсовывали
+    метку времени вместо длительности. Считает строку сервер — часы у
+    него московские, а у телефона игрока свои.
+    """
+    from datetime import datetime
+
+    from bot.blackout_service import when_text
+    from bot.game.clock import MOSCOW
+
+    def at(day: int, hour: int, minute: int = 0) -> int:
+        return int(
+            datetime(2026, 11, day, hour, minute, tzinfo=MOSCOW).timestamp()
+        )
+
+    now = at(4, 23, 30)
+    assert when_text(at(4, 19), now) == "сегодня в 19:00"
+    assert when_text(at(5, 19), now) == "завтра в 19:00"
+    assert when_text(at(6, 19), now) == "6.11 в 19:00"
+
+
+async def test_the_lobby_tells_the_rules_in_numbers(db):
+    """Лобби отдаёт числа правил, а не пересказ: экран их только читает."""
+    from bot.blackout_service import lobby_for
+    from bot.game.blackout import (
+        DIED_COOLDOWN_HOURS,
+        MAX_PARTY,
+        RUN_LIMIT_MINUTES,
+        WON_COOLDOWN_DAYS,
+    )
+
+    one = make_player(1, "Тайлер")
+    one.location = "power_station"
+    await db.save_player(one)
+
+    body = await lobby_for(db, one, NOW)
+
+    assert body["window_from"] == "19:00" and body["window_to"] == "23:00"
+    assert body["limit_hours"] == RUN_LIMIT_MINUTES // 60 == 3
+    assert body["max"] == MAX_PARTY == 5
+    assert body["died_hours"] == DIED_COOLDOWN_HOURS == 3
+    assert body["won_days"] == WON_COOLDOWN_DAYS == 3
+    assert body["opens_text"], "когда откроется — словами"
+    assert body["overview"].endswith("/zombiemission/covers/black-start.jpg")

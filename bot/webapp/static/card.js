@@ -12918,11 +12918,17 @@ function paintBlackoutLobby(data, body) {
   el("blackout-clock").textContent = "";
   // Откат личный и важнее окна: станция открыта каждый вечер, а этому
   // бойцу — не каждый, и сказать это надо до кнопки, а не после отказа
+  // Когда откроется — датой и часом, а не «через столько-то»: до
+  // следующего вечера бывает двадцать с лишним часов. Строку считает
+  // сервер: часы у него московские, а у телефона свои. Прежде сюда
+  // приходил `clockText`, которому дают длительность, а дали метку
+  // времени — и экран писал «29898240:00»
   el("blackout-note").textContent = data.locked_until
     ? data.locked_why + " " + leftText(data.locked_left) + "."
     : data.window
       ? "Окно входа открыто. Отряд от " + data.min + " до " + data.max + "."
-      : "Окно закрыто. Следующее — " + clockText(data.opens_at) + ".";
+      : "Окно закрыто. Следующее откроется — "
+        + (data.opens_text || "скоро") + ".";
 
   if (data.overview) {
     const pic = document.createElement("img");
@@ -12934,16 +12940,21 @@ function paintBlackoutLobby(data, body) {
     body.appendChild(pic);
   }
 
+  // Кнопка горит только в окно: вне его сервер всё равно откажет, и
+  // показывать живую кнопку значило бы звать на отказ
+  const shut = Boolean(data.locked_until) || !data.window;
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons";
   buttons.appendChild(
     button(
-      data.locked_until ? "Станция закрыта" : "Объявить рейд",
+      data.locked_until ? "Станция закрыта" : "Начать миссию",
       {
-        disabled: Boolean(data.locked_until),
+        disabled: shut,
         hint: data.locked_until
           ? data.locked_why + " " + leftText(data.locked_left)
-          : "Награда за рейд — до " + (data.reward || 1000) + " 💰.",
+          : data.window
+            ? "Награда за миссию — до " + (data.reward || 1000) + " 💰."
+            : "Окно откроется " + (data.opens_text || "скоро") + ".",
         onClick: () => blackoutAction({ action: "open" }),
       }
     )
@@ -12952,9 +12963,24 @@ function paintBlackoutLobby(data, body) {
   if (!data.locked_until) {
     const said = document.createElement("p");
     said.className = "thing-note";
-    said.textContent =
-      "Со станции не уходят: вошёл — проходи до конца. Прошёл — "
-      + "следующий заход через трое суток, погиб — через три часа.";
+    // Правила станции — списком под кнопкой: четыре строки, и каждая
+    // отвечает на вопрос, который задают до входа, а не после
+    [
+      "Миссия доступна каждый день с " + (data.window_from || "19:00")
+        + " до " + (data.window_to || "23:00") + ".",
+      "На прохождение даётся " + (data.limit_hours || 3) + " "
+        + plural(data.limit_hours || 3, "час", "часа", "часов")
+        + ". Отряд до " + (data.max || 5) + " человек.",
+      "При гибели следующий раз можно попробовать через "
+        + (data.died_hours || 3) + " "
+        + plural(data.died_hours || 3, "час", "часа", "часов") + ".",
+      "При прохождении миссии полностью следующий раз можно пройти через "
+        + (data.won_days || 3) + " "
+        + plural(data.won_days || 3, "сутки", "суток", "суток") + ".",
+    ].forEach((line, at) => {
+      if (at) said.appendChild(document.createElement("br"));
+      said.appendChild(document.createTextNode(line));
+    });
     body.appendChild(said);
   }
 

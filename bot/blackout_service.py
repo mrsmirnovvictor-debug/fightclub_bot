@@ -174,6 +174,24 @@ def window_open(moment: int) -> bool:
     return start <= moment < start + ENTRY_WINDOW_MINUTES * 60
 
 
+def when_text(moment: int, now: int) -> str:
+    """«Сегодня в 19:00», «завтра в 19:00», «5.11 в 19:00».
+
+    Час московский: станция живёт по Москве, а телефон игрока — по
+    своему поясу, и показывать ему пересчитанное время значило бы
+    назвать час, которого в расписании нет.
+    """
+    when = datetime.fromtimestamp(moment, MOSCOW)
+    here = datetime.fromtimestamp(now, MOSCOW)
+    hour = when.strftime("%H:%M")
+    days = (when.date() - here.date()).days
+    if days == 0:
+        return f"сегодня в {hour}"
+    if days == 1:
+        return f"завтра в {hour}"
+    return f"{when.day}.{when.month:02d} в {hour}"
+
+
 def window_opens_at(moment: int) -> int:
     """Когда откроется следующее окно входа — по расписанию или разовое."""
     soon = [one for one, _ in extra_windows() if one > moment]
@@ -3166,7 +3184,17 @@ async def lobby_for(
             if held > now else ""
         ),
         "locked_left": max(0, held - now) if held > now else 0,
-        "overview": art_url("maps/station_overview.jpg"),
+        "overview": art_url("covers/black-start.jpg"),
+        # Когда откроется — датой и часом, а не «через столько-то». До
+        # следующего вечера бывает двадцать с лишним часов, и обратный
+        # отсчёт в такой срок читается хуже, чем «5.11 в 19:00».
+        # Считает его сервер: часы у него московские, а у телефона свои
+        "opens_text": when_text(window_opens_at(now), now),
+        "window_from": f"{CYCLE_HOUR:02d}:00",
+        "window_to": f"{(CYCLE_HOUR + ENTRY_WINDOW_MINUTES // 60) % 24:02d}:00",
+        "limit_hours": RUN_LIMIT_MINUTES // 60,
+        "died_hours": DIED_COOLDOWN_HOURS,
+        "won_days": WON_COOLDOWN_DAYS,
     }
 
 
