@@ -17063,15 +17063,19 @@ async def test_the_walker_turns_the_frames_and_remembers_it(server):
     """
     async with async_playwright() as pw:
         browser, page = await open_walker(pw, server)
+        # Встаём в комнату, которой расстановки ещё не завели: у
+        # обойдённых она уже стоит, и крутить их незачем
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
         here = (await page.locator("#where").inner_text()).split(" ")[0]
+        assert here == "E12"
 
         # Кадров в тесте нет, и страница пишет имя файла, которого ждёт
         said = await page.locator("#eye-big .none").inner_text()
         assert said.endswith("north"), said
-        assert await page.locator("#turn-now").inner_text() == "как нарисовано"
+        assert "как нарисовано" in await page.locator("#turn-now").inner_text()
 
         await page.locator("#turn-right").click()
-        assert await page.locator("#turn-now").inner_text() == "⟳ 1 из 4"
+        assert "⟳ 1 из 4" in await page.locator("#turn-now").inner_text()
         said = await page.locator("#eye-big .none").inner_text()
         assert said.endswith("west"), "смотрим на север, а кадр взят западный"
 
@@ -17082,7 +17086,8 @@ async def test_the_walker_turns_the_frames_and_remembers_it(server):
         # Перезагрузка: расстановка лежит в памяти браузера
         await page.reload()
         await page.wait_for_selector(".four .eye")
-        assert await page.locator("#turn-now").inner_text() == "⟳ 1 из 4"
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
+        assert "⟳ 1 из 4" in await page.locator("#turn-now").inner_text()
         kept = json.loads(await page.locator("#out").input_value())
         assert kept[here] == {
             "sides": {
@@ -17109,11 +17114,12 @@ async def test_the_walker_swaps_any_two_sides(server):
     """
     async with async_playwright() as pw:
         browser, page = await open_walker(pw, server)
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
         here = (await page.locator("#where").inner_text()).split(" ")[0]
 
         await page.locator("#swap-ns").click()
 
-        assert await page.locator("#turn-now").inner_text() == "север ↔ юг"
+        assert "север ↔ юг" in await page.locator("#turn-now").inner_text()
         said = await page.locator("#eye-big .none").inner_text()
         assert said.endswith("south"), "за северной стеной теперь южный кадр"
         kept = json.loads(await page.locator("#out").input_value())
@@ -17153,6 +17159,7 @@ async def test_the_walker_can_set_one_arrangement_for_the_whole_station(
         browser, page = await open_walker(pw, server)
         page.on("dialog", lambda one: asyncio.ensure_future(one.accept()))
 
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
         await page.locator("#turn-right").click()
         await page.locator("#all").click()
         await page.wait_for_function(
@@ -17160,9 +17167,150 @@ async def test_the_walker_can_set_one_arrangement_for_the_whole_station(
             "document.getElementById('out').value)).length > 1"
         )
 
-        kept = json.loads(await page.locator("#out").input_value())
-        assert len(kept) == len(carte["rooms"])
-        assert all(
-            one["sides"]["north"] == "west" for one in kept.values()
-        ), "не всем досталась одна расстановка"
+        # Спрашиваем саму разметку, а не выгрузку: комната, у которой
+        # внесённая в игру расстановка и так эта же, в выгрузку не
+        # идёт — хранить её незачем
+        everywhere = await page.evaluate(
+            "() => carte.order.every((code) => mark(code).sides.north === 'west')"
+        )
+        assert everywhere, "не всем досталась одна расстановка"
+        assert len(carte["rooms"]) == 64
+        await browser.close()
+
+
+# ---------- конец станции ----------
+
+
+async def test_the_station_says_goodbye_before_the_city(server, db):
+    """Выбывшего не выставляют в город молча: сперва окно и кнопка.
+
+    Прежде экран просто сменялся городским лобби — боец падал в бою и
+    оказывался на карте, не узнав даже, что проиграл.
+    """
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 1)
+    body = await state_for(db, people[0], NOW)
+    body["screen"] = "over"
+    body["farewell"] = {
+        "kind": "alone",
+        "words": "Вы проиграли бой. Вы очнётесь у входа на электростанцию.",
+        "button": "Продолжить",
+        "waiting": False,
+        "over": True,
+    }
+    card = build_card(people[0], TOKEN, viewer_id=people[0].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#station-veil:not(.hidden)")
+
+        said = await page.locator("#station-said").inner_text()
+        assert said == (
+            "Вы проиграли бой. Вы очнётесь у входа на электростанцию."
+        )
+        assert "Продолжить" in await page.locator(
+            "#station-buttons"
+        ).inner_text()
+
+        # Нажали — окно ушло, и экран пошёл спрашивать сервер заново
+        asked: list[dict] = []
+
+        async def watch(route):
+            if route.request.method == "POST":
+                asked.append(route.request.post_data_json)
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(body),
+            )
+
+        await page.route("**/api/blackout*", watch)
+        await page.get_by_text("Продолжить", exact=True).click()
+        await page.wait_for_selector("#station-veil", state="hidden")
+        await page.wait_for_timeout(300)
+
+        assert [one["action"] for one in asked] == ["heard"], asked
+        await browser.close()
+
+
+async def test_the_fallen_one_is_offered_to_wait(server, db):
+    """Упавшему в отряде кнопка другая: «Ждать», и экран остаётся."""
+    from bot.blackout_service import state_for
+    from tests.test_blackout import NOW, enter
+
+    people, run = await enter(db, 3)
+    body = await state_for(db, people[1], NOW)
+    body["farewell"] = {
+        "kind": "squad",
+        "words": (
+            "Вы проиграли бой. Ваши товарищи продолжают миссию без Вас, "
+            "по завершению вы очнётесь у входа на электростанцию."
+        ),
+        "button": "Ждать",
+        "waiting": True,
+        "over": False,
+    }
+    card = build_card(people[1], TOKEN, viewer_id=people[1].user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, blackout=body)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "blackout")
+        await page.wait_for_selector("#station-veil:not(.hidden)")
+
+        assert "товарищи продолжают" in await page.locator(
+            "#station-said"
+        ).inner_text()
+        await page.get_by_text("Ждать", exact=True).click()
+        await page.wait_for_selector("#station-veil", state="hidden")
+
+        # Станция осталась на экране: смотреть за отрядом не запрещено
+        assert await page.locator("#blackout-body .stage").count() == 1
+        # И второй раз окно не встаёт само
+        await page.wait_for_timeout(1200)
+        assert await page.locator("#station-veil.hidden").count() == 1
+        await browser.close()
+
+
+async def test_the_walker_starts_from_what_the_game_already_shows(server):
+    """Обходчик начинает с внесённого, а не с чистого листа.
+
+    Сорок три комнаты уже разобраны, и показывать их «как нарисовано»
+    значило бы просить разобрать их заново — да ещё и не отличая от
+    тех, где и правда никто не был.
+    """
+    import json as js
+    from pathlib import Path
+
+    carte = js.loads(
+        (Path(__file__).resolve().parent.parent / "bot" / "webapp"
+         / "static" / "station.json").read_text(encoding="utf-8")
+    )
+    settled = [c for c, one in carte["rooms"].items() if one.get("settled")]
+    assert len(settled) == 43, len(settled)
+
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+        # F303 перевёрнут: за северной стеной лежит южный кадр
+        await page.evaluate("() => { at = 'F303'; floor = 'F3'; paint(); }")
+        said = await page.locator("#eye-big .none").inner_text()
+        assert said.endswith("south"), said
+        assert "внесено в игру" in await page.locator("#turn-now").inner_text()
+
+        # А непройденная комната так и говорит
+        await page.evaluate("() => { at = 'E12'; floor = 'E'; paint(); }")
+        assert "не обойдена" in await page.locator("#turn-now").inner_text()
+        assert "не обойдено комнат: 21" in await page.locator(
+            "#counted"
+        ).inner_text()
+
+        # Зеркальная комната показывается зеркальной
+        await page.evaluate("() => { at = 'O07'; floor = 'O'; paint(); }")
+        assert "flip" in (await page.locator("#eye-big").get_attribute("class"))
+
+        # И выгрузка пустая: править пока нечего
+        assert json.loads(await page.locator("#out").input_value()) == {}
         await browser.close()

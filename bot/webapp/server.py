@@ -3136,7 +3136,13 @@ async def api_blackout_action(request: web.Request) -> web.Response:
     data = await _payload(request)
     db = request.app[DB_KEY]
     player = await _own_player(request)
-    if not await db.blackout_of(player.user_id):
+    # «Услышал» — не ход, а ответ на окно прощания: рейд уже кончился,
+    # и требовать для него стоять у станции незачем. Всё остальное,
+    # что делают вне рейда, делают именно там
+    if (
+        str(data.get("action") or "") != "heard"
+        and not await db.blackout_of(player.user_id)
+    ):
         player = await _at(request, Service.BLACKOUT)
     # Тестовые команды — инструмент разработки. В городе их нет вовсе:
     # иначе окно входа обходилось бы одним полем в запросе

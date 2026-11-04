@@ -959,6 +959,18 @@
     </section>
   </div>
 
+  <!-- Конец станции: боец выбыл или время вышло. Окно встаёт поверх
+       экрана станции и не даёт выставить его в город молча — прежде
+       экран просто сменялся городским лобби, и боец узнавал о
+       поражении по тому, что оказался на карте -->
+  <div class="daily-veil hidden" id="station-veil">
+    <section class="daily" id="station-box">
+      <h2 class="daily-head">Чёрный пуск</h2>
+      <p class="daily-note" id="station-said"></p>
+      <div class="daily-buttons" id="station-buttons"></div>
+    </section>
+  </div>
+
   <!-- Плашка выборов: висит в углу поверх всего, пока идёт голосование
        и бюллетень закрыт. Нажал — лист открылся снова -->
   <button type="button" class="vote-chip hidden" id="vote-chip"></button>

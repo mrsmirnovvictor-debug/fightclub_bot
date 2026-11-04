@@ -118,6 +118,7 @@
   svg.map .room { fill: #222a3d; stroke: var(--line); cursor: pointer; }
   svg.map .room.now { fill: var(--mark); }
   svg.map .room.done { stroke: var(--good); stroke-width: 3; }
+  svg.map .room.fixed { stroke: var(--mark); stroke-width: 5; }
   svg.map text { fill: var(--ink); font-size: 26px; pointer-events: none; }
   svg.map .door { stroke: #465070; stroke-width: 6; }
   svg.map .look { stroke: var(--mark); stroke-width: 8; }
@@ -244,9 +245,22 @@ function samePlain(sides) {
   return SIDES.every((one) => sides[one] === one);
 }
 
+// Что уже внесено в игру. Обходчик начинает с этого, а не с чистого
+// листа: пройденные комнаты показываются так же, как их увидит игрок,
+// и доворачивать их заново незачем
+function settled(room) {
+  const row = (carte && carte.rooms[room] && carte.rooms[room].settled) || null;
+  if (!row) return null;
+  return {
+    sides: Object.assign(plainSides(), row.sides),
+    flip: !!row.flip,
+    note: "",
+  };
+}
+
 function mark(room) {
   const row = marks[room];
-  if (!row) return { sides: plainSides(), flip: false, note: "" };
+  if (!row) return settled(room) || { sides: plainSides(), flip: false, note: "" };
   return {
     sides: Object.assign(plainSides(), row.sides),
     flip: !!row.flip,
@@ -254,10 +268,19 @@ function mark(room) {
   };
 }
 
+// Отличается ли нынешняя разметка от внесённой в игру. Совпала —
+// хранить её незачем: игра и так так считает
+function sameAsGame(room, now) {
+  const was = settled(room);
+  if (!was) return samePlain(now.sides) && !now.flip;
+  return SIDES.every((one) => now.sides[one] === was.sides[one])
+    && !!now.flip === was.flip;
+}
+
 function keep(room, change) {
   const was = mark(room);
   const now = Object.assign({}, was, change);
-  if (samePlain(now.sides) && !now.flip && !now.note) delete marks[room];
+  if (sameAsGame(room, now) && !now.note) delete marks[room];
   else marks[room] = now;
   try {
     localStorage.setItem(KEY, JSON.stringify(marks));
@@ -449,14 +472,23 @@ function paint() {
   });
 
   const mine = mark(at);
-  document.getElementById("turn-now").textContent = sidesWords(mine.sides);
+  const stand = settled(at)
+    ? (marks[at] ? "правлено" : "внесено в игру")
+    : (marks[at] ? "правлено" : "не обойдена");
+  document.getElementById("turn-now").textContent =
+    sidesWords(mine.sides) + " · " + stand;
   document.getElementById("flip").classList.toggle("on", !!mine.flip);
   const note = document.getElementById("note");
   if (note !== document.activeElement) note.value = mine.note || "";
 
   const count = Object.keys(marks).length;
+  const left = carte.order.filter(
+    (code) => !carte.rooms[code].settled && !marks[code]
+  ).length;
   document.getElementById("counted").textContent =
-    count ? "размечено комнат: " + count : "ещё ничего не размечено";
+    (count ? "правок: " + count + " · " : "") + (
+      left ? "не обойдено комнат: " + left : "обойдена вся станция"
+    );
   document.getElementById("howmany").textContent = count ? "· " + count : "";
   document.getElementById("out").value = JSON.stringify(marks, null, 2);
 
@@ -528,7 +560,9 @@ function drawMap() {
 
   rooms.forEach(([code, one]) => {
     const dot = add("circle", {
-      class: "room" + (code === at ? " now" : "") + (marks[code] ? " done" : ""),
+      class: "room" + (code === at ? " now" : "")
+        + (marks[code] || one.settled ? " done" : "")
+        + (marks[code] ? " fixed" : ""),
       cx: one.x, cy: one.y, r: 46,
     });
     dot.onclick = () => { at = code; paint(); };
@@ -590,8 +624,14 @@ function wire() {
     () => keep(at, { sides: swapped(mark(at).sides, "east", "west") });
   document.getElementById("flip").onclick =
     () => keep(at, { flip: !mark(at).flip });
-  document.getElementById("reset").onclick =
-    () => keep(at, { sides: plainSides(), flip: false, note: "" });
+  document.getElementById("reset").onclick = () => {
+    const was = settled(at);
+    keep(at, {
+      sides: was ? Object.assign({}, was.sides) : plainSides(),
+      flip: was ? was.flip : false,
+      note: "",
+    });
+  };
   document.getElementById("all").onclick = () => {
     const mine = mark(at);
     const words = sidesWords(mine.sides);

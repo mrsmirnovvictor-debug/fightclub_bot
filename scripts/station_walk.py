@@ -26,11 +26,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bot.game.blackout import (  # noqa: E402
+    EYE_FLIP,
     EYE_FORMATS,
+    EYE_SIDES_SHORT,
     EYE_STAGES,
     FACINGS,
     ZOMBIE_ART,
     doorways,
+    eye_sides,
     station,
 )
 
@@ -94,6 +97,14 @@ def carte() -> dict:
         }
         if stages:
             row["stages"] = stages
+        # Что уже внесено в игру: обходчик начинает с этого, а не с
+        # чистого листа. Иначе пройденные комнаты пришлось бы
+        # размечать заново, а непройденные было бы не отличить от них
+        if one.code in EYE_SIDES_SHORT:
+            row["settled"] = {
+                "sides": eye_sides(one.code),
+                "flip": one.code in EYE_FLIP,
+            }
         rooms[one.code] = row
 
     return {

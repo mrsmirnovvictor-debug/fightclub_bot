@@ -12834,9 +12834,60 @@ function renderBlackout(data, force) {
   // решают, в лобби и в покое — нет
   const hot = Boolean(data.walking || data.fight);
   armStationPoll(hot ? STATION_POLL_LIVE : STATION_POLL_IDLE);
+  // Выбыл, а отряд идёт дальше: говорим один раз и не мешаем смотреть
+  const said = data.farewell;
+  if (said && !said.over) {
+    const mark = data.run + ":" + said.kind;
+    if (stationHeard !== mark) {
+      stationHeard = mark;
+      showStationEnd(said, null);
+    }
+  }
+  if (data.screen === "over") return paintStationEnd(data, body);
   if (data.screen === "lobby") return paintBlackoutLobby(data, body);
   if (data.screen === "squad") return paintBlackoutSquad(data, body);
   paintBlackoutRun(data, body);
+}
+
+// ---------- чем станция кончилась ----------
+//
+// Прежде экран просто сменялся городским лобби: боец падал в бою и
+// оказывался на карте, не узнав даже, что проиграл. Теперь поверх
+// станции встаёт окно, и пока его не закрыли, в город не выставляем.
+//
+// Слова и кнопку называет сервер: исходов четыре, и выбирать их
+// экрану не из чего — он не знает ни размера отряда, ни того, остался
+// ли кто на ногах.
+
+let stationHeard = "";  // какое прощание уже закрыли
+
+function showStationEnd(said, onClose) {
+  const veil = el("station-veil");
+  el("station-said").textContent = said.words;
+  const buttons = el("station-buttons");
+  buttons.textContent = "";
+  buttons.appendChild(
+    button(said.button || "Продолжить", {
+      onClick: () => {
+        veil.classList.add("hidden");
+        if (onClose) onClose();
+      },
+    })
+  );
+  veil.classList.remove("hidden");
+}
+
+/** Экран после конца: ничего, кроме окна. Закрыл — уходим в город. */
+function paintStationEnd(data, body) {
+  const said = data.farewell || {};
+  showStationEnd(said, async () => {
+    try {
+      await post("api/blackout", { action: "heard" });
+    } catch (error) {
+      // Не услышали — не беда: окно встанет снова на следующем взгляде
+    }
+    loadBlackout();
+  });
 }
 
 /** «2 дня 7 часов», «3 часа», «18 минут» — сколько ещё держится откат. */

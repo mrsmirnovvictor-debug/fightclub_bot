@@ -4580,6 +4580,23 @@ class Database:
             row = await cursor.fetchone()
         return int(row["run_id"]) if row else 0
 
+    async def blackout_last(self, user_id: int) -> dict | None:
+        """Последний рейд этого бойца — хоть живой, хоть кончившийся.
+
+        `blackout_of` кончившиеся не отдаёт, и это правильно: в них уже
+        не ходят. Но сказать бойцу, чем кончилось, надо именно после
+        конца — а для этого рейд надо найти.
+        """
+        async with self.conn.execute(
+            "SELECT r.* FROM blackout_members m "
+            "JOIN blackout_runs r ON r.id = m.run_id "
+            "WHERE m.user_id = ? AND m.left_at = 0 "
+            "ORDER BY m.run_id DESC LIMIT 1",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
     async def blackout_live(self, cycle: str = "") -> list[dict]:
         """Открытые рейды: по ним собирают отряд."""
         where = "phase = 'lobby'"

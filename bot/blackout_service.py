@@ -2937,6 +2937,111 @@ def _stairs_of(place: Any, room: Any, layer: str) -> list[dict[str, Any]]:
 # отдаёт прежний ответ, а не делает второй шаг.
 
 
+# ---------- чем станция кончилась для бойца ----------
+#
+# Экран просто сменялся городским лобби: боец падал в бою и оказывался
+# на карте, не узнав даже, что проиграл. Теперь перед уходом встаёт
+# окно, и сказать в нём надо разное — одиночке, павшему в отряде и
+# тому, с кем лёг весь отряд.
+#
+# Слова тут, а не на экране: на станции четыре исхода, и путать их
+# местами нельзя. Кнопка у каждого своя: «Ждать» — когда отряд идёт
+# дальше без тебя, «Продолжить» — когда идти уже некому.
+FAREWELLS: dict[str, tuple[str, str]] = {
+    "alone": (
+        "Вы проиграли бой. Вы очнётесь у входа на электростанцию.",
+        "Продолжить",
+    ),
+    "squad": (
+        "Вы проиграли бой. Ваши товарищи продолжают миссию без Вас, "
+        "по завершению вы очнётесь у входа на электростанцию.",
+        "Ждать",
+    ),
+    "wiped": (
+        "В живых не осталось никого, вы очнётесь у входа на "
+        "электростанцию.",
+        "Продолжить",
+    ),
+    "timeout": (
+        "Время миссии закончилось, вы очнётесь у входа на "
+        "электростанцию.",
+        "Продолжить",
+    ),
+}
+
+
+def farewell(state: dict, user_id: int) -> dict[str, Any] | None:
+    """Чем станция кончилась для этого бойца. Ничем — значит, рано.
+
+    Время смотрится первым: отряд, которому не хватило часов, услышит
+    про часы, даже если кто-то в нём уже лежал. Победа молчит — её
+    разбирает свой экран, и прощаться там не с чем.
+    """
+    one = member(state, user_id)
+    if one is None or one.get("left") or one.get("extracted"):
+        return None
+    outcome = str(state.get("outcome") or "")
+    if outcome in ("extracted", "restarted"):
+        return None
+    if outcome == "timeout":
+        kind = "timeout"
+    elif not one.get("down"):
+        return None
+    elif int(state.get("party") or len(state.get("members") or {})) <= 1:
+        kind = "alone"
+    elif outcome:
+        kind = "wiped"
+    else:
+        kind = "squad"
+    words, button = FAREWELLS[kind]
+    return {
+        "kind": kind,
+        "words": words,
+        "button": button,
+        # Отряд идёт дальше без тебя: уходить некуда, можно смотреть
+        "waiting": kind == "squad",
+        "over": bool(outcome),
+    }
+
+
+async def _after_the_end(
+    db: Database, player: Player, now: int
+) -> dict[str, Any] | None:
+    """Экран прощания, если боец о конце ещё не слышал.
+
+    Живого рейда у него уже нет — `blackout_of` кончившиеся не отдаёт, —
+    но и выкидывать его в город молча нельзя. Пока не нажал кнопку,
+    станция держит его этим окном.
+    """
+    row = await db.blackout_last(player.user_id)
+    if row is None or str(row["phase"]) != "over":
+        return None
+    state = json.loads(str(row["state"]) or "{}")
+    one = member(state, player.user_id)
+    if one is None or one.get("told"):
+        return None
+    said = farewell(state, player.user_id)
+    if said is None:
+        return None
+    return {"screen": "over", "run": int(row["id"]), "farewell": said}
+
+
+async def _hear_the_end(db: Database, player: Player, now: int) -> str:
+    """Боец нажал кнопку прощания. Больше окно не встанет."""
+    row = await db.blackout_last(player.user_id)
+    if row is None or str(row["phase"]) != "over":
+        return "Станция уже за спиной."
+    state = json.loads(str(row["state"]) or "{}")
+    one = member(state, player.user_id)
+    if one is None:
+        return "Станция уже за спиной."
+    one["told"] = now
+    await db.blackout_write(
+        int(row["id"]), int(row["version"]), "over", json.dumps(state), now
+    )
+    return "Станция осталась позади."
+
+
 async def state_for(
     db: Database, player: Player, now: int | None = None
 ) -> dict[str, Any]:
@@ -2944,6 +3049,11 @@ async def state_for(
     moment = now_ts() if now is None else now
     run_id = await db.blackout_of(player.user_id)
     if not run_id:
+        # Рейд кончился — но молча в город не выставляем: сперва
+        # скажем, чем он кончился, и дождёмся кнопки
+        said = await _after_the_end(db, player, moment)
+        if said is not None:
+            return said
         return await lobby_for(db, player, moment)
     run = await look(db, run_id, moment)
     one = member(run.state, player.user_id)
@@ -2982,6 +3092,9 @@ async def state_for(
     # Склянки из рюкзака: передышки за комнату нет, и это то, чем боец
     # лечится, если ждать десять минут ему некогда
     body["potions"] = _potions_payload(player, one)
+    # Выбыл — говорим об этом прямо, не дожидаясь конца рейда: отряд
+    # идёт дальше, а боец должен понимать, почему он больше не ходит
+    body["farewell"] = farewell(run.state, player.user_id)
     return body
 
 
@@ -3109,6 +3222,10 @@ async def act(
         return await start_run(
             db, player, moment, bots=int(data.get("bots") or 0)
         )
+    if action == "heard":
+        # Прощание читают уже вне рейда: искать его через `blackout_of`
+        # поздно, рейд кончился
+        return await _hear_the_end(db, player, moment)
 
     run_id = await db.blackout_of(player.user_id)
     if not run_id:

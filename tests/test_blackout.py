@@ -2344,3 +2344,114 @@ def test_the_mirrored_rooms_are_named_and_only_they():
     assert not eye_flipped("F303")
     # Зеркало — не поворот: у этих комнат и расстановка своя
     assert all(one in EYE_SIDES_SHORT for one in EYE_FLIP)
+
+
+# ---------- чем станция кончилась для бойца ----------
+
+
+async def test_the_lone_fighter_is_told_he_lost(db):
+    """Одиночка узнаёт о поражении словами, а не по смене экрана."""
+    from bot.blackout_service import farewell, state_for
+
+    people, run = await enter(db, 1)
+    one = run.state["members"][str(people[0].user_id)]
+    one["down"] = True
+    run.state["outcome"] = "wiped"
+
+    said = farewell(run.state, people[0].user_id)
+
+    assert said["kind"] == "alone"
+    assert said["words"] == (
+        "Вы проиграли бой. Вы очнётесь у входа на электростанцию."
+    )
+    assert said["button"] == "Продолжить"
+    assert said["over"] and not said["waiting"]
+
+
+async def test_the_fallen_one_waits_while_the_squad_goes_on(db):
+    """Упавший в отряде слышит, что товарищи идут дальше, и ждёт."""
+    from bot.blackout_service import farewell
+
+    people, run = await enter(db, 3)
+    run.state["members"][str(people[1].user_id)]["down"] = True
+
+    said = farewell(run.state, people[1].user_id)
+
+    assert said["kind"] == "squad"
+    assert "товарищи продолжают миссию без Вас" in said["words"]
+    assert said["button"] == "Ждать"
+    assert said["waiting"] and not said["over"]
+    # А тем, кто на ногах, говорить нечего
+    assert farewell(run.state, people[0].user_id) is None
+
+
+async def test_the_last_to_fall_hears_that_nobody_is_left(db):
+    """Лёг весь отряд — и слова другие: в живых не осталось никого."""
+    from bot.blackout_service import farewell
+
+    people, run = await enter(db, 3)
+    for one in people:
+        run.state["members"][str(one.user_id)]["down"] = True
+    run.state["outcome"] = "wiped"
+
+    for one in people:
+        said = farewell(run.state, one.user_id)
+        assert said["kind"] == "wiped"
+        assert said["words"] == (
+            "В живых не осталось никого, вы очнётесь у входа на "
+            "электростанцию."
+        )
+        assert said["button"] == "Продолжить"
+
+
+async def test_the_clock_speaks_before_the_wounds(db):
+    """Время вышло — говорим про время, даже если кто-то уже лежал.
+
+    Иначе упавший в отряде услышал бы про товарищей, которые
+    «продолжают миссию», когда миссии уже нет.
+    """
+    from bot.blackout_service import farewell
+
+    people, run = await enter(db, 2)
+    run.state["members"][str(people[1].user_id)]["down"] = True
+    run.state["outcome"] = "timeout"
+
+    for one in people:
+        said = farewell(run.state, one.user_id)
+        assert said["kind"] == "timeout"
+        assert said["words"] == (
+            "Время миссии закончилось, вы очнётесь у входа на "
+            "электростанцию."
+        )
+        assert said["button"] == "Продолжить"
+
+
+async def test_the_station_holds_the_fighter_until_he_presses_the_button(db):
+    """В город молча не выставляют: сперва окно, и только потом карта.
+
+    Это и была беда: рейд кончался, `blackout_of` переставал его
+    отдавать, и экран сменялся городским лобби. Боец узнавал о
+    поражении по тому, что оказался на карте.
+    """
+    from bot.blackout_service import act, close_out, look, state_for
+
+    people, run = await enter(db, 1)
+    one = run.state["members"][str(people[0].user_id)]
+    one["down"] = True
+    run.state["outcome"] = "wiped"
+    await db.blackout_write(
+        run.id, run.version, run.phase, json.dumps(run.state), NOW
+    )
+    fresh = await look(db, run.id, NOW)
+    await close_out(db, fresh, NOW)
+
+    body = await state_for(db, people[0], NOW)
+    assert body["screen"] == "over", "рейда уже нет, а прощания ещё не было"
+    assert body["farewell"]["kind"] == "alone"
+
+    # Нажал кнопку — и только теперь город
+    await act(db, people[0], "heard", {}, "heard", NOW)
+    after = await state_for(db, people[0], NOW)
+    assert after["screen"] == "lobby"
+    # Второй раз окно не встаёт
+    assert (await state_for(db, people[0], NOW))["screen"] == "lobby"

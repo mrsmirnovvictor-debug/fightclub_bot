@@ -197,6 +197,15 @@
           "name": "Проходная",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "north",
+          "south": "east",
+          "west": "west"
+        },
+        "flip": false
       }
     },
     "O02": {
@@ -217,7 +226,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "north",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "O03": {
       "name": "Диспетчерская",
@@ -237,7 +255,16 @@
           "stair": false
         }
       },
-      "objective": "dispatch_clearance"
+      "objective": "dispatch_clearance",
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "west",
+          "south": "north",
+          "west": "east"
+        },
+        "flip": false
+      }
     },
     "O04": {
       "name": "Санитарный шлюз",
@@ -256,6 +283,15 @@
           "name": "Развилка двора",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "west",
+          "south": "north",
+          "west": "east"
+        },
+        "flip": false
       }
     },
     "O05": {
@@ -280,6 +316,15 @@
           "name": "Склад снабжения",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "north",
+          "south": "east",
+          "west": "west"
+        },
+        "flip": false
       }
     },
     "O06": {
@@ -299,6 +344,15 @@
           "name": "Погрузочная зона",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "north",
+          "east": "west",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
       }
     },
     "O07": {
@@ -318,6 +372,15 @@
           "name": "Погрузочная зона",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "south",
+          "south": "east",
+          "west": "north"
+        },
+        "flip": true
       }
     },
     "O08": {
@@ -348,7 +411,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "east",
+          "east": "south",
+          "south": "north",
+          "west": "west"
+        },
+        "flip": false
+      }
     },
     "O09": {
       "name": "Медпункт",
@@ -381,6 +453,15 @@
           "name": "Вестибюль",
           "stair": true
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "east",
+          "south": "north",
+          "west": "west"
+        },
+        "flip": false
       }
     },
     "F101": {
@@ -401,7 +482,16 @@
           "stair": true
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "north",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "F102": {
       "name": "Раздевалка",
@@ -420,6 +510,15 @@
           "name": "Цеховой коридор",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "north",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
       }
     },
     "F103": {
@@ -440,7 +539,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "east",
+          "south": "north",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "F104": {
       "name": "Лестница А · на 2 этаж",
@@ -464,6 +572,15 @@
           "name": "Лестница Б",
           "stair": true
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "west",
+          "south": "north",
+          "west": "east"
+        },
+        "flip": false
       }
     },
     "F105": {
@@ -483,6 +600,15 @@
           "name": "Лестница В · вниз",
           "stair": true
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "west",
+          "south": "north",
+          "west": "east"
+        },
+        "flip": false
       }
     },
     "F106": {
@@ -503,7 +629,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "west",
+          "south": "north",
+          "west": "east"
+        },
+        "flip": false
+      }
     },
     "F107": {
       "name": "Арена Громилы",
@@ -524,7 +659,16 @@
         }
       },
       "objective": "brute_defeated",
-      "encounter": "boss_brute"
+      "encounter": "boss_brute",
+      "settled": {
+        "sides": {
+          "north": "north",
+          "east": "west",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "F108": {
       "name": "Сердечник · пьедестал",
@@ -544,7 +688,16 @@
           "stair": false
         }
       },
-      "objective": "power_core"
+      "objective": "power_core",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "east",
+          "south": "south",
+          "west": "north"
+        },
+        "flip": false
+      }
     },
     "F109": {
       "name": "Мастерская",
@@ -617,6 +770,15 @@
           "name": "Лестница Б",
           "stair": true
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "east",
+          "east": "north",
+          "south": "south",
+          "west": "west"
+        },
+        "flip": false
       }
     },
     "F202": {
@@ -637,7 +799,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "east",
+          "south": "north",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "F203": {
       "name": "Архив смен",
@@ -656,6 +827,15 @@
           "name": "Сервисный мост",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "east",
+          "south": "north",
+          "west": "west"
+        },
+        "flip": false
       }
     },
     "F204": {
@@ -675,6 +855,15 @@
           "name": "Склад кабеля",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "west",
+          "south": "east",
+          "west": "north"
+        },
+        "flip": true
       }
     },
     "F205": {
@@ -695,7 +884,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "east",
+          "east": "west",
+          "south": "south",
+          "west": "north"
+        },
+        "flip": false
+      }
     },
     "F206": {
       "name": "Пульт прожекторов",
@@ -715,7 +913,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "east",
+          "east": "south",
+          "south": "north",
+          "west": "west"
+        },
+        "flip": true
+      }
     },
     "F207": {
       "name": "Площадка засады",
@@ -735,7 +942,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "north",
+          "east": "south",
+          "south": "east",
+          "west": "west"
+        },
+        "flip": false
+      }
     },
     "F208": {
       "name": "Арена Охотника",
@@ -756,7 +972,16 @@
         }
       },
       "objective": "hunter_defeated",
-      "encounter": "boss_hunter"
+      "encounter": "boss_hunter",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "north",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "F209": {
       "name": "Модуль · тайник",
@@ -776,7 +1001,16 @@
           "stair": false
         }
       },
-      "objective": "synchronizer"
+      "objective": "synchronizer",
+      "settled": {
+        "sides": {
+          "north": "north",
+          "east": "south",
+          "south": "east",
+          "west": "west"
+        },
+        "flip": false
+      }
     },
     "F210": {
       "name": "Лестница В · вниз",
@@ -805,6 +1039,15 @@
           "name": "Лестница Б",
           "stair": true
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "south",
+          "south": "east",
+          "west": "north"
+        },
+        "flip": false
       }
     },
     "B01": {
@@ -834,6 +1077,15 @@
           "name": "Нижний аварийный шлюз",
           "stair": true
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "north",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
       }
     },
     "B02": {
@@ -854,7 +1106,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "north",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "B03": {
       "name": "Вентиль А",
@@ -874,7 +1135,16 @@
           "stair": false
         }
       },
-      "objective": "valve_a"
+      "objective": "valve_a",
+      "settled": {
+        "sides": {
+          "north": "east",
+          "east": "west",
+          "south": "north",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "B04": {
       "name": "Насосный пост",
@@ -893,6 +1163,15 @@
           "name": "Вентиль Б",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "north",
+          "east": "west",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
       }
     },
     "B05": {
@@ -913,7 +1192,16 @@
           "stair": false
         }
       },
-      "objective": "valve_b"
+      "objective": "valve_b",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "south",
+          "south": "east",
+          "west": "north"
+        },
+        "flip": false
+      }
     },
     "B06": {
       "name": "Дренажный канал",
@@ -933,7 +1221,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "north",
+          "east": "west",
+          "south": "south",
+          "west": "east"
+        },
+        "flip": false
+      }
     },
     "B07": {
       "name": "Щит насосов",
@@ -954,7 +1251,16 @@
         }
       },
       "objective": "cooling_ready",
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "north",
+          "south": "east",
+          "west": "west"
+        },
+        "flip": false
+      }
     },
     "B08": {
       "name": "Техническая лестница",
@@ -973,6 +1279,15 @@
           "name": "Лестница Б · в подвал",
           "stair": true
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "north",
+          "south": "east",
+          "west": "south"
+        },
+        "flip": false
       }
     },
     "F301": {
@@ -1002,6 +1317,15 @@
           "name": "Лестница А",
           "stair": true
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "north",
+          "south": "east",
+          "west": "west"
+        },
+        "flip": false
       }
     },
     "F302": {
@@ -1022,7 +1346,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "east",
+          "south": "north",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "F303": {
       "name": "Медицинский пост",
@@ -1041,6 +1374,15 @@
           "name": "Релейная комната",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "east",
+          "south": "north",
+          "west": "west"
+        },
+        "flip": false
       }
     },
     "F304": {
@@ -1061,7 +1403,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "south",
+          "south": "east",
+          "west": "north"
+        },
+        "flip": false
+      }
     },
     "F305": {
       "name": "Кольцевая площадка",
@@ -1080,6 +1431,15 @@
           "name": "Предбоссовый шлюз",
           "stair": false
         }
+      },
+      "settled": {
+        "sides": {
+          "north": "east",
+          "east": "south",
+          "south": "west",
+          "west": "north"
+        },
+        "flip": false
       }
     },
     "F306": {
@@ -1100,7 +1460,16 @@
           "stair": false
         }
       },
-      "encounter": "zombie_squad"
+      "encounter": "zombie_squad",
+      "settled": {
+        "sides": {
+          "north": "west",
+          "east": "south",
+          "south": "north",
+          "west": "east"
+        },
+        "flip": false
+      }
     },
     "F307": {
       "name": "Арена Предводителя",
@@ -1121,7 +1490,16 @@
         }
       },
       "objective": "leader_defeated",
-      "encounter": "boss_leader"
+      "encounter": "boss_leader",
+      "settled": {
+        "sides": {
+          "north": "south",
+          "east": "north",
+          "south": "east",
+          "west": "west"
+        },
+        "flip": false
+      }
     },
     "F308": {
       "name": "Ключ · лестница наверх",
@@ -1141,7 +1519,16 @@
           "stair": true
         }
       },
-      "objective": "restart_key"
+      "objective": "restart_key",
+      "settled": {
+        "sides": {
+          "north": "north",
+          "east": "east",
+          "south": "west",
+          "west": "south"
+        },
+        "flip": false
+      }
     },
     "F401": {
       "name": "Верхняя лестница",
