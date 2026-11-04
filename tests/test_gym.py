@@ -682,9 +682,15 @@ async def test_extending_the_subscription_extends_the_pass_with_it(db):
 
 
 async def test_the_gym_screen_says_the_pass_came_with_the_subscription(client, db):
-    """Путь целиком: подписчик открывает зал и уже с абонементом."""
-    now = at_slot(0)
-    await stand(db, pro_player(now=now, credits=0))
+    """Путь целиком: подписчик открывает зал и уже с абонементом.
+
+    Подписку тут выдаём от живых часов, а не от вписанного в тесты
+    понедельника: ручка смотрит на настоящее «сейчас», и подписка,
+    выданная на тридцать дней от пятого октября две тысячи двадцать
+    шестого, однажды просто истекла — проверка падала не оттого, что
+    что-то сломали, а оттого, что настал четвёртый ноября.
+    """
+    await stand(db, pro_player(credits=0))
 
     response = await client.get("/api/gym", headers=headers())
     body = await response.json()
