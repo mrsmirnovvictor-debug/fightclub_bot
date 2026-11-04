@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Обход станции «Контур»</title>
+<!--
+  Обходчик панорам. Служебная страница, не часть игры.
+
+  Зачем. Панорамы станции — не сфера, а четыре отдельных кадра на
+  комнату, и сторона света зашита в имя файла: panoramas_fp/F303/north.
+  План же считает стороны по координатам комнат. Там, где художник
+  рисовал коридор уходящим на север, а по плану он идёт на восток,
+  спорить не с чем: надо запомнить, на сколько четвертей кадры этой
+  комнаты повёрнуты относительно плана. Это число и собирается тут.
+
+  Поворот k — «кадры комнаты повёрнуты на k четвертей по часовой
+  стрелке относительно плана». Кадр, показывающий сторону D, назван
+  FACINGS[(idx(D) - k) % 4]. Пример: по плану из F303 ход в F304 южный,
+  а художник нарисовал F304 на северном кадре — значит у F303 k = 2.
+
+  Карта берётся из station.json, который собран из той же функции
+  doorways, по которой ходит игра (scripts/station_walk.py). Зомби,
+  замков и флагов тут нет вовсе: ходить можно всюду.
+
+  Итог лежит в localStorage и выгружается строкой внизу.
+-->
+<style>
+  :root {
+    --bg: #11131a; --panel: #1b1f2b; --line: #2d3345;
+    --ink: #e8ecf5; --dim: #9aa4bd; --mark: #ffd27f; --good: #8ee6a8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
+    padding: 10px 16px; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: var(--bg); z-index: 5;
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  header .where { color: var(--mark); font-weight: 700; }
+  header .dim { color: var(--dim); font-size: 13px; }
+  main {
+    display: grid; grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 16px; padding: 16px; align-items: start;
+  }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+
+  .eye {
+    position: relative; background: #05070c; border: 1px solid var(--line);
+    border-radius: 10px; overflow: hidden; aspect-ratio: 4 / 3;
+    max-height: 62vh; display: flex; align-items: center;
+    justify-content: center;
+  }
+  .eye img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .eye.flip img { transform: scaleX(-1); }
+  .eye .none { color: var(--dim); font-size: 14px; padding: 20px; }
+  .eye .tag {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 7px 10px;
+    background: rgba(5, 7, 12, 0.82); font-size: 13px;
+  }
+  .eye .tag b { color: var(--mark); }
+
+  .four { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+  .four .eye { aspect-ratio: 1 / 1; cursor: pointer; }
+  .four .eye.now { outline: 2px solid var(--mark); }
+  .four .cap { font-size: 12px; color: var(--dim); margin-top: 4px; min-height: 32px; }
+  .four .cap b { color: var(--ink); }
+  @media (max-width: 560px) { .four { grid-template-columns: repeat(2, 1fr); } }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px; margin-bottom: 12px;
+  }
+  .panel h2 { font-size: 13px; margin: 0 0 8px; color: var(--dim); font-weight: 600; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  button {
+    font: inherit; color: var(--ink); background: #273047;
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 11px; cursor: pointer;
+  }
+  button:hover { background: #313c58; }
+  button.on { background: var(--mark); color: #1b1200; border-color: var(--mark); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .turn-now { font-size: 22px; font-weight: 700; color: var(--mark); min-width: 2.2em; text-align: center; }
+  input[type=text] {
+    font: inherit; width: 100%; color: var(--ink); background: #0f1320;
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px;
+  }
+  textarea {
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width: 100%;
+    height: 160px; color: var(--ink); background: #0f1320;
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+  }
+  .plan li { margin: 2px 0; }
+  .plan .side { color: var(--dim); display: inline-block; min-width: 4.6em; }
+  .plan .stair { color: var(--good); }
+  .done { color: var(--good); font-size: 12px; }
+
+  svg.map { width: 100%; height: auto; display: block; }
+  svg.map .room { fill: #222a3d; stroke: var(--line); cursor: pointer; }
+  svg.map .room.now { fill: var(--mark); }
+  svg.map .room.done { stroke: var(--good); stroke-width: 3; }
+  svg.map text { fill: var(--ink); font-size: 26px; pointer-events: none; }
+  svg.map .door { stroke: #465070; stroke-width: 6; }
+  svg.map .look { stroke: var(--mark); stroke-width: 8; }
+  .keys { color: var(--dim); font-size: 12px; }
+  .keys b { color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Обход станции «Контур»</h1>
+  <span class="where" id="where">…</span>
+  <span class="dim" id="floor"></span>
+  <span class="dim" id="note-room"></span>
+  <span class="dim" style="margin-left:auto" id="counted"></span>
+</header>
+
+<main>
+  <section>
+    <div class="eye" id="eye-big"><div class="none">…</div></div>
+    <div class="four" id="four"></div>
+  </section>
+
+  <aside>
+    <div class="panel">
+      <h2>Поворот кадров этой комнаты</h2>
+      <div class="row">
+        <button id="turn-left">⟲ влево</button>
+        <span class="turn-now" id="turn-now">0</span>
+        <button id="turn-right">вправо ⟳</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="flip">зеркало</button>
+        <button id="reset">сбросить</button>
+      </div>
+      <div class="keys" style="margin-top:8px">
+        Крути, пока подпись под каждым кадром не совпадёт с тем, что на нём видно.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Что по плану на стенах</h2>
+      <ul class="plan" id="plan" style="margin:0; padding-left:16px"></ul>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="note" placeholder="заметка: перерисовать, кадра нет…">
+      </div>
+      <div class="done" id="saved"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Этаж</h2>
+      <div class="row" id="floors"></div>
+      <svg class="map" id="map" viewBox="0 0 100 100"></svg>
+    </div>
+
+    <div class="panel">
+      <h2>Ходить</h2>
+      <div class="keys">
+        <b>↑ / W</b> вперёд · <b>↓ / S</b> назад · <b>← → / A D</b> повернуться<br>
+        <b>[ ]</b> повернуть кадры · <b>M</b> зеркало · комната на карте — прыжок
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Итог <span class="dim" id="howmany"></span></h2>
+      <textarea id="out" readonly></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="copy">скопировать</button>
+        <button id="save-file">скачать файл</button>
+        <button id="wipe">стереть всё</button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+const SIDES = ["north", "east", "south", "west"];
+const SIDE_RU = { north: "север", east: "восток", south: "юг", west: "запад" };
+const AHEAD = ["впереди", "справа", "позади", "слева"];
+const KEY = "station-turns";
+
+let carte = null;       // station.json
+let at = "";            // где стоим
+let look = 0;           // куда смотрим: индекс в SIDES
+let marks = {};         // {комната: {turn, flip, note}}
+let floor = "";         // какой этаж показан на карте
+
+// ---------- память ----------
+
+function load() {
+  try {
+    marks = JSON.parse(localStorage.getItem(KEY) || "{}") || {};
+  } catch (error) {
+    marks = {};
+  }
+}
+
+function mark(room) {
+  return marks[room] || { turn: 0, flip: false, note: "" };
+}
+
+function keep(room, change) {
+  const was = mark(room);
+  const now = Object.assign({}, was, change);
+  if (!now.turn && !now.flip && !now.note) delete marks[room];
+  else marks[room] = now;
+  try {
+    localStorage.setItem(KEY, JSON.stringify(marks));
+    say("сохранено");
+  } catch (error) {
+    say("не сохранилось: " + error.message);
+  }
+  paint();
+}
+
+let saidAt = 0;
+function say(words) {
+  const box = document.getElementById("saved");
+  box.textContent = words;
+  const mine = ++saidAt;
+  setTimeout(() => { if (mine === saidAt) box.textContent = ""; }, 1500);
+}
+
+// ---------- кадры ----------
+
+// Какой файл показывает эту сторону света. Поворот k значит, что кадры
+// комнаты повёрнуты на k четвертей по часовой стрелке относительно
+// плана, поэтому имя файла отстаёт от стороны ровно на k
+function fileFor(side, turn) {
+  return SIDES[(SIDES.indexOf(side) - turn + 8) % 4];
+}
+
+// Адреса, которые стоит попробовать: сперва нужная ступень, потом
+// обычная, и в обоих случаях jpg и png — выгружают то так, то так
+function urlsFor(room, side) {
+  const row = carte.rooms[room];
+  if (!row) return [];
+  const name = fileFor(side, mark(room).turn);
+  const stage = (row.stages || {})[name];
+  const folders = stage ? [stage + "/", ""] : [""];
+  const out = [];
+  folders.forEach((where) => {
+    carte.formats.forEach((kind) => {
+      out.push(`${carte.art}/${room}/${where}${name}.${kind}`);
+    });
+  });
+  return out;
+}
+
+// Картинка, которая сама перебирает адреса и сдаётся словами
+function eyeBox(box, room, side) {
+  const tries = urlsFor(room, side);
+  box.textContent = "";
+  box.classList.toggle("flip", !!mark(room).flip);
+  let step = 0;
+  const pic = document.createElement("img");
+  pic.alt = "";
+  pic.onerror = () => {
+    step += 1;
+    if (step < tries.length) { pic.src = tries[step]; return; }
+    box.textContent = "";
+    const none = document.createElement("div");
+    none.className = "none";
+    none.textContent = "кадра нет · " + fileFor(side, mark(room).turn);
+    box.appendChild(none);
+  };
+  pic.src = tries[0];
+  box.appendChild(pic);
+  return box;
+}
+
+// ---------- что по плану ----------
+
+function wallOf(room, side) {
+  return (carte.rooms[room].walls || {})[side] || null;
+}
+
+function wallWords(room, side) {
+  const door = wallOf(room, side);
+  if (!door) return "глухая стена";
+  if (door.stair) return "лестница → " + door.to;
+  return "ход → " + door.to + " · " + door.name;
+}
+
+// ---------- рисуем ----------
+
+function paint() {
+  const row = carte.rooms[at];
+  document.getElementById("where").textContent = at + " · " + row.name;
+  document.getElementById("floor").textContent =
+    (carte.layers.find((one) => one.code === row.layer) || {}).title || row.layer;
+  const extra = [];
+  if (row.objective) extra.push("цель: " + row.objective);
+  if (row.encounter) extra.push("обычно тут: " + row.encounter);
+  if (row.safe) extra.push("тихая комната");
+  document.getElementById("note-room").textContent = extra.join(" · ");
+
+  const side = SIDES[look];
+  const big = eyeBox(document.getElementById("eye-big"), at, side);
+  const tag = document.createElement("div");
+  tag.className = "tag";
+  tag.innerHTML = "Смотришь на <b>" + SIDE_RU[side] + "</b> — "
+    + wallWords(at, side);
+  big.appendChild(tag);
+
+  const four = document.getElementById("four");
+  four.textContent = "";
+  SIDES.forEach((one, index) => {
+    const cell = document.createElement("div");
+    const box = document.createElement("div");
+    box.className = "eye" + (index === look ? " now" : "");
+    box.onclick = () => { look = index; paint(); };
+    eyeBox(box, at, one);
+    const cap = document.createElement("div");
+    cap.className = "cap";
+    cap.innerHTML = "<b>" + SIDE_RU[one] + "</b> ("
+      + AHEAD[(index - look + 8) % 4] + ")<br>" + wallWords(at, one);
+    cell.append(box, cap);
+    four.appendChild(cell);
+  });
+
+  const plan = document.getElementById("plan");
+  plan.textContent = "";
+  SIDES.forEach((one) => {
+    const line = document.createElement("li");
+    const door = wallOf(at, one);
+    line.innerHTML = '<span class="side">' + SIDE_RU[one] + "</span>"
+      + '<span class="' + (door && door.stair ? "stair" : "") + '">'
+      + wallWords(at, one) + "</span>";
+    plan.appendChild(line);
+  });
+
+  const mine = mark(at);
+  document.getElementById("turn-now").textContent = mine.turn;
+  document.getElementById("flip").classList.toggle("on", !!mine.flip);
+  const note = document.getElementById("note");
+  if (note !== document.activeElement) note.value = mine.note || "";
+
+  const count = Object.keys(marks).length;
+  document.getElementById("counted").textContent =
+    count ? "размечено комнат: " + count : "ещё ничего не размечено";
+  document.getElementById("howmany").textContent = count ? "· " + count : "";
+  document.getElementById("out").value = JSON.stringify(marks, null, 2);
+
+  if (floor !== row.layer) floor = row.layer;
+  drawMap();
+  drawFloors();
+}
+
+function drawFloors() {
+  const box = document.getElementById("floors");
+  box.textContent = "";
+  carte.layers.forEach((one) => {
+    const btn = document.createElement("button");
+    btn.textContent = one.code;
+    btn.title = one.title;
+    if (one.code === floor) btn.classList.add("on");
+    btn.onclick = () => { floor = one.code; drawMap(); drawFloors(); };
+    box.appendChild(btn);
+  });
+}
+
+function drawMap() {
+  const here = carte.layers.find((one) => one.code === floor);
+  const map = document.getElementById("map");
+  map.textContent = "";
+  if (!here) return;
+  const rooms = here.rooms.map((code) => [code, carte.rooms[code]]);
+  const xs = rooms.map(([, one]) => one.x);
+  const ys = rooms.map(([, one]) => one.y);
+  // Поле вокруг плана: в него должен влезть не только кружок комнаты,
+  // но и луч взгляда — иначе крайняя комната упирается в край
+  const pad = 150;
+  const left = Math.min(...xs) - pad;
+  const top = Math.min(...ys) - pad;
+  const wide = Math.max(...xs) - Math.min(...xs) + pad * 2;
+  const tall = Math.max(...ys) - Math.min(...ys) + pad * 2;
+  map.setAttribute("viewBox", `${left} ${top} ${wide} ${tall}`);
+
+  const ns = "http://www.w3.org/2000/svg";
+  const add = (name, attrs) => {
+    const node = document.createElementNS(ns, name);
+    Object.entries(attrs).forEach(([key, value]) => {
+      node.setAttribute(key, value);
+    });
+    map.appendChild(node);
+    return node;
+  };
+
+  rooms.forEach(([code, one]) => {
+    Object.values(one.walls || {}).forEach((door) => {
+      const there = carte.rooms[door.to];
+      if (!there || there.layer !== floor) return;
+      add("line", {
+        class: "door", x1: one.x, y1: one.y, x2: there.x, y2: there.y,
+      });
+    });
+  });
+
+  // Куда смотрим — коротким лучом от своей комнаты
+  const mineRoom = carte.rooms[at];
+  if (mineRoom.layer === floor) {
+    const step = { north: [0, -1], east: [1, 0], south: [0, 1], west: [-1, 0] };
+    const [dx, dy] = step[SIDES[look]];
+    add("line", {
+      class: "look", x1: mineRoom.x, y1: mineRoom.y,
+      x2: mineRoom.x + dx * 95, y2: mineRoom.y + dy * 95,
+    });
+  }
+
+  rooms.forEach(([code, one]) => {
+    const dot = add("circle", {
+      class: "room" + (code === at ? " now" : "") + (marks[code] ? " done" : ""),
+      cx: one.x, cy: one.y, r: 46,
+    });
+    dot.onclick = () => { at = code; paint(); };
+    const label = add("text", {
+      x: one.x, y: one.y + 9, "text-anchor": "middle",
+    });
+    label.textContent = code;
+    if (code === at) label.setAttribute("fill", "#1b1200");
+  });
+}
+
+// ---------- ходить ----------
+
+function step(back) {
+  const side = SIDES[(look + (back ? 2 : 0)) % 4];
+  const door = wallOf(at, side);
+  if (!door) { say("в эту сторону хода нет"); return; }
+  at = door.to;
+  // Лестница ведёт на другой этаж, и сторона там своя: оставляем как
+  // смотрели — всё равно направления у такого хода нет
+  paint();
+}
+
+function spin(step) {
+  look = (look + step + 8) % 4;
+  paint();
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA") {
+    return;
+  }
+  const code = event.key.toLowerCase();
+  const did = {
+    arrowup: () => step(false), w: () => step(false), "ц": () => step(false),
+    arrowdown: () => step(true), s: () => step(true), "ы": () => step(true),
+    arrowleft: () => spin(-1), a: () => spin(-1), "ф": () => spin(-1),
+    arrowright: () => spin(1), d: () => spin(1), "в": () => spin(1),
+    "[": () => keep(at, { turn: (mark(at).turn + 3) % 4 }),
+    "]": () => keep(at, { turn: (mark(at).turn + 1) % 4 }),
+    m: () => keep(at, { flip: !mark(at).flip }),
+    "ь": () => keep(at, { flip: !mark(at).flip }),
+  }[code];
+  if (!did) return;
+  event.preventDefault();
+  did();
+});
+
+// ---------- кнопки ----------
+
+function wire() {
+  document.getElementById("turn-left").onclick =
+    () => keep(at, { turn: (mark(at).turn + 3) % 4 });
+  document.getElementById("turn-right").onclick =
+    () => keep(at, { turn: (mark(at).turn + 1) % 4 });
+  document.getElementById("flip").onclick =
+    () => keep(at, { flip: !mark(at).flip });
+  document.getElementById("reset").onclick =
+    () => keep(at, { turn: 0, flip: false, note: "" });
+  document.getElementById("note").oninput = (event) => {
+    keep(at, { note: event.target.value.trim() });
+  };
+  document.getElementById("copy").onclick = async () => {
+    const out = document.getElementById("out");
+    try {
+      await navigator.clipboard.writeText(out.value);
+      say("скопировано");
+    } catch (error) {
+      out.select();
+      say("выдели и скопируй руками");
+    }
+  };
+  document.getElementById("save-file").onclick = () => {
+    const blob = new Blob([document.getElementById("out").value],
+      { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "station_turns.json";
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+  document.getElementById("wipe").onclick = () => {
+    if (!confirm("Стереть все повороты?")) return;
+    marks = {};
+    localStorage.removeItem(KEY);
+    paint();
+  };
+}
+
+// ---------- запуск ----------
+
+(async function start() {
+  load();
+  try {
+    const answer = await fetch("station.json");
+    if (!answer.ok) throw new Error("station.json не отдался");
+    carte = await answer.json();
+  } catch (error) {
+    document.getElementById("eye-big").innerHTML =
+      '<div class="none">Карта не загрузилась: ' + error.message + "</div>";
+    return;
+  }
+  at = carte.order[0];
+  floor = carte.rooms[at].layer;
+  wire();
+  paint();
+})();
+</script>
+</body>
+</html>

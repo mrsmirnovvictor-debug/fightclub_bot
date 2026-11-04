@@ -2159,3 +2159,67 @@ def test_the_zombie_wears_his_own_things_not_the_city_ones():
     from bot.blackout_service import boss_foes
     brute = _foe_fighter(boss_foes("brute", BEST_PARTY)[0])
     assert "кувалд" in brute.weapon, brute.weapon
+
+
+# ---------- обходчик панорам ----------
+
+
+def test_the_walker_map_matches_the_station_itself():
+    """`bot/webapp/static/station.json` не отстаёт от карты.
+
+    По этому файлу ходит обходчик панорам: в нём сказано, что по плану
+    на каждой стене комнаты. Стоит кому-то подвинуть комнату или
+    добавить дверь — и обходчик начнёт показывать не ту стену, а
+    собранные по нему повороты лягут мимо. Поэтому файл не пишется
+    руками: `scripts/station_walk.py` собирает его из той же функции
+    `doorways`, по которой ходит игра.
+
+        python3 scripts/station_walk.py
+    """
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "scripts"))
+    from station_walk import text  # noqa: E402
+
+    written = (
+        root / "bot" / "webapp" / "static" / "station.json"
+    ).read_text(encoding="utf-8")
+    assert written == text(), (
+        "карта станции изменилась — пересобери station.json: "
+        "python3 scripts/station_walk.py"
+    )
+
+
+def test_the_walker_map_speaks_of_doors_the_game_itself_draws():
+    """Стены в файле — те же, что рисует игра, а не пересказ манифеста."""
+    import json
+    from pathlib import Path
+
+    from bot.game.blackout import doorways, station
+
+    root = Path(__file__).resolve().parent.parent
+    carte = json.loads(
+        (root / "bot" / "webapp" / "static" / "station.json")
+        .read_text(encoding="utf-8")
+    )
+    place = station()
+    assert len(carte["rooms"]) == len(place.rooms)
+    for code, row in carte["rooms"].items():
+        want = doorways(code)
+        assert {
+            side: door["to"] for side, door in row["walls"].items()
+        } == want, code
+    # Лестница помечена: поворотом кадров её не судят, своей стороны у
+    # неё нет вовсе
+    stairs = [
+        (code, side)
+        for code, row in carte["rooms"].items()
+        for side, door in row["walls"].items()
+        if door["stair"]
+    ]
+    assert stairs, "на станции семь этажей, лестницы обязаны быть"
+    for code, side in stairs:
+        there = carte["rooms"][carte["rooms"][code]["walls"][side]["to"]]
+        assert there["layer"] != carte["rooms"][code]["layer"], (code, side)

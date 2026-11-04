@@ -16943,3 +16943,97 @@ async def test_the_spinning_drum_hides_the_prize(server, db):
         assert await page.evaluate("() => !!casinoBeltSpin"), "барабан стоит"
         assert not await page.get_by_text("Ролл за 250").is_enabled()
         await browser.close()
+
+
+# ---------- обходчик панорам ----------
+
+
+async def open_walker(pw, server):
+    """Открыть обходчик станции. Это не мини-апп: ни входа, ни карточки."""
+    browser = await pw.chromium.launch(
+        executable_path=CHROMIUM, args=["--no-proxy-server"]
+    )
+    page = await browser.new_page(viewport={"width": 1100, "height": 900})
+    # Кадры лежат в бакете, до которого из теста не дотянуться: пусть
+    # страница честно скажет, что кадра нет
+    await page.route(IMAGES, lambda route: route.abort())
+    await page.goto(f"{server.make_url('/static/station.html')}")
+    await page.wait_for_selector(".four .eye")
+    return browser, page
+
+
+async def test_the_walker_opens_the_station_and_walks_it(server):
+    """Обходчик открывается без входа и ходит по станции.
+
+    Служебная страница: по ней собирают повороты панорам. Зомби,
+    замков и флагов в ней нет вовсе — ходить можно всюду, а значит и
+    проверять нечего, кроме того, что ход ведёт туда, куда ведёт план.
+    """
+    import json
+    from pathlib import Path
+
+    carte = json.loads(
+        (Path(__file__).resolve().parent.parent / "bot" / "webapp"
+         / "static" / "station.json").read_text(encoding="utf-8")
+    )
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+
+        first = carte["order"][0]
+        assert first in await page.locator("#where").inner_text()
+        # Четыре кадра и четыре подписи — по стене на каждую сторону
+        assert await page.locator(".four .eye").count() == 4
+
+        # Поворачиваемся до стены, за которой есть ход, и делаем шаг
+        walls = carte["rooms"][first]["walls"]
+        side = next(iter(walls))
+        sides = ["north", "east", "south", "west"]
+        for _ in range(sides.index(side)):
+            await page.keyboard.press("ArrowRight")
+        await page.keyboard.press("ArrowUp")
+
+        there = walls[side]["to"]
+        assert there in await page.locator("#where").inner_text()
+        # И обратно тем же ходом
+        await page.keyboard.press("ArrowDown")
+        assert first in await page.locator("#where").inner_text()
+        await browser.close()
+
+
+async def test_the_walker_turns_the_frames_and_remembers_it(server):
+    """Поворот меняет, какой файл показан за эту сторону, и переживает
+    перезагрузку.
+
+    Поворот k значит «кадры комнаты повёрнуты на k четвертей по часовой
+    стрелке относительно плана»: кадр стороны D лежит в файле на k
+    имён назад. Проверяется именно это соответствие — на нём держится
+    весь смысл обхода.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_walker(pw, server)
+        here = (await page.locator("#where").inner_text()).split(" ")[0]
+
+        # Кадров в тесте нет, и страница пишет имя файла, которого ждёт
+        said = await page.locator("#eye-big .none").inner_text()
+        assert said.endswith("north"), said
+
+        await page.locator("#turn-right").click()
+        assert await page.locator("#turn-now").inner_text() == "1"
+        said = await page.locator("#eye-big .none").inner_text()
+        assert said.endswith("west"), "смотрим на север, а кадр взят западный"
+
+        await page.locator("#flip").click()
+        assert "on" in (await page.locator("#flip").get_attribute("class"))
+        assert "flip" in (await page.locator("#eye-big").get_attribute("class"))
+
+        # Перезагрузка: повороты лежат в памяти браузера
+        await page.reload()
+        await page.wait_for_selector(".four .eye")
+        assert await page.locator("#turn-now").inner_text() == "1"
+        kept = json.loads(await page.locator("#out").input_value())
+        assert kept[here] == {"turn": 1, "flip": True, "note": ""}
+
+        # Сброс убирает комнату из итога целиком: ноль — это не разметка
+        await page.locator("#reset").click()
+        assert json.loads(await page.locator("#out").input_value()) == {}
+        await browser.close()

@@ -1,0 +1,1503 @@
+{
+  "art": "https://pub-44581ebfe3a240b9b46b8d169429b1c0.r2.dev/zombiemission/panoramas_fp",
+  "formats": [
+    "jpg",
+    "png"
+  ],
+  "facings": [
+    "north",
+    "east",
+    "south",
+    "west"
+  ],
+  "layers": [
+    {
+      "code": "O",
+      "title": "Территория",
+      "rooms": [
+        "O01",
+        "O02",
+        "O03",
+        "O04",
+        "O05",
+        "O06",
+        "O07",
+        "O08",
+        "O09",
+        "O10"
+      ]
+    },
+    {
+      "code": "F1",
+      "title": "Первый этаж · турбины",
+      "rooms": [
+        "F101",
+        "F102",
+        "F103",
+        "F104",
+        "F105",
+        "F106",
+        "F107",
+        "F108",
+        "F109",
+        "F110"
+      ]
+    },
+    {
+      "code": "F2",
+      "title": "Второй этаж · галереи",
+      "rooms": [
+        "F201",
+        "F202",
+        "F203",
+        "F204",
+        "F205",
+        "F206",
+        "F207",
+        "F208",
+        "F209",
+        "F210"
+      ]
+    },
+    {
+      "code": "B",
+      "title": "Подвал охлаждения",
+      "rooms": [
+        "B01",
+        "B02",
+        "B03",
+        "B04",
+        "B05",
+        "B06",
+        "B07",
+        "B08"
+      ]
+    },
+    {
+      "code": "F3",
+      "title": "Третий этаж · энергоблок",
+      "rooms": [
+        "F301",
+        "F302",
+        "F303",
+        "F304",
+        "F305",
+        "F306",
+        "F307",
+        "F308"
+      ]
+    },
+    {
+      "code": "F4",
+      "title": "Четвёртый этаж · рубка",
+      "rooms": [
+        "F401",
+        "F402",
+        "F403",
+        "F404",
+        "F405",
+        "F406"
+      ]
+    },
+    {
+      "code": "E",
+      "title": "Эвакуационный лабиринт",
+      "rooms": [
+        "E01",
+        "E02",
+        "E03",
+        "E04",
+        "E05",
+        "E06",
+        "E07",
+        "E08",
+        "E09",
+        "E10",
+        "E11",
+        "E12"
+      ]
+    }
+  ],
+  "order": [
+    "O01",
+    "O02",
+    "O03",
+    "O04",
+    "O05",
+    "O06",
+    "O07",
+    "O08",
+    "O09",
+    "O10",
+    "F101",
+    "F102",
+    "F103",
+    "F104",
+    "F105",
+    "F106",
+    "F107",
+    "F108",
+    "F109",
+    "F110",
+    "F201",
+    "F202",
+    "F203",
+    "F204",
+    "F205",
+    "F206",
+    "F207",
+    "F208",
+    "F209",
+    "F210",
+    "B01",
+    "B02",
+    "B03",
+    "B04",
+    "B05",
+    "B06",
+    "B07",
+    "B08",
+    "F301",
+    "F302",
+    "F303",
+    "F304",
+    "F305",
+    "F306",
+    "F307",
+    "F308",
+    "F401",
+    "F402",
+    "F403",
+    "F404",
+    "F405",
+    "F406",
+    "E01",
+    "E02",
+    "E03",
+    "E04",
+    "E05",
+    "E06",
+    "E07",
+    "E08",
+    "E09",
+    "E10",
+    "E11",
+    "E12"
+  ],
+  "rooms": {
+    "O01": {
+      "name": "Внешний сбор",
+      "layer": "O",
+      "x": 160,
+      "y": 145,
+      "safe": true,
+      "walls": {
+        "east": {
+          "to": "O02",
+          "name": "Проходная",
+          "stair": false
+        }
+      }
+    },
+    "O02": {
+      "name": "Проходная",
+      "layer": "O",
+      "x": 460,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "O01",
+          "name": "Внешний сбор",
+          "stair": false
+        },
+        "east": {
+          "to": "O03",
+          "name": "Диспетчерская",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "O03": {
+      "name": "Диспетчерская",
+      "layer": "O",
+      "x": 760,
+      "y": 145,
+      "safe": true,
+      "walls": {
+        "west": {
+          "to": "O02",
+          "name": "Проходная",
+          "stair": false
+        },
+        "south": {
+          "to": "O04",
+          "name": "Санитарный шлюз",
+          "stair": false
+        }
+      },
+      "objective": "dispatch_clearance"
+    },
+    "O04": {
+      "name": "Санитарный шлюз",
+      "layer": "O",
+      "x": 760,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "O03",
+          "name": "Диспетчерская",
+          "stair": false
+        },
+        "south": {
+          "to": "O05",
+          "name": "Развилка двора",
+          "stair": false
+        }
+      }
+    },
+    "O05": {
+      "name": "Развилка двора",
+      "layer": "O",
+      "x": 760,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "O04",
+          "name": "Санитарный шлюз",
+          "stair": false
+        },
+        "west": {
+          "to": "O06",
+          "name": "Трансформаторы",
+          "stair": false
+        },
+        "south": {
+          "to": "O07",
+          "name": "Склад снабжения",
+          "stair": false
+        }
+      }
+    },
+    "O06": {
+      "name": "Трансформаторы",
+      "layer": "O",
+      "x": 460,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "O05",
+          "name": "Развилка двора",
+          "stair": false
+        },
+        "south": {
+          "to": "O08",
+          "name": "Погрузочная зона",
+          "stair": false
+        }
+      }
+    },
+    "O07": {
+      "name": "Склад снабжения",
+      "layer": "O",
+      "x": 760,
+      "y": 1045,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "O05",
+          "name": "Развилка двора",
+          "stair": false
+        },
+        "west": {
+          "to": "O08",
+          "name": "Погрузочная зона",
+          "stair": false
+        }
+      }
+    },
+    "O08": {
+      "name": "Погрузочная зона",
+      "layer": "O",
+      "x": 460,
+      "y": 1045,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "O06",
+          "name": "Трансформаторы",
+          "stair": false
+        },
+        "east": {
+          "to": "O07",
+          "name": "Склад снабжения",
+          "stair": false
+        },
+        "west": {
+          "to": "O09",
+          "name": "Медпункт",
+          "stair": false
+        },
+        "south": {
+          "to": "O10",
+          "name": "Вход в главный корпус",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "O09": {
+      "name": "Медпункт",
+      "layer": "O",
+      "x": 160,
+      "y": 1045,
+      "safe": true,
+      "walls": {
+        "east": {
+          "to": "O08",
+          "name": "Погрузочная зона",
+          "stair": false
+        }
+      }
+    },
+    "O10": {
+      "name": "Вход в главный корпус",
+      "layer": "O",
+      "x": 460,
+      "y": 1345,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "O08",
+          "name": "Погрузочная зона",
+          "stair": false
+        },
+        "east": {
+          "to": "F101",
+          "name": "Вестибюль",
+          "stair": true
+        }
+      }
+    },
+    "F101": {
+      "name": "Вестибюль",
+      "layer": "F1",
+      "x": 160,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F102",
+          "name": "Раздевалка",
+          "stair": false
+        },
+        "south": {
+          "to": "O10",
+          "name": "Вход в главный корпус",
+          "stair": true
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F102": {
+      "name": "Раздевалка",
+      "layer": "F1",
+      "x": 460,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F101",
+          "name": "Вестибюль",
+          "stair": false
+        },
+        "east": {
+          "to": "F103",
+          "name": "Цеховой коридор",
+          "stair": false
+        }
+      }
+    },
+    "F103": {
+      "name": "Цеховой коридор",
+      "layer": "F1",
+      "x": 760,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F102",
+          "name": "Раздевалка",
+          "stair": false
+        },
+        "south": {
+          "to": "F104",
+          "name": "Лестница А · на 2 этаж",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F104": {
+      "name": "Лестница А · на 2 этаж",
+      "layer": "F1",
+      "x": 760,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "F103",
+          "name": "Цеховой коридор",
+          "stair": false
+        },
+        "east": {
+          "to": "F201",
+          "name": "Лестница А",
+          "stair": true
+        },
+        "south": {
+          "to": "B01",
+          "name": "Лестница Б",
+          "stair": true
+        }
+      }
+    },
+    "F105": {
+      "name": "Щитовая ворот",
+      "layer": "F1",
+      "x": 760,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F106",
+          "name": "Предтурбинный шлюз",
+          "stair": false
+        },
+        "east": {
+          "to": "F210",
+          "name": "Лестница В · вниз",
+          "stair": true
+        }
+      }
+    },
+    "F106": {
+      "name": "Предтурбинный шлюз",
+      "layer": "F1",
+      "x": 460,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F105",
+          "name": "Щитовая ворот",
+          "stair": false
+        },
+        "west": {
+          "to": "F107",
+          "name": "Арена Громилы",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F107": {
+      "name": "Арена Громилы",
+      "layer": "F1",
+      "x": 160,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F106",
+          "name": "Предтурбинный шлюз",
+          "stair": false
+        },
+        "south": {
+          "to": "F108",
+          "name": "Сердечник · пьедестал",
+          "stair": false
+        }
+      },
+      "objective": "brute_defeated",
+      "encounter": "boss_brute"
+    },
+    "F108": {
+      "name": "Сердечник · пьедестал",
+      "layer": "F1",
+      "x": 160,
+      "y": 1045,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "F107",
+          "name": "Арена Громилы",
+          "stair": false
+        },
+        "east": {
+          "to": "F109",
+          "name": "Мастерская",
+          "stair": false
+        }
+      },
+      "objective": "power_core"
+    },
+    "F109": {
+      "name": "Мастерская",
+      "layer": "F1",
+      "x": 460,
+      "y": 1045,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F108",
+          "name": "Сердечник · пьедестал",
+          "stair": false
+        },
+        "east": {
+          "to": "F110",
+          "name": "Лестница Б · в подвал",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F110": {
+      "name": "Лестница Б · в подвал",
+      "layer": "F1",
+      "x": 760,
+      "y": 1045,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F109",
+          "name": "Мастерская",
+          "stair": false
+        },
+        "east": {
+          "to": "B01",
+          "name": "Лестница Б",
+          "stair": true
+        },
+        "south": {
+          "to": "B08",
+          "name": "Техническая лестница",
+          "stair": true
+        },
+        "north": {
+          "to": "F210",
+          "name": "Лестница В · вниз",
+          "stair": true
+        }
+      }
+    },
+    "F201": {
+      "name": "Лестница А",
+      "layer": "F2",
+      "x": 160,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F202",
+          "name": "Стеллажный коридор",
+          "stair": false
+        },
+        "south": {
+          "to": "F104",
+          "name": "Лестница А · на 2 этаж",
+          "stair": true
+        },
+        "west": {
+          "to": "F301",
+          "name": "Лестница Б",
+          "stair": true
+        }
+      }
+    },
+    "F202": {
+      "name": "Стеллажный коридор",
+      "layer": "F2",
+      "x": 460,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F201",
+          "name": "Лестница А",
+          "stair": false
+        },
+        "east": {
+          "to": "F203",
+          "name": "Архив смен",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F203": {
+      "name": "Архив смен",
+      "layer": "F2",
+      "x": 760,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F202",
+          "name": "Стеллажный коридор",
+          "stair": false
+        },
+        "south": {
+          "to": "F204",
+          "name": "Сервисный мост",
+          "stair": false
+        }
+      }
+    },
+    "F204": {
+      "name": "Сервисный мост",
+      "layer": "F2",
+      "x": 760,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "F203",
+          "name": "Архив смен",
+          "stair": false
+        },
+        "west": {
+          "to": "F205",
+          "name": "Склад кабеля",
+          "stair": false
+        }
+      }
+    },
+    "F205": {
+      "name": "Склад кабеля",
+      "layer": "F2",
+      "x": 460,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F204",
+          "name": "Сервисный мост",
+          "stair": false
+        },
+        "west": {
+          "to": "F206",
+          "name": "Пульт прожекторов",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F206": {
+      "name": "Пульт прожекторов",
+      "layer": "F2",
+      "x": 160,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F205",
+          "name": "Склад кабеля",
+          "stair": false
+        },
+        "south": {
+          "to": "F207",
+          "name": "Площадка засады",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F207": {
+      "name": "Площадка засады",
+      "layer": "F2",
+      "x": 160,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "F206",
+          "name": "Пульт прожекторов",
+          "stair": false
+        },
+        "east": {
+          "to": "F208",
+          "name": "Арена Охотника",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F208": {
+      "name": "Арена Охотника",
+      "layer": "F2",
+      "x": 460,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F207",
+          "name": "Площадка засады",
+          "stair": false
+        },
+        "east": {
+          "to": "F209",
+          "name": "Модуль · тайник",
+          "stair": false
+        }
+      },
+      "objective": "hunter_defeated",
+      "encounter": "boss_hunter"
+    },
+    "F209": {
+      "name": "Модуль · тайник",
+      "layer": "F2",
+      "x": 760,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F208",
+          "name": "Арена Охотника",
+          "stair": false
+        },
+        "south": {
+          "to": "F210",
+          "name": "Лестница В · вниз",
+          "stair": false
+        }
+      },
+      "objective": "synchronizer"
+    },
+    "F210": {
+      "name": "Лестница В · вниз",
+      "layer": "F2",
+      "x": 760,
+      "y": 1045,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "F209",
+          "name": "Модуль · тайник",
+          "stair": false
+        },
+        "east": {
+          "to": "F105",
+          "name": "Щитовая ворот",
+          "stair": true
+        },
+        "south": {
+          "to": "F110",
+          "name": "Лестница Б · в подвал",
+          "stair": true
+        },
+        "west": {
+          "to": "F301",
+          "name": "Лестница Б",
+          "stair": true
+        }
+      }
+    },
+    "B01": {
+      "name": "Лестница Б",
+      "layer": "B",
+      "x": 160,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "B02",
+          "name": "Коллектор",
+          "stair": false
+        },
+        "south": {
+          "to": "F110",
+          "name": "Лестница Б · в подвал",
+          "stair": true
+        },
+        "west": {
+          "to": "F104",
+          "name": "Лестница А · на 2 этаж",
+          "stair": true
+        },
+        "north": {
+          "to": "E01",
+          "name": "Нижний аварийный шлюз",
+          "stair": true
+        }
+      }
+    },
+    "B02": {
+      "name": "Коллектор",
+      "layer": "B",
+      "x": 460,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "B01",
+          "name": "Лестница Б",
+          "stair": false
+        },
+        "east": {
+          "to": "B03",
+          "name": "Вентиль А",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "B03": {
+      "name": "Вентиль А",
+      "layer": "B",
+      "x": 760,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "B02",
+          "name": "Коллектор",
+          "stair": false
+        },
+        "south": {
+          "to": "B04",
+          "name": "Насосный пост",
+          "stair": false
+        }
+      },
+      "objective": "valve_a"
+    },
+    "B04": {
+      "name": "Насосный пост",
+      "layer": "B",
+      "x": 760,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "B03",
+          "name": "Вентиль А",
+          "stair": false
+        },
+        "west": {
+          "to": "B05",
+          "name": "Вентиль Б",
+          "stair": false
+        }
+      }
+    },
+    "B05": {
+      "name": "Вентиль Б",
+      "layer": "B",
+      "x": 460,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "B04",
+          "name": "Насосный пост",
+          "stair": false
+        },
+        "west": {
+          "to": "B06",
+          "name": "Дренажный канал",
+          "stair": false
+        }
+      },
+      "objective": "valve_b"
+    },
+    "B06": {
+      "name": "Дренажный канал",
+      "layer": "B",
+      "x": 160,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "B05",
+          "name": "Вентиль Б",
+          "stair": false
+        },
+        "south": {
+          "to": "B07",
+          "name": "Щит насосов",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "B07": {
+      "name": "Щит насосов",
+      "layer": "B",
+      "x": 160,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "B06",
+          "name": "Дренажный канал",
+          "stair": false
+        },
+        "east": {
+          "to": "B08",
+          "name": "Техническая лестница",
+          "stair": false
+        }
+      },
+      "objective": "cooling_ready",
+      "encounter": "zombie_squad"
+    },
+    "B08": {
+      "name": "Техническая лестница",
+      "layer": "B",
+      "x": 460,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "B07",
+          "name": "Щит насосов",
+          "stair": false
+        },
+        "east": {
+          "to": "F110",
+          "name": "Лестница Б · в подвал",
+          "stair": true
+        }
+      }
+    },
+    "F301": {
+      "name": "Лестница Б",
+      "layer": "F3",
+      "x": 160,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F302",
+          "name": "Кабельная галерея",
+          "stair": false
+        },
+        "south": {
+          "to": "F210",
+          "name": "Лестница В · вниз",
+          "stair": true
+        },
+        "west": {
+          "to": "F406",
+          "name": "Аварийная лестница",
+          "stair": true
+        },
+        "north": {
+          "to": "F201",
+          "name": "Лестница А",
+          "stair": true
+        }
+      }
+    },
+    "F302": {
+      "name": "Кабельная галерея",
+      "layer": "F3",
+      "x": 460,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F301",
+          "name": "Лестница Б",
+          "stair": false
+        },
+        "east": {
+          "to": "F303",
+          "name": "Медицинский пост",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F303": {
+      "name": "Медицинский пост",
+      "layer": "F3",
+      "x": 760,
+      "y": 145,
+      "safe": true,
+      "walls": {
+        "west": {
+          "to": "F302",
+          "name": "Кабельная галерея",
+          "stair": false
+        },
+        "south": {
+          "to": "F304",
+          "name": "Релейная комната",
+          "stair": false
+        }
+      }
+    },
+    "F304": {
+      "name": "Релейная комната",
+      "layer": "F3",
+      "x": 760,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "F303",
+          "name": "Медицинский пост",
+          "stair": false
+        },
+        "west": {
+          "to": "F305",
+          "name": "Кольцевая площадка",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F305": {
+      "name": "Кольцевая площадка",
+      "layer": "F3",
+      "x": 460,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F304",
+          "name": "Релейная комната",
+          "stair": false
+        },
+        "west": {
+          "to": "F306",
+          "name": "Предбоссовый шлюз",
+          "stair": false
+        }
+      }
+    },
+    "F306": {
+      "name": "Предбоссовый шлюз",
+      "layer": "F3",
+      "x": 160,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F305",
+          "name": "Кольцевая площадка",
+          "stair": false
+        },
+        "south": {
+          "to": "F307",
+          "name": "Арена Предводителя",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "F307": {
+      "name": "Арена Предводителя",
+      "layer": "F3",
+      "x": 160,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "F306",
+          "name": "Предбоссовый шлюз",
+          "stair": false
+        },
+        "east": {
+          "to": "F308",
+          "name": "Ключ · лестница наверх",
+          "stair": false
+        }
+      },
+      "objective": "leader_defeated",
+      "encounter": "boss_leader"
+    },
+    "F308": {
+      "name": "Ключ · лестница наверх",
+      "layer": "F3",
+      "x": 460,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F307",
+          "name": "Арена Предводителя",
+          "stair": false
+        },
+        "north": {
+          "to": "F401",
+          "name": "Верхняя лестница",
+          "stair": true
+        }
+      },
+      "objective": "restart_key"
+    },
+    "F401": {
+      "name": "Верхняя лестница",
+      "layer": "F4",
+      "x": 160,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F402",
+          "name": "Серверная",
+          "stair": false
+        },
+        "south": {
+          "to": "F308",
+          "name": "Ключ · лестница наверх",
+          "stair": true
+        }
+      }
+    },
+    "F402": {
+      "name": "Серверная",
+      "layer": "F4",
+      "x": 460,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F401",
+          "name": "Верхняя лестница",
+          "stair": false
+        },
+        "east": {
+          "to": "F403",
+          "name": "Архив эвакуации",
+          "stair": false
+        }
+      }
+    },
+    "F403": {
+      "name": "Архив эвакуации",
+      "layer": "F4",
+      "x": 760,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "F402",
+          "name": "Серверная",
+          "stair": false
+        },
+        "south": {
+          "to": "F404",
+          "name": "Шлюз управления",
+          "stair": false
+        }
+      },
+      "objective": "evacuation_plan"
+    },
+    "F404": {
+      "name": "Шлюз управления",
+      "layer": "F4",
+      "x": 760,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "F403",
+          "name": "Архив эвакуации",
+          "stair": false
+        },
+        "west": {
+          "to": "F405",
+          "name": "Рубка · три гнезда",
+          "stair": false
+        }
+      }
+    },
+    "F405": {
+      "name": "Рубка · три гнезда",
+      "layer": "F4",
+      "x": 460,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F404",
+          "name": "Шлюз управления",
+          "stair": false
+        },
+        "west": {
+          "to": "F406",
+          "name": "Аварийная лестница",
+          "stair": false
+        }
+      },
+      "objective": "station_restarted"
+    },
+    "F406": {
+      "name": "Аварийная лестница",
+      "layer": "F4",
+      "x": 160,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "F405",
+          "name": "Рубка · три гнезда",
+          "stair": false
+        },
+        "south": {
+          "to": "F301",
+          "name": "Лестница Б",
+          "stair": true
+        }
+      }
+    },
+    "E01": {
+      "name": "Нижний аварийный шлюз",
+      "layer": "E",
+      "x": 160,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "E02",
+          "name": "Развилка труб",
+          "stair": false
+        },
+        "west": {
+          "to": "B01",
+          "name": "Лестница Б",
+          "stair": true
+        }
+      }
+    },
+    "E02": {
+      "name": "Развилка труб",
+      "layer": "E",
+      "x": 460,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "E01",
+          "name": "Нижний аварийный шлюз",
+          "stair": false
+        },
+        "east": {
+          "to": "E03",
+          "name": "Старый склад",
+          "stair": false
+        }
+      }
+    },
+    "E03": {
+      "name": "Старый склад",
+      "layer": "E",
+      "x": 760,
+      "y": 145,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "E02",
+          "name": "Развилка труб",
+          "stair": false
+        },
+        "south": {
+          "to": "E06",
+          "name": "Перекрёсток",
+          "stair": false
+        }
+      }
+    },
+    "E04": {
+      "name": "Коллектор С",
+      "layer": "E",
+      "x": 160,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "E05",
+          "name": "Пульт дренажа",
+          "stair": false
+        }
+      }
+    },
+    "E05": {
+      "name": "Пульт дренажа",
+      "layer": "E",
+      "x": 460,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "E04",
+          "name": "Коллектор С",
+          "stair": false
+        },
+        "east": {
+          "to": "E06",
+          "name": "Перекрёсток",
+          "stair": false
+        }
+      },
+      "objective": "drainage_open"
+    },
+    "E06": {
+      "name": "Перекрёсток",
+      "layer": "E",
+      "x": 760,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "E03",
+          "name": "Старый склад",
+          "stair": false
+        },
+        "west": {
+          "to": "E05",
+          "name": "Пульт дренажа",
+          "stair": false
+        },
+        "east": {
+          "to": "E07",
+          "name": "Ложный выход",
+          "stair": false
+        },
+        "south": {
+          "to": "E08",
+          "name": "Шлюз D",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "E07": {
+      "name": "Ложный выход",
+      "layer": "E",
+      "x": 1060,
+      "y": 445,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "E06",
+          "name": "Перекрёсток",
+          "stair": false
+        },
+        "south": {
+          "to": "E09",
+          "name": "Кабельный обход",
+          "stair": false
+        }
+      }
+    },
+    "E08": {
+      "name": "Шлюз D",
+      "layer": "E",
+      "x": 760,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "E06",
+          "name": "Перекрёсток",
+          "stair": false
+        },
+        "east": {
+          "to": "E09",
+          "name": "Кабельный обход",
+          "stair": false
+        },
+        "west": {
+          "to": "E10",
+          "name": "Внешний тоннель",
+          "stair": false
+        }
+      },
+      "stages": {
+        "west": "flooded"
+      }
+    },
+    "E09": {
+      "name": "Кабельный обход",
+      "layer": "E",
+      "x": 1060,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "E08",
+          "name": "Шлюз D",
+          "stair": false
+        },
+        "north": {
+          "to": "E07",
+          "name": "Ложный выход",
+          "stair": false
+        }
+      }
+    },
+    "E10": {
+      "name": "Внешний тоннель",
+      "layer": "E",
+      "x": 460,
+      "y": 745,
+      "safe": false,
+      "walls": {
+        "east": {
+          "to": "E08",
+          "name": "Шлюз D",
+          "stair": false
+        },
+        "south": {
+          "to": "E11",
+          "name": "Последний заслон",
+          "stair": false
+        }
+      }
+    },
+    "E11": {
+      "name": "Последний заслон",
+      "layer": "E",
+      "x": 460,
+      "y": 1045,
+      "safe": false,
+      "walls": {
+        "north": {
+          "to": "E10",
+          "name": "Внешний тоннель",
+          "stair": false
+        },
+        "east": {
+          "to": "E12",
+          "name": "Выход · дезактивация",
+          "stair": false
+        }
+      },
+      "encounter": "zombie_squad"
+    },
+    "E12": {
+      "name": "Выход · дезактивация",
+      "layer": "E",
+      "x": 760,
+      "y": 1045,
+      "safe": false,
+      "walls": {
+        "west": {
+          "to": "E11",
+          "name": "Последний заслон",
+          "stair": false
+        }
+      },
+      "objective": "extracted"
+    }
+  }
+}
