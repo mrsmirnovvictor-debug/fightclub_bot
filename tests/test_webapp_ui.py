@@ -16760,7 +16760,27 @@ async def test_the_drum_stops_on_the_prize_and_stays_there(server, db):
         assert await belt_at(page) == stood, "лента поехала после остановки"
         assert await page.locator(".casino-shout").inner_text() \
             == "Тяжёлый маслкар"
+
+        # А теперь пересоберём ленту заново — так делает любая
+        # перерисовка экрана. Узел станет новым, и если бы место
+        # помнилось меркой с мига прицеливания, приз уехал бы из-под
+        # метки. Он считается от живой ленты и остаётся на месте
+        await page.evaluate("() => renderCasino(casinoData, true)")
+        await page.wait_for_timeout(200)
+        again = await page.evaluate("""() => {
+          const mark =
+            document.querySelector('.casino-belt-mark').getBoundingClientRect();
+          const at = (mark.left + mark.right) / 2;
+          return [...document.querySelectorAll('.casino-prize')]
+            .filter((one) => {
+              const box = one.getBoundingClientRect();
+              return box.left <= at && at <= box.right;
+            })
+            .map((one) => one.dataset.code);
+        }""")
+        assert again == ["iron_muscle"], again
         await browser.close()
+
 
 
 async def test_the_drum_crawls_past_half_a_dozen_prizes_at_the_end(server, db):

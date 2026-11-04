@@ -19795,6 +19795,9 @@ function renderCasino(data, force) {
   if (casinoDrawOpen && data.draw) {
     el("casino-title").textContent = "🎡 " + data.draw.title;
     body.appendChild(casinoDrawBox(data));
+    // Лента уже в документе — довести её до места можно только тут:
+    // раньше мерить было нечего
+    casinoBeltPaint(performance.now(), false);
     return;
   }
   el("casino-title").textContent = "🎰 Казино";
@@ -20957,6 +20960,7 @@ let casinoBeltSpin = null;  // {from, to, start, ms} — пока крутитс
 let casinoBeltHold = false; // стоит на призе и больше не едет
 let casinoBeltWas = 0;      // время прошлого кадра
 let casinoBeltSpun = "";    // какое вращение уже посчитано
+let casinoBeltRest = null;  // на чём стоим: {code, slip}
 let casinoBeltAsk = 0;      // заказанный кадр, 0 — ни одного
 let casinoBeltShow = false; // показать приз, как только лента встанет
 
@@ -20970,9 +20974,6 @@ function casinoBeltBox(draw) {
   goods.concat(goods).forEach(
     (one) => belt.appendChild(casinoPrizeCard(one))
   );
-  // Смещение переживает перерисовку: узел новый, а лента та же, и
-  // начинать её с нуля значило бы дёрнуть на ровном месте
-  belt.style.transform = "translateX(" + casinoBeltX + "px)";
   road.appendChild(belt);
 
   const mark = document.createElement("div");
@@ -20983,6 +20984,11 @@ function casinoBeltBox(draw) {
   casinoBeltCodes = goods.map((one) => one.code);
   casinoBeltWide = 0; // померяем, когда лента ляжет
   casinoBeltRide(draw);
+  // Смещение переживает перерисовку: узел новый, а лента та же, и
+  // начинать её с нуля значило бы дёрнуть на ровном месте. Доводить
+  // её до места тут нечем — узел ещё не в документе, мерить нечего;
+  // этим займётся `casinoBeltPaint` сразу после вставки
+  belt.style.transform = "translateX(" + casinoBeltX + "px)";
   return road;
 }
 
@@ -20993,6 +20999,7 @@ function casinoBeltRide(draw) {
     casinoBeltSpin = null;
     casinoBeltHold = false;
     casinoBeltSpun = "";
+    casinoBeltRest = null;
   }
   casinoBeltAwait();
 }
@@ -21016,15 +21023,24 @@ function casinoBeltMeasure(belt) {
 
 function casinoBeltStep(ts) {
   casinoBeltAsk = 0;
+  if (!casinoBeltPaint(ts, true)) return;
+  casinoBeltAwait();
+}
+
+// Поставить ленту туда, где она должна быть в этот миг. Зовётся и
+// кадром, и перерисовкой: узел рождается новым, а лента та же, и
+// ждать кадра, чтобы довести её до места, нельзя — под нагрузкой
+// кадр может и не прийти, а приз на экране уже назван
+function casinoBeltPaint(ts, moving) {
   const belt = casinoBeltRun;
   if (!belt || !belt.isConnected) {
     casinoBeltWas = 0;
-    return;
+    return false;
   }
   // Первый кадр и возвращение из фона: шага не было, и ленту за это
   // время никуда не двигаем — иначе она прыгнула бы на всю отлучку
-  const span = casinoBeltWas ? Math.min(100, ts - casinoBeltWas) : 0;
-  casinoBeltWas = ts;
+  const span = casinoBeltWas && moving ? Math.min(100, ts - casinoBeltWas) : 0;
+  if (moving) casinoBeltWas = ts;
   casinoBeltMeasure(belt);
 
   const prize = casinoData && casinoData.draw && casinoData.draw.prize;
@@ -21034,33 +21050,36 @@ function casinoBeltStep(ts) {
     casinoBeltAim(prize, ts);
   }
 
-  let landed = false;
-  if (casinoBeltSpin) {
-    const run = casinoBeltSpin;
-    const part = run.ms > 0 ? Math.min(1, (ts - run.start) / run.ms) : 1;
-    casinoBeltX = run.from + (run.to - run.from) * casinoBeltEase(part);
-    if (part >= 1) {
-      casinoBeltX = run.to;
-      casinoBeltSpin = null;
-      casinoBeltHold = true;
-      landed = true;
-    }
-  } else if (!casinoBeltHold) {
+  const landed = casinoBeltSettle(ts);
+  if (!casinoBeltSpin && !casinoBeltHold) {
     casinoBeltX -= CASINO_BELT_SPEED * span / 1000;
+  }
+  // Пока стоим — место пересчитываем от живой ленты, а не помним с
+  // мига прицеливания. Между прицелом и остановкой проходит семь
+  // секунд, и за них ленту успевают пересобрать: узел становится
+  // новым, а мерка — старой. Пересчёт стоит дёшево (лента не едет) и
+  // снимает целый разряд промахов мимо приза
+  if (casinoBeltHold && casinoBeltRest) {
+    const where = casinoBeltWant(
+      casinoBeltRest.code, casinoBeltRest.slip
+    );
+    if (where !== null) casinoBeltX = where;
   }
   if (casinoBeltWide) {
     while (casinoBeltX <= -casinoBeltWide) casinoBeltX += casinoBeltWide;
     while (casinoBeltX > 0) casinoBeltX -= casinoBeltWide;
   }
   belt.style.transform = "translateX(" + casinoBeltX + "px)";
-  casinoBeltAwait();
 
   // Лента встала — приз показываем сразу, а не на следующем опросе:
-  // ждать секунду с остановившимся барабаном некуда
-  if (landed && casinoBeltShow && casinoData) {
+  // ждать секунду с остановившимся барабаном некуда. Но только из
+  // кадра: звать перерисовку из самой перерисовки значит входить в
+  // неё второй раз, пока первая не достроила экран
+  if (landed && moving && casinoBeltShow && casinoData) {
     casinoBeltShow = false;
     renderCasino(casinoData, true);
   }
+  return true;
 }
 
 // Как лента тормозит. Одной степенью такого не выразить: нужен и
@@ -21084,6 +21103,37 @@ function casinoBeltEase(part) {
   );
 }
 
+// Где лента должна быть в этот миг, если идёт вращение. Отвечает,
+// встала ли она только что.
+//
+// Считается от времени, а не от числа кадров: кадр может и не успеть —
+// под нагрузкой их выдают как придётся, — а приз от этого уехать не
+// должен
+function casinoBeltSettle(ts) {
+  if (!casinoBeltSpin) return false;
+  const run = casinoBeltSpin;
+  const part = run.ms > 0 ? Math.min(1, (ts - run.start) / run.ms) : 1;
+  casinoBeltX = run.from + (run.to - run.from) * casinoBeltEase(part);
+  if (part < 1) return false;
+  casinoBeltSpin = null;
+  casinoBeltHold = true;
+  casinoBeltRest = { code: run.code, slip: run.slip };
+  return true;
+}
+
+// Где должна стоять лента, чтобы под меткой был этот приз. Считается
+// от живой ленты: все три числа — мерки узлов, которые сейчас на
+// экране. `slip` сдвигает остановку с середины карточки к краю
+function casinoBeltWant(code, slip) {
+  const belt = casinoBeltRun;
+  const seat = casinoBeltCodes.indexOf(code);
+  if (!belt || !belt.isConnected || seat < 0) return null;
+  const card = belt.children[seat];
+  if (!card || !card.offsetWidth) return null;
+  const mark = belt.parentElement.clientWidth / 2;
+  return mark - (card.offsetLeft + card.offsetWidth / 2) + slip;
+}
+
 // Куда и как долго ехать. Считается от приза: он известен до первого
 // кадра, и лента не выбирает — она доезжает до названного
 function casinoBeltAim(prize, ts) {
@@ -21094,12 +21144,15 @@ function casinoBeltAim(prize, ts) {
     casinoBeltHold = true;
     return;
   }
-  const mark = belt.parentElement.clientWidth / 2;
   // Встать можно и краешком под метку, а не серединой: так остаётся
   // интрига до последнего, и видно, что лежало рядом
   const slip = (Math.random() - 0.5)
     * Math.max(0, card.offsetWidth - CASINO_BELT_EDGE * 2);
-  const want = mark - (card.offsetLeft + card.offsetWidth / 2) + slip;
+  const want = casinoBeltWant(prize.code, slip);
+  if (want === null) { // pragma: лента исчезла между кадрами
+    casinoBeltHold = true;
+    return;
+  }
 
   const now = (Date.now() + casinoDrift) / 1000;
   const left = Math.max(0, prize.ready - now);
@@ -21110,13 +21163,17 @@ function casinoBeltAim(prize, ts) {
     casinoBeltX = want;
     casinoBeltSpin = null;
     casinoBeltHold = true;
+    casinoBeltRest = { code: prize.code, slip };
     return;
   }
   const ms = left * 1000;
   const far = casinoBeltWide * CASINO_BELT_ROUNDS * Math.min(1, ms / 5000);
   const from = casinoBeltX;
   const rounds = Math.ceil((want - from + far) / casinoBeltWide);
-  casinoBeltSpin = { from, to: want - rounds * casinoBeltWide, start: ts, ms };
+  casinoBeltSpin = {
+    from, to: want - rounds * casinoBeltWide, start: ts, ms,
+    code: prize.code, slip,
+  };
   casinoBeltHold = false;
   casinoBeltShow = true;
 }
