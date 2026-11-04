@@ -755,7 +755,9 @@ async def test_mini_app_serves_the_shop_and_takes_the_money(client, db):
     assert response.status == 200
     shop = await response.json()
     # У оружейника на прилавке только то, что берут в руки
-    assert [section["slot"] for section in shop["sections"]] == ["weapon", "offhand"]
+    assert [section["slot"] for section in shop["sections"]] == [
+        "weapon", "offhand", "tickets"
+    ]
 
     response = await client.post("/api/buy", json={"code": "pipe"}, headers=headers(42))
     body = await response.json()

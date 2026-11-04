@@ -341,7 +341,11 @@ async def test_weapons_are_sold_by_the_gunsmith_and_shirts_by_the_tailor(client,
     """Прилавок зависит от того, в чьей лавке боец стоит."""
     await db.save_player(make_player(location="weapon_shop"))
     gunsmith = await (await client.get("/api/shop", headers=headers())).json()
-    assert [row["slot"] for row in gunsmith["sections"]] == ["weapon", "offhand"]
+    # Третья полка — билеты на рейды: их не пьют, а предъявляют на
+    # входе, и место им у оружейника, а не в аптеке
+    assert [row["slot"] for row in gunsmith["sections"]] == [
+        "weapon", "offhand", "tickets"
+    ]
 
     await db.save_player(make_player(location="clothes_shop"))
     tailor = await (await client.get("/api/shop", headers=headers())).json()
