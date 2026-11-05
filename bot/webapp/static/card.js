@@ -108,14 +108,14 @@ function share(combat, name, label, text) {
 
 /** Шкала опыта: уровень слева, дорожка с засечками, числа под ней.
 
-    Четыре строки — «Опыт», «Уровень», «До уровня», «До апгреда» — говорили
+    Четыре строки — «Опыт», «Уровень», «До уровня», «До апгрейда» — говорили
     то же самое, но вразнобой: сколько пройдено, понимал только тот, кто
     делил одно число на другое в уме. Шкала показывает это одним взглядом,
     а числа остаются там же, под ней.
 
-    Засечки приходят с сервера (`progress.ups`): пороги апгредов считает
+    Засечки приходят с сервера (`progress.ups`): пороги апгрейдов считает
     та же лестница, по которой начисляются очки, и второго места, где они
-    живут, быть не должно. Четвёртый апгред — это сам уровень, и стоит он
+    живут, быть не должно. Четвёртый апгрейд — это сам уровень, и стоит он
     отдельным знаком в конце дорожки. */
 function experienceBar(card) {
   const data = card.progress;
@@ -144,7 +144,7 @@ function experienceBar(card) {
   const right = document.createElement("span");
   right.textContent = data.capped
     ? "ПОТОЛОК"
-    : "АПГРЕДЫ " + data.micro_ups + " / " + (data.ups_per_level - 1);
+    : "АПГРЕЙДЫ " + data.micro_ups + " / " + (data.ups_per_level - 1);
   head.append(left, rule, right);
   main.appendChild(head);
 
@@ -198,7 +198,7 @@ function experienceBar(card) {
   next.className = "xp-next";
   next.textContent = data.capped
     ? "Потолок: выше " + data.max_level + " уровня в клубе не растут"
-    : "До следующего апгреда: " + num(data.exp_to_next_up) + "\u00a0XP";
+    : "До следующего апгрейда: " + num(data.exp_to_next_up) + "\u00a0XP";
   main.appendChild(next);
 
   box.appendChild(main);
@@ -222,7 +222,7 @@ function experienceMark(mark) {
 
   const gem = document.createElement("span");
   gem.className = "xp-gem";
-  // У взятого апгреда на ромбе галочка, у уровня — его номер, у ещё не
+  // У взятого апгрейда на ромбе галочка, у уровня — его номер, у ещё не
   // взятого — ничего: пустой ромб и есть «сюда ещё идти»
   const face = document.createElement("i");
   face.textContent = mark.kind === "level" ? mark.badge : mark.taken ? "✓" : "";
@@ -1362,8 +1362,10 @@ function renderWallets(card) {
       walletTile("💳", "Карта", num(money.account) + " 💰", "card")
     );
   }
+  // Плюс встаёт в ту же строку, что и сумма: своей строкой он
+  // растягивал плашку наличных на три ряда, а соседнюю — нет
   const cash = walletTile("💰", "Наличные", num(money.credits) + " 💰", "cash");
-  cash.appendChild(plusButton());
+  cash.querySelector(".wallet-tile-sum").appendChild(plusButton());
   box.appendChild(cash);
 }
 
@@ -1375,7 +1377,9 @@ function walletTile(icon, title, sum, kind) {
   head.textContent = icon + " " + title;
   const value = document.createElement("div");
   value.className = "wallet-tile-sum";
-  value.textContent = sum;
+  const amount = document.createElement("span");
+  amount.textContent = sum;
+  value.appendChild(amount);
   box.append(head, value);
   return box;
 }
@@ -1404,14 +1408,28 @@ function renderBag(card) {
     list.appendChild(thingCard(item, card.record.credits));
   });
 
-  // Склянки стоят своей полкой: их пьют, а не надевают
+  // Склянки стоят своей полкой: их пьют, а не надевают. Билеты —
+  // своей: их не пьют, а предъявляют на входе в рейд, и среди склянок
+  // билет читался как склянка, которую забыли выпить
+  const drinks = potions.filter((one) => !one.is_pass);
+  const passes = potions.filter((one) => one.is_pass);
+
   const box = el("potion-box");
-  box.classList.toggle("hidden", potions.length === 0);
-  el("potion-count").textContent = potions.length ? "· " + potions.length : "";
+  box.classList.toggle("hidden", drinks.length === 0);
+  el("potion-count").textContent = drinks.length ? "· " + drinks.length : "";
   const shelf = el("potion-list");
   shelf.textContent = "";
-  potions.forEach((potion) => {
+  drinks.forEach((potion) => {
     shelf.appendChild(thingCard(potion, card.record.credits));
+  });
+
+  const tickets = el("pass-box");
+  tickets.classList.toggle("hidden", passes.length === 0);
+  el("pass-count").textContent = passes.length ? "· " + passes.length : "";
+  const rack = el("pass-list");
+  rack.textContent = "";
+  passes.forEach((pass) => {
+    rack.appendChild(thingCard(pass, card.record.credits));
   });
 }
 
@@ -16293,17 +16311,13 @@ function carsHereSheet() {
   );
   const list = el("sheet-list");
   // Рамка и кнопки под ней — разные вещи: в рамке машина, под ней то,
-  // что с ней можно сделать. «Закрыть» встаёт в тот же ряд, иначе у
-  // каждой машины свой ряд кнопок, а внизу болтается ещё один
+  // что с ней можно сделать. Кнопки «Закрыть» тут нет вовсе: у всплывашки
+  // свой крест в шапке, а внизу списка она читалась как кнопка последней
+  // машины — и давила на ту же рамку, что и «Угнать»
   cars.forEach((one) => {
     list.appendChild(hereCard(one));
-    list.appendChild(hereButtons(one, cars.length === 1));
+    list.appendChild(hereButtons(one));
   });
-  if (cars.length !== 1) {
-    list.appendChild(
-      button("Закрыть", { secondary: true, onClick: () => closeSheet() })
-    );
-  }
 }
 
 // Кнопка в этом списке ходит в ту же ручку ключей, а показывает итог
@@ -16365,7 +16379,7 @@ function hereCard(one) {
 }
 
 /** Что с этой машиной можно сделать — рядом кнопок под её рамкой. */
-function hereButtons(one, alone) {
+function hereButtons(one) {
   const buttons = document.createElement("div");
   buttons.className = "thing-buttons car-here-acts";
   if (one.mine && !one.impound) {
@@ -16390,11 +16404,6 @@ function hereButtons(one, alone) {
       button("🚔 В участок", {
         onClick: () => hereAction({ action: "deliver", car: one.id }),
       })
-    );
-  }
-  if (alone) {
-    buttons.appendChild(
-      button("Закрыть", { secondary: true, onClick: () => closeSheet() })
     );
   }
   return buttons;

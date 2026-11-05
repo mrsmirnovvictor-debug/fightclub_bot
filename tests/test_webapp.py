@@ -813,7 +813,7 @@ async def test_the_casino_seats_and_bets_over_http(client, db):
 def test_the_bar_gets_the_very_thresholds_the_ups_are_paid_at():
     """Засечки шкалы считает лестница, а не страница.
 
-    Второе место, где живут пороги апгредов, однажды разошлось бы с
+    Второе место, где живут пороги апгрейдов, однажды разошлось бы с
     первым — и шкала рисовала бы засечку там, где очко не дают.
     """
     from bot.game.economy import exp_at_up
@@ -830,7 +830,7 @@ def test_the_bar_gets_the_very_thresholds_the_ups_are_paid_at():
 
 
 def test_the_fourth_up_is_not_a_notch_but_the_level_itself():
-    """Четвёртого апгреда на дорожке нет: он и есть новый уровень."""
+    """Четвёртого апгрейда на дорожке нет: он и есть новый уровень."""
     from bot.game.economy import MICRO_UPS_PER_LEVEL
     from bot.webapp.card import ups_payload
 

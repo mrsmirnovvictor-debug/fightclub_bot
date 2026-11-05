@@ -2518,7 +2518,7 @@ async def test_the_hero_screen_reads_without_extra_icons(server):
         # На месте прежних четырёх строк — шкала: ни «До уровня», ни
         # «До улучшения», ни «ап» в ней не осталось
         progress = await page.locator("#progress").inner_text()
-        assert "До следующего апгреда" in progress
+        assert "До следующего апгрейда" in progress
         assert "До улучшения" not in progress and "До апа" not in progress
         assert "До уровня" not in progress
         assert await page.locator("#progress .xp").count() == 1
@@ -3618,6 +3618,9 @@ async def test_the_damage_is_coloured_by_the_kind_of_strike(server):
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, ring_with_duel())
 
+        # Журнал приезжает ответом сервера, а `all_inner_texts` ничего не
+        # ждёт: без этой строки проверка иногда читала пустой список
+        await page.wait_for_selector(".fight-log .dmg")
         marks = page.locator(".fight-log .dmg")
         assert await marks.all_inner_texts() == ["−5", "−60"]
         assert await marks.nth(0).get_attribute("class") == "dmg"
@@ -5777,7 +5780,11 @@ async def test_a_house_that_promises_more_still_opens_its_own_screen(server, db)
         await page.locator(".zone-house").filter(has_text="Общежитие").click()
         await page.wait_for_selector("#dorm:not(.hidden)")
 
-        # Экран общежития, а не общая записка «скоро»
+        # Экран общежития, а не общая записка «скоро». Записку наполняет
+        # ответ сервера, и ждать надо его: экран открывается раньше
+        await page.wait_for_function(
+            "() => el('dorm-note').textContent.trim().length > 0"
+        )
         assert await page.locator("#house:not(.hidden)").count() == 0
         assert "Комната студенту" in await page.locator("#dorm-note").inner_text()
         await browser.close()
@@ -6751,6 +6758,13 @@ async def test_the_counter_shows_the_art_of_every_modifier(server):
         pics = page.locator("#workshop-shop .mod .mod-pic")
         assert await pics.count() == 5, "пять ступеней заточки оружия"
         first = pics.first
+        # Значок встаёт на место картинки не сразу: сперва браузер должен
+        # сходить за файлом и получить отказ. Ждём отказа, а не читаем
+        # клетку на полпути — иначе в ней пусто, и не потому, что сломано
+        await page.wait_for_function(
+            "() => document.querySelector('#workshop-shop .mod .mod-pic')"
+            ".innerText.trim().length > 0"
+        )
         assert "🗡" in await first.inner_text(), "картинка не доехала — виден значок"
         box = await first.bounding_box()
         assert box["width"] >= 96, f"картинка мелковата: {box['width']}"
@@ -7540,10 +7554,9 @@ async def test_the_bag_shows_the_pass_wear_and_not_undefined(server):
         await page.locator("#tab-bag").click()
         await page.wait_for_selector("#bag:not(.hidden)")
 
-        shelf = page.locator("#potion-list .thing")
-        said = await shelf.first.inner_text()
+        said = await page.locator("#pass-list .thing").first.inner_text()
         assert "Износ: 0/1" in said
-        assert "undefined" not in (await page.locator("#potion-list").inner_text())
+        assert "undefined" not in (await page.locator("#pass-list").inner_text())
         assert "один рейд" in said, "не сказано, на сколько талона хватает"
         # и сколько талонов на руках: износ «0/1» иначе говорил бы, что он один
         assert "В рюкзаке: 2 шт." in said
@@ -7551,7 +7564,63 @@ async def test_the_bag_shows_the_pass_wear_and_not_undefined(server):
         assert "рассыплется" not in said
 
         # у склянки полосы износа нет вовсе
-        assert await shelf.nth(1).locator(".thing-wear").count() == 0
+        jar = page.locator("#potion-list .thing").first
+        assert await jar.locator(".thing-wear").count() == 0
+        await browser.close()
+
+
+async def test_the_raid_tickets_stand_on_their_own_shelf(server):
+    """Билеты лежат своей полкой, а не в стопке эликсиров.
+
+    Приходят они оттуда же, с полки оружейника, и в рюкзаке лежали
+    вместе со склянками. Но билет не пьют — его предъявляют на входе, —
+    и среди эликсиров он читался как склянка, которую забыли выпить.
+    """
+    from bot.game.potions import RAID_PASS
+
+    player = make_player()
+    player.potions = {RAID_PASS: 1, "heal_small": 2}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#pass-box:not(.hidden)")
+
+        head = await page.locator("#pass-box .bag-head").inner_text()
+        assert "Билеты на рейд" in head and "· 1" in head
+
+        # На полке билетов — только билет, на полке склянок — только склянка
+        assert await page.locator("#pass-list .thing").count() == 1
+        assert "Билет" in await page.locator("#pass-list").inner_text()
+        assert await page.locator("#potion-list .thing").count() == 1
+        assert "Билет" not in await page.locator("#potion-list").inner_text()
+
+        # И подпись под названием — «Билеты», а не «Прочее»: в прочем
+        # лежит то, чему не нашлось полки, а у билета полка своя
+        assert await page.locator("#pass-list .thing-kind").inner_text() == "Билеты"
+
+        # Полка билетов стоит ниже эликсиров, в том же рюкзаке
+        drinks = await page.locator("#potion-box").bounding_box()
+        rack = await page.locator("#pass-box").bounding_box()
+        assert rack["y"] > drinks["y"]
+        await browser.close()
+
+
+async def test_without_tickets_the_shelf_does_not_show_at_all(server):
+    """Пустой полки в рюкзаке нет: она обещала бы билет, которого нет."""
+    player = make_player()
+    player.potions = {"heal_small": 1}
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(player))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.wait_for_selector("#potion-box:not(.hidden)")
+
+        assert await page.locator("#pass-box").is_hidden()
         await browser.close()
 
 
@@ -7576,9 +7645,9 @@ async def test_the_pass_lies_in_the_bag_as_a_ticket(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-bag").click()
         await page.wait_for_selector("#bag:not(.hidden)")
-        await page.wait_for_selector("#potion-list .thing-pic.ticket")
+        await page.wait_for_selector("#pass-list .thing-pic.ticket")
 
-        box = page.locator("#potion-list .thing").first
+        box = page.locator("#pass-list .thing").first
         assert "Билет в казино" in await box.inner_text()
         shape = await box.locator(".thing-pic").evaluate(
             "(one) => { const css = getComputedStyle(one); return {"
@@ -7593,7 +7662,7 @@ async def test_the_pass_lies_in_the_bag_as_a_ticket(server):
         assert shape["paint"] in ("rgba(0, 0, 0, 0)", "transparent"), shape
 
         # А склянка как лежала квадратом, так и лежит
-        jar = page.locator("#potion-list .thing").nth(1).locator(".thing-pic")
+        jar = page.locator("#potion-list .thing").first.locator(".thing-pic")
         assert await jar.evaluate("(one) => one.offsetWidth / one.offsetHeight") == 1
         await browser.close()
 
@@ -7602,9 +7671,10 @@ async def test_the_ticket_card_does_not_lie_on_its_own_text(server):
     """Билет не наползает на описание: у него своя раскладка карточки.
 
     Клетка под картинку — 104 точки и жёсткая. Билет вдвое шире своей
-    высоты, и, растянутый до своей ширины, он залезал во вторую
-    колонку прямо поверх слов. Поэтому у билета картинка сверху во всю
-    ширину, а текст под ней.
+    высоты, и, растянутый до своей ширины, он залезал во вторую колонку
+    прямо поверх слов. Поэтому у билета своя раскладка: половина
+    карточки под картинку, половина под текст — во всю ширину он
+    занимал пол-экрана ради одной строки описания.
     """
     from bot.game.potions import RAID_PASS
 
@@ -7619,19 +7689,25 @@ async def test_the_ticket_card_does_not_lie_on_its_own_text(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-bag").click()
         await page.wait_for_selector("#bag:not(.hidden)")
-        await page.wait_for_selector("#potion-list .thing.ticket")
+        await page.wait_for_selector("#pass-list .thing.ticket")
+        await page.set_viewport_size({"width": 390, "height": 900})
+        await page.wait_for_timeout(60)
 
         over = await page.evaluate("""() => {
-          const card = document.querySelector('#potion-list .thing.ticket');
+          const card = document.querySelector('#pass-list .thing.ticket');
+          const box = card.getBoundingClientRect();
           const pic = card.querySelector('.thing-pic').getBoundingClientRect();
           const body = card.querySelector('.thing-body').getBoundingClientRect();
-          return { gap: body.top - pic.bottom, wide: pic.width > 200 };
+          return { gap: body.left - pic.right, share: pic.width / box.width,
+                   ratio: pic.width / pic.height };
         }""")
         assert over["gap"] >= 0, "картинка лежит на тексте"
-        assert over["wide"], "билет показан во всю ширину карточки"
+        # Половина карточки, а не вся её ширина: вторая половина — слова
+        assert 0.4 <= over["share"] <= 0.55, over
+        assert abs(over["ratio"] - 2) < 0.05, over
 
         # И описание короткое: про рейд, и больше ничего
-        said = await page.locator("#potion-list .thing.ticket").first.inner_text()
+        said = await page.locator("#pass-list .thing.ticket").first.inner_text()
         assert "Билет позволит вам участвовать в рейде" in said
         assert "печатью" not in said and "талон" not in said
         await browser.close()
@@ -10535,10 +10611,15 @@ async def test_the_clan_line_in_the_card_opens_the_family(server):
         assert await line.locator(".clan-sign").count() == 1
         assert await page.locator("#hero-clan .clan-sign").count() == 1
 
-        # По строке открывается окно состава: три чина и кнопки старших
+        # По строке открывается окно состава: три чина и кнопки старших.
+        # Пока состав едет, в шапке стоит «Состав семьи · Загружаю…» —
+        # имя семьи встаёт туда ответом сервера, и ждать надо его, а не
+        # саму всплывашку: она открывается мгновенно
         await line.click()
         await page.wait_for_selector("#sheet:not(.hidden)")
-        assert "Коза Ностра" in await page.locator("#sheet-title").inner_text()
+        await page.wait_for_function(
+            "() => el('sheet-title').textContent.includes('Коза Ностра')"
+        )
         heads = await page.locator("#sheet-list .shelf-head").all_inner_texts()
         assert heads == ["Заявки · 0", "Дон", "Приближённые · 1 из 3", "Мафиози"]
 
@@ -17484,7 +17565,7 @@ async def test_the_walker_starts_from_what_the_game_already_shows(server):
 
 # ---------- шкала опыта ----------
 #
-# Четыре строки — «Опыт», «Уровень», «До уровня», «До апгреда» — говорили
+# Четыре строки — «Опыт», «Уровень», «До уровня», «До апгрейда» — говорили
 # то же самое, но вразнобой: сколько пройдено, понимал только тот, кто
 # делил одно число на другое в уме.
 
@@ -17500,7 +17581,7 @@ def a_fighter_at(level: int, exp: int, micro_ups: int, total_exp: int = 0):
 
 
 async def test_the_experience_bar_draws_the_whole_level_at_a_glance(server):
-    """Уровень, засечки апгредов и числа — всё на одной шкале."""
+    """Уровень, засечки апгрейдов и числа — всё на одной шкале."""
     player = a_fighter_at(10, 6_000, 2, total_exp=44_000)
     card = build_card(player, TOKEN, viewer_id=42)
 
@@ -17512,9 +17593,9 @@ async def test_the_experience_bar_draws_the_whole_level_at_a_glance(server):
         assert await page.locator(".xp-level-number").inner_text() == "10"
         assert await page.locator(".xp-level-word").inner_text() == "УРОВЕНЬ"
         head = await page.locator(".xp-head").inner_text()
-        assert "ОПЫТ" in head and "АПГРЕДЫ 2 / 3" in head
+        assert "ОПЫТ" in head and "АПГРЕЙДЫ 2 / 3" in head
 
-        # Засечки стоят там, где апгреды и дают: три апгреда и уровень
+        # Засечки стоят там, где апгрейды и дают: три апгрейда и уровень
         at = await page.locator(".xp-at").all_inner_texts()
         assert [one.replace(" ", " ") for one in at] == [
             "2 100", "4 500", "7 200", "10 200"
@@ -17527,11 +17608,52 @@ async def test_the_experience_bar_draws_the_whole_level_at_a_glance(server):
         total = (await page.locator(".xp-total").inner_text()).replace(" ", " ")
         assert total == "6 000 / 10 200 XP"
         left = (await page.locator(".xp-next").inner_text()).replace(" ", " ")
-        assert left == "До следующего апгреда: 1 200 XP"
+        assert left == "До следующего апгрейда: 1 200 XP"
 
         # Прежних строк на их месте больше нет
         body = await page.locator("#hero-stats").inner_text()
         assert "До уровня" not in body and "До улучшения" not in body
+        await browser.close()
+
+
+async def test_the_flags_of_the_ups_clear_the_line_above_them(server):
+    """Флажки апгрейдов не наезжают на строку «ОПЫТ — АПГРЕЙДЫ».
+
+    Флажок поднимается на тридцать одну точку над дорожкой, а поля над
+    дорожкой было тридцать: он садился ровно на черту сверху. Зазор
+    снизу — такой же, как сверху, иначе шкала висит выше середины
+    своего блока, а между числами и крупным счётом зияет пустота.
+    """
+    player = a_fighter_at(10, 2_500, 1, total_exp=40_000)
+    card = build_card(player, TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector(".xp")
+
+        for width in (360, 390, 430):
+            await page.set_viewport_size({"width": width, "height": 900})
+            await page.wait_for_timeout(60)
+            gaps = await page.evaluate("""() => {
+              const low = (list, pick) => Math.min(...[...list].map(pick));
+              const head = document.querySelector('.xp-head').getBoundingClientRect();
+              const flag = low(document.querySelectorAll('.xp-flag'),
+                               (one) => one.getBoundingClientRect().top);
+              const at = document.querySelectorAll('.xp-at');
+              const under = at.length
+                ? Math.max(...[...at].map((one) => one.getBoundingClientRect().bottom))
+                : document.querySelector('.xp-scale').getBoundingClientRect().bottom;
+              const total = document.querySelector('.xp-total').getBoundingClientRect();
+              return {above: flag - head.bottom, below: total.top - under};
+            }""")
+            assert gaps["above"] > 0, (
+                f"при {width} точках флажок лёг на строку выше: {gaps}"
+            )
+            # Сверху и снизу поля одного порядка: шкала стоит посередине
+            assert abs(gaps["above"] - gaps["below"]) <= 10, (
+                f"при {width} точках шкала висит не по центру: {gaps}"
+            )
         await browser.close()
 
 
@@ -17639,13 +17761,52 @@ async def test_the_wallets_stand_above_the_backpack(server):
 
         heads = await page.locator("#wallets .wallet-tile-head").all_inner_texts()
         assert heads == ["💳 Карта", "💰 Наличные"]
-        sums = await page.locator("#wallets .wallet-tile-sum").all_inner_texts()
+        sums = await page.locator("#wallets .wallet-tile-sum span").all_inner_texts()
         assert [one.replace(" ", " ") for one in sums] == [
             "1 200 💰", "430 💰"
         ]
         # Пополняют наличные: звёзды приходят в карман, а не на счёт
         assert await page.locator("#wallets .cash .plus").count() == 1
         assert await page.locator("#wallets .card .plus").count() == 0
+        await browser.close()
+
+
+async def test_the_plus_stands_in_the_same_line_as_the_cash(server):
+    """Плюс не растягивает плашку наличных на лишнюю строку.
+
+    Своей строкой он делал плашку наличных на треть выше соседней, и
+    ряд из двух одинаковых плашек переставал быть рядом из двух
+    одинаковых плашек.
+    """
+    player = make_player()
+    player.credits = 30_430
+    player.account_balance = 702
+    player.account_number = "VB-1"
+    player.card_at = 1
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+        await page.set_viewport_size({"width": 390, "height": 900})
+        await page.wait_for_timeout(60)
+
+        # Плюс стоит внутри строки суммы, а не отдельным рядом под ней
+        assert await page.locator("#wallets .wallet-tile-sum .plus").count() == 1
+        line = await page.locator("#wallets .cash .wallet-tile-sum").bounding_box()
+        plus = await page.locator("#wallets .cash .plus").bounding_box()
+        middle = plus["y"] + plus["height"] / 2
+        assert line["y"] <= middle <= line["y"] + line["height"], (
+            "плюс выпал из строки суммы"
+        )
+
+        # И обе плашки одной высоты: лишней строки нет ни у одной
+        on_card = await page.locator("#wallets .card").bounding_box()
+        in_hand = await page.locator("#wallets .cash").bounding_box()
+        assert round(on_card["height"]) == round(in_hand["height"]), (
+            f"плашки разной высоты: {on_card['height']} и {in_hand['height']}"
+        )
         await browser.close()
 
 
@@ -17715,6 +17876,103 @@ async def test_the_tricks_stand_in_a_row_of_tiles(server):
         await browser.close()
 
 
+def a_fighter_with_long_tricks():
+    """Боец с самыми длинными названиями, какие есть в игре.
+
+    «Сокрушительный» — четырнадцать букв, и это худший случай: если
+    влезает он, влезет любое другое название.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = {
+        "slots": 4,
+        "known": [
+            {"code": "a", "title": "Сокрушительный удар", "icon": "👊",
+             "image": "", "cost": 3, "tier": 2, "note": "Бьёт."},
+            {"code": "b", "title": "Критический удар", "icon": "👊",
+             "image": "", "cost": 4, "tier": 4, "note": "Бьёт."},
+            {"code": "c", "title": "Восстановление", "icon": "💚",
+             "image": "", "cost": 5, "tier": 6, "note": "Лечит."},
+            {"code": "d", "title": "Воля к победе", "icon": "🔥",
+             "image": "", "cost": 6, "tier": 8, "note": "Держит."},
+        ],
+        "choice": None,
+        "next_tier": 12,
+    }
+    return card
+
+
+# Ширина слова при данном шрифте — то, что решает, разорвут его или нет.
+# Меряем каждое слово отдельно и сравниваем с колонкой под название:
+# если слово шире колонки, браузеру остаётся только разорвать его
+WIDEST_WORD = """() => {
+  const probe = document.createElement('span');
+  probe.style.cssText = 'position:absolute;white-space:nowrap;visibility:hidden';
+  document.body.appendChild(probe);
+  const out = [...document.querySelectorAll('#skills-list .skill-title')].map((one) => {
+    probe.style.font = getComputedStyle(one).font;
+    const room = one.getBoundingClientRect().width;
+    const word = Math.max(...one.textContent.split(' ').map((bit) => {
+      probe.textContent = bit;
+      return probe.getBoundingClientRect().width;
+    }));
+    return {text: one.textContent, room: room, word: word};
+  });
+  probe.remove();
+  return out;
+}"""
+
+
+async def test_the_longest_trick_name_fits_the_tile_without_breaking(server):
+    """Слова в плитке не рвутся: строка кончается там, где был пробел.
+
+    «Критиче-ский удар» читается как опечатка, и переносы отсюда убраны
+    вовсе. Но четверть экрана под «Сокрушительный» мала при любом
+    читаемом кегле — поэтому кегль привязан к ширине самой плитки.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, a_fighter_with_long_tricks())
+        await page.wait_for_selector(".skill")
+
+        for width in (360, 390, 430):
+            await page.set_viewport_size({"width": width, "height": 900})
+            await page.wait_for_timeout(60)
+            for one in await page.evaluate(WIDEST_WORD):
+                assert one["word"] <= one["room"] + 0.5, (
+                    f"при {width} точках «{one['text']}» рвут по слогам: "
+                    f"слову нужно {one['word']:.0f}, а колонка {one['room']:.0f}"
+                )
+        await browser.close()
+
+
+async def test_the_row_of_tricks_never_pushes_the_page_sideways(server):
+    """Ряд приёмов не вылезает за ширину экрана.
+
+    В вебе Телеграма это видно сразу: страница начинает ездить вбок.
+    Колонки сетки заданы как `minmax(0, 1fr)` — у простого `1fr`
+    нижняя граница равна самому длинному слову, и оно растягивало ряд.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, a_fighter_with_long_tricks())
+        await page.wait_for_selector(".skill")
+
+        for width in (320, 360, 390, 430):
+            await page.set_viewport_size({"width": width, "height": 900})
+            await page.wait_for_timeout(60)
+            out = await page.evaluate("""() => {
+              const over = [];
+              document.querySelectorAll('#hero *').forEach((one) => {
+                const box = one.getBoundingClientRect();
+                if (box.width && box.right > window.innerWidth + 0.5)
+                  over.push(one.tagName + '.' + one.className);
+              });
+              return {over: over, page: document.documentElement.scrollWidth};
+            }""")
+            assert out["over"] == [], f"при {width} точках вылезли: {out['over']}"
+            assert out["page"] <= width, f"страница шире экрана: {out['page']}"
+        await browser.close()
+
+
 async def test_a_trick_opens_with_a_big_picture_and_its_words(server):
     """Нажал на приём — всплывашка с крупной картинкой и описанием."""
     async with async_playwright() as pw:
@@ -17776,12 +18034,51 @@ async def test_the_car_at_the_porch_shows_itself_and_its_buttons_below(server):
         # Кнопок в рамке нет — они под ней, одним рядом
         assert await frame.locator(".btn").count() == 0
         acts = page.locator("#sheet .car-here-acts")
-        assert await acts.locator(".btn").all_inner_texts() == [
-            "🔑 Угнать", "Закрыть"
-        ]
-        places = [
-            await acts.locator(".btn").nth(one).bounding_box()
-            for one in range(2)
-        ]
-        assert round(places[0]["y"]) == round(places[1]["y"]), "кнопки не в ряд"
+        # «Закрыть» тут нет вовсе: всплывашку закрывают крестом в шапке,
+        # а внизу эта кнопка читалась как кнопка последней машины
+        assert await acts.locator(".btn").all_inner_texts() == ["🔑 Угнать"]
+        assert await page.locator("#sheet .btn", has_text="Закрыть").count() == 0
+
+        # Кнопка стоит ПОД рамкой, а не на ней: отрицательный отступ
+        # наезжал ряду кнопок на нижний край рамки машины
+        under = await frame.bounding_box()
+        over = await acts.bounding_box()
+        assert over["y"] >= under["y"] + under["height"], "кнопка налезла на рамку"
+        await browser.close()
+
+
+async def test_two_cars_at_the_porch_each_keep_their_own_buttons(server):
+    """У каждой машины свой ряд кнопок, и лишней кнопки внизу нет."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    def a_car(one, title, plate, mine):
+        return {
+            "id": one, "code": "suv", "title": title, "image": "",
+            "plate": plate, "owner": "x RED x", "owner_id": 9, "mine": mine,
+            "street": True, "impound": False, "service": "", "stolen": False,
+            "wanted": False, "can_steal": not mine, "why": "",
+            "can_deliver": False,
+        }
+    here = [
+        a_car(7, "Бронированный внедорожник", "Р919ВК", False),
+        a_car(8, "Прокачанный GT", "Р254ВН", True),
+    ]
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, city=city_map(cars=here)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "map")
+        await page.wait_for_function("mapData && mapData.cars.length > 1")
+        await page.evaluate("carsHereSheet()")
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert await page.locator("#sheet .car-here").count() == 2
+        rows = page.locator("#sheet .car-here-acts")
+        assert await rows.count() == 2
+        assert await rows.nth(0).locator(".btn").all_inner_texts() == ["🔑 Угнать"]
+        assert await rows.nth(1).locator(".btn").all_inner_texts() == ["Забрать"]
+        # Ни одной «Закрыть» — ни в рядах, ни отдельной внизу списка
+        assert await page.locator("#sheet .btn", has_text="Закрыть").count() == 0
         await browser.close()
