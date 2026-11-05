@@ -20,7 +20,7 @@ from bot.game.combat import (
     total_crit,
     total_dodge,
 )
-from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL
+from bot.game.economy import MAX_LEVEL, MICRO_UPS_PER_LEVEL, exp_at_up
 from bot.game.equipment import (
     ALL_SLOTS,
     JEWEL_SLOTS,
@@ -721,6 +721,28 @@ def pro_payload(
     }
 
 
+def ups_payload(player: Player) -> list[dict[str, Any]]:
+    """Засечки шкалы: по апгреду на каждый, кроме четвёртого.
+
+    Четвёртый апгред — это сам уровень, и на шкале он стоит отдельным
+    знаком в самом конце: у него и цвет другой, и число на нём не номер
+    апгреда, а номер следующего уровня.
+
+    На потолке засечек нет вовсе: уровня впереди нет, а значит, нет и
+    долей до него.
+    """
+    if player.at_max_level:
+        return []
+    return [
+        {
+            "number": number,
+            "at": exp_at_up(player.level, number),
+            "taken": number <= player.micro_ups,
+        }
+        for number in range(1, MICRO_UPS_PER_LEVEL)
+    ]
+
+
 def build_magic(
     player: Player, now: int | None = None, promo_claimed: bool = False
 ) -> dict:
@@ -1221,6 +1243,12 @@ def build_card(
             "capped": player.at_max_level,
             "max_level": MAX_LEVEL,
             "free_points": player.free_points,
+            "level": player.level,
+            "next_level": min(player.level + 1, MAX_LEVEL),
+            # Пороги апгредов этого уровня — те самые, по которым
+            # начисляются очки. Шкала рисует по ним засечки, и считать их
+            # на странице было бы вторым местом, где живёт лестница
+            "ups": ups_payload(player),
         },
         "place": place_payload(player, moment),
         # Работа: по ней в шапке того дома, где боец стоит, встаёт кнопка

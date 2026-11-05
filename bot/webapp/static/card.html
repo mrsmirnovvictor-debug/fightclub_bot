@@ -15,7 +15,16 @@
   <link rel="stylesheet" href="static/card.css">
 </head>
 <body>
-  <div id="loader" class="loader">Судья листает картотеку…</div>
+  <!-- Экран загрузки: картина во весь экран, а внизу, в оставленном под
+       них месте, колесо и строка. Адрес картинки подставляет сервер —
+       она нужна раньше, чем приедет первый ответ -->
+  <div id="loader" class="loader">
+    <div class="loader-pic" style="background-image: url('{{loading}}')"></div>
+    <div class="loader-foot">
+      <div class="loader-spin" aria-hidden="true"></div>
+      <div class="loader-text" id="loader-text">Судья листает картотеку…</div>
+    </div>
+  </div>
 
   <div id="error" class="error hidden">
     <div class="error-emoji">🥊</div>
@@ -871,7 +880,9 @@
       <ul class="rows" id="stats"></ul>
       <div id="upgrade" class="upgrade hidden"></div>
       <hr class="rule">
-      <ul class="rows" id="progress"></ul>
+      <!-- Шкала опыта: уровень, дорожка с засечками апгредов и числа.
+           Не список: внутри не строки, а рисунок -->
+      <div id="progress"></div>
       <hr class="rule">
       <ul class="rows" id="combat"></ul>
       <hr class="rule">

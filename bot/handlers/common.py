@@ -100,8 +100,8 @@ def progress_line(player: Player) -> str:
     ups_left = MICRO_UPS_PER_LEVEL - player.micro_ups
     return (
         f"📈 Опыт: <b>{player.exp}/{player.exp_needed}</b> · "
-        f"до апа: <b>{player.exp_to_next_up}</b> "
-        f"(апов до уровня: {ups_left})"
+        f"до апгреда: <b>{player.exp_to_next_up}</b> "
+        f"(апгредов до уровня: {ups_left})"
     )
 
 

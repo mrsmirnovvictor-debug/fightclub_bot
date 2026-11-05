@@ -89,10 +89,75 @@ body {
 
 .hidden { display: none !important; }
 
-.loader, .error {
+.error {
   padding: 48px 16px;
   text-align: center;
   color: var(--muted);
+}
+
+/* ---------- экран загрузки ----------
+
+   Картина во весь экран, а внизу колесо и строка — в том месте, которое
+   под них на картине и оставлено. Показываем картину целиком
+   (`contain`), а не по ширине: её низ — часть замысла, и обрезать его
+   значит обрезать как раз то место, куда встаёт строка.
+
+   Фон тёмный и не из темы: картина нарисована на чёрном, и светлая
+   подложка по краям резала бы глаз. Строка внизу лежит на затемнении —
+   так она читается и когда картина не доехала вовсе. */
+.loader {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: #0b0d10;
+}
+/* Картину прижимаем к низу, а не к верху: место под строку оставлено на
+   ней самой, внизу, и оно обязано лечь туда же, где строка и стоит.
+   Прижать к верху — и это место уехало бы на середину экрана, а строка
+   осталась бы на пустом чёрном */
+.loader-pic {
+  position: absolute;
+  inset: 0;
+  background-position: center bottom;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+.loader-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 24px 24px calc(32px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  background: linear-gradient(
+    to bottom, rgba(11, 13, 16, 0), rgba(11, 13, 16, 0.85) 45%
+  );
+}
+.loader-text {
+  color: #e8dfce;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+.loader-spin {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(232, 223, 206, 0.22);
+  border-top-color: #e2641f;
+  animation: loader-turn 0.9s linear infinite;
+}
+@keyframes loader-turn {
+  to { transform: rotate(360deg); }
+}
+/* Колесо крутится ради ожидания, а не ради красоты: кому движение
+   мешает, тот его выключил в системе, и спорить с этим нечем */
+@media (prefers-reduced-motion: reduce) {
+  .loader-spin { animation-duration: 3s; }
 }
 .error-emoji { font-size: 40px; margin-bottom: 12px; }
 .error-text { color: var(--ink); }
@@ -5193,3 +5258,193 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .casino-prize.kind-car { background: rgba(255, 233, 168, 0.18); }
 .casino-prize.kind-chips { background: rgba(142, 230, 168, 0.16); }
 
+
+/* ---------- шкала опыта ----------
+
+   Четыре строки — «Опыт», «Уровень», «До уровня», «До апгреда» —
+   говорили то же самое, но вразнобой: сколько пройдено, понимал только
+   тот, кто делил одно число на другое в уме. Шкала показывает это одним
+   взглядом, а числа остаются под ней.
+
+   Цвета берём из темы, а роли — из макета: залитое оранжевое, взятый
+   апгред золотой, невзятый серый, уровень впереди красный. */
+.xp {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  padding: 10px 0 4px;
+}
+.xp-level {
+  flex: 0 0 auto;
+  min-width: 58px;
+  padding-right: 14px;
+  border-right: 2px solid var(--hp-red);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.xp-level-number {
+  font-size: 42px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.xp-level-word {
+  margin-top: 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+.xp-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.xp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+/* Черта между «ОПЫТ» и счётом апгредов тянется на всё свободное место:
+   в макете она и есть то, что связывает шапку шкалы в одну строку */
+.xp-head i {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+/* Поля по бокам — под числа крайних засечек: у последней засечка стоит
+   на самом конце дорожки, и её число иначе уехало бы за край панели */
+.xp-scale {
+  position: relative;
+  height: 13px;
+  margin: 30px 22px 34px 10px;
+}
+.xp-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--hp-track);
+}
+.xp-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #d4571a, #f0922a);
+  box-shadow: 0 0 10px rgba(226, 100, 31, 0.4);
+}
+.xp-mark {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+/* Ромб — повёрнутый квадрат, поэтому всё, что внутри, поворачиваем
+   обратно: иначе галочка и номер уровня лежали бы на боку */
+.xp-gem {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  border: 2px solid var(--slot-line);
+  background: var(--panel);
+  transform: rotate(45deg);
+}
+.xp-gem i {
+  transform: rotate(-45deg);
+  font-style: normal;
+  font-weight: 800;
+  font-size: 10px;
+  line-height: 1;
+}
+.xp-mark.taken .xp-gem {
+  border-color: var(--hp-yellow);
+  background: var(--hp-yellow);
+  color: #2a1a05;
+}
+.xp-mark-level .xp-gem {
+  width: 22px;
+  height: 22px;
+  border-color: var(--hp-red);
+  color: var(--hp-red);
+}
+.xp-mark-level .xp-gem i { font-size: 11px; }
+/* Флажок с номером апгреда стоит над ромбом — как в макете, стрелкой
+   вверх: взятые золотые, следующий серый */
+.xp-flag {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translate(-50%, -10px);
+  min-width: 19px;
+  padding: 2px 5px 3px;
+  border-radius: 4px 4px 2px 2px;
+  background: var(--slot-line);
+  color: var(--panel);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: center;
+}
+.xp-flag::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--slot-line);
+}
+.xp-mark.taken .xp-flag {
+  background: var(--hp-yellow);
+  color: #2a1a05;
+}
+.xp-mark.taken .xp-flag::after { border-top-color: var(--hp-yellow); }
+.xp-at {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translate(-50%, 12px);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.xp-total {
+  margin-top: 2px;
+  font-size: 22px;
+  font-weight: 800;
+  text-align: center;
+  letter-spacing: 0.01em;
+}
+.xp-next {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+/* На потолке засечек нет вовсе, и дорожка залита целиком: идти некуда */
+.xp.capped .xp-scale { margin-right: 10px; }
+
+/* На узком экране шкале тесно: числа под засечками у поздних уровней
+   пятизначные, и четыре таких в строку не встают. Сперва ужимаем всё,
+   что ужимается, а на совсем узких числа под засечками убираем вовсе —
+   главные два всё равно стоят крупно под дорожкой */
+@media (max-width: 400px) {
+  .xp { gap: 10px; }
+  .xp-level { min-width: 46px; padding-right: 10px; }
+  .xp-level-number { font-size: 34px; }
+  .xp-level-word { font-size: 8.5px; letter-spacing: 0.1em; }
+  .xp-head { font-size: 9.5px; letter-spacing: 0.07em; }
+  .xp-scale { margin-left: 6px; margin-right: 20px; }
+  .xp-at { font-size: 10px; }
+  .xp-total { font-size: 20px; }
+  .xp-next { font-size: 11.5px; }
+}
+@media (max-width: 345px) {
+  .xp-at { display: none; }
+  .xp-scale { margin-bottom: 16px; }
+}

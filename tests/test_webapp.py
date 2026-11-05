@@ -334,6 +334,24 @@ async def test_the_page_carries_a_version_and_is_never_cached(client):
     assert (await client.get(f"/static/card.css?v={stamp}")).status == 200
 
 
+async def test_the_loading_picture_reaches_the_page_by_its_real_address(client):
+    """Заставка нужна раньше первого ответа, значит её адрес — в странице.
+
+    Подставляет его сервер, а не вёрстка: все адреса картинок в игре
+    живут в одном месте. Если имя места в странице переименуют, браузер
+    получит само `{{loading}}` вместо картинки, и увидит это только
+    игрок — поэтому проверяем обе половины: подстановка сработала и
+    следа от неё не осталось.
+    """
+    from bot.game.art import LOADING
+    from bot.webapp.server import LOADING_SLOT
+
+    body = await (await client.get("/")).text()
+
+    assert LOADING in body
+    assert LOADING_SLOT not in body
+
+
 def test_the_version_changes_with_the_files(tmp_path, monkeypatch):
     """Метка считается по содержимому: правка стиля обязана её сдвинуть."""
     import bot.webapp.server as server
@@ -783,3 +801,54 @@ async def test_the_casino_seats_and_bets_over_http(client, db):
     )
     assert response.status == 200
     assert (await db.casino_wallet(42)) == {"chips": 300, "reserved": 0}
+
+
+# ---------- шкала опыта ----------
+
+
+def test_the_bar_gets_the_very_thresholds_the_ups_are_paid_at():
+    """Засечки шкалы считает лестница, а не страница.
+
+    Второе место, где живут пороги апгредов, однажды разошлось бы с
+    первым — и шкала рисовала бы засечку там, где очко не дают.
+    """
+    from bot.game.economy import exp_at_up
+    from bot.webapp.card import ups_payload
+
+    player = make_player(level=10, exp=6_000, micro_ups=2)
+
+    marks = ups_payload(player)
+
+    assert [one["number"] for one in marks] == [1, 2, 3]
+    assert [one["at"] for one in marks] == [2_100, 4_500, 7_200]
+    assert [one["at"] for one in marks] == [exp_at_up(10, n) for n in (1, 2, 3)]
+    assert [one["taken"] for one in marks] == [True, True, False]
+
+
+def test_the_fourth_up_is_not_a_notch_but_the_level_itself():
+    """Четвёртого апгреда на дорожке нет: он и есть новый уровень."""
+    from bot.game.economy import MICRO_UPS_PER_LEVEL
+    from bot.webapp.card import ups_payload
+
+    marks = ups_payload(make_player(level=10, exp=6_000, micro_ups=2))
+
+    assert len(marks) == MICRO_UPS_PER_LEVEL - 1
+    assert all(one["at"] < 10_200 for one in marks)
+
+
+def test_at_the_ceiling_the_bar_has_no_notches_at_all():
+    """На потолке уровня впереди нет, а значит, нет и долей до него."""
+    from bot.webapp.card import ups_payload
+
+    assert ups_payload(make_player(level=15, exp=0)) == []
+
+
+def test_the_card_carries_the_whole_bar():
+    """Всё, что рисует шкала, приезжает одним куском."""
+    card = build_card(make_player(level=10, exp=6_000, micro_ups=2), TOKEN, 42)
+
+    bar = card["progress"]
+    assert bar["level"] == 10 and bar["next_level"] == 11
+    assert bar["exp"] == 6_000 and bar["exp_needed"] == 10_200
+    assert bar["exp_to_next_up"] == 1_200
+    assert len(bar["ups"]) == 3

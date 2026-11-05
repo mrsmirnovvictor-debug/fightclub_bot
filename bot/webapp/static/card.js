@@ -4,6 +4,28 @@ const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : 
 
 const el = (id) => document.getElementById(id);
 
+// Экран загрузки держим не меньше двух секунд. На быстрой связи карточка
+// приезжает за сотню миллисекунд, и картина успевала только моргнуть —
+// со стороны это выглядело сбоем вёрстки, а не заставкой. Снизу две
+// секунды, сверху — сколько понадобится серверу.
+//
+// Порог снимается снаружи: браузерных проверок пять сотен, и ждать
+// заставку в каждой — это лишние четверть часа на прогон. В Телеграме
+// это окно никто не задаёт, так что порог там всегда свой.
+const LOADER_LEAST =
+  typeof window.LOADER_LEAST_MS === "number" ? window.LOADER_LEAST_MS : 2000;
+const loaderSince = Date.now();
+
+function hideLoader() {
+  const left = LOADER_LEAST - (Date.now() - loaderSince);
+  if (left > 0) {
+    setTimeout(hideLoader, left);
+    return;
+  }
+  const box = el("loader");
+  if (box) box.classList.add("hidden");
+}
+
 // Падения мини-аппа не видно ниоткуда: консоль вебвью Telegram не
 // показывает, а на телефоне её не открыть — со стороны карточка просто
 // «не работает», и в логах сервера при этом чисто. Поэтому свою ошибку
@@ -82,6 +104,136 @@ function share(combat, name, label, text) {
         : sum + " (потолок " + cap.cap + "%)";
   }
   return line;
+}
+
+/** Шкала опыта: уровень слева, дорожка с засечками, числа под ней.
+
+    Четыре строки — «Опыт», «Уровень», «До уровня», «До апгреда» — говорили
+    то же самое, но вразнобой: сколько пройдено, понимал только тот, кто
+    делил одно число на другое в уме. Шкала показывает это одним взглядом,
+    а числа остаются там же, под ней.
+
+    Засечки приходят с сервера (`progress.ups`): пороги апгредов считает
+    та же лестница, по которой начисляются очки, и второго места, где они
+    живут, быть не должно. Четвёртый апгред — это сам уровень, и стоит он
+    отдельным знаком в конце дорожки. */
+function experienceBar(card) {
+  const data = card.progress;
+  const box = document.createElement("section");
+  box.className = "xp" + (data.capped ? " capped" : "");
+
+  const level = document.createElement("div");
+  level.className = "xp-level";
+  const number = document.createElement("div");
+  number.className = "xp-level-number";
+  number.textContent = card.level;
+  const word = document.createElement("div");
+  word.className = "xp-level-word";
+  word.textContent = "УРОВЕНЬ";
+  level.append(number, word);
+  box.appendChild(level);
+
+  const main = document.createElement("div");
+  main.className = "xp-main";
+
+  const head = document.createElement("div");
+  head.className = "xp-head";
+  const left = document.createElement("span");
+  left.textContent = "ОПЫТ";
+  const rule = document.createElement("i");
+  const right = document.createElement("span");
+  right.textContent = data.capped
+    ? "ПОТОЛОК"
+    : "АПГРЕДЫ " + data.micro_ups + " / " + (data.ups_per_level - 1);
+  head.append(left, rule, right);
+  main.appendChild(head);
+
+  // Дорожка: залито ровно столько, сколько пройдено на этом уровне. На
+  // потолке заливаем целиком — дальше идти некуда
+  const scale = document.createElement("div");
+  scale.className = "xp-scale";
+  const track = document.createElement("div");
+  track.className = "xp-track";
+  const fill = document.createElement("div");
+  fill.className = "xp-fill";
+  const done = data.capped
+    ? 1
+    : Math.max(0, Math.min(1, data.exp / Math.max(1, data.exp_needed)));
+  fill.style.width = (done * 100).toFixed(2) + "%";
+  track.appendChild(fill);
+  scale.appendChild(track);
+
+  (data.ups || []).forEach((up) => {
+    scale.appendChild(
+      experienceMark({
+        at: up.at,
+        of: data.exp_needed,
+        badge: up.number,
+        taken: up.taken,
+        kind: "up",
+      })
+    );
+  });
+  if (!data.capped) {
+    scale.appendChild(
+      experienceMark({
+        at: data.exp_needed,
+        of: data.exp_needed,
+        badge: data.next_level,
+        taken: false,
+        kind: "level",
+      })
+    );
+  }
+  main.appendChild(scale);
+
+  const total = document.createElement("div");
+  total.className = "xp-total";
+  total.textContent = data.capped
+    ? num(data.total_exp) + " XP"
+    : num(data.exp) + " / " + num(data.exp_needed) + " XP";
+  main.appendChild(total);
+
+  const next = document.createElement("div");
+  next.className = "xp-next";
+  next.textContent = data.capped
+    ? "Потолок: выше " + data.max_level + " уровня в клубе не растут"
+    : "До следующего апгреда: " + num(data.exp_to_next_up) + "\u00a0XP";
+  main.appendChild(next);
+
+  box.appendChild(main);
+  return box;
+}
+
+/** Одна засечка на дорожке: флажок с номером, ромб и число под ним. */
+function experienceMark(mark) {
+  const at = Math.max(0, Math.min(1, mark.at / Math.max(1, mark.of)));
+  const box = document.createElement("div");
+  box.className =
+    "xp-mark xp-mark-" + mark.kind + (mark.taken ? " taken" : "");
+  box.style.left = (at * 100).toFixed(2) + "%";
+
+  if (mark.kind === "up") {
+    const flag = document.createElement("span");
+    flag.className = "xp-flag";
+    flag.textContent = mark.badge;
+    box.appendChild(flag);
+  }
+
+  const gem = document.createElement("span");
+  gem.className = "xp-gem";
+  // У взятого апгреда на ромбе галочка, у уровня — его номер, у ещё не
+  // взятого — ничего: пустой ромб и есть «сюда ещё идти»
+  const face = document.createElement("i");
+  face.textContent = mark.kind === "level" ? mark.badge : mark.taken ? "✓" : "";
+  gem.appendChild(face);
+  box.appendChild(gem);
+
+  const at_text = document.createElement("span");
+  at_text.className = "xp-at";
+  at_text.textContent = num(mark.at);
+  box.appendChild(at_text);
+  return box;
 }
 
 function row(label, value, extraClass) {
@@ -6484,28 +6636,14 @@ function render(card, keepTab) {
 
   const progress = el("progress");
   progress.textContent = "";
-  progress.appendChild(row("Опыт", num(card.progress.total_exp)));
-  progress.appendChild(row("Уровень", num(card.level)));
-  if (card.progress.capped) {
-    progress.appendChild(row("До уровня", "потолок"));
-  } else {
-    progress.appendChild(
-      row("До уровня", num(card.progress.exp) + " / " + num(card.progress.exp_needed))
-    );
-    progress.appendChild(
-      row(
-        "До улучшения",
-        num(card.progress.exp_to_next_up) +
-          " (" +
-          card.progress.micro_ups +
-          "/" +
-          card.progress.ups_per_level +
-          ")"
-      )
-    );
-  }
+  progress.appendChild(experienceBar(card));
   if (card.progress.free_points) {
-    progress.appendChild(row("Свободных очков", num(card.progress.free_points), "good"));
+    const free = document.createElement("ul");
+    free.className = "rows";
+    free.appendChild(
+      row("Свободных очков", num(card.progress.free_points), "good")
+    );
+    progress.appendChild(free);
   }
 
   const combat = el("combat");
@@ -6555,7 +6693,7 @@ function render(card, keepTab) {
   el("foot").textContent =
     card.fclass.emoji + " " + card.fclass.title + " — " + card.fclass.tagline;
 
-  el("loader").classList.add("hidden");
+  hideLoader();
   // Чужую карточку показываем одним экраном: ни панели, ни рюкзака
   el("bar").classList.toggle("hidden", !card.is_self);
   pickClubSection(clubSection);
@@ -19498,7 +19636,9 @@ function paintCity(card) {
 }
 
 function fail(message) {
-  el("loader").classList.add("hidden");
+  // Отказ тоже ждёт своих двух секунд: иначе картина моргнула бы и
+  // сменилась ошибкой, и человек не понял бы, что это было
+  hideLoader();
   const box = el("error");
   box.querySelector(".error-text").textContent = message;
   box.classList.remove("hidden");

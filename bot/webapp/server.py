@@ -15,6 +15,7 @@ from bot.abilities_service import AbilityError, ensure_starter
 from bot.daily_service import DailyError, check_in, claim, ladder_view
 from bot.abilities_service import learn as learn_ability
 from bot.database import Database
+from bot.game.art import LOADING
 from bot.battle_service import BattleError
 from bot.duel_service import DuelError
 from bot.raid_service import RaidError
@@ -230,6 +231,9 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Файлы, из которых собирается метка версии страницы
 ASSETS = ("card.css", "card.js")
 
+# Место в странице, куда встаёт адрес картинки экрана загрузки
+LOADING_SLOT = "{{loading}}"
+
 # Типизированные ключи приложения — так рекомендует aiohttp
 BOT_KEY: web.AppKey = web.AppKey("bot")
 DB_KEY: web.AppKey[Database] = web.AppKey("db", Database)
@@ -317,11 +321,16 @@ def stamped_page(stamp: str) -> str:
     после выката человек открывает карточку и видит вчерашнюю вёрстку, а в
     логах сервера — только запрос к API. Метка в адресе делает файл новым, и
     вебвью идёт за ним заново.
+
+    Заодно подставляем адрес картинки экрана загрузки. Она единственная,
+    которая нужна странице до первого ответа сервера, — присылать её в
+    json поздно, а прописывать бакет в вёрстке нельзя: все адреса
+    картинок в игре живут в одном месте, `bot.game.art`.
     """
     html = (STATIC_DIR / "card.html").read_text(encoding="utf-8")
     for name in ASSETS:
         html = html.replace(f"static/{name}", f"static/{name}?v={stamp}")
-    return html
+    return html.replace(LOADING_SLOT, LOADING)
 
 
 async def index(request: web.Request) -> web.Response:

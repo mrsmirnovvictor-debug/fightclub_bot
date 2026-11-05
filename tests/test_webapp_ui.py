@@ -1009,6 +1009,7 @@ async def open_page(
     court=None, blackout=None, casino=None,
     images=False,
     telegram="",
+    loader_wait=False,
 ):
     """Открыть мини-апп с подменёнными ответами API."""
     def canned(payload):
@@ -1020,6 +1021,11 @@ async def open_page(
         executable_path=CHROMIUM, args=["--no-proxy-server"]
     )
     page = await browser.new_page(viewport={"width": 420, "height": 900})
+    # Заставку проверки не высиживают: её порог в две секунды здесь ни
+    # о чём не говорит, а на пяти сотнях проверок стоит четверть часа.
+    # Саму заставку проверяет отдельный тест — он просит порог обратно
+    if not loader_wait:
+        await page.add_init_script("window.LOADER_LEAST_MS = 0;")
     await page.route("**/api/card*", canned(card))
     await page.route("**/api/shop*", canned(shop or {}))
     await page.route("**/api/topup*", canned(topup or {"credits": 0, "packs": []}))
@@ -2491,7 +2497,7 @@ async def test_the_bag_counts_the_fights_a_thing_has_left(server):
 
 
 async def test_the_hero_screen_reads_without_extra_icons(server):
-    """Характеристики без значков, броня по строке на зону, «До улучшения»."""
+    """Характеристики без значков, броня по строке на зону, шкала опыта."""
     player = make_player()
     player.gear = [OwnedItem(item=CATALOGUE["moto_helmet"], id=1, slot=Slot.HEAD)]
     card = build_card(player, TOKEN, viewer_id=player.user_id)
@@ -2503,8 +2509,13 @@ async def test_the_hero_screen_reads_without_extra_icons(server):
         stats = await page.locator("#stats li .label").all_inner_texts()
         assert stats == ["Сила", "Проворство", "Интуиция", "Выносливость"]
 
+        # На месте прежних четырёх строк — шкала: ни «До уровня», ни
+        # «До улучшения», ни «ап» в ней не осталось
         progress = await page.locator("#progress").inner_text()
-        assert "До улучшения" in progress and "До апа" not in progress
+        assert "До следующего апгреда" in progress
+        assert "До улучшения" not in progress and "До апа" not in progress
+        assert "До уровня" not in progress
+        assert await page.locator("#progress .xp").count() == 1
 
         combat = await page.locator("#combat li .label").all_inner_texts()
         assert "🩸 Крит" in combat  # крит помечен каплей крови
@@ -8604,7 +8615,8 @@ def make_policy(
     """Бланк полиса, как его отдаёт сервер.
 
     `by_pro` — полис, который держит подписка: у него другой срок, другие
-    обещания и нет переключателя автопродления.
+    обещания и нет переключателя автопродления. Держит его только
+    PREMIUM, поэтому и срок ставим ей.
     """
     from bot.game.health import now_ts
     from bot.game.insurance import NOTE, POLICY_SECONDS, Policy
@@ -8623,7 +8635,7 @@ def make_policy(
     )
     if by_pro:
         # Подписка держит полис ровно до своего конца: срок один и тот же
-        player.pro_until = player.policy.until
+        player.premium_until = player.policy.until
     paper = policy_document(player, moment)
     assert paper["note"] == NOTE and paper["by_pro"] is by_pro
     return paper
@@ -9456,14 +9468,20 @@ async def test_the_atm_offers_putting_in_taking_out_and_sending(server):
 
 
 async def test_the_new_product_tab_spells_out_the_discounts(server):
-    """Прайс скидок собран из той же таблицы, по которой считают цену."""
+    """Прайс скидок собран той же функцией, по которой считают цену.
+
+    Процент один на все места — меняет его только ступень подписки, — и
+    в прайсе у бойца без подписки везде стоят его карточные пять.
+    """
+    from bot.game.bank import CARD_DISCOUNT
+
     async with async_playwright() as pw:
         browser, page = await open_bank(pw, server)
         await page.locator("#bank-tabs .chip", has_text="Новый продукт").click()
         await page.wait_for_selector(".day-prices")
 
         rows = await page.locator(".day-prices .day-price-value").all_inner_texts()
-        assert "−15%" in rows and "−5%" in rows and "−10%" in rows
+        assert set(rows) == {f"−{CARD_DISCOUNT}%"}
         # В прайсе стоят дома, а не дела: «Аптека», а не «покупать эликсиры»
         places = await page.locator(".day-prices .day-price-number").all_inner_texts()
         assert "Аптека" in places and "Больница" in places
@@ -11808,7 +11826,7 @@ async def test_the_salon_goes_dark_when_the_garage_is_full(server, db):
         said = await page.locator("#cars-note").inner_text()
         assert "Машин на руках 1 из 1" in said
         assert "Поставь её на парковку" in said
-        assert "С подпиской держат 3" in said
+        assert "С PRO держат 2 разом, с PREMIUM — 3" in said
         # Своя машина отмечена, а у остальных погасли все три кнопки
         cards = page.locator("#cars-body .car")
         assert "Твоя насовсем" in await cards.first.inner_text()
@@ -15148,6 +15166,7 @@ async def test_a_woman_in_the_barbershop_is_told_why_not(server):
 
 async def test_the_station_offers_cash_or_card_with_a_discount(server, db):
     """На станции виден переключатель кошелька и скидка по карте."""
+    from bot.game.bank import CARD_DISCOUNT
     from bot.webapp.charging import build_charge
     from tests.test_charge import carded, drained, driver
 
@@ -15165,20 +15184,20 @@ async def test_the_station_offers_cash_or_card_with_a_discount(server, db):
         picks = await page.locator("#charge-body .wallet-pick").all_inner_texts()
         assert len(picks) == 2
         assert "Наличные" in picks[0] and "Карта" in picks[1]
-        assert "−15%" in picks[1], "скидка видна на самой кнопке"
+        assert f"−{CARD_DISCOUNT}%" in picks[1], "скидка видна на самой кнопке"
         assert "card" == await page.locator(
             "#charge-body .wallet-pick.on"
         ).get_attribute("data-purse")
-        assert "−15% к ценам" in await page.locator(
+        assert f"−{CARD_DISCOUNT}% к ценам" in await page.locator(
             "#charge-body .wallet-note"
         ).inner_text()
 
-        # И мерки посчитаны по карте: 42 вместо пятидесяти
+        # И мерки посчитаны по карте: 47 вместо пятидесяти
         await page.locator("#charge-body .charge-slot").first.click()
         await page.locator(".charge-car-tile").first.click()
         await page.wait_for_selector(".charge-steps")
         squares = await page.locator(".charge-step").all_inner_texts()
-        assert "42 💰" in squares[0] and "63 💰" in squares[1]
+        assert "47 💰" in squares[0] and "71 💰" in squares[1]
         await browser.close()
 
 
@@ -17451,4 +17470,138 @@ async def test_the_walker_starts_from_what_the_game_already_shows(server):
 
         # И выгрузка пустая: править пока нечего
         assert json.loads(await page.locator("#out").input_value()) == {}
+        await browser.close()
+
+
+# ---------- шкала опыта ----------
+#
+# Четыре строки — «Опыт», «Уровень», «До уровня», «До апгреда» — говорили
+# то же самое, но вразнобой: сколько пройдено, понимал только тот, кто
+# делил одно число на другое в уме.
+
+
+def a_fighter_at(level: int, exp: int, micro_ups: int, total_exp: int = 0):
+    from bot.game.classes import Stats
+
+    return Player(
+        user_id=42, nickname="Тайлер", class_code="warrior", level=level,
+        exp=exp, micro_ups=micro_ups, total_exp=total_exp or exp,
+        **Stats(strength=20, agility=20, intuition=20, endurance=20).as_dict(),
+    )
+
+
+async def test_the_experience_bar_draws_the_whole_level_at_a_glance(server):
+    """Уровень, засечки апгредов и числа — всё на одной шкале."""
+    player = a_fighter_at(10, 6_000, 2, total_exp=44_000)
+    card = build_card(player, TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector(".xp")
+
+        assert await page.locator(".xp-level-number").inner_text() == "10"
+        assert await page.locator(".xp-level-word").inner_text() == "УРОВЕНЬ"
+        head = await page.locator(".xp-head").inner_text()
+        assert "ОПЫТ" in head and "АПГРЕДЫ 2 / 3" in head
+
+        # Засечки стоят там, где апгреды и дают: три апгреда и уровень
+        at = await page.locator(".xp-at").all_inner_texts()
+        assert [one.replace(" ", " ") for one in at] == [
+            "2 100", "4 500", "7 200", "10 200"
+        ]
+        assert await page.locator(".xp-mark.taken").count() == 2
+        assert await page.locator(".xp-mark-level").count() == 1
+        # На взятых — галочка, на уровне впереди — его номер
+        assert await page.locator(".xp-mark-level .xp-gem i").inner_text() == "11"
+
+        total = (await page.locator(".xp-total").inner_text()).replace(" ", " ")
+        assert total == "6 000 / 10 200 XP"
+        left = (await page.locator(".xp-next").inner_text()).replace(" ", " ")
+        assert left == "До следующего апгреда: 1 200 XP"
+
+        # Прежних строк на их месте больше нет
+        body = await page.locator("#hero-stats").inner_text()
+        assert "До уровня" not in body and "До улучшения" not in body
+        await browser.close()
+
+
+async def test_the_bar_is_filled_to_exactly_what_is_earned(server):
+    """Залито ровно столько, сколько пройдено на этом уровне.
+
+    Шесть тысяч из десяти с небольшим — это доля уровня, а не доля всего
+    набранного за жизнь: общий опыт у бойца сорок четыре тысячи, и
+    спутать одно с другим легче лёгкого.
+    """
+    card = build_card(
+        a_fighter_at(10, 6_000, 2, total_exp=44_000), TOKEN, viewer_id=42
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector(".xp-fill")
+
+        width = await page.locator(".xp-fill").evaluate(
+            "node => node.style.width"
+        )
+        assert width == "58.82%"
+        await browser.close()
+
+
+async def test_at_the_ceiling_the_bar_is_full_and_has_no_notches(server):
+    """На потолке идти некуда: дорожка залита целиком, засечек нет."""
+    card = build_card(
+        a_fighter_at(15, 0, 0, total_exp=120_000), TOKEN, viewer_id=42
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector(".xp")
+
+        assert await page.locator(".xp-mark").count() == 0
+        assert await page.locator(".xp-fill").evaluate(
+            "node => node.style.width"
+        ) == "100%"
+        assert "ПОТОЛОК" in await page.locator(".xp-head").inner_text()
+        total = (await page.locator(".xp-total").inner_text()).replace(" ", " ")
+        assert total == "120 000 XP"
+        assert "Потолок" in await page.locator(".xp-next").inner_text()
+        await browser.close()
+
+
+# ---------- экран загрузки ----------
+
+
+async def test_the_loading_screen_shows_the_picture_and_waits_two_seconds(server):
+    """Заставка висит не меньше двух секунд, даже если карточка уже тут.
+
+    На быстрой связи карточка приезжает за сотню миллисекунд, и картина
+    успевала только моргнуть — со стороны это выглядело сбоем вёрстки.
+    """
+    import time
+
+    from bot.game.art import LOADING
+
+    card = build_card(a_fighter_at(10, 6_000, 2), TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, loader_wait=True)
+        started = time.monotonic()
+
+        # Картинку ставит сервер: в вёрстке адреса бакета нет
+        picture = await page.locator(".loader-pic").evaluate(
+            "node => node.style.backgroundImage"
+        )
+        assert LOADING in picture
+
+        # Карточка уже отрисована, а заставка ещё висит
+        await page.wait_for_selector("#hero", state="attached")
+        assert await page.locator("#loader").is_visible()
+        assert await page.locator(".loader-spin").count() == 1
+        assert await page.locator("#loader-text").inner_text()
+
+        await page.wait_for_selector(
+            "#loader.hidden", state="attached", timeout=5_000
+        )
+        assert time.monotonic() - started >= 1.7, "заставка ушла раньше срока"
         await browser.close()
