@@ -3534,6 +3534,26 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   text-align: center;
   cursor: pointer;
 }
+/* Строка приёма — там, где его выбирают: на развилке уровня и на
+   прилавке школы. Без описания выбора нет, поэтому картинка, цена и
+   слова стоят рядом, а не прячутся за нажатием */
+.skill-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.skill-row .skill-pic {
+  flex: 0 0 auto;
+  width: 112px;
+  font-size: 26px;
+}
+.skill-row .skill-title { font-size: 13.5px; }
+.skill-body { min-width: 0; }
+
 /* Картинка приёма горизонтальная, 16:9 — в отличие от квадратных вещей */
 .skill-pic {
   width: 100%;

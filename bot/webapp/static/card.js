@@ -1237,6 +1237,43 @@ function skillCard(trick) {
   return box;
 }
 
+/** Приём строкой: картинка, цена и описание рядом.
+
+    Своим приёмам в карточке хватает плитки — их боец и так знает. А
+    там, где приём выбирают — развилка уровня и прилавок школы, — без
+    описания выбора нет: строка и нужна затем, чтобы прочесть, что
+    берёшь. */
+function skillRow(trick) {
+  const box = document.createElement("div");
+  box.className = "skill-row";
+
+  const pic = document.createElement("div");
+  pic.className = "skill-pic";
+  pic.appendChild(slotPicture(trick, trick.icon));
+  box.appendChild(pic);
+
+  const body = document.createElement("div");
+  body.className = "skill-body";
+
+  const title = document.createElement("div");
+  title.className = "skill-title";
+  title.textContent = trick.title;
+  body.appendChild(title);
+
+  const cost = document.createElement("div");
+  cost.className = "skill-cost";
+  cost.textContent = trick.cost + " \u26a1 · выучен на " + trick.tier + " уровне";
+  body.appendChild(cost);
+
+  const note = document.createElement("div");
+  note.className = "skill-note";
+  note.textContent = trick.note;
+  body.appendChild(note);
+
+  box.appendChild(body);
+  return box;
+}
+
 /** Приём во всплывашке: крупная картинка, цена и описание. */
 function skillSheet(trick) {
   openSheet(trick.title, trick.cost + " \u26a1 · выучен на " + trick.tier
@@ -1273,7 +1310,7 @@ function forkCard(choice) {
   box.appendChild(warn);
 
   choice.options.forEach((option) => {
-    const card = skillCard({ ...option, tier: choice.tier });
+    const card = skillRow({ ...option, tier: choice.tier });
     card.classList.add("pickable");
     if (option.own) {
       const mark = document.createElement("span");
@@ -14950,7 +14987,7 @@ function dojoKnownBox(data) {
 
 /** Карточка приёма: картинка, цена в энергии и что он делает. */
 function dojoTrickCard(one) {
-  const card = skillCard(one);
+  const card = skillRow(one);
   card.querySelector(".skill-cost").textContent =
     one.price + " ⚡ · приём " + one.tier + " ступени · " + one.branch_of;
   return card;

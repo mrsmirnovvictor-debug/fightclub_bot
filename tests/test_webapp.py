@@ -130,7 +130,11 @@ def test_card_has_everything_the_screen_needs():
         "raid_wins": player.raid_wins,
         "raid_fights": player.raid_fights,
         "rating": player.rating,
+        # Чужой кошелёк не наше дело: эта карточка открыта соседом
         "credits": 0,
+        "account": 0,
+        "has_account": False,
+        "has_card": False,
     }
     assert card["hp"]["current"] == card["hp"]["max"] == player.max_hp
     assert card["hp"]["color"] == "green"
