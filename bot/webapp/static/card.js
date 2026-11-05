@@ -4,16 +4,16 @@ const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : 
 
 const el = (id) => document.getElementById(id);
 
-// Экран загрузки держим не меньше двух секунд. На быстрой связи карточка
-// приезжает за сотню миллисекунд, и картина успевала только моргнуть —
-// со стороны это выглядело сбоем вёрстки, а не заставкой. Снизу две
-// секунды, сверху — сколько понадобится серверу.
+// Экран загрузки держим не меньше четырёх секунд. На быстрой связи
+// карточка приезжает за сотню миллисекунд, и картина успевала только
+// моргнуть — со стороны это выглядело сбоем вёрстки, а не заставкой.
+// Снизу четыре секунды, сверху — сколько понадобится серверу.
 //
 // Порог снимается снаружи: браузерных проверок пять сотен, и ждать
 // заставку в каждой — это лишние четверть часа на прогон. В Телеграме
 // это окно никто не задаёт, так что порог там всегда свой.
 const LOADER_LEAST =
-  typeof window.LOADER_LEAST_MS === "number" ? window.LOADER_LEAST_MS : 2000;
+  typeof window.LOADER_LEAST_MS === "number" ? window.LOADER_LEAST_MS : 4000;
 const loaderSince = Date.now();
 
 function hideLoader() {
@@ -1213,35 +1213,49 @@ function renderSkills(card) {
         "искусств — за дела в бою.";
 }
 
+/** Приём в ряду: картинка и название под ней.
+
+    Прежде строка приёма несла и картинку, и цену, и описание — четыре
+    таких подряд читались как список правил, а не как набор приёмов.
+    Теперь это плитка: что это за приём, видно по картинке, а всё
+    остальное — по нажатию. */
 function skillCard(trick) {
-  const box = document.createElement("div");
+  const box = document.createElement("button");
+  box.type = "button";
   box.className = "skill";
+  box.addEventListener("click", () => skillSheet(trick));
 
   const pic = document.createElement("div");
   pic.className = "skill-pic";
   pic.appendChild(slotPicture(trick, trick.icon));
   box.appendChild(pic);
 
-  const body = document.createElement("div");
-  body.className = "skill-body";
-
   const title = document.createElement("div");
   title.className = "skill-title";
   title.textContent = trick.title;
-  body.appendChild(title);
+  box.appendChild(title);
+  return box;
+}
 
-  const cost = document.createElement("div");
-  cost.className = "skill-cost";
-  cost.textContent = trick.cost + " ⚡ · выучен на " + trick.tier + " уровне";
-  body.appendChild(cost);
+/** Приём во всплывашке: крупная картинка, цена и описание. */
+function skillSheet(trick) {
+  openSheet(trick.title, trick.cost + " \u26a1 · выучен на " + trick.tier
+    + " уровне", true);
+  const list = el("sheet-list");
 
-  const note = document.createElement("div");
+  const pic = document.createElement("div");
+  pic.className = "skill-wide";
+  pic.appendChild(slotPicture(trick, trick.icon));
+  list.appendChild(pic);
+
+  const note = document.createElement("p");
   note.className = "skill-note";
   note.textContent = trick.note;
-  body.appendChild(note);
+  list.appendChild(note);
 
-  box.appendChild(body);
-  return box;
+  list.appendChild(
+    button("Закрыть", { secondary: true, onClick: () => closeSheet() })
+  );
 }
 
 function forkCard(choice) {
@@ -1292,7 +1306,45 @@ async function pickAbility(option, tier) {
   }
 }
 
+/** Кошельки над рюкзаком: счёт и наличные в один ряд.
+
+    Деньги стояли строкой среди боевых показателей, где им делать
+    нечего, а нужны они ровно здесь — рядом с тем, что покупают. Счёт
+    показываем, только когда он открыт: ноль на счету, которого нет,
+    обещал бы счёт. */
+function renderWallets(card) {
+  const box = el("wallets");
+  if (!box) return;
+  box.textContent = "";
+  const money = card.record || {};
+  box.classList.toggle("hidden", !card.is_self);
+  if (!card.is_self) return;
+
+  if (money.has_account) {
+    box.appendChild(
+      walletTile("💳", "Карта", num(money.account) + " 💰", "card")
+    );
+  }
+  const cash = walletTile("💰", "Наличные", num(money.credits) + " 💰", "cash");
+  cash.appendChild(plusButton());
+  box.appendChild(cash);
+}
+
+function walletTile(icon, title, sum, kind) {
+  const box = document.createElement("div");
+  box.className = "wallet-tile " + kind;
+  const head = document.createElement("div");
+  head.className = "wallet-tile-head";
+  head.textContent = icon + " " + title;
+  const value = document.createElement("div");
+  value.className = "wallet-tile-sum";
+  value.textContent = sum;
+  box.append(head, value);
+  return box;
+}
+
 function renderBag(card) {
+  renderWallets(card);
   const bag = el("bag-box");
   if (!card.is_self) {
     bag.classList.add("hidden");
@@ -6634,17 +6686,12 @@ function render(card, keepTab) {
   freePoints = card.is_self ? card.progress.free_points : 0;
   paintUpgrade();
 
+  // Шкала опыта стоит наверху карточки, отдельным блоком. Свободные
+  // очки в ней не повторяем: их показывает и считает блок раздачи
   const progress = el("progress");
   progress.textContent = "";
   progress.appendChild(experienceBar(card));
-  if (card.progress.free_points) {
-    const free = document.createElement("ul");
-    free.className = "rows";
-    free.appendChild(
-      row("Свободных очков", num(card.progress.free_points), "good")
-    );
-    progress.appendChild(free);
-  }
+  progress.classList.toggle("hidden", !card.progress);
 
   const combat = el("combat");
   combat.textContent = "";
@@ -6684,9 +6731,6 @@ function render(card, keepTab) {
   record.appendChild(row("Ничьих", num(card.record.draws)));
   record.appendChild(row("Рейды", raidScore(card.record)));
   record.appendChild(row("Рейтинг", num(card.record.rating)));
-  if (card.is_self) {
-    record.appendChild(row("Кредиты", purse(card.record.credits)));
-  }
   record.appendChild(row("Место рождения", card.birthplace));
   record.appendChild(row("День рождения персонажа", card.birthday));
 
@@ -16211,10 +16255,18 @@ function carsHereSheet() {
     true
   );
   const list = el("sheet-list");
-  cars.forEach((one) => list.appendChild(hereCard(one)));
-  list.appendChild(
-    button("Закрыть", { secondary: true, onClick: () => closeSheet() })
-  );
+  // Рамка и кнопки под ней — разные вещи: в рамке машина, под ней то,
+  // что с ней можно сделать. «Закрыть» встаёт в тот же ряд, иначе у
+  // каждой машины свой ряд кнопок, а внизу болтается ещё один
+  cars.forEach((one) => {
+    list.appendChild(hereCard(one));
+    list.appendChild(hereButtons(one, cars.length === 1));
+  });
+  if (cars.length !== 1) {
+    list.appendChild(
+      button("Закрыть", { secondary: true, onClick: () => closeSheet() })
+    );
+  }
 }
 
 // Кнопка в этом списке ходит в ту же ручку ключей, а показывает итог
@@ -16237,26 +16289,48 @@ async function hereAction(payload) {
   }
 }
 
-/** Что стоит у этого здания: своё забирают, чужое просто видно. */
+/** Что стоит у этого здания: название, сама машина и чья она.
+
+    Машину показываем картинкой, а не одним названием: у здания их
+    может стоять несколько, и отличать «Бронированный внедорожник» от
+    «Неонового купе» по строке — работа, которой быть не должно. */
 function hereCard(one) {
   const box = document.createElement("article");
-  box.className = "thing";
+  box.className = "thing car-here";
   const head = document.createElement("h3");
   head.className = "thing-title";
   head.textContent = one.title + " · " + one.plate;
   box.appendChild(head);
 
+  const pic = document.createElement("div");
+  pic.className = "car-here-pic";
+  pic.appendChild(
+    slotPicture({ image: one.image, title: one.title, icon: "🚗" }, "🚗")
+  );
+  box.appendChild(pic);
+
   const said = document.createElement("p");
   said.className = "thing-note";
   said.textContent = [
-    one.mine ? "твоя" : "хозяин: " + one.owner,
+    one.mine ? "Твоя" : "Хозяин: " + one.owner,
     one.impound ? "изъята, в участке" : "",
     one.wanted ? "в розыске" : "",
   ].filter(Boolean).join(" · ");
   box.appendChild(said);
 
+  if (!one.mine && !one.can_steal && one.why) {
+    const why = document.createElement("p");
+    why.className = "thing-note";
+    why.textContent = one.why;
+    box.appendChild(why);
+  }
+  return box;
+}
+
+/** Что с этой машиной можно сделать — рядом кнопок под её рамкой. */
+function hereButtons(one, alone) {
   const buttons = document.createElement("div");
-  buttons.className = "thing-buttons";
+  buttons.className = "thing-buttons car-here-acts";
   if (one.mine && !one.impound) {
     buttons.appendChild(
       button("Забрать", {
@@ -16281,14 +16355,12 @@ function hereCard(one) {
       })
     );
   }
-  if (buttons.children.length) box.appendChild(buttons);
-  if (!one.mine && !one.can_steal && one.why) {
-    const why = document.createElement("p");
-    why.className = "thing-note";
-    why.textContent = one.why;
-    box.appendChild(why);
+  if (alone) {
+    buttons.appendChild(
+      button("Закрыть", { secondary: true, onClick: () => closeSheet() })
+    );
   }
-  return box;
+  return buttons;
 }
 
 // ---------- война за территории ----------

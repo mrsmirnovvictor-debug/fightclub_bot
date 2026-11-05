@@ -1272,6 +1272,13 @@ def build_card(
             "rating": player.rating,
             # Чужой кошелёк не наше дело: карточку соседа открывают из чата боя
             "credits": player.credits if is_self else 0,
+            # Счёт в банке — рядом с наличными: над рюкзаком они стоят
+            # парой, и по ним боец и решает, чем платить. Карты нет —
+            # нет и строки: показывать ноль на счету, которого не
+            # открывали, значит обещать счёт
+            "account": player.account_balance if is_self else 0,
+            "has_account": bool(is_self and player.has_account),
+            "has_card": bool(is_self and player.has_card),
         },
         "birthplace": player.home,
         "birthday": format_birthday(player.created_at),

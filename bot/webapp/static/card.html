@@ -794,6 +794,11 @@
 
     <div class="city" id="city"></div>
 
+    <!-- Кошельки над рюкзаком: счёт и наличные в один ряд. Стояли они
+         строкой среди боевых показателей, где деньгам делать нечего, —
+         а нужны они ровно здесь, рядом с тем, что покупают -->
+    <div class="wallets" id="wallets"></div>
+
     <section class="bag" id="bag-box">
       <h2 class="bag-head">🎒 Инвентарь <span class="bag-count" id="bag-count"></span></h2>
       <div class="bag-list" id="bag-list"></div>
@@ -854,6 +859,12 @@
          нельзя, её кабинет стоит в её же доме -->
     <div class="clan-line duty-line hidden" id="hero-duty-line"></div>
 
+    <!-- Шкала опыта: уровень, дорожка с засечками апгредов и числа.
+         Стоит наверху, сразу под семьёй, и ниже по карточке не
+         повторяется: одно и то же дважды на одном экране читается как
+         ошибка, а не как напоминание -->
+    <section class="panel xp-panel" id="progress"></section>
+
     <!-- Приёмы — про самого бойца, а не про его поклажу, и стоят рядом с
          характеристиками. В инвентаре их видел только хозяин карточки:
          рюкзак чужим не показывают, а приёмы соперника — то, что стоит
@@ -879,10 +890,6 @@
     <section class="panel" id="hero-stats">
       <ul class="rows" id="stats"></ul>
       <div id="upgrade" class="upgrade hidden"></div>
-      <hr class="rule">
-      <!-- Шкала опыта: уровень, дорожка с засечками апгредов и числа.
-           Не список: внутри не строки, а рисунок -->
-      <div id="progress"></div>
       <hr class="rule">
       <ul class="rows" id="combat"></ul>
       <hr class="rule">

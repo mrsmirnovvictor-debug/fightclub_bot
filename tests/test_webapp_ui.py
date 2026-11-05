@@ -1845,7 +1845,11 @@ async def test_the_bottom_bar_switches_four_screens(server):
 
 
 async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
-    """Кнопка «+» рядом с кредитами ведёт в кассу и возвращает обратно."""
+    """Кнопка «+» у наличных ведёт в кассу и возвращает обратно.
+
+    Кошельки стоят над рюкзаком, а не строкой среди боевых показателей:
+    деньги нужны там, где покупают, а не рядом с рейтингом.
+    """
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
 
@@ -1854,9 +1858,11 @@ async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
             pw, server, card, build_shop(player), topup=build_topup(player)
         )
         await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
 
-        assert "214" in await page.locator("#record").inner_text()
-        await page.locator("#record .plus").click()
+        assert "214" in await page.locator("#wallets").inner_text()
+        assert "214" not in await page.locator("#record").inner_text()
+        await page.locator("#wallets .plus").click()
 
         await page.wait_for_selector("#topup:not(.hidden)")
         assert await page.locator("#card").is_hidden()
@@ -1868,7 +1874,7 @@ async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
         assert await page.locator(".pack-profit").count() == len(PACKS) - 1
 
         await page.get_by_role("button", name="← Назад").click()
-        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.wait_for_selector("#bag:not(.hidden)")
         await browser.close()
 
 
@@ -17604,4 +17610,175 @@ async def test_the_loading_screen_shows_the_picture_and_waits_two_seconds(server
             "#loader.hidden", state="attached", timeout=5_000
         )
         assert time.monotonic() - started >= 1.7, "заставка ушла раньше срока"
+        await browser.close()
+
+
+# ---------- кошельки над рюкзаком ----------
+
+
+async def test_the_wallets_stand_above_the_backpack(server):
+    """Счёт и наличные в один ряд над рюкзаком, а не среди показателей.
+
+    Деньги стояли строкой рядом с рейтингом, где им делать нечего:
+    нужны они там, где покупают.
+    """
+    player = make_player()
+    player.credits = 430
+    player.account_balance = 1_200
+    player.account_number = "VB-1"
+    player.card_at = 1
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+
+        heads = await page.locator("#wallets .wallet-tile-head").all_inner_texts()
+        assert heads == ["💳 Карта", "💰 Наличные"]
+        sums = await page.locator("#wallets .wallet-tile-sum").all_inner_texts()
+        assert [one.replace(" ", " ") for one in sums] == [
+            "1 200 💰", "430 💰"
+        ]
+        # Пополняют наличные: звёзды приходят в карман, а не на счёт
+        assert await page.locator("#wallets .cash .plus").count() == 1
+        assert await page.locator("#wallets .card .plus").count() == 0
+        await browser.close()
+
+
+async def test_without_an_account_only_the_cash_tile_stands(server):
+    """Ноль на счету, которого не открывали, обещал бы счёт."""
+    player = make_player()
+    player.credits = 430
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "bag")
+
+        assert await page.locator("#wallets .wallet-tile").count() == 1
+        assert await page.locator("#wallets .card").count() == 0
+        await browser.close()
+
+
+# ---------- приёмы плитками ----------
+
+
+def a_fighter_with_tricks():
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    card["abilities"] = {
+        "slots": 4,
+        "known": [
+            {"code": "a", "title": "Двойка", "icon": "🥊", "image": "",
+             "cost": 3, "tier": 2, "note": "Два удара подряд в одну зону."},
+            {"code": "b", "title": "Подсечка", "icon": "🦵", "image": "",
+             "cost": 4, "tier": 4, "note": "Сбивает соперника с ног."},
+            {"code": "c", "title": "Захват", "icon": "🤼", "image": "",
+             "cost": 5, "tier": 6, "note": "Держит соперника ход."},
+            {"code": "d", "title": "Контратака", "icon": "↩️", "image": "",
+             "cost": 6, "tier": 8, "note": "Отвечает на пропущенный удар."},
+        ],
+        "choice": None,
+        "next_tier": 12,
+    }
+    return card
+
+
+async def test_the_tricks_stand_in_a_row_of_tiles(server):
+    """Четыре плитки в ряд: картинка и название, остальное по нажатию.
+
+    Прежде строка приёма несла и картинку, и цену, и описание — четыре
+    таких подряд читались как список правил, а не как набор приёмов.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, a_fighter_with_tricks())
+        await page.wait_for_selector(".skill")
+
+        tiles = page.locator("#skills-list .skill")
+        assert await tiles.count() == 4
+        names = await page.locator("#skills-list .skill-title").all_inner_texts()
+        assert names == ["Двойка", "Подсечка", "Захват", "Контратака"]
+        # В ряду только картинка и название: ни цены, ни описания
+        first = await tiles.first.inner_text()
+        assert "Двойка" in first and "3 ⚡" not in first
+        assert "Два удара подряд" not in first
+        assert await page.locator("#skills-list .skill-note").count() == 0
+        assert await page.locator("#skills-list .skill-cost").count() == 0
+        # Четыре в ряд, а не в столбик
+        boxes = [await tiles.nth(one).bounding_box() for one in range(4)]
+        assert len({round(one["y"]) for one in boxes}) == 1, "плитки не в ряд"
+        await browser.close()
+
+
+async def test_a_trick_opens_with_a_big_picture_and_its_words(server):
+    """Нажал на приём — всплывашка с крупной картинкой и описанием."""
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, a_fighter_with_tricks())
+        await page.wait_for_selector(".skill")
+
+        await page.locator("#skills-list .skill").nth(1).click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        assert await page.locator("#sheet-title").inner_text() == "Подсечка"
+        assert "выучен на 4 уровне" in await page.locator("#sheet-note").inner_text()
+        assert await page.locator("#sheet .skill-wide").count() == 1
+        assert (
+            await page.locator("#sheet .skill-note").inner_text()
+            == "Сбивает соперника с ног."
+        )
+        await page.locator("#sheet .btn", has_text="Закрыть").click()
+        await page.wait_for_selector("#sheet.hidden", state="attached")
+        await browser.close()
+
+
+# ---------- машина у здания ----------
+
+
+async def test_the_car_at_the_porch_shows_itself_and_its_buttons_below(server):
+    """В рамке машина, под рамкой — что с ней делать.
+
+    Картинки у машины не было вовсе: отличать «Бронированный
+    внедорожник» от «Неонового купе» приходилось по строке.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    here = [{
+        "id": 7, "code": "suv", "title": "Бронированный внедорожник",
+        "image": "https://example.invalid/suv.png", "plate": "Р919ВК",
+        "owner": "x RED x", "owner_id": 9, "mine": False, "street": True,
+        "impound": False, "service": "", "stolen": False, "wanted": False,
+        "can_steal": True, "why": "", "can_deliver": False,
+    }]
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, city=city_map(cars=here)
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "map")
+        await page.wait_for_function("mapData && mapData.cars.length > 0")
+        await page.evaluate("carsHereSheet()")
+        await page.wait_for_selector("#sheet:not(.hidden)")
+
+        frame = page.locator("#sheet .car-here")
+        assert await frame.locator(".thing-title").inner_text() == (
+            "Бронированный внедорожник · Р919ВК"
+        )
+        assert await frame.locator(".car-here-pic").count() == 1
+        assert await frame.locator(".thing-note").inner_text() == (
+            "Хозяин: x RED x"
+        )
+        # Кнопок в рамке нет — они под ней, одним рядом
+        assert await frame.locator(".btn").count() == 0
+        acts = page.locator("#sheet .car-here-acts")
+        assert await acts.locator(".btn").all_inner_texts() == [
+            "🔑 Угнать", "Закрыть"
+        ]
+        places = [
+            await acts.locator(".btn").nth(one).bounding_box()
+            for one in range(2)
+        ]
+        assert round(places[0]["y"]) == round(places[1]["y"]), "кнопки не в ряд"
         await browser.close()

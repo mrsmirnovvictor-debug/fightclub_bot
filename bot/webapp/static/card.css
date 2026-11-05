@@ -1575,24 +1575,27 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 
 /* Имя своей семьи в карточке, под местоположением: это вход в состав,
    поэтому строка выглядит кнопкой — знак, имя, чин */
+/* Семья и служба — строкой, а не плашкой. Рамка вокруг двух слов
+   превращала подпись в кнопку размером с блок, хотя это всего лишь
+   имя клана и должность: читается как строка, ведёт как ссылка */
 .clan-line {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  margin: -8px 0 14px;
-  padding: 7px 10px;
-  border: 1px solid var(--slot-line);
-  border-radius: 8px;
-  background: var(--slot);
+  margin: -6px 0 12px;
+  padding: 0;
+  border: 0;
+  background: none;
   color: inherit;
   font: inherit;
   cursor: pointer;
 }
-/* Подпись службы — та же плашка, что у семьи, но не кнопка */
+/* Подпись службы — та же строка, что у семьи, но не кнопка */
 .duty-line { cursor: default; }
-.clan-line-name { font-weight: 700; }
+.clan-line-name { font-weight: 700; color: var(--accent); }
+.duty-line .clan-line-name { color: inherit; }
 .clan-line-rank { color: var(--muted); font-size: 12.5px; }
 
 /* Шапка вкладки «Состав»: знак слева, имя и размер семьи справа */
@@ -3509,38 +3512,67 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 /* ---------- приёмы в карточке ---------- */
 
 .skills { margin-top: 16px; }
-.skill-list { display: grid; gap: 8px; }
+/* Приёмы — ряд плиток по четыре, картинка и название под ней. Прежде
+   строка приёма несла и картинку, и цену, и описание: четыре таких
+   подряд читались как список правил, а не как набор приёмов. Цена и
+   описание никуда не делись — они во всплывашке, по нажатию */
+.skill-list {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
 .skill {
   display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 8px 10px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 6px 8px;
   border-radius: 10px;
   background: var(--panel);
   border: 1px solid var(--line);
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
 }
 /* Картинка приёма горизонтальная, 16:9 — в отличие от квадратных вещей */
 .skill-pic {
-  flex: 0 0 auto;
-  width: 112px;
+  width: 100%;
   aspect-ratio: 16 / 9;
   border-radius: 6px;
   background: var(--slot);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 26px;
+  font-size: 20px;
   overflow: hidden;
 }
 .skill-pic img { width: 100%; height: 100%; object-fit: cover; }
-.skill-body { min-width: 0; }
-.skill-title { font-weight: 700; font-size: 13.5px; }
+.skill-title {
+  font-weight: 700;
+  font-size: 11.5px;
+  line-height: 1.2;
+  hyphens: auto;
+}
+/* Та же картинка во всплывашке — крупно, во всю её ширину */
+.skill-wide {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  background: var(--slot);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 44px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.skill-wide img { width: 100%; height: 100%; object-fit: cover; }
 .skill-cost { font-size: 11.5px; color: var(--accent); margin-top: 2px; }
 .skill-note {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 3px;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 /* Развилка: её нельзя не заметить, поэтому рамка и свой заголовок */
@@ -5448,3 +5480,92 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   .xp-at { display: none; }
   .xp-scale { margin-bottom: 16px; }
 }
+
+/* ---------- шкала опыта отдельным блоком ----------
+
+   Прежде она стояла строкой среди характеристик, между двумя чертами.
+   Теперь это свой блок наверху карточки, сразу под семьёй: уровень —
+   первое, что о бойце спрашивают, и искать его в середине списка не
+   должно быть нужно. Цвета свои, игровые: красная черта у уровня,
+   оранжевая дорожка — те же, что в бою */
+.xp-panel {
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+/* Правая половина по высоте выравнивается с числом уровня: шапка,
+   дорожка и числа стоят посередине, а не висят от верхнего края */
+.xp-panel .xp-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.xp-panel .xp { padding: 0; }
+/* Число под дорожкой чуть меньше: оно не заголовок блока, а подпись к
+   нему — крупнее уровня слева ему быть незачем */
+.xp-panel .xp-total { font-size: 18px; }
+.xp-panel .xp-next { font-size: 11.5px; }
+
+/* ---------- кошельки над рюкзаком ----------
+
+   Счёт и наличные в один ряд: деньги стояли строкой среди боевых
+   показателей, где им делать нечего, а нужны они ровно здесь — рядом
+   с тем, что покупают */
+.wallets {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.wallet-tile {
+  padding: 8px 10px 9px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.wallet-tile-head {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.wallet-tile-sum { font-size: 17px; font-weight: 800; }
+/* Кнопка пополнения стоит у наличных: звёзды приходят кредитами в
+   карман, а не на счёт */
+.wallet-tile .plus { margin-top: 4px; }
+
+/* ---------- машина у здания ----------
+
+   В рамке сама машина: название с номером, картинка и чья она. Кнопки
+   под рамкой, в один ряд: рамка — про машину, а не про то, что с ней
+   делать */
+/* У машины рамка своя, в одну колонку: название, под ним сама машина,
+   под ней хозяин. Общая рамка вещи делит место надвое — картинка слева,
+   текст справа, — и машина в ней выходила маркой на полях */
+.car-here {
+  display: block;
+}
+.car-here .thing-title { text-align: center; }
+.car-here-pic {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  background: var(--avatar-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+.car-here-pic img { width: 100%; height: 100%; object-fit: cover; }
+.car-here .thing-note { text-align: center; }
+.car-here-acts {
+  display: flex;
+  gap: 8px;
+  margin: -4px 0 12px;
+}
+.car-here-acts .btn { flex: 1 1 0; }
