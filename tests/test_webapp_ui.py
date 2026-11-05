@@ -7184,7 +7184,10 @@ async def test_the_fork_is_impossible_to_miss(server):
         assert await fork.count() == 1
         said = await fork.inner_text()
         assert "3 уровень" in said and "навсегда" in said
-        assert await fork.locator(".skill").count() == 3
+        # На развилке приёмы стоят строками, а не плитками: выбирают их
+        # по описанию, и прятать слова за нажатием тут нечего
+        assert await fork.locator(".skill-row").count() == 3
+        assert "Уворот наверняка." in said
         # классовый приём помечен
         assert await fork.locator(".fork-own").inner_text() == "свой"
         await browser.close()
