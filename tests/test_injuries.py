@@ -82,7 +82,7 @@ def test_the_weight_decides_the_price_the_time_and_the_loss():
 
 
 def test_where_it_hurts_is_where_it_broke():
-    """Куда ударили, то и сломалось: голова — интуиция, ноги — ловкость."""
+    """Куда ударили, то и сломалось: голова — интуиция, ноги — проворство."""
     assert injury_for(Zone.HEAD, Hurt.HEAVY).title == "травма позвоночника"
     assert injury_for(Zone.CHEST, Hurt.HEAVY).title == "перелом руки"
     assert injury_for(Zone.LEGS, Hurt.LIGHT).title == "ушиб ноги"

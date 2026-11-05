@@ -2501,7 +2501,7 @@ async def test_the_hero_screen_reads_without_extra_icons(server):
         await page.wait_for_selector("#hero:not(.hidden)")
 
         stats = await page.locator("#stats li .label").all_inner_texts()
-        assert stats == ["Сила", "Ловкость", "Интуиция", "Выносливость"]
+        assert stats == ["Сила", "Проворство", "Интуиция", "Выносливость"]
 
         progress = await page.locator("#progress").inner_text()
         assert "До улучшения" in progress and "До апа" not in progress
@@ -2769,7 +2769,7 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         assert face["x"] + face["width"] <= right["x"] + 0.5
 
         card_text = await page.locator("#sheet-list").inner_text()
-        for line in ("Сила", "Ловкость", "Интуиция", "Выносливость"):
+        for line in ("Сила", "Проворство", "Интуиция", "Выносливость"):
             assert line in card_text
         for line in ("Уровень", "Опыт", "Побед", "Поражений", "Ничьих",
                      "Рейды", "Рейтинг"):
@@ -3073,7 +3073,7 @@ async def test_the_bag_warns_before_one_elixir_puts_out_another(server):
                         "card": card,
                         "used": {
                             "code": "boost_agility",
-                            "title": "Эликсир ловкости",
+                            "title": "Эликсир проворства",
                             "healed": 0,
                             "extended": False,
                             "seconds_left": 7200,
@@ -5788,14 +5788,14 @@ async def test_an_injury_stands_in_the_card_like_an_elixir(server):
 
 
 async def test_a_broken_stat_is_red_and_may_go_below_zero(server):
-    """«Ловкость -5 (-20)» — красным: минус в характеристике не опечатка."""
+    """«Проворство -5 (-20)» — красным: минус в характеристике не опечатка."""
     player = make_player()
-    player.agility = 15  # травма уводит ловкость в минус
+    player.agility = 15  # травма уводит проворство в минус
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, hurt_card(player), build_shop(player))
         await page.wait_for_selector("#hero:not(.hidden)")
 
-        row = page.locator("#stats li").filter(has_text="Ловкость").first
+        row = page.locator("#stats li").filter(has_text="Проворство").first
         said = await row.inner_text()
         assert "-5" in said and "(-20)" in said
 

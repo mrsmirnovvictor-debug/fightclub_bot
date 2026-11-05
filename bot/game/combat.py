@@ -1,4 +1,4 @@
-"""Боевой движок: раунд = одновременный размен ударами.
+"""Боевой движок: раунд = размен ударами, и очередь решает проворство.
 
 Каждый боец выбирает зону удара для каждого своего оружия и один блок.
 Блок закрывает только смежные зоны: две обычно, три со щитом.
@@ -8,8 +8,13 @@
 нажал ничего, пропускает ход целиком, а три пропуска подряд означают
 техническое поражение.
 
-Обе стороны считаются от состояния на начало раунда и применяются
-одновременно, поэтому взаимный нокаут возможен и засчитывается как ничья.
+**Первым бьёт проворный.** Его удар считается по живому сопернику, и,
+если добил, ответа уже не будет: лежащий не бьёт. В логе его удар стоит
+раньше по той же причине — что посчитано раньше, то раньше и рассказано.
+
+**Вровень — бьют одновременно**, обе стороны от состояния на начало
+раунда. Это единственный случай, когда оба могут упасть одним разменом,
+и единственный, когда бой кончается вничью.
 """
 
 from __future__ import annotations
@@ -261,7 +266,7 @@ class Fighter:
 
     @property
     def accuracy(self) -> float:
-        """Точность: ловкость плюс проценты с вещей. Сбивает чужой уворот."""
+        """Точность: проворство плюс проценты с вещей. Сбивает чужой уворот."""
         return total_accuracy(self.derived.accuracy, self.equipment.accuracy)
 
     @property
@@ -276,7 +281,7 @@ class Fighter:
 
     @property
     def penetration(self) -> float:
-        """Пробивание от ловкости: срезает чужое сопротивление."""
+        """Пробивание от проворства: срезает чужое сопротивление."""
         return self.derived.penetration
 
     def resist_against(self, attacker: "Fighter") -> float:
@@ -285,7 +290,7 @@ class Fighter:
 
     @property
     def dodge(self) -> float:
-        """Уворот: ловкость плюс проценты с вещей."""
+        """Уворот: проворство плюс проценты с вещей."""
         return total_dodge(self.derived.dodge_chance, self.equipment.dodge)
 
     @property
@@ -295,7 +300,7 @@ class Fighter:
 
     @property
     def counter(self) -> float:
-        """Шанс контрудара: ловкость плюс проценты с вещей."""
+        """Шанс контрудара: проворство плюс проценты с вещей."""
         return total_counter(self.derived.counter_chance, self.equipment.counter)
 
     @property
@@ -630,6 +635,54 @@ def validate_action(action: Action, fighter: Fighter) -> None:
         )
 
 
+def by_quickness(first: Fighter, second: Fighter) -> tuple[
+    Fighter | None, Fighter | None
+]:
+    """Кто бьёт первым: у кого проворство выше. Вровень — никто.
+
+    Проворство решает не только уворот и контрудар, но и очередь: в
+    размене первым считается удар проворного, и, если он добил, ответа
+    уже не будет — лежащий не бьёт.
+
+    Вровень — бьют одновременно, обе стороны от состояния на начало
+    раунда. Это единственный случай, когда оба могут упасть одним
+    разменом, и единственный, когда бой кончается вничью.
+    """
+    if first.stats.agility == second.stats.agility:
+        return None, None
+    if first.stats.agility > second.stats.agility:
+        return first, second
+    return second, first
+
+
+def _one_side(
+    attacker: Fighter,
+    defender: Fighter,
+    action: Action,
+    defender_action: Action,
+    round_number: int,
+    rng: random.Random,
+    limit: int,
+) -> list[Strike]:
+    """Удары одного бойца — и их урон, применённый сразу.
+
+    Сразу — потому что следующим считается ответ, и считать его надо
+    по тому, что от бойца осталось, а не по тому, с чем он входил в
+    раунд. Отсюда же и очередь в логе: что посчитано раньше, то раньше
+    и рассказано.
+    """
+    strikes = strikes_of(
+        attacker, defender, action, defender_action, round_number, rng, limit
+    )
+    dealt = sum(one.damage for one in strikes)
+    back = sum(one.counter_damage for one in strikes)
+    defender.hp = max(0, defender.hp - dealt)
+    attacker.hp = max(0, attacker.hp - back)
+    attacker.damage_dealt += dealt
+    defender.damage_dealt += back
+    return strikes
+
+
 def strikes_of(
     attacker: Fighter,
     defender: Fighter,
@@ -961,28 +1014,45 @@ def resolve_round(
         else:
             fighter.missed_turns = 0
 
-    strikes = strikes_of(
-        first, second, first_action, second_action, round_number, rng, limit
-    ) + strikes_of(
-        second, first, second_action, first_action, round_number, rng, limit
-    )
-
-    # Урон всех ударов считается от состояния на начало раунда
-    damage_taken = {first.user_id: 0, second.user_id: 0}
-    for strike in strikes:
-        damage_taken[strike.defender_id] += strike.damage
-        damage_taken[strike.attacker_id] += strike.counter_damage
-
     fighters = {first.user_id: first, second.user_id: second}
     # Здоровье на начало раунда запоминаем до того, как применим урон:
     # по нему судья и рассказывает ход. Обратно из остатка его не
     # восстановить — остаток обрезан нулём
     before = {user_id: fighter.hp for user_id, fighter in fighters.items()}
-    for user_id, damage in damage_taken.items():
-        fighter = fighters[user_id]
-        fighter.hp = max(0, fighter.hp - damage)
-    first.damage_dealt += damage_taken[second.user_id]
-    second.damage_dealt += damage_taken[first.user_id]
+
+    quick, slow = by_quickness(first, second)
+    if quick is None:
+        # Проворство вровень — бьют одновременно, обе стороны от
+        # состояния на начало раунда. Это единственный случай, когда
+        # возможен взаимный нокаут, а значит и ничья
+        strikes = strikes_of(
+            first, second, first_action, second_action,
+            round_number, rng, limit,
+        ) + strikes_of(
+            second, first, second_action, first_action,
+            round_number, rng, limit,
+        )
+        damage_taken = {first.user_id: 0, second.user_id: 0}
+        for strike in strikes:
+            damage_taken[strike.defender_id] += strike.damage
+            damage_taken[strike.attacker_id] += strike.counter_damage
+        for user_id, damage in damage_taken.items():
+            fighters[user_id].hp = max(0, fighters[user_id].hp - damage)
+        first.damage_dealt += damage_taken[second.user_id]
+        second.damage_dealt += damage_taken[first.user_id]
+    else:
+        # Проворный бьёт первым, и бьёт по живому. Вырубил — ответа нет:
+        # лежащий не отвечает, и в логе его удара не появится
+        moves = {first.user_id: first_action, second.user_id: second_action}
+        strikes = _one_side(
+            quick, slow, moves[quick.user_id], moves[slow.user_id],
+            round_number, rng, limit,
+        )
+        if slow.alive:
+            strikes += _one_side(
+                slow, quick, moves[slow.user_id], moves[quick.user_id],
+                round_number, rng, limit,
+            )
 
     _fill_running_hp(strikes, before)
     _fill_energy(strikes, fighters)
@@ -1320,6 +1390,7 @@ __all__ = [
     "Strike",
     "block_combo",
     "boxing_round",
+    "by_quickness",
     "fatigue_multiplier",
     "group_aftermath",
     "heal_line",

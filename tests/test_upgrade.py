@@ -219,7 +219,7 @@ def test_stats_carry_the_case_the_phrase_needs():
 
     assert [stat.dative for stat in ALL_STATS] == [
         "силе",
-        "ловкости",
+        "проворству",
         "интуиции",
         "выносливости",
     ]

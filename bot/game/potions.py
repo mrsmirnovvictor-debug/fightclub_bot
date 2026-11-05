@@ -215,7 +215,7 @@ POTIONS: tuple[Potion, ...] = (
     ),
     Potion(
         "boost_agility",
-        "Эликсир ловкости",
+        "Эликсир проворства",
         "🤸",
         PotionKind.BOOST,
         note="Два часа ноги сами уводят из-под удара.",

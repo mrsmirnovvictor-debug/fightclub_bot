@@ -111,7 +111,7 @@ def gym_document(player: Player, moment: int) -> dict[str, Any]:
         "period_title": "Действует",
         "active": live,
         "seconds_left": max(0, player.gym_until - moment),
-        "covers": "Тренировки на силу, ловкость и интуицию",
+        "covers": "Тренировки на силу, проворство и интуицию",
         "gives": (
             "Одно занятие в день бесплатно",
             f"Ещё до {VISITS_PER_DAY - 1} занятий в день за кредиты: {extra}",

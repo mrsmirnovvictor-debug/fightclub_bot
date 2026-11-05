@@ -92,7 +92,7 @@ def test_the_kit_is_a_fifth_above_the_fan_counter():
             was = getattr(base, field)
             now = getattr(mine, field)
             assert now >= was, f"{ours}: {field} ниже фанатского"
-            # Мелочь вроде двух очков ловкости округляется в ноль, и
+            # Мелочь вроде двух очков проворства округляется в ноль, и
             # требовать от неё роста значит требовать выдумки. Зазор
             # сверяем там, где числа крупные
             if was >= 10:

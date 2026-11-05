@@ -109,7 +109,7 @@ function statValue(stat) {
     bonus.textContent = ` (${stat.base} + ${stat.bonus})`;
     box.appendChild(bonus);
   }
-  // Потеря от травмы — красным и отдельным числом: «Ловкость -5 (-10)».
+  // Потеря от травмы — красным и отдельным числом: «Проворство -5 (-10)».
   // В общую прибавку её не складываем, иначе видно только итог, а он и
   // сам по себе бывает отрицательным
   if (stat.loss) {
@@ -4132,7 +4132,7 @@ function bossStats(boss) {
     boss.damage[0] + "–" + boss.damage[1]
   );
   add("💪 Сила", String(boss.stats.strength));
-  add("🤸 Ловкость", String(boss.stats.agility));
+  add("🤸 Проворство", String(boss.stats.agility));
   add("🔮 Интуиция", String(boss.stats.intuition));
   add("🫀 Выносливость", String(boss.stats.endurance));
   add("🎯 Точность", boss.combat.accuracy + "%");

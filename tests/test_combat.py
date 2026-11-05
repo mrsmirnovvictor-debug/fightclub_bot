@@ -21,6 +21,7 @@ from bot.game.classes import (
     block_title,
 )
 from bot.game.combat import (
+    by_quickness,
     LONG_ROUNDS,
     LONG_TURNS,
     MATCH_ROUNDS,
@@ -63,6 +64,17 @@ def make(fclass=WARRIOR, user_id=1, name="Боец", **kwargs):
     return Fighter(
         user_id=user_id, name=name, fclass=fclass, stats=fclass.base_stats, **kwargs
     )
+
+
+def blow(result, user_id: int = 1):
+    """Удар этого бойца в раунде.
+
+    По месту в списке его больше не найти: очередь решает проворство, и
+    первым стоит удар того, кто проворнее. У бойцов разных классов
+    проворство разное, и у половины проверок первым оказывался не тот,
+    о ком они.
+    """
+    return next(one for one in result.strikes if one.attacker_id == user_id)
 
 
 def guard(zone: Zone, width: int = BLOCK_WIDTH) -> tuple[Zone, ...]:
@@ -268,7 +280,7 @@ def test_a_crit_that_hits_a_block_can_break_through():
         rng=rng,
     )
 
-    strike = result.strikes[0]
+    strike = blow(result)
     assert strike.outcome is Outcome.BREAK
     assert strike.damage > 0
 
@@ -288,8 +300,8 @@ def test_a_block_that_holds_costs_the_attacker_nothing():
         rng=rng,
     )
 
-    assert result.strikes[0].outcome is Outcome.BLOCK
-    assert result.strikes[0].damage == 0
+    assert blow(result).outcome is Outcome.BLOCK
+    assert blow(result).damage == 0
     assert defender.hp == defender.max_hp
 
 
@@ -308,7 +320,7 @@ def test_an_ordinary_blocked_hit_never_breaks_a_block():
         rng=rng,
     )
 
-    assert result.strikes[0].outcome is Outcome.BLOCK
+    assert blow(result).outcome is Outcome.BLOCK
 
 
 def test_a_broken_block_lets_through_half_of_the_maximum():
@@ -335,7 +347,7 @@ def test_a_broken_block_lets_through_half_of_the_maximum():
         rng=rng,
     )
 
-    strike = result.strikes[0]
+    strike = blow(result)
     expected = round(_max_damage(attacker, 1) * BLOCK_BREAK_DAMAGE_SHARE)
     assert strike.outcome is Outcome.BREAK
     assert strike.damage == expected
@@ -380,7 +392,7 @@ def test_the_judge_marks_a_broken_block_with_a_bleeding_shield():
         round_number=1,
         rng=Loaded([0.0, 0.0]),
     )
-    strike = result.strikes[0]
+    strike = blow(result)
 
     line = describe_strike(strike, attacker, defender, random.Random(1))
     assert line.startswith(OUTCOME_EMOJI[Outcome.BREAK])
@@ -738,12 +750,12 @@ def dressed(*codes: str, user_id: int = 1, fclass=WARRIOR, **kwargs) -> Fighter:
 
 
 def test_each_pair_is_split_between_two_stats():
-    """Круг: ловкость бьёт выносливость, выносливость — интуицию, интуиция — ловкость."""
+    """Круг: проворство бьёт выносливость, выносливость — интуицию, интуиция — проворство."""
     nimble = derive(WARRIOR, Stats(strength=5, agility=30, intuition=5, endurance=5))
     sharp = derive(WARRIOR, Stats(strength=5, agility=5, intuition=30, endurance=5))
     tough = derive(WARRIOR, Stats(strength=5, agility=5, intuition=5, endurance=30))
 
-    # ловкость — уворот и пробивание, но не точность и не антикрит
+    # проворство — уворот и пробивание, но не точность и не антикрит
     assert nimble.dodge_chance > sharp.dodge_chance
     assert nimble.penetration > sharp.penetration
     assert nimble.accuracy == pytest.approx(sharp.accuracy / 6, abs=0.01)
@@ -963,7 +975,7 @@ def duel_share(first: str, second: str, level: int, runs: int, seed: int) -> flo
 @pytest.mark.parametrize(
     "winner,loser,why",
     [
-        ("rogue", "tank", "ловкость пробивает сопротивление"),
+        ("rogue", "tank", "проворство пробивает сопротивление"),
         ("tank", "assassin", "выносливость гасит крит антикритом"),
         ("assassin", "rogue", "интуиция ловит уворот точностью"),
     ],
@@ -1208,3 +1220,129 @@ def test_the_dodge_keeps_its_rail_even_with_the_ceilings_raised():
 
     assert MIN_DODGE_CHANCE > 0, "совсем без надежды уйти с линии удара"
     assert MAX_DODGE_CHANCE < 1.0, "в такого бойца нельзя попасть вовсе"
+
+
+# ---------- очередь решает проворство ----------
+
+
+def test_the_quicker_one_strikes_first():
+    """Проворный бьёт первым, и в логе его удар стоит раньше."""
+    quick = make(ROGUE, user_id=1)  # проворство 5
+    slow = make(TANK, user_id=2)  # проворство 2
+    assert quick.stats.agility > slow.stats.agility
+
+    result = resolve_round(
+        slow,  # медленный идёт первым аргументом — очередь решает не это
+        strike_at(Zone.HEAD),
+        quick,
+        strike_at(Zone.CHEST),
+        round_number=1,
+        rng=random.Random(7),
+    )
+
+    assert [one.attacker_id for one in result.strikes] == [1, 2]
+    assert by_quickness(slow, quick) == (quick, slow)
+
+
+def test_a_knockout_leaves_the_slow_one_no_answer():
+    """Добил — ответа нет: лежащий не бьёт, и удара его в логе не будет.
+
+    Прежде раунд считался целиком от состояния на начало, и упавший
+    всё равно успевал ударить в ответ. Теперь успевает только тот, кто
+    пережил удар проворного.
+    """
+    quick = make(ROGUE, user_id=1)
+    slow = make(TANK, user_id=2)
+    slow.hp = 1  # следующий удар — последний
+
+    result = resolve_round(
+        quick,
+        strike_at(Zone.HEAD),
+        slow,
+        strike_at(Zone.CHEST),
+        round_number=1,
+        rng=random.Random(3),
+    )
+
+    assert slow.hp == 0, "медленный должен лечь"
+    assert [one.attacker_id for one in result.strikes] == [1]
+    assert result.finished and result.winner_id == 1
+    assert quick.hp == quick.max_hp, "ответного удара не было вовсе"
+
+
+def test_the_slow_one_answers_if_he_survives():
+    """Выжил — отвечает, и его удар считается по тому, что осталось."""
+    quick = make(ROGUE, user_id=1)
+    slow = make(TANK, user_id=2)
+
+    result = resolve_round(
+        quick,
+        strike_at(Zone.HEAD),
+        slow,
+        strike_at(Zone.CHEST),
+        round_number=1,
+        rng=random.Random(11),
+    )
+
+    assert slow.alive
+    assert sorted(one.attacker_id for one in result.strikes) == [1, 2]
+    assert [one.attacker_id for one in result.strikes][0] == 1
+
+
+def test_equal_quickness_means_one_blow_at_a_time():
+    """Проворство вровень — бьют одновременно, и ничья возможна.
+
+    Это единственный оставшийся случай ничьей: оба кладут друг друга
+    одним разменом. При разном проворстве такого не бывает — второй
+    просто не успевает ответить.
+    """
+    one = make(WARRIOR, user_id=1)
+    two = make(WARRIOR, user_id=2)
+    assert by_quickness(one, two) == (None, None)
+    one.hp = two.hp = 1
+
+    result = resolve_round(
+        one, strike_at(Zone.HEAD), two, strike_at(Zone.HEAD),
+        round_number=1, rng=random.Random(5),
+    )
+
+    assert one.hp == 0 and two.hp == 0
+    assert result.finished and result.winner_id is None, "ничья"
+    assert sorted(blow.attacker_id for blow in result.strikes) == [1, 2]
+
+
+def test_quickness_counts_the_stat_and_not_the_seat():
+    """Решает проворство, а не то, кого передали первым."""
+    quick = make(ASSASSIN, user_id=1)  # 4
+    slow = make(WARRIOR, user_id=2)  # 3
+
+    assert by_quickness(quick, slow) == (quick, slow)
+    assert by_quickness(slow, quick) == (quick, slow)
+    # Поднял проворство — и очередь перевернулась
+    from bot.game.classes import Stat
+
+    slow.stats = slow.stats.plus(Stat.AGILITY, 2)
+    assert by_quickness(quick, slow) == (slow, quick)
+
+
+def test_the_log_puts_the_quick_blow_first():
+    """Судья рассказывает ход в том же порядке, в каком он посчитан.
+
+    Строка про удар проворного стоит раньше — не потому, что судья её
+    переставил, а потому, что раньше посчитан сам удар.
+    """
+    from bot.game.narrator import strike_lines
+
+    quick = make(ROGUE, user_id=1, name="Марла")
+    slow = make(TANK, user_id=2, name="Тайлер")
+
+    result = resolve_round(
+        slow, strike_at(Zone.HEAD), quick, strike_at(Zone.CHEST),
+        round_number=1, rng=random.Random(7),
+    )
+    said = strike_lines(result, {1: quick, 2: slow}, random.Random(1))
+
+    assert len(said) >= 2
+    # Первым бьёт Марла — она проворнее, и строка про неё первая
+    assert "Марла" in said[0] and "Тайлер" in said[1], said
+    assert [one.attacker_id for one in result.strikes] == [1, 2]

@@ -1263,7 +1263,7 @@ def zombie_card(kind: str) -> dict[str, Any]:
         "weapon_icon": fighter.weapon_icon,
         "stats": [
             ["Сила", fighter.stats.strength],
-            ["Ловкость", fighter.stats.agility],
+            ["Проворство", fighter.stats.agility],
             ["Интуиция", fighter.stats.intuition],
             ["Выносливость", fighter.stats.endurance],
         ],

@@ -34,7 +34,7 @@ from bot.game.potions import BASE_PASS, RAID_PASS, STADIUM_PASS, get_potion
 # по кругу, чтобы за квартал боец собрал все три
 MONTHLY_POTIONS: tuple[tuple[str, str, str], ...] = (
     ("boost_strength", "Эликсир силы", "💪"),
-    ("boost_agility", "Эликсир ловкости", "🤸"),
+    ("boost_agility", "Эликсир проворства", "🤸"),
     ("boost_intuition", "Эликсир интуиции", "🔮"),
 )
 
