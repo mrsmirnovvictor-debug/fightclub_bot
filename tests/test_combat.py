@@ -1346,3 +1346,42 @@ def test_the_log_puts_the_quick_blow_first():
     # Первым бьёт Марла — она проворнее, и строка про неё первая
     assert "Марла" in said[0] and "Тайлер" in said[1], said
     assert [one.attacker_id for one in result.strikes] == [1, 2]
+
+
+def test_a_draw_needs_equal_quickness():
+    """Ничья бывает только при равном проворстве — и больше никогда.
+
+    Это и есть следствие очереди: при разном проворстве второй просто
+    не успевает ответить на добивающий удар, а значит оба упасть не
+    могут. Проверяется прогоном, а не рассуждением: двести боёв на
+    пару классов, случайные ходы, настоящий движок.
+    """
+    from bot.game.classes import get_class
+
+    pairs = {
+        ("warrior", "tank"): False,
+        ("rogue", "assassin"): False,
+        ("tank", "assassin"): False,
+        ("warrior", "warrior"): True,
+    }
+    for (left, right), same in pairs.items():
+        one_class, two_class = get_class(left), get_class(right)
+        assert (one_class.base_stats.agility
+                == two_class.base_stats.agility) is same, (left, right)
+        draws = 0
+        for seed in range(200):
+            rng = random.Random(seed)
+            one = make(one_class, user_id=1)
+            two = make(two_class, user_id=2)
+            for number in range(1, 40):
+                result = resolve_round(
+                    one, random_action(one, rng),
+                    two, random_action(two, rng), number, rng,
+                )
+                if result.finished:
+                    draws += result.winner_id is None
+                    break
+        if same:
+            assert draws, f"{left}×{right}: при равном проворстве ничья бывает"
+        else:
+            assert draws == 0, f"{left}×{right}: ничья при разном проворстве"

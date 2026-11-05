@@ -254,12 +254,17 @@ def test_a_trick_never_pays_for_itself():
 
 
 def test_a_dodge_you_earned_still_pays():
-    """Ушёл своим броском — энергия начисляется как обычно."""
+    """Ушёл своим броском — энергия начисляется как обычно.
+
+    Зерно подобрано под уворот. Подбирать пришлось заново: очередь в
+    размене теперь решает проворство, трикстер бьёт первым, и броски
+    легли иначе, чем когда обе стороны считались разом.
+    """
     attacker, dodger = make(user_id=1), make(ROGUE, user_id=2)
 
     resolve_round(attacker, Action(attacks=(HEAD,), block=(BELT, LEGS)),
                   dodger, Action(attacks=(BELT,), block=(BELT, LEGS)), 1,
-                  random.Random(1))
+                  random.Random(4))
 
     assert dodger.energy == energy_gain("rogue", Source.DODGE)
 

@@ -231,9 +231,12 @@ def test_a_deed_is_counted_for_every_class_not_only_its_own():
     """
     attacker, dodger = fighter(user_id=1), fighter("rogue", user_id=2)
 
+    # Зерно подобрано под уворот и удержанный блок. Подбирать пришлось
+    # заново: очередь в размене теперь решает проворство, трикстер бьёт
+    # первым, и броски легли иначе
     resolve_round(attacker, Action(attacks=(HEAD,), block=(BELT, LEGS)),
                   dodger, Action(attacks=(BELT,), block=(BELT, LEGS)), 1,
-                  random.Random(1))
+                  random.Random(4))
 
     assert dodger.deeds[Source.DODGE] == 1, "уворот зачтён"
     # Воин в этом же размене удержал удар в пояс. Энергии ему за это не
