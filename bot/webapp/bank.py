@@ -32,7 +32,8 @@ from bot.game.bank import (
     CARD_TITLE,
     CARD_YEAR_PRICE,
     CASH,
-    DISCOUNTS,
+    CARD_DISCOUNT,
+    DISCOUNT_PLACES,
     PURSE_EMOJI,
     PURSE_TITLES,
     YEAR_DAYS,
@@ -84,7 +85,7 @@ def purse_payload(
     moment = now_ts() if now is None else now
     purse = player.purse_for(moment, service)
     takes_card = card_works(service)
-    percent = discount_of(service)
+    percent = discount_of(service, player.tier_rank(moment))
     return {
         "purse": purse,
         "prefers": player.pay_from,
@@ -114,7 +115,10 @@ def _purse_note(
 ) -> str:
     """Строка под переключателем: почему здесь платят именно так."""
     if not player.has_card:
-        return "Карта Vegas Банка даёт скидки в городе. Оформляется в банке."
+        return (
+            f"Карта Vegas Банка даёт скидку {CARD_DISCOUNT}% в городе, "
+            "а с подпиской больше. Оформляется в банке."
+        )
     if not takes_card:
         return "Здесь платят только наличными: карта тут не ходит."
     if not player.card_works(moment):
@@ -212,20 +216,24 @@ PLACE_TITLES: dict[Service, str] = {
 }
 
 
-def discounts_payload() -> list[dict[str, Any]]:
-    """Прайс скидок: где и сколько снимает карта.
+def discounts_payload(rank: int = 0) -> list[dict[str, Any]]:
+    """Прайс скидок: где карта их даёт и сколько снимает у этого бойца.
 
-    Собирается из той же таблицы, по которой считается цена. Списком
+    Собирается той же функцией, по которой считается цена. Списком
     руками он однажды разошёлся бы с правилами — и обещал бы то, чего
     касса не даёт.
+
+    Процент один на все места, но зависит от ступени, поэтому список
+    собирается под бойца, а не раз и навсегда: подписчик должен видеть
+    свои двадцать, а не чужие пять.
     """
     return [
         {
             "code": service.value,
             "title": PLACE_TITLES.get(service, service.title),
-            "percent": percent,
+            "percent": discount_of(service, rank),
         }
-        for service, percent in DISCOUNTS.items()
+        for service in sorted(DISCOUNT_PLACES, key=lambda one: PLACE_TITLES[one])
     ]
 
 
@@ -448,7 +456,7 @@ def build_bank(
         # Не «card»: этим ключом во всех экранах едет карточка бойца, и
         # банковская карта его затирала. Одно слово, два разных предмета
         "bank_card": card_payload(player, moment),
-        "discounts": discounts_payload(),
+        "discounts": discounts_payload(player.tier_rank(moment)),
         "statement": statement if statement is not None else statement_payload([]),
         "purse": purse_payload(player, moment, Service.BANK),
         # Вклады и кредиты: то, за что банк и зовётся банком

@@ -420,6 +420,75 @@ async def test_the_brawl_pays_experience_like_a_ring_bout(db):
     assert beaten.total_exp == 0
 
 
+async def test_one_on_one_in_the_alley_uses_the_narrow_corridor(db):
+    """Драка один на один считается дуэльной формулой, а не групповой.
+
+    Подворотня — такой же бой, и опыт за него должен быть тем же, какой
+    был бы за него на ринге: вдвоём это узкий коридор в пять процентов,
+    отрядом — широкий в пятьдесят.
+    """
+    import math
+
+    from bot.game.economy import base_exp, base_level, damage_share
+
+    service = RobberyService(db, rng=random.Random(4))
+    don, _, _ = await family(db)
+    victim = make_player(50, "Прохожий", level=1, credits=1_000)
+    victim.strength = victim.agility = 5
+    await db.save_player(victim)
+    await licensed(db, [don.user_id], 1)
+    before = await db.get_player(don.user_id)
+
+    raid = await service.rob(before, victim.user_id, now=NOW)
+    await fight_out(service, raid)
+
+    assert raid.won and len(raid.fighters) == 2
+    me = raid.fighters[don.user_id]
+    hp_total = sum(one.max_hp for one in raid.fighters.values())
+    top = max(one.level for one in raid.fighters.values())
+    # Коридор узкий: group=False
+    share = damage_share(me.damage_dealt, hp_total, 2)
+    rate = base_exp(base_level(me.level, top))
+    after = await db.get_player(don.user_id)
+    assert after.total_exp - before.total_exp == math.ceil(rate * share)
+
+    # А вот и сам выбор коридора. В честной драке сильного со слабым
+    # отношение ХП до потолка не доходит, и подмена узкого коридора
+    # широким прошла бы незамеченной — поэтому урон задираем руками
+    me.damage_dealt = hp_total * 3
+    assert service._exp_for(raid, after) == math.ceil(rate * 1.05), (
+        "драка вдвоём считается по широкому коридору"
+    )
+
+
+async def test_a_squad_brawl_uses_the_wide_corridor(db):
+    """Драка отряд на отряд считается групповой формулой."""
+    import math
+
+    from bot.game.economy import base_exp, base_level, damage_share
+
+    service = RobberyService(db, rng=random.Random(3))
+    don, squad, _ = await family(db)
+    victim = make_player(50, "Прохожий", level=1, credits=3_000)
+    victim.strength = victim.agility = 5
+    await db.save_player(victim)
+    await licensed(db, [don.user_id, squad[1]], 1)
+    before = await db.get_player(don.user_id)
+
+    raid = await service.rob(before, victim.user_id, now=NOW)
+    await service.join(raid.id, await db.get_player(squad[1]), now=NOW)
+    await fight_out(service, raid)
+
+    assert len(raid.fighters) > 2, "в драке должно быть больше двоих"
+    me = raid.fighters[don.user_id]
+    hp_total = sum(one.max_hp for one in raid.fighters.values())
+    top = max(one.level for one in raid.fighters.values())
+    share = damage_share(me.damage_dealt, hp_total, len(raid.fighters), group=True)
+    rate = base_exp(base_level(me.level, top))
+    after = await db.get_player(don.user_id)
+    assert after.total_exp - before.total_exp == math.ceil(rate * share)
+
+
 async def test_the_helper_gets_nothing(db):
     """Добыча идёт одному напавшему: помощники не получают ничего."""
     service = RobberyService(db, rng=random.Random(3))

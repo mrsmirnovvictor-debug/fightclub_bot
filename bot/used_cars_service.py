@@ -183,7 +183,7 @@ async def _check_room(
 
     if await room_for_another(db, player, now):
         return
-    limit = cars_allowed(player.is_pro(now))
+    limit = cars_allowed(player.tier_rank(now))
     raise UsedCarError(
         f"«{title}» некуда девать: машин на руках {limit} — это предел. "
         "Поставь одну на парковку или продай."

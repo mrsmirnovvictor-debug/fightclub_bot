@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 
 from bot.database import Database
+from bot.game.pro import PREMIUM_CARS, PRO_CARS
 from bot.game.cars import (
     GARAGES,
     IN_IMPOUND,
@@ -29,7 +30,6 @@ from bot.game.cars import (
     RESTAMP_PRICE,
     STEAL_WINDOW,
     PARKINGS,
-    PRO_MAX_CARS,
     SPANS,
     TAXI,
     TAXI_SHIFT_PRICE,
@@ -177,7 +177,7 @@ async def room_for_another(
     """Влезет ли бойцу ещё одна машина: одна на руках, с подпиской три."""
     moment = now_ts() if now is None else now
     return await kept_count(db, player, moment) < cars_allowed(
-        player.is_pro(moment)
+        player.tier_rank(moment)
     )
 
 
@@ -189,16 +189,16 @@ async def _check_room(db: Database, player: Player, now: int) -> None:
     """
     if await room_for_another(db, player, now):
         return
-    limit = cars_allowed(player.is_pro(now))
+    limit = cars_allowed(player.tier_rank(now))
     if player.is_pro(now):
         raise CarError(
-            f"Машин на руках {limit} — больше не держат даже с подпиской. "
+            f"Машин на руках {limit} — больше не держат по этой подписке. "
             "Поставь одну на парковку: в особняке или у своей квартиры."
         )
     raise CarError(
         f"Машина у бойца одна, и она у тебя на руках. Поставь её на "
         f"парковку — в особняке или у своей квартиры, — и бери вторую. "
-        f"С подпиской держат {PRO_MAX_CARS} разом."
+        f"С PRO держат {PRO_CARS} разом, с PREMIUM — {PREMIUM_CARS}."
     )
 
 

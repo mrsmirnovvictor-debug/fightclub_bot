@@ -15,7 +15,6 @@ from bot.game.health import HURT_THRESHOLD, READY_THRESHOLD, format_duration
 from bot.game.injuries import Injury
 from bot.game.links import links
 from bot.game.modes import FightMode
-from bot.game.pro import PRO_BADGE
 from bot.game.stats import derive
 from bot.game.combat import (
     MAX_MISSED_TURNS,
@@ -130,22 +129,24 @@ def plain(text: str) -> str:
 
 
 def mention(fighter: Fighter) -> str:
-    return name_link(fighter.user_id, fighter.name, fighter.pro)
+    return name_link(fighter.user_id, fighter.name, fighter.badge)
 
 
-def name_link(user_id: int, name: str, pro: bool = False) -> str:
+def name_link(user_id: int, name: str, badge: str = "") -> str:
     """Имя-ссылка: открывает карточку бойца, если мини-апп настроен.
 
     У подписчика к имени приклеен значок — он должен быть виден везде, где
     бойца вообще называют по имени, поэтому живёт здесь, а не в каждом тексте.
+    Какой именно значок, решает ступень подписки, и приходит он готовым:
+    кристалл у PRO, корона у PREMIUM.
     """
-    badge = f" {PRO_BADGE}" if pro else ""
-    return f'<a href="{links.href(user_id)}">{esc(name)}</a>{badge}'
+    mark = f" {badge}" if badge else ""
+    return f'<a href="{links.href(user_id)}">{esc(name)}</a>{mark}'
 
 
 def player_link(player: "Player") -> str:
     """Имя бойца со всем, что к нему прилагается."""
-    return name_link(player.user_id, player.nickname, player.is_pro())
+    return name_link(player.user_id, player.nickname, player.badge)
 
 
 def upgrade_hint(player: "Player") -> str:

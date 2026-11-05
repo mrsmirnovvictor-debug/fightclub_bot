@@ -585,3 +585,117 @@ async def test_the_group_board_stacks_the_pairs_one_under_another(bot, db):
     assert "<pre>" in "\n".join(board)  # табло идёт моноширинным блоком
     assert board[-1].endswith("Удар и блок — в карточке, вкладка «Клуб».")
     await service.shutdown()
+
+
+# ---------- опыт за групповой бой ----------
+
+
+async def test_the_group_fight_pays_by_the_wide_corridor(bot, db):
+    """В клубном бою опыт считается групповой формулой, а не дуэльной.
+
+    Коридор в десять раз шире дуэльного: полтора базового достаётся
+    тому, кто уложил полтора средних бойца, а не тому, кто простоял в
+    блоке, пока отряд работал. Сверяем не «больше нуля», а ровно то
+    число, которое даёт формула на числах этого самого боя.
+    """
+    import math
+
+    from bot.game.economy import base_exp, damage_share
+
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    levels = {one: session.fighters[one].level for one in session.fighters}
+    hp_total = sum(one.max_hp for one in session.fighters.values())
+    on_ring = len(session.fighters)
+    dealt = dict(session.fighters)
+    await fight_to_the_end(service, session)
+
+    winners = [one for one in players if (await db.get_player(one.user_id)).wins]
+    assert winners, "бой кончился без победителей"
+    for player in winners:
+        fresh = await db.get_player(player.user_id)
+        share = damage_share(
+            dealt[player.user_id].damage_dealt, hp_total, on_ring, group=True
+        )
+        rate = base_exp(max(levels.values()))
+        assert fresh.total_exp == math.ceil(rate * share), player.nickname
+        # И коридор именно широкий: дуэльный обрезал бы на пяти процентах
+        assert share <= 1.5
+    await service.shutdown()
+
+
+async def test_the_losers_of_a_group_fight_get_nothing(bot, db):
+    """Опыт за поражение — ноль, как и за ничью."""
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    for player, team in ((players[1], RED), (players[2], BLUE), (players[3], BLUE)):
+        await service.join(lobby.id, player, team)
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    await fight_to_the_end(service, session)
+
+    for player in players:
+        fresh = await db.get_player(player.user_id)
+        if not fresh.wins:
+            assert fresh.total_exp == 0, fresh.nickname
+    await service.shutdown()
+
+
+async def test_the_rate_of_a_mixed_battle_comes_from_the_oldest_fighter(bot, db):
+    """Ставка берётся по старшему на ринге, но не выше своего плюс два.
+
+    В смешанном составе младший получает по ставке старшего — ровно
+    настолько, насколько до неё дотягивается. Без предела первый уровень
+    проходил бы не боец, а его старший знакомый.
+    """
+    import math
+
+    from bot.game.economy import base_exp, base_level, damage_share
+
+    service = make_service(bot, db)
+    juniors = await fill(db, 2, first_id=1, level=1)
+    seniors = await fill(db, 2, first_id=3, level=12)
+    # Рамки созывают руками: по умолчанию сбор пускает ±2 уровня, и
+    # такой разброс в него не влез бы
+    lobby = await service.open_lobby(
+        CHAT_ID,
+        THREAD_ID,
+        juniors[0],
+        BattleKind.TEAM,
+        size=2,
+        levels=(1, 12),
+    )
+    for player, team in (
+        (juniors[1], BLUE), (seniors[0], RED), (seniors[1], BLUE)
+    ):
+        await service.join(lobby.id, player, team)
+
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    hp_total = sum(one.max_hp for one in session.fighters.values())
+    on_ring = len(session.fighters)
+    dealt = dict(session.fighters)
+    await fight_to_the_end(service, session)
+
+    for player in juniors + seniors:
+        fresh = await db.get_player(player.user_id)
+        if not fresh.wins:
+            continue
+        rate = base_exp(base_level(player.level, 12))
+        share = damage_share(
+            dealt[player.user_id].damage_dealt, hp_total, on_ring, group=True
+        )
+        assert fresh.total_exp == math.ceil(rate * share), fresh.nickname
+        if player.level == 1:
+            # Дотянулся на две ступени, а не до двенадцатой
+            assert rate == base_exp(3)
+    await service.shutdown()

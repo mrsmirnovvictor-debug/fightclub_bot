@@ -2716,7 +2716,7 @@ function proCard(pro) {
 
   const title = document.createElement("div");
   title.className = "thing-title";
-  title.textContent = pro.emoji + " " + pro.title;
+  title.textContent = (pro.badge || pro.emoji) + " " + pro.title;
   body.appendChild(title);
 
   const price = document.createElement("div");
@@ -2786,7 +2786,13 @@ function renderMagic(data) {
   // а она — нет.
   const head = el("pro-card");
   head.textContent = "";
-  if (data.pro) head.appendChild(proCard(data.pro));
+  // Ступеней две, и они идут подряд, младшая первой. Одиночный ключ
+  // остаётся запасным: страница старше ответа сервера не бывает, но
+  // ответ старше страницы — бывает
+  const tiers = data.tiers && data.tiers.length ? data.tiers : [data.pro];
+  tiers.forEach((tier) => {
+    if (tier) head.appendChild(proCard(tier));
+  });
   el("magic-empty").classList.toggle("hidden", data.items.length > 0);
 
   const list = el("magic-list");
@@ -2798,7 +2804,7 @@ async function takePro(pro) {
   if (busy) return;
   // Бесплатную забираем прямо здесь, платную — через счёт Telegram
   if (!pro.free) {
-    await buyRelic({ code: "month", title: pro.title, kind: "pro" });
+    await buyRelic({ code: pro.code || "month", title: pro.title, kind: "pro" });
     return;
   }
   busy = true;
@@ -2809,7 +2815,7 @@ async function takePro(pro) {
     haptic((feedback) => feedback.notificationOccurred("success"));
     const got = data.pro;
     popup(
-      "💎 " + pro.title,
+      (pro.badge || "💎") + " " + pro.title,
       (got.renewed ? "Подписка продлена на " : "Подписка на ") + got.days + " дней."
     );
   } catch (error) {
@@ -2884,7 +2890,7 @@ function fighterRow(fighter) {
   // Порядок знаков в строке один на весь город: класс, знак мафии, знак
   // клана, ник, премиум, уровень
   name.textContent = fighter.pro
-    ? fighter.nickname + " 💎"
+    ? fighter.nickname + " " + (fighter.badge || "💎")
     : fighter.nickname;
 
   const level = document.createElement("span");
@@ -3045,7 +3051,9 @@ function fighterCard(card) {
 
 async function showFighter(fighter) {
   openSheet(
-    (fighter.pro ? fighter.nickname + " 💎" : fighter.nickname)
+    (fighter.pro
+      ? fighter.nickname + " " + (fighter.badge || "💎")
+      : fighter.nickname)
       + " [" + fighter.level + "]",
     fighter.fclass.emoji + " " + fighter.fclass.title
   );
@@ -8970,7 +8978,7 @@ function proHeldNote(paper) {
   const said = document.createElement("p");
   said.className = "paper-held";
   said.textContent =
-    "💎 Полис держит подписка PRO — до " + paper.until
+    "👑 Полис держит подписка PREMIUM — до " + paper.until
     + ". Оформлять и продлевать его не нужно.";
   return said;
 }
@@ -9061,7 +9069,7 @@ function renderInsurance(data) {
   el("insurance-note").textContent =
     data.said
     || (data.by_pro
-      ? "Полис держит подписка — оформлять ничего не нужно."
+      ? "Полис держит PREMIUM — оформлять ничего не нужно."
       : data.insured
         ? "Полис на руках. Продлить можно в любой момент — месяц ляжет сверху."
         : "Первая услуга конторы: лечение травм по полису дешевле впятеро.");
@@ -9360,7 +9368,9 @@ function crowdRow(one) {
 
   const name = document.createElement("span");
   name.className = "fighter-name";
-  name.textContent = one.pro ? one.nickname + " 💎" : one.nickname;
+  name.textContent = one.pro
+    ? one.nickname + " " + (one.badge || "💎")
+    : one.nickname;
 
   const level = document.createElement("span");
   level.className = "fighter-level";

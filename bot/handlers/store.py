@@ -136,11 +136,12 @@ async def on_paid(message: Message, store: StoreService) -> None:
 
     if grant.is_pro:
         got = grant.pro
+        tier = grant.goods.tier
         await message.answer(
-            f"💎 <b>{grant.label}</b> "
+            f"{tier.badge} <b>{grant.label}</b> "
             f"{'продлена' if got and got.renewed else 'оформлена'} на "
             f"{grant.goods.days} дней.\n"
-            "\nОпыт за бои теперь идёт в полтора раза. Подробности: /pro"
+            f"\nОпыт за бои теперь идёт ×{tier.exp_share:g}. Подробности: /pro"
         )
         return
 
@@ -164,39 +165,59 @@ async def on_paid(message: Message, store: StoreService) -> None:
 
 
 def pro_text(player, offer: ProOffer, claimed: bool = False) -> str:
-    lines = [f"{pro.EMOJI} <b>{pro.TITLE}</b>", ""]
-    left = player.pro_left()
-    if left:
-        lines += [f"✅ Подписка активна, осталось <b>{spell_duration(left)}</b>.", ""]
-    lines.append("<b>Что даёт</b>")
-    lines += [f"• {line}" for line in pro.BENEFITS]
+    """Экран подписок: обе ступени подряд, со своими списками и ценами.
+
+    Ступени показываем вместе, а не по кнопке «а что ещё бывает»: выбор
+    между двумя ценами — это и есть то, зачем боец сюда пришёл, и
+    сравнить он должен в один взгляд.
+    """
+    mine = player.tier()
+    lines: list[str] = []
+    if mine is not None:
+        lines += [
+            f"{mine.badge} <b>{mine.title}</b> — активна, осталось "
+            f"<b>{spell_duration(player.pro_left())}</b>.",
+            "",
+        ]
+    for tier in pro.TIERS:
+        head = f"{tier.badge} <b>{tier.title}</b>"
+        if mine is not None and tier.rank < mine.rank:
+            head += " · ступенью ниже твоей"
+        lines.append(head)
+        lines += [f"• {line}" for line in tier.benefits]
+        lines.append(f"Цена: <b>{tier.stars}</b> ⭐ за {tier.days} дней.")
+        lines.append("")
     # Оговорка под списком бывает пустой: список из трёх строк в ней не
     # нуждается, и пустая строка вместо неё читалась бы как обрыв
     if pro.NOTE:
-        lines += ["", pro.NOTE]
+        lines += [pro.NOTE, ""]
     promo = pro.promo_note(offer, claimed)
     if promo:
-        lines += ["", promo]
-    if claimed or not offer.promo:
-        paid = pro.paid_offer()
-        lines += ["", f"Цена: <b>{paid.stars}</b> ⭐ за {paid.days} дней."]
-    return "\n".join(lines)
+        lines += [promo, ""]
+    return "\n".join(lines).strip()
 
 
 def pro_keyboard(free: bool, active: bool) -> InlineKeyboardMarkup:
-    """Кнопка одна: либо разовая бесплатная неделя, либо звёзды."""
-    paid = pro.paid_offer()
+    """По кнопке на ступень. Бесплатная неделя бывает только у PRO."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if free:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{pro.PRO_BADGE} Забрать неделю бесплатно",
+                callback_data=ProCB(free=1, tier=pro.PRO).pack(),
+            )
+        ])
     verb = "Продлить" if active else "Оформить"
-    text = (
-        f"{pro.EMOJI} Забрать бесплатно"
-        if free
-        else f"{pro.EMOJI} {verb} · {paid.stars} ⭐"
-    )
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=text, callback_data=ProCB(free=int(free)).pack())]
-        ]
-    )
+    for tier in pro.TIERS:
+        if free and tier.code == pro.PRO:
+            continue
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{tier.badge} {verb} {tier.short} · {tier.stars} ⭐",
+                callback_data=ProCB(free=0, tier=tier.code).pack(),
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.message(Command("pro", "subscription"))
@@ -241,14 +262,15 @@ async def on_pro(
         await callback.answer("Добро пожаловать в PRO!")
         return
 
-    paid = pro.paid_offer()
+    tier = pro.get_tier(callback_data.tier) or pro.PRO_TIER
+    paid = pro.paid_offer(tier)
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=f"{pro.EMOJI} {pro.TITLE}",
+        title=f"{tier.emoji} {tier.title}",
         description=store.description(paid),
-        payload=pro_payload(callback.from_user.id),
+        payload=pro_payload(callback.from_user.id, tier.code),
         currency="XTR",
-        prices=[{"label": pro.TITLE, "amount": paid.stars}],
+        prices=[{"label": tier.title, "amount": paid.stars}],
     )
     await callback.answer()
 

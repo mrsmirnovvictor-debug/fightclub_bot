@@ -150,7 +150,7 @@ async def cover_pass(db: Database, player: Player, now: int | None = None) -> st
     """
     moment = now_ts() if now is None else now
     was = await db.gym_pass_of(player.user_id)
-    until = cover_by_pro(was, player.pro_until, moment)
+    until = cover_by_pro(was, player.subscription_until(moment), moment)
     if not until:
         return ""
     await db.set_gym_pass(player.user_id, until)

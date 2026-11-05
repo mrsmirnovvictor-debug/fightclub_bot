@@ -196,9 +196,10 @@ class Member:
     nickname: str
     level: int
     class_code: str
-    # До какого часа у бойца подписка: значок премиума в строке ставят
-    # по нему. Самого значка здесь нет — это уже дело экрана
+    # До какого часа у бойца каждая подписка: значок в строке ставят по
+    # ним. Самого значка здесь нет — это уже дело экрана
     pro_until: int = 0
+    premium_until: int = 0
     joined_at: int = 0
 
 
@@ -233,6 +234,7 @@ class Knock:
     level: int = 0
     class_code: str = ""
     pro_until: int = 0
+    premium_until: int = 0
     clan_name: str = ""
     clan_sign: str = ""
     by_name: str = ""

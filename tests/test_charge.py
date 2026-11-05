@@ -41,7 +41,13 @@ from bot.game.charge import (
     range_km,
     wasted,
 )
-from bot.game.bank import CARD_PRICE, CASH, card_works, discount_of
+from bot.game.bank import (
+    CARD_DISCOUNT,
+    CARD_PRICE,
+    CASH,
+    card_works,
+    discount_of,
+)
 from bot.game.locations import STEP, Service, get_location, travel_seconds
 from bot.travel_service import Travel
 from bot.webapp.charging import build_charge
@@ -382,23 +388,26 @@ async def carded(db, player, money: int = 500, now: int = NOW):
     return fresh
 
 
-async def test_the_card_takes_fifteen_percent_off_the_charge(db):
-    """Картой зарядка дешевле на 15%: 42 кредита вместо пятидесяти."""
-    assert discount_of(Service.CHARGE) == 15
+async def test_the_card_takes_its_percent_off_the_charge(db):
+    """Картой зарядка дешевле: 47 кредитов вместо пятидесяти."""
+    from bot.game.bank import with_discount
+
+    assert discount_of(Service.CHARGE) == CARD_DISCOUNT == 5
     assert card_works(Service.CHARGE), "карта на АЗС ходит"
+    paid = with_discount(50, CARD_DISCOUNT)
 
     player = await carded(db, await driver(db, credits=1000))
     player = await drained(db, player, 20)
 
     said = await plug(db, player, SUV, 1, 50, NOW)
 
-    assert "42 💰" in said
+    assert f"{paid} 💰" in said
     fresh = await db.get_player(player.user_id)
-    assert fresh.account_balance == 500 - 42, "списали со счёта"
+    assert fresh.account_balance == 500 - paid, "списали со счёта"
     assert fresh.credits == 1000 - CARD_PRICE, "наличные не тронули"
     # И в выписке видно, где боец оставил деньги и за что
     moves = await db.card_log(player.user_id)
-    assert moves[0].note == "АЗС" and moves[0].amount == -42
+    assert moves[0].note == "АЗС" and moves[0].amount == -paid
     assert get_car(SUV).title in moves[0].about
 
 
@@ -420,19 +429,25 @@ async def test_cash_pays_the_full_price(db):
 
 async def test_the_screen_counts_the_measures_by_the_chosen_purse(db):
     """Мерки считаются тем кошельком, которым боец здесь платит."""
+    from bot.game.bank import with_discount
+
     player = await carded(db, await driver(db, credits=1000))
     player = await drained(db, player, 20)
 
     body = await build_charge(db, player, NOW)
 
     assert body["purse"]["purse"] == "card"
-    assert body["purse"]["discount"] == 15
-    assert body["purse"]["now_off"] == 15
+    assert body["purse"]["discount"] == CARD_DISCOUNT
+    assert body["purse"]["now_off"] == CARD_DISCOUNT
     assert body["purse"]["takes_card"] is True
     car = body["cars"][0]
-    assert [one["price"] for one in car["steps"]] == [42, 63, 85]
-    assert [one["price"] for one in body["steps"]] == [42, 63, 85]
-    assert "+50% за 42 💰" in body["note"]
+    assert [one["price"] for one in car["steps"]] == [
+        with_discount(50, CARD_DISCOUNT),
+        with_discount(75, CARD_DISCOUNT),
+        with_discount(100, CARD_DISCOUNT),
+    ] == [47, 71, 95]
+    assert [one["price"] for one in body["steps"]] == [47, 71, 95]
+    assert "+50% за 47 💰" in body["note"]
 
     # Переключился на наличные — цены вернулись к полным
     player.pay_from = CASH

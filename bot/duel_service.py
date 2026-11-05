@@ -38,7 +38,6 @@ from bot.game.economy import (
     REPEAT_WINDOW_HOURS,
     apply_share,
     consolation_exp,
-    pro_exp,
     rating_delta,
     repeat_share,
     win_exp,
@@ -926,7 +925,18 @@ class DuelService:
             opponent_level = levels[opponent.user_id]
             won = result.winner_id == user_id
 
-            full_exp = win_exp(fighter.damage_dealt, my_level, opponent_level)
+            # Ставка берётся по старшему из двоих, прибавка за урон — по
+            # полным ХП обоих, повторный бой урезает её тут же, а подписка
+            # множит уже урезанное: округление в формуле одно и последнее
+            full_exp = win_exp(
+                fighter.damage_dealt,
+                my_level,
+                opponent_level,
+                fighter.max_hp + session.fighters[opponent.user_id].max_hp,
+                2,
+                previous_fights=previous_fights,
+                exp_share=player.exp_share(),
+            )
             if won:
                 player.wins += 1
                 # Победа — событие для бармена: с неё начинается город
@@ -943,7 +953,9 @@ class DuelService:
             drawn = result.winner_id is None
             delta = rating_delta(None if drawn else won, my_level, opponent_level)
             if share < 1.0:
-                exp = apply_share(exp, share)
+                # Опыт повтор уже урезал внутри формулы — второй раз его
+                # здесь применять нельзя. Рейтингу урезание всё ещё нужно:
+                # в его расчёт повторные бои не входят
                 delta = int(math.copysign(apply_share(abs(delta), share), delta))
 
             if player.birthplace is None and session.chat_title:
@@ -962,9 +974,7 @@ class DuelService:
             if ruined:
                 broken.append((player, ruined))
             player.set_hp(fighter.hp)
-            # Подписка множит уже урезанное: полтора от того, что боец
-            # действительно заработал в этом бою
-            report = player.grant_exp(pro_exp(exp, player.is_pro()))
+            report = player.grant_exp(exp)
             report.rating_delta = delta
             player.apply_rating(delta)
             await self.db.save_player(player)

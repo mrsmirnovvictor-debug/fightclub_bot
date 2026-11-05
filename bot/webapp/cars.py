@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from bot.game.pro import PREMIUM_CARS, PRO_CARS
 from bot.game.cars import (
     BUY_PRICE_DAYS,
     MONTH_PRICE_DAYS,
-    PRO_MAX_CARS,
     SHOWCASE,
     TAXI,
     TAXI_SHIFT_PRICE,
@@ -186,7 +186,7 @@ async def build_cars(
     # Оставленные на парковке в счёт не идут: в гараже они стоят, а не
     # в руках. Их видно там, где они стоят, — в особняке и у квартиры
     stored = sum(1 for one in keys if one["parked"])
-    limit = cars_allowed(player.is_pro(moment))
+    limit = cars_allowed(player.tier_rank(moment))
 
     body: dict[str, Any] = {
         "title": place.title if place else "Машины",
@@ -201,7 +201,10 @@ async def build_cars(
         "stored": stored,
         "limit": limit,
         "pro": player.is_pro(moment),
-        "pro_limit": PRO_MAX_CARS,
+        # Что даёт каждая ступень: бойцу без подписки показываем обе,
+        # подписчику — то, до чего он может доехать
+        "pro_limit": PRO_CARS,
+        "premium_limit": PREMIUM_CARS,
         "shelf": [],
         "market": None,
         "said": "",
@@ -304,7 +307,8 @@ def _note(body: dict[str, Any], player: Player, moment: int) -> str:
             if body["pro"]
             else (
                 "Поставь её на парковку — в особняке или у своей квартиры, "
-                f"— и бери вторую. С подпиской держат {body['pro_limit']}."
+                f"— и бери вторую. С PRO держат {body['pro_limit']} разом, "
+                f"с PREMIUM — {body['premium_limit']}."
             )
         )
         return (

@@ -25,7 +25,6 @@ from bot.game.stats import derive
 from bot.game.links import links
 from bot.game.narrator import esc, health_line
 from bot.game.potions import spell_duration
-from bot.game.pro import PRO_BADGE
 from bot.models import Player
 
 PRIVATE_HINT = (
@@ -132,10 +131,14 @@ def profile_text(player: Player, own: bool = True) -> str:
     ]
     if own:
         lines.append(f"💰 Кредиты: <b>{player.credits}</b>")
-    if own and player.is_pro():
+    tier = player.tier() if own else None
+    if tier is not None:
+        # Множитель пишем числом ступени, а не «×1.5»: ступеней две, и
+        # строка должна говорить про ту, которая у бойца на руках
+        share = f"{tier.exp_share:g}"
         lines.append(
-            f"{PRO_BADGE} Подписка PRO: осталось "
-            f"<b>{spell_duration(player.pro_left())}</b> · опыт ×1.5"
+            f"{tier.badge} {tier.title}: осталось "
+            f"<b>{spell_duration(player.pro_left())}</b> · опыт ×{share}"
         )
     effects = effects_line(player)
     if effects:

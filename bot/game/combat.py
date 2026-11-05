@@ -217,8 +217,10 @@ class Fighter:
     equipment: Equipment = field(default_factory=Equipment)
     # Запас здоровья сверх своего: от вещей и от выпитых эликсиров
     extra_hp: int = 0
-    # Подписчик: значок у имени судья ставит по этому полю
-    pro: bool = False
+    # Подписчик: значок у имени судья ставит по этому полю. Хранится сам
+    # значок, а не признак подписки: у ступеней он разный — кристалл у
+    # PRO, корона у PREMIUM, — и признаком их не различить
+    badge: str = ""
     # Лицо — только у нанятых и городской охраны. У игрока его нет: его
     # карточка и так рядом, а в шкалах боя место одно на строку
     picture: str = ""
@@ -531,7 +533,7 @@ class Fighter:
             level=player.level,
             equipment=equipment,
             extra_hp=getattr(player, "effect_hp", 0),
-            pro=bool(getattr(player, "is_pro", bool)()),
+            badge=str(getattr(player, "badge", "") or ""),
         )
         fighter.hp = max(1, min(player.current_hp(), fighter.max_hp))
         # Приёмы боец приносит с собой, а энергию — нет: она копится с нуля

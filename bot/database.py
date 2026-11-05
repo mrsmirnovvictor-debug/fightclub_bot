@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS players (
     look           TEXT    NOT NULL DEFAULT '',
     gender         TEXT    NOT NULL DEFAULT '',
     pro_until      INTEGER NOT NULL DEFAULT 0,
+    premium_until  INTEGER NOT NULL DEFAULT 0,
     birthplace     TEXT,
     wins           INTEGER NOT NULL DEFAULT 0,
     losses         INTEGER NOT NULL DEFAULT 0,
@@ -1239,7 +1240,7 @@ PLAYER_COLUMNS = (
     "agility, intuition, endurance, free_points, level, exp, total_exp, "
     "micro_ups, credits, rating, hp, hp_at, wins, losses, draws, "
     "raid_wins, raid_fights, seen_at, location, travel_to, arrives_at, "
-    "city, birthplace, pro_until, gender, created_at, "
+    "city, birthplace, pro_until, premium_until, gender, created_at, "
     "account_number, account_balance, account_at, "
     "card_at, card_paid_until, pay_from, "
     "job_code, job_since, job_experience, job_week, job_minutes, job_salary, "
@@ -1261,6 +1262,9 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("birthplace", "TEXT"),
     ("look", "TEXT NOT NULL DEFAULT ''"),
     ("pro_until", "INTEGER NOT NULL DEFAULT 0"),  # 0 — подписки нет
+    # Вторая ступень подписки. Срок отдельный от PRO: оплаченный месяц
+    # PRO обязан дожить свой срок, а не исчезнуть под старшей ступенью
+    ("premium_until", "INTEGER NOT NULL DEFAULT 0"),
     ("gender", "TEXT NOT NULL DEFAULT ''"),  # пусто — бойца заводили до выбора
     ("raid_wins", "INTEGER NOT NULL DEFAULT 0"),
     ("raid_fights", "INTEGER NOT NULL DEFAULT 0"),
@@ -1926,7 +1930,7 @@ class Database:
                 exp, total_exp, micro_ups, credits, rating, hp, hp_at,
                 wins, losses, draws, raid_wins, raid_fights, seen_at,
                 location, travel_to, arrives_at,
-                city, birthplace, pro_until, gender, created_at,
+                city, birthplace, pro_until, premium_until, gender, created_at,
                 account_number, account_balance, account_at,
                 card_at, card_paid_until, pay_from,
                 job_code, job_since, job_experience, job_week, job_minutes,
@@ -1935,7 +1939,7 @@ class Database:
                 study_exam_at, study_tries, lesson_until, diplomas,
                 car, car_until
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 nickname       = excluded.nickname,
                 class_code     = excluded.class_code,
@@ -1967,6 +1971,7 @@ class Database:
                 travel_to      = excluded.travel_to,
                 arrives_at     = excluded.arrives_at,
                 pro_until      = excluded.pro_until,
+                premium_until  = excluded.premium_until,
                 gender         = excluded.gender,
                 account_number  = excluded.account_number,
                 account_balance = excluded.account_balance,
@@ -2027,6 +2032,7 @@ class Database:
                 player.city,
                 player.birthplace,
                 player.pro_until,
+                player.premium_until,
                 player.gender,
                 player.created_at,
                 player.account_number,
@@ -3165,7 +3171,8 @@ class Database:
         async with self.conn.execute(
             """
             SELECT m.user_id, m.rank, m.joined_at,
-                   p.nickname, p.level, p.class_code, p.pro_until
+                   p.nickname, p.level, p.class_code, p.pro_until,
+                   p.premium_until
             FROM clan_members m JOIN players p ON p.user_id = m.user_id
             WHERE m.clan_id = ?
             ORDER BY m.joined_at ASC
@@ -3183,6 +3190,7 @@ class Database:
                     level=int(row["level"]),
                     class_code=str(row["class_code"]),
                     pro_until=int(row["pro_until"]),
+                    premium_until=int(row["premium_until"]),
                     joined_at=int(row["joined_at"]),
                 )
                 for row in rows
@@ -6791,7 +6799,8 @@ class Database:
         async with self.conn.execute(
             """
             SELECT k.clan_id, k.user_id, k.kind, k.created_at, k.by_id,
-                   p.nickname, p.level, p.class_code, p.pro_until
+                   p.nickname, p.level, p.class_code, p.pro_until,
+                   p.premium_until
             FROM clan_petitions k JOIN players p ON p.user_id = k.user_id
             WHERE k.clan_id = ? AND k.kind = ?
             ORDER BY k.created_at ASC
@@ -6810,6 +6819,7 @@ class Database:
                 level=int(row["level"]),
                 class_code=str(row["class_code"]),
                 pro_until=int(row["pro_until"]),
+                premium_until=int(row["premium_until"]),
             )
             for row in rows
         ]

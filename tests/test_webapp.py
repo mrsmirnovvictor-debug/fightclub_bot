@@ -489,7 +489,7 @@ async def test_club_lists_every_fighter(client, db):
     # Клан и служба — исключение: их значки стоят в самой строке, рядом
     # с ником, и носить их разом нельзя
     assert set(me) == {
-        "user_id", "nickname", "level", "pro", "is_self", "fclass",
+        "user_id", "nickname", "level", "pro", "badge", "is_self", "fclass",
         "clan", "service",
     }
     assert me["clan"] == {}, "боец без клана знаков не носит"

@@ -45,7 +45,6 @@ from bot.game.combat import (
     spread_heal,
 )
 from bot.game.economy import (
-    pro_exp,
     rating_delta,
     win_exp,
 )
@@ -762,6 +761,13 @@ class BattleService:
         levels = {
             user_id: session.fighters[user_id].level for user_id in session.fighters
         }
+        # Отряд считается целиком: ставка — по старшему бойцу на ринге,
+        # прибавка за урон — по среднему запасу здоровья всех, кто вышел.
+        # Полные ХП, а не те, с которыми пришли: иначе побитый отряд стоил
+        # бы дешевле целого, и выгоднее было бы ждать, пока все подлечатся
+        top_level = max(levels.values(), default=1)
+        hp_total = sum(one.max_hp for one in session.fighters.values())
+        on_ring = len(session.fighters)
         rows: list[tuple[Player, ProgressReport, Fighter, bool]] = []
         broken: list[tuple[Player, list]] = []
 
@@ -775,7 +781,15 @@ class BattleService:
                 player.wins += 1
                 # Победа — событие для бармена: с неё начинается город
                 await notice(self.db, player, "fight")
-                exp = win_exp(fighter.damage_dealt, levels[user_id], rival_level)
+                exp = win_exp(
+                    fighter.damage_dealt,
+                    levels[user_id],
+                    top_level,
+                    hp_total,
+                    on_ring,
+                    group=True,
+                    exp_share=player.exp_share(),
+                )
             elif outcome.draw:
                 player.draws += 1
                 exp = 0
@@ -800,9 +814,7 @@ class BattleService:
             if ruined:
                 broken.append((player, ruined))
             player.set_hp(fighter.hp)
-            # Подписка множит уже урезанное: полтора от того, что боец
-            # действительно заработал в этом бою
-            report = player.grant_exp(pro_exp(exp, player.is_pro()))
+            report = player.grant_exp(exp)
             report.rating_delta = delta
             player.apply_rating(delta)
             await self.db.save_player(player)

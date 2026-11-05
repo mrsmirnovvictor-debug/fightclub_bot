@@ -102,9 +102,18 @@ async def licensed(
     return fresh
 
 
-async def subscribed(db: Database, player: Player, when: int = NOW) -> Player:
-    """Боец с подпиской: ему город разрешает три машины вместо одной."""
-    player.pro_until = when + 30 * DAY
+async def subscribed(
+    db: Database, player: Player, when: int = NOW, top: bool = True
+) -> Player:
+    """Боец с подпиской: город разрешает ему больше одной машины.
+
+    `top` — старшая ступень, с которой держат три; без неё PRO, с
+    которой держат две.
+    """
+    if top:
+        player.premium_until = when + 30 * DAY
+    else:
+        player.pro_until = when + 30 * DAY
     await db.save_player(player)
     fresh = await db.get_player(player.user_id)
     assert fresh is not None and fresh.is_pro(when)
@@ -1065,12 +1074,18 @@ async def test_the_flat_parking_is_not_shared(db, client):
 # ---------- сколько машин держат ----------
 
 
-def test_one_car_for_a_fighter_and_three_for_a_subscriber():
-    """Машина у бойца одна, с подпиской три — и это всё правило."""
-    from bot.game.cars import MAX_CARS, PRO_MAX_CARS, cars_allowed
+def test_one_car_for_a_fighter_two_for_pro_and_three_for_premium():
+    """Машина у бойца одна, с PRO две, с PREMIUM три — и это всё правило."""
+    from bot.game.cars import MAX_CARS, cars_allowed
+    from bot.game.pro import PREMIUM_TIER, PRO_TIER
 
-    assert MAX_CARS == 1 and PRO_MAX_CARS == 3
-    assert cars_allowed(False) == 1 and cars_allowed(True) == 3
+    assert MAX_CARS == 1
+    assert PRO_TIER.cars == 2 and PREMIUM_TIER.cars == 3
+    assert cars_allowed(0) == MAX_CARS
+    assert cars_allowed(PRO_TIER.rank) == PRO_TIER.cars
+    assert cars_allowed(PREMIUM_TIER.rank) == PREMIUM_TIER.cars
+    # `True` понимают как PRO: так зовут оттуда, где ступень ещё не завезли
+    assert cars_allowed(True) == PRO_TIER.cars
 
 
 async def test_the_second_car_does_not_fit(db):
@@ -1080,24 +1095,41 @@ async def test_the_second_car_does_not_fit(db):
 
     with pytest.raises(CarError, match="Машина у бойца одна"):
         await buy(db, player, HYPER, NOW)
-    with pytest.raises(CarError, match="С подпиской держат 3"):
+    with pytest.raises(CarError, match="С PRO держат 2 разом"):
         await rent(db, player, HYPER, "day", NOW)
     assert [one["code"] for one in await mine(db, player, NOW)] == [HATCH]
 
 
-async def test_the_subscription_makes_room_for_three(db):
-    """С подпиской на руках три машины, а четвёртая не влезает и ей."""
-    from bot.game.cars import PRO_MAX_CARS
+async def test_the_top_subscription_makes_room_for_three(db):
+    """С PREMIUM на руках три машины, а четвёртая не влезает и ей."""
+    from bot.game.pro import PREMIUM_TIER
 
     player = await subscribed(db, await licensed(db, make_player()))
-    codes = [one.code for one in SHOWCASE[:PRO_MAX_CARS + 1]]
+    codes = [one.code for one in SHOWCASE[:PREMIUM_TIER.cars + 1]]
 
-    for code in codes[:PRO_MAX_CARS]:
+    for code in codes[:PREMIUM_TIER.cars]:
         await buy(db, player, code, NOW)
 
-    assert len(await mine(db, player, NOW)) == PRO_MAX_CARS
-    with pytest.raises(CarError, match="даже с подпиской"):
-        await buy(db, player, codes[PRO_MAX_CARS], NOW)
+    assert len(await mine(db, player, NOW)) == PREMIUM_TIER.cars
+    with pytest.raises(CarError, match="по этой подписке"):
+        await buy(db, player, codes[PREMIUM_TIER.cars], NOW)
+
+
+async def test_the_younger_subscription_makes_room_for_two(db):
+    """С PRO машин две, а не три: третья — то, за что берут PREMIUM."""
+    from bot.game.pro import PRO_TIER
+
+    player = await subscribed(
+        db, await licensed(db, make_player()), top=False
+    )
+    codes = [one.code for one in SHOWCASE[:PRO_TIER.cars + 1]]
+
+    for code in codes[:PRO_TIER.cars]:
+        await buy(db, player, code, NOW)
+
+    assert len(await mine(db, player, NOW)) == PRO_TIER.cars
+    with pytest.raises(CarError, match="по этой подписке"):
+        await buy(db, player, codes[PRO_TIER.cars], NOW)
 
 
 async def test_a_freed_place_takes_a_new_car(db):
@@ -1210,7 +1242,7 @@ async def test_the_salon_says_why_the_buttons_are_dark(db):
 
     assert body["held"] == 1 and body["limit"] == 1 and body["pro"] is False
     assert "Машин на руках 1 из 1" in body["note"]
-    assert "С подпиской держат 3" in body["note"]
+    assert "С PRO держат 2 разом, с PREMIUM — 3" in body["note"]
     rows = {one["code"]: one for one in body["shelf"]}
     assert rows[HYPER]["fits"] is False and rows[HYPER]["can_buy"] is False
     assert rows[HYPER]["can_rent_day"] is False

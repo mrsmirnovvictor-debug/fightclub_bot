@@ -126,8 +126,15 @@ def relic_payload(code: str, user_id: int) -> str:
     return f"{RELIC_KIND}:{code}:{user_id}"
 
 
-def pro_payload(user_id: int) -> str:
-    return f"{PRO_KIND}:month:{user_id}"
+def pro_payload(user_id: int, tier: str = "pro") -> str:
+    """Счёт на подписку: в середине код ступени, а не слово «month».
+
+    Раньше там стояло «month» — ступень была одна, и различать было
+    нечего. Старые счета с «month» касса по-прежнему принимает и
+    понимает как PRO: платёж, выставленный до этой правки, обязан
+    дойти.
+    """
+    return f"{PRO_KIND}:{tier}:{user_id}"
 
 
 __all__ = [

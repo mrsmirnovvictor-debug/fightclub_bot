@@ -360,3 +360,26 @@ async def test_the_grant_stays_out_of_the_paid_history(club):
     await owner.send("/givecredits x RED x 500")
 
     assert await db.purchases_of(777) == []
+
+
+async def test_the_owner_grants_the_top_tier_by_its_own_command(club):
+    """`/givepremium` продлевает PREMIUM, а не младшую ступень.
+
+    Команды две, а тело одно: выдача не зависит от ступени ничем, кроме
+    того, какой срок продлевать. Проверяем, что продлевается именно тот.
+    """
+    from bot.game.pro import PREMIUM_BADGE
+
+    db, owner, session = club
+    before = now_ts()
+
+    await owner.send("/givepremium x RED x")
+
+    player = await db.get_player(777)
+    assert player.pro_until == 0, "продлили не ту ступень"
+    assert PRO_DAYS * DAY - 60 <= player.premium_until - before <= (
+        PRO_DAYS * DAY + 60
+    )
+    assert player.is_premium() and player.badge == PREMIUM_BADGE
+    said = session.texts[-1]
+    assert "PREMIUM" in said and "30 дней" in said

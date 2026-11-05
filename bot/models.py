@@ -22,7 +22,7 @@ from bot.game.economy import (
     POINTS_PER_UP,
     RATING_START,
     UP_CREDITS,
-    exp_per_up,
+    exp_at_up,
     exp_to_next_level,
     ups_earned,
 )
@@ -56,7 +56,15 @@ from bot.game.potions import (
 )
 from bot.game.locations import FIGHT_CLUB
 from bot.game.looks import MALE
-from bot.game.pro import PRO_BADGE
+from bot.game.pro import (
+    PREMIUM_TIER,
+    PRO_TIER,
+    cars_of,
+    discount_of_tier,
+    exp_share,
+    holds_policy,
+    tier_of,
+)
 from bot.game.stats import derive
 from bot.game.world import DEFAULT_BIRTHPLACE, DEFAULT_CITY
 
@@ -142,8 +150,12 @@ class Player:
     location: str = FIGHT_CLUB
     travel_to: str | None = None
     arrives_at: int = 0  # unix-время прибытия; 0 — никуда не идёт
-    # До какого момента жива подписка PRO (unix-время); 0 — подписки нет
+    # До какого момента жива каждая подписка (unix-время); 0 — её нет.
+    # Сроки раздельные намеренно: боец мог продлить PRO на месяц, а
+    # потом взять PREMIUM, и оплаченный месяц PRO обязан дожить свой
+    # срок, а не исчезнуть под старшей ступенью
     pro_until: int = 0
+    premium_until: int = 0
     birthplace: str | None = None  # группа, где боец начал драться
     created_at: str | None = None  # когда персонаж появился на свет
     # Инвентарь: и надетое, и лежащее в рюкзаке. Подгружается из базы.
@@ -342,28 +354,105 @@ class Player:
     # ---------- подписка ----------
 
     def is_pro(self, now: int | None = None) -> bool:
+        """Есть ли у бойца подписка — любая.
+
+        Имя осталось прежним нарочно: по нему спрашивают услуги, которые
+        держат обе ступени — аналитика, абонемент, значок. То, что
+        ступени различает, спрашивает `tier`: полис, число машин, скидку
+        и множитель опыта.
+        """
+        return self.tier_rank(now) > 0
+
+    def is_premium(self, now: int | None = None) -> bool:
+        moment = now_ts() if now is None else now
+        return self.premium_until > moment
+
+    def is_pro_exactly(self, now: int | None = None) -> bool:
+        """Жива ли именно PRO — без оглядки на то, есть ли PREMIUM."""
         moment = now_ts() if now is None else now
         return self.pro_until > moment
+
+    def tier_rank(self, now: int | None = None) -> int:
+        """Номер старшей живой ступени. 0 — подписки нет вовсе.
+
+        Держать обе разом можно, и тогда работает старшая: ступень — это
+        уровень обслуживания, а не сумма услуг.
+        """
+        moment = now_ts() if now is None else now
+        if self.premium_until > moment:
+            return PREMIUM_TIER.rank
+        if self.pro_until > moment:
+            return PRO_TIER.rank
+        return 0
+
+    def tier(self, now: int | None = None):
+        """Старшая живая ступень. None — подписки нет."""
+        return tier_of(self.tier_rank(now))
+
+    def subscription_until(self, now: int | None = None) -> int:
+        """Докуда жива старшая ступень. 0 — подписки нет."""
+        moment = now_ts() if now is None else now
+        if self.premium_until > moment:
+            return self.premium_until
+        if self.pro_until > moment:
+            return self.pro_until
+        return 0
 
     def pro_left(self, now: int | None = None) -> int:
         """Сколько секунд подписке осталось. 0 — её нет."""
         moment = now_ts() if now is None else now
-        return max(0, self.pro_until - moment)
+        return max(0, self.subscription_until(moment) - moment)
+
+    def exp_share(self, now: int | None = None) -> float:
+        """Во сколько раз подписка множит опыт за бой."""
+        return exp_share(self.tier_rank(now))
+
+    def cars_allowed(self, now: int | None = None) -> int:
+        """Сколько машин боец держит на руках."""
+        return cars_of(self.tier_rank(now))
+
+    def tier_discount(self, now: int | None = None) -> int:
+        """Скидка в городе, которую даёт подписка этого бойца."""
+        return discount_of_tier(self.tier_rank(now))
+
+    def tier_holds_policy(self, now: int | None = None) -> bool:
+        """Держит ли подписка этого бойца страховой полис."""
+        return holds_policy(self.tier_rank(now))
+
+    def policy_cover_until(self, now: int | None = None) -> int:
+        """Докуда подписка держит полис. 0 — не держит вовсе.
+
+        Полис держит только PREMIUM. У бойца с PRO его нет, и это не
+        забывчивость: полис — то, чем старшая ступень отличается от
+        младшей, а не то, что идёт к любой подписке.
+        """
+        moment = now_ts() if now is None else now
+        if not self.tier_holds_policy(moment):
+            return 0
+        return self.subscription_until(moment)
 
     def extend_pro(self, seconds: int, now: int | None = None) -> int:
-        """Продлить подписку. Живая продлевается с конца, мёртвая — с сейчас."""
+        """Продлить PRO. Живая продлевается с конца, мёртвая — с сейчас."""
         moment = now_ts() if now is None else now
         self.pro_until = max(self.pro_until, moment) + max(0, seconds)
         return self.pro_until
 
+    def extend_premium(self, seconds: int, now: int | None = None) -> int:
+        """Продлить PREMIUM. Живая продлевается с конца, мёртвая — с сейчас."""
+        moment = now_ts() if now is None else now
+        self.premium_until = max(self.premium_until, moment) + max(0, seconds)
+        return self.premium_until
+
     @property
     def badge(self) -> str:
-        """Значок у имени. Пусто — подписки нет."""
-        return PRO_BADGE if self.is_pro() else ""
+        """Значок у имени: кристалл у PRO, корона у PREMIUM. Пусто — нет подписки."""
+        one = self.tier()
+        return one.badge if one else ""
 
     def titled(self) -> str:
         """Имя со значком: то, как бойца называют в текстах."""
-        return f"{self.nickname} {PRO_BADGE}" if self.is_pro() else self.nickname
+        mark = self.badge
+        return f"{self.nickname} {mark}" if mark else self.nickname
 
     # ---------- эликсиры ----------
 
@@ -577,11 +666,16 @@ class Player:
 
     @property
     def exp_to_next_up(self) -> int:
-        """Сколько опыта осталось до ближайшего апа (0 на потолке уровня)."""
+        """Сколько опыта осталось до ближайшего апа (0 на потолке уровня).
+
+        Порог четвёртого апа — цена всего уровня, а не четыре шага по
+        четверти: шаги внутри уровня разной длины, и у последнего своя
+        цена. Считать его шагами значило бы показывать «до апа: 0», пока
+        до уровня ещё остаётся опыт.
+        """
         if self.at_max_level:
             return 0
-        step = exp_per_up(self.level)
-        target = min(self.exp_needed, step * (self.micro_ups + 1))
+        target = exp_at_up(self.level, self.micro_ups + 1)
         return max(0, target - self.exp)
 
     @property
@@ -833,8 +927,15 @@ class Player:
         return f"{where} {self.purse_money(purse)} 💰"
 
     def price_here(self, price: int, now: int, service=None) -> int:
-        """Цена для этого бойца: со скидкой карты, если платит картой."""
-        return price_for(price, self.purse_for(now, service), service)
+        """Цена для этого бойца: со скидкой карты, если платит картой.
+
+        Размер скидки решает ступень подписки, а право на неё — карта:
+        наличными боец платит полную цену, какая бы подписка у него ни
+        была.
+        """
+        return price_for(
+            price, self.purse_for(now, service), service, self.tier_rank(now)
+        )
 
     def can_afford(self, price: int, now: int = 0, service=None) -> bool:
         return self.purse_money(self.purse_for(now, service)) >= price

@@ -61,7 +61,6 @@ from bot.game.economy import (
     DRAW_EXP_SHARE,
     LOSS_EXP_SHARE,
     consolation_exp,
-    pro_exp,
     win_exp,
 )
 from bot.game.fightlog import turn_payload
@@ -876,26 +875,35 @@ class RobberyService:
     def _exp_for(self, raid: Robbery, player: Player) -> int:
         """Опыт за драку — тот же, что за бой на ринге.
 
-        Считается по нанесённому урону и по уровню противной стороны,
-        как в дуэли: драка в подворотне — такой же бой, и опыт за неё
-        должен быть таким же. Рейтинг при этом не двигается: рейтинг —
-        лестница ринга, и ограблением по ней не поднимаются.
+        Какая из двух формул, решает число бойцов: один на один считается
+        по-дуэльному, узким коридором, драка отряд на отряд — по
+        групповому, широким. Драка в подворотне — такой же бой, и опыт за
+        неё должен быть таким же, какой был бы за неё на ринге.
+
+        Рейтинг при этом не двигается: рейтинг — лестница ринга, и
+        ограблением по ней не поднимаются. Повторных боёв здесь нет
+        вовсе: ограбленного три часа не трогают, и урезать нечего.
         """
         fighter = raid.fighters[player.user_id]
+        top_level = max(one.level for one in raid.fighters.values())
+        hp_total = sum(one.max_hp for one in raid.fighters.values())
+        in_fight = len(raid.fighters)
+        full = win_exp(
+            fighter.damage_dealt,
+            fighter.level,
+            top_level,
+            hp_total,
+            in_fight,
+            group=in_fight > 2,
+            exp_share=player.exp_share(),
+        )
         mine = raid.side_of(player.user_id)
-        others = [
-            raid.fighters[one].level
-            for one in raid.fighters
-            if raid.side_of(one) != mine
-        ]
-        against = round(sum(others) / len(others)) if others else fighter.level
-        full = win_exp(fighter.damage_dealt, fighter.level, against)
         won = raid.won if mine == RED else not raid.won
         if raid.draw:
             full = consolation_exp(full, DRAW_EXP_SHARE)
         elif not won:
             full = consolation_exp(full, LOSS_EXP_SHARE)
-        return pro_exp(full, player.is_pro())
+        return full
 
     def _summary(self, raid: Robbery, outcome: BattleOutcome) -> list[str]:
         first = (

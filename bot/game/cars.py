@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 from bot.game.art import BUCKET
 from bot.game.clans import GARAGE_SLOTS
+from bot.game.pro import cars_of
 
 # Папка картинок: по файлу на машину, все в 16:9
 VEHICLES = f"{BUCKET}/vehicles"
@@ -222,12 +223,17 @@ SPANS: tuple[str, ...] = ("day", "month")
 # на смену и забирает обратно.
 
 MAX_CARS = 1
-PRO_MAX_CARS = 3
 
 
-def cars_allowed(is_pro: bool) -> int:
-    """Сколько машин боец может держать: одну, а с подпиской три."""
-    return PRO_MAX_CARS if is_pro else MAX_CARS
+def cars_allowed(rank: int | bool) -> int:
+    """Сколько машин боец держит на руках: одну, две по PRO, три по PREMIUM.
+
+    Предел назван в самой ступени (`bot.game.pro`), а не здесь: ступеней
+    две, и числа у них разные — признаком «есть подписка» их не
+    различить. `True` понимается как PRO: так зовут из тех мест, где
+    ступень ещё не завезли.
+    """
+    return cars_of(int(rank))
 
 
 # ---------- где машина стоит ----------
@@ -425,7 +431,6 @@ __all__ = [
     "PATROL_CAR",
     "POLICE_PLACE",
     "PARKINGS",
-    "PRO_MAX_CARS",
     "PARKING_SLOTS",
     "SALON",
     "SALON_PLACE",

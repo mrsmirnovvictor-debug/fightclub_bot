@@ -55,7 +55,7 @@ from bot.game.classes import get_class
 from bot.game.clock import club_moment
 from bot.game.health import now_ts
 from bot.game.locations import Service
-from bot.game.pro import PRO_BADGE
+from bot.game.pro import badge_for
 from bot.models import Player
 from bot.webapp.bank import purse_payload
 
@@ -140,8 +140,8 @@ def member_row(
         "user_id": member.user_id,
         "nickname": member.nickname,
         "level": member.level,
-        "pro": member.pro_until > moment,
-        "pro_badge": PRO_BADGE,
+        "pro": bool(badge_for(member.pro_until, member.premium_until, moment)),
+        "pro_badge": badge_for(member.pro_until, member.premium_until, moment),
         "emblem": clan.picture,
         "clan": clan.name,
         "rank": member.rank.value,
@@ -190,8 +190,12 @@ def knock_row(
             {
                 "nickname": knock.nickname,
                 "level": knock.level,
-                "pro": knock.pro_until > moment,
-                "pro_badge": PRO_BADGE,
+                "pro": bool(
+                    badge_for(knock.pro_until, knock.premium_until, moment)
+                ),
+                "pro_badge": badge_for(
+                    knock.pro_until, knock.premium_until, moment
+                ),
                 "fclass": {
                     "code": fclass.code,
                     "title": fclass.title,

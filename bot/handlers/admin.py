@@ -42,7 +42,14 @@ from bot.database import Database
 from bot.game.clock import club_moment
 from bot.game.health import now_ts
 from bot.game.narrator import esc
-from bot.game.pro import PRO_DAYS, ProOffer
+from bot.game.pro import (
+    PREMIUM,
+    PREMIUM_TIER,
+    PRO_DAYS,
+    PRO_TIER,
+    ProOffer,
+    Tier,
+)
 from bot.models import Player
 from bot.pro_service import grant_pro
 
@@ -58,6 +65,8 @@ MAX_GIFT_DAYS = 365
 PRO_HOW_TO = (
     "Кому и насколько: <code>/givepro ник</code> — на месяц, "
     "<code>/givepro ник 7</code> — на неделю.\n"
+    "Старшая ступень — та же команда с другим именем: "
+    "<code>/givepremium ник</code>.\n"
     "Ник пишется как в карточке, пробелы внутри можно."
 )
 
@@ -96,7 +105,30 @@ async def read_target(db: Database, args: str) -> tuple[Player | None, int]:
 async def cmd_give_pro(
     message: Message, command: CommandObject, db: Database, config: Config
 ) -> None:
-    """Выдать или продлить бойцу подписку. Только владельцу клуба."""
+    """Выдать или продлить бойцу PRO. Только владельцу клуба."""
+    await _give_tier(message, command, db, config, PRO_TIER)
+
+
+@router.message(Command("givepremium"))
+async def cmd_give_premium(
+    message: Message, command: CommandObject, db: Database, config: Config
+) -> None:
+    """Выдать или продлить бойцу PREMIUM. Только владельцу клуба."""
+    await _give_tier(message, command, db, config, PREMIUM_TIER)
+
+
+async def _give_tier(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    config: Config,
+    tier: Tier,
+) -> None:
+    """Выдать подарочную подписку названной ступени.
+
+    Команды две, а тело одно: выдача не зависит от ступени ничем, кроме
+    того, какой срок продлевать, — и это решает сама оферта.
+    """
     if not is_owner(message.from_user.id, config):
         # Молчим: для посторонних этой команды нет. Но если OWNER_ID не
         # задан вовсе, сказать об этом стоит — иначе владелец жмёт
@@ -126,21 +158,28 @@ async def cmd_give_pro(
         return
 
     now = now_ts()
-    was = player.is_pro(now)
-    grant = await grant_pro(db, player, ProOffer(stars=0, days=days), now)
+    was = (
+        player.is_premium(now)
+        if tier.code == PREMIUM
+        else player.is_pro_exactly(now)
+    )
+    grant = await grant_pro(
+        db, player, ProOffer(stars=0, days=days, tier=tier), now
+    )
     # Подарок, а не покупка: в историю оплат не идёт и возврату не
     # подлежит. Ключ с часом — чтобы вторая выдача тому же бойцу не
     # затёрлась молча об уникальный столбец
     await db.add_purchase(
         user_id=player.user_id,
-        code="pro",
+        code=tier.code,
         stars=0,
         credits=0,
-        charge_id=f"gift:pro:{player.user_id}:{now}",
+        charge_id=f"gift:{tier.code}:{player.user_id}:{now}",
         kind="gift",
     )
     logger.info(
-        "Владелец выдал PRO: %s (%s) на %s дней, до %s",
+        "Владелец выдал %s: %s (%s) на %s дней, до %s",
+        tier.title,
         player.nickname,
         player.user_id,
         days,
@@ -148,7 +187,7 @@ async def cmd_give_pro(
     )
 
     await message.answer(
-        f"💎 <b>{esc(player.nickname)}</b>: подписка "
+        f"{tier.badge} <b>{esc(player.nickname)}</b>: {tier.title} "
         f"{'продлена' if was else 'оформлена'} на {days} дней — "
         f"до {club_moment(grant.until)} мск."
     )

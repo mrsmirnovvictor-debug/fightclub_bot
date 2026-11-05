@@ -46,7 +46,8 @@ def policy_document(player: Player, moment: int) -> dict[str, Any]:
     # Полис держит подписка, когда его срок и есть её срок. Тогда и
     # обещания у него другие: не «месяц с часа оформления», а «пока жива
     # подписка», и продлевать его незачем
-    by_pro = player.is_pro(moment) and policy.until <= player.pro_until
+    cover = player.policy_cover_until(moment)
+    by_pro = bool(cover) and policy.until <= cover
     return {
         "code": CODE,
         "kind": "insurance",
@@ -77,7 +78,7 @@ def policy_document(player: Player, moment: int) -> dict[str, Any]:
         # именно кончилось: срок, а не сам документ
         "state": "Действует" if live else "Срок вышел",
         # По какому праву он на руках: по оплате или по подписке
-        "ground": "По подписке PRO" if by_pro else "Оплачен",
+        "ground": "По подписке PREMIUM" if by_pro else "Оплачен",
     }
 
 
@@ -121,10 +122,14 @@ def gym_document(player: Player, moment: int) -> dict[str, Any]:
         "switchable": False,
         "note": (
             "Без абонемента на тренировки не пускают. "
-            "С подпиской PRO он держится сам, на весь её срок."
+            "С подпиской он держится сам, на весь её срок."
         ),
         "state": "Действует" if live else "Срок вышел",
-        "ground": "По подписке PRO" if player.is_pro(moment) else "Оплачен",
+        "ground": (
+            f"По подписке {player.tier(moment).title.removeprefix('Подписка ')}"
+            if player.tier(moment)
+            else "Оплачен"
+        ),
     }
 
 

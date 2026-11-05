@@ -36,6 +36,10 @@ RAID_ITEMS = f"{BOSSES}/raid2_items"
 NPC = f"{BUCKET}/npc"
 # Товар лавки мага
 MAGIC = f"{BUCKET}/magic"
+# Значки подписок: кристалл у PRO, корона у PREMIUM. В сообщениях
+# Телеграма вместо них идут эмодзи — картинку в строку с именем не
+# вставить, — а мини-апп показывает сами файлы
+SUBSCRIPTIONS = f"{BUCKET}/subscriptions"
 POTIONS = f"{BUCKET}/potions"
 # Карты районов города: по карте на район
 LOCATIONS = f"{BUCKET}/locations"
@@ -295,6 +299,7 @@ __all__ = [
     "ITEMS",
     "LOCATIONS",
     "MAGIC",
+    "SUBSCRIPTIONS",
     "NEW_INTERIORS",
     "NPC",
     "PDD",

@@ -2932,7 +2932,7 @@ async def _keys(db, player) -> dict:
     moment = now_ts()
     return {
         "keys": await at_hand(db, player, moment),
-        "limit": cars_allowed(player.is_pro(moment)),
+        "limit": cars_allowed(player.tier_rank(moment)),
     }
 
 

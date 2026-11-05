@@ -131,7 +131,15 @@ def progress(runs: int, seed: int) -> None:
             fights += 1
             if result.winner_id == 1:
                 wins += 1
-                hero.grant_exp(win_exp(a.damage_dealt, hero.level, hero.level))
+                hero.grant_exp(
+                    win_exp(
+                        a.damage_dealt,
+                        hero.level,
+                        hero.level,
+                        a.max_hp + b.max_hp,
+                        2,
+                    )
+                )
         fights_taken.append(fights)
         wins_taken.append(wins)
 

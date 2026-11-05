@@ -30,7 +30,8 @@ from bot.game.bank import (
     CARD_PRICE,
     CARD_YEAR_PRICE,
     CASH,
-    DISCOUNTS,
+    CARD_DISCOUNT,
+    DISCOUNT_PLACES,
     YEAR_SECONDS,
     card_works,
     discount_of,
@@ -43,6 +44,7 @@ from bot.game.bank import (
 from bot.game.classes import Stats
 from bot.game.health import now_ts
 from bot.game.locations import Service, get_location, where_to
+from bot.game.pro import PREMIUM_TIER, PRO_TIER
 from bot.models import Player
 from bot.webapp.server import create_app
 from tests.test_inventory import FakeBot
@@ -146,23 +148,38 @@ def test_what_is_not_a_number_is_refused(said):
 # ---------- скидка ----------
 
 
-def test_the_card_discounts_are_the_ones_the_bank_promised():
-    assert discount_of(Service.CLOTHES) == 10
-    assert discount_of(Service.FAN) == 10
-    assert discount_of(Service.JEWEL) == 10
-    assert discount_of(Service.WEAPONS) == 5
-    assert discount_of(Service.POTIONS) == 15
-    assert discount_of(Service.HEAL) == 10
-    assert discount_of(Service.INSURANCE) == 10
-    assert discount_of(Service.TRAIN) == 10
+def test_the_discount_is_one_number_in_every_place_it_works():
+    """Процент один на все места — меняет его только ступень подписки.
+
+    Прежде он зависел от места: пятнадцать в аптеке, пять у оружейника.
+    Бойцу приходилось держать в голове табличку на девять строк, чтобы
+    понять, стоит ли карта своих денег.
+    """
+    for service in DISCOUNT_PLACES:
+        assert discount_of(service) == CARD_DISCOUNT == 5, service.value
+        assert discount_of(service, PRO_TIER.rank) == 10, service.value
+        assert discount_of(service, PREMIUM_TIER.rank) == 20, service.value
 
 
-def test_where_the_bank_promised_nothing_there_is_no_discount():
-    """Мастерская, комиссионка и лавка мага — по полной цене."""
-    assert discount_of(Service.REPAIR) == 0
-    assert discount_of(Service.MARKET) == 0
-    assert discount_of(Service.PREMIUM) == 0
-    assert discount_of(None) == 0
+def test_the_subscription_lifts_the_discount_instead_of_adding_to_it():
+    """Лестница, а не сумма: с PRO выходит десять, а не пять плюс десять."""
+    assert PRO_TIER.discount == 10 and PREMIUM_TIER.discount == 20
+    assert discount_of(Service.POTIONS, PRO_TIER.rank) == PRO_TIER.discount
+    assert (
+        discount_of(Service.POTIONS, PREMIUM_TIER.rank) == PREMIUM_TIER.discount
+    )
+
+
+def test_where_the_bank_promised_nothing_no_subscription_helps():
+    """Мастерская, комиссионка и лавка мага — по полной цене всем.
+
+    Подписка поднимает процент там, где он есть, а не заводит его там,
+    где его нет: иначе «скидка 20% в городе» обещала бы скидку в
+    комиссионке, которой банк там не давал никогда.
+    """
+    for service in (Service.REPAIR, Service.MARKET, Service.PREMIUM, None):
+        for rank in (0, PRO_TIER.rank, PREMIUM_TIER.rank):
+            assert discount_of(service, rank) == 0, (service, rank)
 
 
 def test_every_discount_is_named_in_the_price_list_and_promised_on_the_card():
@@ -173,17 +190,27 @@ def test_every_discount_is_named_in_the_price_list_and_promised_on_the_card():
     разойтись с таблицей им легче лёгкого: завели скидку у ювелира —
     будьте добры сказать о ней там, где её ищут.
     """
-    from bot.game.bank import CARD_BENEFITS, DISCOUNTS
+    from bot.game.bank import CARD_BENEFITS
     from bot.webapp.bank import PLACE_TITLES, discounts_payload
 
-    for service in DISCOUNTS:
+    for service in DISCOUNT_PLACES:
         assert service in PLACE_TITLES, service.value
 
     rows = {row["title"]: row["percent"] for row in discounts_payload()}
-    assert rows["Ювелирный магазин"] == 10
-    assert rows["Магазин одежды"] == 10
+    assert len(rows) == len(DISCOUNT_PLACES)
+    assert set(rows.values()) == {CARD_DISCOUNT}
+    # Прайс собирается под бойца: подписчик видит свои проценты, а не чужие
+    rich = {
+        row["title"]: row["percent"]
+        for row in discounts_payload(PREMIUM_TIER.rank)
+    }
+    assert set(rich.values()) == {PREMIUM_TIER.discount}
+
     promised = " ".join(CARD_BENEFITS)
-    assert "украшени" in promised, "про скидку у ювелира на карточке молчат"
+    assert f"{CARD_DISCOUNT}%" in promised, "про саму скидку на карточке молчат"
+    assert "PRO" in promised and "PREMIUM" in promised, (
+        "про то, что подписка её поднимает, на карточке молчат"
+    )
 
 
 def test_the_discount_rounds_in_the_fighters_favour():
@@ -198,9 +225,22 @@ def test_the_discount_rounds_in_the_fighters_favour():
 
 def test_cash_never_gets_a_discount():
     assert price_for(100, CASH, Service.POTIONS) == 100
-    assert price_for(100, CARD, Service.POTIONS) == 85
-    assert saved_by_card(100, Service.POTIONS) == 15
+    assert price_for(100, CARD, Service.POTIONS) == 95
+    assert saved_by_card(100, Service.POTIONS) == 5
     assert saved_by_card(100, Service.REPAIR) == 0
+
+
+def test_cash_gets_no_discount_even_with_the_top_subscription():
+    """Скидка живёт на карте, и подписка её туда не переносит.
+
+    Боец с PREMIUM, заплативший наличными, платит столько же, сколько
+    новичок без счёта: иначе выбор кошелька перестал бы значить что-либо
+    и сам переключатель стало бы незачем показывать.
+    """
+    rank = PREMIUM_TIER.rank
+    assert price_for(100, CASH, Service.POTIONS, rank) == 100
+    assert price_for(100, CARD, Service.POTIONS, rank) == 80
+    assert saved_by_card(100, Service.POTIONS, rank) == 20
 
 
 def test_the_card_does_not_walk_the_market():
@@ -212,7 +252,7 @@ def test_the_card_does_not_walk_the_market():
 
 def test_every_discount_is_a_place_the_card_walks():
     """Скидка там, где картой нельзя заплатить, была бы обещанием впустую."""
-    for service in DISCOUNTS:
+    for service in DISCOUNT_PLACES:
         assert card_works(service), f"{service} не принимает карту"
 
 
@@ -536,8 +576,8 @@ async def test_the_price_shown_is_the_price_taken(db):
     price = player.price_here(100, NOW, Service.POTIONS)
     player.pay(price, NOW, Service.POTIONS)
 
-    assert price == 85
-    assert player.account_balance == 315
+    assert price == 95
+    assert player.account_balance == 305
 
 
 async def test_what_the_card_cannot_reach_is_not_discounted(db):
@@ -630,7 +670,7 @@ async def test_the_purse_is_chosen_from_any_counter_not_only_the_bank(client, db
 
 
 async def test_the_pharmacy_shows_and_takes_the_card_price(client, db):
-    """Пятнадцать процентов видно на витрине и ровно столько уходит."""
+    """Скидка видна на витрине, и ровно столько уходит со счёта."""
     player = await with_card(db, make_player(credits=1_000, location="pharmacy"))
     await deposit(db, player, 500)
 
@@ -642,8 +682,8 @@ async def test_the_pharmacy_shows_and_takes_the_card_price(client, db):
         if one["code"] == "heal_small"
     )
     assert shop["purse"]["purse"] == CARD
-    assert shop["purse"]["discount"] == 15
-    assert row["price"] == row["full_price"] * 85 // 100
+    assert shop["purse"]["discount"] == CARD_DISCOUNT
+    assert row["price"] == row["full_price"] * (100 - CARD_DISCOUNT) // 100
     assert row["off"] == row["full_price"] - row["price"]
 
     was = (await db.get_player(42)).account_balance
@@ -674,25 +714,49 @@ async def test_the_pouch_pays_the_full_price_at_the_same_counter(client, db):
     assert row["price"] == row["full_price"] and row["off"] == 0
 
 
-async def test_the_weapon_shop_takes_five_and_the_clothes_shop_ten(client, db):
+async def test_every_counter_takes_the_same_percent(client, db):
+    """Процент один на все прилавки: в оружейной столько же, сколько в одёжной.
+
+    Прежде он зависел от места — пять у оружейника, десять у портного, —
+    и бойцу приходилось помнить табличку. Теперь место решает только
+    одно: есть ли скидка вообще.
+    """
     from bot.game.bank import with_discount
     from bot.game.equipment import get_item
 
     player = await with_card(db, make_player(credits=5_000))
     await db.move_to_account(player.user_id, 3_000)
 
-    for place, service, percent in (
-        ("weapon_shop", Service.WEAPONS, 5),
-        ("clothes_shop", Service.CLOTHES, 10),
-    ):
+    for place in ("weapon_shop", "clothes_shop"):
         fresh = await db.get_player(42)
         fresh.location = place
         await db.save_player(fresh)
         shop = await (await client.get("/api/shop", headers=headers())).json()
-        assert shop["purse"]["discount"] == percent, place
+        assert shop["purse"]["discount"] == CARD_DISCOUNT, place
         row = shop["sections"][0]["items"][0]
         item = get_item(row["code"])
-        assert row["price"] == with_discount(item.price, percent), place
+        assert row["price"] == with_discount(item.price, CARD_DISCOUNT), place
+
+
+async def test_the_subscription_shows_its_own_percent_at_the_counter(client, db):
+    """Подписчик видит на витрине свои проценты, а не карточные пять."""
+    from bot.game.bank import with_discount
+    from bot.game.equipment import get_item
+    from bot.game.health import now_ts
+
+    player = await with_card(
+        db, make_player(credits=5_000, location="weapon_shop")
+    )
+    await db.move_to_account(player.user_id, 3_000)
+    fresh = await db.get_player(42)
+    fresh.premium_until = now_ts() + 30 * 24 * 60 * 60
+    await db.save_player(fresh)
+
+    shop = await (await client.get("/api/shop", headers=headers())).json()
+    assert shop["purse"]["discount"] == PREMIUM_TIER.discount
+    row = shop["sections"][0]["items"][0]
+    item = get_item(row["code"])
+    assert row["price"] == with_discount(item.price, PREMIUM_TIER.discount)
 
 
 async def test_the_market_counter_takes_the_card_but_gives_no_discount(db):
@@ -738,10 +802,10 @@ async def test_the_gym_takes_card_money_when_the_pouch_is_empty(db):
     await deposit(db, player, player.credits)
     assert (player.credits, player.account_balance) == (0, 100)
 
-    # Вторая тренировка в сутках: 50 по прайсу, 45 по карте
+    # Вторая тренировка в сутках: 50 по прайсу, меньше по карте
     day = day_payload(1, player, NOW)
 
-    assert day["price"] == 45
+    assert day["price"] == with_discount(50, CARD_DISCOUNT) == 47
     assert day["affordable"] is True, "отказали при деньгах на счету"
 
 
@@ -753,7 +817,7 @@ async def test_the_gym_still_refuses_when_neither_purse_has_enough(db):
 
     day = day_payload(1, player, NOW)
 
-    assert day["price"] == 45
+    assert day["price"] == with_discount(50, CARD_DISCOUNT)
     assert day["affordable"] is False
 
 
@@ -790,7 +854,9 @@ async def test_the_gym_charges_the_account_for_an_extra_training(db):
     # Следующее занятие — в другом слоте: в одном дважды не встают
     await join(db, player, monday + SLOT_SECONDS)
 
-    assert player.account_balance == was - 45, "деньги не ушли со счёта"
+    assert player.account_balance == was - with_discount(50, CARD_DISCOUNT), (
+        "деньги не ушли со счёта"
+    )
     assert player.credits == 0
 
 

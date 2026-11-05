@@ -36,6 +36,7 @@ def neighbour_payload(
         "nickname": one.nickname,
         "level": one.level,
         "pro": one.is_pro(),
+        "badge": one.badge,
         "fclass": {
             "code": one.fclass.code,
             "title": one.fclass.title,

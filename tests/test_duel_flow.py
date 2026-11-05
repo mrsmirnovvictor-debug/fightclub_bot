@@ -23,6 +23,7 @@ from bot.game.economy import (
     MICRO_UPS_PER_LEVEL,
     RATING_START,
     UP_CREDITS,
+    exp_at_up,
     exp_to_next_level,
     win_exp,
 )
@@ -626,18 +627,36 @@ async def test_only_the_winner_gets_exp_and_the_ring_pays_no_credits(bot, db):
     assert winner.rating - RATING_START == RATING_START - loser.rating
 
 
-async def test_exp_depends_on_damage_dealt(bot, db):
-    """Крепкий соперник приносит больше опыта, чем хлипкий."""
+async def test_exp_depends_on_how_tough_the_opponent_was(bot, db):
+    """Прибавку за урон в дуэли даёт запас здоровья соперника, а не удар.
+
+    Победа означает, что боец снял с соперника все его ХП, поэтому
+    отношение упирается в сами ХП: пять процентов сверху достаются тому,
+    чей соперник был крепче, и ничего — тому, кто бил слабейшего. Сколько
+    раз при этом махнули рукой, значения не имеет.
+    """
     await db.save_player(make_player(1, "Тайлер", "warrior"))
     fighter = Fighter.from_player(await db.get_player(1))
-    fighter.damage_dealt = 40
-    weak = win_exp(fighter.damage_dealt, 1, 1)
-    fighter.damage_dealt = 120
-    strong = win_exp(fighter.damage_dealt, 1, 1)
-    assert strong > weak
+    mine = fighter.max_hp
 
-    # и уровень соперника тоже влияет
-    assert win_exp(60, 1, 5) > win_exp(60, 1, 1) > win_exp(60, 5, 1)
+    # Соперник слабее — ровно ставка, даже если урона насыпали вдвое
+    assert win_exp(mine * 2, 1, 1, mine + mine // 2, 2) == win_exp(
+        mine, 1, 1, mine + mine // 2, 2
+    )
+    # Соперник крепче — прибавка, но не больше пяти процентов
+    tough = win_exp(mine * 2, 1, 1, mine + mine * 2, 2)
+    assert tough > win_exp(mine, 1, 1, mine + mine, 2)
+
+
+async def test_the_rate_follows_the_older_of_the_two(bot, db):
+    """Ставка берётся по старшему, но не ниже своей и не выше плюс двух."""
+    # Соперник старше — платят по его ставке, пока дотягиваемся
+    assert win_exp(60, 1, 3, 200, 2) > win_exp(60, 1, 1, 200, 2)
+    # Дальше двух ступеней ставка не растёт
+    assert win_exp(60, 1, 14, 200, 2) == win_exp(60, 1, 3, 200, 2)
+    # А над младшим платят по своей, а не по его: наказывать за вызов
+    # слабого не за что, но и приплачивать не за что тоже
+    assert win_exp(60, 5, 1, 200, 2) == win_exp(60, 5, 5, 200, 2)
 
 
 async def test_a_draw_leaves_the_rating_where_it_was(bot, db):
@@ -667,13 +686,21 @@ async def test_a_draw_leaves_the_rating_where_it_was(bot, db):
 
 
 async def test_repeat_fights_pay_less(bot, db):
-    """Второй бой той же пары за сутки приносит половину, третий — пятую часть."""
+    """Повторные бои той же пары за сутки: 100%, 80%, 60% и дальше 50%.
+
+    Прежде со второго боя срезали вдвое, а с третьего отдавали пятую
+    часть — то есть качаться вдвоём было нельзя вовсе. Теперь спуск
+    плавный, и дно у него на половине: фарм одного соперника невыгоден,
+    но и обычный вечер с одним спарринг-партнёром не обнуляется.
+    """
+    from bot.game.economy import REPEAT_SHARES
+
     service = make_service(bot, db)
     await db.save_player(make_player(1, "Тайлер", "warrior"))
     await db.save_player(make_player(2, "Марла", "warrior"))
 
     gains = []
-    for _ in range(3):
+    for _ in range(len(REPEAT_SHARES) + 1):
         await heal_everyone(db, 1, 2)  # между боями бойцы успевают отлежаться
         before = await db.get_player(1)
         session = await service.start_duel(
@@ -688,10 +715,13 @@ async def test_repeat_fights_pay_less(bot, db):
         after = await db.get_player(1)
         gains.append(after.total_exp - before.total_exp)
 
-    assert (await db.get_player(1)).wins == 3
-    assert gains[0] > gains[1] > gains[2]
-    assert gains[1] == pytest.approx(gains[0] * 0.5, abs=2)
-    assert gains[2] == pytest.approx(gains[0] * 0.2, abs=2)
+    assert (await db.get_player(1)).wins == len(gains)
+    # Ставка между боями не меняется — значит, доли видны прямо в опыте
+    full = gains[0]
+    for index, share in enumerate(REPEAT_SHARES):
+        assert gains[index] == pytest.approx(full * share, abs=2), index
+    # Пятый бой стоит столько же, сколько четвёртый: ниже дна не падают
+    assert gains[-1] == gains[len(REPEAT_SHARES) - 1]
 
 
 async def test_rewards_block_is_shown_in_the_thread(bot, db):
@@ -1127,7 +1157,11 @@ async def test_the_ring_sends_the_winner_to_the_card_and_not_to_a_command(bot, d
     from bot.game.narrator import upgrade_hint
 
     service = make_service(bot, db)
-    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    # До первого апа боец не дотягивает одного опыта: любая победа его
+    # даст, и в итогах появится строка про очко
+    almost = make_player(1, "Тайлер", "warrior")
+    almost.exp = exp_at_up(1, 1) - 1
+    await db.save_player(almost)
     await db.save_player(make_player(2, "Марла", "rogue"))
 
     was = (links.bot_username, links.miniapp_name, links.main_app)

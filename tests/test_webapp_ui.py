@@ -2989,8 +2989,8 @@ async def test_the_mage_sells_for_stars_and_never_for_credits(server):
         await browser.close()
 
 
-async def test_the_pro_card_always_leads_the_mage_counter(server):
-    """Подписка стоит первой, показывает акцию и забирается одной кнопкой."""
+async def test_both_subscription_cards_lead_the_mage_counter(server):
+    """Ступени стоят первыми, младшая сверху, и акция забирается кнопкой."""
     player = make_player()
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     magic = build_magic(player)
@@ -3026,27 +3026,41 @@ async def test_the_pro_card_always_leads_the_mage_counter(server):
         await open_screen(page, "magic")
         await page.wait_for_selector("#pro-card .thing")
 
-        pro = page.locator("#pro-card .thing")
-        text = await pro.inner_text()
-        assert "Подписка PRO" in text
-        # Три строки и ничего больше: ни вещей, ни образа, ни значка
-        assert "150% опыта за бой" in text
-        assert "Аналитик-помощник во время боя" in text
-        assert "Страховка жизни и здоровья" in text
-        assert "Клинок" not in text and "Образ" not in text
-        assert "Значок" not in text
+        cards = page.locator("#pro-card .thing")
+        assert await cards.count() == 2, "ступеней на прилавке должно быть две"
 
-        # подписка идёт раньше любого товара прилавка
-        first = page.locator("#magic .thing").first
-        assert "Подписка PRO" in await first.inner_text()
+        junior = cards.nth(0)
+        senior = cards.nth(1)
+        first = await junior.inner_text()
+        second = await senior.inner_text()
+
+        assert "Подписка PRO" in first and "Подписка PREMIUM" in second
+        assert "150% опыта за бой" in first
+        assert "200% опыта за бой" in second
+        assert "Аналитик-помощник во время боя" in first
+        # Полис обещает только старшая: у младшей его нет
+        assert "Страховка жизни и здоровья" not in first
+        assert "Страховка жизни и здоровья" in second
+        # Ни вещей, ни образа, ни значка — ни на одной
+        for text in (first, second):
+            assert "Клинок" not in text and "Образ" not in text
+            assert "Значок" not in text
+        # Цена у каждой своя
+        assert "500 ⭐" in second
+
+        # Подписки идут раньше любого товара прилавка
+        head = page.locator("#magic .thing").first
+        assert "Подписка PRO" in await head.inner_text()
 
         if magic["pro"]["promo"]:
-            assert "Бесплатно · 7 дней" in text
-            assert "До 1 сентября" in text
-            assert await pro.locator(".btn").inner_text() == "Забрать бесплатно"
+            assert "Бесплатно · 7 дней" in first
+            assert "До 1 сентября" in first
+            assert (
+                await junior.locator(".btn").inner_text() == "Забрать бесплатно"
+            )
 
             page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
-            await pro.locator(".btn").click()
+            await junior.locator(".btn").click()
             await page.wait_for_timeout(200)
             assert taken == ["{}"]
         await browser.close()
@@ -8812,19 +8826,19 @@ async def test_a_subscriber_is_told_the_subscription_holds_his_policy(server):
         policy=make_policy(by_pro=True),
         gives=list(PRO_BENEFITS),
         action="Продлить на месяц",
-        why="Полис держит подписка — до её последнего часа. Купленный месяц "
+        why="Полис держит PREMIUM — до её последнего часа. Купленный месяц "
             "ляжет сверху и останется, когда подписка кончится.",
     )
     async with async_playwright() as pw:
         browser, page = await open_insurance(pw, server, state)
 
-        assert "держит подписка" in await page.locator("#insurance-note").inner_text()
-        assert "держит подписка" in await page.locator(".policy-buy-why").inner_text()
+        assert "держит PREMIUM" in await page.locator("#insurance-note").inner_text()
+        assert "держит PREMIUM" in await page.locator(".policy-buy-why").inner_text()
         # Цена та же, что у всех: платят за время после подписки
         assert "300 💰" in await page.locator(".policy-buy-price").inner_text()
         # У бланка подписки переключателя нет — есть строка о том, чем он жив
         assert await page.locator(".paper-renew").count() == 0
-        assert "Полис держит подписка PRO" in await page.locator(
+        assert "Полис держит подписка PREMIUM" in await page.locator(
             ".paper-held"
         ).inner_text()
         await browser.close()

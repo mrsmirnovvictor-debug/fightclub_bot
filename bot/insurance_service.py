@@ -178,7 +178,7 @@ async def cover_by_pro(
     раньше этого правила, и тех, кому её продлили мимо магазина.
     """
     moment = now_ts() if now is None else now
-    cover = pro_cover(player.policy, player.pro_until, moment)
+    cover = pro_cover(player.policy, player.policy_cover_until(moment), moment)
     if cover is None:
         return ""
 

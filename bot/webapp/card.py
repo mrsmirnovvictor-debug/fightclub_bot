@@ -54,7 +54,7 @@ from bot.game.locations import Service, get_location
 from bot.game.looks import DEFAULT_LOOK, get_look
 from bot.game import pro
 from bot.game.presence import is_online, plural, presence_text
-from bot.game.pro import PRO_BADGE, current_offer
+from bot.game.pro import current_offer
 from bot.game.potions import (
     POTIONS,
     effects_bonus,
@@ -665,24 +665,43 @@ def relic_payload(player: Player, item: Item, owned: int) -> dict:
 
 
 def pro_payload(
-    player: Player, now: int | None = None, promo_claimed: bool = False
+    player: Player,
+    now: int | None = None,
+    promo_claimed: bool = False,
+    tier: "pro.Tier | None" = None,
 ) -> dict:
-    """Карточка подписки: она всегда стоит первой на элитном прилавке.
+    """Карточка одной ступени подписки: они стоят первыми на прилавке.
 
     `promo_claimed` — забирал ли боец бесплатную неделю. Она даётся один
     раз, поэтому кнопка после этого всегда ведёт в счёт: иначе «продлить
-    бесплатно» тыкается до бесконечности.
+    бесплатно» тыкается до бесконечности. Бывает она только у PRO.
+
+    Без ступени собирается карточка PRO: так зовут из тех мест, где
+    ступень ещё не завезли.
     """
     moment = int(time.time()) if now is None else now
-    offer = current_offer()
-    paid = pro.paid_offer()
+    one = tier or pro.PRO_TIER
+    offer = current_offer(tier=one)
+    paid = pro.paid_offer(one)
     free = offer.promo and not promo_claimed
-    left = player.pro_left(moment)
+    # Сколько осталось — у этой ступени, а не у старшей: на карточке PRO
+    # должен стоять срок PRO, даже если поверх неё взяли PREMIUM
+    left = max(
+        0,
+        (
+            player.premium_until
+            if one.code == pro.PREMIUM
+            else player.pro_until
+        )
+        - moment,
+    )
     return {
-        "title": pro.TITLE,
-        "emoji": pro.EMOJI,
-        "image": pro.IMAGE,
-        "benefits": list(pro.BENEFITS),
+        "code": one.code,
+        "title": one.title,
+        "emoji": one.emoji,
+        "badge": one.badge,
+        "image": one.image,
+        "benefits": list(one.benefits),
         "note": pro.NOTE,
         # Что предлагают этому бойцу: бесплатная неделя или обычный месяц
         "stars": 0 if free else paid.stars,
@@ -712,7 +731,14 @@ def build_magic(
     return {
         "credits": player.credits,
         "level": player.level,
+        # Карточка PRO осталась отдельным ключом: по нему её берут
+        # страницы, которые про вторую ступень ещё не знают
         "pro": pro_payload(player, now, promo_claimed),
+        # Обе ступени подряд, младшая первой: выбор между двумя ценами —
+        # это и есть то, зачем боец открыл прилавок
+        "tiers": [
+            pro_payload(player, now, promo_claimed, one) for one in pro.TIERS
+        ],
         "items": [
             relic_payload(player, item, mine.get(item.code, 0))
             for item in MAGIC_ITEMS
@@ -975,6 +1001,9 @@ def fighter_row(
         "nickname": player.nickname,
         "level": player.level,
         "pro": player.is_pro(),
+        # Сам значок, а не только признак: у ступеней он разный, и
+        # признаком их не различить
+        "badge": player.badge,
         "is_self": player.user_id == viewer_id,
         "fclass": {
             "code": player.fclass.code,
@@ -1102,11 +1131,19 @@ def build_card(
         # Служба: значок у ника рядом со знаком клана. Носить их разом
         # нельзя — служивого в семью не пускают, мафиози на службу не берут
         "service": service_badge(player),
+        # Подписка: ступень, её значок и сколько ей осталось. Картинка
+        # значка идёт рядом с эмодзи — страница ставит её, где есть место,
+        # а эмодзи остаётся для строк, куда картинку не вставить
         "pro": {
             "active": player.is_pro(moment),
             "seconds_left": player.pro_left(moment),
             "left_text": spell_duration(player.pro_left(moment)),
-            "badge": PRO_BADGE,
+            "badge": player.badge,
+            "tier": (player.tier(moment).code if player.tier(moment) else ""),
+            "tier_title": (
+                player.tier(moment).title if player.tier(moment) else ""
+            ),
+            "picture": (player.tier(moment).image if player.tier(moment) else ""),
         },
         "fclass": {
             "code": fclass.code,

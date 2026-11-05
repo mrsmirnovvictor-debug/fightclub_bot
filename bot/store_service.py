@@ -24,9 +24,13 @@ from aiogram.types import LabeledPrice, SuccessfulPayment
 from bot.config import Config
 from bot.database import Database
 from bot.game.equipment import MAGIC_ITEMS, Item, OwnedItem, get_item
-from bot.game.pro import BENEFITS, LEGACY_ITEM, LEGACY_LOOK
-from bot.game.pro import EMOJI as PRO_EMOJI
-from bot.game.pro import TITLE as PRO_TITLE
+from bot.game.pro import (
+    LEGACY_ITEM,
+    LEGACY_LOOK,
+    PREMIUM,
+    PRO_TIER,
+    get_tier,
+)
 from bot.game.pro import ProOffer, paid_offer
 from bot.game.store import (
     PACK_KIND,
@@ -71,7 +75,7 @@ class Grant:
         if isinstance(self.goods, CreditPack):
             return self.goods.label
         if isinstance(self.goods, ProOffer):
-            return f"{PRO_EMOJI} {PRO_TITLE}"
+            return f"{self.goods.tier.emoji} {self.goods.tier.title}"
         return f"{self.goods.emoji} {self.goods.title}"
 
     @property
@@ -117,15 +121,15 @@ class StoreService:
         if isinstance(goods, CreditPack):
             return goods.label
         if isinstance(goods, ProOffer):
-            return f"{PRO_EMOJI} {PRO_TITLE}"
+            return f"{goods.tier.emoji} {goods.tier.title}"
         return f"{goods.emoji} {goods.title}"
 
     @staticmethod
     def description(goods: Goods) -> str:
         if isinstance(goods, ProOffer):
             return (
-                f"Подписка клуба на {goods.term_text}: "
-                + ", ".join(BENEFITS[:3]).lower()
+                f"{goods.tier.title} на {goods.term_text}: "
+                + ", ".join(goods.tier.benefits[:3]).lower()
                 + "."
             )
         if isinstance(goods, Item):
@@ -169,7 +173,10 @@ class StoreService:
             # За звёзды подписку берут на обычных условиях всегда, даже пока
             # идёт акция: акция — это разовый бесплатный вход, а не скидка на
             # продление. Счёта на ноль звёзд Telegram и не примет.
-            return paid_offer()
+            #
+            # Ступень читается из счёта. Чего не узнали — то PRO: так
+            # приходят счета, выставленные до появления второй ступени
+            return paid_offer(get_tier(code) or PRO_TIER)
         raise StoreError("Этой пачки больше нет в кассе.")
 
     async def grant(self, user_id: int, payment: SuccessfulPayment) -> Grant:
@@ -187,7 +194,9 @@ class StoreService:
         if isinstance(goods, CreditPack):
             code, kind = goods.code, "credits"
         elif isinstance(goods, ProOffer):
-            code, kind = PRO_KIND, PRO_KIND
+            # В журнал ложится код ступени: по нему возврат знает, какую
+            # из двух подписок забирать обратно
+            code, kind = goods.tier.code, PRO_KIND
         else:
             code, kind = goods.code, RELIC_KIND
         fresh = await self.db.add_purchase(
@@ -250,7 +259,7 @@ class StoreService:
         if relic is not None:
             await self.db.delete_gear(relic.id)
         elif is_pro:
-            await self._revoke_pro(player)
+            await self._revoke_pro(player, str(row["code"]))
         else:
             player.grant_credits(-row["credits"])
             await self.db.save_player(player)
@@ -258,14 +267,21 @@ class StoreService:
         logger.info("Возврат: боец %s, платёж %s", user_id, row["charge_id"])
         return row
 
-    async def _revoke_pro(self, player) -> None:
+    async def _revoke_pro(self, player, code: str = "") -> None:
         """Снять подписку целиком: срок и старую выдачу.
+
+        Какую из двух — сказано в журнале покупки. Снимаем только её:
+        боец мог держать обе, и возврат звёзд за PREMIUM не повод
+        забирать оплаченный месяц PRO.
 
         Клинка с образом подписка больше не выдаёт, а вот вернуть их при
         возврате звёзд за старую покупку по-прежнему нужно: вечное вечно у
         того, кто за него заплатил. У кого их нет, строки ничего не делают.
         """
-        player.pro_until = 0
+        if code == PREMIUM:
+            player.premium_until = 0
+        else:
+            player.pro_until = 0
         if player.look == LEGACY_LOOK:
             player.look = ""
         blade = next(
