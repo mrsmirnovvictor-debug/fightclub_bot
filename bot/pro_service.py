@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from bot.database import Database
 from bot.game.health import now_ts
 from bot.game.pro import PREMIUM, ProOffer, promo_is_on, promo_offer
+from bot.game.promocodes import PromoCode, find as find_code, known as code_known
+from bot.game.promocodes import normalize as normalize_code
 from bot.gym_service import cover_pass
 from bot.insurance_service import cover_by_pro
 from bot.models import Player
@@ -144,11 +146,64 @@ async def claim_free_pro(
     return await grant_pro(db, player, promo_offer(), now)
 
 
+def code_claim_id(code: str, user_id: int) -> str:
+    """Ключ применённого кода в журнале. Он же и защита от второго раза."""
+    return f"promo:code:{normalize_code(code)}:{user_id}"
+
+
+async def code_taken(db: Database, code: str, user_id: int) -> bool:
+    """Применял ли боец этот код. Один раз на бойца, навсегда."""
+    return await db.get_purchase(code_claim_id(code, user_id)) is not None
+
+
+async def redeem_code(
+    db: Database, player: Player, typed: str, now: int | None = None
+) -> tuple[PromoCode, ProGrant]:
+    """Применить промокод. Возвращает сам код и то, что он выдал.
+
+    Проверку «не применял ли уже» делает не чтение перед записью, а сама
+    запись: ключ в журнале уникален, и два быстрых нажатия подряд не
+    проскочат. Читать сперва и писать потом значило бы оставить щель
+    ровно в тот миг, когда она дороже всего.
+
+    Действует ли код, решает сервер: со страницы ни слова, ни даты не
+    подделать.
+    """
+    wanted = normalize_code(typed)
+    if not wanted:
+        raise ProError("Введи промокод — поле пустое.")
+
+    code = find_code(typed)
+    if code is None:
+        if code_known(typed):
+            raise ProError("Этот промокод больше не действует.")
+        raise ProError("Такого промокода нет. Проверь, как он написан.")
+
+    first = await db.add_purchase(
+        user_id=player.user_id,
+        code=code.tier,
+        stars=0,
+        credits=0,
+        charge_id=code_claim_id(code.code, player.user_id),
+        # Подарок, а не покупка: в историю трат не идёт и возврату не
+        # подлежит — возвращать нечего
+        kind="gift",
+    )
+    if not first:
+        raise ProError(
+            "Этот промокод ты уже применял — он даётся один раз на бойца."
+        )
+    return code, await grant_pro(db, player, code.offer(), now)
+
+
 __all__ = [
     "ProError",
     "ProGrant",
     "claim_free_pro",
+    "code_claim_id",
+    "code_taken",
     "grant_pro",
     "promo_claim_id",
     "promo_taken",
+    "redeem_code",
 ]

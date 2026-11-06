@@ -1,8 +1,14 @@
 """Команды владельца клуба: то, что делается руками и в обход правил.
 
-Их две — выдать подписку и начислить кредиты. Больше сюда заводить не
-стоит: уровень, характеристики, вещи боец добывает сам, и чем короче
-этот список, тем меньше в клубе того, что нельзя объяснить правилами.
+Их три, и две из них про одно — выдать подписку и начислить кредиты.
+Больше таких заводить не стоит: уровень, характеристики, вещи боец
+добывает сам, и чем короче этот список, тем меньше в клубе того, что
+нельзя объяснить правилами.
+
+Третья стои́т особняком. `/wipe` обнуляет город целиком — это не
+подарок кому-то одному, а начало нового сезона, и к игре она вообще не
+относится. Как она устроена и почему так осторожно, написано у неё же,
+перед командой.
 
 Кредиты в этом списке — не подарок, а инструмент: ими возвращают
 потерянное на чужой ошибке и платят за то, чего в игре ещё нет
@@ -31,9 +37,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from pathlib import Path
 
-from aiogram import F, Router
+from aiogram import Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
@@ -276,14 +284,141 @@ async def cmd_give_credits(
     )
 
 
+# ---------- обнуление города ----------
+#
+# Сезон начинают с чистого листа: бойцов нет, кланов нет, мэра нет,
+# машин на улицах нет. Это единственное необратимое действие во всём
+# клубе, поэтому оно обставлено тремя заслонами разом.
+#
+# 1. Фраза, а не кнопка. Кнопку жмут не глядя, фразу набирают, и
+#    набрать её случайно нельзя. Она же не даёт команде сработать от
+#    пересланного сообщения или от истории команд.
+# 2. Копия до, а не после. Копия снимается первой, и если снять её не
+#    вышло — не стирается ничего. Обнуление без копии — это не
+#    обнуление, а потеря.
+# 3. Перезапуск после. В памяти бота живут идущие бои, столы казино и
+#    собранные отряды, и все они знают бойцов, которых больше нет.
+#    Доигранный после стирания бой записал бы их обратно — и город
+#    начался бы не с чистого листа, а с призраков.
+
+WIPE_WORD = "СТЕРЕТЬ ВСЁ"
+
+WIPE_HOW_TO = (
+    "Обнуление города стирает всех бойцов, кланы, деньги, машины, "
+    "подписки и дела — всё, что игроки нажили. Контент (локации, вещи, "
+    "приёмы) живёт в коде и не пострадает.\n\n"
+    "Перед стиранием снимается копия базы рядом с ней — на том же диске.\n\n"
+    f"Если решение принято: <code>/wipe {WIPE_WORD}</code>"
+)
+
+# Сколько ждать перед остановкой: ответ владельцу должен успеть уйти
+RESTART_DELAY = 3.0
+
+
+def backup_name(path: str, now: int | None = None) -> str:
+    """Имя файла копии: рядом с базой, с часом снятия в названии.
+
+    Рядом, а не в отдельном каталоге: на хостинге подключённый диск
+    один, и копия, положенная мимо него, исчезнет вместе с контейнером.
+    """
+    moment = now_ts() if now is None else now
+    stamp = club_moment(moment, "%Y%m%d-%H%M%S")
+    base = Path(path)
+    return str(base.with_name(f"{base.stem}-before-wipe-{stamp}{base.suffix}"))
+
+
+async def restart_after(dispatcher, delay: float = RESTART_DELAY) -> None:
+    """Остановить опрос — хостинг поднимет бота заново.
+
+    Ждём, потому что `stop_polling` ждёт окончания всех обработчиков, а
+    мы сами и есть такой обработчик: позвать её отсюда напрямую значит
+    дождаться самого себя. Поэтому отдельной задачей и с паузой — чтобы
+    ответ владельцу успел уйти.
+    """
+    await asyncio.sleep(delay)
+    try:
+        await dispatcher.stop_polling()
+    except RuntimeError:  # pragma: no cover - опрос уже не идёт
+        logger.warning("Опрос уже остановлен — перезапускать нечего")
+
+
+def schedule_restart(dispatcher) -> asyncio.Task:
+    """Поставить перезапуск в очередь. Отдельной дверью — чтобы проверять.
+
+    Проверке нужно знать, что перезапуск назначен, и не нужно, чтобы он
+    случился: на стенде опроса нет, а висящая задача переживёт тест.
+    """
+    return asyncio.create_task(restart_after(dispatcher))
+
+
+@router.message(Command("wipe"))
+async def cmd_wipe(
+    message: Message,
+    command: CommandObject,
+    db: Database,
+    config: Config,
+    dispatcher: Dispatcher,
+) -> None:
+    """Обнулить город целиком. Только владельцу и только по фразе."""
+    if not is_owner(message.from_user.id, config):
+        if not config.owner_id:
+            logger.warning("OWNER_ID не задан: /wipe не работает ни у кого")
+        return
+
+    said = " ".join((command.args or "").split()).upper()
+    if said != WIPE_WORD:
+        players = len(await db.all_players())
+        tables = await db.game_tables()
+        await message.answer(
+            f"🔥 <b>Обнуление города</b>\n\n"
+            f"Сейчас в клубе бойцов: <b>{players}</b>, "
+            f"таблиц с игрой: <b>{len(tables)}</b>.\n\n"
+            + WIPE_HOW_TO
+        )
+        return
+
+    where = backup_name(db.path)
+    try:
+        size = await db.backup_to(where)
+    except Exception as error:
+        logger.exception("Копия перед обнулением не снялась")
+        await message.answer(
+            "❌ Копию базы снять не вышло, поэтому ничего не стёрто.\n"
+            f"<code>{esc(str(error))}</code>"
+        )
+        return
+
+    was = await db.wipe_game()
+    logger.warning(
+        "Владелец %s обнулил город: копия в %s", message.from_user.id, where
+    )
+    await message.answer(
+        "🔥 <b>Город обнулён.</b>\n"
+        f"Стёрто строк: <b>{sum(was.values())}</b> "
+        f"в {len(was)} таблицах.\n"
+        f"Копия базы: <code>{esc(where)}</code> "
+        f"({size // 1024} КБ).\n\n"
+        "Бот сейчас перезапустится — в памяти остались бои и столы с "
+        "бойцами, которых больше нет. Через полминуты пиши /start."
+    )
+    schedule_restart(dispatcher)
+
+
 __all__ = [
     "MAX_GIFT_DAYS",
     "MONEY_HOW_TO",
     "PRO_HOW_TO",
+    "RESTART_DELAY",
+    "WIPE_HOW_TO",
+    "WIPE_WORD",
+    "backup_name",
     "cmd_give_credits",
     "cmd_give_pro",
+    "cmd_wipe",
     "is_owner",
     "read_purse",
     "read_target",
+    "restart_after",
+    "schedule_restart",
     "router",
 ]

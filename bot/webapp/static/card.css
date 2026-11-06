@@ -3338,6 +3338,39 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .field-input:disabled { opacity: 0.5; }
 
+/* ---------- промокод в «Элите» ----------
+
+   Поле ничего не подсказывает и ничего не обещает: код называют снаружи
+   игры — в объявлении, в рассылке, — и по прилавку его не подобрать.
+   Поэтому и стоит оно под подписками, а не над ними: это не прилавок,
+   а дверь для тех, кому ключ уже дали */
+.promo {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.promo-head { margin: 0; font-size: 15px; font-weight: 700; }
+.promo-note {
+  margin: 4px 0 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+/* Ответ на попытку: отказ красным, удача зелёной — с одного взгляда
+   видно, сработал код или нет, не вчитываясь в строку */
+.promo-note.bad { color: var(--hp-red); }
+.promo-note.good { color: var(--hp-green); }
+/* Поле и кнопка в строку, на узком экране — в столбик */
+.promo-row { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+.promo-row .field-input {
+  flex: 1 1 150px;
+  min-width: 0;
+  text-transform: uppercase;
+}
+.promo-row .btn { flex: 0 0 auto; min-width: 110px; }
+
 /* Список и «Начать» в одну строку: кнопка по содержимому, список — всё
    остальное. min-width держит его от распирания на узком экране. */
 .raid-open-row { display: flex; gap: 8px; align-items: stretch; }

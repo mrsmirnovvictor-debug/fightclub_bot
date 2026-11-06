@@ -153,6 +153,23 @@
     <h1 class="screen-title">💎 Магазин «Элита»</h1>
     <p class="screen-note" id="magic-note"></p>
     <div id="pro-card"></div>
+
+    <!-- Промокод: слово, которое превращается в подписку. Поле стоит
+         пустым и ничего не подсказывает — код называют снаружи игры, и
+         подбирать его по прилавку нельзя -->
+    <section class="promo" id="promo-box">
+      <h2 class="promo-head">🎟 Промокод</h2>
+      <p class="promo-note" id="promo-note">
+        Получил код — введи его здесь. Один код на бойца.
+      </p>
+      <div class="promo-row">
+        <input class="field-input" id="promo-input" type="text"
+               maxlength="32" autocomplete="off" autocapitalize="characters"
+               spellcheck="false" placeholder="Например, CLUB2026">
+        <button type="button" class="btn" id="promo-go">Применить</button>
+      </div>
+    </section>
+
     <div id="magic-list"></div>
     <div class="soon hidden" id="magic-empty">
       <div class="soon-emoji">💎</div>

@@ -318,25 +318,27 @@ def test_the_boosted_gear_is_what_the_owner_asked_for():
     assert (shirt.strength, shirt.agility, shirt.intuition, shirt.hp) == (3, 3, 3, 60)
 
 
-def test_the_boosted_gear_never_reaches_the_counter():
-    """Стендовые вещи — награды: их не купить и в эталонный комплект не взять.
+def test_the_reward_gear_never_reaches_the_counter():
+    """Наградные вещи не купить и в эталонный комплект не взять.
 
-    Это и есть шов между стендом и балансом: числа выше потолка живут
-    только в руках тестовых бойцов, а витрину держит потолок.
+    Это и есть шов между наградой и балансом: числа выше потолка не
+    должны попадать ни на прилавок, ни в расчёт, по которому меряют
+    силу класса. Список берём из самого каталога (`reward=True`), а не
+    из отдельного перечня: перечень разошёлся бы с каталогом молча.
     """
-    from bot.game.equipment import SHOWCASE, get_item
+    from bot.game.equipment import CATALOGUE, SHOWCASE
     from bot.game.reference import best_kit
-    from bot.seed import GRANTED_GEAR
+
+    rewards = {code for code, item in CATALOGUE.items() if item.reward}
+    assert rewards, "наградных вещей в каталоге не осталось вовсе"
 
     shelf = {item.code for item in SHOWCASE}
-    for code in GRANTED_GEAR:
-        assert get_item(code).reward, code
-        assert code not in shelf, code
+    assert not rewards & shelf, sorted(rewards & shelf)
 
     for fclass in FIGHTER_CLASSES.values():
         for level in range(1, 11):
             kit = {item.code for item in best_kit(fclass, level).values()}
-            assert not kit & set(GRANTED_GEAR), (fclass.code, level)
+            assert not kit & rewards, (fclass.code, sorted(kit & rewards))
 
 
 # ---------- лестницы: чем выше уровень, тем крупнее числа ----------

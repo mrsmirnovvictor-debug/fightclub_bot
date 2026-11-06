@@ -3084,6 +3084,58 @@ async function takePro(pro) {
   }
 }
 
+// ---------- промокод ----------
+//
+// Поле стоит пустым и ничего не подсказывает: код называют снаружи
+// игры, и подбирать его перебором по прилавку нельзя. Что код даёт и
+// действует ли он — решает сервер; страница только относит слово.
+
+const PROMO_HINT = "Получил код — введи его здесь. Один код на бойца.";
+
+function promoSay(text, kind) {
+  const note = el("promo-note");
+  if (!note) return;
+  note.textContent = text;
+  note.classList.toggle("bad", kind === "bad");
+  note.classList.toggle("good", kind === "good");
+}
+
+async function sendPromo() {
+  if (busy) return;
+  const field = el("promo-input");
+  const typed = (field && field.value) || "";
+  if (!typed.trim()) {
+    promoSay("Введи промокод — поле пустое.", "bad");
+    return;
+  }
+  busy = true;
+  if (field) field.disabled = true;
+  try {
+    const data = await post("api/promo", { code: typed });
+    render(data.card, true);
+    renderMagic(data.magic);
+    haptic((feedback) => feedback.notificationOccurred("success"));
+    const got = data.promo;
+    if (field) field.value = "";
+    promoSay(
+      (got.renewed ? "Код принят: подписка продлена на " : "Код принят: ")
+      + got.term + " " + got.title + ".",
+      "good"
+    );
+    popup(
+      "🎟 " + got.code,
+      (got.renewed ? got.title + " продлён на " : got.title + " на ")
+      + got.term + "."
+    );
+  } catch (error) {
+    promoSay(error.message, "bad");
+    haptic((feedback) => feedback.notificationOccurred("error"));
+  } finally {
+    busy = false;
+    if (field) field.disabled = false;
+  }
+}
+
 async function loadMagic() {
   try {
     const response = await fetch("api/magic", {
@@ -19874,6 +19926,18 @@ TABS.forEach((tab) => {
   });
 });
 el("topup-back").addEventListener("click", () => showTab(lastTab));
+
+// Промокод в «Элите»: кнопка и Enter в поле — одно и то же действие.
+// Подсказку возвращаем, как только боец начал править код: прежний
+// отказ про прежнее слово рядом с новым читается как отказ про новое
+el("promo-go").addEventListener("click", () => sendPromo());
+el("promo-input").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    sendPromo();
+  }
+});
+el("promo-input").addEventListener("input", () => promoSay(PROMO_HINT, ""));
 
 // Мастерская: слоты открывают выбор, кнопка запускает модификацию
 el("master-item").addEventListener("click", () => {

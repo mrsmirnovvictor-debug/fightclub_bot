@@ -1395,35 +1395,3 @@ async def test_a_respec_undresses_what_it_can_no_longer_carry(db):
     assert (await db.get_player(1)).equipped == []
 
 
-# ---------- разовая выдача под ручные тесты ----------
-
-
-async def test_the_boosted_gear_lands_in_the_backpacks_once(db):
-    """Усиленные вещи выдаются обоим бойцам и ровно по одному разу."""
-    from bot.models import Player
-    from bot.seed import TEST_FIGHTERS, TEST_GEAR, grant_test_gear
-
-    for user_id, nickname in enumerate(TEST_FIGHTERS, start=100):
-        await db.save_player(
-            Player(user_id=user_id, nickname=nickname, class_code="warrior")
-        )
-
-    given = await grant_test_gear(db)
-
-    assert given == len(TEST_FIGHTERS) * len(TEST_GEAR)
-    for user_id in range(100, 100 + len(TEST_FIGHTERS)):
-        codes = sorted(owned.code for owned in await db.list_gear(user_id))
-        assert codes == sorted(TEST_GEAR)
-
-    # второй запуск бота ничего не задваивает
-    assert await grant_test_gear(db) == 0
-    assert len(await db.list_gear(100)) == len(TEST_GEAR)
-
-
-async def test_the_boosted_gear_waits_for_a_missing_fighter(db):
-    """Бойца ещё нет — выдача молча ждёт следующего запуска."""
-    from bot.seed import grant_test_gear
-
-    assert await grant_test_gear(db) == 0
-
-

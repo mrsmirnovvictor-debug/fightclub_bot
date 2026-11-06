@@ -3011,6 +3011,142 @@ async def test_the_mage_sells_for_stars_and_never_for_credits(server):
         await browser.close()
 
 
+async def test_the_promo_field_sends_the_code_and_shows_what_it_gave(server):
+    """Поле промокода в «Элите»: ввёл слово — получил подписку.
+
+    Поле ничего не подсказывает: код называют снаружи игры, и перебирать
+    его по прилавку нельзя. Страница только относит слово — что оно
+    даёт и действует ли, решает сервер.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    magic = build_magic(player)
+    sent = []
+
+    async def give(route):
+        sent.append(json.loads(route.request.post_data))
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "card": card,
+                    "magic": magic,
+                    "promo": {
+                        "code": "VEGAS1334",
+                        "title": "Подписка PRO",
+                        "term": "месяц",
+                        "days": 30,
+                        "renewed": False,
+                        "seconds_left": 30 * 24 * 3600,
+                    },
+                }
+            ),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), magic=magic
+        )
+        await page.route("**/api/promo", give)
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "magic")
+        await page.wait_for_selector("#promo-box")
+
+        # Поле пустое и не называет ни одного кода
+        said = await page.locator("#promo-box").inner_text()
+        assert "VEGAS" not in said, "прилавок подсказал код"
+        assert await page.locator("#promo-input").input_value() == ""
+
+        await page.locator("#promo-input").fill("vegas1334")
+        await page.locator("#promo-go").click()
+        await page.wait_for_function(
+            "() => el('promo-note').classList.contains('good')"
+        )
+
+        # Набранное ушло как есть: приводит его к виду кода сервер
+        assert sent == [{"code": "vegas1334"}]
+        note = await page.locator("#promo-note").inner_text()
+        assert "Код принят" in note and "месяц" in note
+        # И поле очистилось: вводить второй раз нечего
+        assert await page.locator("#promo-input").input_value() == ""
+        await browser.close()
+
+
+async def test_a_refused_code_says_why_and_keeps_what_was_typed(server):
+    """Отказ виден в том же месте, и набранное никуда не девается.
+
+    Стирать чужой ввод на отказе значит заставлять набирать заново —
+    а ошибка чаще всего в одной букве.
+    """
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    magic = build_magic(player)
+
+    async def refuse(route):
+        await route.fulfill(
+            status=409,
+            content_type="application/json",
+            body=json.dumps({"error": "Такого промокода нет."}),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), magic=magic
+        )
+        await page.route("**/api/promo", refuse)
+        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "magic")
+        await page.wait_for_selector("#promo-box")
+
+        await page.locator("#promo-input").fill("CLUB0000")
+        await page.locator("#promo-go").click()
+        await page.wait_for_function(
+            "() => el('promo-note').classList.contains('bad')"
+        )
+
+        assert "Такого промокода нет." in await page.locator(
+            "#promo-note"
+        ).inner_text()
+        assert await page.locator("#promo-input").input_value() == "CLUB0000"
+
+        # Начал править — подсказка вернулась: прежний отказ про прежнее
+        # слово рядом с новым читался бы как отказ про новое
+        await page.locator("#promo-input").fill("CLUB0001")
+        await page.wait_for_function(
+            "() => !el('promo-note').classList.contains('bad')"
+        )
+        await browser.close()
+
+
+async def test_an_empty_field_is_refused_without_asking_the_server(server):
+    """Пустое поле сервер не беспокоит: отвечать тут нечего."""
+    player = make_player()
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    tries = []
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, build_shop(player), magic=build_magic(player)
+        )
+        await page.route("**/api/promo", lambda route: tries.append(1))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "magic")
+        await page.wait_for_selector("#promo-box")
+
+        await page.locator("#promo-input").fill("   ")
+        await page.locator("#promo-go").click()
+        await page.wait_for_function(
+            "() => el('promo-note').classList.contains('bad')"
+        )
+
+        assert tries == [], "за пустым полем ходили на сервер"
+        assert "поле пустое" in await page.locator("#promo-note").inner_text()
+        await browser.close()
+
+
 async def test_both_subscription_cards_lead_the_mage_counter(server):
     """Ступени стоят первыми, младшая сверху, и акция забирается кнопкой."""
     player = make_player()

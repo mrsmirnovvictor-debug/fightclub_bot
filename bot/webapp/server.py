@@ -33,7 +33,12 @@ from bot.inventory_service import (
 )
 from bot.looks_service import LookError, wardrobe, wear_look
 from bot.potions_service import PotionError, buy_potion, use_potion
-from bot.pro_service import ProError, claim_free_pro, promo_taken
+from bot.pro_service import (
+    ProError,
+    claim_free_pro,
+    promo_taken,
+    redeem_code,
+)
 from bot.store_service import StoreError, StoreService
 from bot.upgrade_service import UpgradeError, spend_points
 from bot.webapp.auth import AuthError, check_avatar_token, parse_init_data
@@ -1024,6 +1029,41 @@ async def api_pro(request: web.Request) -> web.Response:
             "magic": build_magic(player, promo_claimed=True),
             "pro": {
                 "days": grant.offer.days,
+                "renewed": grant.renewed,
+                "seconds_left": grant.seconds_left(),
+            },
+        }
+    )
+
+
+async def api_promo(request: web.Request) -> web.Response:
+    """Применить промокод. Что он даёт и действует ли — решает сервер.
+
+    Отказ приходит тем же текстом, каким его увидит игрок: «такого кода
+    нет» и «уже применял» — разные вещи, и путать их не нужно. А вот
+    того, какие коды бывают, страница не знает и знать не должна: код
+    называют снаружи игры, и подобрать его перебором по прилавку нельзя.
+    """
+    body = await _payload(request)
+    try:
+        player = await _own_player(request)
+        code, grant = await redeem_code(
+            request.app[DB_KEY], player, str(body.get("code") or "")
+        )
+    except (InventoryError, ProError) as error:
+        return web.json_response({"error": str(error)}, status=409)
+
+    config = request.app[CONFIG_KEY]
+    claimed = await promo_taken(request.app[DB_KEY], player.user_id)
+    return web.json_response(
+        {
+            "card": build_card(player, config.bot_token, player.user_id),
+            "magic": build_magic(player, promo_claimed=claimed),
+            "promo": {
+                "code": code.code,
+                "title": grant.offer.tier.title,
+                "term": code.term_text,
+                "days": code.days,
                 "renewed": grant.renewed,
                 "seconds_left": grant.seconds_left(),
             },
@@ -3870,6 +3910,7 @@ def create_app(
             web.get("/api/fight/{fight_id}", api_fight_log),
             web.get("/api/magic", api_magic),
             web.post("/api/pro", api_pro),
+            web.post("/api/promo", api_promo),
             web.get("/api/looks", api_looks),
             web.get("/api/barber", api_barber),
             web.post("/api/barber", api_barber_action),

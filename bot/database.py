@@ -1918,6 +1918,73 @@ class Database:
         if self.path != ":memory:" and str(parent) not in ("", "."):
             parent.mkdir(parents=True, exist_ok=True)
 
+    # ---------- обнуление города ----------
+    #
+    # Сезон начинают с чистого листа: бойцов нет, кланов нет, мэра нет,
+    # машин на улицах нет. Контент в базе не живёт — локации, вещи,
+    # приёмы лежат в коде, — поэтому стирать можно всё без разбора, и
+    # разбирать, что из этого «игровое», не нужно: игровое тут всё.
+
+    async def game_tables(self) -> list[str]:
+        """Таблицы, в которых лежит игра. Служебные SQLite сюда не идут."""
+        async with self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ) as cursor:
+            return [str(row["name"]) for row in await cursor.fetchall()]
+
+    async def backup_to(self, path: str) -> int:
+        """Снять копию базы в отдельный файл. Возвращает её размер.
+
+        `VACUUM INTO` делает целостную копию на работающем соединении:
+        останавливать бота и ловить миг между записями не нужно. Копия
+        — единственное, что отличает обнуление от необратимой потери, и
+        делается она до того, как стёрта первая строка.
+        """
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        if Path(path).exists():
+            raise FileExistsError(path)
+        await self.conn.execute("VACUUM INTO ?", (path,))
+        return Path(path).stat().st_size
+
+    async def wipe_game(self) -> dict[str, int]:
+        """Стереть всю игру. Возвращает, сколько строк было в каждой таблице.
+
+        Внешние ключи на время чистки выключены: порядок таблиц иначе
+        пришлось бы выстраивать руками, а он меняется с каждой новой
+        связью — и однажды обнуление упало бы на середине, оставив город
+        наполовину стёртым. Это хуже любого из двух целых состояний.
+
+        Счётчики `AUTOINCREMENT` сбрасываем тоже: у нового сезона номера
+        начинаются с единицы, а не продолжают прошлый.
+        """
+        tables = await self.game_tables()
+        was: dict[str, int] = {}
+        await self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            for table in tables:
+                async with self.conn.execute(
+                    f"SELECT COUNT(*) AS n FROM {table}"
+                ) as cursor:
+                    row = await cursor.fetchone()
+                was[table] = int(row["n"]) if row else 0
+                await self.conn.execute(f"DELETE FROM {table}")
+            async with self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'sqlite_sequence'"
+            ) as cursor:
+                if await cursor.fetchone():
+                    await self.conn.execute("DELETE FROM sqlite_sequence")
+            await self.conn.commit()
+        finally:
+            await self.conn.execute("PRAGMA foreign_keys = ON")
+        logger.warning(
+            "Город обнулён: стёрто %s строк в %s таблицах",
+            sum(was.values()),
+            len(tables),
+        )
+        return was
+
     async def close(self) -> None:
         if self._conn is not None:
             await self._conn.close()
