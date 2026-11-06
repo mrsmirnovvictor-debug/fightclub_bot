@@ -10995,7 +10995,8 @@ function jailBox(term) {
   const said = document.createElement("p");
   said.className = "screen-note";
   said.textContent = "До освобождения " + clockText(term.left)
-    + ". Отсидка " + term.times + "-я. Из тюрьмы не выходят.";
+    + ". " + (term.head || "Отсидка " + term.times + "-я")
+    + ". Из тюрьмы не выходят.";
   box.appendChild(said);
   return box;
 }
@@ -15744,8 +15745,10 @@ function myTermBox(term) {
 
   const note = document.createElement("p");
   note.className = "screen-note";
+  // Начало строки приходит с сервера: у судебной отсидки номера нет
+  // вовсе — суд считает угоны, а не приводы
   note.textContent =
-    "Отсидка " + term.times + "-я, срок " + term.hours + " ч. Выйдешь "
+    term.head + ", срок " + term.hours + " ч. Выйдешь "
     + term.out_text + ". Из тюрьмы не выходят — ждут.";
   box.appendChild(note);
   return box;
@@ -15788,8 +15791,7 @@ function inmatesBox(data) {
     const note = document.createElement("p");
     note.className = "neighbour-note";
     note.textContent =
-      "Отсидка " + one.times + "-я, срок " + one.hours + " ч. Выйдет "
-      + one.out_text + ".";
+      one.head + ", срок " + one.hours + " ч. Выйдет " + one.out_text + ".";
     row.appendChild(note);
     box.appendChild(row);
   });

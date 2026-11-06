@@ -25,7 +25,9 @@ from bot.database import Database
 from bot.game.battle import BLUE, RED
 from bot.game.police import (
     ARREST_FEE,
+    COURT_TERM,
     JAIL_TERMS,
+    POLICE_TERM,
     PRISON,
     QUOTA_BONUS,
     jail_hours,
@@ -34,6 +36,8 @@ from bot.game.police import (
     quota_done,
     quota_target,
     shares,
+    term_head,
+    term_hours,
 )
 from bot.game.work import week_of
 from bot.police_service import (
@@ -177,6 +181,99 @@ async def test_the_jailed_move_to_the_prison_and_stay(db):
     again = await jail(db, one.user_id, NOW + 100_000)
     assert again == NOW + 100_000 + jail_seconds(2)
     assert (await term_of(db, one.user_id, NOW))["times"] == 2
+
+
+def test_the_term_is_read_off_the_sitting_and_not_off_the_ladder():
+    """Часы берём из самой отсидки, а не считаем обратно по лестнице.
+
+    Лестница участка описывает только то, что даёт полиция. Суд даёт
+    свои часы и счётчик задержаний не трогает — и у осуждённого, которого
+    полиция не брала ни разу, по лестнице выходил ноль часов при живом
+    сроке. Так и было на экране тюрьмы: «отсидка 0-я, срок 0 ч».
+    """
+    assert term_hours(NOW + 2 * 3600, NOW, 0) == 2, "судебные два часа"
+    assert term_hours(NOW + 6 * 3600, NOW, 2) == 6
+    # Час с минутами — это два часа решётки, а не один: срок на экране
+    # не должен выглядеть короче, чем он есть
+    assert term_hours(NOW + 3600 + 60, NOW, 0) == 2
+    # У строк, заведённых до того, как база стала помнить начало
+    # отсидки, считаем по-старому — иначе срок вовсе пропал бы
+    assert term_hours(NOW + 6 * 3600, 0, 2) == 6
+    assert term_hours(NOW + 6 * 3600, NOW + 9 * 3600, 2) == 6
+
+
+def test_the_sitting_says_who_put_the_man_inside():
+    """Номер отсидки — про приводы, и к приговору он не относится."""
+    assert term_head(1, POLICE_TERM) == "Отсидка 1-я"
+    assert term_head(3, POLICE_TERM) == "Отсидка 3-я"
+    # Полиция не брала ни разу — значит, посадил суд, и «отсидка 0-я»
+    # тут не номер, а пустое место
+    assert term_head(0, POLICE_TERM) == "По приговору суда"
+    assert term_head(2, COURT_TERM) == "По приговору суда"
+
+
+async def test_the_jail_row_remembers_when_the_sitting_began(db):
+    """Посадка пишет в камеру начало срока и того, кто посадил."""
+    one = make_player(50, "Мафиози", where=BAR)
+    await db.save_player(one)
+
+    await jail(db, one.user_id, NOW)
+    sitting = await db.jail_sitting(one.user_id)
+    assert sitting["since"] == NOW
+    assert sitting["reason"] == POLICE_TERM
+    assert sitting["until"] - sitting["since"] == jail_seconds(1)
+
+    term = await term_of(db, one.user_id, NOW)
+    assert term["head"] == "Отсидка 1-я"
+
+
+async def test_the_court_term_shows_its_own_hours_and_not_a_zero(db):
+    """Осуждённый видит свои часы, а не ноль от чужой лестницы.
+
+    Полиция его не брала ни разу, счётчик задержаний нулевой — и экран
+    тюрьмы писал «Отсидка 0-я, срок 0 ч.» при двух живых часах срока.
+    """
+    from bot.court_service import lock_up
+    from bot.webapp.prison import build_prison
+
+    one = make_player(50, "Угонщик", where=BAR)
+    await db.save_player(one)
+
+    until = await lock_up(db, one, 2, NOW)
+    assert until == NOW + 2 * 3600
+
+    body = await build_prison(db, one, NOW)
+    mine = body["mine"]
+    assert mine is not None, "сидящий себя в списке не нашёл"
+    assert mine["hours"] == 2, "срок взят из лестницы участка, а не из дела"
+    assert mine["times"] == 0, "приговор не считается приводом"
+    assert mine["head"] == "По приговору суда"
+    assert "сидишь 0-й раз" not in body["note"]
+    assert "посадил суд" in body["note"]
+
+
+async def test_a_sentence_on_top_of_a_sitting_extends_it_whole(db):
+    """Приговор поверх начатой отсидки продлевает её, а не начинает новую.
+
+    Срок на экране — вся отсидка целиком, от первого часа до выхода, а
+    не последняя её добавка.
+    """
+    from bot.court_service import lock_up
+    from bot.webapp.prison import build_prison
+
+    one = make_player(50, "Мафиози", where=BAR)
+    await db.save_player(one)
+
+    await jail(db, one.user_id, NOW)  # три часа от участка
+    fresh = await db.get_player(one.user_id)
+    await lock_up(db, fresh, 2, NOW + 600)  # и два сверху от суда
+
+    sitting = await db.jail_sitting(one.user_id)
+    assert sitting["since"] == NOW, "начало отсидки сдвинулось"
+    assert sitting["until"] == NOW + (3 + 2) * 3600
+
+    body = await build_prison(db, fresh, NOW + 600)
+    assert body["mine"]["hours"] == 5, "показана только добавка суда"
 
 
 async def test_the_road_out_of_prison_is_shut(db, client):

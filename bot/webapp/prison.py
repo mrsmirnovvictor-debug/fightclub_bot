@@ -20,23 +20,36 @@ from typing import Any
 
 from bot.game.clock import club_moment
 from bot.game.health import now_ts
-from bot.game.police import JAIL_TERMS, jail_hours, jail_left
+from bot.game.police import (
+    JAIL_TERMS,
+    POLICE_TERM,
+    jail_left,
+    term_head,
+    term_hours,
+)
 from bot.models import Player
 
 
 def term_row(
     user_id: int, name: str, until: int, times: int, moment: int,
-    mine: bool = False,
+    mine: bool = False, since: int = 0, reason: str = POLICE_TERM,
 ) -> dict[str, Any]:
-    """Строка сидящего: кто, в который раз и сколько ему осталось."""
+    """Строка сидящего: кто, за что, насколько и сколько ему осталось."""
+    out_text = club_moment(until, "%d.%m %H:%M")
+    hours = term_hours(until, since, times)
     return {
         "user_id": user_id,
         "name": name,
         "times": times,
         "until": until,
+        "since": since,
+        "reason": reason,
         "left": jail_left(until, moment),
-        "out_text": club_moment(until, "%d.%m %H:%M"),
-        "hours": jail_hours(times),
+        "out_text": out_text,
+        "hours": hours,
+        # Начало строки под часами готовит сервер: правило о том, когда
+        # номера отсидки нет вовсе, живёт здесь, а не на странице
+        "head": term_head(times, reason),
         "mine": mine,
     }
 
@@ -48,15 +61,18 @@ async def build_prison(
     moment = now_ts() if now is None else now
     rows = []
     mine = None
-    for user_id, until, times in await db.inmates(moment):
+    for one in await db.inmates(moment):
+        user_id = int(one["user_id"])
         who = await db.get_player(user_id)
         row = term_row(
             user_id,
             who.nickname if who else "боец",
-            until,
-            times,
+            int(one["until"]),
+            int(one["times"]),
             moment,
             mine=user_id == player.user_id,
+            since=int(one["since"]),
+            reason=str(one["reason"]),
         )
         rows.append(row)
         if row["mine"]:
@@ -76,10 +92,14 @@ async def build_prison(
 def _note(mine: dict[str, Any] | None, total: int) -> str:
     """Строка сверху: про свой срок, а без него — про чужие."""
     if mine:
-        return (
-            f"Ты сидишь {mine['times']}-й раз. Из тюрьмы не выходят — "
-            "ждут. Срок идёт даже в сети."
+        # Раз у отсидки считают по задержаниям. Посадил суд — считать
+        # нечего: приводов не было, и «сидишь 0-й раз» тут неправда
+        head = (
+            f"Ты сидишь {mine['times']}-й раз."
+            if mine["reason"] != "court" and mine["times"] >= 1
+            else "Тебя посадил суд."
         )
+        return f"{head} Из тюрьмы не выходят — ждут. Срок идёт даже в сети."
     if not total:
         return "Камеры пусты: сегодня в городе никого не взяли."
     return f"За решёткой {total}. Сроки идут, выйдут сами."

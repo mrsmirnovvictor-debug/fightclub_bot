@@ -1866,6 +1866,8 @@ async def test_plus_next_to_the_credits_opens_the_cashdesk(server):
 
         await page.wait_for_selector("#topup:not(.hidden)")
         assert await page.locator("#card").is_hidden()
+        # Касса открывается пустой: пачки приезжают ответом сервера
+        await page.wait_for_selector(".pack-title")
         titles = await page.locator(".pack-title").all_inner_texts()
         assert len(titles) == len(PACKS)
         assert PACKS[0].title in titles[0]
@@ -2034,6 +2036,9 @@ async def test_the_wardrobe_of_a_woman_holds_womens_looks(server):
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#hero-avatar").click()
         await page.wait_for_selector("#sheet:not(.hidden)")
+        # Всплывашка открывается пустой: гардероб приезжает ответом
+        # сервера, и `all_inner_texts` его не ждёт
+        await page.wait_for_selector(".look-title")
 
         titles = await page.locator(".look-title").all_inner_texts()
         assert "Бунтарка" in titles and "Барменша" in titles
@@ -3342,6 +3347,9 @@ async def open_ring(pw, server, fights):
     await page.wait_for_selector("#hero:not(.hidden)")
     await page.locator("#tab-club").click()
     await page.wait_for_selector("#club:not(.hidden)")
+    # Вкладка показывается сразу, а бои приезжают ответом сервера. Без
+    # этой строки проверка читала пустой ринг и падала не там, где сломано
+    await page.wait_for_function("() => fightsData !== null")
     return browser, page
 
 
@@ -12360,6 +12368,49 @@ async def test_the_prison_counts_the_term_and_lists_the_inmates(server, db):
         said = await page.locator("#prison-body").inner_text()
         assert "Отсидка 2-я, срок 6 ч" in said, "вторая отсидка длиннее"
         assert "3, 6, 12, 24 ч" in said
+        await page.evaluate("stopPrisonClock()")
+        await browser.close()
+
+
+async def test_the_court_term_on_the_screen_is_not_a_zero(server, db):
+    """Осуждённый видит свои часы и «по приговору суда», а не «0-я, 0 ч».
+
+    Номер отсидки считает приводы, а не приговоры. Полиция этого бойца
+    не брала ни разу, счётчик нулевой — и экран писал ему «Отсидка 0-я,
+    срок 0 ч.» при двух живых часах, пересчитывая срок обратно по
+    чужой лестнице.
+    """
+    from bot.court_service import lock_up
+    from bot.game.health import now_ts
+    from bot.webapp.prison import build_prison
+    from tests.test_robbery import make_player as a_fighter
+
+    now = now_ts()
+    one = a_fighter(51, "Марла")
+    await db.save_player(one)
+    await lock_up(db, one, 2, now)
+
+    sitting = await db.get_player(51)
+    body = await build_prison(db, sitting, now)
+    card = build_card(sitting, TOKEN, viewer_id=sitting.user_id)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/prison*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        ))
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "prison")
+        await page.wait_for_selector("#prison-body .shelf")
+
+        said = await page.locator("#prison").inner_text()
+        assert "По приговору суда, срок 2 ч" in said, said
+        assert "Отсидка 0-я" not in said
+        assert "срок 0 ч" not in said
+        assert "сидишь 0-й раз" not in said
+        assert "Тебя посадил суд" in said
+        # Часы при этом идут: срок настоящий, а не нарисованный
+        assert re.search(r"Осталось (02:00:00|01:59:\d\d)", said), said
         await page.evaluate("stopPrisonClock()")
         await browser.close()
 

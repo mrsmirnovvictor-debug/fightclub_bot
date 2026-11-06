@@ -30,6 +30,7 @@ from bot.game.presence import is_online
 from bot.game.police import (
     ARREST_FEE,
     FINE_NO_LICENCE,
+    POLICE_TERM,
     PRISON,
     QUOTA_BONUS,
     jail_left,
@@ -37,6 +38,7 @@ from bot.game.police import (
     quota_done,
     quota_target,
     shares,
+    term_head,
 )
 from bot.game.services import get_service
 from bot.game.work import week_is_over, week_of
@@ -606,7 +608,11 @@ async def jail(db: Database, user_id: int, now: int | None = None) -> int:
     _, times = await db.jail_term(user_id)
     times += 1
     until = moment + jail_seconds(times)
-    await db.put_in_jail(user_id, until, times)
+    # Начало отсидки пишем сюда же: срок на экране берётся из него, а не
+    # пересчитывается обратно из числа задержаний
+    await db.put_in_jail(
+        user_id, until, times, since=moment, reason=POLICE_TERM
+    )
     player = await db.get_player(user_id)
     if player is not None:
         player.location = PRISON
@@ -625,11 +631,22 @@ async def jail(db: Database, user_id: int, now: int | None = None) -> int:
 
 async def term_of(
     db: Database, user_id: int, now: int | None = None
-) -> dict[str, int]:
-    """Сколько бойцу ещё сидеть и в который раз его взяли."""
+) -> dict[str, int | str]:
+    """Сколько бойцу ещё сидеть, который это раз и кто его посадил.
+
+    Начало отсидки и имя посадившего нужны экрану: у судебного срока
+    своего номера нет, и писать ему «отсидка 0-я» — врать.
+    """
     moment = now_ts() if now is None else now
-    until, times = await db.jail_term(user_id)
-    return {"until": until, "times": times, "left": jail_left(until, moment)}
+    jailed = await db.jail_sitting(user_id)
+    return {
+        "until": int(jailed["until"]),
+        "times": int(jailed["times"]),
+        "since": int(jailed["since"]),
+        "reason": str(jailed["reason"]),
+        "head": term_head(int(jailed["times"]), str(jailed["reason"])),
+        "left": jail_left(int(jailed["until"]), moment),
+    }
 
 
 # ---------- копилка участка ----------

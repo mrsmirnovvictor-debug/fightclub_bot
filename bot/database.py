@@ -1041,11 +1041,17 @@ CREATE INDEX IF NOT EXISTS police_cases_suspect ON police_cases(suspect_id);
 CREATE INDEX IF NOT EXISTS police_cases_victim ON police_cases(victim_id);
 
 -- Тюрьма: до какого часа сидит и в который раз. Счёт не обнуляется —
--- срок растёт от того, сколько раз человека уже брали
+-- срок растёт от того, сколько раз человека уже брали.
+--
+-- `since` — когда эта отсидка началась, `reason` — кто посадил. Без них
+-- экран тюрьмы считал срок обратно, из числа задержаний, и судебной
+-- отсидке — у неё свои часы и свой счёт — писал «срок 0 ч.»
 CREATE TABLE IF NOT EXISTS jail (
     user_id INTEGER PRIMARY KEY,
     until   INTEGER NOT NULL DEFAULT 0,
-    times   INTEGER NOT NULL DEFAULT 0
+    times   INTEGER NOT NULL DEFAULT 0,
+    since   INTEGER NOT NULL DEFAULT 0,
+    reason  TEXT    NOT NULL DEFAULT 'police'
 );
 
 -- Недельный счёт службы: задержаний за неделю и роздана ли копилка.
@@ -1414,6 +1420,33 @@ class Database:
         await self._migrate_service_vault()
         await self._migrate_card_log()
         await self._migrate_dojo()
+        await self._migrate_jail()
+
+    async def _migrate_jail(self) -> None:
+        """Дописать камере, когда отсидка началась и кто посадил.
+
+        На живой базе таблица уже есть, и `CREATE TABLE IF NOT EXISTS`
+        колонок не добавит. У старых строк начало отсидки неизвестно —
+        ставим ноль, и экран тогда считает срок по старому правилу, от
+        числа задержаний: это ровно то, что было, и хуже не станет.
+        """
+        async with self.conn.execute("PRAGMA table_info(jail)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if not columns:
+            return
+        if "since" not in columns:
+            await self.conn.execute(
+                "ALTER TABLE jail ADD COLUMN since INTEGER NOT NULL DEFAULT 0"
+            )
+            await self.conn.commit()
+            logger.info("База обновлена: добавлена колонка jail.since")
+        if "reason" not in columns:
+            await self.conn.execute(
+                "ALTER TABLE jail ADD COLUMN reason TEXT NOT NULL "
+                "DEFAULT 'police'"
+            )
+            await self.conn.commit()
+            logger.info("База обновлена: добавлена колонка jail.reason")
 
     async def _migrate_turf(self) -> None:
         """Привести живые точки к нынешней форме.
@@ -5181,37 +5214,71 @@ class Database:
             row = await cursor.fetchone()
         return (int(row["until"]), int(row["times"])) if row else (0, 0)
 
-    async def inmates(self, now: int) -> list[tuple[int, int, int]]:
-        """Кто сидит сейчас: номер, до какого часа и в который раз.
+    async def jail_sitting(self, user_id: int) -> dict[str, int | str]:
+        """Вся отсидка целиком: до какого часа, с какого, чья и которая.
+
+        `jail_term` отдаёт только то, что нужно для лестницы сроков.
+        Экрану тюрьмы нужно больше: сам срок он считает из `since`, а не
+        обратно из числа задержаний.
+        """
+        async with self.conn.execute(
+            "SELECT until, times, since, reason FROM jail WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return {"until": 0, "times": 0, "since": 0, "reason": "police"}
+        return {
+            "until": int(row["until"]),
+            "times": int(row["times"]),
+            "since": int(row["since"]),
+            "reason": str(row["reason"] or "police"),
+        }
+
+    async def inmates(self, now: int) -> list[dict[str, int | str]]:
+        """Кто сидит сейчас: номер, срок целиком и кто посадил.
 
         Отсидевшие остаются строкой — по ней считается, в который раз
         человека берут, — и в список они не идут: срок кончился.
         """
         async with self.conn.execute(
-            "SELECT user_id, until, times FROM jail WHERE until > ? "
-            "ORDER BY until",
+            "SELECT user_id, until, times, since, reason FROM jail "
+            "WHERE until > ? ORDER BY until",
             (now,),
         ) as cursor:
             rows = await cursor.fetchall()
         return [
-            (int(row["user_id"]), int(row["until"]), int(row["times"]))
+            {
+                "user_id": int(row["user_id"]),
+                "until": int(row["until"]),
+                "times": int(row["times"]),
+                "since": int(row["since"]),
+                "reason": str(row["reason"] or "police"),
+            }
             for row in rows
         ]
 
-    async def put_in_jail(self, user_id: int, until: int, times: int) -> None:
+    async def put_in_jail(
+        self, user_id: int, until: int, times: int,
+        since: int = 0, reason: str = "police",
+    ) -> None:
         """Посадить до этого часа и записать, который это раз.
 
         Срок считает служба, а не база: он зависит от числа отсидок, и
-        это правило, а не хранение.
+        это правило, а не хранение. База хранит начало отсидки и того,
+        кто посадил, — чтобы не пересчитывать срок обратно.
         """
         await self.conn.execute(
             """
-            INSERT INTO jail (user_id, until, times) VALUES (?,?,?)
+            INSERT INTO jail (user_id, until, times, since, reason)
+            VALUES (?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 until = excluded.until,
-                times = excluded.times
+                times = excluded.times,
+                since = excluded.since,
+                reason = excluded.reason
             """,
-            (user_id, until, times),
+            (user_id, until, times, since, reason),
         )
         await self.conn.commit()
 

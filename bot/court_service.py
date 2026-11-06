@@ -29,7 +29,7 @@ from bot.database import Database
 from bot.game.city import JUDGE_ID as CITY_JUDGE
 from bot.game.court import extra_hours, sentence_for, sentence_text
 from bot.game.health import now_ts
-from bot.game.police import PRISON
+from bot.game.police import COURT_TERM, PRISON
 from bot.models import Player
 
 logger = logging.getLogger(__name__)
@@ -247,10 +247,23 @@ async def lock_up(
 
     Отсидка судебная, и счётчик задержаний она не трогает: он считает,
     сколько раз человека брала полиция, а не сколько раз его осудили.
+    Поэтому и срок свой: лестница участка (3, 6, 12, 24 ч) к приговору
+    отношения не имеет, и считать по ней судебные часы нельзя — экран
+    тюрьмы так и делал, и у осуждённого, которого полиция не брала ни
+    разу, выходило «отсидка 0-я, срок 0 ч.» при живых двух часах.
+
+    Приговор поверх начатой отсидки её продлевает, и началом остаётся
+    то, с которого человек сидит: срок на экране — вся отсидка целиком,
+    а не последняя её добавка.
     """
-    sitting, times = await db.jail_term(player.user_id)
+    jailed = await db.jail_sitting(player.user_id)
+    sitting = int(jailed["until"])
+    since = int(jailed["since"]) if sitting > now else now
     until = max(now, sitting) + hours * 3_600
-    await db.put_in_jail(player.user_id, until, times)
+    await db.put_in_jail(
+        player.user_id, until, int(jailed["times"]),
+        since=since or now, reason=COURT_TERM,
+    )
     player.location = PRISON
     player.travel_to = None
     player.arrives_at = 0
