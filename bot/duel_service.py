@@ -22,6 +22,7 @@ from bot.game.modes import FightMode
 from bot.game.scout import SCOUT_FIGHTS, Habits, read_habits
 from bot.game.combat import (
     MAX_MISSED_TURNS,
+    NO_GONG,
     TURNS_PER_ROUND,
     Action,
     Fighter,
@@ -773,6 +774,11 @@ class DuelService:
             session.round_number,
             self.rng,
             limit=session.mode.turns,
+            # Судьи у дуэли нет: дерутся до победы. Прежде бой обрывался
+            # гонгом на шестом раунде (на кулаках) или девятом (с
+            # оружием), и выигрывал тот, кто успел больше нанести, —
+            # а не тот, кто довёл дело до конца
+            gong=NO_GONG,
         )
 
         # Боевые дела этого раунда — в ведомость школы: одной строкой
@@ -813,7 +819,6 @@ class DuelService:
             corner_break(
                 *(session.fighters[uid] for uid in session.order),
                 round_number=finished,
-                total=session.mode.rounds,
                 seconds=rest,
             ),
         )

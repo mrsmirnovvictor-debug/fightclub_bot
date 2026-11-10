@@ -20158,6 +20158,10 @@ let casinoPoll = null;
 let casinoTicker = null;
 let casinoAt = 0; // стол, который смотрим; 0 — лобби
 let casinoStake = 0; // выбранный номинал фишки
+// Набранное в поле своей ставки. Живёт отдельно от самой ставки: экран
+// казино перерисовывает себя каждые полсекунды, и число, лежащее только
+// в поле, стиралось бы на полуслове
+let casinoOwnTyped = "";
 let casinoPick = ""; // выбранный исход в костях
 let casinoGrid = false; // открыта ли сетка чисел рулетки
 let casinoShown = ""; // что уже нарисовано: партия и фаза
@@ -21222,17 +21226,49 @@ function casinoDropButton(table) {
   });
 }
 
+/** Что не так со ставкой. Пусто — всё так.
+
+    Те же три правила, что и у службы (`_check_stake`), и теми же
+    словами: отказ, пришедший с сервера после нажатия, и отказ, видный
+    до нажатия, должны читаться одинаково — иначе выходит, что правил
+    два.  */
+function casinoStakeOops(table, amount) {
+  if (!amount || amount <= 0) return "Ставка должна быть больше нуля.";
+  if (amount % table.step) return "Ставка должна быть кратна " + table.step + ".";
+  if (amount < table.least) return "Наименьшая ставка — " + table.least + ".";
+  if (amount > table.most) return "Наибольшая ставка — " + table.most + ".";
+  return "";
+}
+
+/** Быстрые ставки и поле для своей.
+
+    Лесенка — четыре привычные суммы, и верх у неё теперь сам потолок
+    стола: прежде она шла «минимум ×1, ×2, ×5, ×10», и на столе с
+    минимумом в двадцать выше двухсот было не подняться, хотя стол
+    принимает тысячу. Поле рядом — для всего, что между ними. */
 function casinoStakeRow(table, onPick) {
+  const box = document.createElement("div");
+  box.className = "casino-stake-box";
+
   const row = document.createElement("div");
   row.className = "casino-stakes";
-  const steps = [table.least, table.least * 2, table.least * 5,
-                 table.least * 10];
-  if (!casinoStake || casinoStake < table.least) casinoStake = table.least;
-  steps.filter((one) => one <= table.most).forEach((one) => {
+  // Потолок стола — последняя ступень: до него должно хватать одного
+  // нажатия, а не десяти прибавлений в поле
+  const steps = [table.least, table.least * 2, table.least * 5, table.most];
+  const seen = [];
+  steps.forEach((one) => {
+    if (one <= table.most && one >= table.least && !seen.includes(one)) {
+      seen.push(one);
+    }
+  });
+  if (!casinoStake || casinoStakeOops(table, casinoStake)) {
+    casinoStake = table.least;
+  }
+  seen.forEach((one) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = casinoStake === one ? "on" : "";
-    btn.textContent = String(one);
+    btn.textContent = num(one);
     btn.addEventListener("click", () => {
       casinoStake = one;
       if (onPick) onPick(one);
@@ -21240,7 +21276,62 @@ function casinoStakeRow(table, onPick) {
     });
     row.appendChild(btn);
   });
-  return row;
+  box.appendChild(row);
+
+  // Стол, у которого ставка одна на всех, своей не знает: там не
+  // ставка, а взнос, и менять его нельзя
+  if (table.least >= table.most) return box;
+
+  const own = document.createElement("div");
+  own.className = "casino-own";
+  const field = document.createElement("input");
+  field.type = "number";
+  field.className = "field-input";
+  field.min = String(table.least);
+  field.max = String(table.most);
+  field.step = String(table.step);
+  field.inputMode = "numeric";
+  field.placeholder = "Своя: " + table.least + "–" + num(table.most);
+  // Своя ставка живёт между перерисовками: экран казино перерисовывает
+  // себя каждые полсекунды, и набранное иначе стиралось бы на полуслове
+  field.value = casinoOwnTyped;
+  field.addEventListener("input", (event) => {
+    casinoOwnTyped = event.target.value;
+    said.textContent = "";
+  });
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "casino-own-go";
+  go.textContent = "Поставить";
+
+  const said = document.createElement("p");
+  said.className = "casino-own-oops";
+
+  function take() {
+    const amount = Math.trunc(Number(casinoOwnTyped));
+    const oops = casinoStakeOops(table, amount);
+    if (oops) {
+      said.textContent = oops;
+      return;
+    }
+    casinoStake = amount;
+    casinoOwnTyped = "";
+    if (onPick) onPick(amount);
+    renderCasino(casinoData, true);
+  }
+
+  go.addEventListener("click", take);
+  field.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      take();
+    }
+  });
+
+  own.append(field, go);
+  box.append(own, said);
+  return box;
 }
 
 function casinoDiceControls(box, table) {

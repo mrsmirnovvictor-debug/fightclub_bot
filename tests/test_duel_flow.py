@@ -1197,8 +1197,6 @@ async def three_turns(service, session) -> None:
 
 async def test_after_three_turns_the_judge_sends_them_to_the_corners(bot, db):
     """Раунд — три удара, дальше гонг и минута отдыха."""
-    from bot.game.combat import MATCH_ROUNDS
-
     service = make_service(bot, db, round_break=60)
     await db.save_player(make_player(1, "Тайлер", "tank"))
     await db.save_player(make_player(2, "Марла", "tank"))
@@ -1209,7 +1207,10 @@ async def test_after_three_turns_the_judge_sends_them_to_the_corners(bot, db):
     await three_turns(service, session)
 
     gong = bot.log[-1]
-    assert f"Раунд 1 из {MATCH_ROUNDS} окончен" in gong
+    # Без «из скольких»: потолка у боя нет, и «Раунд 7 из 6» читалось бы
+    # как ошибка, а «из бесконечности» — как шутка
+    assert "Раунд 1 окончен" in gong
+    assert " из " not in gong.split("окончен")[0]
     assert "Отдых минута" in gong and "на раунд 2" in gong
     # следующий удар не начался: бойцы в углах
     assert session.round_number == 3
@@ -1254,8 +1255,13 @@ async def test_a_knockout_in_the_third_turn_skips_the_break(bot, db):
     await service.shutdown()
 
 
-async def test_a_fight_that_goes_the_distance_is_decided_by_damage(bot, db):
-    """Шесть раундов без нокаута — побеждает тот, кто больше нанёс."""
+async def test_a_duel_does_not_stop_at_the_old_gong(bot, db):
+    """Дуэль идёт до победы: на бывшем финальном гонге она ещё идёт.
+
+    Раньше бой обрывался на шестом раунде (на кулаках) или девятом (с
+    оружием), и выигрывал тот, кто успел больше нанести, — а не тот, кто
+    довёл дело до конца. Теперь судьи нет.
+    """
     from bot.game.combat import MAX_TURNS
 
     service = make_service(bot, db)
@@ -1264,54 +1270,84 @@ async def test_a_fight_that_goes_the_distance_is_decided_by_damage(bot, db):
     session = await service.start_duel(
         CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
     )
-    # первый бьёт, второй только закрывается: нокаута не выйдет, урон будет
-    session.fighters[1].hp = session.fighters[2].hp = 5000
-    for _ in range(MAX_TURNS):
-        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
-            break
-        # бьём в живот, а закрывается соперник по голове: удар доходит
+    # Запас здоровья такой, что нокаута на этом отрезке не случится
+    session.fighters[1].hp = session.fighters[2].hp = 100_000
+    for _ in range(MAX_TURNS + 6):
+        assert service.duel_in_chat(CHAT_ID, THREAD_ID) is not None, (
+            f"бой кончился на {session.round_number}-м ходу"
+        )
         await service.handle_choice(session.id, 1, "attack", "belly")
         await service.handle_choice(session.id, 1, "block", "legs")
         await service.handle_choice(session.id, 2, "block", "head")
         await service._resolve(session)
 
-    assert session.round_number == MAX_TURNS
-    verdict = next(text for text in bot.log if "Финальный гонг" in text)
-    assert "6 раундов позади" in verdict
-    assert "По нанесённому урону побеждает" in verdict
-    assert session.fighters[1].damage_dealt > session.fighters[2].damage_dealt
-    assert (await db.get_player(1)).wins == 1
+    assert session.round_number > MAX_TURNS, "бой встал на бывшем гонге"
+    assert not session.finished
+    assert not any("Финальный гонг" in text for text in bot.log)
     await service.shutdown()
 
 
-async def test_a_fight_with_weapons_gets_more_rounds(bot, db):
-    """С оружием бой длиннее: на восемнадцатом ходу он ещё идёт."""
-    from bot.game.combat import LONG_TURNS, MAX_TURNS
-    from bot.game.modes import FightMode
+async def test_fatigue_ends_even_the_longest_duel(bot, db):
+    """Бой без судьи всё равно конечен: его заканчивает усталость.
 
+    Разгон усталости на бывшем потолке не останавливается, а растёт тем
+    же шагом. Сколько бы ни было брони и запаса, множитель однажды их
+    перерастёт — и чем дольше бойцы не могут друг друга достать, тем
+    быстрее это кончится. Иначе «до победы» значило бы «никогда».
+    """
     service = make_service(bot, db)
     await db.save_player(make_player(1, "Тайлер", "tank"))
     await db.save_player(make_player(2, "Марла", "tank"))
     session = await service.start_duel(
-        CHAT_ID,
-        THREAD_ID,
-        await db.get_player(1),
-        await db.get_player(2),
-        mode=FightMode.ARMED,
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
     )
-    session.fighters[1].hp = session.fighters[2].hp = 50000
-    for _ in range(LONG_TURNS):
+    session.fighters[1].hp = session.fighters[2].hp = 5_000
+
+    # Потолок у проверки свой — иначе сломанная усталость повесила бы
+    # весь прогон вместо того, чтобы его провалить
+    for _ in range(600):
         if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
             break
         await service.handle_choice(session.id, 1, "attack", "belly")
         await service.handle_choice(session.id, 1, "block", "legs")
-        await service.handle_choice(session.id, 2, "block", "head")
+        await service.handle_choice(session.id, 2, "attack", "head")
+        await service.handle_choice(session.id, 2, "block", "legs")
         await service._resolve(session)
+    else:  # pragma: no cover - усталость перестала расти
+        raise AssertionError(
+            f"бой не кончился за 600 ходов, здоровье "
+            f"{session.fighters[1].hp} и {session.fighters[2].hp}"
+        )
 
-    # кулачный бой на этом ходу уже закончился бы решением судьи
-    assert session.round_number == LONG_TURNS > MAX_TURNS
-    assert "9 раундов позади" in next(t for t in bot.log if "Финальный гонг" in t)
+    assert session.finished
+    # И кончился он нокаутом, а не решением судьи
+    assert not any("Финальный гонг" in text for text in bot.log)
+    assert min(session.fighters[1].hp, session.fighters[2].hp) <= 0
     await service.shutdown()
+
+
+async def test_the_weapons_duel_heats_up_slower_than_the_fists(bot, db):
+    """Разгон усталости у боя с оружием длиннее — он и остался длиннее.
+
+    Потолком это число быть перестало, но смыслом — нет: снаряжению и
+    приёмам нужно время, чтобы себя показать, и на том же ходу бой с
+    оружием бьёт легче кулачного.
+    """
+    from bot.game.combat import LONG_TURNS, MAX_TURNS, fatigue_multiplier
+    from bot.game.modes import FightMode
+
+    assert FightMode.ARMED.turns == LONG_TURNS > MAX_TURNS == FightMode.FIST.turns
+    # На одном и том же ходу кулачный тяжелее: ему отпущено меньше
+    for turn in (10, 20, 40):
+        assert (
+            fatigue_multiplier(turn, MAX_TURNS)
+            > fatigue_multiplier(turn, LONG_TURNS)
+        ), turn
+    # И после бывшего потолка разгон не встаёт
+    assert (
+        fatigue_multiplier(LONG_TURNS * 4, LONG_TURNS)
+        > fatigue_multiplier(LONG_TURNS, LONG_TURNS)
+    )
 
 
 async def test_two_boxing_rounds_fit_one_minute_of_chat_budget(bot, db):

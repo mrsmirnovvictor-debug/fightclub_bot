@@ -380,11 +380,17 @@ def corner_break(
     first: Fighter,
     second: Fighter,
     round_number: int,
-    total: int,
     seconds: int,
+    total: int = 0,
 ) -> str:
-    """Гонг в конце раунда: счёт по углам и сколько ещё отдыхать."""
-    lines = [f"<b>🔔 Гонг! Раунд {round_number} из {total} окончен.</b>", ""]
+    """Гонг в конце раунда: счёт по углам и сколько ещё отдыхать.
+
+    `total` — сколько раундов отпущено бою. Ноль значит, что потолка нет
+    и дерутся до победы: «Раунд 7 из 6» читалось бы как ошибка, а «из
+    бесконечности» — как шутка.
+    """
+    whole = f" из {total}" if total else ""
+    lines = [f"<b>🔔 Гонг! Раунд {round_number}{whole} окончен.</b>", ""]
     for fighter in (first, second):
         lines.append(
             f"{fighter.fclass.emoji} {mention(fighter)} "

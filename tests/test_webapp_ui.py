@@ -16683,6 +16683,127 @@ async def test_the_table_keeps_four_seats_and_the_empty_one(server, db):
         await browser.close()
 
 
+async def test_the_quick_stakes_reach_the_ceiling_of_the_table(server, db):
+    """Верхняя быстрая ставка — сам потолок стола, а не десять минимумов.
+
+    Лесенка шла «минимум ×1, ×2, ×5, ×10», и на блэкджеке с минимумом в
+    двадцать выше двухсот было не подняться — хотя стол принимает
+    тысячу. Потолок должен браться одним нажатием.
+    """
+    from bot.game.casino import game as rules_of
+
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("blackjack")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-stakes button")
+
+        rules = rules_of("blackjack")
+        steps = await page.locator(".casino-stakes button").all_inner_texts()
+        clean = [one.replace("\u00a0", "") for one in steps]
+        assert clean[0] == str(rules.least)
+        assert clean[-1] == str(rules.most), f"потолок не взять: {clean}"
+        await browser.close()
+
+
+async def test_the_table_with_one_stake_has_no_field_of_its_own(server, db):
+    """На столе с общим взносом своей ставки нет: там не ставка, а взнос."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("highcard")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-felt")
+
+        assert await page.locator(".casino-own").count() == 0
+        await browser.close()
+
+
+async def test_a_stake_of_your_own_goes_up_to_the_ceiling(server, db):
+    """Своя ставка: набрал число — поставил, и уходит оно на сервер.
+
+    Между двадцатью и тысячей промежуточных сумм больше, чем кнопок в
+    ряду, и доходить до своей прибавлениями по ступеньке — работа,
+    которой быть не должно.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    sent = []
+
+    async def catch(route):
+        if route.request.method == "POST":
+            sent.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(casino_table("blackjack")),
+            )
+            return
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(casino_table("blackjack")),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("blackjack")
+        )
+        await page.route("**/api/casino*", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-own")
+
+        await page.locator(".casino-own .field-input").fill("640")
+        await page.locator(".casino-own-go").click()
+        await page.wait_for_function(
+            "() => document.querySelector('.casino-stake-box')"
+            " && !document.querySelector('.casino-own .field-input').value"
+        )
+        # Набранное принято: оно же уходит на сервер при ставке
+        said = await page.locator("#casino-body").inner_text()
+        assert "640" in said, said
+        await browser.close()
+
+
+async def test_an_impossible_stake_is_refused_in_the_same_words(server, db):
+    """Отказ до нажатия — теми же словами, что и отказ службы.
+
+    Иначе выходит, что правил два: одно на странице, другое на сервере.
+    """
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, casino=casino_table("blackjack")
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "casino")
+        await page.wait_for_selector(".casino-own")
+
+        field = page.locator(".casino-own .field-input")
+        oops = page.locator(".casino-own-oops")
+
+        # Блэкджек: от 20 до 1000, шаг 2
+        for typed, words in (
+            ("1200", "Наибольшая ставка — 1000."),
+            ("10", "Наименьшая ставка — 20."),
+            ("41", "Ставка должна быть кратна 2."),
+            ("0", "Ставка должна быть больше нуля."),
+        ):
+            await field.fill(typed)
+            await page.locator(".casino-own-go").click()
+            await page.wait_for_function(
+                "said => el('casino-body').innerText.includes(said)",
+                arg=words,
+            )
+            assert await oops.inner_text() == words, typed
+            # И ставка от отказа не поменялась
+            assert await field.input_value() == typed
+        await browser.close()
+
+
 async def test_the_dice_table_offers_three_outcomes(server, db):
     """Три большие кнопки под лотком, и выплаты на них подписаны."""
     card = build_card(make_player("casino"), TOKEN, viewer_id=42)

@@ -5284,6 +5284,49 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font: inherit;
 }
 .casino-stakes button.on { outline: 2px solid var(--brass); }
+
+/* Своя ставка: поле и кнопка в строку. Лесенка быстрых сумм покрывает
+   привычное, поле — всё остальное: на столе с минимумом в двадцать и
+   потолком в тысячу промежуточных ставок больше, чем кнопок в ряду */
+.casino-stake-box { margin-top: 8px; }
+.casino-own { display: flex; gap: 6px; margin-top: 6px; }
+.casino-own .field-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.24);
+  color: #f3efe6;
+}
+/* Стрелки числового поля в казино только мешают: шаг у ставки свой,
+   и прибавлять по единице нечем */
+.casino-own .field-input::-webkit-outer-spin-button,
+.casino-own .field-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.casino-own .field-input { -moz-appearance: textfield; appearance: textfield; }
+.casino-own-go {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.24);
+  color: #f3efe6;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.casino-own-go:active { transform: scale(0.97); }
+/* Отказ теми же словами, что и у службы: правило одно, и читаться оно
+   должно одинаково — до нажатия и после */
+.casino-own-oops {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: #ff9a8a;
+  min-height: 1em;
+}
 .casino-picks { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .casino-pick {
   display: flex;
