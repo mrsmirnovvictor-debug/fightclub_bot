@@ -1013,7 +1013,10 @@ def avatar_payload(player: Player, avatar_url: str) -> dict:
 
 
 def fighter_row(
-    player: Player, viewer_id: int | None, bot_token: str = ""
+    player: Player,
+    viewer_id: int | None,
+    bot_token: str = "",
+    place: int = 0,
 ) -> dict:
     """Строка списка клуба: только то, что видно в самой строке.
 
@@ -1028,6 +1031,9 @@ def fighter_row(
         "user_id": player.user_id,
         "nickname": player.nickname,
         "level": player.level,
+        # Рейтинг стоит в самой строке: доску почёта читают по нему, и
+        # прятать число, по которому список отсортирован, незачем
+        "rating": player.rating,
         "pro": player.is_pro(),
         # Сам значок, а не только признак: у ступеней он разный, и
         # признаком их не различить
@@ -1040,13 +1046,56 @@ def fighter_row(
         },
         "clan": fighter_badges(player, bot_token),
         "service": service_badge(player),
+        # Место в рейтинге. Ноль — строка не из рейтинга, а из поиска:
+        # там мест нет, и рисовать «0 место» было бы неправдой
+        "place": place,
     }
 
 
+# Сколько бойцов на странице рейтинга. Пятьдесят — столько, сколько
+# называют доской почёта: дальше начинается картотека, и листают её уже
+# те, кто ищет себя, а не тех, кто наверху
+PAGE = 50
+
+
 def build_club(
+    players: list[Player],
+    viewer_id: int | None,
+    bot_token: str = "",
+    offset: int = 0,
+    total: int | None = None,
+    page_size: int = PAGE,
+) -> dict:
+    """Страница рейтинга: кто записан, какого уровня и с каким ELO.
+
+    Место считает сервер и от смещения, а не страница от своего списка:
+    на второй странице первая строка — это пятьдесят первое место, и
+    страница, считающая места сама, написала бы там единицу.
+
+    `total` — сколько бойцов в клубе всего, а не на этой странице: по
+    нему рисуются стрелки и подпись «1–50 из 137».
+    """
+    whole = len(players) if total is None else total
+    size = max(1, page_size)
+    return {
+        "fighters": [
+            fighter_row(player, viewer_id, bot_token, place=offset + number)
+            for number, player in enumerate(players, start=1)
+        ],
+        "total": whole,
+        "offset": offset,
+        "page_size": size,
+        # Страницы считаем здесь же: на странице это было бы делением с
+        # округлением вверх, написанным во второй раз
+        "page": offset // size + 1,
+        "pages": max(1, -(-whole // size)),
+    }
+
+
+def build_search(
     players: list[Player], viewer_id: int | None, bot_token: str = ""
 ) -> dict:
-    """Список клуба: кто записан, какого уровня и что у него в карточке."""
+    """Найденные по прозвищу. Мест тут нет: это не рейтинг, а поиск."""
     return {
         "fighters": [
             fighter_row(player, viewer_id, bot_token) for player in players

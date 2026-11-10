@@ -33,8 +33,10 @@
 
   <!-- ---------- 1. Бойцовский клуб ---------- -->
   <main id="club" class="screen club hidden">
-    <!-- Вид изнутри: один экран обслуживает и клуб, и казино, поэтому картинку
-         ставит не вёрстка, а та локация, в которой боец стоит -->
+    <!-- Вид изнутри: один экран обслуживает клуб, казино и справочную,
+         поэтому картинку ставит не вёрстка, а та локация, в которой боец
+         стоит. У справочной локации нет вовсе: в неё не приходят ногами,
+         её открывает кнопка внизу, — и панорамы у неё поэтому нет -->
     <figure class="interior hidden" id="club-interior">
       <img class="interior-pic" id="club-pic" alt="">
     </figure>
@@ -45,7 +47,7 @@
     </header>
     <h1 class="screen-title" id="club-title">🥊 Бойцовский клуб</h1>
 
-    <!-- Разделы одной вкладки: бои, рейд, игроки и статистика -->
+    <!-- Разделы одной вкладки: бои, рейд, рейтинг и статистика -->
     <div class="bubbles" id="club-sections"></div>
 
     <!-- Бои: вызовы, свой вызов или панель идущего боя -->
@@ -54,10 +56,17 @@
       <div id="fights-body"></div>
     </section>
 
-    <!-- Игроки -->
+    <!-- Рейтинг игроков: доска почёта по ELO, страницами по пятьдесят -->
     <section id="club-players">
       <p class="screen-note" id="club-note"></p>
       <div id="club-list"></div>
+      <div class="pager hidden" id="club-pager">
+        <button type="button" class="pager-step" id="club-prev"
+                aria-label="Предыдущие пятьдесят">←</button>
+        <span class="pager-where" id="club-where"></span>
+        <button type="button" class="pager-step" id="club-next"
+                aria-label="Следующие пятьдесят">→</button>
+      </div>
     </section>
 
     <!-- Рейд: сбор отряда, волна против босса или итог -->
@@ -72,8 +81,19 @@
       <div id="battle-body"></div>
     </section>
 
-    <!-- Статистика: бои по дням, с провалом в разбор одного боя -->
+    <!-- Статистика игрока: бои по дням, с провалом в разбор одного боя.
+         Сверху поиск: чужую статистику смотрят по нику, и искать его по
+         рейтингу нельзя — в рейтинге только верхние полсотни -->
     <section id="club-stats" class="hidden">
+      <div class="seek">
+        <input class="field-input" id="stats-seek" type="text" maxlength="32"
+               autocomplete="off" spellcheck="false"
+               placeholder="Чья статистика? Начни вводить ник">
+        <button type="button" class="btn secondary hidden" id="stats-mine">
+          Моя статистика
+        </button>
+      </div>
+      <div class="seek-found hidden" id="stats-found"></div>
       <p class="screen-note" id="stats-note"></p>
       <div id="stats-body"></div>
     </section>

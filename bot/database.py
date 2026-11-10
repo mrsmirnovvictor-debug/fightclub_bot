@@ -1347,6 +1347,7 @@ class Database:
         self._conn = await aiosqlite.connect(self.path)
         try:
             self._conn.row_factory = aiosqlite.Row
+            await self._conn.create_function("lower", 1, _lower, deterministic=True)
             await self._conn.execute("PRAGMA foreign_keys = ON")
             await self._tune()
             await self._conn.executescript(SCHEMA)
@@ -2242,10 +2243,82 @@ class Database:
             (limit,),
         ) as cursor:
             rows = await cursor.fetchall()
-        players = [_to_player(row) for row in rows]
         # Клан дочитываем одним запросом на весь список: знак мафии стоит
         # у ника в каждой строке, а спрашивать про каждого по отдельности
         # — это двести запросов на один экран
+        return await self._with_standings([_to_player(row) for row in rows])
+
+    async def count_players(self) -> int:
+        """Сколько бойцов в клубе всего. Нужно рейтингу — он идёт страницами."""
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM players"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["n"]) if row else 0
+
+    async def rated_players(
+        self, offset: int = 0, limit: int = 50
+    ) -> list[Player]:
+        """Страница рейтинга: сильные сверху, по ELO и вне зависимости от уровня.
+
+        Порядок тот же, что у `all_players`, но со смещением: рейтинг
+        листают страницами, и тянуть ради второй сотни первую — значит
+        читать базу дважды об одном и том же.
+
+        Ничья в рейтинге разводится уровнем и победами, а на самом дне —
+        номером бойца: без последнего один и тот же боец мог бы попасть
+        на две страницы сразу или не попасть ни на одну. У SQLite нет
+        обещания про порядок равных строк, и страницы разъезжались бы
+        молча.
+        """
+        async with self.conn.execute(
+            f"""
+            SELECT {PLAYER_COLUMNS} FROM players
+            ORDER BY rating DESC, level DESC, wins DESC, user_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (max(1, limit), max(0, offset)),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return await self._with_standings([_to_player(row) for row in rows])
+
+    async def search_players(self, text: str, limit: int = 20) -> list[Player]:
+        """Бойцы, в прозвище которых есть этот кусок. Регистр не важен.
+
+        Сначала те, чьё прозвище с него начинается: набравший «Мар»
+        ищет «Марлу», а не «Команданте Марио», и ставить второго выше
+        первого было бы издевательством над поиском.
+        """
+        needle = " ".join((text or "").split())
+        if not needle:
+            return []
+        # Процент и подчёркивание в LIKE — подстановочные знаки. Боец,
+        # набравший «%», искал бы не процент, а весь клуб разом
+        safe = (
+            needle.lower()
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        like = f"%{safe}%"
+        starts = f"{safe}%"
+        async with self.conn.execute(
+            f"""
+            SELECT {PLAYER_COLUMNS} FROM players
+            WHERE lower(nickname) LIKE ? ESCAPE '\\'
+            ORDER BY (lower(nickname) LIKE ? ESCAPE '\\') DESC,
+                     length(nickname) ASC,
+                     rating DESC,
+                     user_id ASC
+            LIMIT ?
+            """,
+            (like, starts, max(1, limit)),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return await self._with_standings([_to_player(row) for row in rows])
+
+    async def _with_standings(self, players: list[Player]) -> list[Player]:
+        """Дочитать чины списку бойцов одним запросом на весь список."""
         standings = await self.standings_in([one.user_id for one in players])
         for player in players:
             player.clan = standings.get(player.user_id)
@@ -8007,6 +8080,20 @@ class TurfRow:
     empty_since: int = 0
     # До какого часа владение этой точкой записано в бонусный журнал
     counted_at: int = 0
+
+
+def _lower(text: Any) -> Any:
+    """`lower()` для SQL, умеющий кириллицу.
+
+    Родной `lower()` в SQLite складывает только латиницу: «Марла» после
+    него остаётся «Марлой», и сравнение прозвищ без учёта регистра на
+    русских никах молча не работало. `/givepro марла` не находил Марлу,
+    а поиск по куску ника не находил никого.
+
+    Подменяем встроенную функцию своей: все, кто зовёт `lower()` в
+    запросе, уже рассчитывали именно на такое поведение.
+    """
+    return text.lower() if isinstance(text, str) else text
 
 
 def _to_player(row: Iterable[Any]) -> Player:

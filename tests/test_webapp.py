@@ -511,11 +511,136 @@ async def test_club_lists_every_fighter(client, db):
     # Клан и служба — исключение: их значки стоят в самой строке, рядом
     # с ником, и носить их разом нельзя
     assert set(me) == {
-        "user_id", "nickname", "level", "pro", "badge", "is_self", "fclass",
-        "clan", "service",
+        "user_id", "nickname", "level", "rating", "place", "pro", "badge",
+        "is_self", "fclass", "clan", "service",
     }
+    # Место считает сервер от смещения страницы, а не страница от своего
+    # списка: на второй странице первая строка — пятьдесят первое место
+    assert [row["place"] for row in body["fighters"]] == [1, 2, 3]
+    assert me["place"] == 2 and me["rating"] == 1000
     assert me["clan"] == {}, "боец без клана знаков не носит"
     assert me["service"] == {}, "боец без службы значка не носит"
+
+
+async def a_crowd(db, many: int, start: int = 100) -> None:
+    """Клуб из `many` бойцов: рейтинг убывает с номером, как и места."""
+    from bot.models import Player
+
+    for number in range(many):
+        player = Player(
+            user_id=start + number,
+            nickname=f"Боец {number + 1}",
+            class_code="warrior",
+            level=1 + number % 9,
+        )
+        player.rating = 2000 - number
+        await db.save_player(player)
+
+
+async def test_the_rating_comes_in_pages_of_fifty(client, db):
+    """Рейтинг листается страницами: номер со страницы, смещение с сервера.
+
+    Место считает сервер и от смещения: на второй странице первая
+    строка — пятьдесят первое место, и страница, считающая места сама,
+    написала бы там единицу.
+    """
+    await a_crowd(db, 137)
+    head = {"X-Telegram-Init-Data": make_init_data(100)}
+
+    first = await (await client.get("/api/club", headers=head)).json()
+    assert first["total"] == 137
+    assert first["page"] == 1 and first["pages"] == 3
+    assert first["offset"] == 0 and first["page_size"] == 50
+    assert len(first["fighters"]) == 50
+    assert first["fighters"][0]["place"] == 1
+    assert first["fighters"][-1]["place"] == 50
+
+    second = await (await client.get("/api/club?page=2", headers=head)).json()
+    assert second["page"] == 2 and second["offset"] == 50
+    assert second["fighters"][0]["place"] == 51
+    assert second["fighters"][0]["rating"] == 2000 - 50
+
+    last = await (await client.get("/api/club?page=3", headers=head)).json()
+    assert last["page"] == 3 and len(last["fighters"]) == 37
+    assert last["fighters"][-1]["place"] == 137
+
+    # Ни один боец не попал на две страницы и ни один не потерялся
+    seen = [
+        row["user_id"]
+        for page in (first, second, last)
+        for row in page["fighters"]
+    ]
+    assert len(seen) == len(set(seen)) == 137
+
+
+async def test_a_page_past_the_end_lands_on_the_last_one(client, db):
+    """Просили двадцатую, а их три — отдаём третью, а не отказ.
+
+    Доска почёта не та вещь, на запрос которой отвечают ошибкой: номер
+    страницы приходит со страницы, и мусор в нём — не повод закрыться.
+    """
+    await a_crowd(db, 60)
+    head = {"X-Telegram-Init-Data": make_init_data(100)}
+
+    far = await (await client.get("/api/club?page=20", headers=head)).json()
+    assert far["page"] == 2 and far["fighters"][0]["place"] == 51
+
+    for typed in ("0", "-5", "каша", ""):
+        answer = await client.get(f"/api/club?page={typed}", headers=head)
+        assert answer.status == 200, typed
+        assert (await answer.json())["page"] == 1, typed
+
+
+async def test_the_search_finds_fighters_by_a_piece_of_the_nickname(client, db):
+    """Поиск по куску ника: начинающиеся с него — первыми."""
+    from bot.models import Player
+
+    for user_id, nickname in (
+        (42, "Марла"),
+        (43, "Команданте Марио"),
+        (44, "Тайлер"),
+    ):
+        await db.save_player(
+            Player(user_id=user_id, nickname=nickname, class_code="warrior")
+        )
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+
+    found = await (await client.get("/api/players?q=мар", headers=head)).json()
+    names = [row["nickname"] for row in found["fighters"]]
+    assert names == ["Марла", "Команданте Марио"], (
+        "набравший «Мар» ищет Марлу, а не того, у кого это в середине"
+    )
+    assert found["total"] == 2
+    # Мест в поиске нет: это не рейтинг
+    assert all(row["place"] == 0 for row in found["fighters"])
+    assert found["fighters"][0]["is_self"] is True
+
+    # Регистр не важен: прозвище — не пароль
+    assert len(
+        (await (await client.get("/api/players?q=МАРЛ", headers=head)).json())[
+            "fighters"
+        ]
+    ) == 1
+
+
+async def test_an_empty_search_shows_nobody_rather_than_everybody(client, db):
+    """Поиск без слова — это не картотека: он отдаёт пусто."""
+    from bot.models import Player
+
+    await db.save_player(
+        Player(user_id=42, nickname="Тайлер", class_code="warrior")
+    )
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+
+    for query in ("", "   ", "%"):
+        found = await (
+            await client.get(f"/api/players?q={query}", headers=head)
+        ).json()
+        assert found["fighters"] == [], query
+
+
+async def test_the_search_needs_a_signature(client):
+    assert (await client.get("/api/players?q=мар")).status == 401
 
 
 async def test_the_club_list_needs_a_signature(client):

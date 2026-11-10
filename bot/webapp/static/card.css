@@ -1453,6 +1453,76 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 }
 .fighter-level { color: var(--muted); font-weight: 700; font-size: 13px; }
 
+/* ---------- рейтинг игроков ----------
+
+   Строка доски почёта: место слева, ELO справа, между ними всё то же,
+   что и в любом списке бойцов. Место и ELO — числа, и ширина у них
+   своя: без неё ники прыгали бы влево-вправо от строки к строке, и
+   список переставал бы читаться столбцом */
+.fighter-place {
+  flex: 0 0 auto;
+  min-width: 22px;
+  color: var(--muted);
+  font-weight: 800;
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Свою строку видно и по рамке, но место в ней — то, ради чего рейтинг
+   и открывают: его красим */
+.fighter.me .fighter-place { color: var(--accent); }
+.fighter-elo {
+  flex: 0 0 auto;
+  min-width: 38px;
+  color: var(--gold);
+  font-weight: 800;
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Стрелки под рейтингом. Крайние гасим, а не прячем: кнопка,
+   исчезающая под пальцем, уводит нажатие на соседнюю */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 10px 0 4px;
+}
+.pager-step {
+  min-width: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pager-step:disabled { opacity: 0.35; cursor: default; }
+.pager-step:not(:disabled):active { transform: scale(0.96); }
+.pager-where {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- поиск бойца в статистике ----------
+
+   Поле и «Моя статистика» в строку. Кнопка появляется только когда
+   смотрят чужое: у себя возвращаться некуда */
+.seek { display: flex; gap: 8px; align-items: stretch; margin-bottom: 8px; }
+.seek .field-input { flex: 1 1 140px; min-width: 0; }
+.seek .btn { flex: 0 0 auto; min-width: 0; }
+.seek-found { margin-bottom: 10px; }
+/* Найденная строка — кнопка целиком, кроме значка ℹ️ внутри неё */
+.seek-row { cursor: pointer; }
+.seek-row:active { transform: scale(0.99); }
+.seek-empty { margin: 0; font-size: 12.5px; color: var(--muted); }
+
 /* ---------- знак клана ---------- */
 /* Знак один, и место ему между классом и ником — так строка читается
    слева направо: кто по классу, чей по семье, как зовут. */

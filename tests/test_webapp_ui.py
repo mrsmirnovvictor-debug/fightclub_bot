@@ -2764,8 +2764,8 @@ async def test_the_club_lists_everyone_and_opens_a_card(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        # вкладка открывается на боях: за списком идём в «Игроки»
-        await page.get_by_role("button", name="Игроки", exact=True).click()
+        # Кнопка внизу открывает справочную, и открывается она сразу на
+        # рейтинге: списку бойцов больше не надо искать свой раздел
         await page.wait_for_selector(".fighter")
 
         assert await page.locator(".fighter").count() == 2
@@ -2822,7 +2822,6 @@ async def test_a_fighter_row_has_one_way_in_and_it_is_the_card(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        await page.get_by_role("button", name="Игроки", exact=True).click()
         await page.wait_for_selector(".fighter")
 
         row = page.locator(".fighter").first
@@ -2864,7 +2863,6 @@ async def test_a_fighter_card_shows_health_and_leads_to_the_stats(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        await page.get_by_role("button", name="Игроки", exact=True).click()
         await page.locator(".fighter").nth(1).locator(".fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
 
@@ -3481,7 +3479,9 @@ async def open_ring(pw, server, fights):
         pw, server, build_card(make_player(), TOKEN, viewer_id=42), fights=fights
     )
     await page.wait_for_selector("#hero:not(.hidden)")
-    await page.locator("#tab-club").click()
+    # Бои живут в здании клуба, а не под кнопкой внизу: кнопка ведёт в
+    # справочную, где рейтинг и статистика
+    await page.evaluate("openClub()")
     await page.wait_for_selector("#club:not(.hidden)")
     # Вкладка показывается сразу, а бои приезжают ответом сервера. Без
     # этой строки проверка читала пустой ринг и падала не там, где сломано
@@ -3489,19 +3489,285 @@ async def open_ring(pw, server, fights):
     return browser, page
 
 
-async def test_the_club_tab_opens_on_the_ring_and_switches_to_players(server):
-    """Два раздела на одной вкладке: бои и игроки."""
+def a_rated(user_id, nick, level, rating, fclass="warrior"):
+    """Боец с местом в рейтинге: прозвище, уровень и ELO."""
+    one = make_player()
+    one.user_id = user_id
+    one.nickname = nick
+    one.level = level
+    one.class_code = fclass
+    one.rating = rating
+    return one
+
+
+def a_rating(*fighters, offset=0, total=None, viewer=42):
+    from bot.webapp.card import build_club
+
+    return build_club(list(fighters), viewer, offset=offset, total=total)
+
+
+async def test_the_club_button_opens_the_information_desk(server):
+    """Кнопка внизу ведёт в справочную, а не в здание клуба.
+
+    Драться идут ногами, в дом на карте. Справочная к месту не
+    привязана: рейтинг и чужая статистика нужны отовсюду — поэтому у
+    неё нет ни вида изнутри, ни выхода на карту. Показывать панораму
+    того, во что не входили, не из чего, а возвращать на карту того,
+    кто на неё и не уходил, некуда.
+    """
+    me = make_player()
+    card = build_card(me, TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card, club=a_rating(a_rated(42, "Тайлер", 4, 1100))
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+
+        assert (
+            await page.locator("#club-title").inner_text()
+            == "ℹ️ Информация о клубе"
+        )
+        chips = await page.locator("#club-sections .chip").all_inner_texts()
+        assert chips == ["Рейтинг игроков", "Статистика игрока"]
+        # Ни панорамы, ни выхода на карту
+        assert await page.locator("#club-interior").is_hidden()
+        assert await page.locator("#club-back").is_hidden()
+        # А счётчик записанных остаётся: ради него сюда и заходят
+        assert "1 боец" in await page.locator("#club-count").inner_text()
+        # Боёв отсюда не ведут вовсе: это справка, а не ринг
+        assert await page.locator("#club-fights").is_hidden()
+        assert await page.locator("#club-battle").is_hidden()
+        await browser.close()
+
+
+async def test_the_rating_row_shows_the_place_and_the_elo(server):
+    """Строка доски почёта: место слева, ELO справа, порядок по ELO.
+
+    Уровень на места не влияет: четвёртый уровень с полутора тысячами
+    стоит выше четырнадцатого с девятью сотнями.
+    """
+    crowd = a_rating(
+        a_rated(43, "Марла", 4, 1620, "rogue"),
+        a_rated(42, "Тайлер", 14, 1180),
+        a_rated(44, "Бо", 9, 870, "tank"),
+        total=3,
+    )
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, club=crowd)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector(".fighter")
+
+        places = await page.locator(".fighter-place").all_inner_texts()
+        names = await page.locator(".fighter-name").all_inner_texts()
+        elo = await page.locator(".fighter-elo").all_inner_texts()
+        assert places == ["1", "2", "3"]
+        assert names == ["Марла", "Тайлер", "Бо"]
+        assert [one.replace(" ", " ") for one in elo] == [
+            "1 620", "1 180", "870"
+        ]
+
+        # Знаки класса в строке остались: по ним видно, кто как дерётся
+        assert await page.locator(".fighter-class").count() == 3
+        # Своя строка обведена, и место в ней выделено цветом
+        assert await page.locator(".fighter.me").count() == 1
+        mine = page.locator(".fighter.me")
+        assert await mine.locator(".fighter-place").inner_text() == "2"
+        await browser.close()
+
+
+async def test_the_rating_turns_pages_of_fifty(server):
+    """Листалка под рейтингом: «← 1–50 из 137 →».
+
+    На первой странице левая стрелка погашена, на последней — правая.
+    Гасим, а не прячем: кнопка, исчезающая под пальцем, уводит нажатие
+    на соседнюю.
+    """
+    first = a_rating(
+        *[a_rated(100 + one, f"Боец {one + 1}", 5, 2000 - one) for one in range(50)],
+        offset=0, total=137, viewer=100,
+    )
+    second = a_rating(
+        *[a_rated(200 + one, f"Второй {one + 1}", 5, 1900 - one) for one in range(50)],
+        offset=50, total=137, viewer=100,
+    )
+    pages = {1: first, 2: second}
+    asked = []
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+
+    async def give(route):
+        number = int(route.request.url.split("page=")[-1])
+        asked.append(number)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(pages.get(number, first)),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, club=first)
+        await page.route("**/api/club*", give)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-pager:not(.hidden)")
+
+        where = await page.locator("#club-where").inner_text()
+        assert where.replace(" ", " ") == "1–50 из 137"
+        assert await page.locator("#club-prev").is_disabled(), "назад с первой"
+        assert not await page.locator("#club-next").is_disabled()
+
+        await page.locator("#club-next").click()
+        await page.wait_for_function(
+            "() => el('club-where').textContent.includes('51')"
+        )
+        assert asked[-1] == 2
+        assert await page.locator(".fighter-place").first.inner_text() == "51"
+        assert not await page.locator("#club-prev").is_disabled()
+        await browser.close()
+
+
+async def test_a_club_of_one_page_has_no_arrows(server):
+    """Одна страница — стрелок нет: листать некуда."""
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    async with async_playwright() as pw:
+        browser, page = await open_page(
+            pw, server, card,
+            club=a_rating(a_rated(42, "Тайлер", 4, 1100), total=1),
+        )
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector(".fighter")
+
+        assert await page.locator("#club-pager").is_hidden()
+        await browser.close()
+
+
+async def test_the_stats_search_finds_a_fighter_and_opens_his_fights(server):
+    """Чужую статистику смотрят по нику: набрал кусок — выбрал — открылось.
+
+    Через рейтинг так не выйдет: в нём верхние полсотни, а спрашивают
+    чаще про того, с кем только что дрались.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    found = a_rating(a_rated(43, "Марла", 7, 1450, "rogue"))
+    his = dict(HISTORY, user_id=43, name="Марла")
+    asked = []
+
+    async def seek(route):
+        asked.append(route.request.url)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(found, ensure_ascii=False),
+        )
+
+    async def story(route):
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(his if "user_id=43" in route.request.url else HISTORY,
+                            ensure_ascii=False),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, history=HISTORY)
+        await page.route("**/api/players*", seek)
+        await page.route("**/api/history*", story)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role(
+            "button", name="Статистика игрока", exact=True
+        ).click()
+        await page.wait_for_selector("#club-stats:not(.hidden)")
+
+        # Пока смотришь своё, возвращаться некуда — и кнопки нет
+        assert await page.locator("#stats-mine").is_hidden()
+        assert await page.locator("#stats-found").is_hidden()
+
+        await page.locator("#stats-seek").fill("мар")
+        await page.wait_for_selector("#stats-found .fighter")
+        assert "q=" in asked[-1]
+        assert await page.locator("#stats-found .fighter-name").inner_text() == "Марла"
+
+        await page.locator("#stats-found .fighter").click()
+        await page.wait_for_function(
+            "() => el('stats-note').textContent.includes('Марла')"
+        )
+        # Поле очистилось, список спрятался, кнопка возврата появилась
+        assert await page.locator("#stats-seek").input_value() == ""
+        assert await page.locator("#stats-found").is_hidden()
+        assert await page.locator("#stats-mine").is_visible()
+
+        await page.locator("#stats-mine").click()
+        await page.wait_for_function(
+            "() => el('stats-note').textContent.includes('Растафарайчик')"
+        )
+        assert await page.locator("#stats-mine").is_hidden()
+        await browser.close()
+
+
+async def test_one_letter_does_not_send_the_search_anywhere(server):
+    """На одну букву на сервер не ходим: совпадёт полклуба.
+
+    И пустой ответ рисуем словами, а не пустым местом: молчание в ответ
+    на поиск читается как поломка.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    asked = []
+
+    async def seek(route):
+        asked.append(route.request.url)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"fighters": [], "total": 0}),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, history=HISTORY)
+        await page.route("**/api/players*", seek)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.locator("#tab-club").click()
+        await page.get_by_role(
+            "button", name="Статистика игрока", exact=True
+        ).click()
+        await page.wait_for_selector("#club-stats:not(.hidden)")
+
+        await page.locator("#stats-seek").fill("м")
+        await page.wait_for_timeout(400)
+        assert asked == [], "за одной буквой сходили на сервер"
+        assert await page.locator("#stats-found").is_hidden()
+
+        await page.locator("#stats-seek").fill("мяу")
+        await page.wait_for_selector(".seek-empty")
+        assert asked, "за тремя буквами не сходили"
+        assert "Никого" in await page.locator(".seek-empty").inner_text()
+        await browser.close()
+
+
+async def test_the_club_building_offers_fights_and_squads(server):
+    """В здании клуба два дела: бой один на один и бой отрядом.
+
+    Рейтинг и статистика сюда не идут: это не дело, а справка, и за ней
+    не ходят ногами через весь город.
+    """
     async with async_playwright() as pw:
         browser, page = await open_ring(pw, server, None)
 
         sections = await page.locator("#club-sections .chip").all_inner_texts()
         # рейда среди пузырей нет: в подвал спускаются из казино
-        assert sections == ["Бои", "Отряд", "Игроки", "Статистика"]
+        assert sections == ["Бои", "Отряд"]
+        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
         assert await page.locator("#club-fights").is_visible()
         assert await page.locator("#club-players").is_hidden()
+        # В здание пришли ногами — значит, есть куда вернуться
+        assert await page.locator("#club-back").is_visible()
 
-        await page.get_by_role("button", name="Игроки", exact=True).click()
-        assert await page.locator("#club-players").is_visible()
+        await page.get_by_role("button", name="Отряд", exact=True).click()
+        # Смотрим на класс, а не на пиксели: пока состав не приехал,
+        # раздел пуст, и «видимым» его не считает даже открытым
+        await page.wait_for_selector("#club-battle:not(.hidden)", state="attached")
         assert await page.locator("#club-fights").is_hidden()
         await browser.close()
 
@@ -5170,7 +5436,7 @@ async def open_stats(pw, server, history=None, fight_log=None):
     )
     await page.wait_for_selector("#hero:not(.hidden)")
     await page.locator("#tab-club").click()
-    await page.get_by_role("button", name="Статистика", exact=True).click()
+    await page.get_by_role("button", name="Статистика игрока", exact=True).click()
     await page.wait_for_selector("#club-stats:not(.hidden)")
     # История приходит запросом: ждём, пока «Открываем...» сменится ответом
     await page.wait_for_function(
@@ -5279,9 +5545,11 @@ async def open_squad(pw, server, battle=None):
         pw, server, build_card(make_player(), TOKEN, viewer_id=42), battle=battle
     )
     await page.wait_for_selector("#hero:not(.hidden)")
-    await page.locator("#tab-club").click()
+    # Отряд собирают в здании клуба, а не под кнопкой внизу: кнопка
+    # ведёт в справочную, где рейтинг и статистика
+    await page.evaluate("openClub()")
     await page.get_by_role("button", name="Отряд", exact=True).click()
-    await page.wait_for_selector("#club-battle:not(.hidden)")
+    await page.wait_for_selector("#club-battle:not(.hidden)", state="attached")
     return browser, page
 
 
@@ -6414,7 +6682,6 @@ async def test_the_info_card_says_where_the_fighter_is_walking(server):
         )
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        await page.get_by_role("button", name="Игроки", exact=True).click()
         await page.locator(".fighter").nth(1).locator(".fighter-info").click()
         await page.wait_for_selector(".sheet-doll")
 
@@ -7027,21 +7294,24 @@ async def test_the_bag_shows_what_the_master_added(server):
 
 
 async def test_the_casino_opens_only_by_its_own_door(server):
-    """Казино открывает дверь на карте, а не вкладка внизу.
+    """Казино открывает дверь на карте, а не кнопка внизу.
 
-    Вкладка «Клуб» — всегда клуб: боец, стоящий в казино, приходит по ней
-    в клуб, и подвал за ней не прячется.
+    Кнопка «Клуб» — всегда справочная: боец, стоящий в казино, приходит
+    по ней к рейтингу, и подвал за ней не прячется.
     """
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server, city_map("casino"),
                                        card=build_card(make_player("casino"),
                                                        TOKEN, viewer_id=42))
-        # кнопка внизу зовётся «Клуб» и ведёт в клуб — даже отсюда
+        # кнопка внизу зовётся «Клуб» и ведёт в справочную — даже отсюда
         assert await page.locator("#tab-club .bar-label").inner_text() == "Клуб"
         await page.locator("#tab-club").click()
         await page.wait_for_selector("#club:not(.hidden)")
 
-        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
+        assert (
+            await page.locator("#club-title").inner_text()
+            == "ℹ️ Информация о клубе"
+        )
         assert await page.locator("#club-raid").is_hidden(), "подвал открылся сам"
 
         # а дверь казино открывает игорный зал: в казино идут играть
@@ -7079,11 +7349,11 @@ async def test_the_club_keeps_all_its_sections_away_from_the_ring(server):
             build_shop(make_player("pharmacy"), Service.POTIONS),
         )
         await page.wait_for_selector("#hero:not(.hidden)")
-        await page.locator("#tab-club").click()
+        await page.evaluate("openClub()")
         await page.wait_for_selector("#club:not(.hidden)")
 
         chips = await page.locator("#club-sections .chip").all_inner_texts()
-        assert chips == ["Бои", "Отряд", "Игроки", "Статистика"]
+        assert chips == ["Бои", "Отряд"]
         # и стоят они по центру экрана, а не прижаты к левому краю
         box = await page.locator("#club-sections").bounding_box()
         first = await page.locator("#club-sections .chip").first.bounding_box()
@@ -7102,10 +7372,14 @@ async def test_the_club_keeps_all_its_sections_away_from_the_ring(server):
 
 
 async def test_leaving_the_casino_leaves_the_raid_behind(server):
-    """Ушёл в клуб — раздел рейда не едет следом.
+    """Вышел из казино — раздел рейда не едет следом.
 
     Он оставался открытым и после перехода: рейд из него всё равно не
     начать, а выглядело так, будто подвал доступен откуда угодно.
+
+    Падаем в справочную, а не в здание клуба: боец вышел на улицу, и
+    экран, ни к какому месту не привязанный, — единственный, который
+    там не соврёт запиской «бои тут недоступны».
     """
     async with async_playwright() as pw:
         browser, page = await open_map(pw, server, city_map("casino"),
@@ -7124,11 +7398,12 @@ async def test_leaving_the_casino_leaves_the_raid_behind(server):
         )
         await page.locator("#tab-club").click()
 
-        # ждём именно раздел, а не его наполнение: список боёв приезжает
-        # отдельным запросом и до него секция пуста
-        await page.wait_for_selector("#club-fights:not(.hidden)")
+        await page.wait_for_selector("#club-players:not(.hidden)")
         assert await page.locator("#club-raid").is_hidden(), "рейд уехал следом"
-        assert await page.locator("#club-title").inner_text() == "🥊 Бойцовский клуб"
+        assert (
+            await page.locator("#club-title").inner_text()
+            == "ℹ️ Информация о клубе"
+        )
         await browser.close()
 
 
@@ -13616,8 +13891,8 @@ async def test_the_club_list_wears_the_marks_of_the_family(server):
         browser, page = await open_page(pw, server, card, club=club)
         await page.wait_for_selector("#hero:not(.hidden)")
         await page.locator("#tab-club").click()
-        # вкладка открывается на боях: за списком идём в «Игроки»
-        await page.get_by_role("button", name="Игроки", exact=True).click()
+        # Кнопка внизу открывает справочную, и открывается она сразу на
+        # рейтинге: списку бойцов больше не надо искать свой раздел
         await page.wait_for_selector(".fighter")
 
         mine = page.locator(".fighter", has_text="Растафарайчик")

@@ -390,6 +390,22 @@ async def test_the_owner_grants_the_top_tier_by_its_own_command(club):
     assert "PREMIUM" in said and "30 дней" in said
 
 
+async def test_the_owner_finds_a_russian_nickname_in_any_case(club):
+    """«/givepro марла» находит Марлу: прозвище — не пароль.
+
+    Родной `lower()` в SQLite складывает только латиницу, и сравнение
+    без учёта регистра на русских никах молча не работало: владелец
+    писал ник строчными и получал «такого бойца нет».
+    """
+    db, owner, session = club
+    await db.save_player(make_player(778, "Марла"))
+
+    for typed in ("Марла", "марла", "МАРЛА"):
+        await owner.send(f"/givepro {typed}")
+        assert "Марла" in session.texts[-1], typed
+        assert (await db.get_player(778)).is_pro(), typed
+
+
 # ---------- обнуление города ----------
 
 

@@ -222,9 +222,11 @@ from bot.robbery_service import RobberyError, RobberyService
 from bot.turf_war import TurfWar
 from bot.webapp.driving import build_police, build_school
 from bot.webapp.card import (
+    PAGE,
     build_market,
     build_card,
     build_club,
+    build_search,
     build_magic,
     build_shop,
     build_topup,
@@ -1071,14 +1073,56 @@ async def api_promo(request: web.Request) -> web.Response:
     )
 
 
+# Сколько бойцов отдаём поиску за раз. Двадцать — столько, сколько
+# просматривают глазами: длиннее список уже не выбирают, а листают
+SEARCH_LIMIT = 20
+
+
 async def api_club(request: web.Request) -> web.Response:
-    """Список клуба: все записанные бойцы с короткими карточками."""
+    """Страница рейтинга: кто где стоит по ELO, пятьдесят бойцов за раз.
+
+    Номер страницы приходит со страницы, а смещение считает сервер: он
+    же держит и размер страницы. Мусор в номере — первая страница: это
+    не повод отвечать отказом на запрос доски почёта.
+    """
     viewer = await _viewer(request)
-    players = await request.app[DB_KEY].all_players()
+    db = request.app[DB_KEY]
+    total = await db.count_players()
+    pages = max(1, -(-total // PAGE))
+    page = min(max(1, _whole(request.query.get("page"), 1)), pages)
+    offset = (page - 1) * PAGE
+    players = await db.rated_players(offset=offset, limit=PAGE)
     config = request.app[CONFIG_KEY]
     return web.json_response(
-        build_club(players, viewer.user_id, config.bot_token)
+        build_club(
+            players, viewer.user_id, config.bot_token,
+            offset=offset, total=total,
+        )
     )
+
+
+async def api_players(request: web.Request) -> web.Response:
+    """Поиск бойца по прозвищу: часть ника — список совпавших.
+
+    Пустой запрос отдаёт пустой список, а не весь клуб: поиск, который
+    без слова показывает всех, — это уже не поиск, а картотека.
+    """
+    viewer = await _viewer(request)
+    found = await request.app[DB_KEY].search_players(
+        request.query.get("q", ""), limit=SEARCH_LIMIT
+    )
+    config = request.app[CONFIG_KEY]
+    return web.json_response(
+        build_search(found, viewer.user_id, config.bot_token)
+    )
+
+
+def _whole(text: str | None, fallback: int = 0) -> int:
+    """Целое из строки запроса. Мусор — это `fallback`, а не отказ."""
+    try:
+        return int(str(text))
+    except (TypeError, ValueError):
+        return fallback
 
 
 # ---------- бои ----------
@@ -3879,6 +3923,7 @@ def create_app(
             web.post("/api/use", api_use),
             web.post("/api/upgrade", api_upgrade),
             web.get("/api/club", api_club),
+            web.get("/api/players", api_players),
             web.get("/api/fights", api_fights),
             web.post("/api/fight", api_fight),
             web.get("/api/history", api_history),

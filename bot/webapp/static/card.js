@@ -3192,6 +3192,16 @@ function fighterRow(fighter) {
   const box = document.createElement("div");
   box.className = "fighter" + (fighter.is_self ? " me" : "");
 
+  // Место в рейтинге считает сервер: на второй странице первая строка —
+  // это пятьдесят первое место, и страница, считающая места сама,
+  // написала бы там единицу. Ноль — строка не из рейтинга, а из поиска
+  if (fighter.place) {
+    const place = document.createElement("span");
+    place.className = "fighter-place";
+    place.textContent = fighter.place;
+    box.appendChild(place);
+  }
+
   const face = document.createElement("span");
   face.className = "fighter-class";
   face.textContent = fighter.fclass.emoji;
@@ -3227,6 +3237,16 @@ function fighterRow(fighter) {
     level,
     info
   );
+
+  // ELO справа, у самого края: по нему список отсортирован, и прятать
+  // число, которое и решает порядок, было бы странно
+  if (typeof fighter.rating === "number") {
+    const elo = document.createElement("span");
+    elo.className = "fighter-elo";
+    elo.textContent = num(fighter.rating);
+    elo.title = "Рейтинг ELO";
+    box.appendChild(elo);
+  }
   return box;
 }
 
@@ -3351,6 +3371,9 @@ function fighterCard(card) {
     button("📊 Статистика боёв", {
       onClick: () => {
         closeSheet();
+        // Статистика живёт в справочной, а не в здании клуба: карточку
+        // открывают откуда угодно, в том числе с улицы
+        openClubInfo();
         pickClubSection("stats");
         loadHistory(card.is_self ? null : card.user_id);
       },
@@ -3448,11 +3471,19 @@ function sayNoFightsHere(name) {
   el(body).appendChild(said);
 }
 
-// Один экран обслуживает два дома: клуб и казино. Казино — не вкладка, а
-// дом: его открывает дверь на карте, и только она. Кнопка внизу остаётся
-// «Клубом» всегда: она ведёт в клуб, где бы боец ни стоял, — а раздел
-// рейда за ней не прячется, иначе, выйдя из казино, он бы там и остался.
+// Один экран обслуживает несколько домов, и дома эти разного рода.
+//
+// «Справочная» — не дом вовсе: в неё не приходят ногами, её открывает
+// кнопка внизу. Там рейтинг и статистика — то, что нужно отовсюду и ни
+// к какому месту не привязано. Панорамы и выхода на карту у неё нет:
+// показывать вид изнутри у того, во что не входили, не из чего, а
+// возвращать на карту того, кто на неё и не уходил, некуда.
+//
+// Клуб, казино, стадион и часть — настоящие дома: их открывает дверь на
+// карте, и только она. Драться можно там, где стоишь, и нигде больше —
+// поэтому бои живут в здании, а не под кнопкой.
 const CLUB_HOUSES = {
+  info: { title: "ℹ️ Информация о клубе", start: "players" },
   club: { title: "🥊 Бойцовский клуб", start: "fights" },
   casino: { title: "🎲 Казино", start: "raid" },
   // Второй рейдовый дом. Экран тот же, что у казино, — какой именно
@@ -3485,16 +3516,29 @@ function clubSections() {
   // шапке: нажата — рейд, отжата — игорный зал. Две вкладки рядом с
   // той же кнопкой делали одно и то же двумя способами
   if (RAID_HOUSES.includes(clubHouse)) return [];
+  // В справочной — то, что смотрят, в клубе — то, что делают. Четыре
+  // раздела в одном месте путали одно с другим: бойца звали драться
+  // там же, где он читал чужую статистику
+  if (clubHouse === "info") {
+    return [
+      ["players", "Рейтинг игроков"],
+      ["stats", "Статистика игрока"],
+    ];
+  }
   return [
     ["fights", "Бои"],
     ["battle", "Отряд"],
-    ["players", "Игроки"],
-    ["stats", "Статистика"],
   ];
 }
 
 function openClub() {
   clubHouse = "club";
+  showTab("club");
+}
+
+/** Справочная клуба: рейтинг и статистика. Её открывает кнопка внизу. */
+function openClubInfo() {
+  clubHouse = "info";
   showTab("club");
 }
 
@@ -3512,6 +3556,11 @@ function renderClubSections() {
   const box = el("club-sections");
   box.textContent = "";
   el("club-title").textContent = CLUB_HOUSES[clubHouse].title;
+  // В справочную не входили — значит, и выходить из неё на карту
+  // некуда, и вида изнутри у неё нет
+  const walked = clubHouse !== "info";
+  el("club-back").classList.toggle("hidden", !walked);
+  if (!walked) el("club-interior").classList.add("hidden");
   clubSections().forEach(([code, label]) => {
     box.appendChild(chip(label, clubSection === code, () => pickClubSection(code)));
   });
@@ -5451,6 +5500,76 @@ function battleLog(battle) {
 let statsData = null;
 let statsWho = null; // null — своя история
 
+// ---------- поиск бойца для статистики ----------
+//
+// Чужую статистику смотрят по нику, и искать его по рейтингу нельзя: в
+// рейтинге верхние полсотни, а спрашивают чаще про того, с кем только
+// что дрались. Поэтому поле, а не список.
+//
+// Ищет сервер: прозвищ в клубе столько же, сколько бойцов, и тянуть их
+// все на страницу ради подсказки — это картотека вместо поиска.
+
+let seekTimer = null;
+let seekAsked = "";
+
+/** Отложенный поиск: пока набирают, на каждую букву не ходим. */
+function seekPlayers(typed) {
+  if (seekTimer) clearTimeout(seekTimer);
+  const wanted = (typed || "").trim();
+  if (wanted.length < 2) {
+    showFound(null);
+    return;
+  }
+  seekTimer = setTimeout(() => askPlayers(wanted), 250);
+}
+
+async function askPlayers(wanted) {
+  seekAsked = wanted;
+  try {
+    const response = await fetch(
+      "api/players?q=" + encodeURIComponent(wanted),
+      { headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" } }
+    );
+    if (!response.ok) throw new Error("Поиск не отвечает.");
+    const data = await response.json();
+    // Ответ на старый запрос не рисуем: пока он ехал, набрали ещё
+    if (seekAsked !== wanted) return;
+    showFound(data.fighters || []);
+  } catch (error) {
+    showFound([], error.message);
+  }
+}
+
+function showFound(fighters, oops) {
+  const box = el("stats-found");
+  box.textContent = "";
+  if (fighters === null) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  if (oops || !fighters.length) {
+    const said = document.createElement("p");
+    said.className = "seek-empty";
+    said.textContent = oops || "Никого с таким ником не нашлось.";
+    box.appendChild(said);
+    return;
+  }
+  fighters.forEach((one) => {
+    const row = fighterRow(one);
+    // В найденном строка — кнопка: нажал и смотришь его бои
+    row.classList.add("seek-row");
+    row.addEventListener("click", (event) => {
+      // Значок ℹ️ внутри строки ведёт в карточку и остаётся собой
+      if (event.target.closest(".fighter-info")) return;
+      el("stats-seek").value = "";
+      showFound(null);
+      loadHistory(one.is_self ? null : one.user_id);
+    });
+    box.appendChild(row);
+  });
+}
+
 async function loadHistory(userId) {
   statsWho = userId || null;
   el("stats-note").textContent = "Открываем...";
@@ -5486,16 +5605,12 @@ function renderHistory(data) {
       counts.draw + " ничьих" + tail
     : data.name + " ещё не дрался.";
 
+  // «Моя статистика» стоит у поля поиска, а не в списке боёв: вернуться
+  // к себе хотят до того, как долистают чужие бои до конца
+  el("stats-mine").classList.toggle("hidden", !statsWho);
+
   const body = el("stats-body");
   body.textContent = "";
-  if (statsWho) {
-    const back = document.createElement("button");
-    back.type = "button";
-    back.className = "btn secondary wide";
-    back.textContent = "← Моя статистика";
-    back.addEventListener("click", () => loadHistory(null));
-    body.appendChild(back);
-  }
   data.days.forEach((day) => {
     const head = document.createElement("h2");
     head.className = "shelf-head";
@@ -5638,12 +5753,31 @@ function renderClub(data) {
     ? data.total + " " + plural(data.total, "боец", "бойца", "бойцов")
     : "";
   el("club-note").textContent = data.total
-    ? "Все, кто завёл бойца. Значок ℹ️ открывает его карточку."
+    ? "Места по рейтингу ELO, уровень на них не влияет. "
+      + "Значок ℹ️ открывает карточку бойца."
     : "В клубе пока никого.";
 
   const list = el("club-list");
   list.textContent = "";
   data.fighters.forEach((fighter) => list.appendChild(fighterRow(fighter)));
+  renderClubPager(data);
+}
+
+/** Стрелки под рейтингом: «← 1–50 из 137 →». Одна страница — стрелок нет. */
+function renderClubPager(data) {
+  const pager = el("club-pager");
+  const pages = data.pages || 1;
+  pager.classList.toggle("hidden", pages < 2);
+  if (pages < 2) return;
+  const page = data.page || 1;
+  const first = (data.offset || 0) + 1;
+  const last = (data.offset || 0) + data.fighters.length;
+  el("club-where").textContent =
+    first + "–" + last + " из " + num(data.total);
+  // Крайние страницы гасим, а не прячем: кнопка, исчезающая под
+  // пальцем, уводит нажатие на соседнюю
+  el("club-prev").disabled = page <= 1;
+  el("club-next").disabled = page >= pages;
 }
 
 function plural(count, one, few, many) {
@@ -5655,13 +5789,22 @@ function plural(count, one, few, many) {
   return many;
 }
 
-async function loadClub() {
+// Какую страницу рейтинга показываем. Номер, а не смещение: смещение
+// считает сервер — он же держит и размер страницы
+let clubPage = 1;
+
+async function loadClub(page) {
+  clubPage = Math.max(1, page || clubPage);
   try {
-    const response = await fetch("api/club", {
+    const response = await fetch("api/club?page=" + clubPage, {
       headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
     });
-    if (!response.ok) throw new Error("Картотека не открылась.");
-    renderClub(await response.json());
+    if (!response.ok) throw new Error("Рейтинг не открылся.");
+    const data = await response.json();
+    // Страницу называет ответ, а не запрос: попросили двадцатую, а их
+    // три — сервер отдаст третью, и листать дальше надо от неё
+    clubPage = data.page || clubPage;
+    renderClub(data);
   } catch (error) {
     el("club-note").textContent = error.message;
   }
@@ -19791,9 +19934,12 @@ function paintCity(card) {
   // Вышли из рейдового дома — рейд закрывается сам: держать его
   // открытым значит показывать то, во что с улицы всё равно не пустят
   if (!inRaidHouse() && RAID_HOUSES.includes(clubHouse)) {
-    clubHouse = "club";
-    clubSection = "fights";
-    if (lastTab === "club") pickClubSection("fights");
+    // Падаем в справочную, а не в клуб: боец вышел на улицу, и экран,
+    // ни к какому месту не привязанный, — единственный, который там не
+    // соврёт запиской «бои тут недоступны»
+    clubHouse = "info";
+    clubSection = "players";
+    if (lastTab === "club") pickClubSection("players");
   }
   // Строка под куклой: город и дом, в котором боец стоит. В пути дом
   // сменяется дорогой — иначе выходит, что он одновременно и там, и там
@@ -19822,7 +19968,9 @@ function fail(message) {
 const SCREEN_PARAMS = {
   shop: () => showTab("shop"),
   ring: () => {
-    showTab("club");
+    // Зовут на ринг — значит, в здание клуба, а не в справочную: драться
+    // можно там, где стоишь. Не в клубе — увидит записку об этом
+    openClub();
     pickClubSection("fights");
   },
   raid: () => {
@@ -19921,11 +20069,27 @@ TABS.forEach((tab) => {
   el("tab-" + tab).addEventListener("click", () => {
     // Казино открывает только его дверь. Кнопка внизу — всегда клуб,
     // даже если боец стоит в казино и только что смотрел рейд
-    if (tab === "club") clubHouse = "club";
+    // Кнопка внизу ведёт в справочную, а не в клуб: драться идут
+    // ногами, в здание на карте
+    if (tab === "club") clubHouse = "info";
     showTab(tab);
   });
 });
 el("topup-back").addEventListener("click", () => showTab(lastTab));
+
+// Рейтинг листается страницами по полсотни: стрелки под списком
+el("club-prev").addEventListener("click", () => loadClub(clubPage - 1));
+el("club-next").addEventListener("click", () => loadClub(clubPage + 1));
+
+// Поиск бойца для статистики: набрал — через четверть секунды спросили
+el("stats-seek").addEventListener("input", (event) =>
+  seekPlayers(event.target.value)
+);
+el("stats-mine").addEventListener("click", () => {
+  el("stats-seek").value = "";
+  showFound(null);
+  loadHistory(null);
+});
 
 // Промокод в «Элите»: кнопка и Enter в поле — одно и то же действие.
 // Подсказку возвращаем, как только боец начал править код: прежний
