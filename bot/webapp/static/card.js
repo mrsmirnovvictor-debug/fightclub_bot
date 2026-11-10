@@ -14,16 +14,80 @@ const el = (id) => document.getElementById(id);
 // это окно никто не задаёт, так что порог там всегда свой.
 const LOADER_LEAST =
   typeof window.LOADER_LEAST_MS === "number" ? window.LOADER_LEAST_MS : 4000;
+// Сколько длится угасание заставки. Снимается оттуда же, откуда порог:
+// проверкам ждать эти доли секунды пятьсот раз незачем
+const LOADER_FADE =
+  typeof window.LOADER_FADE_MS === "number" ? window.LOADER_FADE_MS : 320;
 const loaderSince = Date.now();
 
+// Заставка проходит четыре состояния, и каждое из них однократно:
+// «висит» → «ждёт порога» → «угасает» → «ушла». Прятать её зовут из
+// каждой отрисовки карточки, а карточка перерисовывается после любого
+// действия — без этой памяти угасание запускалось бы заново поверх
+// самого себя
+let loaderStep = "shown";
+
+// Что показать, когда заставка уйдёт. Окно награды за вход всплывало
+// поверх неё: карточка приезжала за сотню миллисекунд, окно открывалось
+// сразу, а заставка висела свои четыре секунды — и поверх неё лежало
+// предложение забрать награду у игры, которая ещё не началась
+const afterLoaderWaits = [];
+
+// Запуск сорвался: карточку не отдали или подпись не сошлась. Всё, что
+// ждало конца заставки, отменяется — окна поверх ошибки быть не должно
+let launchBroken = false;
+
+/** Сделать это, когда заставка уйдёт. Уже ушла — сделать сразу. */
+function afterLoader(fn) {
+  if (launchBroken) return;
+  if (loaderStep === "gone") {
+    fn();
+    return;
+  }
+  afterLoaderWaits.push(fn);
+}
+
 function hideLoader() {
+  if (loaderStep !== "shown") return;
   const left = LOADER_LEAST - (Date.now() - loaderSince);
   if (left > 0) {
-    setTimeout(hideLoader, left);
+    loaderStep = "waiting";
+    setTimeout(() => {
+      loaderStep = "shown";
+      hideLoader();
+    }, left);
     return;
   }
   const box = el("loader");
-  if (box) box.classList.add("hidden");
+  if (!box) {
+    loaderIsGone();
+    return;
+  }
+  loaderStep = "going";
+  // Угасание, а не щелчок: окно награды, появляющееся ровно в тот миг,
+  // когда заставка пропадает рывком, читается как сбой вёрстки
+  box.style.transitionDuration = LOADER_FADE + "ms";
+  box.classList.add("gone");
+  // Ждём таймером, а не событием перехода: `transitionend` не придёт,
+  // если вкладку свернули или перехода не случилось вовсе, и очередь
+  // осталась бы висеть молча
+  setTimeout(() => {
+    box.classList.add("hidden");
+    loaderIsGone();
+  }, LOADER_FADE);
+}
+
+function loaderIsGone() {
+  loaderStep = "gone";
+  while (afterLoaderWaits.length) {
+    const fn = afterLoaderWaits.shift();
+    if (launchBroken) continue;
+    try {
+      fn();
+    } catch (error) {  // pragma: no cover - падение в очереди не наше дело
+      reportOops(error, "loader");
+    }
+  }
 }
 
 // Падения мини-аппа не видно ниоткуда: консоль вебвью Telegram не
@@ -1034,6 +1098,11 @@ let dailyShown = false;
 // только при заходе. Карточка перерисовывается часто, состояние живёт тут
 let dailyState = null;
 
+// Окно награды ждёт конца заставки. Очередь на показ встаёт один раз за
+// открытие: карточка перерисовывается после каждого действия, и без
+// этой памяти в очереди копились бы десятки одинаковых показов
+let dailyQueued = false;
+
 function renderDaily(card) {
   const state = card.daily;
   if (!state) return;
@@ -1045,14 +1114,26 @@ function renderDaily(card) {
     // Уже показывали: содержимое обновим, а прятать или открывать заново
     // не будем — это решает игрок
     if (veil.classList.contains("hidden")) return;
-  } else if (state.fresh || state.waiting.length) {
-    dailyShown = true;
-  } else {
+    fillDaily(state);
+    return;
+  }
+  if (!(state.fresh || state.waiting.length)) {
     veil.classList.add("hidden");
     return;
   }
-  fillDaily(state);
-  veil.classList.remove("hidden");
+  if (dailyQueued) return;
+  dailyQueued = true;
+  // Показываем не сейчас, а когда уйдёт заставка. Условия перепроверяем
+  // в тот же миг и по свежему состоянию: пока заставка висела, награду
+  // могли забрать с другого устройства
+  afterLoader(() => {
+    if (!dailyState) return;
+    if (!(dailyState.fresh || dailyState.waiting.length)) return;
+    if (dailyShown) return;
+    dailyShown = true;
+    fillDaily(dailyState);
+    el("daily-veil").classList.remove("hidden");
+  });
 }
 
 // Кнопка «Ежедневные награды» на карточке: календарь можно открыть в любой
@@ -6897,6 +6978,9 @@ function renderHead(prefix, card) {
 let cardData = null;
 
 function render(card, keepTab) {
+  // Карточка в руках — значит, запуск состоялся. Прошлый срыв прощаем:
+  // после удачного повтора всё идёт обычным порядком
+  launchBroken = false;
   cardData = card;
   renderHead("bag-", card);
   renderHead("hero-", card);
@@ -19954,6 +20038,10 @@ function paintCity(card) {
 }
 
 function fail(message) {
+  // Запуск сорвался: всё, что ждало конца заставки, отменяется. Окно
+  // награды поверх сообщения об ошибке обещало бы игру, которой нет
+  launchBroken = true;
+  afterLoaderWaits.length = 0;
   // Отказ тоже ждёт своих двух секунд: иначе картина моргнула бы и
   // сменилась ошибкой, и человек не понял бы, что это было
   hideLoader();

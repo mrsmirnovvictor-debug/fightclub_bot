@@ -1025,7 +1025,9 @@ async def open_page(
     # о чём не говорит, а на пяти сотнях проверок стоит четверть часа.
     # Саму заставку проверяет отдельный тест — он просит порог обратно
     if not loader_wait:
-        await page.add_init_script("window.LOADER_LEAST_MS = 0;")
+        await page.add_init_script(
+            "window.LOADER_LEAST_MS = 0; window.LOADER_FADE_MS = 0;"
+        )
     await page.route("**/api/card*", canned(card))
     await page.route("**/api/shop*", canned(shop or {}))
     await page.route("**/api/topup*", canned(topup or {"credits": 0, "packs": []}))
@@ -18318,6 +18320,133 @@ async def test_the_loading_screen_shows_the_picture_and_waits_two_seconds(server
             "#loader.hidden", state="attached", timeout=5_000
         )
         assert time.monotonic() - started >= 1.7, "заставка ушла раньше срока"
+        await browser.close()
+
+
+async def test_the_daily_window_waits_until_the_splash_is_gone(server):
+    """Окно награды не ложится поверх заставки ни на один кадр.
+
+    Карточка приезжает за сотню миллисекунд, окно открывалось сразу, а
+    заставка висела свои секунды — и поверх неё лежало предложение
+    забрать награду у игры, которая ещё не началась.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, loader_wait=True)
+
+        # Карточка уже отрисована, заставка ещё висит — окна быть не должно
+        await page.wait_for_selector("#hero", state="attached")
+        assert await page.locator("#loader").is_visible()
+        assert await page.locator("#daily-veil").is_hidden(), (
+            "окно награды легло поверх заставки"
+        )
+
+        # Заставка ушла — и только теперь окно
+        await page.wait_for_selector(
+            "#loader.hidden", state="attached", timeout=8_000
+        )
+        await page.wait_for_selector("#daily-veil:not(.hidden)", timeout=3_000)
+        assert "день 3" in await page.locator("#daily-veil").inner_text()
+        await browser.close()
+
+
+async def test_the_splash_never_catches_the_reward_window_on_top(server):
+    """Ни на одном кадре заставка и окно награды не видны разом.
+
+    Проверяем не два мига, а всё время запуска: наблюдатель следит за
+    обоими и запоминает каждый случай, когда они оказались видны
+    одновременно.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, loader_wait=True)
+        # Наблюдатель встаёт раньше, чем уходит заставка, и смотрит на
+        # каждую правку страницы
+        await page.evaluate("""() => {
+          window.__together = 0;
+          const seen = () => {
+            const loader = document.getElementById('loader');
+            const veil = document.getElementById('daily-veil');
+            if (!loader || !veil) return;
+            const up = !loader.classList.contains('hidden');
+            const open = !veil.classList.contains('hidden');
+            if (up && open) window.__together += 1;
+          };
+          seen();
+          new MutationObserver(seen).observe(document.body, {
+            attributes: true, subtree: true, attributeFilter: ['class'],
+          });
+        }""")
+
+        await page.wait_for_selector("#daily-veil:not(.hidden)", timeout=8_000)
+        together = await page.evaluate("() => window.__together")
+        assert together == 0, f"видны разом на {together} правках"
+        await browser.close()
+
+
+async def test_a_broken_launch_drops_what_waited_for_the_splash(server):
+    """Запуск сорвался — очередь на показ отменяется.
+
+    Сейчас в неё попасть и не успеть: окно награды встаёт в очередь из
+    отрисовки карточки, а карточки при срыве нет вовсе. Проверяем сам
+    затвор, а не сцену: он стои́т на случай, когда отрисовка и отказ
+    однажды встретятся — и молча показанное поверх ошибки окно
+    обещало бы игру, которой нет.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, loader_wait=True)
+        await page.wait_for_selector("#hero", state="attached")
+        assert await page.locator("#loader").is_visible()
+
+        # Окно уже ждёт конца заставки. Срываем запуск
+        done = await page.evaluate("""() => {
+          const was = [];
+          afterLoader(() => was.push('показали'));
+          fail('Карточка не открылась.');
+          return was;
+        }""")
+        assert done == [], "очередь отработала до срыва"
+
+        await page.wait_for_selector(
+            "#loader.hidden", state="attached", timeout=8_000
+        )
+        await page.wait_for_timeout(200)
+        assert await page.locator("#daily-veil").is_hidden(), (
+            "окно награды встало поверх ошибки"
+        )
+        assert await page.locator("#error").is_visible()
+        await browser.close()
+
+
+async def test_the_reward_window_never_doubles_on_redraws(server):
+    """Перерисовки карточки не плодят окно и не открывают его заново.
+
+    Карточка перерисовывается после каждого действия. Закрыл окно —
+    значит закрыл: открывать его обратно следующей же отрисовкой нельзя.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    card["daily"] = daily_state()
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, build_shop(make_player()))
+        await page.wait_for_selector("#daily-veil:not(.hidden)")
+        assert await page.locator("#daily-veil").count() == 1
+
+        # Закрыли — и десять перерисовок подряд
+        await page.locator("#daily-veil .btn").last.click()
+        await page.wait_for_selector("#daily-veil.hidden", state="attached")
+        await page.evaluate(
+            "card => { for (let i = 0; i < 10; i++) render(card, true); }", card
+        )
+        assert await page.locator("#daily-veil").is_hidden(), "окно вернулось само"
+        assert await page.locator("#daily-veil").count() == 1
         await browser.close()
 
 
