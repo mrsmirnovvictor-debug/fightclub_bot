@@ -2282,11 +2282,24 @@ const OPENED_FROM = {
 };
 let lastTab = "hero";
 
+/** Какая кнопка внизу горит на этом экране.
+
+    Дом на карте подсвечивает «Карту»: боец пришёл туда ногами, и
+    вернуться ему на карту. Экран клуба обслуживает и дома (сам клуб,
+    казино, стадион, часть), и справочную за нижней кнопкой — поэтому
+    горящая кнопка у него зависит не от экрана, а от того, как в него
+    вошли. Прежде он всегда зажигал «Клуб», и Бойцовский клуб был
+    единственным домом города, выпадавшим из «Карты». */
+function litTab(name) {
+  if (name === "club") return clubHouse === "info" ? "club" : "map";
+  return OPENED_FROM[name] || name;
+}
+
 function showTab(name) {
   SCREENS.forEach((screen) => {
     el(screen).classList.toggle("hidden", screen !== name);
   });
-  const lit = OPENED_FROM[name] || name;
+  const lit = litTab(name);
   TABS.forEach((tab) => {
     el("tab-" + tab).classList.toggle("active", tab === lit);
   });
@@ -3637,11 +3650,11 @@ function renderClubSections() {
   const box = el("club-sections");
   box.textContent = "";
   el("club-title").textContent = CLUB_HOUSES[clubHouse].title;
-  // В справочную не входили — значит, и выходить из неё на карту
-  // некуда, и вида изнутри у неё нет
-  const walked = clubHouse !== "info";
-  el("club-back").classList.toggle("hidden", !walked);
-  if (!walked) el("club-interior").classList.add("hidden");
+  // В справочную не входили — значит, и выходить из неё на карту некуда
+  el("club-back").classList.toggle("hidden", clubHouse === "info");
+  // А вид изнутри перерисовываем целиком: он зависит и от дома, в
+  // котором боец стоит, и от того, справочная перед ним или здание
+  paintInterior();
   clubSections().forEach(([code, label]) => {
     box.appendChild(chip(label, clubSection === code, () => pickClubSection(code)));
   });
@@ -19989,8 +20002,13 @@ function paintInterior() {
     const box = el(screen + "-interior");
     const pic = el(screen + "-pic");
     if (!box || !pic) return;
-    box.classList.toggle("hidden", !show);
-    if (!show) return;
+    // Справочная клуба — не дом: в неё не входили, и вида изнутри у неё
+    // нет. Правило живёт здесь, а не в отрисовке разделов: там оно
+    // только прятало картинку и не возвращало её, когда боец заходил в
+    // само здание, — и интерьер пропадал до следующей отрисовки карточки
+    const mine = screen !== "club" || clubHouse !== "info";
+    box.classList.toggle("hidden", !show || !mine);
+    if (!show || !mine) return;
     pic.alt = place.title || "";
     // Тот же адрес заново не грузим: перерисовка идёт на каждой карточке,
     // а картинка тяжёлая

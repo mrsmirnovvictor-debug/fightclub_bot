@@ -3748,6 +3748,89 @@ async def test_one_letter_does_not_send_the_search_anywhere(server):
         await browser.close()
 
 
+async def test_the_fight_club_is_a_house_on_the_map_like_any_other(server):
+    """В здании клуба горит «Карта», а не «Клуб»: туда пришли ногами.
+
+    Экран клуба обслуживает и дома, и справочную за нижней кнопкой, и
+    зажигал он всегда «Клуб» — Бойцовский клуб был единственным домом
+    города, выпадавшим из «Карты».
+    """
+    me = make_player("fight_club")
+    card = build_card(me, TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Кнопка внизу ведёт в справочную — там и горит «Клуб»
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        assert "active" in await page.locator("#tab-club").get_attribute("class")
+        assert "active" not in await page.locator("#tab-map").get_attribute("class")
+
+        # А здание — дом как всякий другой: горит «Карта»
+        await page.evaluate("openClub()")
+        await page.wait_for_selector("#club-fights:not(.hidden)")
+        assert "active" in await page.locator("#tab-map").get_attribute("class"), (
+            "в здании клуба не горит «Карта»"
+        )
+        assert "active" not in await page.locator("#tab-club").get_attribute("class")
+        await browser.close()
+
+
+async def test_the_raid_house_also_lights_the_map(server):
+    """Казино, стадион и часть — тоже дома: у них горит «Карта»."""
+    card = build_card(make_player("casino"), TOKEN, viewer_id=42)
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await page.evaluate("openRaidHouse('casino')")
+        await page.wait_for_selector("#club-raid:not(.hidden)")
+
+        assert "active" in await page.locator("#tab-map").get_attribute("class")
+        assert "active" not in await page.locator("#tab-club").get_attribute("class")
+        await browser.close()
+
+
+async def test_the_club_building_keeps_the_view_from_inside(server):
+    """Вид изнутри в здании клуба не пропадает после справочной.
+
+    Справочная прятала картинку и не возвращала её: правило стояло в
+    отрисовке разделов, а не там, где картинку рисуют, — и, зайдя в
+    здание после справочной, боец видел дом без интерьера до следующей
+    отрисовки карточки.
+    """
+    me = make_player("fight_club")
+    card = build_card(me, TOKEN, viewer_id=42)
+    assert card["place"]["interior"], "у клуба нет вида изнутри — проверять нечего"
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, images=True)
+        await page.wait_for_selector("#hero:not(.hidden)")
+
+        # Сперва справочная: там вида изнутри быть не должно
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        assert await page.locator("#club-interior").is_hidden()
+
+        # Теперь само здание — и картинка на месте, без перерисовки карточки
+        await page.evaluate("openClub()")
+        await page.wait_for_selector("#club-fights:not(.hidden)")
+        assert await page.locator("#club-interior").is_visible(), (
+            "интерьер пропал при входе в здание"
+        )
+        assert card["place"]["interior"] in await page.locator(
+            "#club-pic"
+        ).get_attribute("src")
+
+        # И обратно в справочную — снова без интерьера
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        assert await page.locator("#club-interior").is_hidden()
+        await browser.close()
+
+
 async def test_the_club_building_offers_fights_and_squads(server):
     """В здании клуба два дела: бой один на один и бой отрядом.
 
@@ -5552,6 +5635,10 @@ async def open_squad(pw, server, battle=None):
     await page.evaluate("openClub()")
     await page.get_by_role("button", name="Отряд", exact=True).click()
     await page.wait_for_selector("#club-battle:not(.hidden)", state="attached")
+    # Раздел открывается сразу, а содержимое приезжает ответом сервера.
+    # Без этого ожидания проверка читала пустой `#battle-body` — не
+    # всегда, а когда машина под полным прогоном отвечала медленнее
+    await page.wait_for_function("battleData !== null")
     return browser, page
 
 
