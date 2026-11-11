@@ -14,6 +14,7 @@ import itertools
 import logging
 import random
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
@@ -48,6 +49,7 @@ from bot.game.economy import (
     rating_delta,
     win_exp,
 )
+from bot.game.health import now_ts
 from bot.game.modes import FightMode
 from bot.game.narrator import (
     echo_lines,
@@ -172,6 +174,11 @@ class BattleSession:
     """Идущий бой: бойцы, стороны, пары этого раунда."""
 
     id: int
+    # Ключ боя для журнала ELO: один на бой и на всех, кто в нём был.
+    # Случайный, а не номер боя: номера раздаёт счётчик в памяти и после
+    # каждого перезапуска начинает с единицы, а ключ должен быть разным
+    # всегда — на нём держится обещание «бой учитывается один раз»
+    fight_key: str = field(default_factory=lambda: uuid4().hex, kw_only=True)
     chat_id: int | None
     thread_id: int | None
     kind: BattleKind
@@ -770,6 +777,9 @@ class BattleService:
         on_ring = len(session.fighters)
         rows: list[tuple[Player, ProgressReport, Fighter, bool]] = []
         broken: list[tuple[Player, list]] = []
+        # Миг фиксации итога — один на весь бой, а не по бойцу: иначе
+        # бой, кончившийся на границе недели, разошёлся бы по двум
+        stamped = now_ts()
 
         for user_id, player in players.items():
             fighter = session.fighters[user_id]
@@ -816,8 +826,21 @@ class BattleService:
             player.set_hp(fighter.hp)
             report = player.grant_exp(exp)
             report.rating_delta = delta
+            was = player.rating
             player.apply_rating(delta)
             await self.db.save_player(player)
+            # Журнал ELO: групповой бой идёт в недельный рейтинг наравне
+            # с дуэлью — это такой же бой между живыми игроками. Запись
+            # после сохранения бойца: см. ту же развязку в дуэли
+            await self.db.log_rating(
+                user_id,
+                "battle",
+                session.fight_key,
+                "draw" if outcome.draw else ("win" if won else "loss"),
+                player.rating - was,
+                player.rating,
+                stamped,
+            )
             rows.append((player, report, fighter, won))
 
         return battle_rewards_report(rows, broken=broken)

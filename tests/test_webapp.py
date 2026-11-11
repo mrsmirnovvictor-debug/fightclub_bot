@@ -981,3 +981,342 @@ def test_the_card_carries_the_whole_bar():
     assert bar["exp"] == 6_000 and bar["exp_needed"] == 10_200
     assert bar["exp_to_next_up"] == 1_200
     assert len(bar["ups"]) == 3
+
+
+# ---------- список игроков: отбор по уровню и алфавит ----------
+
+
+async def _club_of(db, *rows):
+    """Клуб из нескольких бойцов: (номер, ник, ELO, уровень)."""
+    from bot.models import Player
+
+    for user_id, nickname, rating, level in rows:
+        player = Player(
+            user_id=user_id, nickname=nickname, class_code="warrior", level=level
+        )
+        player.rating = rating
+        await db.save_player(player)
+
+
+async def test_the_player_list_can_be_sorted_by_nickname(client, db):
+    """Алфавитная сортировка по нику — и она не путается в регистре.
+
+    Кириллица тут важна: `lower()` у SQLite знает только латиницу, и
+    без своей замены «Ангел» и «ангел» встали бы в разные концы списка.
+    """
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(
+        db,
+        (42, "Тайлер", 1000, 4),
+        (43, "марла", 1400, 7),
+        (44, "Ангел", 900, 2),
+        (45, "ёжик", 800, 2),
+    )
+
+    body = await (await client.get("/api/club?sort=name", headers=head)).json()
+    assert [row["nickname"] for row in body["fighters"]] == [
+        "Ангел", "ёжик", "марла", "Тайлер"
+    ]
+    assert body["sort"] == "name"
+    # ELO в строке остаётся — оно свойство бойца, а не порядка строк
+    assert [row["rating"] for row in body["fighters"]] == [900, 800, 1400, 1000]
+
+
+async def test_the_alphabetical_list_shows_no_places(client, db):
+    """В переставленном списке мест нет: «пятый» означал бы не то.
+
+    Место бойцу даёт ELO по всему клубу. Номер строки алфавитного
+    списка читался бы как место в клубе — и врал бы.
+    """
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Ангел", 1400, 7))
+
+    by_elo = await (await client.get("/api/club", headers=head)).json()
+    assert [row["place"] for row in by_elo["fighters"]] == [1, 2]
+
+    by_name = await (await client.get("/api/club?sort=name", headers=head)).json()
+    assert [row["place"] for row in by_name["fighters"]] == [0, 0]
+
+
+async def test_the_player_list_can_be_cut_down_to_one_level(client, db):
+    """Отбор по уровню: тот же список, только без чужих уровней."""
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(
+        db,
+        (42, "Тайлер", 1000, 4),
+        (43, "Марла", 1400, 7),
+        (44, "Ангел", 900, 4),
+    )
+
+    body = await (await client.get("/api/club?level=4", headers=head)).json()
+    assert body["level"] == 4
+    assert body["total"] == 2, "число страниц считается по тому же отбору"
+    assert [row["nickname"] for row in body["fighters"]] == ["Тайлер", "Ангел"]
+    # И мест в урезанном списке тоже нет: «второй» среди четвёртого
+    # уровня — это не второе место в клубе
+    assert [row["place"] for row in body["fighters"]] == [0, 0]
+
+    # Уровни на выбор — только те, на которых кто-то есть
+    assert body["levels"] == [4, 7]
+
+
+async def test_an_empty_filter_is_an_empty_list_and_not_an_error(client, db):
+    """Пустой результат отбора отличается от ошибки загрузки.
+
+    Ответ двести с пустым списком — это «никого такого нет». Отказ
+    читался бы как «рейтинг не открылся», и игрок жал бы «ещё раз».
+    """
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+
+    answer = await client.get("/api/club?level=9", headers=head)
+    assert answer.status == 200
+    body = await answer.json()
+    assert body["fighters"] == [] and body["total"] == 0
+    assert body["level"] == 9
+
+
+async def test_junk_in_the_filter_does_not_break_the_list(client, db):
+    """Мусор в отборе — список целиком, а не отказ."""
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Марла", 1400, 7))
+
+    for typed in ("", "ноль", "-5", "4.5", "'; DROP TABLE players; --"):
+        answer = await client.get(f"/api/club?level={typed}", headers=head)
+        assert answer.status == 200, typed
+        body = await answer.json()
+        assert body["total"] == 2, typed
+        assert body["level"] == 0, typed
+
+
+# ---------- рейтинг недели ----------
+
+
+async def _fought(db, user_id, count, at=None, outcome="draw", delta=0):
+    """Положить бойцу несколько зачётных боёв в журнал ELO."""
+    from bot.game.health import now_ts
+
+    from uuid import uuid4
+
+    moment = now_ts() if at is None else at
+    for _ in range(count):
+        player = await db.get_player(user_id)
+        was = player.rating
+        player.apply_rating(delta)
+        await db.save_player(player)
+        # Ключ боя случайный: одинаковый отбросил бы уникальный индекс
+        # журнала, и второй вызов этой заготовки не добавил бы ни боя
+        await db.log_rating(
+            user_id, "duel", uuid4().hex,
+            outcome, player.rating - was, player.rating, moment,
+        )
+
+
+async def test_the_weekly_rating_shows_only_those_who_fought_ten_times(client, db):
+    """Порог виден и на экране: с девятью боями бойца в рейтинге нет."""
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Марла", 1400, 7))
+    await _fought(db, 42, QUALIFY)
+    await _fought(db, 43, QUALIFY - 1)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert [row["nickname"] for row in body["fighters"]] == ["Тайлер"]
+    assert body["total"] == 1
+    assert body["qualify"] == QUALIFY
+    row = body["fighters"][0]
+    assert row["place"] == 1 and row["fights"] == QUALIFY
+    assert row["prize"] == 400, "предварительная награда за первое место"
+    assert row["is_self"]
+
+
+async def test_the_weekly_rating_says_the_prize_is_preliminary(client, db):
+    """Подпись о предварительности и границы недели — в самом ответе.
+
+    Это часть правил, а не оформления: страница, придумавшая подпись
+    сама, однажды разошлась бы с тем, как считает сервер.
+    """
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+    await _fought(db, 42, QUALIFY)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert "воскресенье" in body["note"] and "12:00" in body["note"]
+    assert "Москв" in body["window"] and "до" in body["window"]
+    assert body["settled"] is False
+    assert body["period"]
+    # Призовая таблица приезжает оттуда же, где её считают
+    assert body["prizes"][0] == {"from": 1, "to": 1, "place": "1", "prize": 400}
+    assert body["prizes"][-1]["place"] == "20–50"
+
+
+async def test_a_fighter_below_the_threshold_sees_his_own_progress(client, db):
+    """До квалификации вместо места — личный прогресс «7 из 10»."""
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+    await _fought(db, 42, 7)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert body["fighters"] == []
+    assert body["mine"]["fights"] == 7
+    assert body["mine"]["left"] == 3
+    assert body["mine"]["qualified"] is False
+    assert body["mine"]["place"] == 0 and body["mine"]["prize"] == 0
+    assert body["mine"]["progress"] == "7 из 10 PvP-боёв в Бойцовском клубе"
+
+
+async def test_the_tenth_fight_puts_a_fighter_on_the_board(client, db):
+    """После десятого боя тот же экран показывает место, а не прогресс."""
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+    await _fought(db, 42, QUALIFY - 1)
+
+    before = await (await client.get("/api/ladder", headers=head)).json()
+    assert before["mine"]["place"] == 0
+
+    await _fought(db, 42, 1, outcome="win")
+
+    after = await (await client.get("/api/ladder", headers=head)).json()
+    assert after["mine"]["qualified"] is True
+    assert after["mine"]["place"] == 1
+    assert after["mine"]["prize"] == 400
+    assert [row["user_id"] for row in after["fighters"]] == [42]
+
+
+async def test_an_empty_weekly_rating_says_so_in_words(client, db):
+    """Пустой рейтинг подписан словами, а не пустотой."""
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+
+    answer = await client.get("/api/ladder", headers=head)
+    assert answer.status == 200, "пустой рейтинг — не ошибка"
+    body = await answer.json()
+    assert body["fighters"] == [] and body["total"] == 0
+    assert body["empty"] == "Пока никто не провёл 10 PvP-боёв за эту неделю."
+
+
+async def test_the_weekly_rating_goes_in_pages_of_fifty(client, db):
+    """Страницы по пятьдесят, а места считаются по всему рейтингу.
+
+    На второй странице первая строка — пятьдесят первое место, а не
+    первое: иначе призовая таблица платила бы за место на странице.
+    """
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    for number in range(1, 56):
+        await _club_of(db, (number, f"Боец{number}", 5000 - number, 4))
+        await _fought(db, number, QUALIFY)
+
+    first = await (await client.get("/api/ladder", headers=head)).json()
+    assert first["pages"] == 2 and first["page"] == 1
+    assert len(first["fighters"]) == 50
+    assert first["fighters"][0]["place"] == 1
+
+    second = await (await client.get("/api/ladder?page=2", headers=head)).json()
+    assert second["page"] == 2 and second["offset"] == 50
+    assert [row["place"] for row in second["fighters"]] == list(range(51, 56))
+    # И награды на второй странице уже нулевые: платят до пятидесятого
+    assert [row["prize"] for row in second["fighters"]] == [0] * 5
+
+    # Мусор в номере страницы — первая, а не отказ
+    for typed in ("", "ноль", "-1", "99"):
+        answer = await client.get(f"/api/ladder?page={typed}", headers=head)
+        assert answer.status == 200, typed
+
+
+async def test_the_weekly_rating_needs_a_signature(client, db):
+    assert (await client.get("/api/ladder")).status == 401
+
+
+async def test_opening_the_rating_settles_the_week_that_ended(client, db):
+    """Взгляд на рейтинг закрывает кончившуюся неделю и платит за неё.
+
+    Часов, которые будили бы бота в полдень воскресенья, в клубе нет:
+    период закрывает тот, кто на него смотрит. И закрывает целиком —
+    платят всем, а не только тому, кто смотрел.
+    """
+    from bot.game.clock import WEEK_SECONDS, week_key, week_opens
+    from bot.game.health import now_ts
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Марла", 1400, 7))
+    # Оба дрались на прошлой неделе, смотрит только первый
+    last_week = week_opens(now_ts()) - WEEK_SECONDS + 3600
+    await _fought(db, 42, QUALIFY, at=last_week)
+    await _fought(db, 43, QUALIFY, at=last_week)
+    closed = week_key(last_week)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert await db.settled_week(closed) is not None, "неделя не закрыта"
+    # Марла на экран не заходила, а деньги получила
+    assert (await db.get_player(43)).credits == 400
+    assert (await db.get_player(42)).credits == 375
+    # И тот, кто смотрел, видит, чем кончилась прошлая неделя
+    assert body["last"]["period"] == closed
+    assert body["last"]["place"] == 2 and body["last"]["prize"] == 375
+    assert body["last"]["paid"] is True
+    # Идущая неделя при этом пустая: бои той недели в неё не затекли
+    assert body["fighters"] == [] and body["mine"]["fights"] == 0
+
+
+async def test_a_broken_payout_does_not_close_the_rating_screen(client, db, monkeypatch):
+    """Сорвалась выплата — экран всё равно открывается.
+
+    Рейтинг показать важнее, чем доплатить именно сейчас: доплатит
+    следующий взгляд, а отказ оставил бы игрока без экрана вовсе.
+    """
+    import bot.webapp.server as server
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4))
+    await _fought(db, 42, QUALIFY)
+
+    async def breaks(*args, **kwargs):
+        raise RuntimeError("касса закрыта")
+
+    monkeypatch.setattr(server, "settle_due", breaks)
+    answer = await client.get("/api/ladder", headers=head)
+
+    assert answer.status == 200
+    body = await answer.json()
+    assert [row["user_id"] for row in body["fighters"]] == [42]
+
+
+async def test_a_fighter_who_left_the_club_keeps_his_place_in_the_week(client, db):
+    """Удалённый боец не обрушивает список мест.
+
+    Место ему посчитал журнал, а прозвище лежало у бойца — и бойца
+    могли удалить между подсчётом и запросом. Набор полей в строке тот
+    же, что у живой: страница рисует её тем же кодом, и из-за одного
+    выбывшего пропали бы все остальные места.
+    """
+    from bot.game.ladder import QUALIFY
+
+    head = {"X-Telegram-Init-Data": make_init_data(42)}
+    await _club_of(db, (42, "Тайлер", 1000, 4), (43, "Марла", 1400, 7))
+    await _fought(db, 42, QUALIFY)
+    await _fought(db, 43, QUALIFY)
+    await db.delete_player(43)
+
+    body = await (await client.get("/api/ladder", headers=head)).json()
+
+    assert [row["place"] for row in body["fighters"]] == [1, 2]
+    gone = body["fighters"][0]
+    assert gone["user_id"] == 43 and gone["nickname"] == "боец выбыл"
+    assert gone["rating"] == 1400, "ELO знает журнал, а не карточка"
+    assert gone["prize"] == 400
+    # Набор полей тот же, что у живого бойца
+    alive = body["fighters"][1]
+    assert set(gone) == set(alive)

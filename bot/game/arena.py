@@ -32,17 +32,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 
-from bot.game.clock import MOSCOW
+from bot.game.clock import (
+    WEEK_HOUR,
+    WEEK_WEEKDAY,
+    week_key,
+    week_opens,
+)
 
 MINUTE = 60
 HOUR = 60 * MINUTE
 
 # Когда что происходит. Воскресенье по московским часам: в полдень
 # открывается запись, в шесть закрывается
-OPEN_WEEKDAY = 6  # воскресенье
-OPEN_HOUR = 12
+# Когда открывается запись: воскресенье, полдень. Значения общие с
+# неделей клуба — расписание арены отсчитывается от её начала
+OPEN_WEEKDAY = WEEK_WEEKDAY
+OPEN_HOUR = WEEK_HOUR
 CLOSE_HOUR = 18
 # Первый бой — через пять минут после закрытия записи: столько нужно,
 # чтобы посеять сетку и позвать людей
@@ -81,28 +87,22 @@ PHASE_TITLES: dict[str, str] = {
 }
 
 
-def _moscow(moment: int) -> datetime:
-    return datetime.fromtimestamp(moment, MOSCOW)
-
-
 def opens_at(moment: int) -> int:
     """Полдень того воскресенья, к которому относится этот час.
 
     До воскресенья — ближайшее будущее; после полудня воскресенья и до
     следующего — то самое, уже наступившее.
+
+    Неделя у арены не своя: она та же, что у всего клуба, и считает её
+    `bot.game.clock`. Второе определение той же недели однажды
+    разошлось бы с первым на час, и выяснилось бы это на выплате.
     """
-    here = _moscow(moment)
-    sunday = here - timedelta(days=(here.weekday() - OPEN_WEEKDAY) % 7)
-    noon = sunday.replace(hour=OPEN_HOUR, minute=0, second=0, microsecond=0)
-    if noon > here:
-        # Воскресенье, но ещё до полудня: неделя та, что кончается сегодня
-        noon -= timedelta(days=7)
-    return int(noon.timestamp())
+    return week_opens(moment)
 
 
 def week_of(moment: int) -> str:
     """Ключ недели: дата того воскресенья, в которое играют."""
-    return _moscow(opens_at(moment)).strftime("%Y-%m-%d")
+    return week_key(moment)
 
 
 def closes_at(moment: int) -> int:

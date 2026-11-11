@@ -63,6 +63,7 @@ from bot.gym_service import settle as gym_settle, upgrade
 from bot.gym_service import visit_of
 from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
+from bot.game.clock import week_key, week_opens
 from bot.game.health import format_duration, now_ts
 from bot.game.raid import CELLAR_RAID, RaidKind, kind_at
 from bot.game.locations import (
@@ -218,9 +219,11 @@ from bot.police_service import (
     take_from_thief,
     settle_week as police_settle,
 )
+from bot.ladder_service import live_week, my_week, settle_due
 from bot.robbery_service import RobberyError, RobberyService
 from bot.turf_war import TurfWar
 from bot.webapp.driving import build_police, build_school
+from bot.webapp.ladder import build_ladder, build_payout
 from bot.webapp.card import (
     PAGE,
     build_market,
@@ -1079,26 +1082,98 @@ SEARCH_LIMIT = 20
 
 
 async def api_club(request: web.Request) -> web.Response:
-    """Страница рейтинга: кто где стоит по ELO, пятьдесят бойцов за раз.
+    """Список игроков: все записанные, пятьдесят бойцов за раз.
 
     Номер страницы приходит со страницы, а смещение считает сервер: он
     же держит и размер страницы. Мусор в номере — первая страница: это
-    не повод отвечать отказом на запрос доски почёта.
+    не повод отвечать отказом на список клуба.
+
+    `level` режет список до одной ступени, `sort=name` ставит его по
+    алфавиту. Место при этом не рисуется вовсе: место даёт ELO по всему
+    клубу, и «пятый» в алфавитном или отфильтрованном списке означал бы
+    не то, что в нём написано. ELO в строке остаётся — оно свойство
+    бойца, а не порядка строк.
     """
     viewer = await _viewer(request)
     db = request.app[DB_KEY]
-    total = await db.count_players()
+    level = max(0, _whole(request.query.get("level"), 0))
+    by_name = request.query.get("sort") == "name"
+    total = await db.count_players(level=level)
     pages = max(1, -(-total // PAGE))
     page = min(max(1, _whole(request.query.get("page"), 1)), pages)
     offset = (page - 1) * PAGE
-    players = await db.rated_players(offset=offset, limit=PAGE)
-    config = request.app[CONFIG_KEY]
-    return web.json_response(
-        build_club(
-            players, viewer.user_id, config.bot_token,
-            offset=offset, total=total,
-        )
+    players = await db.rated_players(
+        offset=offset, limit=PAGE, level=level, by_name=by_name
     )
+    config = request.app[CONFIG_KEY]
+    body = build_club(
+        players, viewer.user_id, config.bot_token,
+        offset=offset, total=total,
+        places=not by_name and not level,
+    )
+    body["level"] = level
+    body["sort"] = "name" if by_name else "rating"
+    body["levels"] = await db.level_spread()
+    return web.json_response(body)
+
+
+async def api_ladder(request: web.Request) -> web.Response:
+    """Рейтинг недели: кто провёл десять боёв и на каком стоит месте.
+
+    Всякий взгляд на рейтинг сперва досчитывает его до «сейчас»:
+    закрывает кончившиеся недели и доплачивает всё, за что ещё не
+    платили. Часов, которые будили бы бота в полдень воскресенья, в
+    клубе нет — и выплата поэтому не ждёт их, а догоняет сама. Сорвись
+    она — экран всё равно откроется: рейтинг показать важнее, чем
+    доплатить именно сейчас, и доплатит следующий взгляд.
+
+    Показывается идущая неделя и считается на ходу: пока она идёт, её
+    рейтинг меняется с каждым боем, и держать его в таблице значило бы
+    иметь второе, всегда немного устаревшее мнение о том же самом.
+    Прошлая неделя приходит отдельной строкой `last` — тем, что боец за
+    неё получил.
+
+    Места считаются по всему рейтингу и только потом от него
+    отрезается страница: страница, считающая места сама, написала бы на
+    второй единицу вместо пятьдесят первого.
+    """
+    viewer = await _viewer(request)
+    db = request.app[DB_KEY]
+    config = request.app[CONFIG_KEY]
+    now = now_ts()
+    try:
+        await settle_due(db, now)
+    except Exception:  # pragma: no cover - выплата не стоит экрана
+        logger.exception("Недельный рейтинг не досчитался")
+
+    ranked = await live_week(db, now)
+    pages = max(1, -(-len(ranked) // PAGE))
+    page = min(max(1, _whole(request.query.get("page"), 1)), pages)
+    offset = (page - 1) * PAGE
+    shown = ranked[offset:offset + PAGE]
+    players = await db.players_in([one.user_id for _, one in shown])
+
+    body = build_ladder(
+        shown,
+        players,
+        viewer.user_id,
+        config.bot_token,
+        now=now,
+        mine=await my_week(db, viewer.user_id, now),
+        my_place=next(
+            (place for place, one in ranked if one.user_id == viewer.user_id), 0
+        ),
+        offset=offset,
+        total=len(ranked),
+        page_size=PAGE,
+    )
+    body["period"] = week_key(now)
+    # Чем кончилась прошлая неделя: награда приходит сама, и без этой
+    # строки игрок видел бы в кармане лишние кредиты без объяснения
+    body["last"] = build_payout(
+        await db.place_of(week_key(week_opens(now) - 1), viewer.user_id)
+    )
+    return web.json_response(body)
 
 
 async def api_players(request: web.Request) -> web.Response:
@@ -3923,6 +3998,7 @@ def create_app(
             web.post("/api/use", api_use),
             web.post("/api/upgrade", api_upgrade),
             web.get("/api/club", api_club),
+            web.get("/api/ladder", api_ladder),
             web.get("/api/players", api_players),
             web.get("/api/fights", api_fights),
             web.post("/api/fight", api_fight),

@@ -1006,7 +1006,7 @@ async def open_page(
     police=None, mafia=None, clan=None, flats=None, post=None, bar=None,
     quests=None, study=None, turf=None, crowd=None, elections=None,
     cars=None, keys=None, dorm=None, charge=None, dojo=None, barber=None,
-    court=None, blackout=None, casino=None,
+    court=None, blackout=None, casino=None, ladder=None,
     images=False,
     telegram="",
     loader_wait=False,
@@ -1033,6 +1033,7 @@ async def open_page(
     await page.route("**/api/topup*", canned(topup or {"credits": 0, "packs": []}))
     await page.route("**/api/looks*", canned(looks or {"looks": [], "credits": 0}))
     await page.route("**/api/club*", canned(club or {"fighters": [], "total": 0}))
+    await page.route("**/api/ladder*", canned(ladder or ladder_state()))
     await page.route("**/api/magic*", canned(magic or {"items": [], "credits": 0}))
     await page.route("**/api/fights*", canned(fights or EMPTY_RING))
     await page.route("**/api/history*", canned(history or EMPTY_HISTORY))
@@ -2734,10 +2735,56 @@ async def test_an_empty_slot_falls_back_to_its_icon(server):
 # ---------- бойцовский клуб ----------
 
 
-def club_of(*fighters) -> dict:
+def club_of(*fighters, **kwargs) -> dict:
     from bot.webapp.card import build_club
 
-    return build_club(list(fighters), 42)
+    body = build_club(list(fighters), 42, **kwargs)
+    body.setdefault("sort", "rating")
+    body.setdefault("level", 0)
+    body.setdefault("levels", sorted({one.level for one in fighters}))
+    return body
+
+
+def ladder_state(*rows, mine=0, my_place=0, last=None, now=None, **kwargs) -> dict:
+    """Рейтинг недели для страницы.
+
+    `rows` — то, что вернул `ladder_rank`: место, недельный счёт и сам
+    боец. Трое вместе, потому что строка экрана и собирается из трёх:
+    место считает рейтинг, счёт лежит в журнале боёв, а прозвище и
+    уровень — у бойца.
+    """
+    from bot.game.health import now_ts
+    from bot.webapp.ladder import build_ladder, build_payout
+
+    body = build_ladder(
+        [(place, one) for place, one, _ in rows],
+        {player.user_id: player for _, _, player in rows},
+        42,
+        now=now_ts() if now is None else now,
+        mine=mine,
+        my_place=my_place,
+        **kwargs,
+    )
+    body["period"] = "2026-11-08"
+    body["last"] = build_payout(last)
+    return body
+
+
+def ladder_rank(place: int, player, fights=10, wins=5, losses=5):
+    """Строка рейтинга недели: место, недельный счёт и сам боец."""
+    from bot.game.ladder import Standing
+
+    return (
+        place,
+        Standing(
+            user_id=player.user_id,
+            rating=player.rating,
+            fights=fights,
+            wins=wins,
+            losses=losses,
+        ),
+        player,
+    )
 
 
 async def test_the_club_lists_everyone_and_opens_a_card(server):
@@ -3502,10 +3549,17 @@ def a_rated(user_id, nick, level, rating, fclass="warrior"):
     return one
 
 
-def a_rating(*fighters, offset=0, total=None, viewer=42):
+def a_rating(*fighters, offset=0, total=None, viewer=42, **kwargs):
     from bot.webapp.card import build_club
 
-    return build_club(list(fighters), viewer, offset=offset, total=total)
+    body = build_club(
+        list(fighters), viewer, offset=offset, total=total, **kwargs
+    )
+    # То же, что дописывает ручка: порядок, отбор и уровни на выбор
+    body.setdefault("sort", "rating")
+    body.setdefault("level", 0)
+    body.setdefault("levels", sorted({one.level for one in fighters}))
+    return body
 
 
 async def test_the_club_button_opens_the_information_desk(server):
@@ -3533,7 +3587,9 @@ async def test_the_club_button_opens_the_information_desk(server):
             == "ℹ️ Информация о клубе"
         )
         chips = await page.locator("#club-sections .chip").all_inner_texts()
-        assert chips == ["Рейтинг игроков", "Статистика игрока"]
+        assert chips == [
+            "Список игроков", "Рейтинг недели", "Статистика игрока"
+        ]
         # Ни панорамы, ни выхода на карту
         assert await page.locator("#club-interior").is_hidden()
         assert await page.locator("#club-back").is_hidden()
@@ -3603,7 +3659,9 @@ async def test_the_rating_turns_pages_of_fifty(server):
     card = build_card(make_player(), TOKEN, viewer_id=42)
 
     async def give(route):
-        number = int(route.request.url.split("page=")[-1])
+        # Номер страницы уже не последний в запросе: за ним идут
+        # порядок и отбор, поэтому режем по первому же «&»
+        number = int(route.request.url.split("page=")[-1].split("&")[0])
         asked.append(number)
         await route.fulfill(
             status=200, content_type="application/json",
@@ -18880,4 +18938,407 @@ async def test_two_cars_at_the_porch_each_keep_their_own_buttons(server):
         assert await rows.nth(1).locator(".btn").all_inner_texts() == ["Забрать"]
         # Ни одной «Закрыть» — ни в рядах, ни отдельной внизу списка
         assert await page.locator("#sheet .btn", has_text="Закрыть").count() == 0
+        await browser.close()
+
+
+# ---------- список игроков: порядок и отбор ----------
+
+
+async def open_desk(pw, server, section="players", **kwargs):
+    """Открыть справочную клуба на нужном разделе."""
+    browser, page = await open_page(
+        pw, server, build_card(make_player(), TOKEN, viewer_id=42), **kwargs
+    )
+    await page.wait_for_selector("#hero:not(.hidden)")
+    await page.locator("#tab-club").click()
+    await page.wait_for_selector("#club-players:not(.hidden)")
+    if section != "players":
+        await page.locator(f"#club-sections .chip").get_by_text(
+            {"ladder": "Рейтинг недели", "stats": "Статистика игрока"}[section],
+            exact=True,
+        ).click()
+        await page.wait_for_selector(f"#club-{section}:not(.hidden)")
+    return browser, page
+
+
+async def test_the_player_list_offers_an_order_and_a_level(server):
+    """Над списком два переключателя: порядок и уровень.
+
+    Порядок пузырями — их два, и видны оба сразу. Уровень списком:
+    уровней десятки, и двадцать пузырей заняли бы весь экран.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server,
+            club=a_rating(
+                a_rated(42, "Тайлер", 4, 1100),
+                a_rated(43, "Марла", 7, 1400),
+            ),
+        )
+        await page.wait_for_function("clubData !== null")
+
+        orders = await page.locator("#club-order .chip").all_inner_texts()
+        assert orders == ["По рейтингу", "По алфавиту"]
+        # Нажат тот, по которому список и пришёл
+        assert await page.locator("#club-order .chip.on").inner_text() == "По рейтингу"
+
+        levels = await page.locator("#club-level option").all_inner_texts()
+        assert levels == ["любой", "4", "7"], "в отборе уровни, которых нет"
+        await browser.close()
+
+
+async def test_choosing_a_level_asks_the_server_from_the_first_page(server):
+    """Выбрали уровень — спрашиваем с первой страницы и с отбором.
+
+    Оставаться на третьей странице после отбора незачем: в урезанном
+    списке её может не быть вовсе.
+    """
+    asked = []
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    body = a_rating(a_rated(42, "Тайлер", 4, 1100), a_rated(43, "Марла", 7, 1400))
+
+    async def give(route):
+        asked.append(route.request.url)
+        await route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(body)
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/club*", give)
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.wait_for_function("clubData !== null")
+
+        await page.select_option("#club-level", "7")
+        # Ответ подменён одним и тем же телом, так что нового от старого
+        # по данным не отличить: ждём самого запроса, со стороны перехвата
+        for _ in range(100):
+            if any("level=7" in url for url in asked):
+                break
+            await page.wait_for_timeout(20)
+
+        assert any("level=7" in url for url in asked), asked
+        assert any("page=1&sort=rating&level=7" in url for url in asked), asked
+        await browser.close()
+
+
+async def test_the_alphabetical_list_says_why_there_are_no_places(server):
+    """В переставленном списке мест нет, и записка об этом говорит.
+
+    Без неё исчезновение мест читается как поломка экрана.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server,
+            club=a_rating(
+                a_rated(42, "Тайлер", 4, 1100), places=False,
+            ),
+        )
+        await page.wait_for_function("clubData !== null")
+        # Пришёл список по алфавиту: сервер сказал это в ответе
+        await page.evaluate(
+            "renderClub({...clubData, sort: 'name',"
+            " fighters: clubData.fighters.map((o) => ({...o, place: 0}))})"
+        )
+
+        said = await page.locator("#club-note").inner_text()
+        assert "без мест" in said and "ELO" in said
+        assert await page.locator(".fighter-place").count() == 0
+        await browser.close()
+
+
+async def test_an_empty_level_is_not_an_empty_club(server):
+    """«На этом уровне никого» и «в клубе никого» — разные новости."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(pw, server, club=a_rating())
+        await page.wait_for_function("clubData !== null")
+
+        assert "В клубе пока никого" in await page.locator("#club-note").inner_text()
+
+        await page.evaluate("renderClub({...clubData, level: 9, total: 0})")
+        said = await page.locator("#club-note").inner_text()
+        assert "На этом уровне бойцов нет" in said
+        assert "сними отбор" in said
+        await browser.close()
+
+
+# ---------- рейтинг недели ----------
+
+
+async def test_the_weekly_rating_shows_place_fights_and_prize(server):
+    """Строка недели: место, ник, уровень, ELO, бои и предварительный приз."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder",
+            ladder=ladder_state(
+                ladder_rank(1, a_rated(43, "Марла", 7, 1400), fights=14),
+                ladder_rank(2, a_rated(42, "Тайлер", 4, 1100), fights=10),
+            ),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        rows = page.locator("#ladder-list .fighter")
+        assert await rows.count() == 2
+        first = await rows.nth(0).inner_text()
+        assert "1" in first and "Марла" in first and "[7]" in first
+        assert "14 б." in first
+        assert "400" in first, "награда за первое место"
+
+        second = await rows.nth(1).inner_text()
+        assert "Тайлер" in second and "10 б." in second and "375" in second
+        # Своя строка подсвечена: её ищут глазами
+        assert await page.locator("#ladder-list .fighter.me").count() == 1
+        await browser.close()
+
+
+async def test_the_weekly_rating_says_the_prize_is_preliminary(server):
+    """Границы недели и подпись о предварительности — на экране."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder",
+            ladder=ladder_state(
+                ladder_rank(1, a_rated(42, "Тайлер", 4, 1100)),
+                mine=10, my_place=1,
+            ),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        assert "Неделя с" in await page.locator("#ladder-window").inner_text()
+        said = await page.locator("#ladder-note").inner_text()
+        assert "предварительная" in said and "воскресенье" in said
+        # Своя строка: место и награда
+        mine = await page.locator("#ladder-mine").inner_text()
+        assert "на 1 месте" in mine and "400" in mine
+        await browser.close()
+
+
+async def test_a_fighter_below_the_threshold_sees_his_progress(server):
+    """До порога вместо места — «7 из 10» и сколько боёв осталось."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder", ladder=ladder_state(mine=7),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        mine = await page.locator("#ladder-mine").inner_text()
+        assert "7 из 10 PvP-боёв в Бойцовском клубе" in mine
+        assert "осталось 3 боя" in mine
+        assert "месте" not in mine, "места у непрошедшего нет"
+        await browser.close()
+
+
+async def test_an_empty_weekly_rating_says_so_in_words(server):
+    """Пустой рейтинг подписан словами, а не пустотой."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(pw, server, "ladder", ladder=ladder_state())
+        await page.wait_for_function("ladderData !== null")
+
+        said = await page.locator("#ladder-note").inner_text()
+        assert said == "Пока никто не провёл 10 PvP-боёв за эту неделю."
+        assert await page.locator("#ladder-list .fighter").count() == 0
+        # Кнопки «ещё раз» тут нет: перезагружать пустоту незачем
+        assert await page.locator("#ladder-oops").is_hidden()
+        await browser.close()
+
+
+async def test_a_broken_weekly_rating_offers_to_try_again(server):
+    """Оборванная загрузка — своя записка и кнопка, а не пустой список.
+
+    Пустой рейтинг и не открывшийся рейтинг выглядели бы одинаково, не
+    скажи мы словами, что случилось: в первом случае жать нечего, во
+    втором — только и остаётся.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    tries = []
+
+    async def give(route):
+        tries.append(1)
+        if len(tries) == 1:
+            await route.fulfill(status=500, body="")
+            return
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(
+                ladder_state(ladder_rank(1, a_rated(42, "Тайлер", 4, 1100)))
+            ),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/ladder*", give)
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.locator("#club-sections .chip").get_by_text(
+            "Рейтинг недели", exact=True
+        ).click()
+        await page.wait_for_selector("#ladder-oops:not(.hidden)")
+
+        assert "не открылся" in await page.locator("#ladder-oops-note").inner_text()
+        assert await page.locator("#ladder-list .fighter").count() == 0
+
+        await page.locator("#ladder-again").click()
+        await page.wait_for_function("ladderData !== null")
+        assert await page.locator("#ladder-oops").is_hidden()
+        assert await page.locator("#ladder-list .fighter").count() == 1
+        await browser.close()
+
+
+async def test_the_rating_says_what_came_for_the_last_week(server):
+    """Награда приходит сама — и экран говорит, за что.
+
+    Без этой строки лишние кредиты в кармане остались бы без
+    объяснения: вручную награду никто не получает.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder",
+            ladder=ladder_state(
+                mine=3,
+                last={
+                    "period": "2026-11-01",
+                    "place": 3,
+                    "prize": 350,
+                    "rating": 1500,
+                    "fights": 12,
+                    "paid_at": 1,
+                },
+            ),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        said = await page.locator("#ladder-paid").inner_text()
+        assert "3 место" in said and "350" in said and "в кармане" in said
+        await browser.close()
+
+
+async def test_no_prize_for_the_week_shows_no_payout_line(server):
+    """Не попал в призы — строки о прошлой неделе нет вовсе."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(pw, server, "ladder", ladder=ladder_state())
+        await page.wait_for_function("ladderData !== null")
+        assert await page.locator("#ladder-paid").is_hidden()
+        await browser.close()
+
+
+async def test_below_the_fiftieth_place_the_prize_is_a_dash(server):
+    """За место ниже пятидесятого — прочерк, а не ноль.
+
+    Ноль читается как «посчитали и вышло нисколько», а здесь не платят
+    вовсе.
+    """
+    async with async_playwright() as pw:
+        browser, page = await open_desk(
+            pw, server, "ladder",
+            ladder=ladder_state(
+                ladder_rank(51, a_rated(42, "Тайлер", 4, 900)),
+            ),
+        )
+        await page.wait_for_function("ladderData !== null")
+
+        prize = page.locator("#ladder-list .ladder-prize")
+        assert await prize.inner_text() == "—"
+        assert "ladder-none" in (await prize.get_attribute("class"))
+        await browser.close()
+
+
+async def test_the_prize_table_hides_under_a_fold(server):
+    """Призовая таблица под складкой: её смотрят один раз."""
+    async with async_playwright() as pw:
+        browser, page = await open_desk(pw, server, "ladder", ladder=ladder_state())
+        await page.wait_for_function("ladderData !== null")
+
+        assert await page.locator("#ladder-table").is_hidden()
+        await page.locator("#ladder-prizes summary").click()
+        rows = await page.locator("#ladder-table li").all_inner_texts()
+        assert len(rows) == 7
+        assert "1 место" in rows[0] and "400" in rows[0]
+        assert "20–50 место" in rows[-1] and "50" in rows[-1]
+        await browser.close()
+
+
+async def test_the_weekly_rating_turns_pages_of_fifty(server):
+    """Страницы по пятьдесят, а места — по всему рейтингу."""
+    first = ladder_state(
+        *[
+            ladder_rank(one + 1, a_rated(100 + one, f"Первый {one + 1}", 5, 2000 - one))
+            for one in range(50)
+        ],
+        total=55,
+    )
+    second = ladder_state(
+        *[
+            ladder_rank(51 + one, a_rated(200 + one, f"Второй {one + 1}", 5, 1900 - one))
+            for one in range(5)
+        ],
+        offset=50, total=55,
+    )
+    pages = {1: first, 2: second}
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+
+    async def give(route):
+        number = int(route.request.url.split("page=")[-1].split("&")[0])
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(pages.get(number, first)),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/ladder*", give)
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        await page.locator("#club-sections .chip").get_by_text(
+            "Рейтинг недели", exact=True
+        ).click()
+        await page.wait_for_function("ladderData !== null")
+
+        assert await page.locator("#ladder-pager:not(.hidden)").count() == 1
+        assert "1–50 из 55" in await page.locator("#ladder-where").inner_text()
+        assert await page.locator("#ladder-prev").is_disabled()
+
+        await page.locator("#ladder-next").click()
+        # Ждём отрисованную страницу, а не номер: номер страница ставит
+        # до запроса, и по нему видно только, что о ней попросили
+        await page.wait_for_function("ladderData && ladderData.offset === 50")
+        assert "51–55 из 55" in await page.locator("#ladder-where").inner_text()
+        # Место первой строки второй страницы — пятьдесят первое
+        assert await page.locator(
+            "#ladder-list .fighter-place"
+        ).nth(0).inner_text() == "51"
+        assert await page.locator("#ladder-next").is_disabled()
+        await browser.close()
+
+
+async def test_reopening_the_tab_asks_the_server_again(server):
+    """Новое открытие рейтинга берёт свежие данные, а не вчерашние.
+
+    Рейтинг меняется с каждым боем в городе: показать запомненный
+    значило бы врать о местах и наградах.
+    """
+    card = build_card(make_player(), TOKEN, viewer_id=42)
+    asked = []
+
+    async def give(route):
+        asked.append(1)
+        await route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps(ladder_state(mine=len(asked))),
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card)
+        await page.route("**/api/ladder*", give)
+        await page.locator("#tab-club").click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        chips = page.locator("#club-sections .chip")
+        await chips.get_by_text("Рейтинг недели", exact=True).click()
+        await page.wait_for_function("ladderData !== null")
+        assert len(asked) == 1
+
+        await chips.get_by_text("Список игроков", exact=True).click()
+        await page.wait_for_selector("#club-players:not(.hidden)")
+        await chips.get_by_text("Рейтинг недели", exact=True).click()
+        await page.wait_for_function("ladderData && ladderData.mine.fights === 2")
+        assert len(asked) == 2
         await browser.close()

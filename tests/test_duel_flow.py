@@ -1495,3 +1495,72 @@ async def test_a_broken_ending_still_ends_the_duel(bot, db, monkeypatch):
     for user_id in (1, 2):
         assert service.result_of_user(user_id) is session
     await service.shutdown()
+
+
+async def test_a_finished_duel_lands_in_the_elo_journal(bot, db):
+    """Бой записывается в журнал ELO — обеим сторонам и одним мигом.
+
+    По этому журналу считается недельный рейтинг
+    (`bot.ladder_service`), и без записи бой в него не попадёт вовсе.
+    Миг фиксации у обеих сторон один: бой, начавшийся в одной неделе и
+    кончившийся в другой, должен попасть в одну, а не разойтись.
+    """
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "rogue"))
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+
+    for _ in range(40):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await play_round(service, session)
+    else:  # pragma: no cover
+        pytest.fail("бой не закончился за 40 раундов")
+
+    mine = await db.rating_log_of(1)
+    yours = await db.rating_log_of(2)
+    assert len(mine) == len(yours) == 1, "бой не попал в журнал"
+    assert mine[0]["kind"] == yours[0]["kind"] == "duel"
+    assert mine[0]["fight"] == yours[0]["fight"], "ключ боя у сторон разный"
+    assert mine[0]["at"] == yours[0]["at"], "стороны зафиксированы разным мигом"
+
+    # Исход у сторон противоположный, а ничья — у обоих ничья
+    outcomes = {mine[0]["outcome"], yours[0]["outcome"]}
+    assert outcomes in ({"win", "loss"}, {"draw"}), outcomes
+
+    # Записанный рейтинг — тот же, что в карточке бойца: по журналу его
+    # потом восстанавливают на любой прошедший миг
+    assert mine[0]["rating"] == (await db.get_player(1)).rating
+    assert yours[0]["rating"] == (await db.get_player(2)).rating
+    # И разница в журнале — та, что и правда случилась
+    assert mine[0]["rating"] - mine[0]["delta"] == RATING_START
+    assert yours[0]["rating"] - yours[0]["delta"] == RATING_START
+
+
+async def test_a_duel_counts_for_the_week_wherever_it_was_called(bot, db):
+    """Дуэль из ветки группы идёт в недельный зачёт наравне с карточкой.
+
+    Так решил заказчик: для игрока ринг в ветке — тот же клуб, хотя
+    место бойца сервер в этом случае не проверяет вовсе. Разводить их
+    значило бы, что половина боёв в рейтинг не идёт без видимой причины.
+    """
+    from bot.ladder_service import my_week
+
+    service = make_service(bot, db)
+    await db.save_player(make_player(1, "Тайлер", "warrior"))
+    await db.save_player(make_player(2, "Марла", "rogue"))
+
+    # Бой из ветки: у него есть чат. Бой из мини-аппа идёт без чата —
+    # в журнале они не различаются, и это нарочно
+    session = await service.start_duel(
+        CHAT_ID, THREAD_ID, await db.get_player(1), await db.get_player(2)
+    )
+    for _ in range(40):
+        if service.duel_in_chat(CHAT_ID, THREAD_ID) is None:
+            break
+        await play_round(service, session)
+
+    assert await my_week(db, 1) == 1
+    assert await my_week(db, 2) == 1

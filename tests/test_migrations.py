@@ -599,3 +599,98 @@ async def test_a_dojo_record_survives_the_key_change(tmp_path):
     assert rows[0]["code"] == "nimble" and rows[0]["baseline"] == 120
     assert rows[0]["started_at"] == 500
     assert [one["code"] for one in both] == ["nimble", "crit_hit"]
+
+
+# ---------- журнал ELO и недельный рейтинг ----------
+
+
+def schema_without_tables(*names: str) -> str:
+    """Схема прошлой версии: нынешняя без этих таблиц и их индексов."""
+    legacy = SCHEMA
+    for name in names:
+        legacy = re.sub(
+            rf"CREATE TABLE IF NOT EXISTS {name} \(.*?\);",
+            "",
+            legacy,
+            flags=re.DOTALL,
+        )
+        legacy = re.sub(
+            rf"CREATE (UNIQUE )?INDEX IF NOT EXISTS \w+\s+ON {name}\([^)]*\);",
+            "",
+            legacy,
+        )
+    return legacy
+
+
+LADDER_TABLES = ("rating_log", "ladder_weeks", "ladder_places")
+
+
+@pytest.fixture
+async def base_without_the_ladder(tmp_path):
+    """База, собранная до того, как появился недельный рейтинг."""
+    path = str(tmp_path / "old.db")
+    async with aiosqlite.connect(path) as conn:
+        await conn.executescript(schema_without_tables(*LADDER_TABLES))
+        await conn.commit()
+    with sqlite3.connect(path) as conn:
+        names = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    for name in LADDER_TABLES:
+        assert name not in names, f"{name} не убралась из прошлой версии"
+    return path
+
+
+async def test_the_ladder_tables_appear_on_a_live_base(base_without_the_ladder):
+    """Таблицы рейтинга заводятся на базе, которая их не знала.
+
+    Индексов по дописываемым колонкам в них нет — все три таблицы
+    целиком новые, и `CREATE TABLE IF NOT EXISTS` создаёт их со всем
+    своим содержимым разом. Эта проверка держит это: заведись в них
+    когда-нибудь новая колонка с индексом рядом — и живая база встанет.
+    """
+    db = Database(base_without_the_ladder)
+    await db.connect()
+    try:
+        tables = set(await db.game_tables())
+        for name in LADDER_TABLES:
+            assert name in tables, name
+        # И они работают: журнал пишется, рейтинг считается
+        assert await db.log_rating(1, "duel", "key", "win", 25, 1025, 100)
+        assert len(await db.rating_log_of(1)) == 1
+    finally:
+        await db.close()
+
+
+async def test_an_empty_journal_gives_an_empty_week_and_no_payouts(
+    base_without_the_ladder,
+):
+    """На базе без истории боёв рейтинг пуст, а выплат нет.
+
+    Это и есть ограничение первого запуска: журнал заводится пустым, и
+    истории боёв, прошедших до его появления, в нём нет. Выдумывать её
+    мы не станем — в рейтинг попадает только тот, кто проведёт десять
+    боёв после выкатки.
+    """
+    from bot.ladder_service import live_week, settle_due
+
+    db = Database(base_without_the_ladder)
+    await db.connect()
+    try:
+        stats = Stats(strength=12, agility=8, intuition=8, endurance=12)
+        player = Player(
+            user_id=1, nickname="Тайлер", class_code="warrior",
+            level=9, **stats.as_dict(),
+        )
+        player.rating = 1800
+        player.credits = 100
+        await db.save_player(player)
+
+        assert await live_week(db) == []
+        assert await settle_due(db) == []
+        # Рейтинг бойца при этом цел: журнал его не трогает
+        assert (await db.get_player(1)).rating == 1800
+        assert (await db.get_player(1)).credits == 100
+    finally:
+        await db.close()

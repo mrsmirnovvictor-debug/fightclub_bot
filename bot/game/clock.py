@@ -35,9 +35,54 @@ STAMP_FORMATS = (
 )
 
 
+# Неделя клуба начинается в воскресенье в полдень по Москве. По ней
+# живут арена (`bot.game.arena`) и рейтинг недели (`bot.game.ladder`), и
+# определение у неё одно — здесь. Два определения одной и той же недели
+# однажды разъехались бы на час, и выяснилось бы это на выплате
+WEEK_WEEKDAY = 6  # воскресенье: у `weekday()` понедельник ноль
+WEEK_HOUR = 12
+WEEK_SECONDS = 7 * 24 * 60 * 60
+
+
 def club_day(moment: float) -> date:
     """Какой сегодня день по часам клуба."""
     return datetime.fromtimestamp(moment, MOSCOW).date()
+
+
+def week_opens(moment: float) -> int:
+    """Полдень того воскресенья, с которого идёт эта неделя клуба.
+
+    Граница включающая: 11:59:59 воскресенья — ещё прошлая неделя,
+    12:00:00 — уже новая. Поэтому полдень, оказавшийся в будущем,
+    отступает на семь дней назад: воскресное утро принадлежит неделе,
+    которая сегодня кончается, а не той, что начнётся в обед.
+    """
+    here = datetime.fromtimestamp(moment, MOSCOW)
+    sunday = here - timedelta(days=(here.weekday() - WEEK_WEEKDAY) % 7)
+    noon = sunday.replace(hour=WEEK_HOUR, minute=0, second=0, microsecond=0)
+    if noon > here:
+        noon -= timedelta(days=7)
+    return int(noon.timestamp())
+
+
+def week_closes(moment: float) -> int:
+    """Когда эта неделя кончится — граница исключающая.
+
+    Семь суток ровно, а не «следующее воскресенье»: в России часы не
+    переводят с 2014 года, пояс у клуба постоянный, и неделя здесь
+    всегда одной длины. Сложение смещения не знает — и потому точнее
+    пересчёта по календарю.
+    """
+    return week_opens(moment) + WEEK_SECONDS
+
+
+def week_key(moment: float) -> str:
+    """Ключ недели: дата её воскресенья, «2026-11-08».
+
+    Строкой, а не числом: ключ стоит в журнале выплат, и по нему потом
+    глазами ищут, за какую именно неделю заплатили.
+    """
+    return datetime.fromtimestamp(week_opens(moment), MOSCOW).strftime("%Y-%m-%d")
 
 
 def next_midnight(moment: float) -> float:
@@ -100,6 +145,9 @@ def club_time(stamp: str | None, fmt: str = "%d.%m.%y %H:%M") -> str:
 __all__ = [
     "MOSCOW",
     "STAMP_FORMATS",
+    "WEEK_HOUR",
+    "WEEK_SECONDS",
+    "WEEK_WEEKDAY",
     "club_date",
     "club_day",
     "club_moment",
@@ -107,4 +155,7 @@ __all__ = [
     "next_midnight",
     "read_stamp",
     "to_moscow",
+    "week_closes",
+    "week_key",
+    "week_opens",
 ]

@@ -3534,9 +3534,11 @@ function pickClubSection(name) {
   // показываем здешний
   if (name !== house.start && !allowed.includes(name)) name = house.start;
   clubSection = name;
-  ["fights", "battle", "raid", "players", "stats"].forEach((section) => {
-    el("club-" + section).classList.toggle("hidden", section !== name);
-  });
+  ["fights", "battle", "raid", "players", "ladder", "stats"].forEach(
+    (section) => {
+      el("club-" + section).classList.toggle("hidden", section !== name);
+    }
+  );
   renderClubSections();
   // Ринг и отряд собираются в клубе. В других домах раздел открывается,
   // но вместо вызовов в нём записка: так видно, что бои есть, просто не
@@ -3545,6 +3547,10 @@ function pickClubSection(name) {
   const locked = (name === "fights" || name === "battle") && !canFightHere();
   if (locked) sayNoFightsHere(name);
   if (name === "players" && !clubData) loadClub();
+  // Рейтинг недели перечитываем всякий раз, а не только впервые: он
+  // меняется с каждым боем в городе, и показывать вчерашний при новом
+  // открытии вкладки значило бы врать о местах и наградах
+  if (name === "ladder") loadLadder();
   if (name === "stats" && !statsData) loadHistory(statsWho);
   // Рейд живёт волнами: пока раздел открыт, спрашиваем состояние
   if (name === "raid") startWatchingRaid();
@@ -3615,7 +3621,8 @@ function clubSections() {
   // там же, где он читал чужую статистику
   if (clubHouse === "info") {
     return [
-      ["players", "Рейтинг игроков"],
+      ["players", "Список игроков"],
+      ["ladder", "Рейтинг недели"],
       ["stats", "Статистика игрока"],
     ];
   }
@@ -5843,35 +5850,41 @@ function turnList(turns) {
 
 function renderClub(data) {
   clubData = data;
+  clubSort = data.sort || clubSort;
+  clubLevel = data.level || 0;
+  renderClubOrder();
+  renderClubLevels(data.levels);
   el("club-count").textContent = data.total
     ? data.total + " " + plural(data.total, "боец", "бойца", "бойцов")
     : "";
-  el("club-note").textContent = data.total
-    ? "Места по рейтингу ELO, уровень на них не влияет. "
-      + "Значок ℹ️ открывает карточку бойца."
-    : "В клубе пока никого.";
+  el("club-note").textContent = clubNote(data);
 
   const list = el("club-list");
   list.textContent = "";
   data.fighters.forEach((fighter) => list.appendChild(fighterRow(fighter)));
-  renderClubPager(data);
+  pagerOf("club", data);
 }
 
-/** Стрелки под рейтингом: «← 1–50 из 137 →». Одна страница — стрелок нет. */
-function renderClubPager(data) {
-  const pager = el("club-pager");
-  const pages = data.pages || 1;
-  pager.classList.toggle("hidden", pages < 2);
-  if (pages < 2) return;
-  const page = data.page || 1;
-  const first = (data.offset || 0) + 1;
-  const last = (data.offset || 0) + data.fighters.length;
-  el("club-where").textContent =
-    first + "–" + last + " из " + num(data.total);
-  // Крайние страницы гасим, а не прячем: кнопка, исчезающая под
-  // пальцем, уводит нажатие на соседнюю
-  el("club-prev").disabled = page <= 1;
-  el("club-next").disabled = page >= pages;
+/** Чем подписан список — зависит от порядка и отбора.
+ *
+ * Пустой отбор отличается от пустого клуба словами: «никого такого
+ * нет» и «в клубе пока никого» — разные новости, и вторая сбивала бы
+ * с толку того, кто просто выбрал уровень, на котором никого нет.
+ */
+function clubNote(data) {
+  if (!data.total) {
+    return data.level
+      ? "На этом уровне бойцов нет. Выбери другой или сними отбор."
+      : "В клубе пока никого.";
+  }
+  if (data.sort === "name" || data.level) {
+    // Мест в таком списке нет нарочно, и об этом стоит сказать: иначе
+    // их исчезновение читается как поломка
+    return "Список без мест: место даёт рейтинг ELO по всему клубу. "
+      + "Значок ℹ️ открывает карточку бойца.";
+  }
+  return "Места по рейтингу ELO, уровень на них не влияет. "
+    + "Значок ℹ️ открывает карточку бойца.";
 }
 
 function plural(count, one, few, many) {
@@ -5883,17 +5896,61 @@ function plural(count, one, few, many) {
   return many;
 }
 
-// Какую страницу рейтинга показываем. Номер, а не смещение: смещение
+// Какую страницу списка показываем. Номер, а не смещение: смещение
 // считает сервер — он же держит и размер страницы
 let clubPage = 1;
+// Порядок и отбор. Держим здесь, а не читаем из вёрстки: по ним
+// собирается запрос, и список уровней приезжает ответом на него же
+let clubSort = "rating";
+let clubLevel = 0;
+
+/** Переключатели порядка над списком: по ELO или по алфавиту. */
+function renderClubOrder() {
+  const box = el("club-order");
+  box.textContent = "";
+  [
+    ["rating", "По рейтингу"],
+    ["name", "По алфавиту"],
+  ].forEach(([code, label]) => {
+    box.appendChild(
+      chip(label, clubSort === code, () => {
+        if (clubSort === code) return;
+        clubSort = code;
+        loadClub(1);
+      })
+    );
+  });
+}
+
+/** Список уровней в отборе — только те, на которых кто-то есть. */
+function renderClubLevels(levels) {
+  const pick = el("club-level");
+  const was = String(clubLevel);
+  pick.textContent = "";
+  const any = document.createElement("option");
+  any.value = "0";
+  any.textContent = "любой";
+  pick.appendChild(any);
+  (levels || []).forEach((level) => {
+    const one = document.createElement("option");
+    one.value = String(level);
+    one.textContent = String(level);
+    pick.appendChild(one);
+  });
+  pick.value = was;
+}
 
 async function loadClub(page) {
   clubPage = Math.max(1, page || clubPage);
+  const query =
+    "api/club?page=" + clubPage
+    + "&sort=" + clubSort
+    + (clubLevel ? "&level=" + clubLevel : "");
   try {
-    const response = await fetch("api/club?page=" + clubPage, {
+    const response = await fetch(query, {
       headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
     });
-    if (!response.ok) throw new Error("Рейтинг не открылся.");
+    if (!response.ok) throw new Error("Список не открылся.");
     const data = await response.json();
     // Страницу называет ответ, а не запрос: попросили двадцатую, а их
     // три — сервер отдаст третью, и листать дальше надо от неё
@@ -5902,6 +5959,154 @@ async function loadClub(page) {
   } catch (error) {
     el("club-note").textContent = error.message;
   }
+}
+
+// ---------- рейтинг недели ----------
+
+// Что приехало последним. Нужно, чтобы отличить «ещё не загружали» от
+// «загрузили и там пусто»: второе подписывается словами, а первое нет
+let ladderData = null;
+let ladderPage = 1;
+
+async function loadLadder(page) {
+  ladderPage = Math.max(1, page || ladderPage);
+  try {
+    const response = await fetch("api/ladder?page=" + ladderPage, {
+      headers: { "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+    });
+    if (!response.ok) throw new Error("Рейтинг недели не открылся.");
+    const data = await response.json();
+    ladderPage = data.page || ladderPage;
+    renderLadder(data);
+  } catch (error) {
+    sayLadderOops(error.message);
+  }
+}
+
+/** Оборванная загрузка: своя записка и кнопка «ещё раз».
+ *
+ * Пустой рейтинг и не открывшийся рейтинг выглядят одинаково, если не
+ * сказать словами, что случилось: в первом случае жать нечего, во
+ * втором — только и остаётся. Поэтому список прячем целиком, а не
+ * оставляем пустым.
+ */
+function sayLadderOops(said) {
+  el("ladder-oops").classList.remove("hidden");
+  el("ladder-oops-note").textContent = said;
+  el("ladder-note").textContent = "";
+  el("ladder-list").textContent = "";
+  el("ladder-pager").classList.add("hidden");
+  el("ladder-mine").classList.add("hidden");
+  el("ladder-prizes").classList.add("hidden");
+}
+
+function renderLadder(data) {
+  ladderData = data;
+  el("ladder-oops").classList.add("hidden");
+  el("ladder-prizes").classList.remove("hidden");
+  el("ladder-window").textContent = "Неделя " + data.window;
+  // Подпись о предварительности приезжает с сервера: это часть правил,
+  // а не оформления. Закрытая неделя её не носит — её итог уже итог
+  el("ladder-note").textContent = data.fighters.length
+    ? (data.settled ? "" : data.note)
+    : data.empty;
+
+  renderLadderMine(data);
+  renderLadderPaid(data.last);
+  renderLadderPrizes(data.prizes);
+
+  const list = el("ladder-list");
+  list.textContent = "";
+  data.fighters.forEach((one) => list.appendChild(ladderRow(one)));
+  pagerOf("ladder", data);
+}
+
+/** Своя строка над списком: место и награда или прогресс до порога. */
+function renderLadderMine(data) {
+  const box = el("ladder-mine");
+  const mine = data.mine || {};
+  box.textContent = "";
+  box.classList.remove("hidden");
+  const said = document.createElement("span");
+  if (mine.qualified && mine.place) {
+    said.textContent =
+      "Ты на " + mine.place + " месте — "
+      + num(mine.prize) + " кр. за неделю";
+  } else {
+    // До квалификации вместо места — прогресс: ноль был бы неправдой,
+    // потому что места у непрошедшего нет вовсе
+    said.textContent = "Твой зачёт: " + mine.progress;
+  }
+  box.appendChild(said);
+  if (!mine.qualified) {
+    const left = document.createElement("span");
+    left.className = "ladder-left";
+    left.textContent =
+      "осталось " + mine.left + " " + plural(mine.left, "бой", "боя", "боёв");
+    box.appendChild(left);
+  }
+}
+
+/** Чем кончилась прошлая неделя: награда приходит сама и молча. */
+function renderLadderPaid(last) {
+  const box = el("ladder-paid");
+  const has = last && last.prize > 0;
+  box.classList.toggle("hidden", !has);
+  if (!has) return;
+  box.textContent =
+    "За прошлую неделю: " + last.place + " место, "
+    + num(last.prize) + " кр. уже в кармане";
+}
+
+/** Призовая таблица — та же, по которой платят: её считает сервер. */
+function renderLadderPrizes(prizes) {
+  const box = el("ladder-table");
+  box.textContent = "";
+  const list = document.createElement("ul");
+  list.className = "rows";
+  (prizes || []).forEach((one) => {
+    list.appendChild(row(one.place + " место", num(one.prize) + " кр."));
+  });
+  box.appendChild(list);
+}
+
+/** Строка рейтинга недели: всё то же плюс бои за неделю и награда. */
+function ladderRow(one) {
+  const box = fighterRow(one);
+  box.classList.add("ladder-row");
+  const fights = document.createElement("span");
+  fights.className = "ladder-fights";
+  fights.textContent = one.fights + " б.";
+  fights.title = "Зачётных боёв за неделю";
+  const prize = document.createElement("span");
+  prize.className = "ladder-prize" + (one.prize ? "" : " ladder-none");
+  prize.textContent = one.prize ? num(one.prize) : "—";
+  prize.title = one.prize
+    ? "Предварительная награда за это место"
+    : "За это место не платят";
+  box.append(fights, prize);
+  return box;
+}
+
+/** Стрелки под списком: «← 1–50 из 137 →». Одна страница — стрелок нет.
+ *
+ * Один счётчик на оба списка: считается в них одно и то же, и две
+ * копии этого счёта однажды разошлись бы.
+ */
+function pagerOf(name, data) {
+  const pager = el(name + "-pager");
+  const pages = data.pages || 1;
+  pager.classList.toggle("hidden", pages < 2);
+  if (pages < 2) return;
+  const page = data.page || 1;
+  const first = (data.offset || 0) + 1;
+  const last = (data.offset || 0) + data.fighters.length;
+  el(name + "-where").textContent =
+    first + "–" + last + " из " + num(data.total);
+  // Крайние страницы гасим, а не прячем: кнопка, исчезающая под
+  // пальцем, уводит нажатие на соседнюю
+  el(name + "-prev").disabled = page <= 1;
+  el(name + "-next").disabled = page >= pages;
 }
 
 // ---------- касса ----------
@@ -20186,6 +20391,16 @@ el("topup-back").addEventListener("click", () => showTab(lastTab));
 // Рейтинг листается страницами по полсотни: стрелки под списком
 el("club-prev").addEventListener("click", () => loadClub(clubPage - 1));
 el("club-next").addEventListener("click", () => loadClub(clubPage + 1));
+// Отбор по уровню: выбрали — спрашиваем с первой страницы. Оставаться
+// на третьей после отбора незачем: в урезанном списке её может не быть
+el("club-level").addEventListener("change", (event) => {
+  clubLevel = Number(event.target.value) || 0;
+  loadClub(1);
+});
+
+el("ladder-prev").addEventListener("click", () => loadLadder(ladderPage - 1));
+el("ladder-next").addEventListener("click", () => loadLadder(ladderPage + 1));
+el("ladder-again").addEventListener("click", () => loadLadder(ladderPage));
 
 // Поиск бойца для статистики: набрал — через четверть секунды спросили
 el("stats-seek").addEventListener("input", (event) =>

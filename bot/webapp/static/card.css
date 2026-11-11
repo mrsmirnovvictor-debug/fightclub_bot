@@ -1517,6 +1517,111 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- отбор и порядок над списком игроков ----------
+
+   Порядок пузырями, уровень выпадающим списком. Пузыри — потому что
+   порядков два и видны оба сразу; список — потому что уровней десятки,
+   и двадцать пузырей заняли бы весь экран. */
+.sift {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.sift .bubbles { flex: 1 1 auto; margin: 0; }
+.sift-level {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.sift-label { font-size: 12.5px; color: var(--muted); }
+/* Поле уровня узкое: в нём одно-два числа, и во всю ширину оно
+   выглядело бы незаполненным */
+.sift-level .field-input { width: auto; min-width: 72px; padding: 5px 8px; }
+
+/* ---------- рейтинг недели ----------
+
+   Строка та же, что в списке клуба, плюс два числа справа: боёв за
+   неделю и награда за место. Ширина у них своя — иначе ники прыгали бы
+   от строки к строке. */
+.ladder-fights {
+  flex: 0 0 auto;
+  min-width: 34px;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ladder-prize {
+  flex: 0 0 auto;
+  min-width: 34px;
+  /* Зелёный шкалы здоровья: деньги, которые придут. Золото тут уже
+     занято — им покрашено ELO в той же строке, и две золотые цифры
+     рядом читались бы одним числом */
+  color: var(--hp-green);
+  font-weight: 800;
+  font-size: 12.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Ниже пятидесятого места не платят. Прочерк, а не ноль: ноль читается
+   как «посчитали и вышло нисколько», а здесь не платят вовсе */
+.ladder-prize.ladder-none { color: var(--muted); font-weight: 700; }
+
+/* Своя строка над списком: место и награда или прогресс до порога.
+   Отдельной плашкой, а не в общем списке: своё место ищут глазами, и
+   на второй странице его в списке не видно вовсе */
+.ladder-mine {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.ladder-left { color: var(--muted); font-weight: 700; font-size: 12px; }
+
+/* Что пришло за прошлую неделю. Награда начисляется сама, и без этой
+   строки лишние кредиты в кармане остались бы без объяснения */
+.ladder-paid {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+/* Оборванная загрузка: записка и кнопка «ещё раз». Пустой рейтинг
+   выглядел бы так же, если не сказать словами, что случилось */
+.ladder-oops {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+/* Призовая таблица — под складкой: её смотрят один раз, а место в
+   рейтинге читают каждый день */
+.ladder-prizes { margin-top: 12px; }
+.ladder-prizes summary {
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 0;
+}
+
 /* ---------- поиск бойца в статистике ----------
 
    Поле и «Моя статистика» в строку. Кнопка появляется только когда

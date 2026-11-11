@@ -56,8 +56,20 @@
       <div id="fights-body"></div>
     </section>
 
-    <!-- Рейтинг игроков: доска почёта по ELO, страницами по пятьдесят -->
+    <!-- Список игроков: все записанные, страницами по пятьдесят. Сверху
+         два переключателя — порядок и уровень. Порядок по ELO даёт
+         места, по алфавиту — картотеку: место в ней не рисуется вовсе,
+         потому что номер строки означал бы не то, что в нём написано -->
     <section id="club-players">
+      <div class="sift">
+        <div class="bubbles" id="club-order"></div>
+        <label class="sift-level">
+          <span class="sift-label">Уровень</span>
+          <select class="field-input" id="club-level">
+            <option value="0">любой</option>
+          </select>
+        </label>
+      </div>
       <p class="screen-note" id="club-note"></p>
       <div id="club-list"></div>
       <div class="pager hidden" id="club-pager">
@@ -67,6 +79,38 @@
         <button type="button" class="pager-step" id="club-next"
                 aria-label="Следующие пятьдесят">→</button>
       </div>
+    </section>
+
+    <!-- Рейтинг недели: только те, кто провёл десять зачётных боёв.
+         Награда рядом с местом предварительная — итог подводится в
+         воскресенье в полдень, и подпись об этом приезжает с сервера, а
+         не живёт здесь: это часть правил, а не оформления -->
+    <section id="club-ladder" class="hidden">
+      <p class="screen-note" id="ladder-window"></p>
+      <div class="ladder-mine hidden" id="ladder-mine"></div>
+      <div class="ladder-paid hidden" id="ladder-paid"></div>
+      <p class="screen-note" id="ladder-note"></p>
+      <div id="ladder-list"></div>
+      <div class="pager hidden" id="ladder-pager">
+        <button type="button" class="pager-step" id="ladder-prev"
+                aria-label="Предыдущие пятьдесят">←</button>
+        <span class="pager-where" id="ladder-where"></span>
+        <button type="button" class="pager-step" id="ladder-next"
+                aria-label="Следующие пятьдесят">→</button>
+      </div>
+      <!-- Ошибка загрузки — не пустой рейтинг. У неё своя записка и
+           своя кнопка: пустоту перезагружать незачем, а оборванную
+           загрузку — только и остаётся -->
+      <div class="ladder-oops hidden" id="ladder-oops">
+        <p class="screen-note" id="ladder-oops-note"></p>
+        <button type="button" class="btn secondary" id="ladder-again">
+          Попробовать снова
+        </button>
+      </div>
+      <details class="ladder-prizes" id="ladder-prizes">
+        <summary>Призы за места</summary>
+        <div id="ladder-table"></div>
+      </details>
     </section>
 
     <!-- Рейд: сбор отряда, волна против босса или итог -->

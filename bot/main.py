@@ -21,6 +21,7 @@ from aiogram.types import (
 
 from bot.config import Config, load_config
 from bot import chores
+from bot.ladder_service import settle_due
 from bot.database import Database
 from bot.battle_service import BattleService
 from bot.duel_service import DuelService
@@ -121,6 +122,15 @@ async def run(config: Config | None = None) -> None:
     # раз на живой базе. Молчат, когда делать нечего
     for line in await chores.run(db):
         logger.info("Разовая работа: %s", line)
+    # Недели рейтинга, кончившиеся пока бота не было. Часов, которые
+    # будили бы его в полдень воскресенья, в клубе нет: период закрывает
+    # тот, кто на него смотрит, — а при запуске смотрим мы сами, чтобы
+    # выплата не ждала первого, кто откроет экран рейтинга
+    try:
+        for line in await settle_due(db):
+            logger.info("Недельный рейтинг: %s", line)
+    except Exception:  # pragma: no cover - выплата не стоит запуска бота
+        logger.exception("Недельный рейтинг не досчитался при запуске")
     duels = DuelService(bot=bot, db=db, config=config)
     battles = BattleService(bot=bot, db=db, config=config)
     tournaments = TournamentService(bot=bot, db=db, config=config, duels=duels)

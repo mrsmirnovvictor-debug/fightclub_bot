@@ -699,3 +699,79 @@ async def test_the_rate_of_a_mixed_battle_comes_from_the_oldest_fighter(bot, db)
             # Дотянулся на две ступени, а не до двенадцатой
             assert rate == base_exp(3)
     await service.shutdown()
+
+
+async def test_a_group_fight_lands_in_the_elo_journal(bot, db):
+    """Групповой бой идёт в недельный рейтинг наравне с дуэлью.
+
+    Так решил заказчик: это такой же PvP-бой между живыми игроками, и
+    собирают его в здании Бойцовского клуба. Записывается он тем же
+    журналом ELO, по которому считается неделя
+    (`bot.ladder_service`), — одним мигом на всех, кто вышел на ринг.
+    """
+    from bot.ladder_service import my_week
+
+    service = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await service.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    await service.join(lobby.id, players[1], RED)
+    await service.join(lobby.id, players[2], BLUE)
+    await service.join(lobby.id, players[3], BLUE)
+    session = service.battle_in_chat(CHAT_ID, THREAD_ID)
+    await fight_to_the_end(service, session)
+
+    keys = set()
+    stamps = set()
+    for player in players:
+        rows = await db.rating_log_of(player.user_id)
+        assert len(rows) == 1, f"бой не записан бойцу {player.user_id}"
+        assert rows[0]["kind"] == "battle"
+        assert rows[0]["outcome"] in ("win", "loss", "draw")
+        # Записанный рейтинг — тот же, что в карточке
+        assert rows[0]["rating"] == (await db.get_player(player.user_id)).rating
+        assert await my_week(db, player.user_id) == 1
+        keys.add(rows[0]["fight"])
+        stamps.add(rows[0]["at"])
+
+    assert len(keys) == 1, "у одного боя оказалось несколько ключей"
+    assert len(stamps) == 1, "бойцы одного боя зафиксированы разным мигом"
+    await service.shutdown()
+
+
+async def test_a_duel_and_a_group_fight_do_not_share_a_journal_key(bot, db):
+    """Номера дуэлей и отрядов свои — в журнале их разводит род боя.
+
+    Оба счётчика живут в памяти и после перезапуска начинают с единицы.
+    Без рода боя первая дуэль и первый групповой бой оказались бы одним
+    боем, и второй из них в рейтинг не попал бы.
+    """
+    from bot.duel_service import DuelService
+    from tests.test_duel_flow import make_service as duel_service
+    from tests.test_duel_flow import play_round
+
+    battles = make_service(bot, db)
+    players = await fill(db, 4)
+    lobby = await battles.open_lobby(
+        CHAT_ID, THREAD_ID, players[0], BattleKind.TEAM, size=2
+    )
+    await battles.join(lobby.id, players[1], RED)
+    await battles.join(lobby.id, players[2], BLUE)
+    await battles.join(lobby.id, players[3], BLUE)
+    await fight_to_the_end(battles, battles.battle_in_chat(CHAT_ID, THREAD_ID))
+    await battles.shutdown()
+
+    duels: DuelService = duel_service(bot, db)
+    session = await duels.start_duel(
+        CHAT_ID, THREAD_ID + 1,
+        await db.get_player(1), await db.get_player(2),
+    )
+    for _ in range(40):
+        if duels.duel_in_chat(CHAT_ID, THREAD_ID + 1) is None:
+            break
+        await play_round(duels, session)
+
+    rows = await db.rating_log_of(1)
+    assert len(rows) == 2, "один из двух боёв пропал"
+    assert {row["kind"] for row in rows} == {"duel", "battle"}

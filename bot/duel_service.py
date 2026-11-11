@@ -9,6 +9,7 @@ import logging
 import math
 import random
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
@@ -18,6 +19,7 @@ from bot.config import Config
 from bot.database import Database
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.equipment import BARE_HANDS_ICON
+from bot.game.health import now_ts
 from bot.game.modes import FightMode
 from bot.game.scout import SCOUT_FIGHTS, Habits, read_habits
 from bot.game.combat import (
@@ -145,6 +147,11 @@ class Choice:
 @dataclass
 class DuelSession:
     id: int
+    # Ключ боя для журнала ELO: один на бой и на обе его стороны.
+    # Случайный, а не номер боя: номера раздаёт счётчик в памяти и после
+    # каждого перезапуска начинает с единицы, а ключ должен быть разным
+    # всегда — на нём держится обещание «бой учитывается один раз»
+    fight_key: str = field(default_factory=lambda: uuid4().hex, kw_only=True)
     chat_id: int | None
     thread_id: int | None
     fighters: dict[int, Fighter]
@@ -923,6 +930,11 @@ class DuelService:
 
         rows: list[tuple[Player, ProgressReport]] = []
         broken: list[tuple[Player, list]] = []
+        # Миг фиксации итога — один на весь бой, а не по бойцу. От него
+        # зависит, в какую неделю рейтинга бой попадёт, и бой, начавшийся
+        # в одной неделе и кончившийся в другой, должен попасть в одну:
+        # две стороны одного боя в разных неделях разошлись бы навсегда
+        stamped = now_ts()
         for user_id, player in players.items():
             fighter = session.fighters[user_id]
             opponent = session.opponent_of(user_id)
@@ -981,8 +993,29 @@ class DuelService:
             player.set_hp(fighter.hp)
             report = player.grant_exp(exp)
             report.rating_delta = delta
+            was = player.rating
             player.apply_rating(delta)
             await self.db.save_player(player)
+            # Журнал ELO — после сохранения бойца, а не до: по журналу
+            # потом восстанавливают рейтинг на любой прошедший миг, и
+            # запись, которой нет в `players`, сделала бы это
+            # восстановление неправдой. Обратный порядок потерял бы бой
+            # для недельного счётчика — это обидно, но честно
+            await self.db.log_rating(
+                user_id,
+                "duel",
+                session.fight_key,
+                # Ничья — это бой, но не победа и не поражение. По одной
+                # нулевой разнице её от ничего не отличить: рейтинг не
+                # двигает и проигрыш бойца, стоящего на нуле
+                "draw" if drawn else ("win" if won else "loss"),
+                # Разница настоящая, а не задуманная: рейтинг не уходит
+                # ниже нуля, и у бойца на дне формула считает одно, а
+                # случается другое
+                player.rating - was,
+                player.rating,
+                stamped,
+            )
             rows.append((player, report))
 
         return rewards_report(

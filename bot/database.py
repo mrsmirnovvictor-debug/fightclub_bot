@@ -1239,6 +1239,89 @@ CREATE TABLE IF NOT EXISTS announcements (
     posted_at TEXT    NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (chat_id, code)
 );
+
+-- Журнал ELO: по строке на бойца и бой, в котором его рейтинг
+-- зафиксировали. Таблица новая и заводится пустой — в ней нет истории
+-- тех боёв, что прошли до её появления, и выдумывать её мы не станем.
+--
+-- Зачем она нужна, если рейтинг и так лежит в `players.rating`. Затем,
+-- что по одному текущему числу нельзя ответить ни на один вопрос
+-- недельного рейтинга: сколько боёв боец провёл за неделю, каким его
+-- ELO было на границе периода и когда это значение установилось. Всё
+-- три ответа — здесь, и источник у них один: иначе бои считались бы в
+-- одном месте, а ELO в другом, и однажды они разошлись бы.
+--
+-- `fight` — ключ боя, один на бой и на все его стороны. Он же держит
+-- обещание «бой учитывается один раз»: повторная обработка того же
+-- итога упирается в уникальный индекс и ничего не меняет.
+--
+-- `delta` — то изменение, которое и правда случилось, а не то, которое
+-- посчитала формула: рейтинг не уходит ниже нуля, и у бойца на дне
+-- проигрыш в сорок очков меняет его на пять. Для восстановления ELO по
+-- журналу нужна настоящая разница, а не задуманная.
+--
+-- `outcome` отдельно от `delta`, потому что ничья рейтинга не двигает:
+-- по нулевой разнице нельзя отличить ничью от боя, которого не было.
+CREATE TABLE IF NOT EXISTS rating_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    -- Какого рода бой: `duel` или `battle`. Ключи боёв у них свои, и
+    -- без рода они могли бы совпасть
+    kind    TEXT    NOT NULL,
+    fight   TEXT    NOT NULL,
+    -- `win`, `loss` или `draw`
+    outcome TEXT    NOT NULL,
+    delta   INTEGER NOT NULL DEFAULT 0,
+    -- ELO после боя
+    rating  INTEGER NOT NULL DEFAULT 0,
+    at      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS rating_log_once
+    ON rating_log(user_id, kind, fight);
+CREATE INDEX IF NOT EXISTS rating_log_when ON rating_log(at);
+CREATE INDEX IF NOT EXISTS rating_log_who ON rating_log(user_id, id);
+
+-- Закрытая неделя рейтинга: одна строка на период. Строка есть —
+-- период посчитан, и пересчитывать его новые бои уже не заставят
+CREATE TABLE IF NOT EXISTS ladder_weeks (
+    period     TEXT    PRIMARY KEY,
+    opened_at  INTEGER NOT NULL DEFAULT 0,
+    -- Граница периода: по состоянию на неё и считали
+    closed_at  INTEGER NOT NULL DEFAULT 0,
+    -- Когда посчитали. Может быть много позже границы: если бот не
+    -- работал в полдень воскресенья, период закрывается по возвращении
+    settled_at INTEGER NOT NULL DEFAULT 0,
+    players    INTEGER NOT NULL DEFAULT 0,
+    prize      INTEGER NOT NULL DEFAULT 0
+);
+
+-- Итоговый снимок периода: по строке на участника. Неизменяемый — его
+-- не пересчитывают, а читают: по нему потом видно, за что заплатили.
+--
+-- `paid_at` пустой — место посчитано, а деньги ещё не выданы. Выдача
+-- идёт по одной строке и каждая отмечается до начисления, поэтому
+-- повторный заход доплатит только неоплаченное и ничего не задвоит.
+CREATE TABLE IF NOT EXISTS ladder_places (
+    period  TEXT    NOT NULL,
+    user_id INTEGER NOT NULL,
+    place   INTEGER NOT NULL,
+    -- ELO на границе периода, а не сегодняшний
+    rating  INTEGER NOT NULL DEFAULT 0,
+    fights  INTEGER NOT NULL DEFAULT 0,
+    wins    INTEGER NOT NULL DEFAULT 0,
+    losses  INTEGER NOT NULL DEFAULT 0,
+    -- Четвёртый ключ равенства: когда ELO стало тем, с которым закрыли
+    reached INTEGER NOT NULL DEFAULT 0,
+    prize   INTEGER NOT NULL DEFAULT 0,
+    paid_at INTEGER,
+    PRIMARY KEY (period, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS ladder_places_place
+    ON ladder_places(period, place);
+CREATE INDEX IF NOT EXISTS ladder_places_owed
+    ON ladder_places(period, paid_at);
 """
 
 PLAYER_COLUMNS = (
@@ -1348,6 +1431,9 @@ class Database:
         try:
             self._conn.row_factory = aiosqlite.Row
             await self._conn.create_function("lower", 1, _lower, deterministic=True)
+            await self._conn.create_function(
+                "ru_key", 1, _ru_key, deterministic=True
+            )
             await self._conn.execute("PRAGMA foreign_keys = ON")
             await self._tune()
             await self._conn.executescript(SCHEMA)
@@ -2248,16 +2334,62 @@ class Database:
         # — это двести запросов на один экран
         return await self._with_standings([_to_player(row) for row in rows])
 
-    async def count_players(self) -> int:
-        """Сколько бойцов в клубе всего. Нужно рейтингу — он идёт страницами."""
+    async def count_players(self, level: int = 0) -> int:
+        """Сколько бойцов в клубе. `level` — только этого уровня.
+
+        Нужно списку: он идёт страницами, и число страниц считается по
+        тому же отбору, что и сами строки. Считать всех, а показывать
+        отобранных значило бы рисовать стрелки на пустые страницы.
+        """
+        if level > 0:
+            async with self.conn.execute(
+                "SELECT COUNT(*) AS n FROM players WHERE level = ?", (level,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            return int(row["n"]) if row else 0
         async with self.conn.execute(
             "SELECT COUNT(*) AS n FROM players"
         ) as cursor:
             row = await cursor.fetchone()
         return int(row["n"]) if row else 0
 
+    async def players_in(self, user_ids: list[int]) -> dict[int, Player]:
+        """Бойцы по списку номеров, одним запросом. Порядок не хранится.
+
+        Нужно недельному рейтингу: места ему считает `bot.game.ladder` по
+        журналу боёв, а прозвища, уровни и знаки мафии лежат у бойцов.
+        Спрашивать про каждого по отдельности — это пятьдесят запросов
+        на один экран.
+        """
+        if not user_ids:
+            return {}
+        holes = ",".join("?" * len(user_ids))
+        async with self.conn.execute(
+            f"SELECT {PLAYER_COLUMNS} FROM players WHERE user_id IN ({holes})",
+            tuple(user_ids),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        players = await self._with_standings([_to_player(row) for row in rows])
+        return {player.user_id: player for player in players}
+
+    async def level_spread(self) -> list[int]:
+        """Какие уровни в клубе есть вообще — по возрастанию.
+
+        Отбор по уровню предлагает только те, кого и правда можно
+        выбрать: список с уровнями, на которых никого нет, обещал бы
+        игроку то, чего там не найдётся.
+        """
+        async with self.conn.execute(
+            "SELECT DISTINCT level FROM players ORDER BY level"
+        ) as cursor:
+            return [int(row["level"]) for row in await cursor.fetchall()]
+
     async def rated_players(
-        self, offset: int = 0, limit: int = 50
+        self,
+        offset: int = 0,
+        limit: int = 50,
+        level: int = 0,
+        by_name: bool = False,
     ) -> list[Player]:
         """Страница рейтинга: сильные сверху, по ELO и вне зависимости от уровня.
 
@@ -2270,14 +2402,34 @@ class Database:
         на две страницы сразу или не попасть ни на одну. У SQLite нет
         обещания про порядок равных строк, и страницы разъезжались бы
         молча.
+
+        Сортировок две. По ELO — доска почёта, по которой платят; по
+        алфавиту — картотека, по которой ищут знакомого. Вторая не
+        отменяет мест: место бойцу даёт ELO, и в алфавитном списке оно
+        при нём остаётся — иначе выходило бы два разных рейтинга.
+
+        Алфавит русский, а не юникодный: `ru_key` сводит «ё» с «е», а то
+        Ёжик стоял бы последним, за Яковом.
+
+        Отбор по уровню режет список до одной ступени. Он не меняет
+        порядок и не переставляет места: это тот же список, только без
+        чужих уровней.
         """
+        order = (
+            "ru_key(nickname) ASC, user_id ASC"
+            if by_name
+            else "rating DESC, level DESC, wins DESC, user_id ASC"
+        )
+        where = "WHERE level = ?" if level > 0 else ""
+        tail = ((level,) if level > 0 else ()) + (max(1, limit), max(0, offset))
         async with self.conn.execute(
             f"""
             SELECT {PLAYER_COLUMNS} FROM players
-            ORDER BY rating DESC, level DESC, wins DESC, user_id ASC
+            {where}
+            ORDER BY {order}
             LIMIT ? OFFSET ?
             """,
-            (max(1, limit), max(0, offset)),
+            tail,
         ) as cursor:
             rows = await cursor.fetchall()
         return await self._with_standings([_to_player(row) for row in rows])
@@ -7794,6 +7946,390 @@ class Database:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
+    # ---------- журнал ELO и недельный рейтинг ----------
+
+    async def log_rating(
+        self,
+        user_id: int,
+        kind: str,
+        fight: str,
+        outcome: str,
+        delta: int,
+        rating: int,
+        at: int,
+    ) -> bool:
+        """Записать бой в журнал ELO. `False` — он там уже был.
+
+        Отметка и проверка — один запрос: два захода подряд не задвоят
+        ни счётчик боёв, ни изменение рейтинга, потому что второй
+        упрётся в уникальный индекс и вернёт `False`. Проверять заранее
+        и писать потом было бы двумя запросами, между которыми
+        проскочил бы второй обработчик того же итога.
+        """
+        cursor = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO rating_log
+                (user_id, kind, fight, outcome, delta, rating, at)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            (user_id, kind, fight, outcome, int(delta), int(rating), int(at)),
+        )
+        await self.conn.commit()
+        return bool(cursor.rowcount)
+
+    async def rating_log_of(
+        self, user_id: int, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Журнал ELO бойца, свежее сверху. Нужен проверкам и разбору."""
+        async with self.conn.execute(
+            """
+            SELECT id, kind, fight, outcome, delta, rating, at
+            FROM rating_log WHERE user_id = ? ORDER BY id DESC LIMIT ?
+            """,
+            (user_id, max(1, limit)),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def week_fights_of(self, user_id: int, since: int, until: int) -> int:
+        """Сколько зачётных боёв боец провёл за этот период.
+
+        Нужно тому, кто порога ещё не прошёл: в рейтинге его нет, а
+        личный прогресс «семь из десяти» показать надо.
+        """
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS n FROM rating_log "
+            "WHERE user_id = ? AND at >= ? AND at < ?",
+            (user_id, int(since), int(until)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["n"]) if row else 0
+
+    async def week_standings(
+        self, since: int, until: int, least: int = 1
+    ) -> list[dict[str, Any]]:
+        """Все, кто провёл за период не меньше `least` боёв.
+
+        Отдаёт по словарю на бойца: бои, победы, поражения, ELO на
+        границе периода и миг, в который это ELO установилось. Мест
+        здесь нет — их расставляет `bot.game.ladder`: порядок это
+        правило игры, а не свойство базы.
+
+        **ELO берётся на границу, а не сегодняшнее.** У живой недели
+        граница в будущем, и «на границу» означает «сейчас» — тот же
+        ответ. У закрытой с опозданием это важно: пока бот не работал,
+        бойцы успели подраться, и платить им надо по тому ELO, с
+        которым неделя кончилась.
+
+        **Отвечает на это журнал, а не карточка бойца.** Последняя
+        запись журнала до границы несёт ELO на границу — и несёт его
+        даже тогда, когда бой рейтинга не двинул: в записи лежит
+        значение после боя, а не разница. Карточка не годится дважды:
+        у закрытой недели в ней уже другое число, а у выбывшего бойца
+        её нет вовсе — и выбывший провалился бы в хвост рейтинга с
+        нулём вместо места, которое ему посчитали.
+
+        Своей записи у бойца в этом отрезке быть не может: в счёт он
+        попал десятью боями внутри периода, а значит десять его записей
+        журналу известны. Поэтому отдельного запасного пути здесь нет —
+        он был бы недостижимым кодом.
+
+        **Четвёртый ключ равенства — своя запись.** Время достижения
+        ELO даёт последняя запись, которая рейтинг и правда двинула:
+        бой без изменения эту дату не обновляет. Нет такой записи —
+        боец держит своё ELO с начала журнала, и это ноль: он стоит
+        выше поднявшихся позже, и выдумывать ему дату мы не станем.
+
+        Записи упорядочены номером, а не меткой. Номер — это порядок
+        записи в журнал, то есть настоящий порядок изменений рейтинга, а
+        метка пришла от часов сервера и теоретически может шагнуть
+        назад. Для восстановления накопленного значения нужен причинный
+        порядок.
+        """
+        since, until, least = int(since), int(until), max(1, least)
+        async with self.conn.execute(
+            """
+            SELECT user_id,
+                   COUNT(*) AS fights,
+                   SUM(CASE WHEN outcome = 'win'  THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN outcome = 'loss' THEN 1 ELSE 0 END) AS losses
+            FROM rating_log
+            WHERE at >= ? AND at < ?
+            GROUP BY user_id
+            HAVING COUNT(*) >= ?
+            """,
+            (since, until, least),
+        ) as cursor:
+            counted = [dict(row) for row in await cursor.fetchall()]
+        if not counted:
+            return []
+
+        held = await self._rating_at(until)
+        reached = await self._reached_at(until)
+        return [
+            {
+                "user_id": int(one["user_id"]),
+                "rating": held.get(int(one["user_id"]), 0),
+                "reached": reached.get(int(one["user_id"]), 0),
+                "fights": int(one["fights"]),
+                "wins": int(one["wins"] or 0),
+                "losses": int(one["losses"] or 0),
+            }
+            for one in counted
+        ]
+
+    async def _rating_at(self, until: int) -> dict[int, int]:
+        """ELO каждого бойца на этот миг — по последней записи до него.
+
+        Любой записи, а не только двинувшей рейтинг: в записи лежит
+        значение после боя, и ничья говорит о нём ровно то же, что
+        победа.
+        """
+        async with self.conn.execute(
+            """
+            SELECT last.user_id, last.rating
+            FROM (
+                SELECT user_id, MAX(id) AS id FROM rating_log
+                WHERE at < ?
+                GROUP BY user_id
+            ) AS pick
+            JOIN rating_log AS last ON last.id = pick.id
+            """,
+            (int(until),),
+        ) as cursor:
+            return {
+                int(row["user_id"]): int(row["rating"])
+                for row in await cursor.fetchall()
+            }
+
+    async def _reached_at(self, until: int) -> dict[int, int]:
+        """Когда ELO бойца стало тем, с которым он пришёл к этому мигу.
+
+        Последняя запись до границы, которая рейтинг и правда двинула:
+        всё, что было после неё, его не меняло, значит значение
+        установилось именно тогда. Вернувшийся к прежнему числу рейтинг
+        считается от возвращения — это та же запись.
+
+        Пусто для бойца — журнал его рейтинга не двигал ни разу, и
+        держит он своё ELO с начала журнала.
+        """
+        async with self.conn.execute(
+            """
+            SELECT last.user_id, last.at
+            FROM (
+                SELECT user_id, MAX(id) AS id FROM rating_log
+                WHERE at < ? AND delta <> 0
+                GROUP BY user_id
+            ) AS pick
+            JOIN rating_log AS last ON last.id = pick.id
+            """,
+            (int(until),),
+        ) as cursor:
+            return {
+                int(row["user_id"]): int(row["at"])
+                for row in await cursor.fetchall()
+            }
+
+    # ---------- закрытые недели рейтинга ----------
+
+    async def last_closed_week(self) -> int:
+        """Граница самой поздней закрытой недели. Ноль — ни одной нет.
+
+        От неё и начинают искать недосчитанное: всё, что было до,
+        посчитано, и перебирать те недели заново незачем.
+        """
+        async with self.conn.execute(
+            "SELECT MAX(closed_at) AS edge FROM ladder_weeks"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["edge"] or 0) if row else 0
+
+    async def first_logged_fight(self, since: int, before: int) -> int | None:
+        """Самый ранний бой журнала в этом отрезке. Пусто — боёв в нём нет."""
+        async with self.conn.execute(
+            "SELECT MIN(at) AS first FROM rating_log WHERE at >= ? AND at < ?",
+            (int(since), int(before)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        first = row["first"] if row else None
+        return None if first is None else int(first)
+
+    async def settled_week(self, period: str) -> dict[str, Any] | None:
+        """Закрытая неделя, если она уже посчитана. Пусто — ещё нет."""
+        async with self.conn.execute(
+            "SELECT period, opened_at, closed_at, settled_at, players, prize "
+            "FROM ladder_weeks WHERE period = ?",
+            (period,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def close_week(
+        self,
+        period: str,
+        opened_at: int,
+        closed_at: int,
+        settled_at: int,
+        places: list[dict[str, Any]],
+    ) -> bool:
+        """Записать итоговый снимок периода. `False` — он уже записан.
+
+        **Места ложатся раньше строки периода, а не наоборот.** Строка
+        периода — это и есть отметка «посчитано», и поставить её первой
+        значило бы однажды оставить период посчитанным без единого
+        места: обрыв между двумя записями запер бы выплату навсегда. В
+        нынешнем порядке такой обрыв оставляет период непосчитанным,
+        его посчитают снова — и пересчёт даст то же самое, потому что
+        период закрыт и новых боёв в нём уже не появится.
+
+        Повтор ничего не портит: и места, и строка периода ложатся
+        «вставить или промолчать», так что второй заход не меняет
+        записанного. Отката здесь нет нарочно — промолчавшая вставка
+        ничего и не изменила, а `rollback` на общем соединении отменил бы
+        заодно работу соседнего обработчика.
+
+        Деньги здесь не выдаются. Строки ложатся неоплаченными, а платит
+        по ним `pay_place`: выдача идёт по одной и переживает обрыв на
+        середине.
+        """
+        if places:
+            await self.conn.executemany(
+                """
+                INSERT OR IGNORE INTO ladder_places
+                    (period, user_id, place, rating, fights, wins, losses,
+                     reached, prize, paid_at)
+                VALUES (?,?,?,?,?,?,?,?,?,NULL)
+                """,
+                [
+                    (
+                        period,
+                        int(one["user_id"]),
+                        int(one["place"]),
+                        int(one["rating"]),
+                        int(one["fights"]),
+                        int(one["wins"]),
+                        int(one["losses"]),
+                        int(one["reached"]),
+                        int(one["prize"]),
+                    )
+                    for one in places
+                ],
+            )
+        cursor = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO ladder_weeks
+                (period, opened_at, closed_at, settled_at, players, prize)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (
+                period,
+                int(opened_at),
+                int(closed_at),
+                int(settled_at),
+                len(places),
+                sum(int(one["prize"]) for one in places),
+            ),
+        )
+        fresh = bool(cursor.rowcount)
+        await self.conn.commit()
+        return fresh
+
+    async def owed_places(self, period: str) -> list[dict[str, Any]]:
+        """Кому за этот период ещё не заплатили. Ноль-призы сюда не идут."""
+        async with self.conn.execute(
+            """
+            SELECT user_id, place, prize FROM ladder_places
+            WHERE period = ? AND paid_at IS NULL AND prize > 0
+            ORDER BY place
+            """,
+            (period,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def owed_weeks(self, limit: int = 20) -> list[str]:
+        """Периоды, в которых остались невыплаченные места.
+
+        Нужно возвращению после простоя: платить надо не только за
+        последнюю пропущенную неделю, но и за все, что до неё.
+        """
+        async with self.conn.execute(
+            """
+            SELECT DISTINCT period FROM ladder_places
+            WHERE paid_at IS NULL AND prize > 0
+            ORDER BY period LIMIT ?
+            """,
+            (max(1, limit),),
+        ) as cursor:
+            return [str(row["period"]) for row in await cursor.fetchall()]
+
+    async def pay_place(self, period: str, user_id: int, at: int) -> int:
+        """Выдать награду за место. Возвращает выданное; ноль — уже платили.
+
+        Отметка ставится первой и только на неоплаченное место: кто её
+        поставил, тот и платит. Два обработчика, пришедшие за одной и
+        той же строкой, разойдутся здесь — второму `UPDATE` не достанется
+        ни одной строки, и он не начислит ничего. Отката при этом нет
+        нарочно: не изменивший ни строки `UPDATE` нечего откатывать, а
+        `rollback` на общем соединении отменил бы заодно работу соседа.
+
+        Почему отметка раньше денег. Из двух возможных обрывов — «не
+        отмечено, но выдано» и «отмечено, но не выдано» — первый
+        выдаёт награду дважды при следующем заходе, а второй не выдаёт
+        её вовсе. Задвоенные деньги из города не достать, недоданные
+        видны в снимке и доплачиваются руками.
+
+        Деньги кладутся наличными, как всякий другой доход в городе:
+        счёт в банке есть не у каждого, и награда, которую некуда
+        положить, была бы хуже отсутствия награды.
+        """
+        cursor = await self.conn.execute(
+            "UPDATE ladder_places SET paid_at = ? "
+            "WHERE period = ? AND user_id = ? AND paid_at IS NULL AND prize > 0",
+            (int(at), period, int(user_id)),
+        )
+        if not cursor.rowcount:
+            return 0
+        async with self.conn.execute(
+            "SELECT prize FROM ladder_places WHERE period = ? AND user_id = ?",
+            (period, int(user_id)),
+        ) as pick:
+            row = await pick.fetchone()
+        prize = int(row["prize"]) if row else 0
+        if prize:
+            await self.conn.execute(
+                "UPDATE players SET credits = credits + ? WHERE user_id = ?",
+                (prize, int(user_id)),
+            )
+        await self.conn.commit()
+        return prize
+
+    async def week_places(
+        self, period: str, offset: int = 0, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Страница закрытого рейтинга: места подряд, от первого."""
+        async with self.conn.execute(
+            """
+            SELECT period, user_id, place, rating, fights, wins, losses,
+                   reached, prize, paid_at
+            FROM ladder_places WHERE period = ?
+            ORDER BY place LIMIT ? OFFSET ?
+            """,
+            (period, max(1, limit), max(0, offset)),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def place_of(self, period: str, user_id: int) -> dict[str, Any] | None:
+        """Место бойца в закрытой неделе. Пусто — он в ней не участвовал."""
+        async with self.conn.execute(
+            """
+            SELECT period, user_id, place, rating, fights, wins, losses,
+                   reached, prize, paid_at
+            FROM ladder_places WHERE period = ? AND user_id = ?
+            """,
+            (period, int(user_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
     # ---------- образы ----------
 
     async def owned_looks(self, user_id: int) -> set[str]:
@@ -8094,6 +8630,23 @@ def _lower(text: Any) -> Any:
     запросе, уже рассчитывали именно на такое поведение.
     """
     return text.lower() if isinstance(text, str) else text
+
+
+def _ru_key(text: Any) -> Any:
+    """Ключ сортировки по алфавиту — русскому, а не по номерам букв.
+
+    SQLite сравнивает строки по номерам символов, а «ё» стоит в таблице
+    Юникода за «я»: в алфавитном списке Ёжик оказывался последним, после
+    Якова. В русском алфавите «ё» идёт сразу за «е», поэтому для
+    сортировки сводим их в одну букву.
+
+    Функция только для `ORDER BY`. Для поиска по куску ника она не
+    годится: там «ежик» и «ёжик» — разные слова, и сводить их значило бы
+    находить не то, что набрали.
+    """
+    if not isinstance(text, str):
+        return text
+    return text.lower().replace("ё", "е")
 
 
 def _to_player(row: Iterable[Any]) -> Player:
