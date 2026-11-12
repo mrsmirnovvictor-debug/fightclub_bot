@@ -50,6 +50,10 @@ def strike_payload(strike: Strike) -> dict[str, Any]:
         "counter": strike.counter_damage,
         "armor": strike.armor,
         "hp_after": strike.defender_hp_after,
+        # Остаток атакующего после контрудара. `hp_after` относится к
+        # защищающемуся, и показывать им же здоровье контратакованного —
+        # значит снять урон не с того бойца
+        "counter_hp_after": strike.attacker_hp_after,
         "missed_turn": strike.missed_turn,
     }
 
@@ -67,6 +71,12 @@ def turn_payload(result: RoundResult, lines: list[str] | None = None) -> dict[st
         "turn": turn_in_round(result.number),
         "strikes": [strike_payload(strike) for strike in result.strikes],
         "hp_after": {str(uid): hp for uid, hp in result.hp_after.items()},
+        # Здоровье на начало хода: по нему показывают ход по шагам, а не
+        # одним итогом. Сложением из остатка его не вернуть
+        "hp_before": {str(uid): hp for uid, hp in result.hp_before.items()},
+        # «Подряд» или «разом»: очередь решает проворство, и считает её
+        # движок. Пересчитывать её на стороне экрана нельзя
+        "resolution": "simultaneous" if result.simultaneous else "sequential",
         "finished": result.finished,
         "winner_id": result.winner_id,
         # Комментарий судьи без разметки: мини-апп рисует его как текст

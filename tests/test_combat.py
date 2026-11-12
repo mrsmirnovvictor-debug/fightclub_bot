@@ -1385,3 +1385,137 @@ def test_a_draw_needs_equal_quickness():
             assert draws, f"{left}×{right}: при равном проворстве ничья бывает"
         else:
             assert draws == 0, f"{left}×{right}: ничья при разном проворстве"
+
+
+# ---------- что ход рассказывает о себе ----------
+
+
+def test_a_turn_remembers_the_health_it_started_with():
+    """Здоровье на начало хода лежит в итоге, а не считается обратно.
+
+    Обратно из остатка его не вернуть: остаток обрезан нулём, и добитому
+    бойцу сложение вернуло бы здоровье, которого у него не было. Нужно
+    это тому, кто показывает ход по шагам, а не одним итогом.
+    """
+    first = make(WARRIOR, 1)
+    second = make(WARRIOR, 2, name="Соперник")
+    was = {first.user_id: first.hp, second.user_id: second.hp}
+
+    result = resolve_round(
+        first, strike_at(Zone.HEAD), second, strike_at(Zone.CHEST),
+        1, random.Random(7),
+    )
+
+    assert result.hp_before == was
+    # И это именно начало хода, а не его конец
+    assert result.hp_after != result.hp_before or not any(
+        one.damage for one in result.strikes
+    )
+
+
+def test_a_turn_says_whether_the_blows_landed_at_once():
+    """Очередь решает проворство, и ход говорит, как его считали.
+
+    Пересчитывать очередь на стороне экрана нельзя: у проворства тут
+    единственный источник правды, и второй счёт однажды разошёлся бы с
+    первым.
+    """
+    quick = make(WARRIOR, 1)
+    slow = make(WARRIOR, 2, name="Соперник")
+    assert quick.stats.agility == slow.stats.agility
+    even = resolve_round(
+        quick, strike_at(Zone.HEAD), slow, strike_at(Zone.CHEST),
+        1, random.Random(7),
+    )
+    assert even.simultaneous is True
+
+    # Разведём проворство — и удары пойдут подряд
+    faster = make(WARRIOR, 1)
+    faster.stats = replace(faster.stats, agility=faster.stats.agility + 5)
+    apart = resolve_round(
+        faster, strike_at(Zone.HEAD),
+        make(WARRIOR, 2, name="Соперник"), strike_at(Zone.CHEST),
+        1, random.Random(7),
+    )
+    assert apart.simultaneous is False
+
+
+def test_a_counter_tells_the_health_of_the_one_who_attacked():
+    """У контрудара свой остаток: он снимает здоровье с атаковавшего.
+
+    `defender_hp_after` относится к защищающемуся, и показывать им же
+    здоровье контратакованного — значит снять урон не с того бойца.
+    """
+    def pair():
+        slow = make(WARRIOR, 1)
+        # Ловкач уворачивается и отвечает куда чаще обычного бойца:
+        # ждать контрудара от двух одинаковых воинов — это сотни бросков
+        nimble = make(WARRIOR, 2, name="Ловкач")
+        nimble.stats = replace(nimble.stats, agility=nimble.stats.agility + 60)
+        return slow, nimble
+
+    found = whole = None
+    for seed in range(200):
+        slow, nimble = pair()
+        result = resolve_round(
+            slow, strike_at(Zone.HEAD), nimble, strike_at(Zone.CHEST),
+            1, random.Random(seed),
+        )
+        hit = next(
+            (
+                strike
+                for strike in result.strikes
+                if strike.counter_damage and strike.attacker_id == slow.user_id
+            ),
+            None,
+        )
+        if hit is not None:
+            found, whole = hit, result
+            break
+
+    assert found is not None, "за двести бросков ни одного контрудара"
+    assert found.outcome is Outcome.COUNTER
+    # Остаток считается по ходу: в размене до контрудара мог быть и
+    # обычный удар, и его тоже надо вычесть. Идём по ходу тем же путём,
+    # что и движок, и останавливаемся на самом контрударе
+    running = dict(whole.hp_before)
+    for strike in whole.strikes:
+        running[strike.defender_id] -= strike.damage
+        before_counter = running[strike.attacker_id]
+        running[strike.attacker_id] -= strike.counter_damage
+        if strike is found:
+            break
+    assert found.attacker_hp_after == before_counter - found.counter_damage
+    # И это не остаток защищавшегося: тот лежит в своём поле
+    assert found.attacker_hp_after != found.defender_hp_after
+    # Уворот есть уворот: сам удар не прошёл
+    assert found.damage == 0
+
+
+def test_the_turn_payload_carries_what_a_step_by_step_replay_needs():
+    """Сериализация отдаёт начало хода, очередь и остаток контратакованного.
+
+    Это то, без чего ход нельзя показать по шагам: здоровье на начало
+    (из остатка его не вернуть), способ подсчёта (очередь решает
+    проворство, и пересчитывать её на стороне экрана нельзя) и остаток
+    того, кого контратаковали (`hp_after` относится к защищавшемуся).
+    """
+    from bot.game.fightlog import turn_payload
+
+    first = make(WARRIOR, 1)
+    second = make(WARRIOR, 2, name="Соперник")
+    was = {first.user_id: first.hp, second.user_id: second.hp}
+    result = resolve_round(
+        first, strike_at(Zone.HEAD), second, strike_at(Zone.CHEST),
+        1, random.Random(7),
+    )
+
+    body = turn_payload(result)
+    assert body["hp_before"] == {str(uid): hp for uid, hp in was.items()}
+    assert body["resolution"] in ("sequential", "simultaneous")
+    assert body["resolution"] == "simultaneous", "проворство тут вровень"
+    for strike, row in zip(result.strikes, body["strikes"]):
+        assert row["hp_after"] == strike.defender_hp_after
+        assert row["counter_hp_after"] == strike.attacker_hp_after
+    # Старые поля на месте: журнал читается и прежним кодом
+    assert {"number", "round", "turn", "strikes", "hp_after", "finished"} <= set(body)

@@ -593,6 +593,16 @@ class RoundResult:
     number: int
     strikes: list[Strike]
     hp_after: dict[int, int]
+    # Здоровье на начало хода. Обратно из остатка его не восстановить:
+    # остаток обрезан нулём, и добитому бойцу сложение вернуло бы
+    # здоровье, которого у него не было. Нужно тому, кто показывает ход
+    # по шагам, — а не одним итогом
+    hp_before: dict[int, int] = field(default_factory=dict)
+    # Как считался размен: «подряд» — проворный бил первым, «разом» —
+    # проворство вровень и оба удара считались от начала хода. Решает
+    # это движок, и пересчитывать очередь на стороне экрана нельзя:
+    # у проворства тут единственный источник правды
+    simultaneous: bool = False
     finished: bool = False
     winner_id: int | None = None
     end_reason: DuelEnd | None = None
@@ -1086,6 +1096,8 @@ def resolve_round(
         number=round_number,
         strikes=strikes,
         hp_after={first.user_id: first.hp, second.user_id: second.hp},
+        hp_before=dict(before),
+        simultaneous=quick is None,
         injuries=_fill_injuries(strikes, fighters, rng),
     )
     _apply_ending(result, first, second, limit if gong is None else gong)
