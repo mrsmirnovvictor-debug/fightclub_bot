@@ -18,6 +18,7 @@ from bot.game.equipment import Item, get_item
 from bot.game.market import fee_of, payout, price_is_sane, price_range
 from bot.models import Player
 # Квесты слушают город: службы зовут `notice` и больше о них ничего не знают
+from bot.game.quests import market_mark
 from bot.quest_service import notice
 
 
@@ -66,11 +67,15 @@ async def sell_lot(db: Database, player: Player, gear_id: int, price: int) -> in
             else "Цена должна быть больше нуля."
         )
 
+    # Номер вещи запоминаем до удаления: ниже его уже не спросить, а
+    # бармену нужен именно он — задание закрывает не любой кастет, а тот,
+    # который он сам и выдал
+    item_id = owned.id
     await db.delete_gear(owned.id)
     player.gear = [row for row in player.gear if row.id != owned.id]
     # Вещь на прилавке — событие для бармена: одно из его заданий ровно
     # в этом и состоит
-    await notice(db, player, "market")
+    await notice(db, player, market_mark(item_id))
     return await db.add_lot(
         seller_id=player.user_id,
         code=owned.code,

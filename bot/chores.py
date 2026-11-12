@@ -48,6 +48,12 @@ ENDURANCE_PRICE = 200
 # нападение в нападение: за них заплачено, и сжигать их заодно с
 # правилом было бы вторым наказанием ни за что
 LICENCE_PACKS = "2026-10-19-licence-packs"
+# Квесты бармена переехали с одной ленты из десяти на четыре главы по
+# пять, и у заданий появились уровень и новая цена. Тому, у кого в этот
+# миг задание было на руках, ставим отметку переноса: он соглашался на
+# старые условия, по ним и рассчитаемся. Сданные задания не трогаем —
+# они сданы, и повторно за них не платят
+QUEST_CHAPTERS = "2026-11-12-quest-chapters"
 CHIEF_NAME = "Ragnar"
 CHIEF_JOB = "police_chief"
 CHIEF_DIPLOMA = "police"
@@ -79,6 +85,9 @@ async def run(db: Database, now: int | None = None) -> list[str]:
 
     if await db.mark_chore(LICENCE_PACKS, moment):
         done.append(await _carry_the_licences(db))
+
+    if await db.mark_chore(QUEST_CHAPTERS, moment):
+        done.append(await _carry_the_quests(db))
 
     return done
 
@@ -155,3 +164,28 @@ __all__ = [
     "WIPE_TURF",
     "run",
 ]
+
+
+async def _carry_the_quests(db: Database) -> str:
+    """Отметить задания, взятые до перехода на главы.
+
+    Отметка, а не дата: дату выката пришлось бы записать в код, и она
+    однажды разошлась бы с датой на сервере — перенос достался бы не
+    тем. Эта работа выполняется один раз, и всё, что на руках в её
+    минуту, по определению взято до неё.
+
+    Условия у перенесённых заданий считаются по новым правилам — они
+    могли только стать мягче (на ринге теперь годится любой исход), и
+    хуже никому не стало. А платим по старым: см. `reward_of` в
+    `bot.game.quests`.
+    """
+    from bot.game.quests import OLD_CODES, OLD_MARK
+
+    marked = 0
+    for user_id, code in await db.taken_quests():
+        if code not in OLD_CODES:
+            continue
+        if await db.mark_quest(user_id, code, OLD_MARK):
+            marked += 1
+    logger.info("Перенесено активных заданий: %s", marked)
+    return f"перенесено активных заданий бармена: {marked}"

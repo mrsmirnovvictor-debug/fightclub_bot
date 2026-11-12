@@ -6753,6 +6753,20 @@ class Database:
             rows = await cursor.fetchall()
         return [self._quest(row) for row in rows]
 
+    async def taken_quests(self) -> list[tuple[int, str]]:
+        """Все задания, которые сейчас у кого-то на руках.
+
+        Нужно разовой работе по живой базе: при переходе на главы
+        активные задания помечаются перенесёнными, и для этого их надо
+        перебрать все разом, а не по бойцу.
+        """
+        async with self.conn.execute(
+            "SELECT user_id, code FROM quests WHERE state = 'taken' "
+            "ORDER BY user_id, code"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [(int(row["user_id"]), str(row["code"])) for row in rows]
+
     async def take_quest(self, user_id: int, code: str, now: int) -> None:
         """Записать взятое задание. Второй раз то же не берут."""
         await self.conn.execute(

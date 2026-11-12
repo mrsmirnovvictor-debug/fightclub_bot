@@ -64,6 +64,7 @@ from bot.gym_service import visit_of
 from bot.injury_service import InjuryError, heal_injury
 from bot.mods_service import ModError, apply_mod, buy_mod
 from bot.game.clock import week_key, week_opens
+from bot.game.quests import Goal as QuestGoal
 from bot.game.health import format_duration, now_ts
 from bot.game.raid import CELLAR_RAID, RaidKind, kind_at
 from bot.game.locations import (
@@ -124,6 +125,8 @@ from bot.quest_service import (
     answer as quest_answer,
     hand as quest_hand,
     journal as quest_journal,
+    notice,
+    notice_seen,
     notice_visit,
     take as quest_take,
 )
@@ -189,7 +192,7 @@ from bot.webapp.clans import (
 )
 from bot.webapp.estate import build_house
 from bot.webapp.post import build_post
-from bot.webapp.bar import build_bar, quests_payload
+from bot.webapp.bar import build_bar, chapters_payload
 from bot.game.study import EXAM_SIZE, PASS_MARK
 from bot.webapp.study import build_study, exam_payload
 from bot.webapp.turf import build_war, map_marks
@@ -557,8 +560,12 @@ async def _at(request: web.Request, service: Service, own: bool = True):
         await settle_loan(request.app[DB_KEY], player, now_ts())
     require(player, service)
     # Дверь, в которую вошли, — событие для бармена: часть его заданий в
-    # том и состоит, чтобы дойти и посмотреть. Службы о квестах не знают
-    await notice_visit(request.app[DB_KEY], player, service)
+    # том и состоит, чтобы дойти и посмотреть. Службы о квестах не знают.
+    # Говорим и услугу, и дом: учат в пяти местах города, а спрашивает
+    # он про университет
+    await notice_visit(
+        request.app[DB_KEY], player, service, player.where(now_ts())
+    )
     return player
 
 
@@ -1174,6 +1181,62 @@ async def api_ladder(request: web.Request) -> web.Response:
         await db.place_of(week_key(week_opens(now) - 1), viewer.user_id)
     )
     return web.json_response(body)
+
+
+# Каталоги, карточки которых бармен просит открыть. Для каждого — чья
+# это услуга, в каком доме её спрашивать и как проверить, что код
+# настоящий. Проверка обязательна: иначе задание закрывалось бы запросом
+# с выдуманным кодом, не показав игроку ни строчки
+SEEN_CATALOGS: dict[str, tuple[Service, str]] = {
+    # Приёмы: школа боевых искусств одна на город
+    "dojo": (Service.DOJO, ""),
+    # Машины: услуга открыта и в полицейском гараже, и в таксопарке, а
+    # каталог с ценами и условиями — только в салоне
+    "cars": (Service.CARS, "car_dealership"),
+}
+
+
+def _seen_has(catalog: str, code: str) -> bool:
+    """Есть ли такой код в этом каталоге."""
+    if catalog == "dojo":
+        from bot.content.abilities import ABILITIES
+
+        return any(one.code == code for one in ABILITIES)
+    if catalog == "cars":
+        from bot.game.cars import CARS
+
+        return any(one.code == code for one in CARS)
+    return False  # pragma: no cover - каталог без проверки не заводится
+
+
+async def api_seen(request: web.Request) -> web.Response:
+    """Боец открыл карточку из каталога — приёма или машины.
+
+    Это не посещение: войти в школу и прочитать условия изучения приёма
+    — разные дела, и у бармена задание про второе. Карточку рисует
+    страница из уже приехавшего каталога, поэтому сама она сказать
+    серверу «я её открыл» не может иначе как этим запросом.
+
+    Запрос поэтому проверяется как всякий другой: боец должен стоять в
+    нужном доме, а код — быть настоящим кодом из каталога. Без второго
+    задание закрывалось бы строкой, набранной наугад.
+    """
+    data = await _payload(request)
+    catalog = str(data.get("catalog") or "")
+    code = str(data.get("code") or "")
+    rule = SEEN_CATALOGS.get(catalog)
+    if rule is None:
+        return web.json_response({"error": "Такого каталога нет."}, status=400)
+    service, place = rule
+    player = await _at(request, service)
+    if place and player.where(now_ts()) != place:
+        return web.json_response(
+            {"error": "Этот каталог смотрят в другом месте."}, status=409
+        )
+    if not _seen_has(catalog, code):
+        return web.json_response({"error": "Такой карточки нет."}, status=404)
+    await notice_seen(request.app[DB_KEY], player, catalog)
+    return web.json_response({"seen": catalog, "code": code})
 
 
 async def api_players(request: web.Request) -> web.Response:
@@ -2020,6 +2083,12 @@ async def api_trade_action(request: web.Request) -> web.Response:
     except TradeError as error:
         return web.json_response({"error": str(error)}, status=409)
 
+    # Непустая своя часть стола — событие для бармена: одно из его
+    # заданий ровно в том и состоит, чтобы занять стол и что-нибудь на
+    # него положить. Контрагент и сам обмен для этого не нужны
+    mine = trades.trade_of(player.user_id)
+    if mine is not None and not mine.side(player.user_id).empty:
+        await notice(request.app[DB_KEY], player, QuestGoal.TRADE.value)
     # Кредиты и вещи могли только что переехать: перечитываем бойца, чтобы
     # на столе и в рюкзаке было то же, что в базе
     fresh = await request.app[DB_KEY].get_player(player.user_id)
@@ -2065,9 +2134,17 @@ async def _raid_state(request: web.Request, player) -> dict:
 
 
 async def api_raid(request: web.Request) -> web.Response:
-    """Состояние раздела «Рейд» целиком: сбор, идущая волна или итог."""
+    """Состояние раздела «Рейд» целиком: сбор, идущая волна или итог.
+
+    Условия участия приезжают этим же ответом, поэтому успешный запрос
+    экрана — это и есть знакомство с рейдом, о котором спрашивает
+    бармен. Нажатие на дом на карте им не считается: там ещё не видно
+    ни входа, ни наград.
+    """
     player = await _fighter(request)
-    return web.json_response(await _raid_state(request, player))
+    state = await _raid_state(request, player)
+    await notice_visit(request.app[DB_KEY], player, Service.RAID)
+    return web.json_response(state)
 
 
 async def api_raid_action(request: web.Request) -> web.Response:
@@ -3874,10 +3951,15 @@ async def api_quests(request: web.Request) -> web.Response:
     player = await _own_player(request)
     db = request.app[DB_KEY]
     log = await quest_journal(db, player)
-    rows = quests_payload(player, log)
+    chapters = chapters_payload(player, log)
+    rows = [one for chapter in chapters for one in chapter["quests"]]
     return web.json_response(
         {
+            # Главами и плоским списком сразу: журнал рисуется главами, а
+            # счётчик «сдано из двадцати» считается по всем
+            "chapters": chapters,
             "quests": rows,
+            "level": player.level,
             "done": sum(1 for row in rows if row["state"] == "done"),
             "total": len(rows),
             # Где искать того, кто их раздаёт
@@ -3999,6 +4081,7 @@ def create_app(
             web.post("/api/upgrade", api_upgrade),
             web.get("/api/club", api_club),
             web.get("/api/ladder", api_ladder),
+            web.post("/api/seen", api_seen),
             web.get("/api/players", api_players),
             web.get("/api/fights", api_fights),
             web.post("/api/fight", api_fight),

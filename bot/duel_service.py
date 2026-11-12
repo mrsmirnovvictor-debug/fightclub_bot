@@ -71,6 +71,7 @@ from bot.messaging import Announcer
 from bot.models import Player, ProgressReport
 # Квесты слушают город: службы зовут `notice` и больше о них
 # ничего не знают
+from bot.game.quests import ring_mark
 from bot.quest_service import notice
 
 logger = logging.getLogger(__name__)
@@ -956,8 +957,6 @@ class DuelService:
             )
             if won:
                 player.wins += 1
-                # Победа — событие для бармена: с неё начинается город
-                await notice(self.db, player, "fight")
                 exp = full_exp
             elif result.winner_id is None:
                 player.draws += 1
@@ -1016,6 +1015,13 @@ class DuelService:
                 player.rating,
                 stamped,
             )
+            # Ринг — событие для бармена: с него начинается город. В
+            # отметке стоит исход, потому что за победу он доплачивает,
+            # а зачёт даёт первый завершённый бой — поздняя победа
+            # зачтённое поражение не заменяет. Только кулаки и только
+            # дуэль: задание про то, чтобы выйти один на один
+            if session.mode is FightMode.FIST:
+                await notice(self.db, player, ring_mark(None if drawn else won))
             rows.append((player, report))
 
         return rewards_report(

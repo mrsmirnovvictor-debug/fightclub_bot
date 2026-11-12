@@ -486,24 +486,33 @@ def quest_log(done=("ring",), taken: str = "", marks=()) -> dict:
     return log
 
 
-def bar_state(done=("ring",), taken: str = "", marks=(), **changes) -> dict:
-    """Ответ бара: бармен, разговор и список заданий."""
+def bar_state(
+    done=("ring",), taken: str = "", marks=(), level: int = 4, **changes
+) -> dict:
+    """Ответ бара: бармен, разговор и журнал заданий."""
     from bot.webapp.bar import build_bar
 
     player = make_player("bar")
+    # Четвёртый уровень по умолчанию: все главы открыты, и проверке
+    # экрана не приходится обходить замки
+    player.level = level
     body = build_bar(player, quest_log(done, taken, marks), now_ts())
     body.update(changes)
     return body
 
 
-def quests_state(done=("ring",), taken: str = "", marks=()) -> dict:
+def quests_state(done=("ring",), taken: str = "", marks=(), level: int = 4) -> dict:
     """Ответ журнала заданий — вкладка «Квесты» в карточке."""
-    from bot.webapp.bar import quests_payload
+    from bot.webapp.bar import chapters_payload
 
     player = make_player("bar")
-    rows = quests_payload(player, quest_log(done, taken, marks))
+    player.level = level
+    chapters = chapters_payload(player, quest_log(done, taken, marks))
+    rows = [one for chapter in chapters for one in chapter["quests"]]
     return {
+        "chapters": chapters,
         "quests": rows,
+        "level": player.level,
         "done": sum(1 for row in rows if row["state"] == "done"),
         "total": len(rows),
         "giver": "Бармен в Баре",
@@ -14115,10 +14124,14 @@ async def test_the_barman_offers_the_first_quest_and_the_fighter_answers(server)
         )
         # Знакомство идёт перед первым заданием, и ровно один раз
         text = await talk.locator(".talk-text").inner_text()
-        assert "Ну садись" in text and "Бойцовский клуб" in text
-        assert "+50 опыта" in await talk.locator(".talk-prize").inner_text()
+        assert "Новое лицо" in text and "клуба" in text
+        # Награда перечисляется по частям: за бой платят опытом, а
+        # доплату за победу обещают отдельно
+        prize = await talk.locator(".talk-prize").inner_text()
+        assert "+50 опыта" in prize and "+10 💰 за победу" in prize
+        # Ответы одни на все двадцать заданий: это служебные кнопки
         assert await talk.locator(".talk-replies .btn").all_inner_texts() == [
-            "Схожу подерусь.", "Я подумаю."
+            "Беру задание", "Позже"
         ]
 
         # «Берусь» уходит на сервер кодом задания
@@ -14151,7 +14164,7 @@ async def test_the_taken_quest_waits_on_the_counter(server):
         await page.wait_for_selector("#tavern-body .shelf")
 
         assert await page.locator("#tavern-npc-mark").inner_text() == "🕓"
-        assert "Задания бармена: 1 из 10." in await page.locator(
+        assert "Задания бармена: 1 из 20." in await page.locator(
             "#tavern-note"
         ).inner_text()
         # Разговора нет: к бармену с делом подходят сами
@@ -14161,14 +14174,17 @@ async def test_the_taken_quest_waits_on_the_counter(server):
         task = page.locator("#tavern-body .quest")
         assert await task.locator(".quest-mark").inner_text() == "🕓"
         assert await task.locator(".quest-title").inner_text() == (
-            "Что дают за звёзды"
+            "За что платят звёздами"
         )
 
         # «Подойти к стойке» раскрывает разговор, и бармен напоминает о деле
         await page.locator(".btn", has_text="Подойти к стойке").click()
         await page.wait_for_selector("#tavern-body .talk")
         hint = await page.locator(".talk-text").inner_text()
-        assert "Элитный магазин" in hint
+        # Сперва «пока не всё», потом чем именно: напоминание без этой
+        # строки читалось бы как новое задание
+        assert "Пока не всё" in hint
+        assert "элитном магазине" in hint
         assert await page.locator(".talk-replies .btn").all_inner_texts() == [
             "Отойти"
         ]
@@ -14193,7 +14209,7 @@ async def test_the_barman_asks_his_three_questions(server):
         ).inner_text()
         assert await talk.locator(".talk-step").inner_text() == "Вопрос 1 из 3"
         assert await talk.locator(".talk-replies .btn").all_inner_texts() == [
-            "Столько же, сколько без неё", "Полтора раза", "Вдвое", "Отойти"
+            "100%", "150%", "200%", "Отойти"
         ]
 
         # Ответ уходит номером вопроса и номером варианта
@@ -14218,7 +14234,9 @@ async def test_the_finished_quest_is_handed_over_at_the_counter(server):
     player = make_player("bar")
     card = build_card(player, TOKEN, viewer_id=player.user_id)
     bar = bar_state(
-        done=("ring",), taken="pro", marks=("visit:premium", "quiz:done")
+        done=("ring",),
+        taken="pro",
+        marks=("visit:premium", "quiz:pro:done"),
     )
 
     async with async_playwright() as pw:
@@ -14229,9 +14247,9 @@ async def test_the_finished_quest_is_handed_over_at_the_counter(server):
 
         assert await page.locator("#tavern-npc-mark").inner_text() == "✅"
         # Разговор раскрыт сам: бармену есть что сказать
-        assert "«Ну?»" in await page.locator(".talk-text").inner_text()
+        assert "дело сделано" in await page.locator(".talk-text").inner_text()
         assert await page.locator(".talk-replies .btn").all_inner_texts() == [
-            "Прочитал. Спрашивай.", "Отойти"
+            "Сдать задание", "Отойти"
         ]
         # И в карточке дела стоит отметка «готово — к бармену»
         assert "готово — к бармену" in await page.locator(
@@ -14267,11 +14285,17 @@ async def test_the_finished_quest_is_handed_over_at_the_counter(server):
         await browser.close()
 
 
-async def test_the_quests_tab_lists_all_ten_with_their_marks(server):
-    """Вкладка «Квесты»: десять строк, галочка сданному, часы взятому."""
+async def test_the_quests_tab_lists_twenty_quests_in_four_chapters(server):
+    """Вкладка «Квесты»: двадцать строк четырьмя главами.
+
+    Галочка сданному, часы взятому, замок закрытому уровнем. Главами, а
+    не одной лентой: двадцать строк подряд не читаются, а по главам
+    видно, что пройдено и к чему готовиться.
+    """
     player = make_player("bar")
     card = build_card(player, TOKEN, viewer_id=player.user_id)
-    quests = quests_state(done=("ring",), taken="pro")
+    # Второй уровень: две главы открыты, две закрыты
+    quests = quests_state(done=("ring",), taken="pro", level=2)
 
     async with async_playwright() as pw:
         browser, page = await open_page(pw, server, card, quests=quests)
@@ -14281,21 +14305,40 @@ async def test_the_quests_tab_lists_all_ten_with_their_marks(server):
         await page.wait_for_selector("#quests-list .quest")
 
         assert await page.locator("#quests-note").inner_text() == (
-            "Задания выдаёт Бармен в Баре. Сдано 1 из 10."
+            "Задания выдаёт Бармен в Баре. Сдано 1 из 20."
         )
+        heads = await page.locator(".chapter-head").all_inner_texts()
+        assert len(heads) == 4
+        assert "Знакомство с городом" in heads[0] and "1 из 5" in heads[0]
+        # У закрытой главы в заголовке стоит уровень, до которого расти
+        assert "с 3 уровня" in heads[2]
+        assert "уровня" not in heads[0], "открытая глава зовёт расти"
+
         rows = page.locator("#quests-list .quest")
-        assert await rows.count() == 10
+        assert await rows.count() == 20
         marks = await page.locator("#quests-list .quest-mark").all_inner_texts()
-        # Сданное — галочкой, взятое — часами, остальные просто по номеру
-        assert marks == ["✅", "🕓", "3", "4", "5", "6", "7", "8", "9", "10"]
+        assert marks[0] == "✅" and marks[1] == "🕓"
+        # Задания закрытых глав — под замком, а не просто по номеру
+        assert marks[10] == "🔒" and marks[19] == "🔒"
         assert await rows.nth(0).get_attribute("class") == "quest quest-done"
         assert await rows.nth(1).get_attribute("class") == "quest quest-taken"
-        assert await rows.nth(2).get_attribute("class") == "quest quest-soon"
-        assert await rows.nth(9).locator(".quest-prize").inner_text() == (
-            "+100 опыта"
+        assert await rows.nth(2).get_attribute("class") == (
+            "quest quest-locked_order"
         )
-        # Награда кредитами стоит рядом с опытом
-        assert "+100 💰" in await rows.nth(2).locator(".quest-prize").inner_text()
+        assert await rows.nth(10).get_attribute("class") == (
+            "quest quest-locked_level"
+        )
+        # Замки подписаны словами: что делать, видно из самой строки
+        assert "с 3 уровня" in await rows.nth(10).locator(
+            ".quest-prize"
+        ).inner_text()
+        assert "ждёт своей очереди" in await rows.nth(2).locator(
+            ".quest-prize"
+        ).inner_text()
+        # Награда кредитами и аванс стоят рядом с опытом, по отдельности
+        knuckles = await rows.nth(10).locator(".quest-prize").inner_text()
+        assert "+100 опыта" in knuckles and "+50 💰" in knuckles
+        assert "80 💰 вперёд" in knuckles
         await browser.close()
 
 
@@ -19341,4 +19384,86 @@ async def test_reopening_the_tab_asks_the_server_again(server):
         await chips.get_by_text("Рейтинг недели", exact=True).click()
         await page.wait_for_function("ladderData && ladderData.mine.fights === 2")
         assert len(asked) == 2
+        await browser.close()
+
+
+async def test_the_barman_sends_a_short_fighter_to_grow(server):
+    """Глава кончилась раньше уровня: бармен зовёт расти, значка нет.
+
+    Подходить к нему пока незачем, и восклицательный знак над стойкой
+    был бы обманом — дела за ним нет.
+    """
+    player = make_player("bar")
+    card = build_card(player, TOKEN, viewer_id=player.user_id)
+    # Первая глава сдана целиком, уровень всё ещё первый
+    bar = bar_state(
+        done=("ring", "pro", "bank", "policy", "looks_intro"), level=1
+    )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, bar=bar)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "tavern")
+        await page.wait_for_selector("#tavern-body .shelf")
+
+        assert await page.locator("#tavern-npc-mark").inner_text() == ""
+        assert await page.locator("#tavern-npc-mark").is_hidden()
+        # Разговор свёрнут: бармен сам не заговаривает, дела-то нет
+        assert await page.locator("#tavern-body .talk").count() == 0
+        assert "подрастёшь" in await page.locator(
+            "#tavern-body .thing-note"
+        ).inner_text()
+
+        # Подошли сами — он говорит, до какого уровня расти
+        await page.locator(".btn", has_text="Подойти к стойке").click()
+        await page.wait_for_selector("#tavern-body .talk")
+        said = await page.locator(".talk-text").inner_text()
+        assert "Достигни уровня 2" in said
+        await browser.close()
+
+
+async def test_opening_a_move_card_tells_the_server(server, db):
+    """Карточка приёма с условиями — событие для бармена.
+
+    Войти в школу и прочитать условия изучения — разные дела, и у
+    бармена задание про второе. Карточку рисует страница из уже
+    приехавшего каталога, поэтому сама она сказать об этом иначе не
+    может.
+    """
+    from bot.webapp.dojo import build_dojo
+    from tests.test_dojo_school import student
+
+    me = await student(db)
+    await db.add_deeds(me.user_id, {"hit": 1200, "dodge": 80})
+    body = await build_dojo(db, me, now_ts())
+    card = build_card(me, TOKEN, viewer_id=me.user_id)
+    seen = []
+
+    async def catch(route):
+        seen.append(json.loads(route.request.post_data or "{}"))
+        await route.fulfill(
+            status=200, content_type="application/json", body="{}"
+        )
+
+    async with async_playwright() as pw:
+        browser, page = await open_page(pw, server, card, dojo=body)
+        await page.route("**/api/seen", catch)
+        await page.wait_for_selector("#hero:not(.hidden)")
+        await open_screen(page, "dojo")
+        await page.wait_for_function("dojoData !== null")
+        await page.locator("#dojo-tabs .chip", has_text="Обучение").click()
+        await page.wait_for_selector(".dojo-line")
+
+        # Пока карточку не открыли — серверу не говорили ничего
+        assert seen == []
+        await page.locator(".dojo-plus").first.click()
+        await page.wait_for_selector("#sheet:not(.hidden)")
+        for _ in range(100):
+            if seen:
+                break
+            await page.wait_for_timeout(20)
+
+        assert len(seen) == 1, seen
+        assert seen[0]["catalog"] == "dojo"
+        assert seen[0]["code"], "код приёма не доехал"
         await browser.close()

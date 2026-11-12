@@ -6386,6 +6386,24 @@ async function usePotion(potion) {
 let busy = false;
 let shopData = null;
 
+/** Сказать серверу, что боец открыл карточку из каталога.
+ *
+ * Одно из заданий бармена ровно в том и состоит — прочитать условия, а
+ * не просто войти в дом. Карточку рисует страница из уже приехавшего
+ * каталога, поэтому сама она сказать об этом иначе не может.
+ *
+ * Отказ глотаем молча: это не действие игрока, а примечание на полях.
+ * Карточка открылась, и ронять её из-за отметки в журнале заданий
+ * было бы хуже всего.
+ */
+async function sawCard(catalog, code) {
+  try {
+    await post("api/seen", { catalog: catalog, code: code });
+  } catch (error) {
+    /* отметка не поставилась — экран от этого не страдает */
+  }
+}
+
 async function post(url, body) {
   const response = await fetch(url, {
     method: "POST",
@@ -11842,7 +11860,12 @@ function renderBar(data) {
   barSeen = kind;
   if (barTalking) body.appendChild(talkBox(data));
   else body.appendChild(approachBox(data));
-  const current = (data.quests || []).find((one) => one.state === "taken");
+  // Дело на руках — это и «взято», и «сделано, осталось сдать»: второе
+  // состояние у него же, и прятать карточку в нём значило бы убирать с
+  // глаз то самое дело, за которым боец и пришёл к стойке
+  const current = (data.quests || []).find(
+    (one) => one.state === "taken" || one.state === "ready"
+  );
   if (current) body.appendChild(taskBox(current));
 }
 
@@ -11932,14 +11955,33 @@ function talkBox(data) {
   return box;
 }
 
-/** Что обещано за задание: строка под предложением. */
+/** Что обещано за задание: строка под предложением.
+ *
+ * Награда, бонус, аванс и вещь перечисляются по отдельности, а не
+ * складываются в одно число: аванс дают при взятии и он не награда,
+ * бонус приходит только за победу, а вещь — это вещь. Сумма одной
+ * строкой обещала бы не то, что придёт.
+ */
 function questPrize(quest) {
   const note = document.createElement("p");
   note.className = "talk-prize";
-  const prize = ["+" + quest.exp + " опыта"];
-  if (quest.credits) prize.push("+" + num(quest.credits) + " 💰");
-  note.textContent = quest.task + " · " + prize.join(", ");
+  note.textContent = quest.task + " · " + rewardWords(quest).join(", ");
   return note;
+}
+
+/** Награда задания словами, по частям. */
+function rewardWords(quest) {
+  const parts = ["+" + quest.exp + " опыта"];
+  if (quest.credits) parts.push("+" + num(quest.credits) + " 💰");
+  if (quest.win_bonus) {
+    parts.push("+" + num(quest.win_bonus) + " 💰 за победу");
+  }
+  if (quest.advance) {
+    parts.push(num(quest.advance) + " 💰 вперёд");
+  }
+  if (quest.gives) parts.push("вещь вперёд");
+  if (quest.gym_pass) parts.push("абонемент вперёд");
+  return parts;
 }
 
 function sayToBarman(reply) {
@@ -11969,7 +12011,13 @@ function taskBox(quest) {
   return box;
 }
 
-/** Строка задания: значок состояния, название и что делать. */
+/** Строка задания: значок состояния, название и что делать.
+ *
+ * Шесть состояний, и у каждого свой вид. Два замка различаются
+ * нарочно: «закрыто уровнем» игрок исправляет ростом, «ждёт своей
+ * очереди» — работой, и один серый цвет на оба не сказал бы, что
+ * делать.
+ */
 function questCard(quest) {
   const box = document.createElement("div");
   box.className = "quest quest-" + quest.state + (quest.ready ? " ready" : "");
@@ -11994,13 +12042,38 @@ function questCard(quest) {
 
   const prize = document.createElement("div");
   prize.className = "quest-prize";
-  const parts = ["+" + quest.exp + " опыта"];
-  if (quest.credits) parts.push("+" + num(quest.credits) + " 💰");
-  if (quest.ready) parts.push("готово — к бармену");
+  const parts = rewardWords(quest);
+  if (quest.state === "locked_level") {
+    parts.push("с " + quest.min_level + " уровня");
+  } else if (quest.state === "locked_order") {
+    parts.push("ждёт своей очереди");
+  } else if (quest.ready) {
+    parts.push("готово — к бармену");
+  }
   prize.textContent = parts.join(" · ");
   body.appendChild(prize);
 
   box.appendChild(body);
+  return box;
+}
+
+/** Глава журнала: заголовок с уровнем и пять заданий под ним. */
+function chapterBox(chapter) {
+  const box = document.createElement("section");
+  box.className = "chapter" + (chapter.open ? "" : " shut");
+
+  const head = document.createElement("h2");
+  head.className = "chapter-head";
+  head.textContent = chapter.title;
+  const note = document.createElement("span");
+  note.className = "chapter-note";
+  note.textContent =
+    (chapter.open ? "" : "с " + chapter.level + " уровня · ")
+    + chapter.done + " из " + chapter.total;
+  head.appendChild(note);
+  box.appendChild(head);
+
+  (chapter.quests || []).forEach((one) => box.appendChild(questCard(one)));
   return box;
 }
 
@@ -12023,10 +12096,17 @@ async function loadQuests() {
 function renderQuests(data) {
   questsData = data;
   el("quests-note").textContent =
-    "Задания выдаёт " + (data.giver || "бармен") + ". Сдано " +
-    data.done + " из " + data.total + ".";
+    "Задания выдаёт " + (data.giver || "бармен") + ". Сдано "
+    + data.done + " из " + data.total + ".";
   const list = el("quests-list");
   list.textContent = "";
+  // Главами, а не одной лентой: двадцать строк подряд не читаются, а
+  // по главам видно, что уже пройдено и к чему готовиться
+  const chapters = data.chapters || [];
+  if (chapters.length) {
+    chapters.forEach((one) => list.appendChild(chapterBox(one)));
+    return;
+  }
   (data.quests || []).forEach((one) => list.appendChild(questCard(one)));
 }
 
@@ -13257,9 +13337,44 @@ function carCard(car) {
   return box;
 }
 
+/** Условия одной машины отдельным листом.
+ *
+ * На витрине цены стоят и так, но лист — это и есть «карточка машины»,
+ * про которую спрашивает бармен: по нему видно модель, три цены и
+ * примечание, и открывается он нажатием, а не приездом экрана.
+ */
+function carDetails(one) {
+  sawCard("cars", one.code);
+  openSheet(one.title, one.note || "", true);
+  const list = el("sheet-list");
+  list.appendChild(carPicture(one));
+  list.appendChild(
+    paperRows([
+      ["Сутки", num(one.day) + " 💰"],
+      [
+        "Месяц",
+        num(one.month) + " 💰 · " + one.month_days + " суток по цене дня",
+      ],
+      ["Купить", num(one.price) + " 💰"],
+    ])
+  );
+  const buttons = document.createElement("div");
+  buttons.className = "thing-buttons";
+  buttons.appendChild(
+    button("Закрыть", { secondary: true, onClick: () => closeSheet() })
+  );
+  list.appendChild(buttons);
+}
+
 /** Машина на витрине салона: три цены и три кнопки. */
 function showcaseCar(one) {
   const box = carCard(one);
+  // Нажатие по машине открывает её условия отдельным листом. Кнопки
+  // покупки ниже работают как работали: лист — не вместо них, а для
+  // того, чтобы посмотреть, не нажимая
+  const look = box.querySelector(".car-pic") || box;
+  look.style.cursor = "pointer";
+  look.addEventListener("click", () => carDetails(one));
   if (one.own) {
     const have = document.createElement("div");
     have.className = "thing-have";
@@ -15711,6 +15826,9 @@ function dojoBar(done, total) {
 
 /** Окно «+»: что придётся делать и сколько раз. */
 function dojoAskStart(one) {
+  // Это и есть карточка приёма с условиями изучения, про которую
+  // спрашивает бармен: ниже написано, что делать и сколько раз
+  sawCard("dojo", one.code);
   openSheet("Взять в обучение", "", true);
   const list = el("sheet-list");
   list.appendChild(dojoTrickCard(one));

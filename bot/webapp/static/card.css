@@ -2536,7 +2536,42 @@ body:not(.dark) .slot.empty img { opacity: 0.6; }
 .quest-taken { border-color: var(--accent); }
 .quest-taken.ready .quest-prize { color: var(--hp-green); font-weight: 600; }
 .quest-done { opacity: 0.6; }
-.quest-soon .quest-title { color: var(--muted); }
+/* Открытое прямо сейчас выделяем: из двадцати строк надо увидеть ту
+   одну, за которой стоит идти к бармену */
+.quest-open { border-color: var(--hp-green); }
+.quest-open .quest-title { font-weight: 800; }
+/* Два замка выглядят по-разному нарочно. «С третьего уровня» игрок
+   исправляет ростом, «ждёт своей очереди» — работой, и один серый цвет
+   на оба не сказал бы, что делать */
+.quest-locked_level { opacity: 0.72; border-style: dashed; }
+.quest-locked_level .quest-title { color: var(--muted); }
+.quest-locked_order { opacity: 0.55; }
+.quest-locked_order .quest-title { color: var(--muted); }
+
+/* ---------- главы журнала ----------
+
+   Двадцать строк подряд не читаются. Главами видно, что пройдено и к
+   чему готовиться, а у закрытой главы притушен весь заголовок разом —
+   не каждая строка по отдельности */
+.chapter { margin-bottom: 14px; }
+.chapter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 7px;
+  font-size: 14px;
+  font-weight: 800;
+}
+.chapter-note {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.chapter.shut .chapter-head { color: var(--muted); }
+.chapter .quest { margin-bottom: 6px; }
 
 /* ---------- выписка по карте ---------- */
 
