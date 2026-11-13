@@ -290,7 +290,7 @@ def test_a_drunk_elixir_goes_into_the_fist_fight_too():
         ActiveEffect(code="boost_strength", until=now_ts() + EFFECT_SECONDS),
         ActiveEffect(code="boost_hp", until=now_ts() + EFFECT_SECONDS),
     ]
-    bare = derive(player.fclass, player.base_stats, player.level)
+    bare = derive(player.fclass, player.base_stats)
 
     fighter = Fighter.from_player(player, armed=False)
 

@@ -257,7 +257,7 @@ class Fighter:
 
     def __post_init__(self) -> None:
         self.derived = derive(
-            self.fclass, self.stats, self.level, self.equipment.hp_bonus + self.extra_hp
+            self.fclass, self.stats, self.equipment.hp_bonus + self.extra_hp
         )
         if self.hp <= 0:
             self.hp = self.derived.max_hp
@@ -451,8 +451,7 @@ class Fighter:
         # берутся заново, а здоровье остаётся тем, какое было
         was = self.hp
         self.derived = derive(
-            self.fclass, self.stats, self.level,
-            self.equipment.hp_bonus + self.extra_hp,
+            self.fclass, self.stats, self.equipment.hp_bonus + self.extra_hp,
         )
         self.hp = min(was, self.max_hp)
         return drawn.title

@@ -1,13 +1,13 @@
 """README не расходится с кодом там, где в нём стоят числа.
 
 Числом в документации пользуются как правдой: по нему игроку объясняют,
-почему у соседа с меньшей выносливостью здоровья больше. Разойдясь с
-кодом, такое число хуже отсутствующего — оно врёт уверенно.
+сколько здоровья принесёт вложенное очко. Разойдясь с кодом, такое
+число хуже отсутствующего — оно врёт уверенно.
 
-Здесь проверяются ровно те таблицы README, которые можно сверить с
-источником. Таблица запаса здоровья первая: именно её отсутствие и
-завело в тупик — цены очка выносливости не было видно нигде, и
-разница между классами читалась как ошибка расчёта.
+Здесь проверяется цена очка выносливости. Именно её отсутствие в
+документации однажды и завело в тупик: запас складывался из трёх
+слагаемых, ни одного из них не было видно, и разница между классами
+читалась как ошибка расчёта.
 """
 
 from __future__ import annotations
@@ -15,43 +15,48 @@ from __future__ import annotations
 import pathlib
 import re
 
-from bot.game.classes import FIGHTER_CLASSES
+from bot.game.classes import FIGHTER_CLASSES, Stats
+from bot.game.stats import HP_BASE, HP_PER_ENDURANCE, derive
 
 README = pathlib.Path(__file__).resolve().parent.parent / "README.md"
 
-# Строка таблицы: | ⚔️ Воин | 45 | +7 |
-ROW = re.compile(r"^\|\s*\S+\s+(\S+)\s*\|\s*(\d+)\s*\|\s*\+(\d+)\s*\|$", re.M)
+# Формула из README: `здоровье = 30 + 🫀 выносливость × 8 + запас ...`
+RULE = re.compile(r"здоровье = (\d+) \+ 🫀 выносливость × (\d+)")
 
 
-def _table() -> dict[str, tuple[int, int]]:
-    """Запас класса и прибавка за очко выносливости — как в README."""
-    text = README.read_text(encoding="utf-8")
-    start = text.index("#### Сколько у класса здоровья")
-    end = text.index("Полный запас", start)
-    return {
-        title: (int(base), int(gain))
-        for title, base, gain in ROW.findall(text[start:end])
-    }
+def test_the_readme_tells_the_truth_about_the_health_rule():
+    """Формула запаса в README — та же, что в коде: и база, и цена очка."""
+    told = RULE.search(README.read_text(encoding="utf-8"))
+    assert told is not None, "формулы запаса здоровья в README больше нет"
+    assert (int(told.group(1)), int(told.group(2))) == (
+        HP_BASE, HP_PER_ENDURANCE
+    ), "формула запаса здоровья в README разошлась с кодом"
 
 
-def test_the_readme_tells_the_truth_about_health():
-    """Запас класса и цена очка выносливости в README — те же, что в коде."""
-    told = _table()
-    real = {
-        one.title: (one.hp_base, one.hp_per_endurance)
-        for one in FIGHTER_CLASSES.values()
-    }
-    assert told == real, "таблица запаса здоровья в README разошлась с кодом"
+def test_health_does_not_depend_on_the_class_any_more():
+    """Запас у всех классов одинаковый при одной выносливости.
 
-
-def test_the_price_of_endurance_is_not_the_same_for_everyone():
-    """Общей цены очка выносливости нет — на этом и строится README.
-
-    Если однажды все классы сравняются, абзац про «боец с меньшей
-    выносливостью носит больше здоровья» станет неправдой, и его надо
-    будет переписать, а не оставлять как есть.
+    README обещает, что класс на живучесть не влияет вовсе. Вернись
+    классу свой запас или своя цена очка — обещание станет неправдой, и
+    заметить это надо здесь, а не по жалобе игрока.
     """
-    gains = {one.hp_per_endurance for one in FIGHTER_CLASSES.values()}
-    bases = {one.hp_base for one in FIGHTER_CLASSES.values()}
-    assert len(gains) > 1, "цена очка выносливости стала общей"
-    assert len(bases) > 1, "запас класса стал общим"
+    same = Stats(strength=5, agility=5, intuition=5, endurance=7)
+    sizes = {
+        derive(one, same).max_hp for one in FIGHTER_CLASSES.values()
+    }
+    assert sizes == {HP_BASE + 7 * HP_PER_ENDURANCE}, (
+        "класс снова влияет на запас"
+    )
+
+
+def test_level_adds_nothing_to_health_by_itself():
+    """Уровень сам по себе запаса не даёт — его приносит выносливость.
+
+    Иначе за уровень платили бы дважды: очком выносливости и прибавкой
+    сверх него.
+    """
+    one = FIGHTER_CLASSES["warrior"]
+    same = Stats(strength=4, agility=3, intuition=3, endurance=4)
+    assert derive(one, same).max_hp == HP_BASE + 4 * HP_PER_ENDURANCE
+    # И единственное, что ещё входит в запас, — вещи и выпитое
+    assert derive(one, same, 25).max_hp == HP_BASE + 4 * HP_PER_ENDURANCE + 25

@@ -328,9 +328,7 @@ def test_the_profile_text_counts_gear_the_same_way():
     player.gear = [OwnedItem(item=SABER, id=1, slot=Slot.WEAPON)]
     fighter = Fighter.from_player(player, armed=True)
 
-    text = combat_block(
-        player.fclass, player.stats, player.level, player.equipment
-    )
+    text = combat_block(player.fclass, player.stats, player.equipment)
 
     assert f"🌀 Уворот: <b>{fighter.dodge:.0%}</b>" in text
     assert f"🔄 Контрудар: <b>{fighter.counter:.0%}</b>" in text

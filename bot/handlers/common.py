@@ -51,13 +51,12 @@ def stats_block(stats: Stats, indent: str = "") -> str:
 def combat_block(
     fclass: FighterClass,
     stats: Stats,
-    level: int = 1,
     equipment: Equipment | None = None,
     extra_hp: int = 0,
 ) -> str:
     """extra_hp — запас сверх вещей: то, что дал выпитый эликсир."""
     equipment = equipment or Equipment()
-    d = derive(fclass, stats, level, equipment.hp_bonus + extra_hp)
+    d = derive(fclass, stats, equipment.hp_bonus + extra_hp)
     weapon = equipment.weapon_damage
     hit = f"{d.damage_min}–{d.damage_max}"
     if weapon[1]:
@@ -148,7 +147,7 @@ def profile_text(player: Player, own: bool = True) -> str:
         stats_block(player.stats),
         "",
         combat_block(
-            fclass, player.stats, player.level, player.equipment, player.effect_hp
+            fclass, player.stats, player.equipment, player.effect_hp
         ),
         "",
         f"🥊 Боёв: <b>{player.fights}</b> · "

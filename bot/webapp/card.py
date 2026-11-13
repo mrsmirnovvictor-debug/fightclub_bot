@@ -1196,7 +1196,7 @@ def build_card(
     is_self = viewer_id == player.user_id
     equipment = player.equipment
     fclass = player.fclass
-    derived = derive(fclass, player.stats, player.level, player.extra_hp)
+    derived = derive(fclass, player.stats, player.extra_hp)
 
     current_hp = player.current_hp(moment)
     state = player.health_state(moment)

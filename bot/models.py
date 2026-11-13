@@ -568,7 +568,7 @@ class Player:
 
     @property
     def max_hp(self) -> int:
-        return derive(self.fclass, self.stats, self.level, self.extra_hp).max_hp
+        return derive(self.fclass, self.stats, self.extra_hp).max_hp
 
     def current_hp(self, now: int | None = None) -> int:
         """Здоровье с учётом восстановления, прошедшего с последнего боя."""

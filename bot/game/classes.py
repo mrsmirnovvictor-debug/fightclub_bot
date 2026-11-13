@@ -210,8 +210,10 @@ class FighterClass:
     tagline: str
     description: str
     base_stats: Stats
-    hp_base: int = 45
-    hp_per_endurance: int = 6
+    # Запаса здоровья у класса нет: он весь стоит на выносливости, по
+    # общей для всех цене (`HP_PER_ENDURANCE` в `bot.game.stats`).
+    # Класс отличается уроном, уворотом, критом и блоком, а живучесть
+    # каждый набирает сам — вкладывая очки
     damage_mult: float = 1.0
     crit_bonus: float = 0.0
     crit_power_bonus: float = 0.0
@@ -259,7 +261,6 @@ WARRIOR = FighterClass(
         "хуже танка, но лучше прочих."
     ),
     base_stats=Stats(strength=4, agility=3, intuition=3, endurance=4),
-    hp_per_endurance=7,
     damage_mult=0.9,
     damage_gain=1.33,
     crit_bonus=0.02,
@@ -283,8 +284,6 @@ ROGUE = FighterClass(
     # всех. Зато начинает он не с пустого — иначе на первом уровне, где
     # уворот ещё мал, а вещей на прилавке почти нет, танк просто
     # перебивает его вдвое большим запасом, и круг ломается с самого низа.
-    hp_base=52,
-    hp_per_endurance=4,
     damage_mult=0.91,
     dodge_gain=2.05,
     dodge_bonus=0.25,
@@ -308,8 +307,6 @@ ASSASSIN = FighterClass(
     # Выносливости у ассасина меньше всех, и запас ему добираем плоской
     # прибавкой, а не за очко: иначе к десятому уровню он перестаёт быть
     # хрупким вовсе. Задача скромнее — чтобы он доживал до своего крита
-    hp_base=50,
-    hp_per_endurance=5,
     damage_mult=1.15,
     crit_gain=1.93,
     crit_bonus=0.12,
@@ -331,8 +328,6 @@ TANK = FighterClass(
         "за трикстером."
     ),
     base_stats=Stats(strength=4, agility=2, intuition=2, endurance=6),
-    hp_base=43,
-    hp_per_endurance=5,
     damage_mult=0.98,
     resist_gain=1.52,
     # Профильная защита танка растёт быстрее, чем профильное нападение
