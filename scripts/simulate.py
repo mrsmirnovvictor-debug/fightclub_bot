@@ -5,6 +5,15 @@
     python scripts/simulate.py --gear 8    # то же, но в полной экипировке
     python scripts/simulate.py --triangle  # ворота контента: круг классов
     python scripts/simulate.py --progress  # сколько боёв уходит до потолка
+
+**Бой здесь идёт до победы, как и в игре.** Это важнее, чем кажется:
+`resolve_round` без довода `gong` берёт старое поведение, где гонг равен
+шкале усталости, и мерка считала, кто больше нанёс к восемнадцатому
+ходу. Настоящая дуэль гонга не знает — `bot/duel_service.py` передаёт
+`NO_GONG`, — и разница вышла не на проценты: танк против ассасина на
+шестом уровне брал по сломанной мерке 57%, а до победы берёт 96%. По
+таким числам правили бы не то, что болит, поэтому `gong=NO_GONG` стоит
+во всех прогонах этого файла.
 """
 
 from __future__ import annotations
@@ -33,7 +42,12 @@ from bot.game.reference import (  # noqa: E402
     reference_equipment,
 )
 from bot.models import Player  # noqa: E402
-from bot.game.combat import Fighter, random_action, resolve_round  # noqa: E402
+from bot.game.combat import (  # noqa: E402
+    NO_GONG,
+    Fighter,
+    random_action,
+    resolve_round,
+)
 from bot.game.equipment import Equipment  # noqa: E402
 from bot.game.narrator import duel_intro, finish_report, round_report  # noqa: E402
 
@@ -53,11 +67,16 @@ def show_fight(first: FighterClass, second: FighterClass, seed: int) -> None:
     round_number = 1
     while True:
         result = resolve_round(
-            a, random_action(a, rng), b, random_action(b, rng), round_number, rng
+            a, random_action(a, rng), b, random_action(b, rng),
+            round_number, rng, gong=NO_GONG,
         )
         print(plain(round_report(result, fighters, rng)), "\n")
         if result.finished:
-            print(plain(finish_report(result, fighters, 50, rng)))
+            # Награда из подписи итога ушла: её считает уже не судья,
+            # а `bot/game/economy.py`. Показательный бой падал здесь с
+            # `TypeError` — давно и молча, потому что этот режим гоняют
+            # глазами, а не прогоном
+            print(plain(finish_report(result, fighters, rng)))
             return
         round_number += 1
 
@@ -75,7 +94,8 @@ def balance(runs: int, seed: int) -> None:
             round_number = 1
             while True:
                 result = resolve_round(
-                    a, random_action(a, rng), b, random_action(b, rng), round_number, rng
+                    a, random_action(a, rng), b, random_action(b, rng),
+                    round_number, rng, gong=NO_GONG,
                 )
                 if result.finished:
                     wins[result.winner_id] += 1
@@ -123,7 +143,8 @@ def progress(runs: int, seed: int) -> None:
             round_number = 1
             while True:
                 result = resolve_round(
-                    a, random_action(a, rng), b, random_action(b, rng), round_number, rng
+                    a, random_action(a, rng), b, random_action(b, rng),
+                    round_number, rng, gong=NO_GONG,
                 )
                 if result.finished:
                     break
@@ -180,7 +201,8 @@ def geared(level: int, runs: int, seed: int) -> None:
         number = 1
         while True:
             result = resolve_round(
-                a, random_action(a, rng), b, random_action(b, rng), number, rng
+                a, random_action(a, rng), b, random_action(b, rng),
+                number, rng, gong=NO_GONG,
             )
             if result.finished:
                 return result.winner_id, number
@@ -266,7 +288,18 @@ def triangle(runs: int, seed: int | None) -> None:
                 number = 1
                 while True:
                     result = resolve_round(
-                        a, random_action(a, rng), b, random_action(b, rng), number, rng
+                        a, random_action(a, rng), b, random_action(b, rng),
+                        number, rng,
+                        # Дуэль идёт до победы, и ворота обязаны мерить
+                        # её, а не выдуманный бой. Без этого довода
+                        # `resolve_round` берёт старое поведение, где
+                        # гонг равен шкале усталости: круг считался по
+                        # тому, кто больше нанёс к восемнадцатому ходу,
+                        # а в игре дерутся насмерть. Разница не на
+                        # проценты: танк против ассасина на шестом
+                        # уровне брал по этой мерке 57%, а до победы
+                        # берёт 96%
+                        gong=NO_GONG,
                     )
                     if result.finished:
                         break
