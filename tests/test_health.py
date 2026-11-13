@@ -160,3 +160,31 @@ async def test_old_rows_without_health_are_treated_as_healthy(db):
     loaded = await db.get_player(player.user_id)
     assert loaded.hp is None
     assert loaded.can_fight(NOW)
+
+
+def test_a_full_rest_heals_to_the_brim_whatever_the_size_of_the_fighter():
+    """Отдохнув весь срок, боец выходит с полным запасом, а не почти.
+
+    Считать затянувшееся умножением на запас в секунду нельзя: запас
+    в секунду — дробь, и у многих размеров она неточная. У бойца на 55
+    здоровья `55 / 600 × 600` даёт 54,99…, отброшенная дробь уносит
+    целую единицу, и он после полного отдыха стоит на 54 из 55 —
+    полоска не доходит до края, а на ринг его не пускают из-за
+    последней единицы, которой никогда не будет.
+    """
+    for max_hp in (55, 79, 97, 110):
+        assert regenerated_hp(0, max_hp, FULL_REGEN_SECONDS) == max_hp, max_hp
+
+
+def test_the_healing_does_not_lose_a_whole_unit_on_the_way():
+    """И на полпути счёт точный — теряется дробь, а не единица.
+
+    Те же 55 здоровья за 600 секунд: в середине срока дробное
+    умножение отстаёт на единицу от целого деления, и расходятся на
+    ней отсчёт и допуск.
+    """
+    # 87 за 200 секунд — ровно 29, а через дробь выходило 28
+    assert regenerated_hp(0, 87, 200) == 29
+    assert regenerated_hp(0, 87, 400) == 58
+    # Запас сверх полного не растёт, сколько ни лежи
+    assert regenerated_hp(10, 87, 10 * FULL_REGEN_SECONDS) == 87
