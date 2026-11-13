@@ -146,3 +146,65 @@ async def test_the_mark_is_set_and_checked_in_one_breath(db):
     assert await db.mark_chore(chores.WIPE_TURF, NOW) is True
     assert await db.mark_chore(chores.WIPE_TURF, NOW) is False
     assert await db.chore_done(chores.WIPE_TURF) is True
+
+
+async def test_the_quest_journal_is_wiped_for_everyone(db):
+    """Журнал заданий сбрасывается целиком: и взятое, и сданное.
+
+    Перенос на главы оставил отметки первой версии как есть, а звались
+    они иначе, и новые условия своего в них не находят. Чинить
+    поштучно нечего — журнал снимается весь.
+    """
+    from tests.test_robbery import make_player
+
+    one = make_player(81, "Старожил")
+    two = make_player(82, "Новичок")
+    await db.save_player(one)
+    await db.save_player(two)
+    # На руках зависшее: бой пройден, но отметка о нём от первой версии
+    await db.take_quest(81, "ring", NOW)
+    await db.mark_quest(81, "ring", "fight")
+    # И сданное — его сносим тоже
+    await db.take_quest(81, "pro", NOW)
+    await db.finish_quest(81, "pro", NOW)
+    await db.take_quest(82, "ring", NOW)
+
+    done = await chores.run(db, now_ts())
+    assert any("журнал заданий бармена сброшен" in line for line in done)
+    assert any("снято записей 3" in line for line in done)
+
+    assert await db.quests_of(81) == [], "не осталось ни взятого, ни сданного"
+    assert await db.quests_of(82) == []
+    # И второй заход ничего не сносит: работа делается один раз, иначе
+    # перезапуск бота отбирал бы у игроков дневную работу
+    await db.take_quest(81, "ring", NOW)
+    assert await chores.run(db, now_ts()) == []
+    assert len(await db.quests_of(81)) == 1
+
+
+async def test_after_the_reset_the_bartender_has_work_again(db):
+    """Смысл сброса: бармен снова предлагает дело, а не ждёт зря.
+
+    До него у бойца на руках висит задание со старой отметкой: ринг
+    пройден, условие своей отметки не видит, и бармен бесконечно
+    напоминает про то, что сделано. После — предлагает первое заново.
+    """
+    from bot.quest_service import journal
+    from bot.webapp.bar import talk_node
+
+    from tests.test_robbery import make_player
+
+    stuck = make_player(83, "Застрявший")
+    await db.save_player(stuck)
+    await db.take_quest(83, "ring", NOW)
+    await db.mark_quest(83, "ring", "fight")
+    await db.mark_quest(83, "ring", "old:1")
+
+    before = talk_node(stuck, await journal(db, stuck), NOW)
+    assert before["kind"] == "wait", "бармен ждёт боя, который уже был"
+
+    await chores.run(db, now_ts())
+
+    after = talk_node(stuck, await journal(db, stuck), NOW)
+    assert after["kind"] == "offer", "дело снова можно взять"
+    assert after["quest"]["code"] == "ring"

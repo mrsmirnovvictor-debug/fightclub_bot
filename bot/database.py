@@ -6812,6 +6812,19 @@ class Database:
             logger.info("Боец %s сдал задание %s", user_id, code)
         return cursor.rowcount > 0
 
+    async def clear_quests(self) -> int:
+        """Стереть журнал заданий у всех. Возвращает, сколько записей сняли.
+
+        Нужно разовой работе по живой базе. Снимаем одним запросом, а не
+        по бойцу: журнал сбрасывается целиком и всем сразу, и перебор по
+        игрокам означал бы базу в полуразобранном виде ровно столько
+        времени, сколько идёт перебор.
+        """
+        cursor = await self.conn.execute("DELETE FROM quests")
+        await self.conn.commit()
+        logger.info("Журнал заданий сброшен: снято записей %s", cursor.rowcount)
+        return cursor.rowcount
+
     # ---------- выписка по карте ----------
 
     async def log_card(
