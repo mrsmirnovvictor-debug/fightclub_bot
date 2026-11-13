@@ -8,7 +8,6 @@ from bot.battle_service import BattleError, BattleService
 from bot.config import Config
 from bot.game.battle import (
     BLUE,
-    MAX_BATTLE_ROUNDS,
     RED,
     BattleKind,
     judge,
@@ -90,8 +89,16 @@ async def choose_all(service: BattleService, session) -> None:
             )
 
 
+# Сколько раундов стенд готов отсчитать, прежде чем объявить бой
+# зависшим. Гонга в бою больше нет, и число это не правило, а предел
+# терпения стенда: замер пары «ассасин и трикстер» против «ассасина и
+# танка» на шестом уровне дал самый долгий бой из пяти тысяч на
+# семьдесят третьем раунде, так что запас взят с четырёхкратным
+PATIENCE = 300
+
+
 async def fight_to_the_end(service: BattleService, session) -> None:
-    for _ in range(MAX_BATTLE_ROUNDS + 2):
+    for _ in range(PATIENCE):
         if service.battle_in_chat(session.chat_id, session.thread_id) is None:
             return
         await choose_all(service, session)
@@ -152,14 +159,67 @@ def test_judge_calls_the_battle_when_a_side_is_gone():
     assert judge(solo, {}, BattleKind.ROYALE, 2).winners == (3,)
 
 
-def test_judge_counts_health_when_rounds_run_out():
+def test_the_judge_counts_health_only_when_called_with_a_gong():
+    """По здоровью судья считает лишь тогда, когда его позвали с гонгом.
+
+    Гонг остался для одного случая: бой надо закрыть прямо сейчас,
+    потому что пары больше не складываются. Сам по себе бой до него не
+    доходит — он идёт до победы.
+    """
     fighters = {user_id: make_fighter(user_id) for user_id in range(1, 5)}
     teams = {1: RED, 2: RED, 3: BLUE, 4: BLUE}
     fighters[1].hp = fighters[2].hp = 50
     fighters[3].hp = fighters[4].hp = 20
 
-    outcome = judge(fighters, teams, BattleKind.TEAM, MAX_BATTLE_ROUNDS)
+    outcome = judge(fighters, teams, BattleKind.TEAM, 25, gong=25)
     assert outcome.finished and outcome.by_rounds and outcome.winning_team == RED
+
+
+def test_a_team_battle_has_no_gong_and_goes_to_the_victory():
+    """Без гонга бой не кончается, сколько бы раундов ни прошло.
+
+    Прежде он обрывался на двадцать пятом, и побеждал тот, у кого в
+    этот миг выше доля здоровья, — то есть тот, у кого запас больше.
+    Про ту же ошибку в дуэлях сказано в `judge_decision`, а в бою на
+    многих она жила: «ассасин и трикстер» против «ассасина и танка» на
+    шестом уровне брали с гонгом 53%, а до победы берут 76%.
+    """
+    fighters = {user_id: make_fighter(user_id) for user_id in range(1, 5)}
+    teams = {1: RED, 2: RED, 3: BLUE, 4: BLUE}
+    fighters[1].hp = fighters[2].hp = 50
+    fighters[3].hp = fighters[4].hp = 20
+
+    for number in (25, 100, 1000):
+        assert not judge(fighters, teams, BattleKind.TEAM, number).finished, number
+    # И в мясорубке тоже: там гонга не стало вместе с командным боем
+    assert not judge(fighters, {}, BattleKind.ROYALE, 1000).finished
+
+
+def test_a_fighter_who_went_silent_leaves_the_fight():
+    """Молчащий три хода подряд выходит из боя, и бой на этом кончается.
+
+    Гонга больше нет, а пустое действие урона не наносит: без этого
+    правила брошенный всеми бой не кончился бы никогда и сыпал бы в
+    чат раунд за раундом по таймеру. Наказание то же, что в дуэли, и
+    здоровье ушедшему сохраняется — он не побит, он ушёл.
+    """
+    from bot.game.combat import MAX_MISSED_TURNS
+    from bot.game.battle import in_fight
+
+    fighters = {user_id: make_fighter(user_id) for user_id in range(1, 5)}
+    teams = {1: RED, 2: RED, 3: BLUE, 4: BLUE}
+
+    assert not judge(fighters, teams, BattleKind.TEAM, 50).finished
+    for user_id in (3, 4):
+        fighters[user_id].missed_turns = MAX_MISSED_TURNS
+        assert not in_fight(fighters[user_id])
+        assert fighters[user_id].alive, "ушедший не побит, здоровье при нём"
+
+    outcome = judge(fighters, teams, BattleKind.TEAM, 50)
+    assert outcome.finished and outcome.winning_team == RED
+    # И в пары ушедших больше не ставят
+    pairs, idle = pair_up(fighters, teams, BattleKind.TEAM, 51)
+    assert pairs == [] and sorted(idle) == [1, 2]
 
 
 # ---------- сбор состава ----------

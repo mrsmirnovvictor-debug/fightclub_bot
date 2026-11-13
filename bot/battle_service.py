@@ -22,8 +22,8 @@ from aiogram.types import InlineKeyboardMarkup
 from bot.config import Config
 from bot.database import Database
 from bot.game.battle import (
+    BATTLE_FATIGUE_ROUNDS,
     BLUE,
-    MAX_BATTLE_ROUNDS,
     MAX_ROYALE,
     MAX_TEAM_SIZE,
     MIN_ROYALE,
@@ -31,6 +31,7 @@ from bot.game.battle import (
     RED,
     BattleKind,
     BattleOutcome,
+    in_fight,
     judge,
     pair_up,
     team_name,
@@ -38,6 +39,7 @@ from bot.game.battle import (
 from bot.game.classes import Zone, block_combo, block_title
 from bot.game.injuries import Injury
 from bot.game.combat import (
+    NO_GONG,
     Action,
     Fighter,
     group_aftermath,
@@ -480,8 +482,11 @@ class BattleService:
             session.fighters, session.teams, session.kind, session.round_number
         )
         if not session.pairs:  # pragma: no cover - судья закрывает бой раньше
+            # Пары не складываются — доигрывать нечем, и это тот
+            # единственный случай, когда судью зовут с гонгом
             await self._finish(session, judge(
-                session.fighters, session.teams, session.kind, MAX_BATTLE_ROUNDS
+                session.fighters, session.teams, session.kind,
+                session.round_number, gong=session.round_number,
             ))
             return
 
@@ -654,8 +659,12 @@ class BattleService:
                 session.round_number,
                 self.rng,
                 # Групповой бой длиннее дуэли, и усталость растянута на него:
-                # иначе к двадцатому раунду обычный удар выбивал бы втрое
-                limit=MAX_BATTLE_ROUNDS,
+                # иначе к двадцатому раунду обычный удар выбивал бы втрое.
+                # Разгон на этом числе не кончается, и бой кончается сам
+                limit=BATTLE_FATIGUE_ROUNDS,
+                # Судьи у пары нет: исход боя объявляет `judge` по всем
+                # сторонам, а не размен по своим двоим
+                gong=NO_GONG,
             )
             results.append(result)
             # Боевые дела этого размена — в ведомость школы
@@ -673,10 +682,12 @@ class BattleService:
             said.append(spoken)
             session.rounds.append(turn_payload(result, spoken))
 
+        # Выбыл — это и побитый, и ушедший из-за стола: про обоих надо
+        # сказать один раз, и обоих больше не ставят в пары
         fallen = [
             user_id
             for user_id in standing
-            if not session.fighters[user_id].alive
+            if not in_fight(session.fighters[user_id])
             and user_id not in session.announced_out
         ]
         session.announced_out.update(fallen)

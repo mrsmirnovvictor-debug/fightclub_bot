@@ -41,7 +41,7 @@ from bot.database import Database
 from bot.dojo_service import count_deeds
 from bot.game.battle import (
     BLUE,
-    MAX_BATTLE_ROUNDS,
+    BATTLE_FATIGUE_ROUNDS,
     RED,
     BattleKind,
     BattleOutcome,
@@ -683,7 +683,7 @@ class RobberyService:
                 raid.round_number,
                 self.rng,
                 # Усталость растянута на всю драку, а не на дуэль
-                limit=MAX_BATTLE_ROUNDS,
+                limit=BATTLE_FATIGUE_ROUNDS,
             )
             # Боевые дела этого размена — в ведомость школы: драка в
             # подворотне такой же бой, как всякий другой
@@ -700,8 +700,15 @@ class RobberyService:
             )
             raid.rounds.append(turn_payload(result, said))
 
+        # Драке гонг оставлен, и это не недосмотр. Бой в клубе боец
+        # выбрал сам и готов стоять в нём до победы; ограбленный его не
+        # выбирал, и держать его у телефона тридцать девять раундов по
+        # сорок пять секунд — наказание сверх самого ограбления.
+        # Потолок здесь ровно затем, зачем стоял везде: чтобы драка
+        # кончилась в обозримое время
         outcome = judge(
-            raid.fighters, raid.sides, BattleKind.TEAM, raid.round_number
+            raid.fighters, raid.sides, BattleKind.TEAM, raid.round_number,
+            gong=BATTLE_FATIGUE_ROUNDS,
         )
         if outcome.finished:
             await self._finish(raid, outcome)
